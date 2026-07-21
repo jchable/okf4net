@@ -108,4 +108,20 @@ public class YamlRoundtripTests
         var nanValue = Assert.IsType<YamlFloat>(nanReparsed.AsMapping()!.Get("k"));
         Assert.True(double.IsNaN(nanValue.Value));
     }
+
+    [Fact]
+    public void Emitting_a_pathologically_deep_value_throws_instead_of_overflowing_the_stack()
+    {
+        // Construct the deep YamlSequence directly (not via the parser,
+        // which has its own independent depth guard) so this exercises
+        // YamlEmitter's guard specifically. An INTENTIONAL divergence from
+        // Rust, which has no such guard in emitter.rs.
+        YamlValue v = new YamlSequence([]);
+        for (var i = 0; i < 5000; i++)
+        {
+            v = new YamlSequence([v]);
+        }
+
+        Assert.Throws<InvalidOperationException>(() => v.ToYamlString());
+    }
 }

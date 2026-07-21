@@ -193,6 +193,35 @@ public class YamlParserTests
     }
 
     [Fact]
+    public void Deeply_nested_flow_sequence_throws_instead_of_overflowing_the_stack()
+    {
+        // Unlike Rust (which has no depth guard and hard-crashes on
+        // pathological input like this), the C# port adds an explicit
+        // recursion-depth limit as a deliberate safety improvement -- an
+        // uncatchable StackOverflowException would otherwise take down the
+        // whole process. A flow sequence with 5000 nested '[' must throw a
+        // catchable YamlParseException, and the parser (and process) must
+        // survive to run subsequent tests.
+        var text = "tags: " + new string('[', 5000);
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(text));
+        Assert.Contains("nesting depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Deeply_nested_block_sequence_throws_instead_of_overflowing_the_stack()
+    {
+        // The block parser's "indentation-relaxed" sequence style (list
+        // items at the SAME column as their parent, e.g. "tags:\n- a\n- b")
+        // is implemented by right-recursion: a bare "-" (empty item, i.e. a
+        // nested-null item) recurses ParseSequence -> ParseNested ->
+        // ParseSequence once per line. A long flat run of bare "-" lines
+        // must throw rather than overflow the stack.
+        var text = string.Concat(Enumerable.Repeat("-\n", 5000));
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(text));
+        Assert.Contains("nesting depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Lone_carriage_return_stays_embedded_in_the_line()
     {
         // Rust's str::lines() only splits on '\n' (stripping one preceding

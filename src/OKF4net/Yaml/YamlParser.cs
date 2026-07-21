@@ -13,6 +13,20 @@ namespace OKF4net.Yaml;
 internal static class YamlParser
 {
     /// <summary>
+    /// Maximum recursive-descent nesting depth (block and flow alike)
+    /// before the parser gives up. This is an INTENTIONAL divergence from
+    /// the Rust reference, which has no such guard and simply overflows the
+    /// stack (an uncatchable crash) on pathological input like
+    /// "tags: [[[[...]]]]" with thousands of levels of nesting. Here that
+    /// input throws a catchable <see cref="YamlParseException"/> instead —
+    /// a deliberate safety improvement, not a port of Rust behaviour.
+    /// </summary>
+    private const int MaxNestingDepth = 1000;
+
+    /// <summary>Shared message for every place <see cref="MaxNestingDepth"/> is enforced.</summary>
+    private const string NestingDepthExceededMessage = "nesting depth limit exceeded";
+
+    /// <summary>
     /// Parses a YAML document (the OKF subset) into a <see cref="YamlValue"/>.
     /// Empty or comment/whitespace-only input parses to <see cref="YamlNull"/>,
     /// mirroring PyYAML's <c>safe_load("") is None</c>.
@@ -75,8 +89,36 @@ internal static class YamlParser
         /// </summary>
         public int CurrentIndent() => IndentOf(Lines[Pos]) ?? throw Err("tab character in indentation");
 
+        /// <summary>
+        /// Recursion depth guard shared by <see cref="ParseNode"/> and
+        /// <see cref="ParseMapping"/> — between them every block-level
+        /// recursive path (nested mappings, nested sequences, and the
+        /// "- key: value" inline-mapping shortcut that calls
+        /// <see cref="ParseMapping"/> directly from <see cref="ParseSequence"/>)
+        /// passes through one of the two. See <see cref="MaxNestingDepth"/>.
+        /// </summary>
+        private int _depth;
+
         /// <summary>Parses a node whose block items begin at column <paramref name="indent"/>.</summary>
         public YamlValue ParseNode(int indent)
+        {
+            _depth++;
+            if (_depth > MaxNestingDepth)
+            {
+                throw Err(NestingDepthExceededMessage);
+            }
+
+            try
+            {
+                return ParseNodeCore(indent);
+            }
+            finally
+            {
+                _depth--;
+            }
+        }
+
+        private YamlValue ParseNodeCore(int indent)
         {
             var line = Lines[Pos];
             var content = line[Math.Min(indent, line.Length)..];
@@ -99,6 +141,24 @@ internal static class YamlParser
         }
 
         public YamlValue ParseMapping(int indent)
+        {
+            _depth++;
+            if (_depth > MaxNestingDepth)
+            {
+                throw Err(NestingDepthExceededMessage);
+            }
+
+            try
+            {
+                return ParseMappingCore(indent);
+            }
+            finally
+            {
+                _depth--;
+            }
+        }
+
+        private YamlValue ParseMappingCore(int indent)
         {
             var map = new YamlMapping();
             while (true)
@@ -148,6 +208,32 @@ internal static class YamlParser
         }
 
         public YamlValue ParseSequence(int indent)
+        {
+            // Guarded independently of ParseNode/ParseMapping: the
+            // "indentation-relaxed" block sequence style (list items at the
+            // SAME indent as their parent key, e.g. "tags:\n- a\n- b") is
+            // parsed by right-recursion — ParseSequence -> ParseNested ->
+            // ParseSequence, one stack frame per item — bypassing both
+            // ParseNode and ParseMapping entirely. Without this, even a
+            // very long flat list (not just deeply *nested* structures)
+            // could overflow the stack.
+            _depth++;
+            if (_depth > MaxNestingDepth)
+            {
+                throw Err(NestingDepthExceededMessage);
+            }
+
+            try
+            {
+                return ParseSequenceCore(indent);
+            }
+            finally
+            {
+                _depth--;
+            }
+        }
+
+        private YamlValue ParseSequenceCore(int indent)
         {
             var seq = new List<YamlValue>();
             while (true)
@@ -738,6 +824,15 @@ internal static class YamlParser
 
         private YamlParseException Err(string message) => new(line + 1, message);
 
+        /// <summary>
+        /// Recursion depth guard: every flow-collection recursive path
+        /// (<c>[</c> and <c>{</c> alike) funnels through <see cref="ParseValue"/>
+        /// (<see cref="ParseSeq"/> and <see cref="ParseMap"/> both call back
+        /// into it for each element), so guarding this single choke point
+        /// covers all of it. See <see cref="MaxNestingDepth"/>.
+        /// </summary>
+        private int _depth;
+
         public YamlValue ParseValue()
         {
             SkipWs();
@@ -746,12 +841,25 @@ internal static class YamlParser
                 return YamlNull.Instance;
             }
 
-            return Chars[Pos] switch
+            _depth++;
+            if (_depth > MaxNestingDepth)
             {
-                '[' => ParseSeq(),
-                '{' => ParseMap(),
-                _ => ParseFlowScalar(),
-            };
+                throw Err(NestingDepthExceededMessage);
+            }
+
+            try
+            {
+                return Chars[Pos] switch
+                {
+                    '[' => ParseSeq(),
+                    '{' => ParseMap(),
+                    _ => ParseFlowScalar(),
+                };
+            }
+            finally
+            {
+                _depth--;
+            }
         }
 
         public YamlValue ParseSeq()
