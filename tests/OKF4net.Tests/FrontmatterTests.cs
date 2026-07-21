@@ -132,4 +132,21 @@ public class FrontmatterTests
         var fm = Frontmatter.FromMapping(YamlValue.Parse("type: T\ncustom: 1\n").AsMapping()!);
         Assert.Equal(new[] { "type", "custom" }, fm.AsMapping().Keys.ToArray());
     }
+
+    [Fact]
+    public void Equality_is_structural_over_the_underlying_mapping()
+    {
+        // F11: Rust derives PartialEq on Frontmatter (frontmatter.rs:18), a
+        // single-field wrapper over Mapping, whose PartialEq is structural.
+        var a = Frontmatter.FromMapping(YamlValue.Parse("type: T\ncustom: 1\n").AsMapping()!);
+        var b = Frontmatter.FromMapping(YamlValue.Parse("type: T\ncustom: 1\n").AsMapping()!);
+        Assert.Equal(a, b);
+        Assert.True(a.Equals(b));
+        Assert.Equal(a.GetHashCode(), b.GetHashCode());
+
+        var different = Frontmatter.FromMapping(YamlValue.Parse("type: T\ncustom: 2\n").AsMapping()!);
+        Assert.NotEqual(a, different);
+        Assert.False(a.Equals(different));
+        Assert.False(a.Equals(null));
+    }
 }

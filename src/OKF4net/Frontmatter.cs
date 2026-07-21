@@ -13,7 +13,7 @@ namespace OKF4net;
 /// top, rather than deserializing into a fixed shape that would drop unknown
 /// keys. Port of the Rust <c>Frontmatter</c> (src/frontmatter.rs).
 /// </summary>
-public sealed class Frontmatter
+public sealed class Frontmatter : IEquatable<Frontmatter>
 {
     /// <summary>
     /// Frontmatter keys the reference enrichment agent requires before a
@@ -87,4 +87,19 @@ public sealed class Frontmatter
     /// </summary>
     public IReadOnlyList<string> ExtensionKeys =>
         _map.Keys.Where(k => !KnownKeys.Contains(k, StringComparer.Ordinal)).ToList();
+
+    /// <summary>
+    /// Structural equality: the underlying <see cref="YamlMapping"/>s are
+    /// structurally equal. Mirrors Rust's derived <c>PartialEq</c> for
+    /// <c>Frontmatter</c> (frontmatter.rs:18, a single-field struct wrapping
+    /// <c>Mapping</c>), whose <c>Mapping</c> derives <c>PartialEq</c> in turn
+    /// (yaml/mod.rs:42).
+    /// </summary>
+    public bool Equals(Frontmatter? other) => other is not null && (ReferenceEquals(this, other) || _map.Equals(other._map));
+
+    /// <inheritdoc/>
+    public override bool Equals(object? obj) => Equals(obj as Frontmatter);
+
+    /// <inheritdoc/>
+    public override int GetHashCode() => _map.GetHashCode();
 }

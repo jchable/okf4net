@@ -15,7 +15,7 @@ namespace OKF4net;
 /// Link/citation extraction (§8) is provided by <see cref="Links"/> and
 /// <see cref="Citations"/>, which delegate to <see cref="LinkScanner"/>.
 /// </summary>
-public sealed class OkfDocument
+public sealed class OkfDocument : IEquatable<OkfDocument>
 {
     private const string FrontmatterDelim = "---";
 
@@ -187,4 +187,21 @@ public sealed class OkfDocument
     /// </summary>
     public IReadOnlyList<Citation> Citations() => LinkScanner.ExtractCitations(Body);
 
+    /// <summary>
+    /// Structural equality: <see cref="Frontmatter"/> equality AND ordinal
+    /// <see cref="Body"/> equality. Mirrors Rust's derived <c>PartialEq</c>
+    /// for <c>Document</c> (document.rs:16-21), a componentwise derive over
+    /// its two fields (<c>frontmatter: Frontmatter</c>, <c>body: String</c>;
+    /// Rust <c>String: PartialEq</c> is byte/ordinal comparison).
+    /// </summary>
+    public bool Equals(OkfDocument? other) =>
+        other is not null
+        && (ReferenceEquals(this, other)
+            || (Frontmatter.Equals(other.Frontmatter) && string.Equals(Body, other.Body, StringComparison.Ordinal)));
+
+    /// <inheritdoc/>
+    public override bool Equals(object? obj) => Equals(obj as OkfDocument);
+
+    /// <inheritdoc/>
+    public override int GetHashCode() => HashCode.Combine(Frontmatter.GetHashCode(), Body);
 }
