@@ -37,6 +37,25 @@ public class RustCaseFoldTests
     }
 
     [Fact]
+    public void ToLowercase_skips_ascii_case_ignorable_punctuation_when_locating_final_sigma()
+    {
+        // "ΟΣ.ι": the Σ is followed by '.' (case-ignorable, per Rust's
+        // char::is_case_ignorable ASCII fast path) and then by the cased ι
+        // -- so, skipping the ignorable dot, Σ IS followed by a cased
+        // character and is therefore NOT final. It takes the default
+        // mapping σ, not ς.
+        Assert.Equal("οσ.ι", RustCaseFold.ToLowercase("ΟΣ.ι"));
+
+        // Same shape with ':' instead of '.' -- also in the ASCII
+        // case-ignorable fast path.
+        Assert.Equal("οσ:ι", RustCaseFold.ToLowercase("ΟΣ:ι"));
+
+        // "ΟΣ.": nothing follows the ignorable trailing dot, so Σ IS
+        // final and becomes ς.
+        Assert.Equal("ος.", RustCaseFold.ToLowercase("ΟΣ."));
+    }
+
+    [Fact]
     public void ToLowercase_leaves_pure_ascii_unchanged_from_ToLowerInvariant()
     {
         Assert.Equal("hello world", RustCaseFold.ToLowercase("Hello World"));

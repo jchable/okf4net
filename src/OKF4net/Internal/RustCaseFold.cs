@@ -55,12 +55,14 @@ internal static class RustCaseFold
     /// <c>to_lowercase</c> also does not apply).</description></item>
     /// </list>
     ///
-    /// <see cref="IsCased"/>/<see cref="IsCaseIgnorable"/> approximate the
-    /// Unicode Cased / Case_Ignorable properties (Unicode §3.13, definition
-    /// D136) via UnicodeCategory groupings rather than the full derived
-    /// property tables — sufficient to place Final_Sigma correctly for
-    /// title sorting, though it may not match the full Unicode algorithm on
-    /// every exotic combination of combining marks.
+    /// <see cref="IsCased"/> mirrors Rust's <c>char::is_cased</c> and
+    /// <see cref="IsCaseIgnorable"/> mirrors Rust's
+    /// <c>char::is_case_ignorable</c> (whose ASCII fast path is reproduced
+    /// exactly; see each method's doc comment for exactly which non-ASCII
+    /// derived-property members are and are not covered) — sufficient to
+    /// place Final_Sigma correctly for title sorting, though not a full
+    /// Unicode conformance claim on every exotic combination of combining
+    /// marks.
     ///
     /// Caveat shared with the rest of this port: this delegates single
     /// code-point mapping to .NET's (ICU-backed) Unicode tables, which may
@@ -176,31 +178,73 @@ internal static class RustCaseFold
     }
 
     /// <summary>
-    /// Approximates the Unicode "Cased" property (D136): uppercase,
-    /// lowercase, or titlecase letters.
+    /// Approximates Rust's derived <c>Cased</c> property (which
+    /// <c>char::is_cased</c> uses, and which this mirrors for
+    /// <see cref="IsFinalSigmaPosition"/>): General_Category Lu/Ll/Lt,
+    /// PLUS the <c>Other_Lowercase</c>/<c>Other_Uppercase</c> members
+    /// outside those categories that the full derived property also
+    /// includes. Not exhaustive over every Other_Lowercase/Other_Uppercase
+    /// code point (that requires the full derived-property table, out of
+    /// scope here) — covers the two ranges called out in review as
+    /// concretely relevant to title text:
+    /// <list type="bullet">
+    /// <item><description>U+2160-U+2188 (Letter_Number, Roman numeral
+    /// letterlike symbols: Ⅰ-ↈ), which carry Other_Uppercase/
+    /// Other_Lowercase.</description></item>
+    /// <item><description>U+02B0-U+02B8 (Modifier_Letter, the "small
+    /// letter" superscript block: ʰ-ʸ), which carries
+    /// Other_Lowercase.</description></item>
+    /// </list>
     /// </summary>
     private static bool IsCased(Rune rune)
     {
         var category = Rune.GetUnicodeCategory(rune);
-        return category is UnicodeCategory.UppercaseLetter
-            or UnicodeCategory.LowercaseLetter
-            or UnicodeCategory.TitlecaseLetter;
+        if (category is UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter or UnicodeCategory.TitlecaseLetter)
+        {
+            return true;
+        }
+
+        if (category == UnicodeCategory.LetterNumber && rune.Value is >= 0x2160 and <= 0x2188)
+        {
+            return true;
+        }
+
+        return category == UnicodeCategory.ModifierLetter && rune.Value is >= 0x02B0 and <= 0x02B8;
     }
 
     /// <summary>
-    /// Approximates the Unicode "Case_Ignorable" property (D136): combining
-    /// marks, formatting characters, and modifier letters/symbols, plus the
-    /// three punctuation characters (apostrophe, soft hyphen, right single
-    /// quotation mark) the standard also names as case-ignorable. This is a
-    /// deliberate simplification of the full derived property (which also
-    /// includes a handful of General_Category=Cf/Lm/Sk/Mn/Me characters not
-    /// covered by these category groupings, plus some by explicit
-    /// Word_Break value) — sufficient for locating Final_Sigma in title
+    /// Mirrors Rust's <c>char::is_case_ignorable</c>: an ASCII fast path of
+    /// exactly <c>'\'' | '.' | ':' | '^' | '`'</c>, plus — for non-ASCII —
+    /// the full Unicode <c>Case_Ignorable</c> derived property. This port
+    /// reproduces the ASCII fast path exactly (it is a closed, five-member
+    /// set) and approximates the non-ASCII side via UnicodeCategory
+    /// groupings (NonSpacingMark, EnclosingMark, Format, ModifierLetter,
+    /// ModifierSymbol) plus the explicit Word_Break MidLetter/MidNumLet
+    /// punctuation members and a few named single code points that fall
+    /// outside those categories: U+00AD SOFT HYPHEN, U+00B7 MIDDLE DOT,
+    /// U+0387 GREEK ANO TELEIA, U+05F4 HEBREW PUNCTUATION GERSHAYIM,
+    /// U+2019 RIGHT SINGLE QUOTATION MARK, U+2024 ONE DOT LEADER, U+2027
+    /// HYPHENATION POINT, U+FE13/U+FE52/U+FE55 (small/presentation-form
+    /// colon and full stops), U+FF07/U+FF0E/U+FF1A (fullwidth apostrophe,
+    /// full stop, and colon). This is a deliberate simplification of the
+    /// full derived property (which also includes a handful of other
+    /// General_Category=Cf/Lm/Sk/Mn/Me code points not covered by these
+    /// category groupings) — sufficient for locating Final_Sigma in title
     /// text, not a full Unicode conformance claim.
     /// </summary>
     private static bool IsCaseIgnorable(Rune rune)
     {
-        if (rune.Value is 0x0027 or 0x00AD or 0x2019)
+        // ASCII fast path, matching Rust's is_case_ignorable exactly.
+        if (rune.Value is 0x0027 or 0x002E or 0x003A or 0x005E or 0x0060)
+        {
+            return true;
+        }
+
+        // Explicitly-named non-ASCII Case_Ignorable members (soft hyphen,
+        // right single quote, and the Word_Break MidLetter/MidNumLet
+        // punctuation set) that fall outside the category groupings below.
+        if (rune.Value is 0x00AD or 0x00B7 or 0x0387 or 0x05F4 or 0x2019 or 0x2024 or 0x2027
+            or 0xFE13 or 0xFE52 or 0xFE55 or 0xFF07 or 0xFF0E or 0xFF1A)
         {
             return true;
         }
