@@ -1,0 +1,5 @@
+[warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field `description`
+[warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field `timestamp`
+
+4 concept(s); 0 error(s), 2 warning(s), 0 info.
+✓ conformant with OKF v0.1

@@ -1,0 +1,8 @@
+digraph okf {
+  rankdir=LR; node [shape=box, fontsize=10];
+  "datasets/sales" -> "tables/orders";
+  "datasets/sales" -> "tables/customers";
+  "tables/customers" -> "tables/orders";
+  "tables/orders" -> "datasets/sales";
+  "tables/orders" -> "tables/customers";
+}
