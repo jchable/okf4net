@@ -488,8 +488,20 @@ public static class LinkScanner
             return null;
         }
 
+        // Mirrors Rust's u32::from_str: a single leading '+' is stripped
+        // before parsing digits, but a leading '-' is NEVER stripped for an
+        // unsigned type -- it's simply not a valid digit, so any leading
+        // '-' is rejected outright (including "-0"). Do this by hand rather
+        // than via NumberStyles.AllowLeadingSign, which uniquely accepts
+        // "-0" for uint (a divergence from Rust, which rejects it too).
         var numberText = rest[..close].Trim();
-        if (!uint.TryParse(numberText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number))
+        if (numberText.StartsWith('-'))
+        {
+            return null;
+        }
+
+        var digits = numberText.StartsWith('+') ? numberText[1..] : numberText;
+        if (!uint.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number))
         {
             return null;
         }
