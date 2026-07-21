@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace OKF4net;
@@ -79,7 +80,7 @@ public sealed class ConceptId : IEquatable<ConceptId>
     }
 
     /// <summary>Like <see cref="Parse"/>, but returns <c>false</c> instead of throwing.</summary>
-    public static bool TryParse(string s, out ConceptId? id)
+    public static bool TryParse(string s, [NotNullWhen(true)] out ConceptId? id)
     {
         try
         {

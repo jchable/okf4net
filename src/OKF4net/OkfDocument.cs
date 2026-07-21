@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using OKF4net.Yaml;
 
 namespace OKF4net;
@@ -92,7 +93,7 @@ public sealed class OkfDocument
     }
 
     /// <summary>Like <see cref="Parse"/>, but returns <c>false</c> instead of throwing.</summary>
-    public static bool TryParse(string text, out OkfDocument? doc, out string? error)
+    public static bool TryParse(string text, [NotNullWhen(true)] out OkfDocument? doc, [NotNullWhen(false)] out string? error)
     {
         try
         {

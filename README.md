@@ -13,7 +13,7 @@ a directory of markdown files with YAML frontmatter.
 >
 > OKF4net is a from-scratch C# port of this repository's former Rust `okf`
 > implementation, itself a port of the OKF reference implementation. The Rust
-> sources were removed once the port was proven byte-exact (181/181 tests,
+> sources were removed once the port was proven byte-exact (182/182 tests,
 > including 5 byte-exact golden CLI comparisons — see
 > [`tests/fixtures/`](tests/fixtures/README.md)); OKF4net is now the sole
 > implementation in this repository.
