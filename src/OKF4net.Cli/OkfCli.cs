@@ -18,9 +18,6 @@ public static class OkfCli
     /// <summary>The crate version (Cargo.toml <c>[package] version</c>), echoed by <c>-V</c>/<c>--version</c>.</summary>
     private const string CliVersion = "0.1.0-alpha.1";
 
-    /// <summary>The OKF spec version this tool implements. Port of <c>okf::OKF_VERSION</c> (lib.rs:68).</summary>
-    private const string OkfSpecVersion = "0.1";
-
     /// <summary>
     /// UTF-8 decoder configured to throw on invalid byte sequences, matching
     /// the strictness of Rust's <c>fs::read_to_string</c> used by
@@ -89,7 +86,7 @@ public static class OkfCli
                 stdout.Write("\n");
                 return 0;
             case "-V" or "--version" or "version":
-                stdout.Write($"okf {CliVersion} (OKF spec v{OkfSpecVersion})\n");
+                stdout.Write($"okf {CliVersion} (OKF spec v{OkfSpec.Version})\n");
                 return 0;
         }
 
@@ -291,11 +288,11 @@ public static class OkfCli
 
         if (report.IsConformant)
         {
-            stdout.Write($"✓ conformant with OKF v{OkfSpecVersion}\n");
+            stdout.Write($"✓ conformant with OKF v{OkfSpec.Version}\n");
             return 0;
         }
 
-        stdout.Write($"✗ not conformant with OKF v{OkfSpecVersion}\n");
+        stdout.Write($"✗ not conformant with OKF v{OkfSpec.Version}\n");
         return 1;
     }
 

@@ -43,7 +43,7 @@ mapping.
 | Type / namespace                          | Responsibility                                                            |
 |--------------------------------------------|----------------------------------------------------------------------------|
 | `OKF4net.Yaml.YamlValue` / `YamlMapping`   | A YAML-*subset* value/mapping model for frontmatter                        |
-| `OKF4net.Yaml.YamlParser` / `YamlEmitter`  | Parser and emitter for the same YAML subset                                |
+| `OKF4net.Yaml.YamlValue.Parse` / `YamlEmitter` | Parser entry point and emitter for the same YAML subset                |
 | `OKF4net.OkfDocument`                      | Frontmatter + body; parse / serialize / validate (§4)                      |
 | `OKF4net.Frontmatter`                      | Typed accessors over an order-preserving mapping (§4.1)                    |
 | `OKF4net.ConceptId`                        | `ConceptId` ↔ path conversion and segment validation (§2)                  |
@@ -94,7 +94,7 @@ Console.WriteLine($"{bundle.Count} concepts");
 var report = BundleValidator.Validate(bundle);
 if (report.IsConformant)
 {
-    Console.WriteLine($"conformant with OKF v{OkfSpecVersion}");
+    Console.WriteLine($"conformant with OKF v{OkfSpec.Version}");
 }
 
 // Traverse the cross-link graph.
@@ -158,7 +158,7 @@ unchanged from the Rust binary it replaces.
 | §7 Log files                  | `OKF4net.ChangeLog`                                            |
 | §8 Citations                  | `LinkScanner`, `OkfDocument.Citations()`                       |
 | §9 Conformance                | `OKF4net.BundleValidator`                                      |
-| §11 Versioning                | `Bundle.OkfVersion`                                            |
+| §11 Versioning                | `Bundle.OkfVersion`, `OKF4net.OkfSpec.Version`                 |
 
 ## Building & testing
 
