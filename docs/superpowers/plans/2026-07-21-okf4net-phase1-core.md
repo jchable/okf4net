@@ -158,7 +158,9 @@ public class YamlValueTests
         Assert.True(new YamlString("").IsEmptyValue);
         Assert.True(new YamlSequence([]).IsEmptyValue);
         Assert.True(new YamlMapping().IsEmptyValue);
-        Assert.False(new YamlInt(0).IsEmptyValue);
+        Assert.True(new YamlInt(0).IsEmptyValue);      // miroir du "falsy" Python (mod.rs:194)
+        Assert.True(new YamlBool(false).IsEmptyValue); // mod.rs:193
+        Assert.False(new YamlFloat(0.0).IsEmptyValue); // pas de bras Float dans le match Rust
         Assert.False(new YamlString("x").IsEmptyValue);
     }
 }
