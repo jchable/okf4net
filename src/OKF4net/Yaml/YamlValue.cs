@@ -8,9 +8,8 @@ public abstract class YamlValue
 {
     /// <summary>
     /// Parses a single YAML value from text (the OKF frontmatter subset).
-    /// Implemented in Task 2.
     /// </summary>
-    public static YamlValue Parse(string text) => throw new NotImplementedException();
+    public static YamlValue Parse(string text) => YamlParser.Parse(text);
 
     /// <summary>
     /// Emits this value as YAML text using block style, preserving key order.

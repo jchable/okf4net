@@ -1,0 +1,14 @@
+namespace OKF4net;
+
+/// <summary>
+/// Base class for all OKF4net exceptions. Mirrors the Rust crate's use of a
+/// small set of typed errors (e.g. <c>YamlError</c>) rather than a single
+/// generic error type.
+/// </summary>
+public abstract class OkfException : Exception
+{
+    protected OkfException(string message)
+        : base(message)
+    {
+    }
+}
