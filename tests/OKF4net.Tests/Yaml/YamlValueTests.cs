@@ -104,6 +104,25 @@ public class YamlValueTests
     }
 
     [Fact]
+    public void Sequence_constructor_defensively_copies_the_backing_list()
+    {
+        // Rust's `From<Vec<Value>>` consumes (moves) the Vec, so mutating it
+        // after construction is impossible there. The C# constructor must
+        // not alias the caller's list, so post-construction mutation of the
+        // caller's list must not be observable through the sequence.
+        var list = new List<YamlValue> { new YamlInt(1), new YamlInt(2) };
+        var seq = new YamlSequence(list);
+
+        list.Add(new YamlInt(3));
+        list[0] = new YamlInt(99);
+
+        Assert.Equal(2, seq.Items.Count);
+        Assert.Equal(1L, seq.Items[0].AsInt());
+        Assert.Equal(2L, seq.Items[1].AsInt());
+        Assert.Equal("- 1\n- 2\n", seq.ToYamlString());
+    }
+
+    [Fact]
     public void IsEmptyValue_matches_rust_semantics()
     {
         Assert.True(YamlNull.Instance.IsEmptyValue);

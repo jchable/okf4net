@@ -261,8 +261,15 @@ public sealed class YamlString : YamlValue
 /// <summary>A sequence (`[...]` or block `- ...`).</summary>
 public sealed class YamlSequence : YamlValue
 {
-    /// <summary>Wraps <paramref name="items"/> as a YAML sequence.</summary>
-    public YamlSequence(IReadOnlyList<YamlValue> items) => Items = items;
+    /// <summary>
+    /// Wraps <paramref name="items"/> as a YAML sequence, defensively
+    /// copying it. Rust's <c>impl From&lt;Vec&lt;Value&gt;&gt; for Value</c>
+    /// consumes (moves) the <c>Vec</c>, so the caller cannot mutate it after
+    /// construction there; a plain reference assignment here would alias the
+    /// caller's list and let post-construction mutation leak through, which
+    /// is impossible in Rust. Copying preserves that "moved" invariant.
+    /// </summary>
+    public YamlSequence(IReadOnlyList<YamlValue> items) => Items = [.. items];
 
     /// <summary>The sequence elements, in document order.</summary>
     public IReadOnlyList<YamlValue> Items { get; }
