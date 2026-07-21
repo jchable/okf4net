@@ -210,6 +210,7 @@ public abstract class YamlValue
 /// <summary>`null`, `~`, or an empty value.</summary>
 public sealed class YamlNull : YamlValue
 {
+    /// <summary>The singleton null value.</summary>
     public static readonly YamlNull Instance = new();
 
     private YamlNull()
@@ -220,39 +221,49 @@ public sealed class YamlNull : YamlValue
 /// <summary>`true` / `false`.</summary>
 public sealed class YamlBool : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML boolean.</summary>
     public YamlBool(bool value) => Value = value;
 
+    /// <summary>The boolean value.</summary>
     public bool Value { get; }
 }
 
 /// <summary>An integer scalar.</summary>
 public sealed class YamlInt : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML integer.</summary>
     public YamlInt(long value) => Value = value;
 
+    /// <summary>The integer value.</summary>
     public long Value { get; }
 }
 
 /// <summary>A floating-point scalar.</summary>
 public sealed class YamlFloat : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML float.</summary>
     public YamlFloat(double value) => Value = value;
 
+    /// <summary>The floating-point value.</summary>
     public double Value { get; }
 }
 
 /// <summary>A string scalar.</summary>
 public sealed class YamlString : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML string.</summary>
     public YamlString(string value) => Value = value;
 
+    /// <summary>The string value.</summary>
     public string Value { get; }
 }
 
 /// <summary>A sequence (`[...]` or block `- ...`).</summary>
 public sealed class YamlSequence : YamlValue
 {
+    /// <summary>Wraps <paramref name="items"/> as a YAML sequence.</summary>
     public YamlSequence(IReadOnlyList<YamlValue> items) => Items = items;
 
+    /// <summary>The sequence elements, in document order.</summary>
     public IReadOnlyList<YamlValue> Items { get; }
 }

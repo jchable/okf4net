@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: OKF specification questions
+    url: https://github.com/GoogleCloudPlatform/knowledge-catalog
+    about: Questions about the OKF format itself belong upstream, not here.
+  - name: Security vulnerabilities
+    url: https://github.com/jchable/okf4net/security/advisories/new
+    about: Please report security issues privately, not as public issues.

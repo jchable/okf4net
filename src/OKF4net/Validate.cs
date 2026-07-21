@@ -80,6 +80,7 @@ public sealed class ValidationReport
     /// <summary>All findings, in the order <see cref="BundleValidator.Validate"/> produced them.</summary>
     public IReadOnlyList<Diagnostic> Diagnostics { get; }
 
+    /// <summary>Creates a report over <paramref name="diagnostics"/>.</summary>
     public ValidationReport(IReadOnlyList<Diagnostic> diagnostics)
     {
         Diagnostics = diagnostics;

@@ -326,12 +326,16 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
         return CompareTo(other);
     }
 
+    /// <summary>Ordinal-by-segment less-than comparison.</summary>
     public static bool operator <(ConceptId left, ConceptId right) => Compare(left, right) < 0;
 
+    /// <summary>Ordinal-by-segment less-than-or-equal comparison.</summary>
     public static bool operator <=(ConceptId left, ConceptId right) => Compare(left, right) <= 0;
 
+    /// <summary>Ordinal-by-segment greater-than comparison.</summary>
     public static bool operator >(ConceptId left, ConceptId right) => Compare(left, right) > 0;
 
+    /// <summary>Ordinal-by-segment greater-than-or-equal comparison.</summary>
     public static bool operator >=(ConceptId left, ConceptId right) => Compare(left, right) >= 0;
 
     private static int Compare(ConceptId? left, ConceptId? right)

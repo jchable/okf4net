@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: build & test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore OKF4net.sln
+
+      - name: Build
+        run: dotnet build OKF4net.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test OKF4net.sln -c Release --no-build
+
+  format:
+    name: code style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify formatting
+        run: dotnet format OKF4net.sln --verify-no-changes
+
+  aot-publish:
+    name: Native AOT publish smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish okf CLI (Native AOT)
+        run: dotnet publish src/OKF4net.Cli -c Release
+
+      - name: Run published binary
+        run: |
+          BIN=$(find src/OKF4net.Cli/bin/Release -type f -name okf -path '*publish*' | head -1)
+          "$BIN" validate tests/fixtures/appendix_a

@@ -13,6 +13,7 @@ public sealed class YamlParseException : OkfException
     /// <summary>1-based source line where the problem was detected (0 if not known).</summary>
     public int Line { get; }
 
+    /// <summary>Creates a parse error at 1-based <paramref name="line"/>.</summary>
     public YamlParseException(int line, string message)
         : base(FormatMessage(line, message))
     {

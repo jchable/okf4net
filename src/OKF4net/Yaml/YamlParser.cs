@@ -528,18 +528,18 @@ internal static class YamlParser
                     // comment region without a preceding separator
                     return null;
                 case ':' when depth == 0:
-                {
-                    char? next = i + 1 < s.Length ? s[i + 1] : null;
-                    if (next is null or ' ' or '\t')
                     {
-                        var key = s[..i];
-                        var restRaw = s[(i + 1)..].Trim();
-                        var rest = restRaw.Length == 0 || restRaw.StartsWith('#') ? null : restRaw;
-                        return new KeyValueSplit(key.Trim(), rest);
-                    }
+                        char? next = i + 1 < s.Length ? s[i + 1] : null;
+                        if (next is null or ' ' or '\t')
+                        {
+                            var key = s[..i];
+                            var restRaw = s[(i + 1)..].Trim();
+                            var rest = restRaw.Length == 0 || restRaw.StartsWith('#') ? null : restRaw;
+                            return new KeyValueSplit(key.Trim(), rest);
+                        }
 
-                    break;
-                }
+                        break;
+                    }
             }
 
             i += 1;
@@ -725,22 +725,22 @@ internal static class YamlParser
                         outSb.Append('');
                         break;
                     case 'u':
-                    {
-                        var available = s.Length - (i + 1);
-                        var hexLen = Math.Max(0, Math.Min(4, available));
-                        var hex = s.Substring(i + 1, hexLen);
-                        if (hex.Length == 4)
                         {
-                            if (int.TryParse(hex, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var cp))
+                            var available = s.Length - (i + 1);
+                            var hexLen = Math.Max(0, Math.Min(4, available));
+                            var hex = s.Substring(i + 1, hexLen);
+                            if (hex.Length == 4)
                             {
-                                AppendUnicodeScalar(outSb, cp);
+                                if (int.TryParse(hex, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var cp))
+                                {
+                                    AppendUnicodeScalar(outSb, cp);
+                                }
+
+                                i += 4;
                             }
 
-                            i += 4;
+                            break;
                         }
-
-                        break;
-                    }
 
                     default:
                         outSb.Append(e);

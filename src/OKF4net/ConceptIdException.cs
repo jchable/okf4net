@@ -8,6 +8,7 @@ namespace OKF4net;
 /// </summary>
 public sealed class ConceptIdException : OkfException
 {
+    /// <summary>Creates the exception with a descriptive message.</summary>
     public ConceptIdException(string message)
         : base(message)
     {

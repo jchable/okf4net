@@ -1,9 +1,34 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
+
+  <PropertyGroup Label="Packaging">
+    <PackageId>OKF4net</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Julien CHABLE</Authors>
+    <Description>Zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1: parse, validate, index, and graph OKF knowledge bundles (markdown + YAML frontmatter).</Description>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>okf;open-knowledge-format;knowledge;markdown;yaml;frontmatter;knowledge-graph</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>

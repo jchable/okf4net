@@ -16,6 +16,7 @@ public sealed class YamlMapping : YamlValue
 {
     private readonly List<(YamlValue Key, YamlValue Value)> _entries = [];
 
+    /// <summary>Creates an empty mapping.</summary>
     public YamlMapping()
     {
     }

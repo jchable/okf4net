@@ -7,7 +7,7 @@ namespace OKF4net.Internal;
 /// 229), shared by <see cref="OKF4net.Bundle"/>'s and
 /// <see cref="OKF4net.IndexGenerator"/>'s markdown-collecting sites.
 ///
-/// Neither .NET's <see cref="Path.GetExtension"/> nor a naive
+/// Neither .NET's <see cref="Path.GetExtension(string)"/> nor a naive
 /// <c>EndsWith(".md")</c> check matches Rust here: both treat a file named
 /// EXACTLY <c>.md</c> as having the extension <c>.md</c>
 /// (<c>Path.GetExtension(".md")</c> returns <c>".md"</c>, not <c>""</c>).
