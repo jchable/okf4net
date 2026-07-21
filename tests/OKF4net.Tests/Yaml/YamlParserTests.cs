@@ -171,6 +171,22 @@ public class YamlParserTests
     }
 
     [Fact]
+    public void Culture_sensitive_StartsWith_does_not_misparse_a_soft_hyphen_line()
+    {
+        // string.StartsWith(string) without an explicit StringComparison
+        // uses CurrentCulture, whose linguistic comparison treats certain
+        // zero-width "format" characters -- e.g. U+00AD SOFT HYPHEN -- as
+        // ignorable: "­- x".StartsWith("- ") is empirically true under
+        // CurrentCulture/InvariantCulture, but false under ordinal
+        // (byte-exact) comparison. Rust's str::starts_with (parser.rs:84,
+        // 113, 153, 217) is always byte-exact, so a line beginning with a
+        // soft hyphen must NOT be misread as a block-sequence item ("- ").
+        var v = YamlValue.Parse("outer:\n  ­- x\n");
+        var value = v.AsMapping()!.Get("outer")!;
+        Assert.Equal("­- x", value.AsString());
+    }
+
+    [Fact]
     public void Tab_indentation_is_error()
     {
         Assert.Throws<YamlParseException>(() => YamlValue.Parse("a:\n\tb: 1"));

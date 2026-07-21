@@ -82,7 +82,7 @@ internal static class YamlParser
             var content = line[Math.Min(indent, line.Length)..];
             var trimmed = content.TrimStart();
 
-            if (trimmed == "-" || trimmed.StartsWith("- "))
+            if (trimmed == "-" || trimmed.StartsWith("- ", StringComparison.Ordinal))
             {
                 return ParseSequence(indent);
             }
@@ -123,7 +123,7 @@ internal static class YamlParser
                 var line = Lines[Pos];
                 var content = line[indent..];
                 var trimmed = content.TrimStart();
-                if (trimmed == "-" || trimmed.StartsWith("- "))
+                if (trimmed == "-" || trimmed.StartsWith("- ", StringComparison.Ordinal))
                 {
                     break; // sequence at the same level: not part of this mapping
                 }
@@ -171,7 +171,7 @@ internal static class YamlParser
 
                 var line = Lines[Pos];
                 var content = line[indent..];
-                if (!(content == "-" || content.StartsWith("- ")))
+                if (!(content == "-" || content.StartsWith("- ", StringComparison.Ordinal)))
                 {
                     break;
                 }
@@ -252,7 +252,7 @@ internal static class YamlParser
         {
             var line = Lines[Pos];
             var content = line[Math.Min(indent, line.Length)..];
-            return content == "-" || content.StartsWith("- ");
+            return content == "-" || content.StartsWith("- ", StringComparison.Ordinal);
         }
 
         /// <summary>
