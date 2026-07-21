@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics.CodeAnalysis;
+using OKF4net.Internal;
 using OKF4net.Yaml;
 
 namespace OKF4net;
@@ -45,7 +46,7 @@ public sealed class OkfDocument
     /// </exception>
     public static OkfDocument Parse(string text)
     {
-        var lines = SplitLines(text);
+        var lines = RustLines.Split(text);
         if (lines.Count == 0 || lines[0].Trim() != FrontmatterDelim)
         {
             return new OkfDocument(new Frontmatter(), text);
@@ -186,27 +187,4 @@ public sealed class OkfDocument
     /// </summary>
     public IReadOnlyList<Citation> Citations() => LinkScanner.ExtractCitations(Body);
 
-    /// <summary>
-    /// Splits text into lines the way Rust's <c>str::lines()</c> does: split
-    /// on '\n' (with a preceding '\r' stripped), and no trailing empty
-    /// element for a final line terminator. Mirrors
-    /// <c>YamlParser.SplitLines</c>; duplicated here since that one is
-    /// private to the parser.
-    /// </summary>
-    private static List<string> SplitLines(string text)
-    {
-        var normalized = text.Replace("\r\n", "\n").Replace("\r", "\n");
-        if (normalized.Length == 0)
-        {
-            return [];
-        }
-
-        var parts = normalized.Split('\n').ToList();
-        if (normalized.EndsWith('\n'))
-        {
-            parts.RemoveAt(parts.Count - 1);
-        }
-
-        return parts;
-    }
 }

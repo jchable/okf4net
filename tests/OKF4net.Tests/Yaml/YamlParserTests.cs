@@ -141,4 +141,18 @@ public class YamlParserTests
     {
         Assert.Throws<YamlParseException>(() => YamlValue.Parse("a:\n\tb: 1"));
     }
+
+    [Fact]
+    public void Lone_carriage_return_stays_embedded_in_the_line()
+    {
+        // Rust's str::lines() only splits on '\n' (stripping one preceding
+        // '\r' when present, i.e. it understands "\r\n"). A lone '\r' NOT
+        // followed by '\n' is not a line terminator at all, so the whole
+        // input is a single line and "title: foo" is part of the scalar
+        // value rather than a second mapping entry.
+        var v = YamlValue.Parse("type: doc\rtitle: foo");
+        var m = v.AsMapping()!;
+        Assert.Single(m.Keys);
+        Assert.Equal("doc\rtitle: foo", m.Get("type")!.AsString());
+    }
 }

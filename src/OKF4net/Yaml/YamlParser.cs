@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
 using System.Text;
+using OKF4net.Internal;
 
 namespace OKF4net.Yaml;
 
@@ -18,7 +19,7 @@ internal static class YamlParser
     /// </summary>
     public static YamlValue Parse(string text)
     {
-        var p = new BlockParser(SplitLines(text));
+        var p = new BlockParser(RustLines.Split(text));
         p.SkipBlankAndComments();
         if (p.Pos >= p.Lines.Count)
         {
@@ -34,30 +35,6 @@ internal static class YamlParser
         }
 
         return value;
-    }
-
-    /// <summary>
-    /// Splits text into lines the way Rust's <c>str::lines()</c> does: split on
-    /// '\n' (with a preceding '\r' stripped), and no trailing empty element for
-    /// a final line terminator. Unlike <see cref="string.Split(char[])"/>, this
-    /// does not yield a trailing "" for text ending in a newline, and yields no
-    /// lines at all for an empty string.
-    /// </summary>
-    private static List<string> SplitLines(string text)
-    {
-        var normalized = text.Replace("\r\n", "\n").Replace("\r", "\n");
-        if (normalized.Length == 0)
-        {
-            return [];
-        }
-
-        var parts = normalized.Split('\n').ToList();
-        if (normalized.EndsWith('\n'))
-        {
-            parts.RemoveAt(parts.Count - 1);
-        }
-
-        return parts;
     }
 
     /// <summary>
