@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OKF4net\OKF4net.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Cli\OKF4net.Cli.csproj" />
   </ItemGroup>
 
 </Project>
