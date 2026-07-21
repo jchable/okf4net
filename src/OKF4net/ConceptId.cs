@@ -124,7 +124,14 @@ public sealed class ConceptId : IEquatable<ConceptId>
             throw new ConceptIdException($"{path} is not under bundle root");
         }
 
-        var segments = rel.Split('/', StringSplitOptions.RemoveEmptyEntries).ToList();
+        // Rust's Path::components() normalizes away non-leading "." segments
+        // (concept_id.rs:96-99 iterates components(), which never yields a
+        // CurDir component for a "." that isn't the whole path). ".." is NOT
+        // normalized away by components() -- it stays literal and still
+        // fails ValidateSegment, so it is intentionally not filtered here.
+        var segments = rel.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Where(s => s != ".")
+            .ToList();
         if (segments.Count > 0)
         {
             var last = segments[^1];

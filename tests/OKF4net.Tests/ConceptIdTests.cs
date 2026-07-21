@@ -182,6 +182,27 @@ public class ConceptIdTests
         Assert.Equal(Path.Combine(@"C:\bundle", "tables", "users.md"), id.ToPath(@"C:\bundle"));
     }
 
+    [Fact]
+    public void FromPath_normalizes_away_non_leading_dot_segments()
+    {
+        // Rust's from_path iterates Path::components() (concept_id.rs:96-99),
+        // which normalizes away a non-leading "." path segment (it never
+        // yields a CurDir component for it), so "root/a/./b.md" resolves to
+        // "a/b" in Rust, not an error.
+        var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\a\.\b.md");
+        Assert.Equal("a/b", id.ToString());
+    }
+
+    [Fact]
+    public void FromPath_still_rejects_dotdot_segments()
+    {
+        // Unlike ".", ".." is NOT normalized away by Path::components() --
+        // it survives as a literal segment and fails ValidateSegment (its
+        // first char '.' is not a valid leading char), in both Rust and here.
+        Assert.Throws<ConceptIdException>(
+            () => ConceptId.FromPath(@"C:\bundle", @"C:\bundle\a\..\b.md"));
+    }
+
     // --- Equality / hashing: ConceptId is used as a Dictionary key (Task 8). ---
 
     [Fact]
