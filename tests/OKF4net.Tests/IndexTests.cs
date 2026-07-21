@@ -79,4 +79,23 @@ public class IndexTests
         Assert.Contains("(datasets/index.md) - The only dataset in this bundle.", rootIndex);
         Assert.Equal(0, calls);
     }
+
+    [Fact]
+    public void Regenerate_does_not_list_a_dotfile_named_dot_md()
+    {
+        // Regression: same underlying bug as Bundle.CollectMarkdown -- a
+        // file named EXACTLY ".md" has no extension under Rust's
+        // path.extension() (index.rs:130, 229), so it must not be treated
+        // as a markdown entry to list or recurse into as a concept.
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "datasets/only.md", "BigQuery Dataset", "Only Dataset", "The only dataset in this bundle.");
+        File.WriteAllText(Path.Combine(tmp.Path, "datasets", ".md"), "not a real concept file");
+
+        var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+        Assert.NotEmpty(written);
+
+        var datasetsIndex = File.ReadAllText(Path.Combine(tmp.Path, "datasets", "index.md"));
+        Assert.Contains("[Only Dataset](only.md)", datasetsIndex);
+        Assert.DoesNotContain("(.md)", datasetsIndex);
+    }
 }

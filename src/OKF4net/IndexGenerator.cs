@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Internal;
+
 namespace OKF4net;
 
 /// <summary>
@@ -155,7 +157,7 @@ public static class IndexGenerator
                     continue;
                 }
 
-                if (File.Exists(child) && Path.GetExtension(child) == ".md")
+                if (File.Exists(child) && MarkdownPaths.HasMarkdownExtension(child))
                 {
                     var doc = LoadDoc(child);
                     if (doc is null)
@@ -288,7 +290,7 @@ public static class IndexGenerator
             {
                 CollectMarkdown(path, output);
             }
-            else if (Path.GetExtension(path) == ".md")
+            else if (MarkdownPaths.HasMarkdownExtension(path))
             {
                 output.Add(path);
             }

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Internal;
+
 namespace OKF4net;
 
 /// <summary>
@@ -319,7 +321,7 @@ public sealed class Bundle
             {
                 CollectMarkdown(path, output);
             }
-            else if (File.Exists(path) && path.EndsWith(".md", StringComparison.Ordinal))
+            else if (File.Exists(path) && MarkdownPaths.HasMarkdownExtension(path))
             {
                 output.Add(path);
             }

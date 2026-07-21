@@ -186,4 +186,26 @@ public class BundleTests
         File.WriteAllBytes(System.IO.Path.Combine(tmp.Path, "bad.md"), [0xC3, 0x28]);
         Assert.Throws<BundleLoadException>(() => Bundle.Load(tmp.Path));
     }
+
+    [Fact]
+    public void Dotfile_named_dot_md_is_not_treated_as_a_markdown_file()
+    {
+        // Regression: Rust's path.extension() == Some("md") (bundle.rs:216)
+        // is false for a file named EXACTLY ".md" -- a leading-dot-only
+        // filename has no extension in Rust's model (it's a dotfile, not a
+        // "stem.ext" split). Both .NET's Path.GetExtension(".md") and a
+        // naive EndsWith(".md") check return/match ".md", wrongly treating
+        // it as a markdown file. If collected, it would even fail to parse
+        // -- ConceptId::from_path strips ".md", leaving an empty segment,
+        // which ValidateSegment rejects -- surfacing as a spurious
+        // ParseErrors entry instead of being silently skipped like any
+        // other non-.md file.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
+        File.WriteAllText(System.IO.Path.Combine(tmp.Path, ".md"), "not a real concept file");
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Empty(bundle.ParseErrors);
+        Assert.Equal(1, bundle.Count);
+        Assert.Equal("a", bundle.Concepts[0].Id.ToString());
+    }
 }
