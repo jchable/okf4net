@@ -34,8 +34,10 @@ public abstract class YamlValue
     public YamlMapping? AsMapping() => this as YamlMapping;
 
     /// <summary>
-    /// True for null, an empty string, an empty sequence, or an empty mapping.
-    /// Port of the Rust <c>is_empty_value</c>.
+    /// True for null, an empty string, an empty sequence, an empty mapping,
+    /// <c>false</c>, or <c>0</c>. Port of the Rust <c>is_empty_value</c>
+    /// (src/yaml/mod.rs lines 187-197) — note there is no Float arm there,
+    /// so <see cref="YamlFloat"/>(0.0) is intentionally NOT empty.
     /// </summary>
     public bool IsEmptyValue => this switch
     {
@@ -43,6 +45,8 @@ public abstract class YamlValue
         YamlString s => s.Value.Length == 0,
         YamlSequence seq => seq.Items.Count == 0,
         YamlMapping map => map.IsEmpty,
+        YamlBool b => !b.Value,
+        YamlInt i => i.Value == 0,
         _ => false,
     };
 

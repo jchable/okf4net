@@ -53,7 +53,10 @@ public class YamlValueTests
         Assert.True(new YamlString("").IsEmptyValue);
         Assert.True(new YamlSequence([]).IsEmptyValue);
         Assert.True(new YamlMapping().IsEmptyValue);
-        Assert.False(new YamlInt(0).IsEmptyValue);
+        Assert.True(new YamlInt(0).IsEmptyValue);
+        Assert.True(new YamlBool(false).IsEmptyValue);
+        Assert.False(new YamlBool(true).IsEmptyValue);
+        Assert.False(new YamlFloat(0.0).IsEmptyValue);
         Assert.False(new YamlString("x").IsEmptyValue);
     }
 }
