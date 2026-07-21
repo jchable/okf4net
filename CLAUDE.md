@@ -21,7 +21,7 @@ Requires .NET SDK 10.0+. CI (ci.yml) runs build+test on Linux/Windows/macOS, `do
 
 ## Hard rules
 
-- **Zero third-party runtime dependencies.** The library uses only the BCL — it has its own YAML-subset parser, link scanner, and CLI arg parsing. Do not add packages (test-only packages like xunit are fine).
+- **Zero third-party runtime dependencies, per project.** `src/OKF4net/` and `src/OKF4net.Cli/`: BCL only — the library has its own YAML-subset parser, link scanner, and CLI arg parsing; do not add packages there. `src/OKF4net.Agents/` references exclusively `Microsoft.Agents.AI`. Test-only packages (xunit, etc.) are fine everywhere.
 - **Never touch `tests/fixtures/`.** These are byte-exact golden captures of the removed Rust binary's output (LF endings, significant trailing whitespace; protected by `.gitattributes -text`). If C# output differs from a golden file, the C# code is wrong — fix the port, never the fixture.
 - **Spec fidelity.** Behaviour must conform to the OKF v0.1 spec; behavioural changes should cite the spec section (§) and intentional divergences from the reference implementation need a documented reason.
 - New source files start with `// SPDX-License-Identifier: LGPL-3.0-or-later`.
@@ -29,12 +29,13 @@ Requires .NET SDK 10.0+. CI (ci.yml) runs build+test on Linux/Windows/macOS, `do
 
 ## Architecture
 
-Three projects in `OKF4net.sln`:
+Four projects in `OKF4net.sln`:
 
 - **`src/OKF4net/`** — the library. One file per spec concern, mirroring the reference Python implementation and the Rust crate it replaced: `ConceptId` (§2), `Bundle` (§3, permissive loading — parse failures go into `Bundle.ParseErrors`, never abort), `OkfDocument`/`Frontmatter` (§4), `Links.cs`/`LinkScanner` (§5/§8), `IndexGenerator` (§6), `ChangeLog` (§7), `Validate.cs`/`BundleValidator` (§9). The README has the full spec-section → type mapping table.
   - `Yaml/` — the documented YAML *subset* (scalars, lists, shallow maps, block/flow, `|`/`>`); it deliberately rejects anchors/tags/multi-docs with clear errors. `Frontmatter` wraps an order-preserving `YamlMapping` with typed getters rather than a fixed DTO, so unknown producer keys survive round-trips.
   - `Internal/RustLines.cs` — the single shared port of Rust's `str::lines()` (splits on `\n` only). Use it anywhere Rust-identical line splitting matters; do not reintroduce private copies.
 - **`src/OKF4net.Cli/`** — the `okf` binary (`validate`/`info`/`index`/`graph`/`parse`/`fmt`), published Native AOT (`PublishAot`, `InvariantGlobalization`). All logic lives in `OkfCli.Run(args, out, err)` so tests invoke it in-process without spawning a process.
+- **`src/OKF4net.Agents/`** — Microsoft Agent Framework layer exposing OKF bundle operations as function tools (e.g. `OkfBundleTools`); the only project depending on `Microsoft.Agents.AI`.
 - **`tests/OKF4net.Tests/`** — xunit. `GoldenParityTests` diffs CLI output byte-for-byte against `tests/fixtures/golden/`; tests locate the repo root by walking up from the test assembly to `OKF4net.sln`. Some parity tests temporarily set the CWD to the repo root because goldens embed the relative bundle path as given on the command line.
 
 Two validation levels exist by design: `OkfDocument.ValidateConformance()` enforces only what §9 requires (non-empty `type`); `OkfDocument.Validate()` is the stricter producer-side check (`type`, `title`, `description`, `timestamp`).
