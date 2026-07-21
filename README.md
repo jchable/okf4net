@@ -170,12 +170,20 @@ dotnet publish src/OKF4net.Cli -c Release  # Native AOT, self-contained okf bina
 
 ## License
 
-Licensed under the **Apache License, Version 2.0** — the same license as the
-upstream [OKF project](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf).
+OKF4net is licensed under the **GNU Lesser General Public License v3.0 or
+later (LGPL-3.0-or-later)** — see [`LICENSE`](LICENSE) for the full LGPLv3
+text and [`LICENSE.GPL-3.0`](LICENSE.GPL-3.0) for the GPLv3 text it
+incorporates by reference.
+
 This is a derivative work: its document parser, concept-id conventions, and
-index generator are ports of the OKF reference implementation, by way of this
-repository's former Rust implementation. See [`LICENSE`](LICENSE) for the
-full terms and [`NOTICE`](NOTICE) for attribution.
+index generator are ports of the Apache-2.0-licensed
+[OKF reference implementation](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
+by Google LLC, by way of this repository's former Rust implementation `okf`
+by Walter van der Giessen (also Apache-2.0, removed from this repository at
+commit `d20343c` once byte-exact parity with this C# port was proven).
+Portions derived from those upstream works remain subject to the Apache
+License, Version 2.0 — see [`LICENSE.Apache-2.0`](LICENSE.Apache-2.0). Full
+attribution is in [`NOTICE`](NOTICE).
 
 This is an independent implementation and is not affiliated with or endorsed by
 Google.

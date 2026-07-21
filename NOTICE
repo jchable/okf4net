@@ -1,40 +1,46 @@
 OKF4net — a .NET implementation of the Open Knowledge Format (OKF)
-Copyright 2026 Walter van der Giessen
+Copyright 2026 Julien CHABLE
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not
-use this software except in compliance with the License. A copy of the
-License is provided in the LICENSE file in this distribution, and may also
-be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+Licensed under the GNU Lesser General Public License, Version 3 or later
+(LGPL-3.0-or-later). A copy of the license is provided in the LICENSE file
+in this distribution (the LGPLv3 text), together with the GNU General
+Public License, Version 3 in LICENSE.GPL-3.0, which the LGPLv3 incorporates
+by reference as its base license. The licenses may also be obtained at
+https://www.gnu.org/licenses/lgpl-3.0.html and
+https://www.gnu.org/licenses/gpl-3.0.html.
 
 ------------------------------------------------------------------------------
 
-This product is a derivative work of the Open Knowledge Format (OKF) project
-by Google LLC, which is distributed under the Apache License, Version 2.0:
+This project is a C# port of the Rust crate `okf`
+(Copyright Walter van der Giessen, licensed under the Apache License,
+Version 2.0), which was removed from this repository at commit d20343c
+after byte-exact parity between the Rust crate and this C# port was proven
+(see `tests/fixtures/`).
+
+The Rust `okf` crate was itself a derivative of the Open Knowledge Format
+(OKF) reference implementation:
 
     Open Knowledge Format (OKF)
     Copyright Google LLC
-    https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
+    https://github.com/GoogleCloudPlatform/knowledge-catalog
 
-Portions of this library — specifically the concept-document parser/
-serializer, the concept-id/path conventions, and the index-generation logic —
-are ports of the OKF reference implementation (the Python
-`enrichment_agent.bundle` package: `document.py`, `paths.py`, `index.py`). The
-OKF v0.1 specification (SPEC.md) authored by that project is implemented
-here.
+licensed under the Apache License, Version 2.0.
 
-The attribution chain for these ports is:
+The attribution chain is:
 
-    OKF reference implementation (Python, Google LLC)
+    OKF reference implementation (Python, Copyright Google LLC, Apache-2.0)
       -> this repository's former Rust implementation, `okf`
-         (removed at commit d20343c; Apache-2.0)
-      -> OKF4net, this C# port (Apache-2.0)
+         (Copyright Walter van der Giessen; removed at commit d20343c; Apache-2.0)
+      -> OKF4net, this C# port (Copyright 2026 Julien CHABLE; LGPL-3.0-or-later)
 
-OKF4net is a from-scratch C# port of the Rust `okf` crate that previously
-lived in this repository (proven byte-exact against it before the Rust
-sources were removed, see `tests/fixtures/`); it carries forward the same
-derivative-work relationship to the original OKF reference implementation.
-These files have been rewritten in C# and modified from their original form
-at each step of that chain.
+Portions of OKF4net derived from those Apache-2.0 works — specifically the
+concept-document parser/serializer, the concept-id/path conventions, and the
+index-generation logic, ported from the OKF reference implementation's
+Python `enrichment_agent.bundle` package (`document.py`, `paths.py`,
+`index.py`) by way of the former Rust `okf` crate — remain subject to the
+terms of the Apache License, Version 2.0, a copy of which is provided in
+LICENSE.Apache-2.0. The OKF v0.1 specification (SPEC.md) authored by that
+project is implemented here.
 
 OKF and Google Cloud are trademarks of Google LLC. OKF4net is an independent
 implementation and is not affiliated with, endorsed by, or sponsored by

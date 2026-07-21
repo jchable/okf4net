@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net.Cli;
 
 namespace OKF4net.Tests;
