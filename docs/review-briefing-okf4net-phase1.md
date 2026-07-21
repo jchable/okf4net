@@ -15,7 +15,7 @@ Roadmap context (affects API judgment): Phase 2 will build `OKF4net.Agents` on t
 - **Review scope:** the entire .NET solution — it is all new code from this branch:
   - `src/OKF4net/` — core library, **zero NuGet dependencies** (hard constraint, verify it holds).
   - `src/OKF4net.Cli/` — `okf` CLI, 6 commands, Native AOT, zero dependencies.
-  - `tests/OKF4net.Tests/` — xUnit, 209 tests including 5 byte-exact golden parity tests.
+  - `tests/OKF4net.Tests/` — xUnit, 218 tests including 5 byte-exact golden parity tests.
 - Do not spend effort on `docs/superpowers/` (internal working docs: design spec and implementation plan; useful as background — see §8) or on `graphify-out/` (generated analysis artifacts).
 - The git remote `origin` points to the upstream Rust author's repo; ignore it.
 - You may encounter unrelated in-progress work: a git stash made from `main`, and untracked files (`.github/`, `CONTRIBUTING.md`, `SECURITY.md`). **Do not touch, review, or clean any of these.** Your review is read-only: never mutate the working tree, index, HEAD, branches, or stash.
@@ -24,7 +24,7 @@ Roadmap context (affects API judgment): Phase 2 will build `OKF4net.Agents` on t
 
 ```powershell
 dotnet build OKF4net.sln -warnaserror   # must be 0 warnings (TreatWarningsAsErrors solution-wide)
-dotnet test OKF4net.sln                  # must be 209/209
+dotnet test OKF4net.sln                  # must be 218/218
 dotnet test OKF4net.sln --filter "FullyQualifiedName~GoldenParityTests"   # must be 5/5
 dotnet publish src/OKF4net.Cli -c Release   # AOT publish must succeed (needs MSVC link.exe on PATH on Windows)
 ```
