@@ -1,10 +1,11 @@
 # Golden fixtures
 
-This directory contains **byte-exact reference outputs** captured from the
-original Rust `okf` binary (the CLI defined in `src/bin/okf.rs`, subcommands
-`validate` / `info` / `graph` / `fmt` / `index`). They exist to prove that the
-OKF4net (.NET) port is observably identical to the Rust implementation it
-replaces (see Tasks 13–14 of the migration plan).
+This directory contains **byte-exact reference outputs**, generated from the
+Rust implementation at commit d20343c before its removal (the CLI defined in
+its `src/bin/okf.rs`, subcommands `validate` / `info` / `graph` / `fmt` /
+`index`). They exist to prove that the OKF4net (.NET) port is observably
+identical to the Rust implementation it replaced (see Tasks 13–15 of the
+migration plan).
 
 ## Layout
 
@@ -52,12 +53,13 @@ outside the mounted worktree so no build artifacts land in git).
 
 ## Rules
 
-- **These files are byte-exact captures of the Rust binary's real output.**
-  Never hand-edit them and never regenerate them from the C# port — if the
-  C# output differs, that is a bug in the port to fix on the C# side (the
-  Rust behavior is the specification of record for Phase 1). Only
-  regenerate from the Rust binary again, and only if the Rust source or the
-  `appendix_a` bundle itself intentionally changes.
-- Line endings are exactly what the Rust binary emits (`\n`, never
+- **These files are byte-exact captures of the (now removed) Rust binary's
+  real output.** Never hand-edit them and never regenerate them from the C#
+  port — if the C# output differs, that is a bug in the port to fix on the
+  C# side (the Rust behavior was the specification of record for Phase 1).
+  They can only be regenerated from the Rust source as of commit d20343c
+  (before its removal), and only if the `appendix_a` bundle itself
+  intentionally changes.
+- Line endings are exactly what the Rust binary emitted (`\n`, never
   `\r\n`). The repository's `.gitattributes` marks `tests/fixtures/** -text`
   so git never normalizes them regardless of `core.autocrlf`.

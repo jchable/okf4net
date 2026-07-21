@@ -1,4 +1,4 @@
-okf — a pure-Rust implementation of the Open Knowledge Format (OKF)
+OKF4net — a .NET implementation of the Open Knowledge Format (OKF)
 Copyright 2026 Walter van der Giessen
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not
@@ -15,12 +15,27 @@ by Google LLC, which is distributed under the Apache License, Version 2.0:
     Copyright Google LLC
     https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
 
-Portions of this crate — specifically the concept-document parser/serializer,
-the concept-id/path conventions, and the index-generation logic — are ports of
-the OKF reference implementation (the Python `enrichment_agent.bundle` package:
-`document.py`, `paths.py`, `index.py`). The OKF v0.1 specification (SPEC.md)
-authored by that project is implemented here. These files have been rewritten
-in Rust and modified from their original form.
+Portions of this library — specifically the concept-document parser/
+serializer, the concept-id/path conventions, and the index-generation logic —
+are ports of the OKF reference implementation (the Python
+`enrichment_agent.bundle` package: `document.py`, `paths.py`, `index.py`). The
+OKF v0.1 specification (SPEC.md) authored by that project is implemented
+here.
 
-OKF and Google Cloud are trademarks of Google LLC. This crate is an independent
-implementation and is not affiliated with, endorsed by, or sponsored by Google.
+The attribution chain for these ports is:
+
+    OKF reference implementation (Python, Google LLC)
+      -> this repository's former Rust implementation, `okf`
+         (removed at commit d20343c; Apache-2.0)
+      -> OKF4net, this C# port (Apache-2.0)
+
+OKF4net is a from-scratch C# port of the Rust `okf` crate that previously
+lived in this repository (proven byte-exact against it before the Rust
+sources were removed, see `tests/fixtures/`); it carries forward the same
+derivative-work relationship to the original OKF reference implementation.
+These files have been rewritten in C# and modified from their original form
+at each step of that chain.
+
+OKF and Google Cloud are trademarks of Google LLC. OKF4net is an independent
+implementation and is not affiliated with, endorsed by, or sponsored by
+Google.
