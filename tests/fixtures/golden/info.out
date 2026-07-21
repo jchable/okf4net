@@ -1,0 +1,10 @@
+bundle:     tests/fixtures/appendix_a
+concepts:   4
+index.md:   0
+log.md:     1
+
+types:
+     1  BigQuery Dataset
+     3  BigQuery Table
+
+links:      5 internal (0 broken)
