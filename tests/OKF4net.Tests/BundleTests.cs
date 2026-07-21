@@ -145,4 +145,36 @@ public class BundleTests
         var bundle = Bundle.Load(tmp.Path);
         Assert.Equal("0.1", bundle.OkfVersion);
     }
+
+    [Fact]
+    public void Walk_order_is_component_wise_not_a_flat_string_sort()
+    {
+        // Regression: a directory `orders/` containing `extra.md`, plus a
+        // sibling file `orders.md`. The per-directory walk visits the
+        // `orders` directory before the `orders.md` file (the directory
+        // name "orders" sorts before "orders.md" since it's a string
+        // prefix), so the correct concept order is `orders/extra` before
+        // `orders` -- matching Rust's PathBuf (component-wise) Ord. A flat
+        // ordinal sort of full path strings would invert this, since '.'
+        // (0x2E) sorts before '\' (0x5C).
+        using var tmp = new TempDir();
+        tmp.Write("orders/extra.md", "---\ntype: Note\n---\nbody\n");
+        tmp.Write("orders.md", "---\ntype: Note\n---\nbody\n");
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Equal(2, bundle.Count);
+        Assert.Equal("orders/extra", bundle.Concepts[0].Id.ToString());
+        Assert.Equal("orders", bundle.Concepts[1].Id.ToString());
+    }
+
+    [Fact]
+    public void Invalid_utf8_aborts_the_whole_load()
+    {
+        // Regression: File.ReadAllText silently substitutes U+FFFD for
+        // invalid UTF-8 byte sequences instead of failing, unlike Rust's
+        // fs::read_to_string (which yields an io::Error, propagated by `?`
+        // and turned into BundleError::Io -- aborting the whole load).
+        using var tmp = new TempDir();
+        File.WriteAllBytes(System.IO.Path.Combine(tmp.Path, "bad.md"), [0xC3, 0x28]);
+        Assert.Throws<BundleLoadException>(() => Bundle.Load(tmp.Path));
+    }
 }
