@@ -57,6 +57,52 @@ public class YamlValueTests
         Assert.Equal(v.ToYamlString(), $"{v}");
     }
 
+    // --- F14: implicit conversions, porting Rust's From<&str>/From<bool>/
+    // From<i64>/From<Vec<T>> for Value (yaml/mod.rs:219-247). There is
+    // intentionally no From<f64> port -- Rust has none. ---
+
+    [Fact]
+    public void Implicit_conversion_from_string_yields_YamlString()
+    {
+        YamlValue v = "x";
+        var s = Assert.IsType<YamlString>(v);
+        Assert.Equal("x", s.Value);
+    }
+
+    [Fact]
+    public void Implicit_conversion_from_bool_yields_YamlBool()
+    {
+        YamlValue b = true;
+        var bv = Assert.IsType<YamlBool>(b);
+        Assert.True(bv.Value);
+    }
+
+    [Fact]
+    public void Implicit_conversion_from_long_yields_YamlInt()
+    {
+        YamlValue i = 42L;
+        var iv = Assert.IsType<YamlInt>(i);
+        Assert.Equal(42L, iv.Value);
+    }
+
+    [Fact]
+    public void Implicit_conversion_from_array_yields_YamlSequence()
+    {
+        YamlValue seq = new YamlValue[] { "a", 1L };
+        var sv = Assert.IsType<YamlSequence>(seq);
+        Assert.Equal(2, sv.Items.Count);
+        Assert.Equal("a", ((YamlString)sv.Items[0]).Value);
+        Assert.Equal(1L, ((YamlInt)sv.Items[1]).Value);
+    }
+
+    [Fact]
+    public void Mapping_insert_compiles_via_implicit_conversion()
+    {
+        var m = new YamlMapping();
+        m.Insert("k", "v");
+        Assert.Equal("v", m.Get("k")!.AsString());
+    }
+
     [Fact]
     public void IsEmptyValue_matches_rust_semantics()
     {

@@ -17,6 +17,41 @@ public abstract class YamlValue
     /// </summary>
     public string ToYamlString() => YamlEmitter.Emit(this);
 
+    /// <summary>
+    /// Wraps a string as a <see cref="YamlString"/>. Port of Rust's
+    /// <c>impl From&lt;&amp;str&gt; for Value</c> (yaml/mod.rs:219-223).
+    /// </summary>
+    public static implicit operator YamlValue(string value) => new YamlString(value);
+
+    /// <summary>
+    /// Wraps a bool as a <see cref="YamlBool"/>. Port of Rust's
+    /// <c>impl From&lt;bool&gt; for Value</c> (yaml/mod.rs:231-235).
+    /// </summary>
+    public static implicit operator YamlValue(bool value) => new YamlBool(value);
+
+    /// <summary>
+    /// Wraps a 64-bit integer as a <see cref="YamlInt"/>. Port of Rust's
+    /// <c>impl From&lt;i64&gt; for Value</c> (yaml/mod.rs:237-241).
+    /// </summary>
+    public static implicit operator YamlValue(long value) => new YamlInt(value);
+
+    /// <summary>
+    /// Wraps an array of values as a <see cref="YamlSequence"/>. Closest C#
+    /// idiom to Rust's <c>impl&lt;T: Into&lt;Value&gt;&gt; From&lt;Vec&lt;T&gt;&gt; for Value</c>
+    /// (yaml/mod.rs:243-247).
+    /// </summary>
+    public static implicit operator YamlValue(YamlValue[] items) => new YamlSequence(items);
+
+    // Rust also has `impl From<Mapping> for Value` (yaml/mod.rs:249-253), but
+    // that has no C# equivalent to write: YamlMapping already IS-A YamlValue
+    // (it's a subclass, not a wrapped field), so a YamlMapping needs no
+    // conversion to be used as a YamlValue -- the "conversion" is a no-op
+    // upcast the compiler already performs.
+    //
+    // Rust has no `impl From<f64> for Value`, so there is intentionally no
+    // implicit `double` -> YamlValue operator here (would introduce a
+    // conversion the Rust surface doesn't have).
+
     /// <summary>Returns the string contents if this is a <see cref="YamlString"/>.</summary>
     public string? AsString() => (this as YamlString)?.Value;
 
