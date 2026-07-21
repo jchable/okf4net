@@ -13,9 +13,8 @@ public abstract class YamlValue
 
     /// <summary>
     /// Emits this value as YAML text using block style, preserving key order.
-    /// Implemented in Task 3 (delegates to YamlEmitter.Emit).
     /// </summary>
-    public string ToYamlString() => throw new NotImplementedException();
+    public string ToYamlString() => YamlEmitter.Emit(this);
 
     /// <summary>Returns the string contents if this is a <see cref="YamlString"/>.</summary>
     public string? AsString() => (this as YamlString)?.Value;
@@ -52,16 +51,117 @@ public abstract class YamlValue
     /// <summary>
     /// Renders a scalar as a plain display string (used for typed frontmatter
     /// accessors that coerce scalars to text). Port of the Rust
-    /// <c>as_display_string</c>.
+    /// <c>as_display_string</c> (src/yaml/mod.rs lines 199-210).
+    ///
+    /// The float branch there is <c>format!("{f}")</c> — Rust's f64
+    /// <c>Display</c> impl, which is a *different* format than the emitter's
+    /// <c>format_float</c> (Rust's f64 <c>Debug</c> impl, used by
+    /// <see cref="ToYamlString"/>): Display never uses scientific notation
+    /// and never forces a trailing ".0", and non-finite values print as
+    /// "NaN"/"inf"/"-inf" (not the YAML tokens ".nan"/".inf"/"-.inf"). See
+    /// <see cref="YamlEmitter.FormatDisplayFloat"/> for the port of that
+    /// exact format (previously this used
+    /// <c>double.ToString(InvariantCulture)</c>, which diverges from Rust on
+    /// both points).
     /// </summary>
     public string? AsDisplayString() => this switch
     {
         YamlString s => s.Value,
         YamlBool b => b.Value ? "true" : "false",
         YamlInt i => i.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
-        YamlFloat f => f.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        YamlFloat f => YamlEmitter.FormatDisplayFloat(f.Value),
         _ => null,
     };
+
+    /// <summary>
+    /// Structural (deep) equality, mirroring Rust's derived <c>PartialEq</c>
+    /// for <c>Value</c>/<c>Mapping</c> (src/yaml/mod.rs lines 42 and 116):
+    /// same variant/type, recursively equal contents, mapping entries
+    /// compared in order (not just by key set). Floats compare with IEEE-754
+    /// semantics (via <c>==</c>), like Rust's <c>f64: PartialEq</c> — so
+    /// <c>NaN</c> never equals <c>NaN</c>, and <c>-0.0</c> equals <c>0.0</c>.
+    /// </summary>
+    public override bool Equals(object? obj) => obj is YamlValue other && ValueEquals(this, other);
+
+    /// <inheritdoc cref="Equals(object?)"/>
+    private static bool ValueEquals(YamlValue a, YamlValue b) => (a, b) switch
+    {
+        (YamlNull, YamlNull) => true,
+        (YamlBool x, YamlBool y) => x.Value == y.Value,
+        (YamlInt x, YamlInt y) => x.Value == y.Value,
+        (YamlFloat x, YamlFloat y) => x.Value == y.Value,
+        (YamlString x, YamlString y) => string.Equals(x.Value, y.Value, StringComparison.Ordinal),
+        (YamlSequence x, YamlSequence y) => x.Items.Count == y.Items.Count && x.Items.SequenceEqual(y.Items),
+        (YamlMapping x, YamlMapping y) => MappingEquals(x, y),
+        _ => false,
+    };
+
+    private static bool MappingEquals(YamlMapping a, YamlMapping b)
+    {
+        if (a.Count != b.Count)
+        {
+            return false;
+        }
+
+        using var ea = a.Entries.GetEnumerator();
+        using var eb = b.Entries.GetEnumerator();
+        while (ea.MoveNext() && eb.MoveNext())
+        {
+            if (!string.Equals(ea.Current.Key, eb.Current.Key, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!ValueEquals(ea.Current.Value, eb.Current.Value))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Consistent with <see cref="Equals(object?)"/>: equal values always
+    /// hash equally (in particular, <c>0.0</c> and <c>-0.0</c> are normalized
+    /// to the same hash, matching their IEEE-754 equality above).
+    /// </summary>
+    public override int GetHashCode() => this switch
+    {
+        YamlNull => HashCode.Combine(typeof(YamlNull)),
+        YamlBool b => HashCode.Combine(typeof(YamlBool), b.Value),
+        YamlInt i => HashCode.Combine(typeof(YamlInt), i.Value),
+        YamlFloat f => HashCode.Combine(typeof(YamlFloat), f.Value == 0.0 ? 0.0 : f.Value),
+        YamlString s => HashCode.Combine(typeof(YamlString), s.Value),
+        YamlSequence seq => SequenceHashCode(seq.Items),
+        YamlMapping map => MappingHashCode(map),
+        _ => 0,
+    };
+
+    private static int SequenceHashCode(IReadOnlyList<YamlValue> items)
+    {
+        var hash = new HashCode();
+        hash.Add(typeof(YamlSequence));
+        foreach (var item in items)
+        {
+            hash.Add(item);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private static int MappingHashCode(YamlMapping map)
+    {
+        var hash = new HashCode();
+        hash.Add(typeof(YamlMapping));
+        foreach (var (key, value) in map.Entries)
+        {
+            hash.Add(key, StringComparer.Ordinal);
+            hash.Add(value);
+        }
+
+        return hash.ToHashCode();
+    }
 }
 
 /// <summary>`null`, `~`, or an empty value.</summary>
