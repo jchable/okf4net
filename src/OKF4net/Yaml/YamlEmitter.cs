@@ -48,7 +48,7 @@ public static class YamlEmitter
         var pad = new string(' ', indent);
         foreach (var (key, value) in map.Entries)
         {
-            var keyText = EmitString(key);
+            var keyText = EmitScalar(key);
             switch (value)
             {
                 case YamlMapping m when !m.IsEmpty:

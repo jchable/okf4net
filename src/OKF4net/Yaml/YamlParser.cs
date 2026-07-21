@@ -141,7 +141,7 @@ internal static class YamlParser
                     null => ParseNested(indent),
                 };
 
-                map.Insert(keyValue.AsDisplayString() ?? split.Key, value);
+                map.PushRaw(keyValue, value);
             }
 
             return map;
@@ -819,7 +819,7 @@ internal static class YamlParser
 
                 Pos += 1;
                 var value = ParseValue();
-                map.Insert(key.AsDisplayString() ?? string.Empty, value);
+                map.PushRaw(key, value);
                 SkipWs();
                 if (Pos < Chars.Length && Chars[Pos] == ',')
                 {

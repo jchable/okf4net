@@ -36,6 +36,40 @@ public class YamlParserTests
     }
 
     [Fact]
+    public void Duplicate_string_keys_are_all_preserved_first_match_wins_on_get()
+    {
+        // Port of Rust's push_raw (parser.rs:132): the block-mapping parser
+        // appends every entry unconditionally, it does not dedup like
+        // Mapping::insert does. get() then returns the FIRST match
+        // (mod.rs:65-70).
+        var v = YamlValue.Parse("type: foo\ntype: bar\n");
+        var m = v.AsMapping()!;
+        Assert.Equal("foo", m.Get("type")!.AsString());
+        Assert.Equal(2, m.Count);
+        Assert.Equal("type: foo\ntype: bar\n", v.ToYamlString());
+    }
+
+    [Fact]
+    public void Non_string_keys_are_invisible_to_get_and_keys_but_kept_in_entries()
+    {
+        // Port of Mapping::get/keys (mod.rs:64-75): both filter on the
+        // String variant via as_str(), so a bool or float key is invisible
+        // to them, but iter()/Entries still yields it (raw, typed). The
+        // emitter's emit_mapping (emitter.rs:26-42) runs every key through
+        // emit_scalar, so a float key "1.50" re-emits via format_float as
+        // "1.5" (trailing zero dropped), same as any float scalar value.
+        var v = YamlValue.Parse("true: x\n1.50: y\n");
+        var m = v.AsMapping()!;
+        Assert.Null(m.Get("true"));
+        Assert.Empty(m.Keys);
+        var entries = m.Entries.ToList();
+        Assert.Equal(2, entries.Count);
+        Assert.IsType<YamlBool>(entries[0].Key);
+        Assert.IsType<YamlFloat>(entries[1].Key);
+        Assert.Equal("true: x\n1.5: y\n", v.ToYamlString());
+    }
+
+    [Fact]
     public void Block_mapping()
     {
         var v = YamlValue.Parse("type: BigQuery Table\ntitle: Orders\ncount: 3\n");

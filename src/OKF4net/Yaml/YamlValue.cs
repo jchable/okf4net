@@ -108,7 +108,7 @@ public abstract class YamlValue
         using var eb = b.Entries.GetEnumerator();
         while (ea.MoveNext() && eb.MoveNext())
         {
-            if (!string.Equals(ea.Current.Key, eb.Current.Key, StringComparison.Ordinal))
+            if (!ValueEquals(ea.Current.Key, eb.Current.Key))
             {
                 return false;
             }
@@ -157,7 +157,7 @@ public abstract class YamlValue
         hash.Add(typeof(YamlMapping));
         foreach (var (key, value) in map.Entries)
         {
-            hash.Add(key, StringComparer.Ordinal);
+            hash.Add(key);
             hash.Add(value);
         }
 
