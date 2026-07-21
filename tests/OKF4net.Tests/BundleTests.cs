@@ -1,0 +1,148 @@
+namespace OKF4net.Tests;
+
+/// <summary>
+/// Port of the Rust bundle-loading and cross-link-graph tests
+/// (tests/bundle.rs), exercised against the spec's Appendix A minimal
+/// example bundle.
+///
+/// <see cref="AppendixA"/>_is_conformant and missing_type_is_a_conformance_error
+/// depend on the not-yet-ported <c>BundleValidator</c> (Task 10) and are
+/// marked <c>Skip</c> until then. <c>broken_links_are_detected_but_not_fatal</c>
+/// is ported minus its validator-dependent assertions (<c>validate_bundle</c>,
+/// <c>Severity::Info</c>), which will be restored in Task 10.
+/// </summary>
+public class BundleTests
+{
+    /// <summary>
+    /// Builds the Appendix A example bundle and returns its temp dir. Port
+    /// of <c>appendix_a()</c> (tests/bundle.rs:10-49); literals copied
+    /// verbatim.
+    /// </summary>
+    private static TempDir AppendixA()
+    {
+        var tmp = new TempDir();
+        tmp.Write(
+            "datasets/sales.md",
+            "---\n" +
+            "type: BigQuery Dataset\n" +
+            "title: Sales\n" +
+            "description: All sales-related tables for the retail business.\n" +
+            "resource: https://console.cloud.google.com/bigquery?p=acme&d=sales\n" +
+            "tags: [sales]\n" +
+            "timestamp: 2026-05-28T00:00:00Z\n" +
+            "---\n\n" +
+            "The sales dataset contains transactional tables, including\n" +
+            "[orders](/tables/orders.md) and [customers](/tables/customers.md).\n");
+        tmp.Write(
+            "tables/orders.md",
+            "---\n" +
+            "type: BigQuery Table\n" +
+            "title: Orders\n" +
+            "description: One row per completed customer order.\n" +
+            "resource: https://console.cloud.google.com/bigquery?p=acme&d=sales&t=orders\n" +
+            "tags: [sales, orders]\n" +
+            "timestamp: 2026-05-28T00:00:00Z\n" +
+            "---\n\n" +
+            "# Schema\n\n" +
+            "Part of the [sales dataset](/datasets/sales.md). FK to [customers](/tables/customers.md).\n");
+        tmp.Write(
+            "tables/customers.md",
+            "---\n" +
+            "type: BigQuery Table\n" +
+            "title: Customers\n" +
+            "description: One row per customer.\n" +
+            "timestamp: 2026-05-28T00:00:00Z\n" +
+            "---\n\n" +
+            "Linked from [orders](/tables/orders.md).\n");
+        return tmp;
+    }
+
+    [Fact]
+    public void Loads_all_concepts()
+    {
+        // tests/bundle.rs:51-59
+        using var tmp = AppendixA();
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Equal(3, bundle.Count);
+        Assert.True(bundle.Contains(ConceptId.Parse("tables/orders")));
+        Assert.True(bundle.Contains(ConceptId.Parse("datasets/sales")));
+        Assert.Empty(bundle.ParseErrors);
+    }
+
+    [Fact]
+    public void Resolves_cross_links_and_backlinks()
+    {
+        // tests/bundle.rs:61-81
+        using var tmp = AppendixA();
+        var bundle = Bundle.Load(tmp.Path);
+
+        var sales = ConceptId.Parse("datasets/sales");
+        var orders = ConceptId.Parse("tables/orders");
+        var customers = ConceptId.Parse("tables/customers");
+
+        var salesLinks = bundle.LinksFrom(sales).Select(l => l.Target).ToList();
+        Assert.Contains(orders, salesLinks);
+        Assert.Contains(customers, salesLinks);
+        Assert.All(bundle.LinksFrom(sales), l => Assert.True(l.Exists));
+
+        // orders is linked from sales and customers.
+        var backlinks = bundle.Backlinks(orders);
+        Assert.Contains(sales, backlinks);
+        Assert.Contains(customers, backlinks);
+
+        Assert.Empty(bundle.BrokenLinks());
+    }
+
+    [Fact]
+    public void Broken_links_are_detected_but_not_fatal()
+    {
+        // tests/bundle.rs:83-99. The validate_bundle()/Severity::Info
+        // assertions are deferred to Task 10 (BundleValidator does not exist
+        // yet); the Bundle-level assertions are ported as-is.
+        using var tmp = new TempDir();
+        tmp.Write(
+            "a.md",
+            "---\ntype: Note\n---\nSee [missing](/does/not/exist.md).\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var broken = bundle.BrokenLinks();
+        Assert.Single(broken);
+        Assert.Equal("/does/not/exist.md", broken[0].RawTarget);
+    }
+
+    [Fact(Skip = "Enabled in Task 10 (BundleValidator)")]
+    public void Appendix_a_is_conformant()
+    {
+        // Enabled and implemented in Task 10
+    }
+
+    [Fact(Skip = "Enabled in Task 10 (BundleValidator)")]
+    public void Missing_type_is_a_conformance_error()
+    {
+        // Enabled and implemented in Task 10
+    }
+
+    [Fact]
+    public void Reserved_files_are_recognized_not_concepts()
+    {
+        // tests/bundle.rs:120-130
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
+        tmp.Write("index.md", "# Listing\n\n* [a](a.md)\n");
+        tmp.Write("log.md", "# Log\n\n## 2026-05-22\n* **Update**: did a thing.\n");
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Equal(1, bundle.Count); // only a.md is a concept
+        Assert.Single(bundle.IndexFiles);
+        Assert.Single(bundle.LogFiles);
+    }
+
+    [Fact]
+    public void Okf_version_read_from_root_index()
+    {
+        // tests/bundle.rs:132-139
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
+        tmp.Write("index.md", "---\nokf_version: \"0.1\"\n---\n\n# Listing\n");
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Equal("0.1", bundle.OkfVersion);
+    }
+}
