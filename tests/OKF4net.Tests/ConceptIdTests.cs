@@ -1,0 +1,251 @@
+namespace OKF4net.Tests;
+
+/// <summary>
+/// Port of the Rust <c>ConceptId</c> semantics (src/concept_id.rs). The Rust
+/// crate has no dedicated test file for this module — rules are exercised by
+/// bundle/links tests — so these are written directly from the doc comments
+/// and the <c>validate_segment</c> / <c>parse</c> / <c>new</c> / <c>from_path</c>
+/// implementations (concept_id.rs:31-136).
+/// </summary>
+public class ConceptIdTests
+{
+    [Fact]
+    public void Parse_and_tostring_roundtrip()
+        => Assert.Equal("tables/users", ConceptId.Parse("tables/users").ToString());
+
+    [Fact]
+    public void Name_and_parent()
+    {
+        var id = ConceptId.Parse("a/b/c");
+        Assert.Equal("c", id.Name);
+        Assert.Equal("a/b", id.Parent!.ToString());
+        Assert.Null(ConceptId.Parse("root").Parent);
+    }
+
+    // --- parse() tolerance: empty segments produced by leading/trailing/duplicate
+    // slashes are silently dropped (concept_id.rs:43-47), NOT an error. ---
+
+    [Theory]
+    [InlineData("a//b", "a/b")]     // duplicate slash collapses
+    [InlineData("/a/b", "a/b")]     // leading slash tolerated
+    [InlineData("a/b/", "a/b")]     // trailing slash tolerated
+    [InlineData("//a//b//", "a/b")]
+    public void Parse_tolerates_redundant_slashes(string input, string expected)
+        => Assert.Equal(expected, ConceptId.Parse(input).ToString());
+
+    // --- invalid ids: corrected/completed from the ACTUAL rules in
+    // validate_segment (concept_id.rs:124-136) and parse (concept_id.rs:46-55).
+    // NOTE: the brief's draft listed "a//b" as invalid — that's wrong per the
+    // Rust source (see Parse_tolerates_redundant_slashes above); it is dropped
+    // here and replaced with real invalid segments. ---
+
+    [Theory]
+    [InlineData("")]                 // empty string -> zero segments
+    [InlineData("/")]                 // only slashes -> zero segments
+    [InlineData("///")]               // only slashes -> zero segments
+    [InlineData("../b")]              // segment ".." starts with '.', invalid leading char
+    [InlineData("a/./b")]             // segment "." starts with '.', invalid leading char
+    [InlineData("a/b/..")]            // trailing ".." segment
+    [InlineData("-abc")]              // leading '-' not allowed as first char
+    [InlineData(".abc")]              // leading '.' not allowed as first char
+    [InlineData("a/-bc")]             // leading '-' in a non-first segment
+    [InlineData("a/.bc")]             // leading '.' in a non-first segment
+    [InlineData("a b")]               // space not a permitted char at all
+    [InlineData("a@b")]               // '@' not a permitted char
+    [InlineData("a/b c")]             // space in a non-first segment
+    public void Invalid_ids_throw(string bad)
+        => Assert.Throws<ConceptIdException>(() => ConceptId.Parse(bad));
+
+    [Fact]
+    public void Empty_string_error_message_matches_rust_debug_format()
+    {
+        var ex = Assert.Throws<ConceptIdException>(() => ConceptId.Parse(""));
+        Assert.Equal("Empty concept id: \"\"", ex.Message);
+    }
+
+    [Fact]
+    public void Invalid_segment_error_message_matches_rust_debug_format()
+    {
+        var ex = Assert.Throws<ConceptIdException>(() => ConceptId.Parse("-abc"));
+        Assert.Equal("Invalid concept id segment: \"-abc\"", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("_abc")]  // leading underscore allowed
+    [InlineData("a1_2")]
+    [InlineData("a.b-c")] // '.' and '-' allowed as non-leading chars
+    [InlineData("A9")]
+    public void Valid_segments_do_not_throw(string good)
+        => ConceptId.ValidateSegment(good);
+
+    [Fact]
+    public void ValidateSegment_rejects_empty_segment()
+    {
+        var ex = Assert.Throws<ConceptIdException>(() => ConceptId.ValidateSegment(""));
+        Assert.Equal("Invalid concept id segment: \"\"", ex.Message);
+    }
+
+    // --- new(): validates each segment and requires at least one (concept_id.rs:33-41).
+    // Unlike parse(), it does NOT drop empty strings from the caller-supplied list. ---
+
+    [Fact]
+    public void New_requires_at_least_one_segment()
+    {
+        var ex = Assert.Throws<ConceptIdException>(() => ConceptId.New(Array.Empty<string>()));
+        Assert.Equal("concept_id must have at least one segment", ex.Message);
+    }
+
+    [Fact]
+    public void New_does_not_drop_empty_strings_and_validates_each()
+    {
+        var ex = Assert.Throws<ConceptIdException>(() => ConceptId.New(new[] { "a", "" }));
+        Assert.Equal("Invalid concept id segment: \"\"", ex.Message);
+    }
+
+    [Fact]
+    public void New_builds_valid_id_from_segments()
+        => Assert.Equal("a/b", ConceptId.New(new[] { "a", "b" }).ToString());
+
+    // --- TryParse ---
+
+    [Fact]
+    public void TryParse_true_for_valid_input()
+    {
+        Assert.True(ConceptId.TryParse("a/b", out var id));
+        Assert.Equal("a/b", id!.ToString());
+    }
+
+    [Fact]
+    public void TryParse_false_for_invalid_input()
+    {
+        Assert.False(ConceptId.TryParse("", out var id));
+        Assert.Null(id);
+    }
+
+    // --- FromPath / ToPath ---
+
+    [Fact]
+    public void FromPath_strips_md_and_normalizes_separators()
+    {
+        var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\tables\users.md");
+        Assert.Equal("tables/users", id.ToString());
+    }
+
+    [Fact]
+    public void FromPath_works_with_forward_slashes_too()
+    {
+        var id = ConceptId.FromPath("C:/bundle", "C:/bundle/tables/users.md");
+        Assert.Equal("tables/users", id.ToString());
+    }
+
+    [Fact]
+    public void FromPath_leaves_non_md_suffix_untouched()
+    {
+        // from_path only strips a ".md" suffix if present (strip_suffix,
+        // concept_id.rs:100-104) -- it does not require or enforce it.
+        var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\log");
+        Assert.Equal("log", id.ToString());
+    }
+
+    [Fact]
+    public void FromPath_single_level_strips_md()
+    {
+        var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\index.md");
+        Assert.Equal("index", id.ToString());
+    }
+
+    [Fact]
+    public void FromPath_throws_when_path_is_outside_bundle_root()
+        => Assert.Throws<ConceptIdException>(
+            () => ConceptId.FromPath(@"C:\bundle", @"C:\other\tables\users.md"));
+
+    [Fact]
+    public void FromPath_throws_when_path_equals_root_exactly()
+        // relative part is empty -> zero segments -> New()'s "at least one segment" rule
+        => Assert.Throws<ConceptIdException>(
+            () => ConceptId.FromPath(@"C:\bundle", @"C:\bundle"));
+
+    [Fact]
+    public void ToPath_appends_md()
+        => Assert.Equal(Path.Combine("root", "tables", "users.md"),
+                        ConceptId.Parse("tables/users").ToPath("root"));
+
+    [Fact]
+    public void ToPath_single_segment_has_no_directories()
+        => Assert.Equal(Path.Combine("root", "index.md"),
+                        ConceptId.Parse("index").ToPath("root"));
+
+    [Fact]
+    public void FromPath_and_ToPath_roundtrip()
+    {
+        var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\tables\users.md");
+        Assert.Equal(Path.Combine(@"C:\bundle", "tables", "users.md"), id.ToPath(@"C:\bundle"));
+    }
+
+    [Fact]
+    public void FromPath_normalizes_away_non_leading_dot_segments()
+    {
+        // Rust's from_path iterates Path::components() (concept_id.rs:96-99),
+        // which normalizes away a non-leading "." path segment (it never
+        // yields a CurDir component for it), so "root/a/./b.md" resolves to
+        // "a/b" in Rust, not an error.
+        var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\a\.\b.md");
+        Assert.Equal("a/b", id.ToString());
+    }
+
+    [Fact]
+    public void FromPath_still_rejects_dotdot_segments()
+    {
+        // Unlike ".", ".." is NOT normalized away by Path::components() --
+        // it survives as a literal segment and fails ValidateSegment (its
+        // first char '.' is not a valid leading char), in both Rust and here.
+        Assert.Throws<ConceptIdException>(
+            () => ConceptId.FromPath(@"C:\bundle", @"C:\bundle\a\..\b.md"));
+    }
+
+    // --- Equality / hashing: ConceptId is used as a Dictionary key (Task 8). ---
+
+    [Fact]
+    public void Equal_ids_compare_equal_and_hash_the_same()
+    {
+        var a = ConceptId.Parse("tables/users");
+        var b = ConceptId.Parse("tables/users");
+        Assert.True(a.Equals(b));
+        Assert.Equal(a, b);
+        Assert.Equal(a.GetHashCode(), b.GetHashCode());
+    }
+
+    [Fact]
+    public void Different_ids_compare_unequal()
+    {
+        var a = ConceptId.Parse("tables/users");
+        var b = ConceptId.Parse("tables/orders");
+        Assert.False(a.Equals(b));
+    }
+
+    [Fact]
+    public void Segment_comparison_is_ordinal_case_sensitive()
+    {
+        var a = ConceptId.Parse("Tables/Users");
+        var b = ConceptId.Parse("tables/users");
+        Assert.NotEqual(a, b);
+    }
+
+    [Fact]
+    public void ConceptId_usable_as_dictionary_key()
+    {
+        var a = ConceptId.Parse("tables/users");
+        var b = ConceptId.Parse("tables/users");
+        var dict = new Dictionary<ConceptId, int> { [a] = 42 };
+        Assert.True(dict.ContainsKey(b));
+        Assert.Equal(42, dict[b]);
+    }
+
+    [Fact]
+    public void Equals_false_for_null_and_different_type()
+    {
+        var a = ConceptId.Parse("tables/users");
+        Assert.False(a.Equals(null));
+        Assert.False(a.Equals((object)"tables/users"));
+    }
+}
