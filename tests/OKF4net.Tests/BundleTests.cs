@@ -4,12 +4,6 @@ namespace OKF4net.Tests;
 /// Port of the Rust bundle-loading and cross-link-graph tests
 /// (tests/bundle.rs), exercised against the spec's Appendix A minimal
 /// example bundle.
-///
-/// <see cref="AppendixA"/>_is_conformant and missing_type_is_a_conformance_error
-/// depend on the not-yet-ported <c>BundleValidator</c> (Task 10) and are
-/// marked <c>Skip</c> until then. <c>broken_links_are_detected_but_not_fatal</c>
-/// is ported minus its validator-dependent assertions (<c>validate_bundle</c>,
-/// <c>Severity::Info</c>), which will be restored in Task 10.
 /// </summary>
 public class BundleTests
 {
@@ -96,9 +90,7 @@ public class BundleTests
     [Fact]
     public void Broken_links_are_detected_but_not_fatal()
     {
-        // tests/bundle.rs:83-99. The validate_bundle()/Severity::Info
-        // assertions are deferred to Task 10 (BundleValidator does not exist
-        // yet); the Bundle-level assertions are ported as-is.
+        // tests/bundle.rs:83-99.
         using var tmp = new TempDir();
         tmp.Write(
             "a.md",
@@ -107,18 +99,34 @@ public class BundleTests
         var broken = bundle.BrokenLinks();
         Assert.Single(broken);
         Assert.Equal("/does/not/exist.md", broken[0].RawTarget);
+
+        // Broken links are informational, not conformance errors.
+        var report = BundleValidator.Validate(bundle);
+        Assert.True(report.IsConformant);
+        Assert.Contains(report.Of(Severity.Info), d => d.Message.Contains("does/not/exist"));
     }
 
-    [Fact(Skip = "Enabled in Task 10 (BundleValidator)")]
+    [Fact]
     public void Appendix_a_is_conformant()
     {
-        // Enabled and implemented in Task 10
+        // tests/bundle.rs:101-108
+        using var tmp = AppendixA();
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+        Assert.True(report.IsConformant);
+        Assert.Equal(0, report.ErrorCount);
     }
 
-    [Fact(Skip = "Enabled in Task 10 (BundleValidator)")]
+    [Fact]
     public void Missing_type_is_a_conformance_error()
     {
-        // Enabled and implemented in Task 10
+        // tests/bundle.rs:110-118
+        using var tmp = new TempDir();
+        tmp.Write("bad.md", "---\ntitle: No Type\n---\nbody\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+        Assert.False(report.IsConformant);
+        Assert.Contains(report.Of(Severity.Error), d => d.Message.Contains("type"));
     }
 
     [Fact]
