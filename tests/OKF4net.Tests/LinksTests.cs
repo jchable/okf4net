@@ -114,6 +114,23 @@ public class LinksTests
     }
 
     [Fact]
+    public void Citation_number_accepts_a_leading_plus_but_rejects_a_leading_minus()
+    {
+        // Rust's u32::from_str (links.rs:323's rest[..close].trim().parse())
+        // strips one leading '+' before parsing digits, but never strips a
+        // leading '-' for an unsigned type -- it's simply an invalid digit,
+        // so ANY leading '-' is rejected (including "-0", unlike .NET's
+        // NumberStyles.AllowLeadingSign, which uniquely accepts "-0" for
+        // uint -- verified empirically and avoided below).
+        var plus = LinkScanner.ExtractCitations("# Citations\n[+3] Src\n");
+        Assert.Single(plus);
+        Assert.Equal(3u, plus[0].Number);
+
+        var minus = LinkScanner.ExtractCitations("# Citations\n[-3] Src\n");
+        Assert.Empty(minus);
+    }
+
+    [Fact]
     public void Document_links_and_citations_integration()
     {
         // tests/links.rs:123-135

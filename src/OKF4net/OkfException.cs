@@ -8,6 +8,7 @@ namespace OKF4net;
 /// </summary>
 public abstract class OkfException : Exception
 {
+    /// <summary>Creates the exception with a descriptive message.</summary>
     protected OkfException(string message)
         : base(message)
     {

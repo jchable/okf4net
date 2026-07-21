@@ -19,6 +19,18 @@ public static class YamlEmitter
     private const int IndentStep = 2;
 
     /// <summary>
+    /// Maximum recursion depth for <see cref="EmitMapping"/>/
+    /// <see cref="EmitSequence"/>, mirroring the parser's
+    /// <c>YamlParser.MaxNestingDepth</c>. An INTENTIONAL divergence from
+    /// Rust (which has no such guard): a pathologically deep
+    /// <see cref="YamlValue"/> tree — however it was constructed, since
+    /// this guards the emitter independently of the parser's own limit —
+    /// throws a catchable <see cref="InvalidOperationException"/> here
+    /// instead of overflowing the stack.
+    /// </summary>
+    private const int MaxNestingDepth = 1000;
+
+    /// <summary>
     /// Emits a value as YAML text (always ends with "\n", like PyYAML's
     /// <c>safe_dump</c>). Port of Rust's <c>emit</c> (emitter.rs lines 13-24).
     /// </summary>
@@ -28,10 +40,10 @@ public static class YamlEmitter
         switch (value)
         {
             case YamlMapping m when !m.IsEmpty:
-                EmitMapping(m, 0, outSb);
+                EmitMapping(m, 0, 0, outSb);
                 break;
             case YamlSequence s when s.Items.Count > 0:
-                EmitSequence(s.Items, 0, outSb);
+                EmitSequence(s.Items, 0, 0, outSb);
                 break;
             default:
                 outSb.Append(EmitScalar(value));
@@ -43,21 +55,26 @@ public static class YamlEmitter
     }
 
     /// <summary>Port of Rust's <c>emit_mapping</c> (emitter.rs lines 26-42).</summary>
-    private static void EmitMapping(YamlMapping map, int indent, StringBuilder outSb)
+    private static void EmitMapping(YamlMapping map, int indent, int depth, StringBuilder outSb)
     {
+        if (depth > MaxNestingDepth)
+        {
+            throw new InvalidOperationException("nesting depth limit exceeded");
+        }
+
         var pad = new string(' ', indent);
         foreach (var (key, value) in map.Entries)
         {
-            var keyText = EmitString(key);
+            var keyText = EmitScalar(key);
             switch (value)
             {
                 case YamlMapping m when !m.IsEmpty:
                     outSb.Append(pad).Append(keyText).Append(":\n");
-                    EmitMapping(m, indent + IndentStep, outSb);
+                    EmitMapping(m, indent + IndentStep, depth + 1, outSb);
                     break;
                 case YamlSequence s when s.Items.Count > 0:
                     outSb.Append(pad).Append(keyText).Append(":\n");
-                    EmitSequence(s.Items, indent + IndentStep, outSb);
+                    EmitSequence(s.Items, indent + IndentStep, depth + 1, outSb);
                     break;
                 default:
                     outSb.Append(pad).Append(keyText).Append(": ").Append(EmitScalar(value)).Append('\n');
@@ -67,8 +84,13 @@ public static class YamlEmitter
     }
 
     /// <summary>Port of Rust's <c>emit_sequence</c> (emitter.rs lines 44-59).</summary>
-    private static void EmitSequence(IReadOnlyList<YamlValue> seq, int indent, StringBuilder outSb)
+    private static void EmitSequence(IReadOnlyList<YamlValue> seq, int indent, int depth, StringBuilder outSb)
     {
+        if (depth > MaxNestingDepth)
+        {
+            throw new InvalidOperationException("nesting depth limit exceeded");
+        }
+
         var pad = new string(' ', indent);
         foreach (var item in seq)
         {
@@ -76,11 +98,11 @@ public static class YamlEmitter
             {
                 case YamlMapping m when !m.IsEmpty:
                     outSb.Append(pad).Append("-\n");
-                    EmitMapping(m, indent + IndentStep, outSb);
+                    EmitMapping(m, indent + IndentStep, depth + 1, outSb);
                     break;
                 case YamlSequence s when s.Items.Count > 0:
                     outSb.Append(pad).Append("-\n");
-                    EmitSequence(s.Items, indent + IndentStep, outSb);
+                    EmitSequence(s.Items, indent + IndentStep, depth + 1, outSb);
                     break;
                 default:
                     outSb.Append(pad).Append("- ").Append(EmitScalar(item)).Append('\n');

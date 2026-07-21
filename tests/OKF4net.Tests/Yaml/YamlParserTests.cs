@@ -36,6 +36,40 @@ public class YamlParserTests
     }
 
     [Fact]
+    public void Duplicate_string_keys_are_all_preserved_first_match_wins_on_get()
+    {
+        // Port of Rust's push_raw (parser.rs:132): the block-mapping parser
+        // appends every entry unconditionally, it does not dedup like
+        // Mapping::insert does. get() then returns the FIRST match
+        // (mod.rs:65-70).
+        var v = YamlValue.Parse("type: foo\ntype: bar\n");
+        var m = v.AsMapping()!;
+        Assert.Equal("foo", m.Get("type")!.AsString());
+        Assert.Equal(2, m.Count);
+        Assert.Equal("type: foo\ntype: bar\n", v.ToYamlString());
+    }
+
+    [Fact]
+    public void Non_string_keys_are_invisible_to_get_and_keys_but_kept_in_entries()
+    {
+        // Port of Mapping::get/keys (mod.rs:64-75): both filter on the
+        // String variant via as_str(), so a bool or float key is invisible
+        // to them, but iter()/Entries still yields it (raw, typed). The
+        // emitter's emit_mapping (emitter.rs:26-42) runs every key through
+        // emit_scalar, so a float key "1.50" re-emits via format_float as
+        // "1.5" (trailing zero dropped), same as any float scalar value.
+        var v = YamlValue.Parse("true: x\n1.50: y\n");
+        var m = v.AsMapping()!;
+        Assert.Null(m.Get("true"));
+        Assert.Empty(m.Keys);
+        var entries = m.Entries.ToList();
+        Assert.Equal(2, entries.Count);
+        Assert.IsType<YamlBool>(entries[0].Key);
+        Assert.IsType<YamlFloat>(entries[1].Key);
+        Assert.Equal("true: x\n1.5: y\n", v.ToYamlString());
+    }
+
+    [Fact]
     public void Block_mapping()
     {
         var v = YamlValue.Parse("type: BigQuery Table\ntitle: Orders\ncount: 3\n");
@@ -137,8 +171,67 @@ public class YamlParserTests
     }
 
     [Fact]
+    public void Culture_sensitive_StartsWith_does_not_misparse_a_soft_hyphen_line()
+    {
+        // string.StartsWith(string) without an explicit StringComparison
+        // uses CurrentCulture, whose linguistic comparison treats certain
+        // zero-width "format" characters -- e.g. U+00AD SOFT HYPHEN -- as
+        // ignorable: "­- x".StartsWith("- ") is empirically true under
+        // CurrentCulture/InvariantCulture, but false under ordinal
+        // (byte-exact) comparison. Rust's str::starts_with (parser.rs:84,
+        // 113, 153, 217) is always byte-exact, so a line beginning with a
+        // soft hyphen must NOT be misread as a block-sequence item ("- ").
+        var v = YamlValue.Parse("outer:\n  ­- x\n");
+        var value = v.AsMapping()!.Get("outer")!;
+        Assert.Equal("­- x", value.AsString());
+    }
+
+    [Fact]
     public void Tab_indentation_is_error()
     {
         Assert.Throws<YamlParseException>(() => YamlValue.Parse("a:\n\tb: 1"));
+    }
+
+    [Fact]
+    public void Deeply_nested_flow_sequence_throws_instead_of_overflowing_the_stack()
+    {
+        // Unlike Rust (which has no depth guard and hard-crashes on
+        // pathological input like this), the C# port adds an explicit
+        // recursion-depth limit as a deliberate safety improvement -- an
+        // uncatchable StackOverflowException would otherwise take down the
+        // whole process. A flow sequence with 5000 nested '[' must throw a
+        // catchable YamlParseException, and the parser (and process) must
+        // survive to run subsequent tests.
+        var text = "tags: " + new string('[', 5000);
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(text));
+        Assert.Contains("nesting depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Deeply_nested_block_sequence_throws_instead_of_overflowing_the_stack()
+    {
+        // The block parser's "indentation-relaxed" sequence style (list
+        // items at the SAME column as their parent, e.g. "tags:\n- a\n- b")
+        // is implemented by right-recursion: a bare "-" (empty item, i.e. a
+        // nested-null item) recurses ParseSequence -> ParseNested ->
+        // ParseSequence once per line. A long flat run of bare "-" lines
+        // must throw rather than overflow the stack.
+        var text = string.Concat(Enumerable.Repeat("-\n", 5000));
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(text));
+        Assert.Contains("nesting depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Lone_carriage_return_stays_embedded_in_the_line()
+    {
+        // Rust's str::lines() only splits on '\n' (stripping one preceding
+        // '\r' when present, i.e. it understands "\r\n"). A lone '\r' NOT
+        // followed by '\n' is not a line terminator at all, so the whole
+        // input is a single line and "title: foo" is part of the scalar
+        // value rather than a second mapping entry.
+        var v = YamlValue.Parse("type: doc\rtitle: foo");
+        var m = v.AsMapping()!;
+        Assert.Single(m.Keys);
+        Assert.Equal("doc\rtitle: foo", m.Get("type")!.AsString());
     }
 }

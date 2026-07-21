@@ -17,6 +17,41 @@ public abstract class YamlValue
     /// </summary>
     public string ToYamlString() => YamlEmitter.Emit(this);
 
+    /// <summary>
+    /// Wraps a string as a <see cref="YamlString"/>. Port of Rust's
+    /// <c>impl From&lt;&amp;str&gt; for Value</c> (yaml/mod.rs:219-223).
+    /// </summary>
+    public static implicit operator YamlValue(string value) => new YamlString(value);
+
+    /// <summary>
+    /// Wraps a bool as a <see cref="YamlBool"/>. Port of Rust's
+    /// <c>impl From&lt;bool&gt; for Value</c> (yaml/mod.rs:231-235).
+    /// </summary>
+    public static implicit operator YamlValue(bool value) => new YamlBool(value);
+
+    /// <summary>
+    /// Wraps a 64-bit integer as a <see cref="YamlInt"/>. Port of Rust's
+    /// <c>impl From&lt;i64&gt; for Value</c> (yaml/mod.rs:237-241).
+    /// </summary>
+    public static implicit operator YamlValue(long value) => new YamlInt(value);
+
+    /// <summary>
+    /// Wraps an array of values as a <see cref="YamlSequence"/>. Closest C#
+    /// idiom to Rust's <c>impl&lt;T: Into&lt;Value&gt;&gt; From&lt;Vec&lt;T&gt;&gt; for Value</c>
+    /// (yaml/mod.rs:243-247).
+    /// </summary>
+    public static implicit operator YamlValue(YamlValue[] items) => new YamlSequence(items);
+
+    // Rust also has `impl From<Mapping> for Value` (yaml/mod.rs:249-253), but
+    // that has no C# equivalent to write: YamlMapping already IS-A YamlValue
+    // (it's a subclass, not a wrapped field), so a YamlMapping needs no
+    // conversion to be used as a YamlValue -- the "conversion" is a no-op
+    // upcast the compiler already performs.
+    //
+    // Rust has no `impl From<f64> for Value`, so there is intentionally no
+    // implicit `double` -> YamlValue operator here (would introduce a
+    // conversion the Rust surface doesn't have).
+
     /// <summary>Returns the string contents if this is a <see cref="YamlString"/>.</summary>
     public string? AsString() => (this as YamlString)?.Value;
 
@@ -75,6 +110,13 @@ public abstract class YamlValue
     };
 
     /// <summary>
+    /// Renders this value as YAML text, matching Rust's <c>impl fmt::Display
+    /// for Value</c> (src/yaml/mod.rs lines 213-217), which writes
+    /// <c>to_yaml_string()</c>.
+    /// </summary>
+    public override string ToString() => ToYamlString();
+
+    /// <summary>
     /// Structural (deep) equality, mirroring Rust's derived <c>PartialEq</c>
     /// for <c>Value</c>/<c>Mapping</c> (src/yaml/mod.rs lines 42 and 116):
     /// same variant/type, recursively equal contents, mapping entries
@@ -108,7 +150,7 @@ public abstract class YamlValue
         using var eb = b.Entries.GetEnumerator();
         while (ea.MoveNext() && eb.MoveNext())
         {
-            if (!string.Equals(ea.Current.Key, eb.Current.Key, StringComparison.Ordinal))
+            if (!ValueEquals(ea.Current.Key, eb.Current.Key))
             {
                 return false;
             }
@@ -157,7 +199,7 @@ public abstract class YamlValue
         hash.Add(typeof(YamlMapping));
         foreach (var (key, value) in map.Entries)
         {
-            hash.Add(key, StringComparer.Ordinal);
+            hash.Add(key);
             hash.Add(value);
         }
 
@@ -168,6 +210,7 @@ public abstract class YamlValue
 /// <summary>`null`, `~`, or an empty value.</summary>
 public sealed class YamlNull : YamlValue
 {
+    /// <summary>The singleton null value.</summary>
     public static readonly YamlNull Instance = new();
 
     private YamlNull()
@@ -178,39 +221,56 @@ public sealed class YamlNull : YamlValue
 /// <summary>`true` / `false`.</summary>
 public sealed class YamlBool : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML boolean.</summary>
     public YamlBool(bool value) => Value = value;
 
+    /// <summary>The boolean value.</summary>
     public bool Value { get; }
 }
 
 /// <summary>An integer scalar.</summary>
 public sealed class YamlInt : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML integer.</summary>
     public YamlInt(long value) => Value = value;
 
+    /// <summary>The integer value.</summary>
     public long Value { get; }
 }
 
 /// <summary>A floating-point scalar.</summary>
 public sealed class YamlFloat : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML float.</summary>
     public YamlFloat(double value) => Value = value;
 
+    /// <summary>The floating-point value.</summary>
     public double Value { get; }
 }
 
 /// <summary>A string scalar.</summary>
 public sealed class YamlString : YamlValue
 {
+    /// <summary>Wraps <paramref name="value"/> as a YAML string.</summary>
     public YamlString(string value) => Value = value;
 
+    /// <summary>The string value.</summary>
     public string Value { get; }
 }
 
 /// <summary>A sequence (`[...]` or block `- ...`).</summary>
 public sealed class YamlSequence : YamlValue
 {
-    public YamlSequence(IReadOnlyList<YamlValue> items) => Items = items;
+    /// <summary>
+    /// Wraps <paramref name="items"/> as a YAML sequence, defensively
+    /// copying it. Rust's <c>impl From&lt;Vec&lt;Value&gt;&gt; for Value</c>
+    /// consumes (moves) the <c>Vec</c>, so the caller cannot mutate it after
+    /// construction there; a plain reference assignment here would alias the
+    /// caller's list and let post-construction mutation leak through, which
+    /// is impossible in Rust. Copying preserves that "moved" invariant.
+    /// </summary>
+    public YamlSequence(IReadOnlyList<YamlValue> items) => Items = [.. items];
 
+    /// <summary>The sequence elements, in document order.</summary>
     public IReadOnlyList<YamlValue> Items { get; }
 }

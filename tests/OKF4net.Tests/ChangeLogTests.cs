@@ -40,6 +40,17 @@ public class ChangeLogTests
         Assert.Equal(new[] { "not-a-date" }, log.InvalidDates());
     }
 
+    [Fact]
+    public void Crlf_line_endings_leave_no_carriage_return_residue()
+    {
+        var log = ChangeLog.Parse("## 2026-01-01\r\n* x\r\n");
+        Assert.Single(log.Days);
+        Assert.Equal("2026-01-01", log.Days[0].Date);
+        Assert.DoesNotContain('\r', log.Days[0].Date);
+        Assert.Equal("x", log.Days[0].Entries[0].Text);
+        Assert.DoesNotContain('\r', log.Days[0].Entries[0].Text);
+    }
+
     [Theory]
     [InlineData("2026-07-21", true)]
     [InlineData("2026-13-01", false)] // month out of range: is_iso_date DOES validate the 1..=12 range

@@ -32,6 +32,30 @@ public class DocumentTests
         var reparsed = OkfDocument.Parse(serialized);
         Assert.Equal(doc.Frontmatter.AsMapping(), reparsed.Frontmatter.AsMapping());
         Assert.Equal(doc.Body.Trim(), reparsed.Body.Trim());
+
+        // F11: structural equality (Rust derived PartialEq, document.rs:16-21).
+        Assert.True(doc.Equals(reparsed));
+        Assert.Equal(doc, reparsed);
+        Assert.Equal(doc.GetHashCode(), reparsed.GetHashCode());
+    }
+
+    [Fact]
+    public void Equality_is_structural_and_sensitive_to_body_and_frontmatter()
+    {
+        // F11: Document::eq is a componentwise derive over frontmatter + body.
+        var a = OkfDocument.Parse("---\ntype: X\n---\nbody\n");
+        var sameContent = OkfDocument.Parse("---\ntype: X\n---\nbody\n");
+        Assert.Equal(a, sameContent);
+
+        var differentBody = OkfDocument.Parse("---\ntype: X\n---\nother body\n");
+        Assert.NotEqual(a, differentBody);
+        Assert.False(a.Equals(differentBody));
+
+        var differentFrontmatter = OkfDocument.Parse("---\ntype: Y\n---\nbody\n");
+        Assert.NotEqual(a, differentFrontmatter);
+        Assert.False(a.Equals(differentFrontmatter));
+
+        Assert.False(a.Equals(null));
     }
 
     [Fact]

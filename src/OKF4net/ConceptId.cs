@@ -12,7 +12,7 @@ namespace OKF4net;
 /// turn ports the reference <c>bundle/paths.py</c>, including its segment
 /// validation rule.
 /// </summary>
-public sealed class ConceptId : IEquatable<ConceptId>
+public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, IComparable
 {
     /// <summary>The id's segments, in order.</summary>
     public IReadOnlyList<string> Segments { get; }
@@ -278,5 +278,73 @@ public sealed class ConceptId : IEquatable<ConceptId>
         }
 
         return hash.ToHashCode();
+    }
+
+    /// <summary>
+    /// Lexicographic, element-wise ordering over <see cref="Segments"/>.
+    /// Mirrors Rust's derived <c>PartialOrd</c>/<c>Ord</c> for
+    /// <c>ConceptId</c> (concept_id.rs:26, a single-field struct wrapping
+    /// <c>Vec&lt;String&gt;</c>): segments are compared pairwise with
+    /// ordinal (byte-wise) <c>String</c> <c>Ord</c>, and if one sequence is a
+    /// strict prefix of the other, the shorter sequence sorts first —
+    /// standard slice/<c>Vec</c> <c>Ord</c> semantics.
+    /// </summary>
+    public int CompareTo(ConceptId? other)
+    {
+        if (other is null)
+        {
+            // IComparable convention: a non-null instance sorts after null.
+            return 1;
+        }
+
+        var count = Math.Min(Segments.Count, other.Segments.Count);
+        for (var i = 0; i < count; i++)
+        {
+            var cmp = string.CompareOrdinal(Segments[i], other.Segments[i]);
+            if (cmp != 0)
+            {
+                return cmp;
+            }
+        }
+
+        return Segments.Count.CompareTo(other.Segments.Count);
+    }
+
+    /// <inheritdoc/>
+    int IComparable.CompareTo(object? obj)
+    {
+        if (obj is null)
+        {
+            return 1;
+        }
+
+        if (obj is not ConceptId other)
+        {
+            throw new ArgumentException($"Object must be of type {nameof(ConceptId)}.", nameof(obj));
+        }
+
+        return CompareTo(other);
+    }
+
+    /// <summary>Ordinal-by-segment less-than comparison.</summary>
+    public static bool operator <(ConceptId left, ConceptId right) => Compare(left, right) < 0;
+
+    /// <summary>Ordinal-by-segment less-than-or-equal comparison.</summary>
+    public static bool operator <=(ConceptId left, ConceptId right) => Compare(left, right) <= 0;
+
+    /// <summary>Ordinal-by-segment greater-than comparison.</summary>
+    public static bool operator >(ConceptId left, ConceptId right) => Compare(left, right) > 0;
+
+    /// <summary>Ordinal-by-segment greater-than-or-equal comparison.</summary>
+    public static bool operator >=(ConceptId left, ConceptId right) => Compare(left, right) >= 0;
+
+    private static int Compare(ConceptId? left, ConceptId? right)
+    {
+        if (left is null)
+        {
+            return right is null ? 0 : -1;
+        }
+
+        return left.CompareTo(right);
     }
 }

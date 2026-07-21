@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
+using OKF4net.Internal;
 
 namespace OKF4net;
 
@@ -238,7 +239,7 @@ public static class LinkScanner
     {
         var result = new List<Citation>();
         var inSection = false;
-        foreach (var line in SplitLines(body))
+        foreach (var line in RustLines.Split(body))
         {
             var trimmed = line.Trim();
             if (trimmed.StartsWith('#'))
@@ -278,7 +279,7 @@ public static class LinkScanner
     {
         var result = new List<string>();
         char? fence = null;
-        foreach (var line in SplitLines(body))
+        foreach (var line in RustLines.Split(body))
         {
             var trimmed = line.TrimStart();
             if (fence is { } f)
@@ -487,8 +488,20 @@ public static class LinkScanner
             return null;
         }
 
+        // Mirrors Rust's u32::from_str: a single leading '+' is stripped
+        // before parsing digits, but a leading '-' is NEVER stripped for an
+        // unsigned type -- it's simply not a valid digit, so any leading
+        // '-' is rejected outright (including "-0"). Do this by hand rather
+        // than via NumberStyles.AllowLeadingSign, which uniquely accepts
+        // "-0" for uint (a divergence from Rust, which rejects it too).
         var numberText = rest[..close].Trim();
-        if (!uint.TryParse(numberText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number))
+        if (numberText.StartsWith('-'))
+        {
+            return null;
+        }
+
+        var digits = numberText.StartsWith('+') ? numberText[1..] : numberText;
+        if (!uint.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number))
         {
             return null;
         }
@@ -511,30 +524,6 @@ public static class LinkScanner
         }
 
         return new Citation(number, text, target, after);
-    }
-
-    /// <summary>
-    /// Splits text into lines the way Rust's <c>str::lines()</c> does: split
-    /// on '\n' (with a preceding '\r' stripped), and no trailing empty
-    /// element for a final line terminator. Mirrors
-    /// <c>OkfDocument.SplitLines</c>; duplicated here since that one is
-    /// private to the document parser.
-    /// </summary>
-    private static List<string> SplitLines(string text)
-    {
-        var normalized = text.Replace("\r\n", "\n").Replace("\r", "\n");
-        if (normalized.Length == 0)
-        {
-            return [];
-        }
-
-        var parts = normalized.Split('\n').ToList();
-        if (normalized.EndsWith('\n'))
-        {
-            parts.RemoveAt(parts.Count - 1);
-        }
-
-        return parts;
     }
 
     private readonly record struct InlineLinkMatch(string Text, string Dest, int Next);

@@ -79,4 +79,66 @@ public class IndexTests
         Assert.Contains("(datasets/index.md) - The only dataset in this bundle.", rootIndex);
         Assert.Equal(0, calls);
     }
+
+    [Fact]
+    public void BuildIndexText_sorts_unicode_titles_like_rust_to_lowercase()
+    {
+        // Reviewer's scenario: .NET's ToLowerInvariant leaves U+0130 (İ)
+        // unchanged, so under the old StringComparer.Ordinal sort "İtem"
+        // (starting with U+0130) sorted AFTER "j-item" (U+0130 > 'j' in
+        // UTF-16 ordinal order). Rust's `to_lowercase` maps U+0130 to "i̇"
+        // (lowercase i + combining dot above), which sorts BEFORE "j-item".
+        var entries = new List<IndexEntry>
+        {
+            new("Thing", "j-item", "j-item.md", string.Empty),
+            new("Thing", "İtem", "item.md", string.Empty),
+        };
+
+        var text = IndexGenerator.BuildIndexText(entries);
+
+        var iTemIndex = text.IndexOf("[İtem]", StringComparison.Ordinal);
+        var jItemIndex = text.IndexOf("[j-item]", StringComparison.Ordinal);
+        Assert.True(iTemIndex >= 0 && jItemIndex >= 0);
+        Assert.True(iTemIndex < jItemIndex, "İtem must sort before j-item, matching Rust's to_lowercase.");
+    }
+
+    [Fact]
+    public void BuildIndexText_preserves_ascii_sort_order()
+    {
+        // Golden safety net: for pure-ASCII titles, the Unicode-faithful
+        // sort must agree with the old plain-ASCII-lowercase sort, so the
+        // ASCII golden fixtures are unaffected by this change.
+        var entries = new List<IndexEntry>
+        {
+            new("Thing", "Zebra", "zebra.md", string.Empty),
+            new("Thing", "apple", "apple.md", string.Empty),
+            new("Thing", "Banana", "banana.md", string.Empty),
+        };
+
+        var text = IndexGenerator.BuildIndexText(entries);
+
+        var appleIndex = text.IndexOf("[apple]", StringComparison.Ordinal);
+        var bananaIndex = text.IndexOf("[Banana]", StringComparison.Ordinal);
+        var zebraIndex = text.IndexOf("[Zebra]", StringComparison.Ordinal);
+        Assert.True(appleIndex < bananaIndex && bananaIndex < zebraIndex);
+    }
+
+    [Fact]
+    public void Regenerate_does_not_list_a_dotfile_named_dot_md()
+    {
+        // Regression: same underlying bug as Bundle.CollectMarkdown -- a
+        // file named EXACTLY ".md" has no extension under Rust's
+        // path.extension() (index.rs:130, 229), so it must not be treated
+        // as a markdown entry to list or recurse into as a concept.
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "datasets/only.md", "BigQuery Dataset", "Only Dataset", "The only dataset in this bundle.");
+        File.WriteAllText(Path.Combine(tmp.Path, "datasets", ".md"), "not a real concept file");
+
+        var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+        Assert.NotEmpty(written);
+
+        var datasetsIndex = File.ReadAllText(Path.Combine(tmp.Path, "datasets", "index.md"));
+        Assert.Contains("[Only Dataset](only.md)", datasetsIndex);
+        Assert.DoesNotContain("(.md)", datasetsIndex);
+    }
 }

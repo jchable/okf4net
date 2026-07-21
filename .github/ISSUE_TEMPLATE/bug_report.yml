@@ -1,0 +1,51 @@
+name: Bug report
+description: Something behaves incorrectly (parsing, validation, CLI output, …)
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Minimal input that triggers the problem — ideally a small concept
+        document or bundle layout, plus the library call or CLI command used.
+      placeholder: |
+        ```sh
+        okf validate ./bundle
+        ```
+        ```markdown
+        ---
+        type: Metric
+        ---
+        body…
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: >
+        What you expected instead. If the OKF v0.1 spec covers this, cite the
+        section (§) — spec conformance disputes are the highest-value reports.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: OKF4net version / commit
+      placeholder: "0.1.0, or a commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "OS, .NET SDK version, library or CLI (AOT binary?)"

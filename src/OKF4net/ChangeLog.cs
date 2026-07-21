@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
+using OKF4net.Internal;
 
 namespace OKF4net;
 
@@ -51,7 +52,7 @@ public sealed class ChangeLog
         string? currentDate = null;
         List<LogEntry>? currentEntries = null;
 
-        foreach (var line in SplitLines(text))
+        foreach (var line in RustLines.Split(text))
         {
             var t = line.TrimEnd().TrimStart();
             if (t.StartsWith("## ", StringComparison.Ordinal))
@@ -169,31 +170,6 @@ public sealed class ChangeLog
         }
 
         return month is >= 1 and <= 12 && day is >= 1 and <= 31;
-    }
-
-    /// <summary>
-    /// Splits text into lines the way Rust's <c>str::lines()</c> does: split
-    /// on `\n`, with an optional final line ending (no trailing empty
-    /// element for a trailing `\n`, and no elements at all for `""`).
-    /// </summary>
-    private static IEnumerable<string> SplitLines(string text)
-    {
-        if (text.Length == 0)
-        {
-            yield break;
-        }
-
-        var parts = text.Split('\n');
-        var count = parts.Length;
-        if (parts[count - 1].Length == 0)
-        {
-            count--;
-        }
-
-        for (var i = 0; i < count; i++)
-        {
-            yield return parts[i];
-        }
     }
 
     /// <summary>Returns the text after a `*` or `-` bullet marker, if the line is a bullet. Port of <c>bullet_body</c> (log.rs:109).</summary>

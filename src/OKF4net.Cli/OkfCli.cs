@@ -445,11 +445,15 @@ public static class OkfCli
         stdout.Write($"frontmatter ({mapping.Count} key(s)):\n");
         foreach (var (k, v) in mapping.Entries)
         {
-            // Note: v.ToYamlString() already ends in "\n" (the emitter always
-            // terminates its output that way), and the line itself adds
-            // another -- an exact port of the Rust `println!("  {k}: {v}")`
-            // where `{v}`'s Display is `to_yaml_string()` (yaml/mod.rs:213-216).
-            stdout.Write($"  {k}: {v.ToYamlString()}\n");
+            // Note: both k.ToYamlString() and v.ToYamlString() already end in
+            // "\n" (the emitter always terminates its output that way), and
+            // the line itself adds another -- an exact port of the Rust
+            // `println!("  {k}: {v}")` where `k` and `v` are both `&Value`,
+            // and `Value`'s Display is `to_yaml_string()` (yaml/mod.rs:213-216).
+            // Since mapping keys are (post F2/F6) typed raw Values rather
+            // than plain strings, this reproduces the Rust CLI's output
+            // exactly, embedded newline quirk included.
+            stdout.Write($"  {k.ToYamlString()}: {v.ToYamlString()}\n");
         }
 
         var conformant = IsConformant(doc);

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Internal;
+
 namespace OKF4net;
 
 /// <summary>
@@ -10,6 +12,7 @@ namespace OKF4net;
 /// </summary>
 public sealed class BundleLoadException : OkfException
 {
+    /// <summary>Creates the exception with a descriptive message.</summary>
     public BundleLoadException(string message)
         : base(message)
     {
@@ -133,53 +136,53 @@ public sealed class Bundle
                     logFiles.Add(path);
                     break;
                 default:
-                {
-                    string text;
-                    try
                     {
-                        text = StrictUtf8.GetString(File.ReadAllBytes(path));
-                    }
-                    catch (IOException e)
-                    {
-                        throw new BundleLoadException($"I/O error: {e.Message}");
-                    }
-                    catch (UnauthorizedAccessException e)
-                    {
-                        throw new BundleLoadException($"I/O error: {e.Message}");
-                    }
-                    catch (System.Text.DecoderFallbackException)
-                    {
-                        // Mirrors the io::Error kind ErrorKind::InvalidData
-                        // that Rust's fs::read_to_string produces for
-                        // non-UTF-8 input, propagated by `?` (bundle.rs:88)
-                        // and aborting the whole load — same as any other
-                        // I/O failure during the walk.
-                        throw new BundleLoadException("I/O error: stream did not contain valid UTF-8");
-                    }
+                        string text;
+                        try
+                        {
+                            text = StrictUtf8.GetString(File.ReadAllBytes(path));
+                        }
+                        catch (IOException e)
+                        {
+                            throw new BundleLoadException($"I/O error: {e.Message}");
+                        }
+                        catch (UnauthorizedAccessException e)
+                        {
+                            throw new BundleLoadException($"I/O error: {e.Message}");
+                        }
+                        catch (System.Text.DecoderFallbackException)
+                        {
+                            // Mirrors the io::Error kind ErrorKind::InvalidData
+                            // that Rust's fs::read_to_string produces for
+                            // non-UTF-8 input, propagated by `?` (bundle.rs:88)
+                            // and aborting the whole load — same as any other
+                            // I/O failure during the walk.
+                            throw new BundleLoadException("I/O error: stream did not contain valid UTF-8");
+                        }
 
-                    OkfDocument document;
-                    try
-                    {
-                        document = OkfDocument.Parse(text);
-                    }
-                    catch (DocumentParseException e)
-                    {
-                        parseErrors.Add((path, e.Message));
+                        OkfDocument document;
+                        try
+                        {
+                            document = OkfDocument.Parse(text);
+                        }
+                        catch (DocumentParseException e)
+                        {
+                            parseErrors.Add((path, e.Message));
+                            break;
+                        }
+
+                        try
+                        {
+                            var id = ConceptId.FromPath(root, path);
+                            concepts.Add(new Concept(id, path, document));
+                        }
+                        catch (ConceptIdException e)
+                        {
+                            parseErrors.Add((path, $"Missing required frontmatter keys: {e.Message}"));
+                        }
+
                         break;
                     }
-
-                    try
-                    {
-                        var id = ConceptId.FromPath(root, path);
-                        concepts.Add(new Concept(id, path, document));
-                    }
-                    catch (ConceptIdException e)
-                    {
-                        parseErrors.Add((path, $"Missing required frontmatter keys: {e.Message}"));
-                    }
-
-                    break;
-                }
             }
         }
 
@@ -319,7 +322,7 @@ public sealed class Bundle
             {
                 CollectMarkdown(path, output);
             }
-            else if (File.Exists(path) && path.EndsWith(".md", StringComparison.Ordinal))
+            else if (File.Exists(path) && MarkdownPaths.HasMarkdownExtension(path))
             {
                 output.Add(path);
             }

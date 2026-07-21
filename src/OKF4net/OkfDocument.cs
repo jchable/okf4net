@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics.CodeAnalysis;
+using OKF4net.Internal;
 using OKF4net.Yaml;
 
 namespace OKF4net;
@@ -14,7 +15,7 @@ namespace OKF4net;
 /// Link/citation extraction (§8) is provided by <see cref="Links"/> and
 /// <see cref="Citations"/>, which delegate to <see cref="LinkScanner"/>.
 /// </summary>
-public sealed class OkfDocument
+public sealed class OkfDocument : IEquatable<OkfDocument>
 {
     private const string FrontmatterDelim = "---";
 
@@ -45,7 +46,7 @@ public sealed class OkfDocument
     /// </exception>
     public static OkfDocument Parse(string text)
     {
-        var lines = SplitLines(text);
+        var lines = RustLines.Split(text);
         if (lines.Count == 0 || lines[0].Trim() != FrontmatterDelim)
         {
             return new OkfDocument(new Frontmatter(), text);
@@ -187,26 +188,20 @@ public sealed class OkfDocument
     public IReadOnlyList<Citation> Citations() => LinkScanner.ExtractCitations(Body);
 
     /// <summary>
-    /// Splits text into lines the way Rust's <c>str::lines()</c> does: split
-    /// on '\n' (with a preceding '\r' stripped), and no trailing empty
-    /// element for a final line terminator. Mirrors
-    /// <c>YamlParser.SplitLines</c>; duplicated here since that one is
-    /// private to the parser.
+    /// Structural equality: <see cref="Frontmatter"/> equality AND ordinal
+    /// <see cref="Body"/> equality. Mirrors Rust's derived <c>PartialEq</c>
+    /// for <c>Document</c> (document.rs:16-21), a componentwise derive over
+    /// its two fields (<c>frontmatter: Frontmatter</c>, <c>body: String</c>;
+    /// Rust <c>String: PartialEq</c> is byte/ordinal comparison).
     /// </summary>
-    private static List<string> SplitLines(string text)
-    {
-        var normalized = text.Replace("\r\n", "\n").Replace("\r", "\n");
-        if (normalized.Length == 0)
-        {
-            return [];
-        }
+    public bool Equals(OkfDocument? other) =>
+        other is not null
+        && (ReferenceEquals(this, other)
+            || (Frontmatter.Equals(other.Frontmatter) && string.Equals(Body, other.Body, StringComparison.Ordinal)));
 
-        var parts = normalized.Split('\n').ToList();
-        if (normalized.EndsWith('\n'))
-        {
-            parts.RemoveAt(parts.Count - 1);
-        }
+    /// <inheritdoc/>
+    public override bool Equals(object? obj) => Equals(obj as OkfDocument);
 
-        return parts;
-    }
+    /// <inheritdoc/>
+    public override int GetHashCode() => HashCode.Combine(Frontmatter.GetHashCode(), Body);
 }

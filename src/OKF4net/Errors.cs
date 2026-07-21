@@ -10,6 +10,7 @@ namespace OKF4net;
 /// </summary>
 public sealed class DocumentParseException : OkfException
 {
+    /// <summary>Creates the exception with a descriptive message.</summary>
     public DocumentParseException(string message)
         : base(message)
     {
@@ -28,6 +29,7 @@ public sealed class DocumentValidationException : OkfException
     /// <summary>The required frontmatter keys found missing or empty, in <c>Frontmatter.RequiredKeys</c> order.</summary>
     public IReadOnlyList<string> MissingKeys { get; }
 
+    /// <summary>Creates the exception, listing the frontmatter keys that failed validation.</summary>
     public DocumentValidationException(string message, IReadOnlyList<string> missingKeys)
         : base(message)
     {

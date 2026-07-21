@@ -1,0 +1,42 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+OKF4net — a zero-dependency .NET (C# / net10.0) implementation of the Open Knowledge Format (OKF) v0.1: knowledge bundles as directories of markdown files with YAML frontmatter. It is a from-scratch C# port of this repo's former Rust `okf` implementation (removed at commit `d20343c`), proven byte-exact against captured Rust output. Licensed LGPL-3.0-or-later; ported portions remain Apache-2.0 (see NOTICE).
+
+## Commands
+
+```sh
+dotnet build OKF4net.sln                    # build everything (warnings are errors)
+dotnet test OKF4net.sln                     # full test suite incl. golden CLI comparisons
+dotnet test OKF4net.sln --filter "FullyQualifiedName~ConceptIdTests"        # one test class
+dotnet test OKF4net.sln --filter "FullyQualifiedName~ConceptIdTests.Parse"  # one test method
+dotnet format OKF4net.sln                   # format; CI runs --verify-no-changes
+dotnet publish src/OKF4net.Cli -c Release   # Native AOT self-contained `okf` binary
+```
+
+Requires .NET SDK 10.0+. CI (ci.yml) runs build+test on Linux/Windows/macOS, `dotnet format --verify-no-changes`, and an AOT publish smoke test — all three must pass.
+
+## Hard rules
+
+- **Zero third-party runtime dependencies.** The library uses only the BCL — it has its own YAML-subset parser, link scanner, and CLI arg parsing. Do not add packages (test-only packages like xunit are fine).
+- **Never touch `tests/fixtures/`.** These are byte-exact golden captures of the removed Rust binary's output (LF endings, significant trailing whitespace; protected by `.gitattributes -text`). If C# output differs from a golden file, the C# code is wrong — fix the port, never the fixture.
+- **Spec fidelity.** Behaviour must conform to the OKF v0.1 spec; behavioural changes should cite the spec section (§) and intentional divergences from the reference implementation need a documented reason.
+- New source files start with `// SPDX-License-Identifier: LGPL-3.0-or-later`.
+- File-scoped namespaces, XML doc comments on public API, nullable enabled (all enforced via Directory.Build.props: `TreatWarningsAsErrors`, LangVersion 14).
+
+## Architecture
+
+Three projects in `OKF4net.sln`:
+
+- **`src/OKF4net/`** — the library. One file per spec concern, mirroring the reference Python implementation and the Rust crate it replaced: `ConceptId` (§2), `Bundle` (§3, permissive loading — parse failures go into `Bundle.ParseErrors`, never abort), `OkfDocument`/`Frontmatter` (§4), `Links.cs`/`LinkScanner` (§5/§8), `IndexGenerator` (§6), `ChangeLog` (§7), `Validate.cs`/`BundleValidator` (§9). The README has the full spec-section → type mapping table.
+  - `Yaml/` — the documented YAML *subset* (scalars, lists, shallow maps, block/flow, `|`/`>`); it deliberately rejects anchors/tags/multi-docs with clear errors. `Frontmatter` wraps an order-preserving `YamlMapping` with typed getters rather than a fixed DTO, so unknown producer keys survive round-trips.
+  - `Internal/RustLines.cs` — the single shared port of Rust's `str::lines()` (splits on `\n` only). Use it anywhere Rust-identical line splitting matters; do not reintroduce private copies.
+- **`src/OKF4net.Cli/`** — the `okf` binary (`validate`/`info`/`index`/`graph`/`parse`/`fmt`), published Native AOT (`PublishAot`, `InvariantGlobalization`). All logic lives in `OkfCli.Run(args, out, err)` so tests invoke it in-process without spawning a process.
+- **`tests/OKF4net.Tests/`** — xunit. `GoldenParityTests` diffs CLI output byte-for-byte against `tests/fixtures/golden/`; tests locate the repo root by walking up from the test assembly to `OKF4net.sln`. Some parity tests temporarily set the CWD to the repo root because goldens embed the relative bundle path as given on the command line.
+
+Two validation levels exist by design: `OkfDocument.ValidateConformance()` enforces only what §9 requires (non-empty `type`); `OkfDocument.Validate()` is the stricter producer-side check (`type`, `title`, `description`, `timestamp`).
+
+`docs/design/` holds historical migration specs/plans — context only; the code and README are authoritative.
