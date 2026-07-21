@@ -31,4 +31,10 @@
     <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Lets the test project exercise internal Rust-port helpers (e.g.
+         RustCaseFold) directly, without inflating the public API surface. -->
+    <InternalsVisibleTo Include="OKF4net.Tests" />
+  </ItemGroup>
+
 </Project>

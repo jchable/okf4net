@@ -68,10 +68,14 @@ public static class IndexGenerator
         foreach (var (typ, items) in grouped)
         {
             // Stable sort by lowercased title, mirroring Rust's stable
-            // `sort_by` on `title.to_lowercase()`.
+            // `sort_by` on `title.to_lowercase()`. Uses RustCaseFold rather
+            // than string.ToLowerInvariant()/StringComparer.Ordinal, which
+            // diverge from Rust's `to_lowercase` + `String::cmp` on
+            // characters like U+0130 (İ) and on code points outside the
+            // Basic Multilingual Plane -- see RustCaseFold's doc comments.
             var sorted = items
                 .Select((item, ordinal) => (item, ordinal))
-                .OrderBy(x => x.item.Title.ToLowerInvariant(), StringComparer.Ordinal)
+                .OrderBy(x => RustCaseFold.ToLowercase(x.item.Title), Comparer<string>.Create(RustCaseFold.CompareCodePoints))
                 .ThenBy(x => x.ordinal)
                 .Select(x => x.item)
                 .ToList();
