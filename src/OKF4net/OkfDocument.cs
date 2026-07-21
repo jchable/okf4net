@@ -9,9 +9,8 @@ namespace OKF4net;
 /// round-trip compatibly between implementations. Port of the Rust
 /// <c>Document</c> (src/document.rs).
 ///
-/// Link/citation extraction (§8) is deferred to Task 7, which introduces the
-/// <c>ConceptLink</c>/<c>Citation</c> types; this type intentionally has no
-/// <c>Links()</c>/<c>Citations()</c> members yet.
+/// Link/citation extraction (§8) is provided by <see cref="Links"/> and
+/// <see cref="Citations"/>, which delegate to <see cref="LinkScanner"/>.
 /// </summary>
 public sealed class OkfDocument
 {
@@ -170,6 +169,20 @@ public sealed class OkfDocument
             throw new DocumentValidationException("Missing required frontmatter keys: type", ["type"]);
         }
     }
+
+    /// <summary>
+    /// Extracts all inline markdown links from <see cref="Body"/>, skipping
+    /// fenced code blocks and inline code spans. Delegates to
+    /// <see cref="LinkScanner.ExtractLinks"/>.
+    /// </summary>
+    public IReadOnlyList<ConceptLink> Links() => LinkScanner.ExtractLinks(Body);
+
+    /// <summary>
+    /// Extracts numbered citation entries from the <c># Citations</c>
+    /// section of <see cref="Body"/> (§8). Delegates to
+    /// <see cref="LinkScanner.ExtractCitations"/>.
+    /// </summary>
+    public IReadOnlyList<Citation> Citations() => LinkScanner.ExtractCitations(Body);
 
     /// <summary>
     /// Splits text into lines the way Rust's <c>str::lines()</c> does: split
