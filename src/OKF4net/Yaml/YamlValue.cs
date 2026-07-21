@@ -75,6 +75,13 @@ public abstract class YamlValue
     };
 
     /// <summary>
+    /// Renders this value as YAML text, matching Rust's <c>impl fmt::Display
+    /// for Value</c> (src/yaml/mod.rs lines 213-217), which writes
+    /// <c>to_yaml_string()</c>.
+    /// </summary>
+    public override string ToString() => ToYamlString();
+
+    /// <summary>
     /// Structural (deep) equality, mirroring Rust's derived <c>PartialEq</c>
     /// for <c>Value</c>/<c>Mapping</c> (src/yaml/mod.rs lines 42 and 116):
     /// same variant/type, recursively equal contents, mapping entries

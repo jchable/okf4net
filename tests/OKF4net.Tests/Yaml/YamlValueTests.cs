@@ -48,6 +48,16 @@ public class YamlValueTests
     }
 
     [Fact]
+    public void ToString_matches_ToYamlString()
+    {
+        // Rust `impl fmt::Display for Value` (yaml/mod.rs:213-217) writes
+        // to_yaml_string(); the C# override must match exactly.
+        var v = YamlValue.Parse("a: 1\n");
+        Assert.Equal(v.ToYamlString(), v.ToString());
+        Assert.Equal(v.ToYamlString(), $"{v}");
+    }
+
+    [Fact]
     public void IsEmptyValue_matches_rust_semantics()
     {
         Assert.True(YamlNull.Instance.IsEmptyValue);
