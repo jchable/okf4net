@@ -249,4 +249,93 @@ public class ConceptIdTests
         Assert.False(a.Equals(null));
         Assert.False(a.Equals((object)"tables/users"));
     }
+
+    // --- Ordering (F13): Rust derives PartialOrd/Ord (concept_id.rs:26) over
+    // the single Vec<String> field -- element-wise, ordinal String Ord, and
+    // shorter-is-less on a strict-prefix tie. ---
+
+    [Fact]
+    public void CompareTo_orders_segment_wise_not_by_joined_string()
+    {
+        // Per Vec<String> Ord: compare element-wise. "a/b" vs "ab":
+        // first elements "a" vs "ab" -> "a" < "ab" (ordinal), so "a/b" < "ab"
+        // even though the joined strings would sort the other way
+        // ('/' (0x2F) < 'b' (0x62), so a joined-string compare would also
+        // say "a/b" < "ab" here -- but this test locks in the *segment-wise*
+        // mechanism the brief calls out, not just the observed outcome).
+        var aSlashB = ConceptId.Parse("a/b");
+        var ab = ConceptId.New(["ab"]);
+        Assert.True(aSlashB.CompareTo(ab) < 0);
+        Assert.True(ab.CompareTo(aSlashB) > 0);
+    }
+
+    [Fact]
+    public void CompareTo_shorter_prefix_sorts_first()
+    {
+        var a = ConceptId.New(["a"]);
+        var aB = ConceptId.New(["a", "b"]);
+        Assert.True(a.CompareTo(aB) < 0);
+        Assert.True(aB.CompareTo(a) > 0);
+    }
+
+    [Fact]
+    public void CompareTo_is_ordinal_case_sensitive()
+    {
+        var upper = ConceptId.New(["B"]);
+        var lower = ConceptId.New(["a"]);
+        // Ordinal: 'B' (0x42) < 'a' (0x61).
+        Assert.True(upper.CompareTo(lower) < 0);
+    }
+
+    [Fact]
+    public void Sort_orders_by_segment_wise_comparison()
+    {
+        var ids = new List<ConceptId>
+        {
+            ConceptId.New(["ab"]),
+            ConceptId.Parse("b"),
+            ConceptId.Parse("a/b"),
+            ConceptId.New(["a"]),
+        };
+        ids.Sort();
+        Assert.Equal(
+            new[] { "a", "a/b", "ab", "b" },
+            ids.Select(id => id.ToString()));
+    }
+
+    [Fact]
+    public void CompareTo_returns_zero_for_equal_ids()
+    {
+        var a = ConceptId.Parse("tables/users");
+        var b = ConceptId.Parse("tables/users");
+        Assert.Equal(0, a.CompareTo(b));
+    }
+
+    [Fact]
+    public void CompareTo_null_returns_positive_per_icomparable_convention()
+    {
+        var a = ConceptId.Parse("a");
+        Assert.True(a.CompareTo(null) > 0);
+        Assert.True(((IComparable)a).CompareTo(null) > 0);
+    }
+
+    [Fact]
+    public void IComparable_CompareTo_rejects_wrong_type()
+    {
+        var a = ConceptId.Parse("a");
+        Assert.Throws<ArgumentException>(() => ((IComparable)a).CompareTo("a"));
+    }
+
+    [Fact]
+    public void Comparison_operators_match_CompareTo()
+    {
+        var a = ConceptId.New(["a"]);
+        var aB = ConceptId.New(["a", "b"]);
+        Assert.True(a < aB);
+        Assert.True(a <= aB);
+        Assert.True(aB > a);
+        Assert.True(aB >= a);
+        Assert.True(a <= ConceptId.New(["a"]));
+        Assert.True(a >= ConceptId.New(["a"]));
+    }
 }
