@@ -2,6 +2,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
+using Microsoft.Extensions.AI;
 using OKF4net.Yaml;
 
 namespace OKF4net.Agents;
@@ -93,6 +94,31 @@ public sealed class OkfBundleTools
             _bundle = null;
         }
     }
+
+    /// <summary>
+    /// All nine OKF tools as Agent Framework <see cref="AIFunction"/>s (via
+    /// <see cref="AITool"/>), ready for <c>AsAIAgent(tools: ...)</c>. Each
+    /// call returns a fresh list of freshly-created <see cref="AIFunction"/>
+    /// instances bound to this <see cref="OkfBundleTools"/> — invoking one
+    /// invokes the corresponding public method above, including its
+    /// never-throw behavior.
+    ///
+    /// Names are explicit snake_case (the default would be the C# method
+    /// name), and the order is stable: read → browse → search → write →
+    /// validate.
+    /// </summary>
+    public IList<AITool> GetTools() =>
+    [
+        AIFunctionFactory.Create(ReadConcept, "okf_read_concept", "Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks."),
+        AIFunctionFactory.Create(Browse, "okf_browse", "Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root."),
+        AIFunctionFactory.Create(Graph, "okf_graph", "Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats."),
+        AIFunctionFactory.Create(Search, "okf_search", "Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance."),
+        AIFunctionFactory.Create(WriteConcept, "okf_write_concept", "Create or update a concept document. The frontmatter must contain non-empty type, title, description and timestamp (producer-grade validation is enforced before writing)."),
+        AIFunctionFactory.Create(AppendLog, "okf_append_log", "Append an entry to the bundle root log.md under today's date (ISO)."),
+        AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes", "Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts."),
+        AIFunctionFactory.Create(ValidateBundle, "okf_validate_bundle", "Validate the bundle against OKF v0.1 conformance (§9). Returns the diagnostics report."),
+        AIFunctionFactory.Create(ChangesSince, "okf_changes_since", "Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle."),
+    ];
 
     /// <summary>
     /// Reads one concept: its frontmatter, body, outgoing links, and
