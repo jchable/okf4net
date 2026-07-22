@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.ComponentModel;
+using System.Globalization;
 using System.Text;
 using OKF4net.Yaml;
 
@@ -9,12 +10,16 @@ namespace OKF4net.Agents;
 public sealed class OkfBundleTools
 {
     private const string IndexFilename = "index.md";
+    private const string LogFilename = "log.md";
     private const string NoneLine = "(none)";
 
     private const string SearchUsageMessage =
         "Usage: okf_search requires a non-empty query — one or more terms to match "
         + "(case-insensitive substring) against concept titles, descriptions, tags and "
         + "bodies. Example: okf_search(\"orders\").";
+
+    /// <summary>UTF-8 encoder without a byte-order mark, for every write this class performs (matching Rust's <c>fs::write</c>, which never emits a BOM).</summary>
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     /// <summary>
     /// Guards <see cref="_bundle"/>. Agent hosts may invoke tool methods
@@ -43,6 +48,14 @@ public sealed class OkfBundleTools
 
     /// <summary>The bundle's root directory, as passed to the constructor.</summary>
     public string BundleRoot { get; }
+
+    /// <summary>
+    /// The current UTC time, consulted by <see cref="AppendLog"/> to compute
+    /// "today"'s ISO date heading. Defaults to <see cref="DateTime.UtcNow"/>;
+    /// overridable so tests can pin the date deterministically. Internal: an
+    /// implementation seam, not part of the tool's public surface.
+    /// </summary>
+    internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
     /// <summary>
     /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
@@ -258,6 +271,261 @@ public sealed class OkfBundleTools
 
             return FormatSearchResults(query, effectiveTag, terms, scored);
         });
+    }
+
+    /// <summary>
+    /// Creates or updates one concept document. Producer-grade validation
+    /// (<see cref="OkfDocument.Validate"/>: non-empty <c>type</c>,
+    /// <c>title</c>, <c>description</c> and <c>timestamp</c>) runs BEFORE
+    /// anything is written — on failure, the file on disk (if any) is left
+    /// untouched. Never throws for expected errors (a null/blank/malformed
+    /// concept id, a reserved id, invalid frontmatter YAML, or a failed
+    /// validation) — those are reported as a plain-text message instead.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
+    /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
+    /// <param name="body">The markdown body.</param>
+    [Description("Create or update a concept document. The frontmatter must contain non-empty type, title, description and timestamp (producer-grade validation is enforced before writing).")]
+    public string WriteConcept(
+        [Description("The concept id (path without .md), e.g. 'tables/refunds'.")] string conceptId,
+        [Description("Frontmatter as 'key: value' lines (YAML subset).")] string frontmatterYaml,
+        [Description("The markdown body.")] string body)
+    {
+        if (string.IsNullOrWhiteSpace(conceptId))
+        {
+            return "Error: invalid concept id — it must not be empty.";
+        }
+
+        if (conceptId.Contains('\0'))
+        {
+            return "Error: invalid concept id — it must not contain a null character.";
+        }
+
+        if (frontmatterYaml is null)
+        {
+            return "Error: frontmatter must not be null.";
+        }
+
+        if (frontmatterYaml.Contains('\0'))
+        {
+            return "Error: invalid frontmatter — it must not contain a null character.";
+        }
+
+        if (body is null)
+        {
+            return "Error: body must not be null.";
+        }
+
+        if (body.Contains('\0'))
+        {
+            return "Error: invalid body — it must not contain a null character.";
+        }
+
+        return RunTool(() =>
+        {
+            if (!ConceptId.TryParse(conceptId, out var id))
+            {
+                return $"Error: invalid concept id '{conceptId}'. Concept ids are '/'-separated "
+                    + "segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.";
+            }
+
+            if (id.Name is "index" or "log")
+            {
+                return $"Error: '{id}' is a reserved concept id — the last segment must not be "
+                    + "'index' or 'log' (these would collide with the bundle's index.md/log.md files).";
+            }
+
+            // Throws YamlParseException (line-tagged message) on malformed input;
+            // caught by RunTool's catch-all below, before anything is written.
+            var yaml = YamlValue.Parse(frontmatterYaml);
+            Frontmatter? frontmatter = yaml switch
+            {
+                YamlNull => new Frontmatter(),
+                YamlMapping map => Frontmatter.FromMapping(map),
+                _ => null,
+            };
+
+            if (frontmatter is null)
+            {
+                return "Error: frontmatter must be a YAML mapping of 'key: value' lines, not a list or scalar.";
+            }
+
+            var doc = new OkfDocument(frontmatter, body);
+
+            // Strict producer validation BEFORE any write. On failure this
+            // throws DocumentValidationException (message lists MissingKeys),
+            // caught by RunTool below -- nothing is written for a failed write.
+            doc.Validate();
+
+            var targetPath = id.ToPath(BundleRoot);
+
+            // Belt and braces alongside ConceptId's own segment validation
+            // (which already forbids '..' and '/' inside a segment): the same
+            // defense-in-depth check Browse uses before touching disk.
+            if (!IsWithinBundleRoot(BundleRoot, targetPath))
+            {
+                return $"Error: '{id}' resolves outside the bundle root.";
+            }
+
+            var existed = File.Exists(targetPath);
+            var content = doc.Serialize();
+
+            var parentDir = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(parentDir))
+            {
+                Directory.CreateDirectory(parentDir);
+            }
+
+            File.WriteAllText(targetPath, content, Utf8NoBom);
+            InvalidateBundle();
+
+            var byteCount = Utf8NoBom.GetByteCount(content);
+            var status = existed ? "updated" : "new";
+            return $"Written {id} ({status}, {byteCount} bytes). Remember to run okf_regenerate_indexes.";
+        });
+    }
+
+    /// <summary>
+    /// Appends one entry to the bundle root's <c>log.md</c> under today's
+    /// (UTC) ISO date, creating the file if it does not yet exist. If a
+    /// heading for today's date already exists, the entry is appended to the
+    /// end of that day's entries (days are newest-first by convention (§7),
+    /// but entries within a day stay chronological). Never throws for
+    /// expected errors (a null/blank/embedded-null <paramref name="kind"/> or
+    /// <paramref name="text"/>) — those are reported as a plain-text message
+    /// instead.
+    /// </summary>
+    /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
+    /// <param name="text">The entry text.</param>
+    [Description("Append an entry to the bundle root log.md under today's date (ISO).")]
+    public string AppendLog(
+        [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
+        [Description("The entry text.")] string text)
+    {
+        if (string.IsNullOrWhiteSpace(kind))
+        {
+            return "Error: invalid kind — it must not be empty.";
+        }
+
+        if (kind.Contains('\0'))
+        {
+            return "Error: invalid kind — it must not contain a null character.";
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "Error: invalid text — it must not be empty.";
+        }
+
+        if (text.Contains('\0'))
+        {
+            return "Error: invalid text — it must not contain a null character.";
+        }
+
+        return RunTool(() =>
+        {
+            var logPath = Path.Combine(BundleRoot, LogFilename);
+            var existingText = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+
+            // ChangeLog.Parse is permissive (never throws); used here only to
+            // locate today's day (if any) among the existing entries.
+            var changeLog = ChangeLog.Parse(existingText);
+            var today = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var entry = new LogEntry(kind.Trim(), text.Trim());
+
+            var days = changeLog.Days.ToList();
+            var dayIndex = days.FindIndex(d => string.Equals(d.Date, today, StringComparison.Ordinal));
+            if (dayIndex >= 0)
+            {
+                var day = days[dayIndex];
+                days[dayIndex] = day with { Entries = [.. day.Entries, entry] };
+            }
+            else
+            {
+                // New LogDay at the head: days are newest-first (§7).
+                days.Insert(0, new LogDay(today, [entry]));
+            }
+
+            File.WriteAllText(logPath, BuildLogMarkdown(changeLog.Title, days), Utf8NoBom);
+            InvalidateBundle();
+
+            return $"Appended a '{kind}' entry under {today} in log.md.";
+        });
+    }
+
+    /// <summary>
+    /// Regenerates every <c>index.md</c> in the bundle (progressive
+    /// disclosure listings). Never throws for expected errors (a bundle root
+    /// that disappeared out from under it) — reported as a plain-text
+    /// message instead.
+    /// </summary>
+    [Description("Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.")]
+    public string RegenerateIndexes()
+    {
+        return RunTool(() =>
+        {
+            var written = IndexGenerator.RegenerateIndexes(BundleRoot);
+            InvalidateBundle();
+
+            if (written.Count == 0)
+            {
+                return "No index.md files were regenerated (empty bundle?).";
+            }
+
+            var relative = written
+                .Select(p => Path.GetRelativePath(BundleRoot, p).Replace('\\', '/'))
+                .ToList();
+
+            var sb = new StringBuilder();
+            sb.Append("Regenerated ").Append(relative.Count).Append(" index file(s):").Append('\n');
+            foreach (var rel in relative)
+            {
+                sb.Append("- ").Append(rel).Append('\n');
+            }
+
+            return sb.ToString();
+        });
+    }
+
+    /// <summary>
+    /// Renders a bundle log to markdown, in the exact format produced by
+    /// <see cref="ChangeLog.ToMarkdown"/> (duplicated here because
+    /// <see cref="ChangeLog"/> exposes no way to build an instance from a
+    /// modified day list — only <see cref="ChangeLog.Parse"/> and the
+    /// instance method <see cref="ChangeLog.ToMarkdown"/>). Keep in sync with
+    /// that method if its format ever changes.
+    /// </summary>
+    private static string BuildLogMarkdown(string? title, IReadOnlyList<LogDay> days)
+    {
+        var sb = new StringBuilder();
+        if (title != null)
+        {
+            sb.Append("# ").Append(title).Append("\n\n");
+        }
+
+        for (var i = 0; i < days.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append('\n');
+            }
+
+            var day = days[i];
+            sb.Append("## ").Append(day.Date).Append('\n');
+            foreach (var entry in day.Entries)
+            {
+                if (entry.Kind != null)
+                {
+                    sb.Append("* **").Append(entry.Kind).Append("**: ").Append(entry.Text).Append('\n');
+                }
+                else
+                {
+                    sb.Append("* ").Append(entry.Text).Append('\n');
+                }
+            }
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
