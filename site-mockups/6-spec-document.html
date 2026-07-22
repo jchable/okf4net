@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OKF4net — mockup 6 · The §Document</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;700;800;900&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --white: #ffffff;
+    --ink: #101014;
+    --blue: #1a3fd6;          /* spec blue */
+    --blue-soft: #eef1fd;
+    --gray: #6a6a72;
+    --hair: #e3e3e8;
+    --ok: #0e8a4d;
+    --display: "Inter Tight", "Arial Narrow", sans-serif;
+    --body: "Inter", "Helvetica Neue", sans-serif;
+    --mono: "Space Mono", Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--white); color: var(--ink);
+    font-family: var(--body); font-size: 16px; line-height: 1.6;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; animation: none !important; }
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover, a:focus-visible { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  code { font-family: var(--mono); font-size: .92em; }
+
+  /* ---------- top rule + editor-tab strip, Swiss-set ---------- */
+  .topline { height: 6px; background: var(--blue); }
+  header.bar {
+    position: sticky; top: 0; z-index: 40; background: var(--white);
+    border-bottom: 1px solid var(--hair);
+  }
+  .bar-in {
+    max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 3.5vw, 48px);
+    display: flex; align-items: stretch; height: 58px;
+  }
+  .wordmark {
+    font-family: var(--display); font-weight: 900; font-size: 20px;
+    letter-spacing: -.02em; align-self: center; margin-right: 40px;
+  }
+  .wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
+  .bar-in nav { display: flex; align-items: stretch; }
+  .bar-in nav a {
+    font-family: var(--mono); font-size: 13px; color: var(--gray);
+    display: flex; align-items: center; padding: 0 18px;
+    border-left: 1px solid var(--hair);
+  }
+  .bar-in nav a:last-child { border-right: 1px solid var(--hair); }
+  .bar-in nav a:hover { color: var(--ink); text-decoration: none; background: var(--blue-soft); }
+  .bar-in nav a.active { color: var(--ink); box-shadow: inset 0 -3px 0 var(--blue); }
+  .bar-in .gh {
+    font-family: var(--mono); font-size: 13px; color: var(--white);
+    background: var(--ink); padding: 8px 16px; align-self: center; margin-left: auto;
+  }
+  .bar-in .gh:hover { background: var(--blue); text-decoration: none; }
+
+  .frame { max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 3.5vw, 48px); }
+
+  /* ---------- hero: the document window ---------- */
+  .hero { border-bottom: 1px solid var(--hair); }
+  .hero-doc { padding: 64px 0 72px; }
+
+  .doc-window { border: 1.5px solid var(--ink); }
+  .doc-chrome {
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1.5px solid var(--ink);
+    padding: 10px 16px; font-family: var(--mono); font-size: 13px;
+    background: var(--blue-soft);
+  }
+  .doc-chrome .path b { color: var(--blue); font-weight: 700; }
+  .toggle { display: inline-flex; border: 1.5px solid var(--ink); background: var(--white); }
+  .toggle button {
+    font-family: var(--mono); font-size: 12px; padding: 6px 16px;
+    border: none; background: transparent; color: var(--ink); cursor: pointer;
+  }
+  .toggle button[aria-pressed="true"] { background: var(--blue); color: var(--white); font-weight: 700; }
+
+  .pane { display: none; }
+  .pane.visible { display: block; }
+
+  /* raw pane */
+  .raw {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.8;
+    padding: 20px 0; overflow-x: auto; color: var(--ink);
+  }
+  .raw .ln { display: block; white-space: pre; padding-right: 20px; }
+  .raw .ln::before {
+    content: attr(data-n);
+    display: inline-block; width: 52px; text-align: right;
+    padding-right: 18px; color: #b6bac6; user-select: none;
+  }
+  .raw .fm { background: var(--blue-soft); }
+  .raw .delim { color: var(--blue); font-weight: 700; }
+  .raw .key { color: var(--blue); }
+  .raw .str { color: var(--ok); }
+  .raw .md-h { font-weight: 700; }
+  .raw .md-link { text-decoration: underline; color: var(--blue); }
+
+  /* rendered pane */
+  .rendered { padding: 32px 36px 40px; }
+  .fm-table {
+    font-family: var(--mono); font-size: 13px; width: 100%;
+    border-collapse: collapse; margin-bottom: 28px;
+  }
+  .fm-table td { padding: 7px 14px; border: 1px solid var(--hair); }
+  .fm-table td:first-child {
+    color: var(--blue); font-weight: 700; width: 140px; background: var(--blue-soft);
+  }
+  .rendered h1 {
+    font-family: var(--display); font-weight: 900;
+    font-size: clamp(36px, 4.6vw, 58px); line-height: 1.0; letter-spacing: -.03em;
+    margin-bottom: 20px; text-wrap: balance;
+  }
+  .rendered h1 em { font-style: normal; color: var(--blue); }
+  .rendered .lede { font-size: 17.5px; color: var(--gray); max-width: 56ch; }
+  .rendered .lede strong { color: var(--ink); font-weight: 600; }
+  .hero-actions { margin-top: 30px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--mono); font-size: 14px; padding: 12px 22px;
+    border: 1.5px solid var(--ink); color: var(--ink);
+  }
+  .btn:hover { text-decoration: none; background: var(--ink); color: var(--white); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: var(--white); }
+  .btn.primary:hover { background: #1231a8; border-color: #1231a8; }
+  .conform {
+    margin-top: 24px; display: inline-block;
+    font-family: var(--mono); font-size: 12.5px;
+    color: var(--blue); border: 1.5px dashed var(--blue); padding: 6px 14px;
+  }
+  .conform b { background: var(--blue); color: var(--white); padding: 0 6px; font-weight: 700; }
+
+  /* ---------- document body ---------- */
+  .docbody { padding: 44px 0 100px; }
+  section.chapter { margin-bottom: 84px; scroll-margin-top: 90px; }
+  .chead { display: flex; align-items: baseline; gap: 16px; margin-bottom: 18px; }
+  .chead .h {
+    font-family: var(--mono); font-weight: 700; font-size: 15px;
+    color: var(--white); background: var(--blue); padding: 3px 10px;
+  }
+  .chead h2 { font-family: var(--display); font-weight: 800; font-size: 30px; letter-spacing: -.02em; }
+  .chead .ref { font-family: var(--mono); font-size: 12.5px; color: var(--gray); margin-left: auto; }
+  section.chapter p { color: var(--gray); max-width: 64ch; margin-bottom: 14px; }
+  section.chapter p strong { color: var(--ink); font-weight: 600; }
+  section.chapter p code { background: var(--blue-soft); padding: 1px 6px; color: var(--ink); }
+
+  blockquote {
+    border-left: 6px solid var(--blue);
+    padding: 6px 0 6px 22px; margin: 20px 0 22px;
+    font-family: var(--display); font-weight: 700; font-size: 21px;
+    letter-spacing: -.01em; line-height: 1.35; max-width: 30ch; color: var(--ink);
+  }
+  blockquote code { background: var(--blue-soft); font-size: .85em; padding: 0 6px; }
+
+  .concept-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-top: 1px solid var(--hair); border-left: 1px solid var(--hair);
+    margin: 26px 0 20px;
+  }
+  .concept-grid .cell {
+    border-right: 1px solid var(--hair); border-bottom: 1px solid var(--hair);
+    padding: 20px 24px;
+  }
+  .concept-grid .term {
+    font-family: var(--mono); font-size: 13px; color: var(--blue);
+    font-weight: 700; margin-bottom: 8px;
+  }
+  .concept-grid .cell p { font-size: 14.5px; margin: 0; max-width: none; }
+
+  pre.block {
+    background: var(--ink); color: #e8e8ee; padding: 22px 26px; overflow-x: auto;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.75;
+    margin: 22px 0; border-left: 6px solid var(--blue);
+  }
+  pre.block .k { color: #7e9bff; }
+  pre.block .s { color: #ffd166; }
+  pre.block .c { color: #7a7a85; }
+  pre.block .ok { color: #6fd18a; }
+
+  table.map { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14.5px; }
+  table.map th {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--gray); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 12px 8px 0;
+  }
+  table.map td { border-bottom: 1px solid var(--hair); padding: 10px 12px 10px 0; vertical-align: top; }
+  table.map td:first-child { font-family: var(--mono); color: var(--blue); font-weight: 700; white-space: nowrap; }
+
+  /* contributing steps: real sequence, blue-numbered */
+  ol.steps { list-style: none; counter-reset: step; margin: 24px 0 0; max-width: 62ch; }
+  ol.steps li {
+    counter-increment: step; position: relative;
+    padding: 14px 0 14px 58px; border-bottom: 1px solid var(--hair); color: var(--gray);
+  }
+  ol.steps li:first-child { border-top: 1px solid var(--hair); }
+  ol.steps li strong { color: var(--ink); }
+  ol.steps li::before {
+    content: counter(step);
+    position: absolute; left: 0; top: 12px;
+    width: 34px; height: 34px;
+    background: var(--blue); color: var(--white);
+    font-family: var(--mono); font-weight: 700; font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  ol.steps code { background: var(--blue-soft); padding: 1px 6px; }
+
+  .cta {
+    border-top: 6px solid var(--blue); background: var(--blue-soft);
+    padding: 48px 52px; margin-top: 36px;
+  }
+  .cta h2 { font-family: var(--display); font-weight: 900; font-size: 34px; letter-spacing: -.02em; margin-bottom: 12px; }
+  .cta p { color: var(--gray); max-width: 60ch; margin-bottom: 24px; }
+
+  footer { border-top: 1px solid var(--hair); padding: 36px 32px 60px; }
+  footer .frame p { font-size: 13px; color: var(--gray); max-width: 84ch; margin-bottom: 8px; padding: 0; }
+
+  @media (max-width: 960px) {
+    .bar-in nav { display: none; }
+    .hero-doc { padding: 40px 0 36px; }
+    .rendered { padding: 24px 20px 32px; }
+    .concept-grid { grid-template-columns: 1fr; }
+    .chead { flex-wrap: wrap; }
+    .chead .ref { margin-left: 0; width: 100%; }
+    .cta { padding: 32px 24px; }
+  }
+
+  /* mobile: full-bleed — the frame drops its margins, text keeps a 16px inset */
+  @media (max-width: 720px) {
+    .frame { padding: 0; }
+    .hero-doc { padding: 0 0 28px; }
+    .doc-window { border-left: none; border-right: none; border-top: none; }
+    .rendered { padding: 24px 16px 32px; }
+    .raw { font-size: 12.5px; }
+    .docbody { padding: 36px 16px 70px; }
+    pre.block { margin-left: -16px; margin-right: -16px; padding: 18px 16px 18px 20px; }
+    table.map { display: block; overflow-x: auto; }
+    table.map td:first-child { white-space: normal; }
+    .cta { margin-left: -16px; margin-right: -16px; padding: 32px 16px; }
+    footer { padding: 28px 0 48px; }
+    footer .frame p { padding: 0 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topline"></div>
+<header class="bar">
+  <div class="bar-in">
+    <span class="wordmark">OKF<sup>4net</sup></span>
+    <nav aria-label="Site">
+      <a class="active" href="#top">okf4net.md</a>
+      <a href="#okf">what-okf-is.md</a>
+      <a href="#library">library.md</a>
+      <a href="#cli">cli.md</a>
+      <a href="#contribute">contributing.md</a>
+    </nav>
+    <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
+  </div>
+</header>
+
+<div class="frame" id="top">
+
+  <!-- ============ HERO: the concept document, typeset like the spec ============ -->
+  <div class="hero">
+    <div class="hero-doc">
+      <div class="doc-window">
+        <div class="doc-chrome">
+          <span class="path">my_bundle/<b>okf4net.md</b></span>
+          <div class="toggle" role="group" aria-label="View mode">
+            <button id="btn-raw" aria-pressed="false">raw</button>
+            <button id="btn-rendered" aria-pressed="true">rendered</button>
+          </div>
+        </div>
+
+        <div class="pane raw" id="pane-raw" aria-label="Raw OKF source">
+<span class="ln fm" data-n="1"><span class="delim">---</span></span>
+<span class="ln fm" data-n="2"><span class="key">type</span>: Library</span>
+<span class="ln fm" data-n="3"><span class="key">title</span>: OKF4net</span>
+<span class="ln fm" data-n="4"><span class="key">description</span>: <span class="str">Zero-dependency .NET implementation of OKF v0.1</span></span>
+<span class="ln fm" data-n="5"><span class="key">timestamp</span>: <span class="str">2026-07-22T09:00:00Z</span></span>
+<span class="ln fm" data-n="6"><span class="key">tags</span>: [<span class="str">dotnet</span>, <span class="str">knowledge</span>, <span class="str">markdown</span>]</span>
+<span class="ln fm" data-n="7"><span class="delim">---</span></span>
+<span class="ln" data-n="8"> </span>
+<span class="ln" data-n="9"><span class="md-h"># OKF4net</span></span>
+<span class="ln" data-n="10"> </span>
+<span class="ln" data-n="11">Knowledge is a directory of markdown files.</span>
+<span class="ln" data-n="12">This is its .NET toolchain — parse, validate, index</span>
+<span class="ln" data-n="13">and graph <span class="md-link">[bundles](/spec.md)</span> of concepts, on nothing</span>
+<span class="ln" data-n="14">but the .NET base class library.</span>
+<span class="ln" data-n="15"> </span>
+<span class="ln" data-n="16">If you can `cat` a file, you can read OKF.</span>
+        </div>
+
+        <div class="pane rendered visible" id="pane-rendered">
+          <table class="fm-table" aria-label="Frontmatter">
+            <tr><td>type</td><td>Library</td></tr>
+            <tr><td>title</td><td>OKF4net</td></tr>
+            <tr><td>description</td><td>Zero-dependency .NET implementation of OKF v0.1</td></tr>
+          </table>
+          <h1>Knowledge is a directory of <em>markdown files.</em></h1>
+          <p class="lede">OKF4net is its .NET toolchain — a <strong>zero-dependency C# library</strong> and a Native AOT <strong><code>okf</code> CLI</strong> to parse, validate, index and graph bundles of concepts.</p>
+          <div class="hero-actions">
+            <a class="btn primary" href="https://www.nuget.org/packages/OKF4net">dotnet add package OKF4net</a>
+            <a class="btn" href="#library">Read library.md</a>
+          </div>
+          <div class="conform">conformant with OKF v0.1 · <b>182/182</b> tests · 5 byte-exact golden comparisons</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ DOCUMENT BODY ============ -->
+  <div class="docbody">
+
+      <section class="chapter" id="okf">
+        <div class="chead"><span class="h">##</span><h2>What OKF is</h2><span class="ref">§2–§3 — terminology, bundle structure</span></div>
+        <blockquote>If you can <code>cat</code> a file, you can read OKF; if you can <code>git clone</code> a repo, you can ship it.</blockquote>
+        <p>The Open Knowledge Format represents knowledge as a directory of UTF-8 markdown files with YAML frontmatter. No database, no binary format, no runtime — files that humans, git, and agents already understand.</p>
+        <div class="concept-grid">
+          <div class="cell">
+            <div class="term">bundle</div>
+            <p>A directory tree of markdown files — the unit of distribution.</p>
+          </div>
+          <div class="cell">
+            <div class="term">concept</div>
+            <p>One document: YAML frontmatter delimited by <code>---</code>, then a markdown body.</p>
+          </div>
+          <div class="cell">
+            <div class="term">concept id</div>
+            <p>The file's path with <code>.md</code> removed: <code>tables/users.md</code> → <code>tables/users</code>.</p>
+          </div>
+          <div class="cell">
+            <div class="term">cross-links</div>
+            <p>Ordinary markdown links between concepts — absolute or relative; backlinks derived.</p>
+          </div>
+        </div>
+        <p>The only hard conformance requirement (§9): a non-empty <code>type</code> on every concept. Everything else — unknown types, unknown keys, broken links — must be tolerated by consumers.</p>
+      </section>
+
+      <section class="chapter" id="library">
+        <div class="chead"><span class="h">##</span><h2>The library</h2><span class="ref">§4–§5 — documents, cross-linking</span></div>
+        <p>Load a bundle, check conformance, walk the cross-link graph. <strong><code>Bundle.Load</code> never aborts on a bad file</strong> — parse failures land in <code>ParseErrors</code>, broken links stay in the graph as edges to missing concepts.</p>
+<pre class="block"><span class="k">using</span> OKF4net;
+
+<span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);
+Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);
+
+<span class="c">// Conformance check (§9).</span>
+<span class="k">var</span> report = BundleValidator.Validate(bundle);
+
+<span class="c">// Traverse the cross-link graph.</span>
+<span class="k">var</span> id = ConceptId.Parse(<span class="s">"tables/orders"</span>);
+<span class="k">foreach</span> (<span class="k">var</span> b <span class="k">in</span> bundle.Backlinks(id))
+    Console.WriteLine(<span class="s">$"cited by {b}"</span>);</pre>
+        <p><code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> with typed getters on top — producer-defined keys survive round-trips byte for byte. Two validation levels: <code>ValidateConformance()</code> enforces only what §9 requires; <code>Validate()</code> matches the stricter producer-side check.</p>
+      </section>
+
+      <section class="chapter" id="cli">
+        <div class="chead"><span class="h">##</span><h2>The okf CLI</h2><span class="ref">§6–§9 — indexes, logs, conformance</span></div>
+        <p>Published as a <strong>self-contained Native AOT single-file binary</strong> — no .NET runtime on the target machine. <code>okf validate</code> exits non-zero on a non-conformant bundle, so it drops straight into CI.</p>
+        <table class="map">
+          <tr><th>Command</th><th>Does</th></tr>
+          <tr><td>okf validate &lt;bundle&gt;</td><td>Conformance check (§9), non-zero exit on failure</td></tr>
+          <tr><td>okf info &lt;bundle&gt;</td><td>Concepts, types, links, version</td></tr>
+          <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md (§6)</td></tr>
+          <tr><td>okf graph &lt;bundle&gt;</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
+          <tr><td>okf parse &lt;file&gt;</td><td>One document's structure</td></tr>
+          <tr><td>okf fmt &lt;file&gt;</td><td>Normalize by parse + re-serialize (-w writes)</td></tr>
+        </table>
+<pre class="block">$ okf validate ./bundles/ga4
+<span class="ok">OK: bundle is conformant with OKF v0.1 (42 concepts)</span>
+$ okf graph ./bundles/ga4 --dot | dot -Tsvg &gt; graph.svg</pre>
+      </section>
+
+      <section class="chapter" id="contribute">
+        <div class="chead"><span class="h">##</span><h2>Contributing</h2><span class="ref">PR — the suite is the contract</span></div>
+        <p>One prerequisite: the .NET SDK. <strong>Zero third-party runtime dependencies</strong> is a design rule — contributions keep it that way.</p>
+        <ol class="steps">
+          <li><strong>Fork</strong> and create a topic branch from <code>main</code>.</li>
+          <li><strong>Add or update tests</strong> — including byte-exact golden comparisons for CLI-visible output; never let a formatter touch <code>tests/fixtures/</code>.</li>
+          <li><strong>Run</strong> <code>dotnet test</code> and <code>dotnet format --verify-no-changes</code> — warnings are errors.</li>
+          <li><strong>Open a pull request</strong> citing the relevant spec section (§) for any behavioural change.</li>
+        </ol>
+        <div class="cta">
+          <h2>Ship knowledge as files.</h2>
+          <p>Star the repo, open an issue, or pick a good first one. The spec is short, the codebase is dependency-free, and the test suite tells you immediately whether you're right.</p>
+          <div class="hero-actions">
+            <a class="btn primary" href="https://github.com/jchable/okf4net">github.com/jchable/okf4net</a>
+            <a class="btn" href="https://github.com/jchable/okf4net/issues">Open issues</a>
+          </div>
+        </div>
+      </section>
+
+  </div>
+</div>
+
+<footer>
+  <div class="frame">
+    <p>OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC, by way of the former Rust okf crate by Walter van der Giessen. An independent implementation, not affiliated with or endorsed by Google.</p>
+  </div>
+</footer>
+
+<script>
+  const raw = document.getElementById('pane-raw');
+  const rendered = document.getElementById('pane-rendered');
+  const bRaw = document.getElementById('btn-raw');
+  const bRen = document.getElementById('btn-rendered');
+  function show(mode) {
+    const isRaw = mode === 'raw';
+    raw.classList.toggle('visible', isRaw);
+    rendered.classList.toggle('visible', !isRaw);
+    bRaw.setAttribute('aria-pressed', String(isRaw));
+    bRen.setAttribute('aria-pressed', String(!isRaw));
+  }
+  bRaw.addEventListener('click', () => show('raw'));
+  bRen.addEventListener('click', () => show('rendered'));
+</script>
+</body>
+</html>
