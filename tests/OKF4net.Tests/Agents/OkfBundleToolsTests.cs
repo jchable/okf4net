@@ -209,4 +209,37 @@ public class OkfBundleToolsTests
 
         Assert.Contains("not found", result);
     }
+
+    // ----------------------------------------------------------------
+    // Reparse-point ancestor guard (Browse side -- see OkfWriteToolsTests
+    // for the WriteConcept counterpart). A junction/symlink placed INSIDE
+    // the bundle (e.g. bundleRoot/linked) can point at an arbitrary
+    // external directory. The lexical containment check (IsWithinBundleRoot)
+    // alone would accept it -- Path.GetFullPath resolves "linked" to a path
+    // string still under bundleRoot -- but the OS follows the reparse point
+    // the moment Browse actually touches disk, escaping the bundle. This
+    // test requires reparse-point-creation privilege (a Windows junction via
+    // mklink /J needs none; the Directory.CreateSymbolicLink fallback does)
+    // and skips itself via TryCreateJunctionToExternalDir's bool return when
+    // neither mechanism is available, per xunit v2 having no Assert.Skip.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Browse_rejects_a_junction_pointing_outside_the_bundle()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        using var external = new TempDir();
+        external.Write("secret.md", "---\ntype: Note\ntitle: Secret\n---\nshould never be seen\n");
+
+        if (!tmp.TryCreateJunctionToExternalDir("linked", external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var result = tools.Browse("linked");
+
+        Assert.Contains("error", result, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret", result, StringComparison.OrdinalIgnoreCase);
+    }
 }

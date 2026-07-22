@@ -82,6 +82,65 @@ public sealed class TempDir : IDisposable
         }
     }
 
+    /// <summary>
+    /// Attempts to create a directory reparse point at
+    /// <paramref name="relativeLink"/> (relative to the temp root) pointing
+    /// at the ABSOLUTE, external directory <paramref name="externalTarget"/>
+    /// (typically another <see cref="TempDir"/>). Tries a Windows junction
+    /// first via <c>cmd /c mklink /J</c> -- unlike a symlink, a junction
+    /// needs no special privilege on Windows -- falling back to
+    /// <see cref="Directory.CreateSymbolicLink(string, string)"/> if
+    /// <c>mklink</c> is unavailable or fails (e.g. non-Windows). Returns
+    /// <c>false</c> instead of throwing if neither mechanism succeeds, so
+    /// callers can skip the reparse-point-dependent assertions
+    /// (<c>if (!created) return;</c>) rather than fail the whole run on a
+    /// machine where neither can be created.
+    /// </summary>
+    public bool TryCreateJunctionToExternalDir(string relativeLink, string externalTarget)
+    {
+        var linkPath = System.IO.Path.Combine(Path, relativeLink);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(linkPath) ?? Path);
+
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+                {
+                    ArgumentList = { "/c", "mklink", "/J", linkPath, externalTarget },
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using var process = System.Diagnostics.Process.Start(psi);
+                process!.WaitForExit();
+                if (process.ExitCode == 0 && Directory.Exists(linkPath))
+                {
+                    return true;
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                // fall through to the symlink attempt below.
+            }
+        }
+
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, externalTarget);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Removes the temporary directory and its contents (best-effort).</summary>
     public void Dispose()
     {

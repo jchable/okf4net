@@ -170,6 +170,35 @@ public class OkfWriteToolsTests
         Assert.False(File.Exists(Path.Combine(tmp.Path, "..", "x.md")));
     }
 
+    // A junction/symlink placed INSIDE the bundle (e.g. bundleRoot/linked)
+    // can point at an arbitrary external directory. The lexical containment
+    // check (IsWithinBundleRoot) alone would accept "linked/x" -- it still
+    // resolves to a path string under bundleRoot -- but the OS follows the
+    // reparse point the moment WriteConcept actually touches disk
+    // (Directory.CreateDirectory/File.WriteAllText), escaping the bundle.
+    // See OkfBundleToolsTests for the Browse counterpart. Requires
+    // reparse-point-creation privilege (a Windows junction via mklink /J
+    // needs none; the Directory.CreateSymbolicLink fallback does) and skips
+    // itself via TryCreateJunctionToExternalDir's bool return when neither
+    // mechanism is available, per xunit v2 having no Assert.Skip.
+    [Fact]
+    public void WriteConcept_refuses_to_write_through_a_junction_and_leaves_the_external_dir_empty()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        using var external = new TempDir();
+
+        if (!tmp.TryCreateJunctionToExternalDir("linked", external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var result = tools.WriteConcept("linked/x", ValidFrontmatter, "Body.\n");
+
+        Assert.Contains("Error", result);
+        Assert.Empty(Directory.GetFiles(external.Path));
+    }
+
     [Fact]
     public void WriteConcept_null_concept_id_reports_error_without_throwing()
     {

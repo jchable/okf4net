@@ -193,7 +193,9 @@ public sealed class OkfBundleTools
             var bundle = GetBundle();
             var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
 
-            if (!IsWithinBundleRoot(bundle.Root, fullDir) || !Directory.Exists(fullDir))
+            if (!IsWithinBundleRoot(bundle.Root, fullDir)
+                || !Directory.Exists(fullDir)
+                || HasReparsePointAncestor(bundle.Root, fullDir))
             {
                 return $"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.";
             }
@@ -404,6 +406,18 @@ public sealed class OkfBundleTools
             if (!IsWithinBundleRoot(BundleRoot, targetPath))
             {
                 return $"Error: '{id}' resolves outside the bundle root.";
+            }
+
+            // Reject a reparse point (symlink/junction) anywhere between the
+            // bundle root and the target's parent directory: the lexical
+            // check above would happily accept "tables/refunds" even if
+            // "tables" is a junction pointing outside the bundle -- the OS
+            // follows it when Directory.CreateDirectory/File.WriteAllText
+            // below actually touch disk. Same guard Browse uses.
+            var targetParentDir = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(targetParentDir) && HasReparsePointAncestor(BundleRoot, targetParentDir))
+            {
+                return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
             }
 
             var content = doc.Serialize();
@@ -1021,6 +1035,64 @@ public sealed class OkfBundleTools
 
         var rootWithSeparator = fullRoot.EndsWith(Path.DirectorySeparatorChar) ? fullRoot : fullRoot + Path.DirectorySeparatorChar;
         return fullCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// <c>true</c> if <paramref name="path"/> itself, or any directory
+    /// strictly between it and <paramref name="bundleRoot"/>, is a
+    /// filesystem reparse point (symlink, junction, mount point) -- checked
+    /// via <see cref="ReparsePoints.IsReparsePoint"/>, which reports the
+    /// entry's own type (lstat-like) without following it.
+    ///
+    /// <see cref="IsWithinBundleRoot"/> only compares resolved path STRINGS:
+    /// a junction at, say, <c>bundleRoot/tables</c> pointing at an external
+    /// directory still lexically resolves to a path under
+    /// <paramref name="bundleRoot"/> via <see cref="Path.GetFullPath(string)"/>,
+    /// so that check alone would accept it -- but the OS follows the
+    /// junction the moment <see cref="Browse"/> or <see cref="WriteConcept"/>
+    /// actually touches disk (<see cref="Directory.Exists(string)"/>,
+    /// <see cref="File.ReadAllText(string)"/>, <see cref="File.WriteAllText(string, string)"/>),
+    /// silently reading or writing outside the bundle. Walking every
+    /// intermediate directory and rejecting on the first reparse point
+    /// closes that gap.
+    ///
+    /// Used by <see cref="Browse"/> (on the resolved directory) and
+    /// <see cref="WriteConcept"/> (on the target file's parent directory).
+    /// Not needed by <see cref="ReadConcept"/>, <see cref="Graph"/>, or
+    /// <see cref="Search"/> -- they only query the already-loaded
+    /// <see cref="Bundle"/>, whose own load walk already skips reparse-point
+    /// entries (mirroring Rust's lstat-based <c>collect_markdown</c>); nor by
+    /// <see cref="RegenerateIndexes"/>, whose whole-root walk (<see cref="IndexGenerator"/>)
+    /// likewise already skips reparse-point directories via the same core
+    /// helper; nor by <see cref="AppendLog"/>, which only ever writes
+    /// <c>log.md</c> directly at <see cref="BundleRoot"/> and never resolves
+    /// a caller-supplied sub-path.
+    /// </summary>
+    private static bool HasReparsePointAncestor(string bundleRoot, string path)
+    {
+        var fullRoot = Path.GetFullPath(bundleRoot);
+        var current = Path.GetFullPath(path);
+
+        while (!string.Equals(current, fullRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            if (ReparsePoints.IsReparsePoint(current))
+            {
+                return true;
+            }
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                // Walked past the filesystem root without ever reaching
+                // bundleRoot -- callers already guard containment via
+                // IsWithinBundleRoot, but stop here rather than loop forever.
+                break;
+            }
+
+            current = parent;
+        }
+
+        return false;
     }
 
     /// <summary>
