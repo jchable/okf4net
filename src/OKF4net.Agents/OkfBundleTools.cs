@@ -556,16 +556,20 @@ public sealed class OkfBundleTools
     /// Summarizes bundle changes since a given ISO date (inclusive),
     /// aggregated across every <c>log.md</c> in the bundle (<see cref="Bundle.LogFiles"/>).
     /// Each log is parsed with <see cref="ChangeLog.Parse"/>, filtered to the
-    /// <see cref="LogDay"/>s whose <see cref="LogDay.Date"/> is greater than
-    /// or equal to <paramref name="sinceDate"/> (ordinal string comparison —
-    /// sufficient for well-formed ISO dates), and rendered newest-first,
-    /// grouped by the log file's path relative to the bundle root ('/'
-    /// separators). A log file that fails strict UTF-8 decoding is skipped
-    /// with a note line rather than aborting the whole report (mirroring
-    /// <see cref="BundleValidator"/>'s permissive handling of reserved
-    /// files). Never throws for expected errors (a null/blank/invalid date,
-    /// or a bundle that fails to (re)load) — those are reported as a
-    /// plain-text message instead.
+    /// <see cref="LogDay"/>s whose <see cref="LogDay.Date"/> is a valid ISO
+    /// date (<see cref="ChangeLog.IsIsoDate"/>) greater than or equal to
+    /// <paramref name="sinceDate"/> (ordinal string comparison — sufficient
+    /// for well-formed ISO dates; non-ISO headings, e.g. a stray
+    /// <c>## Notes</c> section, are excluded rather than risk a bogus
+    /// ordinal comparison — <see cref="BundleValidator"/> is what reports
+    /// those as diagnostics), and rendered newest-first, grouped by the log
+    /// file's path relative to the bundle root ('/' separators). A log file
+    /// that fails strict UTF-8 decoding is skipped with a note line rather
+    /// than aborting the whole report (mirroring <see cref="BundleValidator"/>'s
+    /// permissive handling of reserved files); that note is preserved even
+    /// when no other log contributes matching days. Never throws for
+    /// expected errors (a null/blank/invalid date, or a bundle that fails to
+    /// (re)load) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="sinceDate">ISO date (<c>yyyy-MM-dd</c>), inclusive.</param>
     [Description("Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.")]
@@ -590,60 +594,100 @@ public sealed class OkfBundleTools
         return RunTool(() =>
         {
             var bundle = GetBundle();
-            var sb = new StringBuilder();
-            sb.Append("# Changes since ").Append(date).Append('\n').Append('\n');
+            var notes = new StringBuilder();
+            var changes = new StringBuilder();
             var any = false;
 
             foreach (var logPath in bundle.LogFiles)
             {
-                var rel = Path.GetRelativePath(bundle.Root, logPath).Replace('\\', '/');
-
-                string text;
-                try
-                {
-                    text = StrictUtf8.GetString(File.ReadAllBytes(logPath));
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
-                {
-                    sb.Append("> Skipped ").Append(rel).Append(" (not valid UTF-8).").Append('\n').Append('\n');
-                    continue;
-                }
-
-                var changeLog = ChangeLog.Parse(text);
-                var matchingDays = changeLog.Days
-                    .Where(d => string.CompareOrdinal(d.Date, date) >= 0)
-                    .OrderByDescending(d => d.Date, StringComparer.Ordinal)
-                    .ToList();
-
-                if (matchingDays.Count == 0)
-                {
-                    continue;
-                }
-
-                any = true;
-                sb.Append("## ").Append(rel).Append('\n');
-                foreach (var day in matchingDays)
-                {
-                    sb.Append("### ").Append(day.Date).Append('\n');
-                    foreach (var entry in day.Entries)
-                    {
-                        if (entry.Kind is not null)
-                        {
-                            sb.Append("- **").Append(entry.Kind).Append("**: ").Append(entry.Text).Append('\n');
-                        }
-                        else
-                        {
-                            sb.Append("- ").Append(entry.Text).Append('\n');
-                        }
-                    }
-                }
-
-                sb.Append('\n');
+                any |= AppendLogFileChanges(bundle.Root, logPath, date, notes, changes);
             }
 
-            return any ? sb.ToString() : $"No changes since {date}.";
+            if (!any)
+            {
+                // Preserve any skip notes even when nothing matched — a
+                // silently-discarded note would hide a real read failure
+                // behind an otherwise-correct "no changes" report.
+                return notes.Length == 0 ? $"No changes since {date}." : notes + $"No changes since {date}.";
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("# Changes since ").Append(date).Append('\n').Append('\n');
+            sb.Append(notes);
+            sb.Append(changes);
+            return sb.ToString();
         });
     }
+
+    /// <summary>
+    /// Processes one <c>log.md</c> for <see cref="ChangesSince"/>: on a
+    /// strict-UTF-8 read failure, appends a skip note to <paramref name="notes"/>
+    /// and returns <c>false</c>; otherwise parses the log, filters to valid-ISO
+    /// days at or after <paramref name="date"/> (descending), and — if any
+    /// matched — appends a <c>## {relative path}</c> section to <paramref name="changes"/>
+    /// and returns <c>true</c>.
+    /// </summary>
+    private static bool AppendLogFileChanges(string bundleRoot, string logPath, string date, StringBuilder notes, StringBuilder changes)
+    {
+        var rel = Path.GetRelativePath(bundleRoot, logPath).Replace('\\', '/');
+
+        string text;
+        try
+        {
+            text = StrictUtf8.GetString(File.ReadAllBytes(logPath));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
+        {
+            notes.Append("> Skipped ").Append(rel).Append(" (could not be read: ")
+                .Append(SkipReason(ex)).Append(").").Append('\n').Append('\n');
+            return false;
+        }
+
+        var matchingDays = ChangeLog.Parse(text).Days
+            .Where(d => ChangeLog.IsIsoDate(d.Date) && string.CompareOrdinal(d.Date, date) >= 0)
+            .OrderByDescending(d => d.Date, StringComparer.Ordinal)
+            .ToList();
+
+        if (matchingDays.Count == 0)
+        {
+            return false;
+        }
+
+        changes.Append("## ").Append(rel).Append('\n');
+        foreach (var day in matchingDays)
+        {
+            AppendLogDay(changes, day);
+        }
+
+        changes.Append('\n');
+        return true;
+    }
+
+    /// <summary>Appends one <c>### {date}</c> section and its bulleted entries (bold <c>Kind</c> when present) to <paramref name="sb"/>.</summary>
+    private static void AppendLogDay(StringBuilder sb, LogDay day)
+    {
+        sb.Append("### ").Append(day.Date).Append('\n');
+        foreach (var entry in day.Entries)
+        {
+            if (entry.Kind is not null)
+            {
+                sb.Append("- **").Append(entry.Kind).Append("**: ").Append(entry.Text).Append('\n');
+            }
+            else
+            {
+                sb.Append("- ").Append(entry.Text).Append('\n');
+            }
+        }
+    }
+
+    /// <summary>Brief, non-sensitive reason category for a log-file read failure, used by <see cref="ChangesSince"/>'s skip note.</summary>
+    private static string SkipReason(Exception ex) => ex switch
+    {
+        DecoderFallbackException => "not valid UTF-8",
+        UnauthorizedAccessException => "access denied",
+        IOException => "I/O error",
+        _ => "unreadable",
+    };
 
     /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
     private static string FormatSearchResults(string query, string? tag, IReadOnlyList<string> terms, IReadOnlyList<(Concept Concept, int Score)> scored)
