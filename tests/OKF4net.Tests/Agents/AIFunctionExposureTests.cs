@@ -106,6 +106,73 @@ public class AIFunctionExposureTests
     }
 
     [Fact]
+    public void okf_browse_schema_has_optional_path()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_browse");
+        var schema = function.JsonSchema;
+        var properties = schema.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("path", out _), "schema should declare a 'path' property.");
+
+        var required = RequiredProperties(function);
+        Assert.DoesNotContain("path", required);
+    }
+
+    [Fact]
+    public void okf_graph_schema_has_optional_conceptId()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_graph");
+        var schema = function.JsonSchema;
+        var properties = schema.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("conceptId", out _), "schema should declare a 'conceptId' property.");
+
+        var required = RequiredProperties(function);
+        Assert.DoesNotContain("conceptId", required);
+    }
+
+    [Fact]
+    public void okf_append_log_schema_requires_kind_and_text()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_append_log");
+        var required = RequiredProperties(function);
+        Assert.Contains("kind", required);
+        Assert.Contains("text", required);
+        Assert.Equal(2, required.Count);
+    }
+
+    [Fact]
+    public void okf_regenerate_indexes_schema_has_no_params()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_regenerate_indexes");
+        var schema = function.JsonSchema;
+        var properties = schema.GetProperty("properties");
+        Assert.Empty(properties.EnumerateObject());
+
+        var required = RequiredProperties(function);
+        Assert.Empty(required);
+    }
+
+    [Fact]
+    public void okf_validate_bundle_schema_has_no_params()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_validate_bundle");
+        var schema = function.JsonSchema;
+        var properties = schema.GetProperty("properties");
+        Assert.Empty(properties.EnumerateObject());
+
+        var required = RequiredProperties(function);
+        Assert.Empty(required);
+    }
+
+    [Fact]
+    public void okf_changes_since_schema_requires_sinceDate()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_changes_since");
+        var required = RequiredProperties(function);
+        Assert.Contains("sinceDate", required);
+        Assert.Single(required);
+    }
+
+    [Fact]
     public async Task okf_read_concept_invocation_matches_direct_call()
     {
         var tools = new OkfBundleTools(BundlePath);
