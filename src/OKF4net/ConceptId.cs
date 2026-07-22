@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics.CodeAnalysis;
-using System.Text;
+using OKF4net.Internal;
 
 namespace OKF4net;
 
@@ -69,7 +69,7 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
         var segments = s.Split('/').Where(p => p.Length > 0).ToList();
         if (segments.Count == 0)
         {
-            throw new ConceptIdException($"Empty concept id: {DebugQuote(s)}");
+            throw new ConceptIdException($"Empty concept id: {RustDebugQuote.Quote(s)}");
         }
 
         foreach (var seg in segments)
@@ -169,14 +169,14 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     {
         if (segment.Length == 0 || !IsValidFirstChar(segment[0]))
         {
-            throw new ConceptIdException($"Invalid concept id segment: {DebugQuote(segment)}");
+            throw new ConceptIdException($"Invalid concept id segment: {RustDebugQuote.Quote(segment)}");
         }
 
         for (var i = 1; i < segment.Length; i++)
         {
             if (!IsValidLaterChar(segment[i]))
             {
-                throw new ConceptIdException($"Invalid concept id segment: {DebugQuote(segment)}");
+                throw new ConceptIdException($"Invalid concept id segment: {RustDebugQuote.Quote(segment)}");
             }
         }
     }
@@ -185,53 +185,6 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
 
     private static bool IsValidLaterChar(char c) =>
         char.IsAsciiLetterOrDigit(c) || c == '_' || c == '.' || c == '-';
-
-    /// <summary>
-    /// Renders a string the way Rust's <c>{:?}</c> (Debug) format does for
-    /// <c>&amp;str</c>: double-quoted, with <c>\</c>, <c>"</c>, and common
-    /// control characters escaped. Used to keep error messages byte-for-byte
-    /// identical to the Rust crate's <c>format!("...{s:?}")</c> calls.
-    /// </summary>
-    private static string DebugQuote(string s)
-    {
-        var sb = new StringBuilder(s.Length + 2);
-        sb.Append('"');
-        foreach (var c in s)
-        {
-            switch (c)
-            {
-                case '"':
-                    sb.Append("\\\"");
-                    break;
-                case '\\':
-                    sb.Append("\\\\");
-                    break;
-                case '\n':
-                    sb.Append("\\n");
-                    break;
-                case '\r':
-                    sb.Append("\\r");
-                    break;
-                case '\t':
-                    sb.Append("\\t");
-                    break;
-                default:
-                    if (char.IsControl(c))
-                    {
-                        sb.Append("\\u{").Append(((int)c).ToString("x")).Append('}');
-                    }
-                    else
-                    {
-                        sb.Append(c);
-                    }
-
-                    break;
-            }
-        }
-
-        sb.Append('"');
-        return sb.ToString();
-    }
 
     /// <inheritdoc/>
     public override string ToString() => string.Join("/", Segments);
