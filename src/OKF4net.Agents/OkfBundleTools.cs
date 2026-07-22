@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using Microsoft.Extensions.AI;
+using OKF4net.Internal;
 using OKF4net.Yaml;
 
 namespace OKF4net.Agents;
@@ -22,17 +23,6 @@ public sealed class OkfBundleTools
     private const string ChangesSinceUsageMessage =
         "Usage: okf_changes_since requires a valid ISO date (yyyy-MM-dd), inclusive. "
         + "Example: okf_changes_since(\"2026-01-01\").";
-
-    /// <summary>UTF-8 encoder without a byte-order mark, for every write this class performs (matching Rust's <c>fs::write</c>, which never emits a BOM).</summary>
-    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
-
-    /// <summary>
-    /// UTF-8 decoder configured to throw on invalid byte sequences, matching
-    /// the strictness <see cref="BundleValidator"/> uses for reserved files:
-    /// a non-UTF-8 <c>log.md</c> is skipped (with a note in the rendered
-    /// output) rather than silently decoded with replacement characters.
-    /// </summary>
-    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>
     /// Guards <see cref="_bundle"/> and every write this class performs to
@@ -433,11 +423,11 @@ public sealed class OkfBundleTools
                     Directory.CreateDirectory(parentDir);
                 }
 
-                File.WriteAllText(targetPath, content, Utf8NoBom);
+                File.WriteAllText(targetPath, content, OkfEncodings.NoBom);
                 _bundle = null;
             }
 
-            var byteCount = Utf8NoBom.GetByteCount(content);
+            var byteCount = OkfEncodings.NoBom.GetByteCount(content);
             var status = existed ? "updated" : "new";
             return $"Written {id} ({status}, {byteCount} bytes). Remember to run okf_regenerate_indexes.";
         });
@@ -518,7 +508,7 @@ public sealed class OkfBundleTools
                 // by RunTool below) instead of being silently re-decoded with
                 // U+FFFD replacement characters and then rewritten that way.
                 var existingText = File.Exists(logPath)
-                    ? StrictUtf8.GetString(File.ReadAllBytes(logPath))
+                    ? OkfEncodings.Strict.GetString(File.ReadAllBytes(logPath))
                     : string.Empty;
 
                 // ChangeLog.Parse is permissive (never throws); used here only to
@@ -538,7 +528,7 @@ public sealed class OkfBundleTools
                     days.Insert(0, new LogDay(today, [entry]));
                 }
 
-                File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), Utf8NoBom);
+                File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), OkfEncodings.NoBom);
                 _bundle = null;
             }
 
@@ -708,7 +698,7 @@ public sealed class OkfBundleTools
         string text;
         try
         {
-            text = StrictUtf8.GetString(File.ReadAllBytes(logPath));
+            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(logPath));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {

@@ -51,18 +51,6 @@ public sealed class Bundle
     /// <summary>Reserved filenames with defined meaning at any level (§3.1). Port of <c>RESERVED_FILENAMES</c> (bundle.rs:19).</summary>
     public static readonly string[] ReservedFilenames = [IndexFilename, LogFilename];
 
-    /// <summary>
-    /// UTF-8 decoder configured to throw on invalid byte sequences (no
-    /// U+FFFD replacement, no BOM emission), matching the strictness of
-    /// Rust's <c>fs::read_to_string</c> (which fails with an
-    /// <c>io::Error</c> of kind <c>InvalidData</c> — message "stream did not
-    /// contain valid UTF-8" — for any file that is not valid UTF-8).
-    /// <see cref="File.ReadAllText(string)"/> is deliberately not used here:
-    /// it silently substitutes U+FFFD for invalid bytes instead of failing.
-    /// </summary>
-    private static readonly System.Text.UTF8Encoding StrictUtf8 =
-        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-
     private readonly Dictionary<ConceptId, int> _index;
     private readonly Dictionary<ConceptId, List<ResolvedLink>> _outbound;
     private readonly Dictionary<ConceptId, List<ConceptId>> _backlinks;
@@ -117,7 +105,7 @@ public sealed class Bundle
             throw new BundleLoadException($"I/O error: {e.Message}");
         }
 
-        mdFiles.Sort(ComparePathsComponentWise);
+        mdFiles.Sort(PathOrdering.CompareComponentWise);
 
         var concepts = new List<Concept>();
         var indexFiles = new List<string>();
@@ -140,7 +128,7 @@ public sealed class Bundle
                         string text;
                         try
                         {
-                            text = StrictUtf8.GetString(File.ReadAllBytes(path));
+                            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
                         }
                         catch (IOException e)
                         {
@@ -268,7 +256,7 @@ public sealed class Bundle
             string text;
             try
             {
-                text = StrictUtf8.GetString(File.ReadAllBytes(rootIndex));
+                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(rootIndex));
             }
             catch (IOException)
             {
@@ -327,38 +315,6 @@ public sealed class Bundle
                 output.Add(path);
             }
         }
-    }
-
-    /// <summary>
-    /// Compares two absolute file paths component-by-component (splitting
-    /// on <c>\</c> and <c>/</c>), ordinal per segment, with a shorter
-    /// segment list sorting first when one path is a prefix of the other.
-    /// Mirrors Rust's <c>PathBuf</c>'s derived <c>Ord</c> (which compares
-    /// via the <c>Component</c> iterator, not raw bytes) — used for the
-    /// final <c>md_files.sort()</c> in <c>Bundle::load</c> (bundle.rs:72).
-    ///
-    /// A flat ordinal string comparison of full paths is NOT equivalent: on
-    /// Windows, <c>'.'</c> (0x2E) sorts before <c>'\'</c> (0x5C), so a raw
-    /// string sort would place <c>orders.md</c> before <c>orders\extra.md</c>
-    /// even though the directory <c>orders</c> should sort before the
-    /// sibling file <c>orders.md</c> — inverting the DFS walk order that
-    /// <see cref="CollectMarkdown"/> already produced.
-    /// </summary>
-    private static int ComparePathsComponentWise(string a, string b)
-    {
-        var segmentsA = a.Split('\\', '/');
-        var segmentsB = b.Split('\\', '/');
-        var n = Math.Min(segmentsA.Length, segmentsB.Length);
-        for (var i = 0; i < n; i++)
-        {
-            var cmp = string.CompareOrdinal(segmentsA[i], segmentsB[i]);
-            if (cmp != 0)
-            {
-                return cmp;
-            }
-        }
-
-        return segmentsA.Length.CompareTo(segmentsB.Length);
     }
 
     /// <summary>

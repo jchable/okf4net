@@ -20,22 +20,6 @@ public static class IndexGenerator
     private const string IndexFile = "index.md";
 
     /// <summary>
-    /// UTF-8 decoder configured to throw on invalid byte sequences, matching
-    /// the strictness of Rust's <c>fs::read_to_string</c>. Mirrors
-    /// <c>Bundle</c>'s private <c>StrictUtf8</c> (duplicated here since that
-    /// one is private to <see cref="Bundle"/>).
-    /// </summary>
-    private static readonly System.Text.UTF8Encoding StrictUtf8 =
-        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-
-    /// <summary>
-    /// UTF-8 encoder without a byte-order mark, for writing generated
-    /// <c>index.md</c> files (matching Rust's <c>fs::write</c>, which never
-    /// emits a BOM).
-    /// </summary>
-    private static readonly System.Text.UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
-
-    /// <summary>
     /// A synthesizer for subdirectory descriptions: given the directory's
     /// path (relative to the bundle root) and its child (title, description)
     /// pairs, returns a one-line description. Port of Rust's
@@ -141,7 +125,7 @@ public static class IndexGenerator
             var da = Depth(bundleRoot, a);
             var db = Depth(bundleRoot, b);
             var cmp = db.CompareTo(da);
-            return cmp != 0 ? cmp : ComparePathsComponentWise(a, b);
+            return cmp != 0 ? cmp : PathOrdering.CompareComponentWise(a, b);
         });
 
         var dirDescriptions = new Dictionary<string, string>();
@@ -151,7 +135,7 @@ public static class IndexGenerator
             var entries = new List<IndexEntry>();
 
             var children = Directory.GetFileSystemEntries(directory).ToList();
-            children.Sort(ComparePathsComponentWise);
+            children.Sort(PathOrdering.CompareComponentWise);
 
             foreach (var child in children)
             {
@@ -188,7 +172,7 @@ public static class IndexGenerator
             }
 
             var indexPath = Path.Combine(directory, IndexFile);
-            File.WriteAllText(indexPath, BuildIndexText(entries), Utf8NoBom);
+            File.WriteAllText(indexPath, BuildIndexText(entries), OkfEncodings.NoBom);
             written.Add(indexPath);
 
             if (string.Equals(directory, bundleRoot, StringComparison.Ordinal))
@@ -220,7 +204,7 @@ public static class IndexGenerator
         string text;
         try
         {
-            text = StrictUtf8.GetString(File.ReadAllBytes(path));
+            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
@@ -260,7 +244,7 @@ public static class IndexGenerator
         var mdFiles = new List<string>();
         CollectMarkdown(bundleRoot, mdFiles);
 
-        var dirs = new SortedSet<string>(Comparer<string>.Create(ComparePathsComponentWise));
+        var dirs = new SortedSet<string>(Comparer<string>.Create(PathOrdering.CompareComponentWise));
         var rootParent = Path.GetDirectoryName(bundleRoot);
         foreach (var md in mdFiles)
         {
@@ -301,29 +285,6 @@ public static class IndexGenerator
         }
     }
 
-    /// <summary>
-    /// Compares two absolute file paths component-by-component, mirroring
-    /// Rust's <c>PathBuf</c> derived <c>Ord</c> — used for the <c>children.sort()</c>
-    /// and directory-set ordering in <c>regenerate_indexes_with</c> /
-    /// <c>directories_to_index</c>. Duplicated from <see cref="Bundle"/>'s
-    /// private helper of the same purpose, since that one is private.
-    /// </summary>
-    private static int ComparePathsComponentWise(string a, string b)
-    {
-        var segmentsA = a.Split('\\', '/');
-        var segmentsB = b.Split('\\', '/');
-        var n = Math.Min(segmentsA.Length, segmentsB.Length);
-        for (var i = 0; i < n; i++)
-        {
-            var cmp = string.CompareOrdinal(segmentsA[i], segmentsB[i]);
-            if (cmp != 0)
-            {
-                return cmp;
-            }
-        }
-
-        return segmentsA.Length.CompareTo(segmentsB.Length);
-    }
 }
 
 /// <summary>

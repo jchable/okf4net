@@ -15,28 +15,11 @@ public class CliTests
     // `dotnet test` runs with the current directory set to the test
     // assembly's output folder (bin/Debug/net10.0), not the repo root, so
     // the fixture path is resolved relative to the repo root (located by
-    // walking up from the test assembly to the .sln) rather than assumed
-    // relative to the process's current directory.
-    private static readonly string BundlePath = Path.Combine(RepoRoot(), "tests", "fixtures", "appendix_a");
+    // TestPaths.RepoRoot, walking up from the test assembly to the .sln)
+    // rather than assumed relative to the process's current directory.
+    private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
 
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "OKF4net.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName
-            ?? throw new InvalidOperationException($"could not locate OKF4net.sln above {AppContext.BaseDirectory}");
-    }
-
-    private static (int Code, string Out, string Err) Run(params string[] args)
-    {
-        var o = new StringWriter();
-        var e = new StringWriter();
-        return (OkfCli.Run(args, o, e), o.ToString(), e.ToString());
-    }
+    private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
 
     [Fact]
     public void No_args_prints_usage_and_fails()
