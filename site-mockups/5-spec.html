@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OKF4net — mockup 5 · §pec</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;700;800;900&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --white: #ffffff;
+    --ink: #101014;
+    --blue: #1a3fd6;          /* spec blue */
+    --blue-soft: #eef1fd;
+    --gray: #6a6a72;
+    --hair: #e3e3e8;
+    --display: "Inter Tight", "Arial Narrow", sans-serif;
+    --body: "Inter", "Helvetica Neue", sans-serif;
+    --mono: "Space Mono", Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--white); color: var(--ink);
+    font-family: var(--body); font-size: 16px; line-height: 1.6;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; animation: none !important; }
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover, a:focus-visible { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  code { font-family: var(--mono); font-size: .92em; }
+
+  /* ---------- top rule + nav ---------- */
+  .topline { height: 6px; background: var(--blue); }
+  header.bar {
+    position: sticky; top: 0; z-index: 40; background: var(--white);
+    border-bottom: 1px solid var(--hair);
+  }
+  .bar-in {
+    max-width: 1200px; margin: 0 auto; padding: 0 32px;
+    display: flex; align-items: center; height: 60px; gap: 28px;
+  }
+  .wordmark {
+    font-family: var(--display); font-weight: 900; font-size: 20px;
+    letter-spacing: -.02em;
+  }
+  .wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
+  .bar-in nav { display: flex; gap: 22px; margin-left: auto; }
+  .bar-in nav a { color: var(--gray); font-size: 14px; font-weight: 500; }
+  .bar-in nav a:hover { color: var(--ink); text-decoration: none; }
+  .bar-in .gh {
+    font-family: var(--mono); font-size: 13px; color: var(--white);
+    background: var(--ink); padding: 8px 16px;
+  }
+  .bar-in .gh:hover { background: var(--blue); text-decoration: none; }
+
+  .frame { max-width: 1200px; margin: 0 auto; padding: 0 32px; }
+
+  /* ---------- hero ---------- */
+  .hero {
+    border-bottom: 1px solid var(--hair);
+    display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  }
+  .hero-copy { padding: 84px 48px 84px 0; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 13px; color: var(--blue);
+    letter-spacing: .08em; margin-bottom: 26px;
+  }
+  h1 {
+    font-family: var(--display); font-weight: 900;
+    font-size: clamp(42px, 6.4vw, 84px); line-height: .98; letter-spacing: -.03em;
+    text-wrap: balance;
+  }
+  h1 em { font-style: normal; color: var(--blue); }
+  .hero-copy .sub {
+    margin-top: 28px; font-size: 18px; color: var(--gray); max-width: 52ch;
+  }
+  .hero-copy .sub strong { color: var(--ink); font-weight: 600; }
+  .hero-actions { margin-top: 36px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--mono); font-size: 14px; padding: 13px 24px;
+    border: 1.5px solid var(--ink); color: var(--ink);
+  }
+  .btn:hover { text-decoration: none; background: var(--ink); color: var(--white); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: var(--white); }
+  .btn.primary:hover { background: #1231a8; border-color: #1231a8; }
+
+  /* the § wall */
+  .swall {
+    border-left: 1px solid var(--hair);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 40px 0 40px 48px; position: relative; overflow: hidden;
+  }
+  .swall .big {
+    font-family: var(--display); font-weight: 900;
+    font-size: clamp(160px, 22vw, 300px); line-height: .8;
+    color: var(--blue); letter-spacing: -.05em;
+    user-select: none;
+  }
+  .swall .claim {
+    font-family: var(--mono); font-size: 14px; margin-top: 26px; max-width: 30ch;
+    line-height: 1.8;
+  }
+  .swall .claim b { background: var(--blue); color: #fff; padding: 0 6px; font-weight: 700; }
+
+  /* ---------- stats strip: facts, not vanity ---------- */
+  .facts {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--hair);
+  }
+  .facts .f { padding: 26px 24px; border-left: 1px solid var(--hair); }
+  .facts .f:first-child { border-left: none; padding-left: 0; }
+  .facts .n { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+  .facts .n span { color: var(--blue); }
+  .facts .l { font-size: 13px; color: var(--gray); margin-top: 2px; }
+
+  /* ---------- spec sections layout ---------- */
+  .specgrid {
+    display: grid; grid-template-columns: 300px minmax(0, 1fr);
+    gap: 0; align-items: start;
+  }
+  .specnav {
+    position: sticky; top: 60px;
+    border-right: 1px solid var(--hair);
+    padding: 48px 0;
+  }
+  .specnav .t {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .1em;
+    color: var(--gray); text-transform: uppercase; margin-bottom: 18px;
+  }
+  .specnav a {
+    display: grid; grid-template-columns: 46px 1fr; align-items: baseline;
+    color: var(--ink); font-size: 14.5px; padding: 8px 18px 8px 0;
+    border-bottom: 1px solid var(--hair);
+  }
+  .specnav a:first-of-type { border-top: 1px solid var(--hair); }
+  .specnav a .s { font-family: var(--mono); color: var(--blue); font-weight: 700; }
+  .specnav a .impl { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--gray); }
+  .specnav a:hover { text-decoration: none; background: var(--blue-soft); }
+
+  .specbody { padding: 48px 0 100px 56px; min-width: 0; }
+  .chapter { margin-bottom: 84px; scroll-margin-top: 90px; }
+  .chapter .chead { display: flex; align-items: baseline; gap: 16px; margin-bottom: 18px; }
+  .chapter .chead .s {
+    font-family: var(--mono); font-weight: 700; font-size: 15px;
+    color: var(--white); background: var(--blue); padding: 3px 10px;
+  }
+  .chapter h2 {
+    font-family: var(--display); font-weight: 800; font-size: 30px; letter-spacing: -.02em;
+  }
+  .chapter p { color: var(--gray); max-width: 64ch; margin-bottom: 14px; }
+  .chapter p strong { color: var(--ink); font-weight: 600; }
+  .chapter p code { background: var(--blue-soft); padding: 1px 6px; color: var(--ink); }
+
+  .twocol { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0 40px; }
+
+  pre.block {
+    background: var(--ink); color: #e8e8ee; padding: 24px 28px; overflow-x: auto;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.75;
+    margin: 22px 0; border-left: 6px solid var(--blue);
+  }
+  pre.block .k { color: #7e9bff; }
+  pre.block .s { color: #ffd166; }
+  pre.block .c { color: #7a7a85; }
+  pre.block .ok { color: #6fd18a; }
+
+  table.map { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14.5px; }
+  table.map th {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--gray); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 12px 8px 0;
+  }
+  table.map td { border-bottom: 1px solid var(--hair); padding: 10px 12px 10px 0; }
+  table.map td:first-child { font-family: var(--mono); color: var(--blue); font-weight: 700; white-space: nowrap; }
+  table.map td code { background: none; padding: 0; }
+
+  ul.tick { list-style: none; max-width: 62ch; }
+  ul.tick li { padding: 10px 0 10px 34px; position: relative; border-bottom: 1px solid var(--hair); color: var(--gray); }
+  ul.tick li strong { color: var(--ink); }
+  ul.tick li::before {
+    content: ""; position: absolute; left: 2px; top: 17px;
+    width: 14px; height: 14px; background: var(--blue);
+    clip-path: polygon(0 40%, 40% 100%, 100% 10%, 85% 0, 38% 72%, 12% 28%);
+  }
+
+  .cta {
+    border-top: 6px solid var(--blue); background: var(--blue-soft);
+    padding: 56px; margin-top: 20px;
+  }
+  .cta h2 { font-family: var(--display); font-weight: 900; font-size: 36px; letter-spacing: -.02em; margin-bottom: 12px; }
+  .cta p { color: var(--gray); max-width: 60ch; margin-bottom: 24px; }
+
+  footer { border-top: 1px solid var(--hair); padding: 36px 32px 60px; }
+  footer .frame p { font-size: 13px; color: var(--gray); max-width: 84ch; margin-bottom: 8px; }
+
+  @media (max-width: 960px) {
+    .hero { grid-template-columns: 1fr; }
+    .hero-copy { padding: 56px 0 40px; }
+    .swall { border-left: none; border-top: 1px solid var(--hair); padding: 32px 0; }
+    .swall .big { font-size: 120px; }
+    .facts { grid-template-columns: repeat(2, 1fr); }
+    .facts .f { padding: 18px 16px; }
+    .facts .f:nth-child(odd) { border-left: none; padding-left: 0; }
+    .specgrid { grid-template-columns: 1fr; }
+    .specnav { position: static; border-right: none; padding-bottom: 0; }
+    .specbody { padding-left: 0; }
+    .cta { padding: 36px 24px; }
+    .bar-in nav { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topline"></div>
+<header class="bar">
+  <div class="bar-in">
+    <span class="wordmark">OKF<sup>4net</sup></span>
+    <nav aria-label="Site">
+      <a href="#s2">Format</a>
+      <a href="#s4">Documents</a>
+      <a href="#s9">Conformance</a>
+      <a href="#contribute">Contribute</a>
+    </nav>
+    <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
+  </div>
+</header>
+
+<div class="frame">
+
+  <!-- ============ HERO ============ -->
+  <div class="hero">
+    <div class="hero-copy">
+      <div class="eyebrow">Open Knowledge Format v0.1 — .NET implementation</div>
+      <h1>The spec has nine sections.<br><em>All nine, in pure C#.</em></h1>
+      <p class="sub">OKF4net implements the Open Knowledge Format — <strong>knowledge as a directory of markdown files</strong> — section by section, on nothing but the .NET base class library. A library, a Native AOT <code>okf</code> CLI, and a test suite that proves it byte for byte.</p>
+      <div class="hero-actions">
+        <a class="btn primary" href="https://www.nuget.org/packages/OKF4net">dotnet add package OKF4net</a>
+        <a class="btn" href="#s2">Read the mapping</a>
+      </div>
+    </div>
+    <div class="swall" aria-hidden="true">
+      <div class="big">§</div>
+      <div class="claim">One required field.<br>Nine spec sections.<br><b>Zero dependencies.</b></div>
+    </div>
+  </div>
+
+  <!-- ============ FACTS ============ -->
+  <div class="facts">
+    <div class="f"><div class="n"><span>0</span></div><div class="l">third-party runtime dependencies</div></div>
+    <div class="f"><div class="n">182<span>/</span>182</div><div class="l">tests passing, 5 byte-exact golden CLI comparisons</div></div>
+    <div class="f"><div class="n">§2<span>–</span>§11</div><div class="l">spec sections implemented and mapped to types</div></div>
+    <div class="f"><div class="n">1<span>×</span></div><div class="l">self-contained AOT binary — no runtime install</div></div>
+  </div>
+
+  <!-- ============ SPEC-DRIVEN BODY ============ -->
+  <div class="specgrid">
+
+    <nav class="specnav" aria-label="Spec sections">
+      <div class="t">Spec → implementation</div>
+      <a href="#s2"><span class="s">§2</span><span>Concept ids<span class="impl">ConceptId</span></span></a>
+      <a href="#s2"><span class="s">§3</span><span>Bundle structure<span class="impl">Bundle</span></span></a>
+      <a href="#s4"><span class="s">§4</span><span>Concept documents<span class="impl">OkfDocument · Frontmatter</span></span></a>
+      <a href="#s5"><span class="s">§5</span><span>Cross-linking<span class="impl">LinkScanner · Backlinks</span></span></a>
+      <a href="#s6"><span class="s">§6</span><span>Index files<span class="impl">IndexGenerator</span></span></a>
+      <a href="#s6"><span class="s">§7</span><span>Log files<span class="impl">ChangeLog</span></span></a>
+      <a href="#s5"><span class="s">§8</span><span>Citations<span class="impl">OkfDocument.Citations()</span></span></a>
+      <a href="#s9"><span class="s">§9</span><span>Conformance<span class="impl">BundleValidator</span></span></a>
+      <a href="#s9"><span class="s">§11</span><span>Versioning<span class="impl">OkfSpec.Version</span></span></a>
+    </nav>
+
+    <div class="specbody">
+
+      <div class="chapter" id="s2">
+        <div class="chead"><span class="s">§2–§3</span><h2>Bundles and concept ids</h2></div>
+        <p>A <strong>bundle</strong> is a directory tree of UTF-8 markdown files — the unit of distribution. A <strong>concept</strong> is one file; its <strong>id</strong> is the path with <code>.md</code> removed, so <code>tables/users.md</code> becomes <code>tables/users</code>. Reserved filenames <code>index.md</code> and <code>log.md</code> carry directory listings and change history.</p>
+        <p>The format's whole bet: <strong>if you can <code>cat</code> a file, you can read OKF; if you can <code>git clone</code> a repo, you can ship it.</strong></p>
+      </div>
+
+      <div class="chapter" id="s4">
+        <div class="chead"><span class="s">§4</span><h2>Concept documents</h2></div>
+        <p>YAML frontmatter between <code>---</code> delimiters, then a markdown body. <code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> with typed getters on top — producer-defined keys survive round-trips, byte for byte, as the spec requires.</p>
+<pre class="block"><span class="k">var</span> doc = OkfDocument.Parse(<span class="s">"---\ntype: Metric\ntitle: DAU\n---\n\n# Body\n"</span>);
+Console.WriteLine(doc.Frontmatter.Type);  <span class="c">// "Metric"</span>
+doc.ValidateConformance();                <span class="c">// throws on failure (§9)</span>
+<span class="k">var</span> text = doc.Serialize();               <span class="c">// key order + body preserved</span></pre>
+        <p>The YAML parser is a <strong>documented subset</strong> — block/flow collections, quoted and plain scalars, <code>|</code>/<code>&gt;</code> blocks, comments — with clear errors for anchors, tags, and everything frontmatter never uses.</p>
+      </div>
+
+      <div class="chapter" id="s5">
+        <div class="chead"><span class="s">§5 + §8</span><h2>Cross-links, backlinks, citations</h2></div>
+        <p>Concepts link with ordinary markdown links, absolute or relative. <code>Bundle.Load</code> builds the whole graph — and <strong>never aborts on a bad file</strong>: parse failures land in <code>ParseErrors</code>, broken links stay in the graph as edges to missing concepts.</p>
+<pre class="block"><span class="k">var</span> id = ConceptId.Parse(<span class="s">"tables/orders"</span>);
+<span class="k">foreach</span> (<span class="k">var</span> link <span class="k">in</span> bundle.LinksFrom(id))
+    Console.WriteLine(<span class="s">$"{id} -&gt; {link.Target} (exists: {link.Exists})"</span>);
+<span class="k">foreach</span> (<span class="k">var</span> b <span class="k">in</span> bundle.Backlinks(id))
+    Console.WriteLine(<span class="s">$"cited by {b}"</span>);</pre>
+      </div>
+
+      <div class="chapter" id="s6">
+        <div class="chead"><span class="s">§6–§7</span><h2>Index and log generation</h2></div>
+        <p><code>IndexGenerator</code> (re)builds every <code>index.md</code> listing for progressive disclosure; <code>ChangeLog</code> parses and builds <code>log.md</code> update histories. Output is verified against golden fixtures — <strong>byte-exact</strong>, matching the reference implementation.</p>
+      </div>
+
+      <div class="chapter" id="s9">
+        <div class="chead"><span class="s">§9 + §11</span><h2>Conformance, in CI</h2></div>
+        <p>Conformance requires exactly one thing: a non-empty <code>type</code> on every concept. <code>BundleValidator</code> reports severity-tagged diagnostics; the CLI exits non-zero, so validation drops straight into CI.</p>
+<pre class="block">$ okf validate ./bundles/ga4
+<span class="ok">OK: bundle is conformant with OKF v0.1 (42 concepts)</span>
+$ okf graph ./bundles/ga4 --dot | dot -Tsvg &gt; graph.svg</pre>
+        <table class="map">
+          <tr><th>Command</th><th>Does</th></tr>
+          <tr><td>okf validate</td><td>Conformance check (§9), non-zero exit on failure</td></tr>
+          <tr><td>okf info</td><td>Concepts, types, links, version</td></tr>
+          <tr><td>okf index</td><td>(Re)generate every index.md</td></tr>
+          <tr><td>okf graph</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
+          <tr><td>okf parse</td><td>One document's structure</td></tr>
+          <tr><td>okf fmt</td><td>Normalize by parse + re-serialize</td></tr>
+        </table>
+      </div>
+
+      <!-- contribute -->
+      <div class="chapter" id="contribute">
+        <div class="chead"><span class="s">PR</span><h2>Contribute a section</h2></div>
+        <p>One prerequisite: the .NET SDK. <strong>Zero third-party runtime dependencies</strong> is a design rule — contributions keep it that way. Behavioural changes cite their spec § in the PR description.</p>
+        <ul class="tick">
+          <li><strong>Fork</strong> and branch from <code>main</code>.</li>
+          <li><strong>Tests are the contract</strong> — including byte-exact golden comparisons; never reformat <code>tests/fixtures/</code>.</li>
+          <li><strong><code>dotnet test</code></strong> and <code>dotnet format --verify-no-changes</code> pass; warnings are errors.</li>
+        </ul>
+        <div class="cta">
+          <h2>Ship knowledge as files.</h2>
+          <p>Star the repo, open an issue, or pick a good first one. The spec is short, the codebase is dependency-free, and the test suite tells you immediately whether you're right.</p>
+          <div class="hero-actions">
+            <a class="btn primary" href="https://github.com/jchable/okf4net">github.com/jchable/okf4net</a>
+            <a class="btn" href="https://github.com/jchable/okf4net/issues">Open issues</a>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="frame">
+    <p>OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC, by way of the former Rust okf crate by Walter van der Giessen. An independent implementation, not affiliated with or endorsed by Google.</p>
+  </div>
+</footer>
+
+</body>
+</html>
