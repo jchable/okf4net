@@ -18,8 +18,20 @@ public sealed class OkfBundleTools
         + "(case-insensitive substring) against concept titles, descriptions, tags and "
         + "bodies. Example: okf_search(\"orders\").";
 
+    private const string ChangesSinceUsageMessage =
+        "Usage: okf_changes_since requires a valid ISO date (yyyy-MM-dd), inclusive. "
+        + "Example: okf_changes_since(\"2026-01-01\").";
+
     /// <summary>UTF-8 encoder without a byte-order mark, for every write this class performs (matching Rust's <c>fs::write</c>, which never emits a BOM).</summary>
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>
+    /// UTF-8 decoder configured to throw on invalid byte sequences, matching
+    /// the strictness <see cref="BundleValidator"/> uses for reserved files:
+    /// a non-UTF-8 <c>log.md</c> is skipped (with a note in the rendered
+    /// output) rather than silently decoded with replacement characters.
+    /// </summary>
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>
     /// Guards <see cref="_bundle"/>. Agent hosts may invoke tool methods
@@ -498,6 +510,138 @@ public sealed class OkfBundleTools
             }
 
             return sb.ToString();
+        });
+    }
+
+    /// <summary>
+    /// Validates the bundle against OKF v0.1 conformance (§9) and renders the
+    /// report the same way the CLI's <c>validate</c> command does: one line
+    /// per <see cref="Diagnostic"/> (via its own <see cref="Diagnostic.ToString"/>),
+    /// then a summary line with the concept/error/warning/info counts and a
+    /// conformant ✓/✗ verdict. Never throws for expected errors (a bundle
+    /// that fails to (re)load) — reported as a plain-text message instead.
+    /// </summary>
+    [Description("Validate the bundle against OKF v0.1 conformance (§9). Returns the diagnostics report.")]
+    public string ValidateBundle()
+    {
+        return RunTool(() =>
+        {
+            var bundle = GetBundle();
+            var report = BundleValidator.Validate(bundle);
+
+            var sb = new StringBuilder();
+            foreach (var diagnostic in report.Diagnostics)
+            {
+                sb.Append(diagnostic).Append('\n');
+            }
+
+            var errors = report.ErrorCount;
+            var warnings = report.WarningCount;
+            var infos = report.Of(Severity.Info).Count();
+            sb.Append('\n')
+                .Append(bundle.Count).Append(" concept(s); ")
+                .Append(errors).Append(" error(s), ")
+                .Append(warnings).Append(" warning(s), ")
+                .Append(infos).Append(" info.").Append('\n');
+
+            sb.Append(report.IsConformant
+                ? $"✓ conformant with OKF v{OkfSpec.Version}"
+                : $"✗ not conformant with OKF v{OkfSpec.Version}").Append('\n');
+
+            return sb.ToString();
+        });
+    }
+
+    /// <summary>
+    /// Summarizes bundle changes since a given ISO date (inclusive),
+    /// aggregated across every <c>log.md</c> in the bundle (<see cref="Bundle.LogFiles"/>).
+    /// Each log is parsed with <see cref="ChangeLog.Parse"/>, filtered to the
+    /// <see cref="LogDay"/>s whose <see cref="LogDay.Date"/> is greater than
+    /// or equal to <paramref name="sinceDate"/> (ordinal string comparison —
+    /// sufficient for well-formed ISO dates), and rendered newest-first,
+    /// grouped by the log file's path relative to the bundle root ('/'
+    /// separators). A log file that fails strict UTF-8 decoding is skipped
+    /// with a note line rather than aborting the whole report (mirroring
+    /// <see cref="BundleValidator"/>'s permissive handling of reserved
+    /// files). Never throws for expected errors (a null/blank/invalid date,
+    /// or a bundle that fails to (re)load) — those are reported as a
+    /// plain-text message instead.
+    /// </summary>
+    /// <param name="sinceDate">ISO date (<c>yyyy-MM-dd</c>), inclusive.</param>
+    [Description("Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.")]
+    public string ChangesSince([Description("ISO date (yyyy-MM-dd), inclusive.")] string sinceDate)
+    {
+        if (string.IsNullOrWhiteSpace(sinceDate))
+        {
+            return ChangesSinceUsageMessage;
+        }
+
+        if (sinceDate.Contains('\0'))
+        {
+            return "Error: invalid date — it must not contain a null character.";
+        }
+
+        var date = sinceDate.Trim();
+        if (!ChangeLog.IsIsoDate(date))
+        {
+            return ChangesSinceUsageMessage;
+        }
+
+        return RunTool(() =>
+        {
+            var bundle = GetBundle();
+            var sb = new StringBuilder();
+            sb.Append("# Changes since ").Append(date).Append('\n').Append('\n');
+            var any = false;
+
+            foreach (var logPath in bundle.LogFiles)
+            {
+                var rel = Path.GetRelativePath(bundle.Root, logPath).Replace('\\', '/');
+
+                string text;
+                try
+                {
+                    text = StrictUtf8.GetString(File.ReadAllBytes(logPath));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
+                {
+                    sb.Append("> Skipped ").Append(rel).Append(" (not valid UTF-8).").Append('\n').Append('\n');
+                    continue;
+                }
+
+                var changeLog = ChangeLog.Parse(text);
+                var matchingDays = changeLog.Days
+                    .Where(d => string.CompareOrdinal(d.Date, date) >= 0)
+                    .OrderByDescending(d => d.Date, StringComparer.Ordinal)
+                    .ToList();
+
+                if (matchingDays.Count == 0)
+                {
+                    continue;
+                }
+
+                any = true;
+                sb.Append("## ").Append(rel).Append('\n');
+                foreach (var day in matchingDays)
+                {
+                    sb.Append("### ").Append(day.Date).Append('\n');
+                    foreach (var entry in day.Entries)
+                    {
+                        if (entry.Kind is not null)
+                        {
+                            sb.Append("- **").Append(entry.Kind).Append("**: ").Append(entry.Text).Append('\n');
+                        }
+                        else
+                        {
+                            sb.Append("- ").Append(entry.Text).Append('\n');
+                        }
+                    }
+                }
+
+                sb.Append('\n');
+            }
+
+            return any ? sb.ToString() : $"No changes since {date}.";
         });
     }
 
