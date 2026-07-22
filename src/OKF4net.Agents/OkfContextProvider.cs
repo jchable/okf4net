@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using OKF4net.Internal;
 
 namespace OKF4net.Agents;
 
@@ -217,6 +218,17 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <see cref="StoreAIContextAsync"/> (the last user message and the last
     /// assistant message, for memory capture).
     /// </summary>
+    /// <remarks>
+    /// Known limitation (inherited from Task 2, acceptable for v1): this
+    /// picks the LAST message of <paramref name="role"/>, not necessarily
+    /// the last message overall -- for memory capture specifically, if
+    /// <c>ResponseMessages</c> ends with a trailing non-text/tool-only
+    /// message after the real assistant text answer, that trailing message
+    /// is simply not role <see cref="ChatRole.Assistant"/> with text and is
+    /// skipped, so the actual answer is still found; but a role-<c>Assistant</c>
+    /// message that itself carries only tool-call content (no text) would
+    /// win over an earlier, real text answer and yield a blank capture.
+    /// </remarks>
     private static string? ExtractLastMessageText(IEnumerable<ChatMessage>? messages, ChatRole role)
     {
         ChatMessage? last = null;
@@ -479,13 +491,16 @@ public sealed class OkfContextProvider : AIContextProvider
     /// body, so an injected <c>---</c>, <c># heading</c>, or <c># Citations</c>
     /// line (which <see cref="OkfDocument.Citations"/> would otherwise parse
     /// as real citation data) cannot be mistaken for genuine document
-    /// structure, while the captured text stays human-readable.
+    /// structure, while the captured text stays human-readable. Lines are
+    /// split via the shared <see cref="RustLines.Split"/> (the same helper
+    /// <see cref="OkfDocument"/>/<see cref="LinkScanner"/> use) rather than a
+    /// second, ad hoc <c>Split('\n')</c> copy -- as a side effect, content
+    /// ending in a trailing newline yields no spurious empty trailing
+    /// blockquote line, matching <see cref="RustLines.Split"/>'s documented
+    /// "a trailing '\n' does not produce a trailing empty line" semantics.
     /// </summary>
-    private static string Neutralize(string content)
-    {
-        var lines = content.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-        return string.Join('\n', lines.Select(line => "> " + line));
-    }
+    private static string Neutralize(string content) =>
+        string.Join('\n', RustLines.Split(content).Select(line => "> " + line));
 
     /// <summary>
     /// Test-only entry point: <see cref="ProvideAIContextAsync"/> is

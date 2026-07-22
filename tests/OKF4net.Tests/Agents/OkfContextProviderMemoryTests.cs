@@ -172,6 +172,29 @@ public class OkfContextProviderMemoryTests
     }
 
     [Fact]
+    public async Task Captured_content_ending_in_a_trailing_newline_yields_no_empty_trailing_blockquote_line()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tools.UtcNow = () => new DateTime(2026, 7, 22, 8, 0, 0, DateTimeKind.Utc);
+        var provider = new OkfContextProvider(tools);
+
+        // A naive `Split('\n')` (rather than the shared RustLines.Split,
+        // whose documented semantics say a trailing '\n' produces no
+        // trailing empty line) would turn this trailing newline into a
+        // spurious empty "> " blockquote line after neutralization.
+        await provider.StoreForTest(BuildInvokedContext("trailing newline user text\n", "trailing newline agent text\n"));
+
+        Assert.Null(provider.LastMemoryError);
+        var doc = OkfDocument.Parse(File.ReadAllText(MemoryFilePath(tmp, "2026-07-22")));
+        doc.Validate();
+
+        Assert.Contains("> trailing newline user text", doc.Body, StringComparison.Ordinal);
+        Assert.Contains("> trailing newline agent text", doc.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain(doc.Body.Split('\n'), line => line == "> ");
+    }
+
+    [Fact]
     public async Task EnableMemoryCapture_false_is_a_no_op()
     {
         using var tmp = new TempDir();
