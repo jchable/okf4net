@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.ComponentModel;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
 
@@ -63,6 +64,24 @@ public class AIFunctionExposureTests
         {
             var function = Assert.IsAssignableFrom<AIFunction>(tool);
             Assert.False(string.IsNullOrWhiteSpace(function.Description), $"{function.Name} should have a non-empty Description.");
+        }
+    }
+
+    [Fact]
+    public void GetTools_descriptions_come_from_the_underlying_method_DescriptionAttribute()
+    {
+        var tools = new OkfBundleTools(BundlePath);
+        foreach (var tool in tools.GetTools())
+        {
+            var function = Assert.IsAssignableFrom<AIFunction>(tool);
+            var method = function.UnderlyingMethod
+                ?? throw new InvalidOperationException($"{function.Name} has no UnderlyingMethod to compare against.");
+            var attribute = method.GetCustomAttributes(typeof(DescriptionAttribute), inherit: false)
+                .Cast<DescriptionAttribute>()
+                .SingleOrDefault()
+                ?? throw new InvalidOperationException($"{method.Name} has no [Description] attribute.");
+
+            Assert.Equal(attribute.Description, function.Description);
         }
     }
 
