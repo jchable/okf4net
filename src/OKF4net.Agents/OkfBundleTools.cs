@@ -11,6 +11,11 @@ public sealed class OkfBundleTools
     private const string IndexFilename = "index.md";
     private const string NoneLine = "(none)";
 
+    private const string SearchUsageMessage =
+        "Usage: okf_search requires a non-empty query — one or more terms to match "
+        + "(case-insensitive substring) against concept titles, descriptions, tags and "
+        + "bodies. Example: okf_search(\"orders\").";
+
     /// <summary>
     /// Guards <see cref="_bundle"/>. Agent hosts may invoke tool methods
     /// concurrently from multiple threads, so the lazy cache in
@@ -184,6 +189,161 @@ public sealed class OkfBundleTools
 
             return BuildConceptGraphDetail(bundle, id);
         });
+    }
+
+    /// <summary>
+    /// Full-text search across concept titles, descriptions, tags and
+    /// bodies. Never throws for expected errors (a null/blank query, a
+    /// query or tag containing a null character, or a bundle that fails to
+    /// (re)load) — those are reported as a plain-text message instead.
+    ///
+    /// The query is split into terms on whitespace; each term is matched as
+    /// an <see cref="StringComparison.OrdinalIgnoreCase"/> substring. A
+    /// concept's score is the sum, over all terms, of the weights of every
+    /// field the term is found in: title ×3, tags/description ×2, body ×1.
+    /// Concepts scoring zero are dropped. Results are sorted by descending
+    /// score, then ascending concept id (ordinal), bounded to the top 20
+    /// with the total match count reported alongside.
+    /// </summary>
+    /// <param name="query">The search query (case-insensitive substring terms).</param>
+    /// <param name="tag">Optional tag filter: only concepts carrying this tag.</param>
+    [Description("Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.")]
+    public string Search(
+        [Description("The search query (case-insensitive substring terms).")] string query,
+        [Description("Optional tag filter: only concepts carrying this tag.")] string? tag = null)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return SearchUsageMessage;
+        }
+
+        if (query.Contains('\0'))
+        {
+            return "Error: invalid query — it must not contain a null character.";
+        }
+
+        if (tag is not null && tag.Contains('\0'))
+        {
+            return "Error: invalid tag — it must not contain a null character.";
+        }
+
+        return RunTool(() =>
+        {
+            var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (terms.Length == 0)
+            {
+                return SearchUsageMessage;
+            }
+
+            var bundle = GetBundle();
+            var effectiveTag = string.IsNullOrWhiteSpace(tag) ? null : tag;
+
+            var candidates = effectiveTag is null
+                ? bundle.Concepts
+                : bundle.Concepts.Where(c => c.Document.Frontmatter.Tags.Any(t => string.Equals(t, effectiveTag, StringComparison.OrdinalIgnoreCase)));
+
+            var scored = candidates
+                .Select(c => (Concept: c, Score: ScoreConcept(c, terms)))
+                .Where(x => x.Score > 0)
+                .OrderByDescending(x => x.Score)
+                .ThenBy(x => x.Concept.Id)
+                .ToList();
+
+            if (scored.Count == 0)
+            {
+                return effectiveTag is null
+                    ? $"No results for query '{query}'."
+                    : $"No results for query '{query}' with tag '{effectiveTag}'.";
+            }
+
+            return FormatSearchResults(query, effectiveTag, terms, scored);
+        });
+    }
+
+    /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
+    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<string> terms, IReadOnlyList<(Concept Concept, int Score)> scored)
+    {
+        const int MaxResults = 20;
+        var shown = scored.Take(MaxResults).ToList();
+
+        var sb = new StringBuilder();
+        sb.Append("# Search: \"").Append(query).Append('"');
+        if (tag is not null)
+        {
+            sb.Append(" (tag: ").Append(tag).Append(')');
+        }
+
+        sb.Append('\n').Append('\n');
+        sb.Append("Showing ").Append(shown.Count).Append(" of ").Append(scored.Count).Append(" result(s).").Append('\n').Append('\n');
+
+        foreach (var (concept, score) in shown)
+        {
+            var title = concept.Document.Frontmatter.Title ?? concept.Id.Name;
+            sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')').Append('\n');
+
+            var excerpt = FindExcerpt(concept.Document.Body, terms);
+            if (excerpt is not null)
+            {
+                sb.Append("  ").Append(excerpt).Append('\n');
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// A concept's relevance score for <paramref name="terms"/>: the sum,
+    /// over all terms, of the weights of every field the term is found in
+    /// (<see cref="StringComparison.OrdinalIgnoreCase"/> substring match):
+    /// title ×3, tags/description ×2, body ×1.
+    /// </summary>
+    private static int ScoreConcept(Concept concept, IReadOnlyList<string> terms)
+    {
+        var frontmatter = concept.Document.Frontmatter;
+        var title = frontmatter.Title ?? string.Empty;
+        var tagsAndDescription = string.Join(' ', frontmatter.Tags) + ' ' + (frontmatter.Description ?? string.Empty);
+        var body = concept.Document.Body;
+
+        var score = 0;
+        foreach (var term in terms)
+        {
+            if (title.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 3;
+            }
+
+            if (tagsAndDescription.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 2;
+            }
+
+            if (body.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 1;
+            }
+        }
+
+        return score;
+    }
+
+    /// <summary>The first non-blank line of <paramref name="body"/> containing any of <paramref name="terms"/> (substring, ordinal-ignore-case), or <c>null</c> if none does.</summary>
+    private static string? FindExcerpt(string body, IReadOnlyList<string> terms)
+    {
+        foreach (var rawLine in body.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            if (terms.Any(term => line.Contains(term, StringComparison.OrdinalIgnoreCase)))
+            {
+                return line;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
