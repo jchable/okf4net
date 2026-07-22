@@ -164,8 +164,17 @@ public static class OkfCli
         {
             bytes = File.ReadAllBytes(path);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
+            // Rust's `std::fs::read_to_string(path).map_err(|e| e.to_string())?`
+            // (okf.rs:210, 245) funnels EVERY filesystem failure -- including
+            // an interior NUL byte in the path, which Rust's std rejects with
+            // an io::Error before ever reaching the OS -- into the same
+            // `error: {msg}` exit-1 path. .NET rejects the same garbage paths
+            // (embedded NUL, reserved device names, ...) with ArgumentException
+            // or NotSupportedException rather than an I/O exception, so both
+            // must be caught here too or they escape as unhandled exceptions
+            // instead of a clean CLI error.
             throw new CliOperationException(e.Message);
         }
 
@@ -186,8 +195,9 @@ public static class OkfCli
         {
             File.WriteAllText(path, content, OkfEncodings.NoBom);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
+            // See ReadFileStrict above: same funnel, same rationale.
             throw new CliOperationException(e.Message);
         }
     }

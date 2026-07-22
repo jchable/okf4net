@@ -119,4 +119,79 @@ public class CliTests
         Assert.Contains("formatted", r.Out);
         Assert.Contains("body\n", File.ReadAllText(path));
     }
+
+    // ----------------------------------------------------------------
+    // A3: invalid-path arguments must exit 1 with a uniform "error: ..."
+    // message on stderr, never an unhandled-exception stack trace --
+    // mirroring Rust's io::Error -> `.to_string()` -> `error: {msg}` funnel
+    // (okf.rs's `Err(msg) => { eprintln!("error: {msg}"); ... }`, main.rs:50-53).
+    // An embedded NUL byte is a convenient garbage path on every platform:
+    // .NET's filesystem APIs reject it with ArgumentException ("Null
+    // character in path"), which previously escaped uncaught from
+    // ReadFileStrict/WriteFileStrict instead of being funneled like every
+    // other I/O failure.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Parse_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("parse", "a\0b.md");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Out);
+    }
+
+    [Fact]
+    public void Validate_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("validate", "x\0y");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Out);
+    }
+
+    [Fact]
+    public void Fmt_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("fmt", "a\0b.md");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+    }
+
+    [Fact]
+    public void Info_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("info", "x\0y");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+    }
+
+    [Fact]
+    public void Graph_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("graph", "x\0y");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+    }
+
+    [Fact]
+    public void Index_with_embedded_nul_path_reports_no_files_written_not_an_error()
+    {
+        // Deliberately NOT an "error: ..." exit-1 case: Rust's regenerate_indexes
+        // (index.rs:93-97) checks `bundle_root.exists()` first, which -- like
+        // .NET's Directory.Exists -- swallows the underlying failure and
+        // simply returns false for a garbage path, so the function returns
+        // Ok(empty) rather than an io::Error. cmd_index then reports "no
+        // index files written" and exits 0. Audited (A3) to confirm this
+        // command needed no change, unlike parse/fmt/validate/info/graph.
+        var r = Run("index", "x\0y");
+        Assert.Equal(0, r.Code);
+        Assert.Contains("no index files written", r.Out);
+        Assert.Equal("", r.Err);
+    }
 }
