@@ -189,8 +189,8 @@ regenerate → validate → changes-since):
 is untrusted — it comes from files on disk that may have been written by
 another agent or a human contributor — and is never injected into the
 conversation with a `system` role; it only ever reaches the model as tool
-output. The four write-capable tools (`okf_write_concept`, `okf_append_log`,
-`okf_regenerate_indexes`, and the write side-effects reachable through them)
+output. The three write-capable tools (`okf_write_concept`, `okf_append_log`
+and `okf_regenerate_indexes`)
 rely entirely on the Agent Framework's own tool-approval mechanism to gate
 execution — `OkfBundleTools` performs no additional confirmation step of its
 own.
