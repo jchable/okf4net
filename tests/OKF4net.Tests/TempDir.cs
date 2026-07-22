@@ -28,6 +28,60 @@ public sealed class TempDir : IDisposable
         return full;
     }
 
+    /// <summary>
+    /// Attempts to create a file symlink at <paramref name="relativeLink"/>
+    /// pointing at <paramref name="relativeTarget"/> (both relative to the
+    /// temp root; the target need not already exist). Returns <c>false</c>
+    /// instead of throwing when the platform/process lacks symlink-creation
+    /// privilege -- e.g. Windows without Developer Mode or an elevated
+    /// process (<c>SeCreateSymbolicLinkPrivilege</c>) -- so callers can skip
+    /// the symlink-dependent assertions rather than fail the whole run on
+    /// machines where a real symlink simply cannot be created.
+    /// </summary>
+    public bool TryCreateFileSymlink(string relativeLink, string relativeTarget)
+    {
+        var linkPath = System.IO.Path.Combine(Path, relativeLink);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(linkPath)!);
+        try
+        {
+            File.CreateSymbolicLink(linkPath, System.IO.Path.Combine(Path, relativeTarget));
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Attempts to create a directory symlink at <paramref name="relativeLink"/>
+    /// pointing at <paramref name="relativeTarget"/> (both relative to the
+    /// temp root). See <see cref="TryCreateFileSymlink"/> for the privilege
+    /// caveat.
+    /// </summary>
+    public bool TryCreateDirectorySymlink(string relativeLink, string relativeTarget)
+    {
+        var linkPath = System.IO.Path.Combine(Path, relativeLink);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(linkPath)!);
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, System.IO.Path.Combine(Path, relativeTarget));
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Removes the temporary directory and its contents (best-effort).</summary>
     public void Dispose()
     {

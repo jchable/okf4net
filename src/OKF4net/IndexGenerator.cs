@@ -274,7 +274,17 @@ public static class IndexGenerator
     {
         foreach (var path in Directory.GetFileSystemEntries(dir))
         {
-            if (Directory.Exists(path))
+            // Rust checks only `entry.file_type()?.is_dir()` (lstat-based)
+            // before recursing (index.rs:227) -- a symlinked directory's
+            // file_type() reports is_dir() == false, so it is never
+            // descended into and never contributes a directory to
+            // directories_to_index. Directory.Exists instead follows the
+            // link (like Rust's *non*-lstat Path::is_dir()), so reparse
+            // points are excluded from the recursion arm here. The file
+            // branch below is a pure extension check in Rust too -- no
+            // is_file() guard -- so a symlink named `*.md` is still
+            // collected either way, matching Rust exactly.
+            if (!ReparsePoints.IsReparsePoint(path) && Directory.Exists(path))
             {
                 CollectMarkdown(path, output);
             }

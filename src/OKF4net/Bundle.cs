@@ -306,6 +306,20 @@ public sealed class Bundle
         foreach (var name in entries)
         {
             var path = System.IO.Path.Combine(dir, name);
+
+            // Rust's `entry.file_type()` (bundle.rs:211) is lstat-based: a
+            // symlink's file_type() has is_dir() == false AND is_file() ==
+            // false, matching neither arm below, so the entry is skipped
+            // outright -- never recursed into, never collected even if it
+            // has a `.md` name. Directory.Exists/File.Exists instead follow
+            // the link (like Rust's *non*-lstat Path::is_dir()/is_file()),
+            // so reparse points must be excluded explicitly here to preserve
+            // that fidelity.
+            if (ReparsePoints.IsReparsePoint(path))
+            {
+                continue;
+            }
+
             if (Directory.Exists(path))
             {
                 CollectMarkdown(path, output);

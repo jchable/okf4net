@@ -141,4 +141,31 @@ public class IndexTests
         Assert.Contains("[Only Dataset](only.md)", datasetsIndex);
         Assert.DoesNotContain("(.md)", datasetsIndex);
     }
+
+    // ----------------------------------------------------------------
+    // A2: symlink walk fidelity, mirroring BundleTests' equivalent pair.
+    // index.rs's own collect_markdown (index.rs:223-234, used only to
+    // compute which directories need an index.md at all) recurses via
+    // `entry.file_type()?.is_dir()` -- lstat-based, so a symlinked directory
+    // is never descended into and never contributes to
+    // directories_to_index. This test requires symlink-creation privilege
+    // and skips itself (via TempDir.TryCreateDirectorySymlink's bool return)
+    // when unavailable.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Symlinked_subdirectory_does_not_get_its_own_generated_index()
+    {
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "real/a.md", "BigQuery Dataset", "A", "desc");
+        if (!tmp.TryCreateDirectorySymlink("linked", "real"))
+        {
+            return; // no symlink privilege on this machine -- skip.
+        }
+
+        IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "real", "index.md")));
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "linked", "index.md")));
+    }
 }
