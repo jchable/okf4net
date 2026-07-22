@@ -278,7 +278,7 @@ public sealed class OkfBundleTools
 
         foreach (var (concept, score) in shown)
         {
-            var title = concept.Document.Frontmatter.Title ?? concept.Id.Name;
+            var title = concept.Document.Frontmatter.Title ?? concept.Id.ToString();
             sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')').Append('\n');
 
             var excerpt = FindExcerpt(concept.Document.Body, terms);

@@ -65,20 +65,26 @@ public class OkfSearchTests
     }
 
     [Fact]
-    public void Search_with_tag_filter_narrows_results()
+    public void Search_with_tag_filter_narrows_total_and_drops_untagged_match()
     {
         using var tmp = new TempDir();
         var tools = NewToolsOverFixtureCopy(tmp);
 
-        // "sales" without a tag filter matches both the dataset and the
-        // orders table (tags/description); filtering to a tag only the
-        // dataset carries narrows the result set.
+        // Unfiltered, "sales" matches 3 concepts: datasets/sales (title,
+        // tags, body), tables/orders (tags, body) and tables/users (body
+        // only — "not part of the sales domain"). tables/users carries no
+        // tags at all, so filtering to tag "sales" must drop it, narrowing
+        // the total from 3 to 2.
         var unfiltered = tools.Search("sales");
         var filtered = tools.Search("sales", "sales");
 
-        Assert.Contains("datasets/sales", unfiltered);
+        Assert.Contains("Showing 3 of 3 result(s).", unfiltered);
+        Assert.Contains("tables/users", unfiltered);
+
+        Assert.Contains("Showing 2 of 2 result(s).", filtered);
+        Assert.DoesNotContain("tables/users", filtered);
         Assert.Contains("datasets/sales", filtered);
-        Assert.Contains("tables/orders", unfiltered);
+        Assert.Contains("tables/orders", filtered);
     }
 
     [Fact]
@@ -183,5 +189,74 @@ public class OkfSearchTests
         var result = tools.Search("orders", null);
 
         Assert.Contains("tables/orders", result);
+    }
+
+    [Fact]
+    public void Search_single_term_scores_additively_across_title_and_tag_zones()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        // tables/orders: "orders" is in the title (x3, "Orders") and in
+        // tags (x2, tags: [sales, orders]) but nowhere in the body — so its
+        // score must be exactly the sum of those two zones, 3 + 2 = 5.
+        var result = tools.Search("orders");
+
+        Assert.Contains("* tables/orders — Orders (5)", result);
+    }
+
+    [Fact]
+    public void Search_multi_term_query_uses_OR_semantics_and_additive_scoring()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.Search("sales orders");
+
+        // OR semantics: every concept matching at least one of the two
+        // terms is listed, including concepts that match only one term —
+        // tables/users matches only "sales" (body: "not part of the sales
+        // domain") and tables/customers matches only "orders" (body:
+        // "Linked from [orders](...)").
+        Assert.Contains("tables/users", result);
+        Assert.Contains("tables/customers —", result);
+        Assert.Contains("Showing 4 of 4 result(s).", result);
+
+        // Additive scoring, summed independently per term across zones:
+        //   tables/orders:  "orders" -> title x3 + tags x2 = 5
+        //                    "sales"  -> tags x2 + body x1 = 3   => 8
+        //   datasets/sales: "sales"  -> title x3 + tags/description x2 + body x1 = 6
+        //                    "orders" -> body x1 (link text/target only)  => 7
+        Assert.Contains("* tables/orders — Orders (8)", result);
+        Assert.Contains("* datasets/sales — Sales (7)", result);
+    }
+
+    [Fact]
+    public void Search_bounds_results_to_top_20_and_reports_the_full_total()
+    {
+        using var tmp = new TempDir();
+        for (var i = 1; i <= 25; i++)
+        {
+            tmp.Write(
+                $"concepts/item{i:D2}.md",
+                $"---\ntype: Widget\ntitle: Widget {i:D2}\n---\n\nJust a body, no query term here.\n");
+        }
+
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.Search("widget");
+
+        Assert.Contains("Showing 20 of 25 result(s).", result);
+        var bulletCount = result
+            .Split('\n')
+            .Count(line => line.StartsWith("* ", StringComparison.Ordinal));
+        Assert.Equal(20, bulletCount);
+
+        // All 25 concepts tie on score (title-only match), so the top 20
+        // are the ones sorted first by ascending ordinal concept id.
+        Assert.Contains("concepts/item01", result);
+        Assert.Contains("concepts/item20", result);
+        Assert.DoesNotContain("concepts/item21", result);
+        Assert.DoesNotContain("concepts/item25", result);
     }
 }
