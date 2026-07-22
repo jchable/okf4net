@@ -287,19 +287,8 @@ public sealed class OkfBundleTools
                 return SearchUsageMessage;
             }
 
-            var bundle = GetBundle();
             var effectiveTag = string.IsNullOrWhiteSpace(tag) ? null : tag;
-
-            var candidates = effectiveTag is null
-                ? bundle.Concepts
-                : bundle.Concepts.Where(c => c.Document.Frontmatter.Tags.Any(t => string.Equals(t, effectiveTag, StringComparison.OrdinalIgnoreCase)));
-
-            var scored = candidates
-                .Select(c => (Concept: c, Score: ScoreConcept(c, terms)))
-                .Where(x => x.Score > 0)
-                .OrderByDescending(x => x.Score)
-                .ThenBy(x => x.Concept.Id)
-                .ToList();
+            var scored = ScoreConceptsFor(query, tag);
 
             if (scored.Count == 0)
             {
@@ -310,6 +299,43 @@ public sealed class OkfBundleTools
 
             return FormatSearchResults(query, effectiveTag, terms, scored);
         });
+    }
+
+    /// <summary>
+    /// Scores every candidate concept against <paramref name="query"/>
+    /// (optionally restricted to concepts carrying <paramref name="tag"/>):
+    /// the shared seam behind <see cref="Search"/> and
+    /// <see cref="OKF4net.Agents.OkfContextProvider"/>'s progressive
+    /// disclosure. Same candidate selection, <see cref="ScoreConcept"/>
+    /// weights, score&gt;0 filter, and ordering (descending score, then
+    /// ascending concept id) that <see cref="Search"/> used inline before
+    /// this was extracted, so the two can never drift apart. Assumes
+    /// <paramref name="query"/> has already been validated non-null/blank by
+    /// the caller (mirroring <see cref="Search"/>'s own precondition); a
+    /// query that splits into zero terms yields an empty result rather than
+    /// throwing.
+    /// </summary>
+    internal IReadOnlyList<(Concept Concept, int Score)> ScoreConceptsFor(string query, string? tag = null)
+    {
+        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (terms.Length == 0)
+        {
+            return [];
+        }
+
+        var bundle = GetBundle();
+        var effectiveTag = string.IsNullOrWhiteSpace(tag) ? null : tag;
+
+        var candidates = effectiveTag is null
+            ? bundle.Concepts
+            : bundle.Concepts.Where(c => c.Document.Frontmatter.Tags.Any(t => string.Equals(t, effectiveTag, StringComparison.OrdinalIgnoreCase)));
+
+        return candidates
+            .Select(c => (Concept: c, Score: ScoreConcept(c, terms)))
+            .Where(x => x.Score > 0)
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.Concept.Id)
+            .ToList();
     }
 
     /// <summary>
