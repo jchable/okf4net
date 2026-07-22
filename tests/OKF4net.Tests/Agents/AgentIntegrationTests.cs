@@ -114,11 +114,28 @@ public class AgentIntegrationTests
         Assert.Contains("refunds.md", tablesIndex);
         Assert.Contains("Refunds", tablesIndex);
 
+        // Four round-trips to the scripted "model": the three tool-call
+        // turns above, plus the final plain-text-answer turn.
+        Assert.Equal(4, scriptedClient.TurnsTaken);
+
         // The scripted client observed the real FunctionResultContent for
         // each of the three tool calls, in order -- proof the framework's
         // pipeline round-tripped genuine tool output back to the "model".
         Assert.Equal(3, scriptedClient.ObservedFunctionResults.Count);
         Assert.Contains("Written", scriptedClient.ObservedFunctionResults[0]);
-        Assert.Contains("conformant", scriptedClient.ObservedFunctionResults[2]);
+
+        // ObservedFunctionResults[1] (okf_regenerate_indexes's result) is
+        // not content-asserted here: its actual effect (tables/index.md
+        // listing the new concept) is already verified above by reading the
+        // regenerated index.md straight off disk, which is the stronger
+        // check. The count/order assertions on ObservedFunctionResults
+        // already prove this turn's result did reach the scripted client.
+
+        // "Contains conformant" alone would also match "✗ not conformant
+        // with OKF v0.1" and could never fail -- assert the success marker
+        // (BundleValidator's verdict line, e.g. "✓ conformant with OKF
+        // v0.1") and explicitly rule out the failure marker.
+        Assert.Contains("✓ conformant", scriptedClient.ObservedFunctionResults[2]);
+        Assert.DoesNotContain("✗", scriptedClient.ObservedFunctionResults[2]);
     }
 }

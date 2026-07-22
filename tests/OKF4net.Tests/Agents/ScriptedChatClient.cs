@@ -50,6 +50,15 @@ public sealed record ScriptStep
 /// invoking a tool -- is recorded in <see cref="ObservedFunctionResults"/>,
 /// in the order seen, so a test can assert on what the tools actually
 /// returned without re-deriving it.
+///
+/// Not (yet) supported: correlating a <see cref="FunctionResultContent"/>
+/// back to the specific <see cref="ScriptStep"/> that requested it via
+/// <see cref="FunctionCallContent.CallId"/>. This double assumes exactly one
+/// pending tool call per turn (one <see cref="ScriptStep.Call"/> per
+/// <see cref="GetResponseAsync"/> invocation), so results are recorded and
+/// consumed in the same order the calls were made. A script that issues
+/// multiple concurrent tool calls in a single turn would need CallId-based
+/// matching to know which result belongs to which call.
 /// </summary>
 public sealed class ScriptedChatClient : IChatClient
 {
