@@ -150,6 +150,55 @@ single-file binary — no .NET runtime installation required on the target
 machine (see [Building & testing](#building--testing)). Invocations are
 unchanged from the Rust binary it replaces.
 
+### Using OKF4net with Microsoft Agent Framework
+
+`src/OKF4net.Agents/` exposes bundle operations as function tools for the
+[Microsoft Agent Framework](https://github.com/microsoft/agent-framework):
+`OkfBundleTools` wraps one bundle root and its `GetTools()` method returns
+nine ready-to-use `AITool`s, which `AsAIAgent` turns into an agent's tool list.
+
+```csharp
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using OKF4net.Agents;
+
+IChatClient chatClient = /* your IChatClient, e.g. from an OpenAI/Azure client */;
+var tools = new OkfBundleTools("./my_bundle");
+
+AIAgent agent = chatClient.AsAIAgent(tools: tools.GetTools());
+var response = await agent.RunAsync("Search the bundle for concepts about refunds.");
+Console.WriteLine(response.Text);
+```
+
+The nine tools (read → browse → graph → search → write → append →
+regenerate → validate → changes-since):
+
+| Tool                     | Description                                                                                                                                                                |
+|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.                                                                                 |
+| `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                     |
+| `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                               |
+| `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                   |
+| `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title, description and timestamp (producer-grade validation is enforced before writing). |
+| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO).                                                                                                        |
+| `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                          |
+| `okf_validate_bundle`    | Validate the bundle against OKF v0.1 conformance (§9). Returns the diagnostics report.                                                                                     |
+| `okf_changes_since`      | Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.                                                                               |
+
+**Security note:** bundle content (concept bodies, frontmatter, log entries)
+is untrusted — it comes from files on disk that may have been written by
+another agent or a human contributor — and is never injected into the
+conversation with a `system` role; it only ever reaches the model as tool
+output. The four write-capable tools (`okf_write_concept`, `okf_append_log`,
+`okf_regenerate_indexes`, and the write side-effects reachable through them)
+rely entirely on the Agent Framework's own tool-approval mechanism to gate
+execution — `OkfBundleTools` performs no additional confirmation step of its
+own.
+
+The core `OKF4net` library stays dependency-free (BCL only); only
+`OKF4net.Agents` references `Microsoft.Agents.AI` (see
+[Hard rules](CLAUDE.md) for the per-project dependency policy).
+
 ## Mapping to the spec
 
 | Spec section                 | Implemented by                                                 |

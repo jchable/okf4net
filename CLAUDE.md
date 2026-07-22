@@ -13,6 +13,7 @@ dotnet build OKF4net.sln                    # build everything (warnings are err
 dotnet test OKF4net.sln                     # full test suite incl. golden CLI comparisons
 dotnet test OKF4net.sln --filter "FullyQualifiedName~ConceptIdTests"        # one test class
 dotnet test OKF4net.sln --filter "FullyQualifiedName~ConceptIdTests.Parse"  # one test method
+dotnet test OKF4net.sln --filter "FullyQualifiedName~OKF4net.Tests.Agents"  # OKF4net.Agents tests only
 dotnet format OKF4net.sln                   # format; CI runs --verify-no-changes
 dotnet publish src/OKF4net.Cli -c Release   # Native AOT self-contained `okf` binary
 ```
