@@ -9,7 +9,6 @@
 
   <PropertyGroup Label="Packaging">
     <PackageId>OKF4net.Agents</PackageId>
-    <Version>0.1.0</Version>
     <Authors>Julien CHABLE</Authors>
     <Description>Microsoft Agent Framework function tools for OKF knowledge bundles: expose OKF4net operations (read, browse, search, write, validate) as AIFunctions for AI agents.</Description>
     <Copyright>Copyright 2026 Julien CHABLE</Copyright>

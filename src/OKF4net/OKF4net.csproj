@@ -9,7 +9,6 @@
 
   <PropertyGroup Label="Packaging">
     <PackageId>OKF4net</PackageId>
-    <Version>0.1.0</Version>
     <Authors>Julien CHABLE</Authors>
     <Description>Zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1: parse, validate, index, and graph OKF knowledge bundles (markdown + YAML frontmatter).</Description>
     <Copyright>Copyright 2026 Julien CHABLE</Copyright>
