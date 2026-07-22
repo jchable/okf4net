@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The okf CLI — OKF4net</title>
+<meta name="description" content="The okf command-line tool: validate, info, index, graph, parse and fmt — a self-contained Native AOT binary that drops straight into CI.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231a3fd6'/%3E%3Ctext x='50' y='74' font-size='72' font-family='Georgia,serif' font-weight='bold' text-anchor='middle' fill='white'%3E%C2%A7%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;700;800;900&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<div class="topline"></div>
+<header class="bar">
+  <div class="bar-in">
+    <a class="wordmark" href="./">OKF<sup>4net</sup></a>
+    <nav aria-label="Site">
+      <a href="./">okf4net.md</a>
+      <a href="what-okf-is.html">what-okf-is.md</a>
+      <a href="library.html">library.md</a>
+      <a href="cli.html" aria-current="page">cli.md</a>
+      <a href="contributing.html">contributing.md</a>
+    </nav>
+    <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
+  </div>
+</header>
+
+<div class="frame">
+
+  <div class="page-doc">
+    <div class="doc-window">
+      <div class="doc-chrome">
+        <span class="path">my_bundle/<b>cli.md</b></span>
+        <span>type: Reference</span>
+      </div>
+      <div class="rendered">
+        <h1>Six commands, <em>one binary.</em></h1>
+        <p class="lede"><code>okf</code> is published as a <strong>self-contained, Native AOT single-file binary</strong> — no .NET runtime installation required on the target machine. Invocations are unchanged from the Rust binary it replaces.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="docbody">
+
+    <section class="chapter" id="commands">
+      <div class="chead"><span class="h">##</span><h2>Commands</h2><span class="ref">§6–§9 — the whole surface</span></div>
+      <table class="map">
+        <tr><th>Command</th><th>Does</th></tr>
+        <tr><td>okf validate &lt;bundle&gt;</td><td>Check a bundle against OKF v0.1 conformance (§9); exits non-zero on failure</td></tr>
+        <tr><td>okf info &lt;bundle&gt;</td><td>Summarize a bundle — concepts, types, links, version</td></tr>
+        <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md in the bundle (§6)</td></tr>
+        <tr><td>okf graph &lt;bundle&gt;</td><td>Print the cross-link graph; <code>--dot</code> emits Graphviz DOT</td></tr>
+        <tr><td>okf parse &lt;file&gt;</td><td>Parse one concept document and print its structure</td></tr>
+        <tr><td>okf fmt &lt;file&gt;</td><td>Normalize a document by parse + re-serialize (<code>-w</code> writes in place)</td></tr>
+      </table>
+    </section>
+
+    <section class="chapter" id="session">
+      <div class="chead"><span class="h">##</span><h2>A session</h2><span class="ref">what it looks like</span></div>
+<pre class="block">$ okf validate ./bundles/ga4
+<span class="ok">OK: bundle is conformant with OKF v0.1 (42 concepts)</span>
+
+$ okf info ./bundles/ga4
+concepts: 42    types: Table(19) Metric(12) Dataset(8) …
+links: 117 (3 broken)    okf_version: 0.1
+
+$ okf graph ./bundles/ga4 --dot | dot -Tsvg &gt; graph.svg</pre>
+      <p>Everything the library exposes — permissive loading, broken-link tracking, byte-exact serialization — is the same engine underneath. <code>okf fmt</code> is the round-trip guarantee made tangible: parse + re-serialize, and unknown frontmatter keys come out untouched.</p>
+    </section>
+
+    <section class="chapter" id="ci">
+      <div class="chead"><span class="h">##</span><h2>In CI</h2><span class="ref">§9 — exit codes are the interface</span></div>
+      <p><code>okf validate</code> exits non-zero when a bundle is not conformant, so validating knowledge is one line in any pipeline:</p>
+<pre class="block"><span class="c"># .github/workflows/knowledge.yml — or any CI</span>
+okf validate ./bundles/ga4</pre>
+      <p>Because the binary is self-contained, the CI image needs no .NET runtime, no SDK, no package restore — copy the file, run it.</p>
+    </section>
+
+    <section class="chapter" id="build">
+      <div class="chead"><span class="h">##</span><h2>Build it yourself</h2><span class="ref">Native AOT publish</span></div>
+<pre class="block">$ git clone https://github.com/jchable/okf4net
+$ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># Native AOT, self-contained okf binary</span></pre>
+      <p class="next">→ <a href="contributing.html">contributing.md</a> — build, test, and submit changes</p>
+    </section>
+
+  </div>
+</div>
+
+<footer class="colophon">
+  <div class="frame">
+    <div class="links">
+      <a href="https://github.com/jchable/okf4net">source</a>
+      <a href="https://www.nuget.org/packages/OKF4net">nuget</a>
+      <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">okf spec v0.1</a>
+      <a href="https://github.com/jchable/okf4net/blob/main/LICENSE">license</a>
+    </div>
+    <p>OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC, by way of the former Rust okf crate by Walter van der Giessen. An independent implementation, not affiliated with or endorsed by Google.</p>
+  </div>
+</footer>
+
+</body>
+</html>
