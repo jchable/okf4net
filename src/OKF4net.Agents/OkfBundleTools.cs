@@ -420,6 +420,18 @@ public sealed class OkfBundleTools
                 return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
             }
 
+            // Also reject the target FILE node itself being a reparse point
+            // (a planted file symlink at e.g. tables/x.md pointing at an
+            // external file): HasReparsePointAncestor above only walks
+            // directory ANCESTORS of targetPath, it never inspects targetPath
+            // itself, so an existing symlinked concept file would otherwise
+            // sail through both checks and File.WriteAllText below would
+            // follow the link and silently overwrite whatever it points at.
+            if (ReparsePoints.IsReparsePoint(targetPath))
+            {
+                return $"Error: '{id}' is a reparse point (symlink/junction), not a regular file -- refusing to overwrite it.";
+            }
+
             var content = doc.Serialize();
             bool existed;
 
@@ -506,6 +518,23 @@ public sealed class OkfBundleTools
         return RunTool(() =>
         {
             var logPath = Path.Combine(BundleRoot, LogFilename);
+
+            // Reject log.md itself being a reparse point (symlink/junction),
+            // e.g. a planted file symlink at bundleRoot/log.md pointing at an
+            // external file: File.Exists/ReadAllBytes/WriteAllText below all
+            // follow it, so without this check AppendLog would silently
+            // overwrite whatever external file it points at. log.md always
+            // lives directly at BundleRoot, so its only directory ancestor is
+            // BundleRoot itself -- HasReparsePointAncestor's walk stops there
+            // immediately without checking anything, which is why the file
+            // node itself (not its ancestor chain) is the check that matters
+            // here; both are included for the same defense-in-depth shape as
+            // WriteConcept's guard.
+            if (ReparsePoints.IsReparsePoint(logPath) || HasReparsePointAncestor(BundleRoot, BundleRoot))
+            {
+                return "Error: log.md is a reparse point (symlink/junction), not a regular file -- refusing to write through it.";
+            }
+
             var today = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             var entry = new LogEntry(kind.Trim(), text.Trim());
 
@@ -1057,16 +1086,33 @@ public sealed class OkfBundleTools
     /// closes that gap.
     ///
     /// Used by <see cref="Browse"/> (on the resolved directory) and
-    /// <see cref="WriteConcept"/> (on the target file's parent directory).
+    /// <see cref="WriteConcept"/> (on the target file's parent directory --
+    /// <see cref="WriteConcept"/> separately checks
+    /// <see cref="ReparsePoints.IsReparsePoint"/> on the target FILE itself,
+    /// since this helper only walks directory ancestors and never inspects
+    /// the leaf path passed to it, so it would miss an existing concept file
+    /// that is itself a planted symlink).
+    ///
     /// Not needed by <see cref="ReadConcept"/>, <see cref="Graph"/>, or
     /// <see cref="Search"/> -- they only query the already-loaded
     /// <see cref="Bundle"/>, whose own load walk already skips reparse-point
     /// entries (mirroring Rust's lstat-based <c>collect_markdown</c>); nor by
     /// <see cref="RegenerateIndexes"/>, whose whole-root walk (<see cref="IndexGenerator"/>)
     /// likewise already skips reparse-point directories via the same core
-    /// helper; nor by <see cref="AppendLog"/>, which only ever writes
-    /// <c>log.md</c> directly at <see cref="BundleRoot"/> and never resolves
-    /// a caller-supplied sub-path.
+    /// helper.
+    ///
+    /// <see cref="AppendLog"/> does NOT use this helper for its main guard:
+    /// <c>log.md</c> always lives directly at <see cref="BundleRoot"/>, so
+    /// its only directory ancestor is <see cref="BundleRoot"/> itself, which
+    /// this helper's walk never inspects (it stops as soon as
+    /// <paramref name="path"/> equals <paramref name="bundleRoot"/>). The
+    /// real risk for <see cref="AppendLog"/> is <c>log.md</c> itself being a
+    /// planted file symlink -- <see cref="File.ReadAllBytes(string)"/>/
+    /// <see cref="File.WriteAllText(string, string)"/> would follow it and
+    /// silently overwrite whatever external file it points at -- so
+    /// <see cref="AppendLog"/> checks
+    /// <see cref="ReparsePoints.IsReparsePoint"/> on <c>log.md</c> directly
+    /// instead.
     /// </summary>
     private static bool HasReparsePointAncestor(string bundleRoot, string path)
     {

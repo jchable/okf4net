@@ -141,6 +141,37 @@ public sealed class TempDir : IDisposable
         }
     }
 
+    /// <summary>
+    /// Attempts to create a FILE reparse point at <paramref name="relativeLink"/>
+    /// (relative to the temp root) pointing at the ABSOLUTE, external file
+    /// <paramref name="externalTarget"/> (typically a file inside another
+    /// <see cref="TempDir"/>), via <see cref="File.CreateSymbolicLink(string, string)"/>.
+    /// Unlike a directory junction, NTFS has no unprivileged way to create a
+    /// file-level reparse point, so this needs the same
+    /// <c>SeCreateSymbolicLinkPrivilege</c> as <see cref="TryCreateFileSymlink"/>.
+    /// Returns <c>false</c> instead of throwing when unavailable, so callers
+    /// can skip the reparse-point-dependent assertions
+    /// (<c>if (!created) return;</c>) rather than fail the whole run.
+    /// </summary>
+    public bool TryCreateFileSymlinkToExternalFile(string relativeLink, string externalTarget)
+    {
+        var linkPath = System.IO.Path.Combine(Path, relativeLink);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(linkPath) ?? Path);
+        try
+        {
+            File.CreateSymbolicLink(linkPath, externalTarget);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Removes the temporary directory and its contents (best-effort).</summary>
     public void Dispose()
     {

@@ -199,6 +199,35 @@ public class OkfWriteToolsTests
         Assert.Empty(Directory.GetFiles(external.Path));
     }
 
+    // The junction test above covers a reparse-point ANCESTOR directory;
+    // this covers the target FILE itself being a reparse point (e.g. an
+    // existing "concept" that is actually a planted symlink to an external
+    // file). HasReparsePointAncestor only walks directory ancestors of the
+    // target path -- it never inspects the leaf path itself -- so
+    // WriteConcept has a separate ReparsePoints.IsReparsePoint(targetPath)
+    // check for this case; without it, File.WriteAllText would follow the
+    // link and silently overwrite the external file. Requires
+    // symlink-creation privilege and skips itself via
+    // TryCreateFileSymlinkToExternalFile's bool return when unavailable.
+    [Fact]
+    public void WriteConcept_refuses_to_overwrite_a_target_that_is_itself_a_symlink()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        using var external = new TempDir();
+        var externalFile = external.Write("secret.md", "do not touch\n");
+
+        if (!tmp.TryCreateFileSymlinkToExternalFile("tables/x.md", externalFile))
+        {
+            return; // no symlink privilege on this machine -- skip.
+        }
+
+        var result = tools.WriteConcept("tables/x", ValidFrontmatter, "Body.\n");
+
+        Assert.Contains("Error", result);
+        Assert.Equal("do not touch\n", File.ReadAllText(externalFile));
+    }
+
     [Fact]
     public void WriteConcept_null_concept_id_reports_error_without_throwing()
     {
@@ -429,6 +458,33 @@ public class OkfWriteToolsTests
 
         Assert.Contains("Error", result);
         Assert.Equal(before, File.ReadAllText(logPath));
+    }
+
+    // log.md always lives directly at BundleRoot, so HasReparsePointAncestor
+    // gives no protection here (its walk starts at BundleRoot itself and
+    // stops immediately). The real risk is log.md ITSELF being a planted
+    // file symlink pointing at an external file: File.Exists/ReadAllBytes/
+    // WriteAllText would all follow it and silently overwrite that external
+    // file. Requires symlink-creation privilege and skips itself via
+    // TryCreateFileSymlinkToExternalFile's bool return when unavailable.
+    [Fact]
+    public void AppendLog_refuses_to_write_through_a_planted_log_md_symlink()
+    {
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(tmp.Path);
+        var tools = new OkfBundleTools(tmp.Path);
+        using var external = new TempDir();
+        var externalFile = external.Write("secret.txt", "do not touch\n");
+
+        if (!tmp.TryCreateFileSymlinkToExternalFile("log.md", externalFile))
+        {
+            return; // no symlink privilege on this machine -- skip.
+        }
+
+        var result = tools.AppendLog("Update", "Should not be written.");
+
+        Assert.Contains("Error", result);
+        Assert.Equal("do not touch\n", File.ReadAllText(externalFile));
     }
 
     [Fact]
