@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The library — OKF4net</title>
+<meta name="description" content="Using OKF4net as a C# library: install from NuGet, load bundles, parse and round-trip concept documents, traverse the cross-link graph — with zero third-party dependencies.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231a3fd6'/%3E%3Ctext x='50' y='74' font-size='72' font-family='Georgia,serif' font-weight='bold' text-anchor='middle' fill='white'%3E%C2%A7%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;700;800;900&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<div class="topline"></div>
+<header class="bar">
+  <div class="bar-in">
+    <a class="wordmark" href="./">OKF<sup>4net</sup></a>
+    <nav aria-label="Site">
+      <a href="./">okf4net.md</a>
+      <a href="what-okf-is.html">what-okf-is.md</a>
+      <a href="library.html" aria-current="page">library.md</a>
+      <a href="cli.html">cli.md</a>
+      <a href="contributing.html">contributing.md</a>
+    </nav>
+    <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
+  </div>
+</header>
+
+<div class="frame">
+
+  <div class="page-doc">
+    <div class="doc-window">
+      <div class="doc-chrome">
+        <span class="path">my_bundle/<b>library.md</b></span>
+        <span>type: Reference</span>
+      </div>
+      <div class="rendered">
+        <h1>Pure C#, <em>zero dependencies.</em></h1>
+        <p class="lede">OKF4net is implemented entirely on the .NET <strong>base class library</strong> — it brings its own YAML-subset parser, markdown link scanner, and directory walker. Nothing to audit but this one package.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="docbody">
+
+    <section class="chapter" id="install">
+      <div class="chead"><span class="h">##</span><h2>Install</h2><span class="ref">nuget.org/packages/OKF4net</span></div>
+<pre class="block">$ dotnet add package OKF4net</pre>
+      <p>One package, no transitive dependency tree. Targets modern .NET; every public API carries XML documentation.</p>
+    </section>
+
+    <section class="chapter" id="bundles">
+      <div class="chead"><span class="h">##</span><h2>Load a bundle, walk the graph</h2><span class="ref">§3, §5 — Bundle · LinkScanner</span></div>
+      <p><code>Bundle.Load</code> walks the directory tree, parses every concept, and builds the cross-link graph with backlinks. It is <strong>permissive by design</strong>: a bad file never aborts the load.</p>
+<pre class="block"><span class="k">using</span> OKF4net;
+
+<span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);
+Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);
+
+<span class="c">// Conformance check (§9).</span>
+<span class="k">var</span> report = BundleValidator.Validate(bundle);
+<span class="k">if</span> (report.IsConformant)
+    Console.WriteLine(<span class="s">$"conformant with OKF v{OkfSpec.Version}"</span>);
+
+<span class="c">// Traverse the cross-link graph.</span>
+<span class="k">var</span> id = ConceptId.Parse(<span class="s">"tables/orders"</span>);
+<span class="k">foreach</span> (<span class="k">var</span> link <span class="k">in</span> bundle.LinksFrom(id))
+    Console.WriteLine(<span class="s">$"{id} -&gt; {link.Target} (exists: {link.Exists})"</span>);
+<span class="k">foreach</span> (<span class="k">var</span> backlink <span class="k">in</span> bundle.Backlinks(id))
+    Console.WriteLine(<span class="s">$"cited by {backlink}"</span>);</pre>
+      <p>Parse failures are collected in <code>ParseErrors</code>; broken cross-links are retained as graph edges to non-existent concepts, so <code>link.Exists</code> tells you exactly where the holes are.</p>
+    </section>
+
+    <section class="chapter" id="documents">
+      <div class="chead"><span class="h">##</span><h2>Parse and round-trip a document</h2><span class="ref">§4 — OkfDocument · Frontmatter</span></div>
+<pre class="block"><span class="k">using</span> OKF4net;
+
+<span class="k">var</span> doc = OkfDocument.Parse(<span class="s">"---\ntype: Metric\ntitle: DAU\n---\n\n# Body\n"</span>);
+Console.WriteLine(doc.Frontmatter.Type); <span class="c">// "Metric"</span>
+doc.ValidateConformance(); <span class="c">// throws DocumentValidationException on failure</span>
+
+<span class="c">// Serialize() preserves frontmatter key order and the body.</span>
+<span class="k">var</span> text = doc.Serialize();</pre>
+      <p>Rather than deserializing into a fixed type — which would drop producer-defined keys — <code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> and layers typed getters (<code>Type</code>, <code>Title</code>, <code>Tags</code>, …) on top. Round-trips preserve unknown keys, as the spec requires of consumers.</p>
+    </section>
+
+    <section class="chapter" id="design">
+      <div class="chead"><span class="h">##</span><h2>Design choices</h2><span class="ref">what makes it faithful</span></div>
+      <ul class="plain">
+        <li><strong>Frontmatter preserves everything.</strong> The full ordered mapping survives; typed accessors are a view, not a projection.</li>
+        <li><strong>Permissive loading.</strong> <code>Bundle.Load</code> collects errors and keeps going — exactly what §9 asks of consumers.</li>
+        <li><strong>Two levels of validation.</strong> §9-only conformance, or the stricter producer-side check (<code>type</code>, <code>title</code>, <code>description</code>, <code>timestamp</code>).</li>
+        <li><strong>A documented YAML subset.</strong> Block/flow collections, quoted and plain scalars, <code>|</code>/<code>&gt;</code> block scalars, comments — and clear errors for anchors, tags, and multi-document streams, which frontmatter never uses.</li>
+      </ul>
+    </section>
+
+    <section class="chapter" id="api">
+      <div class="chead"><span class="h">##</span><h2>API surface</h2><span class="ref">one type per responsibility</span></div>
+      <table class="map">
+        <tr><th>Type / namespace</th><th>Responsibility</th></tr>
+        <tr><td>Yaml.YamlValue · YamlMapping</td><td>YAML-subset value/mapping model for frontmatter</td></tr>
+        <tr><td>Yaml.YamlValue.Parse · YamlEmitter</td><td>Parser entry point and emitter for the same subset</td></tr>
+        <tr><td>OkfDocument</td><td>Frontmatter + body; parse / serialize / validate (§4)</td></tr>
+        <tr><td>Frontmatter</td><td>Typed accessors over an order-preserving mapping (§4.1)</td></tr>
+        <tr><td>ConceptId</td><td>Id ↔ path conversion and segment validation (§2)</td></tr>
+        <tr><td>LinkScanner</td><td>Markdown link extraction, classification, citations (§5, §8)</td></tr>
+        <tr><td>Bundle</td><td>Walk a tree, build the concept graph + backlinks (§3, §5)</td></tr>
+        <tr><td>IndexGenerator</td><td>Generate index.md directory listings (§6)</td></tr>
+        <tr><td>ChangeLog</td><td>Parse / build log.md update histories (§7)</td></tr>
+        <tr><td>BundleValidator</td><td>§9 conformance with severity-tagged diagnostics</td></tr>
+      </table>
+      <p class="next">→ <a href="cli.html">cli.md</a> — the same engine, as one AOT binary for CI</p>
+    </section>
+
+  </div>
+</div>
+
+<footer class="colophon">
+  <div class="frame">
+    <div class="links">
+      <a href="https://github.com/jchable/okf4net">source</a>
+      <a href="https://www.nuget.org/packages/OKF4net">nuget</a>
+      <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">okf spec v0.1</a>
+      <a href="https://github.com/jchable/okf4net/blob/main/LICENSE">license</a>
+    </div>
+    <p>OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC, by way of the former Rust okf crate by Walter van der Giessen. An independent implementation, not affiliated with or endorsed by Google.</p>
+  </div>
+</footer>
+
+</body>
+</html>

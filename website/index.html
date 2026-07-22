@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OKF4net — knowledge is a directory of markdown files</title>
+<meta name="description" content="OKF4net is a zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1 — a C# library and a Native AOT okf CLI to parse, validate, index and graph bundles of markdown concepts.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231a3fd6'/%3E%3Ctext x='50' y='74' font-size='72' font-family='Georgia,serif' font-weight='bold' text-anchor='middle' fill='white'%3E%C2%A7%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;700;800;900&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<div class="topline"></div>
+<header class="bar">
+  <div class="bar-in">
+    <a class="wordmark" href="./">OKF<sup>4net</sup></a>
+    <nav aria-label="Site">
+      <a href="./" aria-current="page">okf4net.md</a>
+      <a href="what-okf-is.html">what-okf-is.md</a>
+      <a href="library.html">library.md</a>
+      <a href="cli.html">cli.md</a>
+      <a href="contributing.html">contributing.md</a>
+    </nav>
+    <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
+  </div>
+</header>
+
+<div class="frame">
+
+  <!-- ============ HERO: this page is itself an OKF concept document ============ -->
+  <div class="hero">
+    <div class="hero-doc">
+      <div class="doc-window">
+        <div class="doc-chrome">
+          <span class="path">my_bundle/<b>okf4net.md</b></span>
+          <div class="toggle" role="group" aria-label="View mode">
+            <button id="btn-raw" aria-pressed="false">raw</button>
+            <button id="btn-rendered" aria-pressed="true">rendered</button>
+          </div>
+        </div>
+
+        <div class="pane raw" id="pane-raw" aria-label="Raw OKF source">
+<span class="ln fm" data-n="1"><span class="delim">---</span></span>
+<span class="ln fm" data-n="2"><span class="key">type</span>: Library</span>
+<span class="ln fm" data-n="3"><span class="key">title</span>: OKF4net</span>
+<span class="ln fm" data-n="4"><span class="key">description</span>: <span class="str">Zero-dependency .NET implementation of OKF v0.1</span></span>
+<span class="ln fm" data-n="5"><span class="key">tags</span>: [<span class="str">dotnet</span>, <span class="str">knowledge</span>, <span class="str">markdown</span>]</span>
+<span class="ln fm" data-n="6"><span class="delim">---</span></span>
+<span class="ln" data-n="7"> </span>
+<span class="ln" data-n="8"><span class="md-h"># OKF4net</span></span>
+<span class="ln" data-n="9"> </span>
+<span class="ln" data-n="10">Knowledge is a directory of markdown files.</span>
+<span class="ln" data-n="11">This is its .NET toolchain — parse, validate, index</span>
+<span class="ln" data-n="12">and graph <span class="md-link">[bundles](./what-okf-is.md)</span> of concepts, on nothing</span>
+<span class="ln" data-n="13">but the .NET base class library.</span>
+<span class="ln" data-n="14"> </span>
+<span class="ln" data-n="15">If you can `cat` a file, you can read OKF.</span>
+        </div>
+
+        <div class="pane rendered visible" id="pane-rendered">
+          <table class="fm-table" aria-label="Frontmatter">
+            <tr><td>type</td><td>Library</td></tr>
+            <tr><td>title</td><td>OKF4net</td></tr>
+            <tr><td>description</td><td>Zero-dependency .NET implementation of OKF v0.1</td></tr>
+          </table>
+          <h1>Knowledge is a directory of <em>markdown files.</em></h1>
+          <p class="lede">OKF4net is its .NET toolchain — a <strong>zero-dependency C# library</strong> and a Native AOT <strong><code>okf</code> CLI</strong> to parse, validate, index and graph bundles of concepts.</p>
+          <div class="hero-actions">
+            <a class="btn primary" href="https://www.nuget.org/packages/OKF4net">dotnet add package OKF4net</a>
+            <a class="btn" href="library.html">Read library.md</a>
+          </div>
+          <div class="conform">conformant with OKF v0.1 · <b>182/182</b> tests · 5 byte-exact golden comparisons</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ DOCUMENT BODY ============ -->
+  <div class="docbody">
+
+    <section class="chapter" id="okf">
+      <div class="chead"><span class="h">##</span><h2>What OKF is</h2><span class="ref">§2–§3 — terminology, bundle structure</span></div>
+      <blockquote>If you can <code>cat</code> a file, you can read OKF; if you can <code>git clone</code> a repo, you can ship it.</blockquote>
+      <p>The <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">Open Knowledge Format</a> represents knowledge as a directory of UTF-8 markdown files with YAML frontmatter. No database, no binary format, no runtime — files that humans, git, and agents already understand.</p>
+      <div class="concept-grid">
+        <div class="cell">
+          <div class="term">bundle</div>
+          <p>A directory tree of markdown files — the unit of distribution.</p>
+        </div>
+        <div class="cell">
+          <div class="term">concept</div>
+          <p>One document: YAML frontmatter delimited by <code>---</code>, then a markdown body.</p>
+        </div>
+        <div class="cell">
+          <div class="term">concept id</div>
+          <p>The file's path with <code>.md</code> removed: <code>tables/users.md</code> → <code>tables/users</code>.</p>
+        </div>
+        <div class="cell">
+          <div class="term">cross-links</div>
+          <p>Ordinary markdown links between concepts — absolute or relative; backlinks derived.</p>
+        </div>
+      </div>
+      <p>The only hard conformance requirement (§9): a non-empty <code>type</code> on every concept. Everything else — unknown types, unknown keys, broken links — must be tolerated by consumers.</p>
+      <p class="next">→ <a href="what-okf-is.html">what-okf-is.md</a> — reserved files, conformance, and the section-by-section spec mapping</p>
+    </section>
+
+    <section class="chapter" id="library">
+      <div class="chead"><span class="h">##</span><h2>The library</h2><span class="ref">§4–§5 — documents, cross-linking</span></div>
+      <p>Load a bundle, check conformance, walk the cross-link graph. <strong><code>Bundle.Load</code> never aborts on a bad file</strong> — parse failures land in <code>ParseErrors</code>, broken links stay in the graph as edges to missing concepts.</p>
+<pre class="block"><span class="k">using</span> OKF4net;
+
+<span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);
+Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);
+
+<span class="c">// Conformance check (§9).</span>
+<span class="k">var</span> report = BundleValidator.Validate(bundle);
+
+<span class="c">// Traverse the cross-link graph.</span>
+<span class="k">var</span> id = ConceptId.Parse(<span class="s">"tables/orders"</span>);
+<span class="k">foreach</span> (<span class="k">var</span> b <span class="k">in</span> bundle.Backlinks(id))
+    Console.WriteLine(<span class="s">$"cited by {b}"</span>);</pre>
+      <p><code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> with typed getters on top — producer-defined keys survive round-trips byte for byte. Two validation levels: <code>ValidateConformance()</code> enforces only what §9 requires; <code>Validate()</code> matches the stricter producer-side check.</p>
+      <p class="next">→ <a href="library.html">library.md</a> — install, examples, design choices, and the full API surface</p>
+    </section>
+
+    <section class="chapter" id="cli">
+      <div class="chead"><span class="h">##</span><h2>The okf CLI</h2><span class="ref">§6–§9 — indexes, logs, conformance</span></div>
+      <p>Published as a <strong>self-contained Native AOT single-file binary</strong> — no .NET runtime on the target machine. <code>okf validate</code> exits non-zero on a non-conformant bundle, so it drops straight into CI.</p>
+      <table class="map">
+        <tr><th>Command</th><th>Does</th></tr>
+        <tr><td>okf validate &lt;bundle&gt;</td><td>Conformance check (§9), non-zero exit on failure</td></tr>
+        <tr><td>okf info &lt;bundle&gt;</td><td>Concepts, types, links, version</td></tr>
+        <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md (§6)</td></tr>
+        <tr><td>okf graph &lt;bundle&gt;</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
+        <tr><td>okf parse &lt;file&gt;</td><td>One document's structure</td></tr>
+        <tr><td>okf fmt &lt;file&gt;</td><td>Normalize by parse + re-serialize (-w writes)</td></tr>
+      </table>
+<pre class="block">$ okf validate ./bundles/ga4
+<span class="ok">OK: bundle is conformant with OKF v0.1 (42 concepts)</span>
+$ okf graph ./bundles/ga4 --dot | dot -Tsvg &gt; graph.svg</pre>
+      <p class="next">→ <a href="cli.html">cli.md</a> — building the binary, session transcripts, CI recipes</p>
+    </section>
+
+    <section class="chapter" id="contribute">
+      <div class="chead"><span class="h">##</span><h2>Contributing</h2><span class="ref">PR — the suite is the contract</span></div>
+      <p>One prerequisite: the .NET SDK. <strong>Zero third-party runtime dependencies</strong> is a design rule — contributions keep it that way. Behavioural changes cite their spec section (§) in the PR; the test suite — including byte-exact golden comparisons — is the contract.</p>
+      <p class="next">→ <a href="contributing.html">contributing.md</a> — setup, golden fixtures, code style, and how to submit</p>
+      <div class="cta">
+        <h2>Ship knowledge as files.</h2>
+        <p>Star the repo, open an issue, or pick a good first one. The spec is short, the codebase is dependency-free, and the test suite tells you immediately whether you're right.</p>
+        <div class="hero-actions">
+          <a class="btn primary" href="https://github.com/jchable/okf4net">github.com/jchable/okf4net</a>
+          <a class="btn" href="https://github.com/jchable/okf4net/issues">Open issues</a>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<footer class="colophon">
+  <div class="frame">
+    <div class="links">
+      <a href="https://github.com/jchable/okf4net">source</a>
+      <a href="https://www.nuget.org/packages/OKF4net">nuget</a>
+      <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">okf spec v0.1</a>
+      <a href="https://github.com/jchable/okf4net/blob/main/LICENSE">license</a>
+    </div>
+    <p>OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC, by way of the former Rust okf crate by Walter van der Giessen. An independent implementation, not affiliated with or endorsed by Google.</p>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>
