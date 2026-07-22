@@ -115,13 +115,68 @@ public sealed class OkfContextProvider : AIContextProvider
             return new(new AIContext());
         }
 
+        // Everything from here on — the initial (re)load, Browse, the
+        // scoring seam, and ReadConcept — is wrapped in the SAME try/catch.
+        // Browse and ReadConcept already never throw (they're self-guarded
+        // internally and return "Error: ..." text instead), but
+        // OkfBundleTools.ScoreConceptsFor calls GetBundle() raw, with no
+        // guard of its own: a concurrent write's InvalidateBundle() could
+        // force a reload that then fails (bundle root gone, non-UTF-8
+        // content, ...) right at that call, after an earlier access in this
+        // same method already succeeded. Wrapping the whole block — not just
+        // an up-front probe — is what actually guarantees this method never
+        // throws, regardless of which internal call is the one that hits a
+        // failing reload.
         try
         {
-            // Force the (re)load now, inside our own try/catch, so a bundle
-            // that fails to load is reported as our specific "bundle
-            // unavailable" note rather than whatever error text Browse/
-            // ReadConcept's own internal never-throw handling would produce.
+            // Force the (re)load now (or reuse the cache), so a bundle that
+            // fails to load is reported as our specific "bundle unavailable"
+            // note even in the no-query path below, where ScoreConceptsFor
+            // is never called at all and so could never surface it.
             _tools.GetBundle();
+
+            var query = ExtractLastUserMessageText(context);
+            var remaining = totalBudget;
+            var sb = new StringBuilder();
+
+            // (a) The root index/listing always goes first. When a query
+            // will also be scored below, it's capped to a quarter of the
+            // budget so concepts have room; with no query (nothing else
+            // will use the budget) it gets to use all of it.
+            var rootBudget = query is null ? remaining : totalBudget / 4;
+            var (rootBlock, rootUsed) = RenderBlock(RootBlockId, _tools.Browse(null), rootBudget, alwaysInclude: true);
+            sb.Append(rootBlock);
+            remaining -= rootUsed;
+
+            // (b) Concepts scored against the last user message, highest
+            // first, each capped to whatever budget remains. Stops (rather
+            // than skipping ahead) at the first concept that doesn't fit at
+            // all, since every following concept has the same or less room.
+            if (query is not null)
+            {
+                foreach (var (concept, _) in _tools.ScoreConceptsFor(query).Take(_options.MaxConceptsInjected))
+                {
+                    if (remaining <= 0)
+                    {
+                        break;
+                    }
+
+                    var (block, used) = RenderBlock(concept.Id.ToString(), _tools.ReadConcept(concept.Id.ToString()), remaining, alwaysInclude: false);
+                    if (block is null)
+                    {
+                        break;
+                    }
+
+                    sb.Append('\n').Append(block);
+                    remaining -= used;
+                }
+            }
+
+            return new(new AIContext
+            {
+                Instructions = FixedInstructions,
+                Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
+            });
         }
         catch (Exception ex) when (ex is OkfException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
@@ -131,49 +186,6 @@ public sealed class OkfContextProvider : AIContextProvider
                 Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {ex.Message}")],
             });
         }
-
-        var query = ExtractLastUserMessageText(context);
-        var remaining = totalBudget;
-        var sb = new StringBuilder();
-
-        // (a) The root index/listing always goes first. When a query will
-        // also be scored below, it's capped to a quarter of the budget so
-        // concepts have room; with no query (nothing else will use the
-        // budget) it gets to use all of it.
-        var rootBudget = query is null ? remaining : totalBudget / 4;
-        var (rootBlock, rootUsed) = RenderBlock(RootBlockId, _tools.Browse(null), rootBudget, alwaysInclude: true);
-        sb.Append(rootBlock);
-        remaining -= rootUsed;
-
-        // (b) Concepts scored against the last user message, highest first,
-        // each capped to whatever budget remains. Stops (rather than
-        // skipping ahead) at the first concept that doesn't fit at all,
-        // since every following concept has the same or less room.
-        if (query is not null)
-        {
-            foreach (var (concept, _) in _tools.ScoreConceptsFor(query).Take(_options.MaxConceptsInjected))
-            {
-                if (remaining <= 0)
-                {
-                    break;
-                }
-
-                var (block, used) = RenderBlock(concept.Id.ToString(), _tools.ReadConcept(concept.Id.ToString()), remaining, alwaysInclude: false);
-                if (block is null)
-                {
-                    break;
-                }
-
-                sb.Append('\n').Append(block);
-                remaining -= used;
-            }
-        }
-
-        return new(new AIContext
-        {
-            Instructions = FixedInstructions,
-            Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
-        });
     }
 
     /// <summary>
@@ -259,8 +271,8 @@ public sealed class OkfContextProvider : AIContextProvider
 
         foreach (var line in lines)
         {
-            var candidateLength = kept == 0 ? line.Length : sb.Length + 1 + line.Length;
-            if (candidateLength / 4 > tokenBudget)
+            var candidate = kept == 0 ? line : sb.ToString() + "\n" + line;
+            if (TokenEstimate.Chars(candidate) > tokenBudget)
             {
                 break;
             }

@@ -240,6 +240,62 @@ public class OkfContextProviderTests
     }
 
     [Fact]
+    public async Task Bundle_becoming_unavailable_after_a_prior_successful_load_is_caught_not_thrown()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var provider = new OkfContextProvider(tools);
+
+        // Unlike the test above (the bundle was NEVER loaded successfully),
+        // this reproduces a bundle that loads fine once -- warming
+        // OkfBundleTools' internal cache -- and only THEN becomes
+        // unavailable (e.g. a concurrent writer's InvalidateBundle() forces
+        // a reload that then fails). Regression test for the reviewer-found
+        // bug where OkfBundleTools.ScoreConceptsFor's own raw GetBundle()
+        // call sat outside any try/catch in ProvideAIContextAsync: Browse
+        // and ReadConcept are self-guarded (they swallow a failed reload
+        // into "Error: ..." text instead of throwing), so with that bug,
+        // a reload failure surfacing specifically at the ScoreConceptsFor
+        // call -- after Browse's own identical failed attempt was silently
+        // absorbed -- would escape ProvideAIContextAsync as an unhandled
+        // exception.
+        tools.GetBundle();
+        Directory.Delete(tmp.Path, recursive: true);
+        tools.InvalidateBundle();
+
+        var result = await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
+
+        var text = Assert.Single(result.Messages!).Text;
+        Assert.StartsWith("bundle unavailable: ", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("<okf-context", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Messages_with_no_user_role_yield_the_root_index_alone()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var provider = new OkfContextProvider(tools);
+
+        // Messages ARE present, but none is Role.User (e.g. only a prior
+        // Assistant turn survived the base class's provide-input message
+        // filter) -- must behave exactly like "no messages at all", not
+        // crash or fall back to some other message's text as the query.
+        var agent = new ScriptedChatClient([]).AsAIAgent();
+        var aiContext = new AIContext { Messages = [new ChatMessage(ChatRole.Assistant, "a prior assistant reply")] };
+#pragma warning disable MAAI001 // InvokingContext's public ctor is marked [Experimental] in 1.14.0.
+        var context = new AIContextProvider.InvokingContext(agent, session: null, aiContext);
+#pragma warning restore MAAI001
+
+        var result = await provider.ProvideForTest(context, CancellationToken.None);
+
+        var text = Assert.Single(result.Messages!).Text;
+        Assert.Equal(1, CountOccurrences(text, "<okf-context id=\""));
+        Assert.Contains("<okf-context id=\"index\">", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("tables/orders", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Injected_bundle_content_appears_only_in_Messages_never_in_Instructions()
     {
         using var tmp = new TempDir();
