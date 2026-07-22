@@ -67,28 +67,42 @@ public sealed class OkfBundleTools
     /// <summary>
     /// Reads one concept: its frontmatter, body, outgoing links, and
     /// backlinks, rendered as agent-friendly markdown. Never throws for
-    /// expected errors (invalid or unknown concept id) — those are reported
-    /// as a plain-text message instead.
+    /// expected errors (a null/blank, malformed, or unknown concept id, or a
+    /// bundle that fails to (re)load) — those are reported as a plain-text
+    /// message instead.
     /// </summary>
     /// <param name="conceptId">The concept id, e.g. <c>tables/orders</c>.</param>
     [Description("Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.")]
     public string ReadConcept([Description("The concept id, e.g. 'tables/orders'.")] string conceptId)
     {
-        var bundle = GetBundle();
-        if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
+        if (string.IsNullOrWhiteSpace(conceptId))
         {
-            return ConceptNotFoundMessage(conceptId);
+            return ConceptNotFoundMessage(conceptId ?? string.Empty);
         }
 
-        var sb = new StringBuilder();
-        sb.Append("# ").Append(concept.Document.Frontmatter.Title ?? concept.Id.ToString()).Append('\n').Append('\n');
-        AppendFrontmatterBlock(sb, concept.Document.Frontmatter);
-        sb.Append(concept.Document.Body.TrimEnd('\n')).Append('\n').Append('\n');
-        AppendSection(sb, "Outgoing links", FormatOutgoingLinks(bundle.LinksFrom(id)));
-        sb.Append('\n');
-        AppendSection(sb, "Backlinks", FormatBacklinks(bundle.Backlinks(id)));
+        if (conceptId.Contains('\0'))
+        {
+            return "Error: invalid concept id — it must not contain a null character.";
+        }
 
-        return sb.ToString();
+        return RunTool(() =>
+        {
+            var bundle = GetBundle();
+            if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
+            {
+                return ConceptNotFoundMessage(conceptId);
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("# ").Append(concept.Document.Frontmatter.Title ?? concept.Id.ToString()).Append('\n').Append('\n');
+            AppendFrontmatterBlock(sb, concept.Document.Frontmatter);
+            sb.Append(concept.Document.Body.TrimEnd('\n')).Append('\n').Append('\n');
+            AppendSection(sb, "Outgoing links", FormatOutgoingLinks(bundle.LinksFrom(id)));
+            sb.Append('\n');
+            AppendSection(sb, "Backlinks", FormatBacklinks(bundle.Backlinks(id)));
+
+            return sb.ToString();
+        });
     }
 
     /// <summary>
@@ -96,63 +110,80 @@ public sealed class OkfBundleTools
     /// disclosure): returns the raw content of the requested directory's
     /// index if one exists, otherwise a generated listing of the concepts
     /// and subdirectories at that level. Never throws for expected errors
-    /// (an invalid or out-of-bundle path) — those are reported as a
-    /// plain-text message instead.
+    /// (an invalid, traversing, or out-of-bundle path, or a bundle that
+    /// fails to (re)load) — those are reported as a plain-text message
+    /// instead.
     /// </summary>
     /// <param name="path">Optional directory path within the bundle, e.g. <c>tables</c>. Omit to list the bundle root.</param>
     [Description("Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.")]
     public string Browse([Description("Optional directory path within the bundle, e.g. 'tables'.")] string? path = null)
     {
-        var relPath = path?.Trim() ?? string.Empty;
-        var segments = relPath.Length == 0
-            ? []
-            : relPath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
-
-        if (segments.Any(s => s == "..") || Path.IsPathRooted(relPath))
+        if (path is not null && path.Contains('\0'))
         {
-            return $"Error: invalid path '{path}' — '..' segments and absolute paths are not allowed.";
+            return "Error: invalid path — it must not contain a null character.";
         }
 
-        var bundle = GetBundle();
-        var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
-
-        if (!IsWithinBundleRoot(bundle.Root, fullDir) || !Directory.Exists(fullDir))
+        return RunTool(() =>
         {
-            return $"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.";
-        }
+            var relPath = path?.Trim() ?? string.Empty;
+            var segments = relPath.Length == 0
+                ? []
+                : relPath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
 
-        var indexPath = Path.Combine(fullDir, IndexFilename);
-        if (File.Exists(indexPath))
-        {
-            return File.ReadAllText(indexPath);
-        }
+            if (segments.Any(s => s == "..") || Path.IsPathRooted(relPath))
+            {
+                return $"Error: invalid path '{path}' — '..' segments and absolute paths are not allowed.";
+            }
 
-        return BuildLevelListing(bundle, segments, relPath);
+            var bundle = GetBundle();
+            var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
+
+            if (!IsWithinBundleRoot(bundle.Root, fullDir) || !Directory.Exists(fullDir))
+            {
+                return $"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.";
+            }
+
+            var indexPath = Path.Combine(fullDir, IndexFilename);
+            if (File.Exists(indexPath))
+            {
+                return File.ReadAllText(indexPath);
+            }
+
+            return BuildLevelListing(bundle, segments, relPath);
+        });
     }
 
     /// <summary>
     /// Inspects the cross-link graph: bundle-wide stats, or (with a concept
     /// id) that concept's outgoing links, backlinks, and broken links.
-    /// Never throws for an unknown concept id — reported as a plain-text
-    /// message instead.
+    /// Never throws for expected errors (an unknown concept id, or a bundle
+    /// that fails to (re)load) — reported as a plain-text message instead.
     /// </summary>
     /// <param name="conceptId">Optional concept id to focus on.</param>
     [Description("Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.")]
     public string Graph([Description("Optional concept id to focus on.")] string? conceptId = null)
     {
-        var bundle = GetBundle();
-
-        if (string.IsNullOrWhiteSpace(conceptId))
+        if (conceptId is not null && conceptId.Contains('\0'))
         {
-            return BuildBundleGraphSummary(bundle);
+            return "Error: invalid concept id — it must not contain a null character.";
         }
 
-        if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is null)
+        return RunTool(() =>
         {
-            return ConceptNotFoundMessage(conceptId);
-        }
+            var bundle = GetBundle();
 
-        return BuildConceptGraphDetail(bundle, id);
+            if (string.IsNullOrWhiteSpace(conceptId))
+            {
+                return BuildBundleGraphSummary(bundle);
+            }
+
+            if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is null)
+            {
+                return ConceptNotFoundMessage(conceptId);
+            }
+
+            return BuildConceptGraphDetail(bundle, id);
+        });
     }
 
     /// <summary>
@@ -284,6 +315,33 @@ public sealed class OkfBundleTools
         }
 
         sb.Append('\n');
+    }
+
+    /// <summary>
+    /// Runs a tool method body, converting any exception that a well-formed
+    /// but unlucky input could still trigger — a bundle that fails to
+    /// (re)load (<see cref="OkfException"/>, e.g. <see cref="BundleLoadException"/>
+    /// for I/O failures, a missing root, or non-UTF-8 content), a rejected
+    /// argument surfaced late by a BCL API (<see cref="ArgumentException"/>),
+    /// or a filesystem read failure (<see cref="IOException"/>,
+    /// <see cref="UnauthorizedAccessException"/>) — into a plain-text
+    /// message. This is the single enforcement point for the "tools never
+    /// throw toward the LLM" rule: callers still perform their own
+    /// null/whitespace and null-character guards up front (for a precise,
+    /// tool-specific message), but this catch-all is what makes every
+    /// public tool method structurally unable to throw for any string
+    /// input, now and for tools added later.
+    /// </summary>
+    private static string RunTool(Func<string> body)
+    {
+        try
+        {
+            return body();
+        }
+        catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 
     private static string ConceptNotFoundMessage(string conceptId) =>

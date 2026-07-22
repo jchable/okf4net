@@ -121,4 +121,104 @@ public class OkfBundleToolsTests
 
         Assert.Contains("4 concepts", result);
     }
+
+    [Fact]
+    public void ReadConcept_marks_broken_outgoing_links()
+    {
+        using var tmp = new TempDir();
+        CopyDirectory(BundlePath, tmp.Path);
+        tmp.Write(
+            "tables/dangling.md",
+            "---\ntype: BigQuery Table\ntitle: Dangling\n---\n\nSee [ghost](/tables/ghost.md).\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.ReadConcept("tables/dangling");
+
+        Assert.Contains("## Outgoing links", result);
+        Assert.Contains("tables/ghost (broken)", result);
+    }
+
+    [Fact]
+    public void Browse_lists_concepts_when_directory_has_no_subdirectories()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.Browse("tables");
+
+        Assert.Contains("## Concepts", result);
+        Assert.Contains("tables/orders", result);
+        Assert.Contains("tables/customers", result);
+        Assert.Contains("tables/users", result);
+    }
+
+    [Fact]
+    public void Graph_with_concept_id_reports_its_link_detail()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.Graph("tables/orders");
+
+        Assert.Contains("# Graph: tables/orders", result);
+        Assert.Contains("## Outgoing links", result);
+        Assert.Contains("datasets/sales", result);
+        Assert.Contains("## Backlinks", result);
+        Assert.Contains("tables/customers", result);
+    }
+
+    [Fact]
+    public void ReadConcept_reports_null_concept_id_without_throwing()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.ReadConcept(null!);
+
+        Assert.Contains("not found", result);
+    }
+
+    [Fact]
+    public void ReadConcept_rejects_embedded_null_character_without_throwing()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.ReadConcept("a\0b");
+
+        Assert.Contains("Error", result);
+    }
+
+    [Fact]
+    public void Browse_rejects_absolute_windows_path_without_throwing()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.Browse("C:\\abs");
+
+        Assert.Contains("error", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Browse_rejects_embedded_null_character_without_throwing()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.Browse("a\0b");
+
+        Assert.Contains("Error", result);
+    }
+
+    [Fact]
+    public void Graph_reports_not_found_for_slash_only_id_without_throwing()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.Graph("///");
+
+        Assert.Contains("not found", result);
+    }
 }
