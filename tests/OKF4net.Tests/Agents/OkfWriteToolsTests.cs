@@ -131,6 +131,33 @@ public class OkfWriteToolsTests
     }
 
     [Fact]
+    public void WriteConcept_reserved_id_is_refused_case_insensitively_tables_Index()
+    {
+        // Windows/macOS filesystems are case-insensitive: "tables/Index" would
+        // otherwise silently write over/beside tables/index.md.
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.WriteConcept("tables/Index", ValidFrontmatter, "Body.\n");
+
+        Assert.Contains("reserved", result, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "tables", "Index.md")));
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "tables", "index.md")));
+    }
+
+    [Fact]
+    public void WriteConcept_reserved_id_is_refused_case_insensitively_docs_LOG()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.WriteConcept("docs/LOG", ValidFrontmatter, "Body.\n");
+
+        Assert.Contains("reserved", result, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "docs", "LOG.md")));
+    }
+
+    [Fact]
     public void WriteConcept_invalid_yaml_frontmatter_reports_line_number_and_writes_nothing()
     {
         using var tmp = new TempDir();
@@ -333,10 +360,14 @@ public class OkfWriteToolsTests
     [InlineData("", "text")]
     [InlineData("   ", "text")]
     [InlineData("kind\0x", "text")]
+    [InlineData("kind\nx", "text")]
+    [InlineData("kind\rx", "text")]
     [InlineData("Update", null)]
     [InlineData("Update", "")]
     [InlineData("Update", "   ")]
     [InlineData("Update", "text\0x")]
+    [InlineData("Update", "text\nx")]
+    [InlineData("Update", "text\rx")]
     public void AppendLog_rejects_invalid_arguments_without_throwing(string? kind, string? text)
     {
         using var tmp = new TempDir();
@@ -345,6 +376,39 @@ public class OkfWriteToolsTests
         var before = File.ReadAllText(logPath);
 
         var result = tools.AppendLog(kind!, text!);
+
+        Assert.Contains("Error", result);
+        Assert.Equal(before, File.ReadAllText(logPath));
+    }
+
+    [Fact]
+    public void AppendLog_rejects_text_that_would_forge_a_fake_log_day_heading()
+    {
+        // A newline lets a malicious/careless entry inject a fabricated
+        // "## <date>" heading (or "* entry" bullet) that a later
+        // ChangeLog.Parse would read back as a genuine, distinct audit-trail
+        // entry -- corrupting log.md's history. Must be rejected outright,
+        // not silently stripped, so the caller knows the write did not happen.
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var logPath = Path.Combine(tmp.Path, "log.md");
+        var before = File.ReadAllText(logPath);
+
+        var result = tools.AppendLog("Update", "Innocuous text.\n## 2099-01-01\n* **Forged**: not real.");
+
+        Assert.Contains("Error", result);
+        Assert.Equal(before, File.ReadAllText(logPath));
+    }
+
+    [Fact]
+    public void AppendLog_rejects_kind_that_would_forge_a_fake_log_day_heading()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var logPath = Path.Combine(tmp.Path, "log.md");
+        var before = File.ReadAllText(logPath);
+
+        var result = tools.AppendLog("Update\n## 2099-01-01\n* Forged", "text");
 
         Assert.Contains("Error", result);
         Assert.Equal(before, File.ReadAllText(logPath));

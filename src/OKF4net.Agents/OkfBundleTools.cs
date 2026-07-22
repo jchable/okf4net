@@ -329,10 +329,12 @@ public sealed class OkfBundleTools
                     + "segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.";
             }
 
-            if (id.Name is "index" or "log")
+            if (string.Equals(id.Name, "index", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(id.Name, "log", StringComparison.OrdinalIgnoreCase))
             {
                 return $"Error: '{id}' is a reserved concept id — the last segment must not be "
-                    + "'index' or 'log' (these would collide with the bundle's index.md/log.md files).";
+                    + "'index' or 'log' in any casing (these would collide with the bundle's "
+                    + "index.md/log.md files on case-insensitive filesystems).";
             }
 
             // Throws YamlParseException (line-tagged message) on malformed input;
@@ -412,6 +414,12 @@ public sealed class OkfBundleTools
             return "Error: invalid kind — it must not contain a null character.";
         }
 
+        if (kind.Contains('\n') || kind.Contains('\r'))
+        {
+            return "Error: invalid kind — it must not contain a line break (this would let it "
+                + "forge fake '## date' or '* entry' lines in log.md).";
+        }
+
         if (string.IsNullOrWhiteSpace(text))
         {
             return "Error: invalid text — it must not be empty.";
@@ -420,6 +428,12 @@ public sealed class OkfBundleTools
         if (text.Contains('\0'))
         {
             return "Error: invalid text — it must not contain a null character.";
+        }
+
+        if (text.Contains('\n') || text.Contains('\r'))
+        {
+            return "Error: invalid text — it must not contain a line break (this would let it "
+                + "forge fake '## date' or '* entry' lines in log.md).";
         }
 
         return RunTool(() =>
@@ -446,7 +460,7 @@ public sealed class OkfBundleTools
                 days.Insert(0, new LogDay(today, [entry]));
             }
 
-            File.WriteAllText(logPath, BuildLogMarkdown(changeLog.Title, days), Utf8NoBom);
+            File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), Utf8NoBom);
             InvalidateBundle();
 
             return $"Appended a '{kind}' entry under {today} in log.md.";
@@ -485,47 +499,6 @@ public sealed class OkfBundleTools
 
             return sb.ToString();
         });
-    }
-
-    /// <summary>
-    /// Renders a bundle log to markdown, in the exact format produced by
-    /// <see cref="ChangeLog.ToMarkdown"/> (duplicated here because
-    /// <see cref="ChangeLog"/> exposes no way to build an instance from a
-    /// modified day list — only <see cref="ChangeLog.Parse"/> and the
-    /// instance method <see cref="ChangeLog.ToMarkdown"/>). Keep in sync with
-    /// that method if its format ever changes.
-    /// </summary>
-    private static string BuildLogMarkdown(string? title, IReadOnlyList<LogDay> days)
-    {
-        var sb = new StringBuilder();
-        if (title != null)
-        {
-            sb.Append("# ").Append(title).Append("\n\n");
-        }
-
-        for (var i = 0; i < days.Count; i++)
-        {
-            if (i > 0)
-            {
-                sb.Append('\n');
-            }
-
-            var day = days[i];
-            sb.Append("## ").Append(day.Date).Append('\n');
-            foreach (var entry in day.Entries)
-            {
-                if (entry.Kind != null)
-                {
-                    sb.Append("* **").Append(entry.Kind).Append("**: ").Append(entry.Text).Append('\n');
-                }
-                else
-                {
-                    sb.Append("* ").Append(entry.Text).Append('\n');
-                }
-            }
-        }
-
-        return sb.ToString();
     }
 
     /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
