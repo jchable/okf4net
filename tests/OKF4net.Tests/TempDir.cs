@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Security.AccessControl;
+using System.Security.Principal;
+
 namespace OKF4net.Tests;
 
 /// <summary>
@@ -167,6 +170,49 @@ public sealed class TempDir : IDisposable
             return false;
         }
         catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Attempts to deny the current Windows user write access (create
+    /// files/subdirectories) to the directory at <paramref name="relativeDir"/>
+    /// (relative to the temp root; created first if it does not yet exist),
+    /// via an explicit NTFS deny <see cref="FileSystemAccessRule"/> -- unlike
+    /// <see cref="FileAttributes.ReadOnly"/> on a directory (which NTFS does
+    /// not enforce for child creation), an explicit deny ACE reliably makes
+    /// <see cref="File.WriteAllText(string, string)"/>/<see cref="Directory.CreateDirectory(string)"/>
+    /// inside it throw <see cref="UnauthorizedAccessException"/>, even for
+    /// the owning process. Only <see cref="FileSystemRights.Write"/> is
+    /// denied (not <see cref="FileSystemRights.Delete"/>), so <see cref="Dispose"/>'s
+    /// best-effort recursive delete still succeeds afterward. Returns
+    /// <c>false</c> instead of throwing on a non-Windows platform or if the
+    /// ACL change itself is denied, so callers can skip the
+    /// permission-dependent assertion (<c>if (!denied) return;</c>) rather
+    /// than fail the whole run on a machine/platform where this cannot be
+    /// set up.
+    /// </summary>
+    public bool TryMakeDirectoryUnwritable(string relativeDir)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        var fullPath = System.IO.Path.Combine(Path, relativeDir);
+        Directory.CreateDirectory(fullPath);
+
+        try
+        {
+            var info = new DirectoryInfo(fullPath);
+            var security = info.GetAccessControl();
+            var sid = WindowsIdentity.GetCurrent().User!;
+            security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.Write, AccessControlType.Deny));
+            info.SetAccessControl(security);
+            return true;
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or PlatformNotSupportedException)
         {
             return false;
         }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
 using System.Text;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -30,8 +31,17 @@ namespace OKF4net.Agents;
 /// smuggled into a concept body cannot reach the instructions channel.
 /// </para>
 /// <para>
-/// <see cref="StoreAIContextAsync"/> is still a no-op (memory capture lands
-/// in a later task).
+/// <see cref="StoreAIContextAsync"/> is deterministic (no LLM) long-term
+/// memory capture, gated by <see cref="OkfContextProviderOptions.EnableMemoryCapture"/>:
+/// the last user message and the agent's final response are written into a
+/// per-day <c>&lt;MemoryDirectory&gt;/&lt;yyyy-MM-dd&gt;</c> concept (created
+/// with full producer frontmatter the first time, appended to as a new
+/// timestamped section on every later capture that same day) plus a
+/// <c>log.md</c> entry, reusing <see cref="OkfBundleTools.WriteConcept"/> and
+/// <see cref="OkfBundleTools.AppendLog"/> exactly as any other caller would
+/// -- so every one of their guarantees (producer validation, the shared
+/// write lock, reparse-point rejection, cache invalidation) applies
+/// unchanged. See its own remarks for the full algorithm.
 /// </para>
 /// <para>
 /// The provider shares an existing <see cref="OkfBundleTools"/> instance
@@ -196,18 +206,29 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <see cref="ProvideAIContextAsync"/> is called), or <see langword="null"/>
     /// if there is none, or its text is null/blank.
     /// </summary>
-    private static string? ExtractLastUserMessageText(InvokingContext context)
+    private static string? ExtractLastUserMessageText(InvokingContext context) =>
+        ExtractLastMessageText(context.AIContext.Messages, ChatRole.User);
+
+    /// <summary>
+    /// The text of the last message with role <paramref name="role"/> in
+    /// <paramref name="messages"/>, or <see langword="null"/> if there is
+    /// none, or its text is null/blank. Shared by <see cref="ExtractLastUserMessageText"/>
+    /// (the last external user message, for progressive disclosure) and
+    /// <see cref="StoreAIContextAsync"/> (the last user message and the last
+    /// assistant message, for memory capture).
+    /// </summary>
+    private static string? ExtractLastMessageText(IEnumerable<ChatMessage>? messages, ChatRole role)
     {
-        ChatMessage? lastUser = null;
-        foreach (var message in context.AIContext.Messages ?? [])
+        ChatMessage? last = null;
+        foreach (var message in messages ?? [])
         {
-            if (message.Role == ChatRole.User)
+            if (message.Role == role)
             {
-                lastUser = message;
+                last = message;
             }
         }
 
-        var text = lastUser?.Text;
+        var text = last?.Text;
         return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 
@@ -291,14 +312,180 @@ public sealed class OkfContextProvider : AIContextProvider
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Skeleton implementation: a no-op. Deterministic long-term memory
-    /// capture (<see cref="OkfContextProviderOptions.EnableMemoryCapture"/>)
-    /// is wired in a later task.
+    /// Deterministic (no LLM) long-term memory capture. A <see langword="false"/>
+    /// <see cref="OkfContextProviderOptions.EnableMemoryCapture"/> makes this
+    /// a complete no-op: no bundle access, no write attempt. Otherwise,
+    /// captures nothing unless the invocation succeeded
+    /// (<see cref="AIContextProvider.InvokedContext.InvokeException"/> is
+    /// <see langword="null"/> and <see cref="AIContextProvider.InvokedContext.ResponseMessages"/>
+    /// is not <see langword="null"/>) and at least one of the last user
+    /// message (<see cref="AIContextProvider.InvokedContext.RequestMessages"/>,
+    /// role <see cref="ChatRole.User"/>) or the last assistant message
+    /// (<see cref="AIContextProvider.InvokedContext.ResponseMessages"/>, role
+    /// <see cref="ChatRole.Assistant"/>) has non-blank text.
+    /// <para>
+    /// When something is captured, both texts (whichever is present; the
+    /// other renders as <c>(none)</c>) are written into the bundle via
+    /// <see cref="CaptureMemory"/>: a per-day concept plus a <c>log.md</c>
+    /// entry, both through the existing public <see cref="OkfBundleTools.WriteConcept"/>/
+    /// <see cref="OkfBundleTools.AppendLog"/> -- no new internal write seam
+    /// was added to <see cref="OkfBundleTools"/> for this, since both were
+    /// already public, general-purpose, and sufficient. Calling them exactly
+    /// as any other caller would means every one of their guarantees applies
+    /// unchanged: producer frontmatter validation before writing, the shared
+    /// <c>_bundleLock</c> serializing the read-modify-write, rejection of a
+    /// reparse-point ancestor directory (a junction/symlink at
+    /// <see cref="OkfContextProviderOptions.MemoryDirectory"/> itself, or
+    /// higher) and of the target file node itself being a reparse point, and
+    /// cache invalidation on success.
+    /// </para>
+    /// <para>
+    /// Never throws: any failure -- I/O, a validation/lock/reparse-point
+    /// rejection surfaced as the tool's own <c>"Error: ..."</c> text, or a
+    /// bundle that fails to (re)load -- is recorded in the
+    /// <see langword="internal"/> <see cref="LastMemoryError"/> (reset to
+    /// <see langword="null"/> at the start of every call) instead of
+    /// propagating or being reported to the invocation pipeline.
+    /// </para>
     /// </remarks>
     protected override ValueTask StoreAIContextAsync(
         InvokedContext context,
-        CancellationToken cancellationToken = default) =>
-        default;
+        CancellationToken cancellationToken = default)
+    {
+        LastMemoryError = null;
+
+        if (!_options.EnableMemoryCapture)
+        {
+            return default;
+        }
+
+        if (context.InvokeException is not null || context.ResponseMessages is null)
+        {
+            return default;
+        }
+
+        var userText = ExtractLastMessageText(context.RequestMessages, ChatRole.User);
+        var agentText = ExtractLastMessageText(context.ResponseMessages, ChatRole.Assistant);
+
+        if (userText is null && agentText is null)
+        {
+            return default;
+        }
+
+        try
+        {
+            CaptureMemory(userText, agentText);
+        }
+        catch (Exception ex) when (ex is OkfException or IOException or UnauthorizedAccessException or DecoderFallbackException or ArgumentException)
+        {
+            // A direct _tools.GetBundle()/ConceptId.TryParse failure here --
+            // as opposed to a WriteConcept/AppendLog call, which never
+            // throws and instead returns "Error: ..." text (handled inside
+            // CaptureMemory itself via IsToolError) -- e.g. the bundle root
+            // vanishing out from under the tool set between invocations.
+            LastMemoryError = ex.Message;
+        }
+
+        return default;
+    }
+
+    /// <summary>
+    /// The error from the most recent <see cref="StoreAIContextAsync"/>
+    /// call, or <see langword="null"/> if that call captured nothing --
+    /// either because memory capture is disabled, there was nothing to
+    /// capture, or the capture succeeded. Reset at the start of every
+    /// <see cref="StoreAIContextAsync"/> call. <see langword="internal"/>:
+    /// a test-only seam, never surfaced to the invocation pipeline (which
+    /// never observes an exception or error from this provider either way).
+    /// </summary>
+    internal string? LastMemoryError { get; private set; }
+
+    private const string NoContentPlaceholder = "(none)";
+
+    /// <summary>
+    /// Writes (creates or appends to) today's memory concept and its
+    /// accompanying <c>log.md</c> entry. See <see cref="StoreAIContextAsync"/>'s
+    /// remarks for the full algorithm and the guarantees this inherits from
+    /// <see cref="OkfBundleTools.WriteConcept"/>/<see cref="OkfBundleTools.AppendLog"/>.
+    /// Sets <see cref="LastMemoryError"/> (rather than throwing) if either
+    /// call reports an <c>"Error: ..."</c> result; a direct <see cref="OkfBundleTools.GetBundle"/>
+    /// failure propagates to the caller's own try/catch instead, since (unlike
+    /// the two tool calls) it is not itself never-throwing.
+    /// </summary>
+    private void CaptureMemory(string? userText, string? agentText)
+    {
+        var now = _tools.UtcNow();
+        var dateStr = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var memoryConceptId = $"{_options.MemoryDirectory}/{dateStr}";
+
+        var section = new StringBuilder()
+            .Append("## ").Append(now.ToString("HH:mm:ss", CultureInfo.InvariantCulture)).Append(" UTC").Append('\n').Append('\n')
+            .Append("**User:**").Append('\n')
+            .Append(Neutralize(userText ?? NoContentPlaceholder)).Append('\n').Append('\n')
+            .Append("**Agent:**").Append('\n')
+            .Append(Neutralize(agentText ?? NoContentPlaceholder)).Append('\n')
+            .ToString();
+
+        // Raw GetBundle()/TryParse -- unlike WriteConcept/AppendLog below,
+        // these are NOT self-guarded, so a failure here (bundle root gone,
+        // non-UTF-8 content, ...) is deliberately left to propagate to
+        // StoreAIContextAsync's own try/catch rather than being swallowed
+        // here, mirroring ProvideAIContextAsync's identical up-front-probe
+        // pattern.
+        var bundle = _tools.GetBundle();
+        var existing = ConceptId.TryParse(memoryConceptId, out var id) ? bundle.Get(id) : null;
+
+        string frontmatterYaml;
+        string body;
+        if (existing is not null)
+        {
+            // Re-read and re-serialize the existing frontmatter unchanged
+            // (WriteConcept re-validates it before rewriting) -- only the
+            // body gains a new section.
+            frontmatterYaml = existing.Document.Frontmatter.AsMapping().ToYamlString();
+            body = existing.Document.Body.TrimEnd('\n') + "\n\n" + section;
+        }
+        else
+        {
+            var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+            frontmatterYaml =
+                "type: AgentMemory\n"
+                + $"title: Agent memory {dateStr}\n"
+                + $"description: Captured user/agent exchanges for {dateStr}.\n"
+                + $"timestamp: {timestamp}\n";
+            body = section;
+        }
+
+        var writeResult = _tools.WriteConcept(memoryConceptId, frontmatterYaml, body);
+        if (IsToolError(writeResult))
+        {
+            LastMemoryError = writeResult;
+            return;
+        }
+
+        var logResult = _tools.AppendLog("Memory", $"Captured exchange in {memoryConceptId}");
+        if (IsToolError(logResult))
+        {
+            LastMemoryError = logResult;
+        }
+    }
+
+    private static bool IsToolError(string toolResult) =>
+        toolResult.StartsWith("Error:", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Prefixes every line of <paramref name="content"/> with <c>&gt; </c>
+    /// (a markdown blockquote) before it is embedded in a memory concept's
+    /// body, so an injected <c>---</c>, <c># heading</c>, or <c># Citations</c>
+    /// line (which <see cref="OkfDocument.Citations"/> would otherwise parse
+    /// as real citation data) cannot be mistaken for genuine document
+    /// structure, while the captured text stays human-readable.
+    /// </summary>
+    private static string Neutralize(string content)
+    {
+        var lines = content.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        return string.Join('\n', lines.Select(line => "> " + line));
+    }
 
     /// <summary>
     /// Test-only entry point: <see cref="ProvideAIContextAsync"/> is
@@ -311,4 +498,13 @@ public sealed class OkfContextProvider : AIContextProvider
     /// </summary>
     internal ValueTask<AIContext> ProvideForTest(InvokingContext context, CancellationToken cancellationToken = default) =>
         ProvideAIContextAsync(context, cancellationToken);
+
+    /// <summary>
+    /// Test-only entry point, mirroring <see cref="ProvideForTest"/>:
+    /// <see cref="AIContextProvider.InvokedContext"/> also has a public
+    /// constructor (both the success and failure overloads), so tests reach
+    /// <see cref="StoreAIContextAsync"/> the same way.
+    /// </summary>
+    internal ValueTask StoreForTest(InvokedContext context, CancellationToken cancellationToken = default) =>
+        StoreAIContextAsync(context, cancellationToken);
 }
