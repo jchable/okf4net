@@ -35,10 +35,15 @@ public sealed class OkfBundleTools
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>
-    /// Guards <see cref="_bundle"/>. Agent hosts may invoke tool methods
-    /// concurrently from multiple threads, so the lazy cache in
-    /// <see cref="GetBundle"/> and the invalidation in
-    /// <see cref="InvalidateBundle"/> must not race.
+    /// Guards <see cref="_bundle"/> and every write this class performs to
+    /// disk. Agent hosts may invoke tool methods concurrently from multiple
+    /// threads, so the lazy cache in <see cref="GetBundle"/> and the
+    /// invalidation in <see cref="InvalidateBundle"/> must not race; the same
+    /// lock also serializes <see cref="WriteConcept"/>, <see cref="AppendLog"/>,
+    /// and <see cref="RegenerateIndexes"/>'s own read-modify-write sequences
+    /// (each holds it around the read, the write, and its own cache
+    /// invalidation), so two concurrent calls into the same tool can't
+    /// interleave and lose one side's update.
     /// </summary>
     private readonly Lock _bundleLock = new();
 
@@ -411,17 +416,26 @@ public sealed class OkfBundleTools
                 return $"Error: '{id}' resolves outside the bundle root.";
             }
 
-            var existed = File.Exists(targetPath);
             var content = doc.Serialize();
+            bool existed;
 
-            var parentDir = Path.GetDirectoryName(targetPath);
-            if (!string.IsNullOrEmpty(parentDir))
+            // Serialized under _bundleLock (shared with AppendLog and
+            // RegenerateIndexes) so concurrent writers can't interleave an
+            // existence check with another writer's write, and so the cache
+            // invalidation below is atomic with the write it follows.
+            lock (_bundleLock)
             {
-                Directory.CreateDirectory(parentDir);
-            }
+                existed = File.Exists(targetPath);
 
-            File.WriteAllText(targetPath, content, Utf8NoBom);
-            InvalidateBundle();
+                var parentDir = Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrEmpty(parentDir))
+                {
+                    Directory.CreateDirectory(parentDir);
+                }
+
+                File.WriteAllText(targetPath, content, Utf8NoBom);
+                _bundle = null;
+            }
 
             var byteCount = Utf8NoBom.GetByteCount(content);
             var status = existed ? "updated" : "new";
@@ -434,14 +448,21 @@ public sealed class OkfBundleTools
     /// (UTC) ISO date, creating the file if it does not yet exist. If a
     /// heading for today's date already exists, the entry is appended to the
     /// end of that day's entries (days are newest-first by convention (§7),
-    /// but entries within a day stay chronological). Never throws for
+    /// but entries within a day stay chronological). The read-modify-write is
+    /// serialized under <see cref="_bundleLock"/> (shared with
+    /// <see cref="WriteConcept"/> and <see cref="RegenerateIndexes"/>) so
+    /// concurrent calls can't lose an update to each other. The existing file,
+    /// if any, is read with the same strict-UTF-8 decoding <see cref="ChangesSince"/>
+    /// uses, then re-rendered through <see cref="ChangeLog.ToMarkdown"/> — the
+    /// strict §7 model — so any non-conforming prose or comments in a
+    /// hand-authored <c>log.md</c> are not preserved. Never throws for
     /// expected errors (a null/blank/embedded-null <paramref name="kind"/> or
-    /// <paramref name="text"/>) — those are reported as a plain-text message
-    /// instead.
+    /// <paramref name="text"/>, or a <c>log.md</c> that fails strict UTF-8
+    /// decoding) — those are reported as a plain-text message instead.
     /// </summary>
     /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
     /// <param name="text">The entry text.</param>
-    [Description("Append an entry to the bundle root log.md under today's date (ISO).")]
+    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §7 model, so non-conforming prose or comments in a hand-authored log.md are not preserved.")]
     public string AppendLog(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text)
@@ -481,29 +502,45 @@ public sealed class OkfBundleTools
         return RunTool(() =>
         {
             var logPath = Path.Combine(BundleRoot, LogFilename);
-            var existingText = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
-
-            // ChangeLog.Parse is permissive (never throws); used here only to
-            // locate today's day (if any) among the existing entries.
-            var changeLog = ChangeLog.Parse(existingText);
             var today = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             var entry = new LogEntry(kind.Trim(), text.Trim());
 
-            var days = changeLog.Days.ToList();
-            var dayIndex = days.FindIndex(d => string.Equals(d.Date, today, StringComparison.Ordinal));
-            if (dayIndex >= 0)
+            // Serialized under _bundleLock (shared with WriteConcept and
+            // RegenerateIndexes): without it, two concurrent AppendLog calls
+            // could both read the same "before" text, each append their own
+            // entry to it, and the second write would silently clobber the
+            // first (a lost update). Locking the whole read-modify-write
+            // makes it atomic.
+            lock (_bundleLock)
             {
-                var day = days[dayIndex];
-                days[dayIndex] = day with { Entries = [.. day.Entries, entry] };
-            }
-            else
-            {
-                // New LogDay at the head: days are newest-first (§7).
-                days.Insert(0, new LogDay(today, [entry]));
-            }
+                // Strict UTF-8, matching ChangesSince's AppendLogFileChanges:
+                // a non-UTF-8 log.md throws DecoderFallbackException (caught
+                // by RunTool below) instead of being silently re-decoded with
+                // U+FFFD replacement characters and then rewritten that way.
+                var existingText = File.Exists(logPath)
+                    ? StrictUtf8.GetString(File.ReadAllBytes(logPath))
+                    : string.Empty;
 
-            File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), Utf8NoBom);
-            InvalidateBundle();
+                // ChangeLog.Parse is permissive (never throws); used here only to
+                // locate today's day (if any) among the existing entries.
+                var changeLog = ChangeLog.Parse(existingText);
+
+                var days = changeLog.Days.ToList();
+                var dayIndex = days.FindIndex(d => string.Equals(d.Date, today, StringComparison.Ordinal));
+                if (dayIndex >= 0)
+                {
+                    var day = days[dayIndex];
+                    days[dayIndex] = day with { Entries = [.. day.Entries, entry] };
+                }
+                else
+                {
+                    // New LogDay at the head: days are newest-first (§7).
+                    days.Insert(0, new LogDay(today, [entry]));
+                }
+
+                File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), Utf8NoBom);
+                _bundle = null;
+            }
 
             return $"Appended a '{kind}' entry under {today} in log.md.";
         });
@@ -511,17 +548,24 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle (progressive
-    /// disclosure listings). Never throws for expected errors (a bundle root
-    /// that disappeared out from under it) — reported as a plain-text
-    /// message instead.
+    /// disclosure listings). The regeneration and cache invalidation are
+    /// serialized under <see cref="_bundleLock"/> (shared with
+    /// <see cref="WriteConcept"/> and <see cref="AppendLog"/>) so a
+    /// concurrent write can't be missed by (or interleave with) this pass.
+    /// Never throws for expected errors (a bundle root that disappeared out
+    /// from under it) — reported as a plain-text message instead.
     /// </summary>
     [Description("Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.")]
     public string RegenerateIndexes()
     {
         return RunTool(() =>
         {
-            var written = IndexGenerator.RegenerateIndexes(BundleRoot);
-            InvalidateBundle();
+            IReadOnlyList<string> written;
+            lock (_bundleLock)
+            {
+                written = IndexGenerator.RegenerateIndexes(BundleRoot);
+                _bundle = null;
+            }
 
             if (written.Count == 0)
             {
@@ -942,14 +986,16 @@ public sealed class OkfBundleTools
     /// (re)load (<see cref="OkfException"/>, e.g. <see cref="BundleLoadException"/>
     /// for I/O failures, a missing root, or non-UTF-8 content), a rejected
     /// argument surfaced late by a BCL API (<see cref="ArgumentException"/>),
-    /// or a filesystem read failure (<see cref="IOException"/>,
-    /// <see cref="UnauthorizedAccessException"/>) — into a plain-text
-    /// message. This is the single enforcement point for the "tools never
-    /// throw toward the LLM" rule: callers still perform their own
-    /// null/whitespace and null-character guards up front (for a precise,
-    /// tool-specific message), but this catch-all is what makes every
-    /// public tool method structurally unable to throw for any string
-    /// input, now and for tools added later.
+    /// a filesystem read failure (<see cref="IOException"/>,
+    /// <see cref="UnauthorizedAccessException"/>), or a strict-UTF-8 decode
+    /// failure reading an existing reserved file directly
+    /// (<see cref="DecoderFallbackException"/>, e.g. <see cref="AppendLog"/>
+    /// reading a non-UTF-8 <c>log.md</c>) — into a plain-text message. This
+    /// is the single enforcement point for the "tools never throw toward the
+    /// LLM" rule: callers still perform their own null/whitespace and
+    /// null-character guards up front (for a precise, tool-specific message),
+    /// but this catch-all is what makes every public tool method structurally
+    /// unable to throw for any string input, now and for tools added later.
     /// </summary>
     private static string RunTool(Func<string> body)
     {
@@ -957,7 +1003,7 @@ public sealed class OkfBundleTools
         {
             return body();
         }
-        catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
             return $"Error: {ex.Message}";
         }

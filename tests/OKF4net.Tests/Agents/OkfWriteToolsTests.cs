@@ -414,6 +414,32 @@ public class OkfWriteToolsTests
         Assert.Equal(before, File.ReadAllText(logPath));
     }
 
+    [Fact]
+    public void AppendLog_concurrent_calls_same_day_lose_no_entries()
+    {
+        // Proves the _bundleLock serialization around AppendLog's
+        // read-modify-write: without it, two threads could both read the
+        // same "before" log.md, each append their own entry to their own
+        // in-memory copy, and whichever writes last would silently clobber
+        // the other's entry (a lost update). With the lock, every one of
+        // the 8 concurrent entries must survive.
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(tmp.Path);
+        var tools = new OkfBundleTools(tmp.Path) { UtcNow = () => new DateTime(2026, 7, 22, 0, 0, 0, DateTimeKind.Utc) };
+
+        const int callCount = 8;
+        Parallel.For(0, callCount, i => tools.AppendLog("Update", $"Entry {i}"));
+
+        var text = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        var changeLog = ChangeLog.Parse(text);
+        var day = Assert.Single(changeLog.Days, d => d.Date == "2026-07-22");
+        Assert.Equal(callCount, day.Entries.Count);
+        for (var i = 0; i < callCount; i++)
+        {
+            Assert.Contains(day.Entries, e => e.Text == $"Entry {i}");
+        }
+    }
+
     // ---------------------------------------------------------------
     // RegenerateIndexes
     // ---------------------------------------------------------------

@@ -173,17 +173,17 @@ Console.WriteLine(response.Text);
 The nine tools (read → browse → graph → search → write → append →
 regenerate → validate → changes-since):
 
-| Tool                     | Description                                                                                                                                                                |
-|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.                                                                                 |
-| `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                     |
-| `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                               |
-| `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                   |
-| `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title, description and timestamp (producer-grade validation is enforced before writing). |
-| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO).                                                                                                        |
-| `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                          |
-| `okf_validate_bundle`    | Validate the bundle against OKF v0.1 conformance (§9). Returns the diagnostics report.                                                                                     |
-| `okf_changes_since`      | Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.                                                                               |
+| Tool                     | Description                                                                                                                                                                                                    |
+|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.                                                                                                                    |
+| `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                                                        |
+| `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                                                                  |
+| `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                                                      |
+| `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title, description and timestamp (producer-grade validation is enforced before writing).                                   |
+| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §7 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
+| `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
+| `okf_validate_bundle`    | Validate the bundle against OKF v0.1 conformance (§9). Returns the diagnostics report.                                                                                                                        |
+| `okf_changes_since`      | Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.                                                                                                                  |
 
 **Security note:** bundle content (concept bodies, frontmatter, log entries)
 is untrusted — it comes from files on disk that may have been written by
