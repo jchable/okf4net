@@ -195,6 +195,108 @@ public class OkfContextProviderMemoryTests
     }
 
     [Fact]
+    public async Task Trailing_tool_only_assistant_message_falls_back_to_the_earlier_text_answer()
+    {
+        // D1: a trailing role-Assistant message that carries only a tool
+        // call (no text) must not win over an earlier real text answer --
+        // ExtractLastMessageText skips it and captures the earlier answer
+        // instead of "(none)".
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tools.UtcNow = () => new DateTime(2026, 7, 22, 8, 0, 0, DateTimeKind.Utc);
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { EnableMemoryCapture = true });
+        var agent = new ScriptedChatClient([]).AsAIAgent();
+
+        List<ChatMessage> responseMessages =
+        [
+            new ChatMessage(ChatRole.Assistant, "the real answer"),
+            new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "some_tool", new Dictionary<string, object?>())]),
+        ];
+
+#pragma warning disable MAAI001
+        var context = new AIContextProvider.InvokedContext(
+            agent,
+            session: null,
+            requestMessages: [new ChatMessage(ChatRole.User, "question")],
+            responseMessages: responseMessages);
+#pragma warning restore MAAI001
+
+        await provider.StoreForTest(context);
+
+        Assert.Null(provider.LastMemoryError);
+        var doc = OkfDocument.Parse(File.ReadAllText(MemoryFilePath(tmp, "2026-07-22")));
+        Assert.Contains("> the real answer", doc.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("(none)", doc.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Trailing_blank_user_request_message_falls_back_to_the_earlier_non_blank_user_message()
+    {
+        // Symmetric case on the request side: a trailing blank role-User
+        // message must not shadow an earlier real question.
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tools.UtcNow = () => new DateTime(2026, 7, 22, 8, 0, 0, DateTimeKind.Utc);
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { EnableMemoryCapture = true });
+        var agent = new ScriptedChatClient([]).AsAIAgent();
+
+        List<ChatMessage> requestMessages =
+        [
+            new ChatMessage(ChatRole.User, "the real question"),
+            new ChatMessage(ChatRole.Assistant, "an intermediate reply"),
+            new ChatMessage(ChatRole.User, "   "),
+        ];
+
+#pragma warning disable MAAI001
+        var context = new AIContextProvider.InvokedContext(
+            agent,
+            session: null,
+            requestMessages: requestMessages,
+            responseMessages: [new ChatMessage(ChatRole.Assistant, "final answer")]);
+#pragma warning restore MAAI001
+
+        await provider.StoreForTest(context);
+
+        Assert.Null(provider.LastMemoryError);
+        var doc = OkfDocument.Parse(File.ReadAllText(MemoryFilePath(tmp, "2026-07-22")));
+        Assert.Contains("> the real question", doc.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Embedded_NUL_in_captured_content_is_sanitized_not_dropped()
+    {
+        // D2: WriteConcept's body guard rejects '\0' -- without sanitizing
+        // first, this turn would be silently lost (LastMemoryError set, no
+        // exception). The provider must replace '\0' with U+FFFD before
+        // building the memory doc so the turn is captured.
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tools.UtcNow = () => new DateTime(2026, 7, 22, 8, 0, 0, DateTimeKind.Utc);
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { EnableMemoryCapture = true });
+
+        var userText = "before\0after";
+        var agentText = "reply\0text";
+
+        await provider.StoreForTest(BuildInvokedContext(userText, agentText));
+
+        Assert.Null(provider.LastMemoryError);
+        var memoryPath = MemoryFilePath(tmp, "2026-07-22");
+        Assert.True(File.Exists(memoryPath));
+
+        var raw = File.ReadAllText(memoryPath);
+        Assert.DoesNotContain('\0', raw);
+        Assert.Contains('�', raw);
+
+        var doc = OkfDocument.Parse(raw);
+        doc.Validate();
+        Assert.Contains("before�after", doc.Body, StringComparison.Ordinal);
+        Assert.Contains("reply�text", doc.Body, StringComparison.Ordinal);
+
+        var report = BundleValidator.Validate(tools.GetBundle());
+        Assert.True(report.IsConformant);
+    }
+
+    [Fact]
     public async Task EnableMemoryCapture_false_is_a_no_op()
     {
         using var tmp = new TempDir();

@@ -188,6 +188,30 @@ public class OkfContextProviderTests
         Assert.DoesNotContain("tables/orders", text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Framing_overhead_is_charged_so_the_assembled_message_stays_within_budget()
+    {
+        // D3: the "<okf-context id="...">"/"</okf-context>" tags, id,
+        // joining newlines, and truncation marker are now charged against
+        // TokenBudget in RenderBlock's own accounting (previously only the
+        // inner content was), so for a budget small enough to force
+        // truncation of the (large) root listing, the WHOLE assembled
+        // message -- wrapper included -- must fit at or under the budget's
+        // token estimate, not just its inner content.
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        const int tokenBudget = 20;
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { TokenBudget = tokenBudget });
+
+        var result = await provider.ProvideForTest(BuildInvokingContext(userMessageText: null), CancellationToken.None);
+
+        var text = Assert.Single(result.Messages!).Text;
+        Assert.Contains("… (truncated)", text, StringComparison.Ordinal);
+        Assert.True(
+            TokenEstimate.Chars(text) <= tokenBudget,
+            $"assembled message estimated at {TokenEstimate.Chars(text)} tokens ({text.Length} chars) exceeds the {tokenBudget}-token budget once framing is charged");
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -293,6 +317,36 @@ public class OkfContextProviderTests
         Assert.Equal(1, CountOccurrences(text, "<okf-context id=\""));
         Assert.Contains("<okf-context id=\"index\">", text, StringComparison.Ordinal);
         Assert.DoesNotContain("tables/orders", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Trailing_blank_user_message_falls_back_to_the_earlier_non_blank_user_message()
+    {
+        // D1: ExtractLastMessageText must skip a trailing empty/whitespace-only
+        // message of the target role and use the last one that actually has
+        // text, not just the last message of that role regardless of content.
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var provider = new OkfContextProvider(tools);
+
+        var agent = new ScriptedChatClient([]).AsAIAgent();
+        var aiContext = new AIContext
+        {
+            Messages =
+            [
+                new ChatMessage(ChatRole.User, "orders"),
+                new ChatMessage(ChatRole.Assistant, "an intermediate reply"),
+                new ChatMessage(ChatRole.User, "   "),
+            ],
+        };
+#pragma warning disable MAAI001 // InvokingContext's public ctor is marked [Experimental] in 1.14.0.
+        var context = new AIContextProvider.InvokingContext(agent, session: null, aiContext);
+#pragma warning restore MAAI001
+
+        var result = await provider.ProvideForTest(context, CancellationToken.None);
+
+        var text = Assert.Single(result.Messages!).Text;
+        Assert.Contains("<okf-context id=\"tables/orders\">", text, StringComparison.Ordinal);
     }
 
     [Fact]

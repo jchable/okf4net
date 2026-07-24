@@ -19,8 +19,9 @@ namespace OKF4net.Agents;
 /// approximate soft budget of <see cref="OkfContextProviderOptions.TokenBudget"/>
 /// (estimated via <see cref="TokenEstimate"/>, a dependency-free chars/4
 /// approximation) -- per-block <c>&lt;okf-context id="..."&gt;</c> framing
-/// overhead is not charged against it, so the assembled message can exceed
-/// it by a small margin; see <see cref="RenderBlock"/>'s remarks:
+/// overhead IS charged against it (see <see cref="RenderBlock"/>'s remarks),
+/// so the assembled message tracks the budget closely, though it can still
+/// land a little under or over it since the estimate itself is approximate:
 /// the bundle root's progressive-disclosure listing (<see cref="OkfBundleTools.Browse"/>
 /// with no path — its own <c>index.md</c> if one exists, otherwise a
 /// generated listing), then concepts scored against the last user message in
@@ -218,36 +219,35 @@ public sealed class OkfContextProvider : AIContextProvider
 
     /// <summary>
     /// The text of the last message with role <paramref name="role"/> in
-    /// <paramref name="messages"/>, or <see langword="null"/> if there is
-    /// none, or its text is null/blank. Shared by <see cref="ExtractLastUserMessageText"/>
-    /// (the last external user message, for progressive disclosure) and
-    /// <see cref="StoreAIContextAsync"/> (the last user message and the last
-    /// assistant message, for memory capture).
+    /// <paramref name="messages"/> whose text is non-blank, or
+    /// <see langword="null"/> if none of them has one. Shared by
+    /// <see cref="ExtractLastUserMessageText"/> (the last external user
+    /// message, for progressive disclosure) and <see cref="StoreAIContextAsync"/>
+    /// (the last user message and the last assistant message, for memory
+    /// capture).
     /// </summary>
     /// <remarks>
-    /// Known limitation (inherited from Task 2, acceptable for v1): this
-    /// picks the LAST message of <paramref name="role"/>, not necessarily
-    /// the last message overall -- for memory capture specifically, if
-    /// <c>ResponseMessages</c> ends with a trailing non-text/tool-only
-    /// message after the real assistant text answer, that trailing message
-    /// is simply not role <see cref="ChatRole.Assistant"/> with text and is
-    /// skipped, so the actual answer is still found; but a role-<c>Assistant</c>
-    /// message that itself carries only tool-call content (no text) would
-    /// win over an earlier, real text answer and yield a blank capture.
+    /// Skips a trailing message of <paramref name="role"/> whose text is
+    /// null/blank rather than stopping at it: for memory capture
+    /// specifically, a role-<see cref="ChatRole.Assistant"/> message that
+    /// itself carries only tool-call content (no text) -- e.g. a trailing
+    /// entry in <c>ResponseMessages</c> after the real text answer -- no
+    /// longer wins over that earlier, real answer and yields a blank
+    /// capture; same reasoning applies to a trailing blank
+    /// <see cref="ChatRole.User"/> message on the provide side.
     /// </remarks>
     private static string? ExtractLastMessageText(IEnumerable<ChatMessage>? messages, ChatRole role)
     {
-        ChatMessage? last = null;
+        string? lastNonBlank = null;
         foreach (var message in messages ?? [])
         {
-            if (message.Role == role)
+            if (message.Role == role && !string.IsNullOrWhiteSpace(message.Text))
             {
-                last = message;
+                lastNonBlank = message.Text;
             }
         }
 
-        var text = last?.Text;
-        return string.IsNullOrWhiteSpace(text) ? null : text;
+        return lastNonBlank;
     }
 
     /// <summary>
@@ -262,15 +262,30 @@ public sealed class OkfContextProvider : AIContextProvider
     /// block), a block is always returned, even if it ends up being just the
     /// truncation marker.
     /// </summary>
-    /// <returns>The rendered block (or <see langword="null"/>) and the token estimate of its inner content (0 if the block is null).</returns>
+    /// <returns>The rendered block (or <see langword="null"/>) and the token estimate of the full returned block, including its framing (0 if the block is null).</returns>
     private static (string? Block, int TokensUsed) RenderBlock(string id, string content, int tokenBudget, bool alwaysInclude)
     {
-        // Intentional: TokensUsed below is the estimate of `inner` only, not
-        // of the returned Block (which also carries the "<okf-context ...>"
-        // wrapper). The wrapper's own tokens are never charged against the
-        // budget, so the final assembled message can exceed TokenBudget by a
-        // small margin (~4% at defaults) -- a soft budget, not a hard cap.
-        var (kept, truncated, linesKept) = TruncateWholeLines(content, tokenBudget);
+        // The per-block framing -- the "<okf-context id="...">"/"</okf-context>"
+        // tags, the id, and the newlines joining them to the inner content --
+        // plus headroom for a trailing TruncatedMarker (reserved up front, in
+        // case truncation turns out to be needed) is charged against
+        // tokenBudget BEFORE deciding how much of `content` fits, by handing
+        // TruncateWholeLines a correspondingly reduced innerBudget rather
+        // than the full tokenBudget. TokensUsed below is the estimate of the
+        // FULL returned Block (wrapper included), not just its inner
+        // content, so the caller's running `remaining` budget reflects the
+        // true per-block cost too. Still only approximate -- TokenEstimate
+        // is itself a crude chars/4 estimate, and whole-line truncation
+        // granularity means the result can land a little under (when the
+        // reserved marker headroom goes unused) or, rarely, a little over
+        // tokenBudget -- a soft budget, not a hard cap, but one that now
+        // tracks TokenBudget much more closely than charging inner content
+        // alone did.
+        var framingOverhead = TokenEstimate.Chars($"<okf-context id=\"{id}\">\n\n</okf-context>")
+            + TokenEstimate.Chars("\n" + TruncatedMarker);
+        var innerBudget = Math.Max(0, tokenBudget - framingOverhead);
+
+        var (kept, truncated, linesKept) = TruncateWholeLines(content, innerBudget);
 
         if (!alwaysInclude && linesKept == 0)
         {
@@ -287,7 +302,8 @@ public sealed class OkfContextProvider : AIContextProvider
             inner = kept.Length == 0 ? TruncatedMarker : kept + "\n" + TruncatedMarker;
         }
 
-        return ($"<okf-context id=\"{id}\">\n{inner}\n</okf-context>", TokenEstimate.Chars(inner));
+        var block = $"<okf-context id=\"{id}\">\n{inner}\n</okf-context>";
+        return (block, TokenEstimate.Chars(block));
     }
 
     /// <summary>
@@ -444,9 +460,9 @@ public sealed class OkfContextProvider : AIContextProvider
         var section = new StringBuilder()
             .Append("## ").Append(now.ToString("HH:mm:ss", CultureInfo.InvariantCulture)).Append(" UTC").Append('\n').Append('\n')
             .Append("**User:**").Append('\n')
-            .Append(Neutralize(userText ?? NoContentPlaceholder)).Append('\n').Append('\n')
+            .Append(Neutralize(SanitizeNul(userText) ?? NoContentPlaceholder)).Append('\n').Append('\n')
             .Append("**Agent:**").Append('\n')
-            .Append(Neutralize(agentText ?? NoContentPlaceholder)).Append('\n')
+            .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
         // Raw GetBundle()/TryParse -- unlike WriteConcept/AppendLog below,
@@ -512,6 +528,20 @@ public sealed class OkfContextProvider : AIContextProvider
     /// </summary>
     private static string Neutralize(string content) =>
         string.Join('\n', RustLines.Split(content).Select(line => "> " + line));
+
+    /// <summary>
+    /// Replaces every U+0000 (NUL) in <paramref name="content"/> with U+FFFD
+    /// (the standard Unicode replacement character), or returns
+    /// <see langword="null"/> unchanged. Applied before <see cref="Neutralize"/>
+    /// so a captured user/agent turn containing an embedded NUL is still
+    /// written (the turn is CAPTURED, not silently dropped): <see cref="OkfBundleTools.WriteConcept"/>'s
+    /// body guard rejects a raw '\0' outright (core stays strict on purpose;
+    /// this sanitization is deliberately only here, in the provider's
+    /// capture path, not loosened in <see cref="OkfBundleTools.WriteConcept"/>
+    /// itself), which would otherwise report an <c>"Error: ..."</c> result,
+    /// set <see cref="LastMemoryError"/>, and lose the whole exchange.
+    /// </summary>
+    private static string? SanitizeNul(string? content) => content?.Replace('\0', '�');
 
     /// <summary>
     /// Test-only entry point: <see cref="ProvideAIContextAsync"/> is

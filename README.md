@@ -258,10 +258,12 @@ pipeline.
 
 A few known v1 caveats:
 
-- **Budget is approximate:** `TokenBudget` uses a crude chars/4 estimate and
-  does not charge the per-block `<okf-context>` framing overhead, so the
-  injected message can exceed it by a small margin (~4% at defaults) — a soft
-  budget, not a hard cap.
+- **Budget is approximate:** `TokenBudget` uses a crude chars/4 estimate, and
+  the per-block `<okf-context>` framing overhead (tags, id, joining newlines,
+  a trailing truncation marker) is charged against it, so the injected
+  message tracks the budget closely — but it's still a soft budget, not a
+  hard cap: the estimate itself is approximate, so the result can land a
+  little under or over.
 - **The `<okf-context id="…">` fences are readability markers, not a security
   boundary:** the whole injected message is untrusted user-role reference
   data (a concept body containing a literal `</okf-context>` could visually
