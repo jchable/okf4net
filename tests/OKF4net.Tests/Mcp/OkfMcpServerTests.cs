@@ -61,4 +61,29 @@ public sealed class OkfMcpServerTests
             Directory.Delete(bundle, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task Build_readOnly_omits_the_three_write_tools()
+    {
+        var bundle = NewBundleDir();
+        try
+        {
+            var tools = OkfMcpToolset.Build(bundle, readOnly: true);
+            var (server, client) = await ConnectAsync(tools);
+            await using var _ = server;
+            await using var __ = client;
+
+            var names = (await client.ListToolsAsync()).Select(t => t.Name).ToHashSet();
+
+            Assert.Equal(6, names.Count);
+            Assert.DoesNotContain("okf_write_concept", names);
+            Assert.DoesNotContain("okf_append_log", names);
+            Assert.DoesNotContain("okf_regenerate_indexes", names);
+            Assert.Contains("okf_read_concept", names);
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
 }
