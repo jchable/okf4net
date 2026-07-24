@@ -506,6 +506,14 @@ public sealed class OkfBundleTools
                     // DecoderFallbackException (caught by RunTool below)
                     // rather than being silently re-decoded and rewritten.
                     var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
+                    // Fail-closed: if the existing concept has malformed
+                    // frontmatter (hand-edited, or a prior partial/crashed
+                    // write), OkfDocument.Parse throws DocumentParseException
+                    // (caught by RunTool -> Error text, LastMemoryError set) so
+                    // this append is dropped rather than overwriting a possibly
+                    // important file. This is stricter than the old permissive
+                    // Bundle.Get path, which treated an unparseable file as
+                    // absent and silently recreated it.
                     var existingDoc = OkfDocument.Parse(text);
                     frontmatterYaml = existingDoc.Frontmatter.AsMapping().ToYamlString();
                     currentBody = existingDoc.Body;
