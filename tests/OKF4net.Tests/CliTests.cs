@@ -101,6 +101,35 @@ public class CliTests
     }
 
     [Fact]
+    public void Graph_dot_styles_broken_links_dashed_and_red()
+    {
+        // okf.rs cmd_graph (okf.rs:177-206): an edge to a non-existent
+        // concept gets ` [style=dashed, color=red]` appended before the
+        // trailing `;` (OkfCli.cs CmdGraph). A resolvable edge gets no style
+        // suffix at all. Build a small bundle with one concept linking to a
+        // target that does not exist in the bundle.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nSee [missing](/does/not/exist.md).\n");
+        var r = Run("graph", tmp.Path, "--dot");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("\"a\" -> \"does/not/exist\" [style=dashed, color=red];\n", r.Out);
+    }
+
+    [Fact]
+    public void Graph_dot_does_not_style_resolvable_links()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nSee [b](/b.md).\n");
+        tmp.Write("b.md", "---\ntype: Note\n---\nbody\n");
+        var r = Run("graph", tmp.Path, "--dot");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("\"a\" -> \"b\";\n", r.Out);
+        Assert.DoesNotContain("style=dashed", r.Out);
+    }
+
+    [Fact]
     public void Parse_prints_document_structure()
     {
         var r = Run("parse", Path.Combine(BundlePath, "tables", "users.md"));
