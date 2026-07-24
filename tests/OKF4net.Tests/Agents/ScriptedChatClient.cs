@@ -85,6 +85,19 @@ public sealed class ScriptedChatClient : IChatClient
     /// </summary>
     public List<string> ObservedFunctionResults { get; } = [];
 
+    /// <summary>
+    /// The full, materialized incoming <c>messages</c> list from every call
+    /// to <see cref="GetResponseAsync"/> so far, in call order -- one entry
+    /// per turn. Unlike <see cref="ObservedFunctionResults"/> (which extracts
+    /// only <see cref="FunctionResultContent"/> across the whole
+    /// conversation), this is the raw request the pipeline actually handed
+    /// this double for a given turn, letting a test assert on what an
+    /// upstream decorator (e.g. an <c>AIContextProvider</c>-driven
+    /// <c>AIContextProviderChatClient</c>) injected into it before it
+    /// reached here.
+    /// </summary>
+    public List<IReadOnlyList<ChatMessage>> ObservedRequestMessages { get; } = [];
+
     /// <summary>How many of <see cref="ScriptStep"/>s in the script have been consumed so far.</summary>
     public int TurnsTaken => _turn;
 
@@ -93,7 +106,9 @@ public sealed class ScriptedChatClient : IChatClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        RecordFunctionResults(messages);
+        var list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        ObservedRequestMessages.Add(list);
+        RecordFunctionResults(list);
 
         if (_turn >= _script.Count)
         {
@@ -131,9 +146,8 @@ public sealed class ScriptedChatClient : IChatClient
     /// for a <see cref="FunctionResultContent"/>, appending each one's
     /// rendered result to <see cref="ObservedFunctionResults"/>.
     /// </summary>
-    private void RecordFunctionResults(IEnumerable<ChatMessage> messages)
+    private void RecordFunctionResults(IReadOnlyList<ChatMessage> list)
     {
-        var list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
         for (var i = _messagesSeen; i < list.Count; i++)
         {
             foreach (var content in list[i].Contents)
