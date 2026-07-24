@@ -48,3 +48,83 @@ jobs:
           --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
+
+  cli-binaries:
+    name: build okf (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: windows-latest
+          - rid: win-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Derive version from tag
+        shell: pwsh
+        run: echo "VERSION=$($env:GITHUB_REF_NAME -replace '^v','')" >> $env:GITHUB_ENV
+      - name: Publish + zip
+        shell: pwsh
+        run: packaging/winget/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:VERSION -OutDir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.rid }}
+          path: dist/*
+
+  github-release:
+    name: publish GitHub Release
+    needs: [cli-binaries, nuget]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+      - name: Build checksums.txt
+        run: |
+          cd dist
+          sha256sum okf-*.zip > checksums.txt
+          cat checksums.txt
+      - name: Create/attach Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/okf-*.zip
+            dist/checksums.txt
+
+  winget-manifests:
+    name: generate winget manifests
+    needs: github-release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+      - name: Generate manifests
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME -replace '^v',''
+          $base = "https://github.com/${env:GITHUB_REPOSITORY}/releases/download/${env:GITHUB_REF_NAME}"
+          $shaX64 = (Get-Content "dist/okf-$ver-win-x64.zip.sha256" -Raw).Trim()
+          $shaArm = (Get-Content "dist/okf-$ver-win-arm64.zip.sha256" -Raw).Trim()
+          packaging/winget/Generate-Manifests.ps1 -Version $ver `
+            -UrlX64 "$base/okf-$ver-win-x64.zip" -Sha256X64 $shaX64 `
+            -UrlArm64 "$base/okf-$ver-win-arm64.zip" -Sha256Arm64 $shaArm `
+            -OutDir manifests
+      - name: Attach manifests to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: manifests/*.yaml
