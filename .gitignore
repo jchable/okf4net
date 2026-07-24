@@ -6,3 +6,6 @@ obj/
 
 # Graphify knowledge graph output
 graphify-out/
+
+# winget packaging artifacts
+packaging/winget/out/
