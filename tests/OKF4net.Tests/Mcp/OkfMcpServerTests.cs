@@ -33,6 +33,46 @@ public sealed class OkfMcpServerTests
         return (server, client);
     }
 
+    private static string ResultText(CallToolResult result) =>
+        string.Concat(result.Content.OfType<TextContentBlock>().Select(b => b.Text));
+
+    [Fact]
+    public async Task Write_then_read_round_trips_through_mcp()
+    {
+        var bundle = NewBundleDir();
+        try
+        {
+            var tools = OkfMcpToolset.Build(bundle, readOnly: false);
+            var (server, client) = await ConnectAsync(tools);
+            await using var _ = server;
+            await using var __ = client;
+
+            var write = await client.CallToolAsync(
+                "okf_write_concept",
+                new Dictionary<string, object?>
+                {
+                    ["conceptId"] = "notes/test",
+                    ["frontmatterYaml"] =
+                        "type: note\ntitle: Test Note\ndescription: A test note.\ntimestamp: 2026-07-24T00:00:00Z",
+                    ["body"] = "Hello from MCP.",
+                });
+            Assert.Contains("Written notes/test", ResultText(write));
+
+            var read = await client.CallToolAsync(
+                "okf_read_concept",
+                new Dictionary<string, object?> { ["conceptId"] = "notes/test" });
+            var text = ResultText(read);
+
+            Assert.Contains("Test Note", text);
+            Assert.Contains("Hello from MCP.", text);
+            Assert.True(File.Exists(Path.Combine(bundle, "notes", "test.md")));
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Build_exposes_all_nine_tools()
     {
