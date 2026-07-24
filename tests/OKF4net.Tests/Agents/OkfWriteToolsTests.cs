@@ -228,6 +228,58 @@ public class OkfWriteToolsTests
         Assert.Equal("do not touch\n", File.ReadAllText(externalFile));
     }
 
+    // Finding 2 (P1 review): ValidateConceptTarget's reparse-point checks
+    // run BEFORE the write, so a concurrent local actor could in principle
+    // substitute a path component with a symlink/junction in the gap
+    // between that check and the later File.WriteAllText -- a classic
+    // check-then-write (TOCTOU). This is a documented, residual limitation
+    // that is NOT fully closed (see ValidateConceptTarget's and
+    // WriteValidatedContentLocked's XML doc remarks) -- but
+    // WriteValidatedContentLocked re-runs the same reparse-point checks
+    // again immediately before the write, narrowing the window. This test
+    // proves that late re-check is load-bearing: using the internal
+    // BeforeLateReparseCheckForTest hook, it deterministically substitutes
+    // the target's freshly-created parent directory with a junction to an
+    // external directory at exactly the point such a race would need to
+    // land -- a substitution the EARLIER check could never have caught,
+    // since "linked" did not exist yet when ValidateConceptTarget ran.
+    // Requires junction/symlink privilege; probes for it up front (without
+    // mutating anything the real assertion depends on) and skips cleanly if
+    // unavailable, per the other reparse-point tests' pattern.
+    [Fact]
+    public void WriteConcept_late_reparse_recheck_catches_a_substitution_planted_after_the_early_check()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        using var external = new TempDir();
+
+        if (!tmp.TryCreateJunctionToExternalDir("privilege-probe", external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        Directory.Delete(Path.Combine(tmp.Path, "privilege-probe"));
+
+        tools.BeforeLateReparseCheckForTest = () =>
+        {
+            // "linked" was just created as a REAL, empty directory by
+            // WriteValidatedContentLocked's Directory.CreateDirectory call
+            // (ValidateConceptTarget ran earlier, when "linked" did not
+            // exist at all, so it had nothing to reject). Swap it out for a
+            // junction to an external directory right before the late
+            // re-check runs, simulating a concurrent local substitution
+            // landing in that narrow window.
+            Directory.Delete(Path.Combine(tmp.Path, "linked"));
+            Assert.True(tmp.TryCreateJunctionToExternalDir("linked", external.Path));
+        };
+
+        var result = tools.WriteConcept("linked/x", ValidFrontmatter, "Body.\n");
+
+        Assert.Contains("Error", result);
+        Assert.Contains("reparse point", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.GetFiles(external.Path));
+    }
+
     [Fact]
     public void WriteConcept_null_concept_id_reports_error_without_throwing()
     {

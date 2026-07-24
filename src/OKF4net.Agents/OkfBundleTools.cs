@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
@@ -25,6 +26,32 @@ public sealed class OkfBundleTools
         + "Example: okf_changes_since(\"2026-01-01\").";
 
     /// <summary>
+    /// Process-wide registry of one lock object per canonicalized bundle
+    /// root, keyed by <see cref="Path.GetFullPath(string)"/> of the bundle
+    /// root -- the SAME canonical form <see cref="IsWithinBundleRoot"/> and
+    /// <see cref="HasReparsePointAncestor"/> resolve to, so two different
+    /// spellings of the same directory (e.g. a trailing separator, or a
+    /// relative vs. absolute path) still share one lock. Every
+    /// <see cref="OkfBundleTools"/> instance constructed over the same
+    /// bundle path -- not just the same instance -- ends up sharing the
+    /// same lock object via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd(TKey,Func{TKey,TValue})"/>
+    /// in the constructor: a per-INSTANCE lock (the previous design) left
+    /// two separate <see cref="OkfBundleTools"/> instances pointed at the
+    /// same bundle directory free to race each other's
+    /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept"/> calls,
+    /// even though each instance's OWN calls were already serialized against
+    /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/>, matching
+    /// the ordinal-ignore-case comparisons <see cref="IsWithinBundleRoot"/>
+    /// and the reserved-id check already use (Windows/macOS filesystems are
+    /// typically case-insensitive). The registry grows by one small object
+    /// per distinct bundle path for the process's lifetime -- bounded in
+    /// practice by how many distinct bundle directories a process ever
+    /// opens, and never removed (there is no matching "last instance for
+    /// this path went away" signal to remove it on).
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, object> BundleLocks = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Guards <see cref="_bundle"/> and every write this class performs to
     /// disk. Agent hosts may invoke tool methods concurrently from multiple
     /// threads, so the lazy cache in <see cref="GetBundle"/> and the
@@ -34,8 +61,24 @@ public sealed class OkfBundleTools
     /// (each holds it around the read, the write, and its own cache
     /// invalidation), so two concurrent calls into the same tool can't
     /// interleave and lose one side's update.
+    ///
+    /// Obtained from the process-wide <see cref="BundleLocks"/> registry, so
+    /// this guarantee extends to every <see cref="OkfBundleTools"/> instance
+    /// constructed over the same canonicalized bundle root -- not just calls
+    /// on THIS instance. It does NOT serialize writes across separate
+    /// processes (e.g. two CLI invocations, or two server processes sharing
+    /// a network path), and a C# lock cannot defend against a concurrent
+    /// external actor mutating the bundle's files directly on disk -- see
+    /// <see cref="ValidateConceptTarget"/>'s remarks for that separate,
+    /// residual TOCTOU limitation. The per-instance <see cref="_bundle"/>
+    /// CACHE deliberately stays instance-level (unaffected by this change):
+    /// <see cref="AppendToConceptAtomic"/> always re-reads the concept's
+    /// on-disk body under this lock rather than trusting any cache, so two
+    /// instances having independent caches does not affect write
+    /// correctness, only how eagerly each one's read-only calls see another
+    /// instance's writes before their own next reload.
     /// </summary>
-    private readonly Lock _bundleLock = new();
+    private readonly object _bundleLock;
 
     private Bundle? _bundle;
 
@@ -52,6 +95,14 @@ public sealed class OkfBundleTools
         }
 
         BundleRoot = bundleRoot;
+
+        // Canonicalize BEFORE looking up the shared lock so two different
+        // spellings of the same bundle directory (e.g. with/without a
+        // trailing separator) still resolve to the same registry entry --
+        // the same Path.GetFullPath canonicalization IsWithinBundleRoot and
+        // HasReparsePointAncestor already use for their own comparisons.
+        var canonicalRoot = Path.GetFullPath(bundleRoot);
+        _bundleLock = BundleLocks.GetOrAdd(canonicalRoot, static _ => new object());
     }
 
     /// <summary>The bundle's root directory, as passed to the constructor.</summary>
@@ -401,10 +452,13 @@ public sealed class OkfBundleTools
             }
 
             // Serialized under _bundleLock (shared with AppendLog,
-            // RegenerateIndexes, and AppendToConceptAtomic) so concurrent
-            // writers can't interleave an existence check with another
-            // writer's write, and so the cache invalidation below is atomic
-            // with the write it follows.
+            // RegenerateIndexes, and AppendToConceptAtomic -- and, since
+            // _bundleLock is now obtained from the process-wide BundleLocks
+            // registry, with every OTHER OkfBundleTools instance pointed at
+            // this same canonicalized bundle root, not just this instance)
+            // so concurrent writers can't interleave an existence check with
+            // another writer's write, and so the cache invalidation below is
+            // atomic with the write it follows.
             lock (_bundleLock)
             {
                 return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
@@ -429,7 +483,17 @@ public sealed class OkfBundleTools
     /// happen inside one unbroken hold of <see cref="_bundleLock"/>, so two
     /// concurrent calls for the same concept id can never interleave: the
     /// second call's read always observes the first call's completed write.
-    /// Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
+    /// Because <see cref="_bundleLock"/> is obtained from the process-wide
+    /// <c>BundleLocks</c> registry (keyed by the canonicalized bundle root),
+    /// this holds for two concurrent calls on the SAME <see cref="OkfBundleTools"/>
+    /// instance AND for two concurrent calls on two SEPARATE instances
+    /// constructed over the same bundle path -- but only within one process:
+    /// it does not serialize a second process writing the same bundle path,
+    /// and a C# lock cannot stop a concurrent external actor from mutating
+    /// the target file/its ancestor directories on disk out from under this
+    /// method (see <see cref="ValidateConceptTarget"/>'s remarks for that
+    /// separate, residual check-then-write limitation, which this lock does
+    /// not close). Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
     /// producer-grade validation and serialization (<see cref="BuildValidatedContent"/>),
     /// and write/cache-invalidation (<see cref="WriteValidatedContentLocked"/>)
     /// steps <see cref="WriteConcept"/> itself uses — this is a locked
@@ -559,6 +623,33 @@ public sealed class OkfBundleTools
     /// the reparse-point/existence checks themselves, and does not touch
     /// <see cref="_bundleLock"/> or the bundle cache.
     /// </summary>
+    /// <remarks>
+    /// <b>Scope of the reparse-point guarantee (read this before assuming
+    /// "no reparse point" holds for the whole write, not just this check):</b>
+    /// this method is a point-in-time check, not an ongoing guarantee — it
+    /// rejects a reparse point that is PRESENT AT THE MOMENT THIS METHOD
+    /// RUNS. The actual write happens later, in <see cref="WriteValidatedContentLocked"/>
+    /// (after YAML parsing and producer validation in between), so this is a
+    /// classic check-then-write (TOCTOU): a concurrent local actor able to
+    /// replace a path component with a symlink/junction between this check
+    /// and that later write is not stopped by this method, and the <see cref="_bundleLock"/>
+    /// this class otherwise relies on for atomicity is a C# in-process lock —
+    /// it has no effect on what a separate, unsynchronized filesystem
+    /// mutation can do to the same paths. <see cref="WriteValidatedContentLocked"/>
+    /// re-runs the same two checks immediately before its actual
+    /// <see cref="File.WriteAllText(string, string)"/> call, still inside the
+    /// same lock hold, which narrows this window considerably but — since
+    /// .NET has no portable "open/write only if not a symlink, atomically" —
+    /// cannot close it completely; a substitution racing that final,
+    /// immediately-preceding check is a residual, documented limitation, not
+    /// something this design claims to eliminate. The threat model this
+    /// guard IS effective against: an actor who does not already have write
+    /// access to the bundle tree planting a reparse point ahead of time (or
+    /// a stale one left over from a previous, unrelated operation) — since an
+    /// actor who DOES already have concurrent write access to the bundle
+    /// tree could corrupt its content directly and has no need to race this
+    /// check at all.
+    /// </remarks>
     /// <returns>
     /// <see langword="null"/> and a populated <paramref name="target"/> on
     /// success; otherwise the <c>Error: ...</c> message to return to the
@@ -661,6 +752,19 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
+    /// Test-only hook, invoked (if set) after <see cref="Directory.CreateDirectory(string)"/>
+    /// but immediately before the late reparse-point re-check in
+    /// <see cref="WriteValidatedContentLocked"/>. Lets a test deterministically
+    /// simulate a filesystem substitution racing the final write -- e.g.
+    /// deleting the just-created parent directory and replacing it with a
+    /// junction to an external directory -- at exactly the point such a race
+    /// would need to land, instead of relying on real (flaky, unreliable)
+    /// thread timing. <see langword="internal"/>, always <see langword="null"/>
+    /// outside tests, so it has zero effect on production behavior.
+    /// </summary>
+    internal Action? BeforeLateReparseCheckForTest { get; set; }
+
+    /// <summary>
     /// Writes already-validated <paramref name="content"/> to <paramref name="targetPath"/>
     /// and invalidates the bundle cache. CALLER MUST already hold
     /// <see cref="_bundleLock"/> — this method does not acquire it itself,
@@ -673,6 +777,24 @@ public sealed class OkfBundleTools
     /// this in its own <c>lock (_bundleLock)</c>) and
     /// <see cref="AppendToConceptAtomic"/>.
     /// </summary>
+    /// <remarks>
+    /// Defense-in-depth against the check-then-write gap documented on
+    /// <see cref="ValidateConceptTarget"/>: immediately before the actual
+    /// <see cref="File.WriteAllText(string, string, Encoding)"/> call below,
+    /// this method re-runs the SAME two reparse-point checks
+    /// <see cref="ValidateConceptTarget"/> already ran earlier (a reparse
+    /// point among <paramref name="targetPath"/>'s parent directories, or at
+    /// <paramref name="targetPath"/> itself), still inside the caller's hold
+    /// of <see cref="_bundleLock"/>. This narrows the window a concurrent
+    /// local filesystem substitution would need to land in — from "anywhere
+    /// between validation and the write" down to "between this re-check and
+    /// the write two lines later" — but does NOT close it: .NET has no
+    /// portable API to open/write a file "only if not currently a symlink"
+    /// atomically, so a substitution racing this exact re-check is still
+    /// possible in principle. Best-effort, not a guarantee; see
+    /// <see cref="ValidateConceptTarget"/>'s remarks for the full threat
+    /// model this is (and is not) meant to defend against.
+    /// </remarks>
     private string WriteValidatedContentLocked(ConceptId id, string targetPath, string content)
     {
         var existed = File.Exists(targetPath);
@@ -681,6 +803,17 @@ public sealed class OkfBundleTools
         if (!string.IsNullOrEmpty(parentDir))
         {
             Directory.CreateDirectory(parentDir);
+        }
+
+        BeforeLateReparseCheckForTest?.Invoke();
+
+        // Late, best-effort re-check -- see this method's <remarks> and
+        // ValidateConceptTarget's <remarks> for exactly what this does and
+        // does not close.
+        if ((!string.IsNullOrEmpty(parentDir) && HasReparsePointAncestor(BundleRoot, parentDir))
+            || ReparsePoints.IsReparsePoint(targetPath))
+        {
+            return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
         }
 
         File.WriteAllText(targetPath, content, OkfEncodings.NoBom);

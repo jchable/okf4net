@@ -357,6 +357,77 @@ public class OkfContextProviderMemoryTests
         Assert.Equal(logEntryCount, sectionCount);
     }
 
+    /// <summary>
+    /// P1 finding: the write lock used to be a private INSTANCE field on
+    /// <see cref="OkfBundleTools"/>, so two separate <see cref="OkfBundleTools"/>
+    /// instances constructed over the SAME bundle directory (both allowed by
+    /// the public constructor -- nothing stops a host from doing this, e.g.
+    /// one instance per session) had independent locks and could still race
+    /// each other's <see cref="OkfBundleTools.AppendToConceptAtomic"/> calls,
+    /// even though <see cref="Concurrent_same_day_captures_never_lose_a_section_E2"/>
+    /// above -- which shares ONE instance across all 8 iterations -- could
+    /// never observe that gap. This test is the two-instance counterpart:
+    /// two <see cref="OkfBundleTools"/> instances (and two <see cref="OkfContextProvider"/>s,
+    /// one per instance) over the same directory, 8 concurrent captures for
+    /// the same pinned UTC day split across both. It fails against the old
+    /// per-instance lock (fewer than 8 surviving sections/log entries -- a
+    /// lost update) and passes once the lock is shared per canonicalized
+    /// bundle path via the process-wide registry.
+    /// </summary>
+    [Fact]
+    public void Concurrent_same_day_captures_across_two_instances_never_lose_a_section()
+    {
+        using var tmp = new TempDir();
+        var pinnedDay = new DateTime(2026, 7, 22, 12, 0, 0, DateTimeKind.Utc);
+
+        // Two SEPARATE OkfBundleTools instances constructed over the SAME
+        // bundle directory -- this is exactly the scenario a per-instance
+        // lock cannot cover, since each instance would otherwise own its own
+        // lock object.
+        var toolsA = NewToolsOverFixtureCopy(tmp);
+        toolsA.UtcNow = () => pinnedDay;
+        var providerA = new OkfContextProvider(toolsA, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.SharedBundle });
+
+        var toolsB = new OkfBundleTools(tmp.Path);
+        toolsB.UtcNow = () => pinnedDay;
+        var providerB = new OkfContextProvider(toolsB, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.SharedBundle });
+
+        const int Iterations = 8;
+
+        // Deliberately synchronous-blocking per iteration (StoreForTest
+        // never actually awaits), same shape as the single-instance E2 test
+        // above, except each iteration alternates which of the two
+        // instances/providers performs the capture.
+        Parallel.For(0, Iterations, i =>
+        {
+            var provider = i % 2 == 0 ? providerA : providerB;
+            var context = BuildInvokedContext($"two-instance user msg {i}", $"two-instance agent reply {i}");
+            provider.StoreForTest(context).AsTask().GetAwaiter().GetResult();
+        });
+
+        var memoryPath = MemoryFilePath(tmp, "2026-07-22");
+        Assert.True(File.Exists(memoryPath));
+
+        var doc = OkfDocument.Parse(File.ReadAllText(memoryPath));
+        doc.Validate(); // producer-grade validation must still pass -- throws on failure.
+
+        var sectionCount = doc.Body.Split('\n').Count(line => line.StartsWith("## ", StringComparison.Ordinal));
+
+        var logText = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        var logEntryCount = logText.Split('\n')
+            .Count(line => line.Contains("**Memory**: Captured exchange in memory/2026-07-22", StringComparison.Ordinal));
+
+        for (var i = 0; i < Iterations; i++)
+        {
+            Assert.Contains($"> two-instance user msg {i}", doc.Body, StringComparison.Ordinal);
+            Assert.Contains($"> two-instance agent reply {i}", doc.Body, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(Iterations, logEntryCount);
+        Assert.Equal(Iterations, sectionCount);
+        Assert.Equal(logEntryCount, sectionCount);
+    }
+
     [Fact]
     public async Task MemoryCapture_Disabled_is_a_no_op()
     {

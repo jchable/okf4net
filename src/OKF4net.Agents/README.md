@@ -46,8 +46,14 @@ context into each invocation (as a message, never as system instructions) and
 capture exchanges into deterministic, per-day memory concepts — no LLM call,
 no extra tool round-trip. Note: the token budget is a soft chars/4 estimate
 (can be exceeded slightly), its `<okf-context>` fences are readability
-markers rather than a security boundary, and same-day memory capture across
-concurrent sessions is last-writer-wins (v1 limitation).
+markers rather than a security boundary, and same-day memory capture is safe
+across concurrent sessions **within one process** — `OkfBundleTools` shares
+its write lock across every instance pointed at the same canonicalized
+bundle path via a process-wide registry — but not across separate processes
+sharing a bundle path, and the reparse-point guard write tools rely on is a
+best-effort check-then-write, not a guarantee against a concurrent local
+actor substituting a path component mid-write (see the project README's
+concurrency caveats for the full scope).
 
 See the [project README](https://github.com/jchable/okf4net) for the full
 documentation, and NOTICE/LICENSE.Apache-2.0 for the attribution chain of the

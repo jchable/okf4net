@@ -255,7 +255,9 @@ for genuine document structure. Writes go through the same
 `OkfBundleTools.WriteConcept`/`AppendLog` calls — and therefore the same
 producer-grade validation, write lock and reparse-point guards — any other
 caller would use, and the provider never throws toward the invocation
-pipeline.
+pipeline. The write lock and the reparse-point guards have precise scopes —
+see the concurrency and reparse-point caveats below before relying on either
+as a stronger guarantee than documented.
 
 A few known v1 caveats:
 
@@ -277,14 +279,33 @@ A few known v1 caveats:
   session sharing the same bundle. That's why `MemoryCapture` defaults to
   `MemoryCaptureMode.Disabled` — set it to `MemoryCaptureMode.SharedBundle`
   only for a bundle that's intended to be a shared, non-sensitive memory
-  across those sessions. It also means same-day capture
-  is a read-modify-write on one concept file: two truly concurrent
-  `StoreAIContextAsync` calls sharing a provider across sessions can lose the
-  earlier section (last-writer-wins on the day's concept) while `log.md`
-  still records both `Memory` entries — a same-day count divergence between
-  `log.md` and the memory concept is a known v1 limitation. Turns within a
-  single session are sequential, so the concurrency half of this only affects
-  cross-session sharing.
+  across those sessions.
+- **Concurrent same-day capture is safe only within one process, and only up
+  to a residual filesystem-race caveat:** same-day capture is a
+  read-modify-write on one concept file, done through
+  `OkfBundleTools.AppendToConceptAtomic` under a write lock that's shared by
+  every `OkfBundleTools` instance pointed at the same canonicalized bundle
+  path — not just one instance — via a process-wide registry keyed on the
+  resolved bundle root. So two (or more) truly concurrent
+  `StoreAIContextAsync` calls, even across separate `OkfBundleTools`/
+  `OkfContextProvider` instances sharing a session pool, never lose a
+  same-day section as long as they're all in **the same process**. This
+  guarantee does **not** extend across separate processes (e.g. two CLI
+  invocations, or two independently-hosted server processes sharing a
+  network bundle path) — nothing coordinates them, so a same-day count
+  divergence between `log.md` and the memory concept is possible there.
+  Separately, the reparse-point guard that write tools use to reject a
+  symlink/junction inside the bundle is a check-then-write: it rejects a
+  reparse point present when it runs (both an early check and a second,
+  best-effort re-check immediately before the actual write), but a
+  concurrent local actor able to substitute a path component with a
+  symlink/junction in the narrow remaining window is not something a C#
+  lock — in-process or not — can fully close (there's no portable
+  no-follow atomic write in .NET). That actor would already need write
+  access inside the bundle tree to plant the substitution in the first
+  place, so this residual gap defends the bundle's own content from causing
+  an accidental escape more than it defends against a hostile, already
+  co-resident writer.
 
 ## Use OKF in Claude (MCP)
 
