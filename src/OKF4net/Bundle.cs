@@ -54,8 +54,7 @@ public sealed class Bundle
     private readonly Dictionary<ConceptId, int> _index;
     private readonly Dictionary<ConceptId, List<ResolvedLink>> _outbound;
     private readonly Dictionary<ConceptId, List<ConceptId>> _backlinks;
-    private string? _okfVersion;
-    private bool _okfVersionComputed;
+    private readonly Lazy<string?> _okfVersion;
 
     private Bundle(
         string root,
@@ -75,6 +74,7 @@ public sealed class Bundle
         ParseErrors = parseErrors;
         _outbound = outbound;
         _backlinks = backlinks;
+        _okfVersion = new Lazy<string?>(ComputeOkfVersion, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <summary>
@@ -250,27 +250,18 @@ public sealed class Bundle
     /// place frontmatter is permitted in an <c>index.md</c>. Port of
     /// <c>Bundle::okf_version</c> (bundle.rs:196-203).
     ///
-    /// A <see cref="Bundle"/> is immutable once <see cref="Load"/> returns,
-    /// so this is computed at most once and memoized -- including a
-    /// <c>null</c> result (the computed value itself can legitimately be
-    /// <c>null</c>, so a separate <see cref="_okfVersionComputed"/> flag
-    /// guards the cache rather than a plain null-check on
-    /// <see cref="_okfVersion"/> alone).
+    /// A <see cref="Bundle"/> is immutable and observably stable once
+    /// <see cref="Load"/> returns, so this is computed at most once and
+    /// memoized via <see cref="Lazy{T}"/> -- including a legitimate
+    /// <c>null</c> result, which <see cref="Lazy{T}"/> caches natively.
+    /// <see cref="Bundle"/> instances may be shared and read concurrently
+    /// (e.g. across tool invocations in <c>OkfBundleTools</c>), so the
+    /// backing <see cref="Lazy{T}"/> uses
+    /// <see cref="LazyThreadSafetyMode.ExecutionAndPublication"/>: concurrent
+    /// first reads block on a single computation rather than racing a
+    /// plain field/flag pair.
     /// </summary>
-    public string? OkfVersion
-    {
-        get
-        {
-            if (_okfVersionComputed)
-            {
-                return _okfVersion;
-            }
-
-            _okfVersion = ComputeOkfVersion();
-            _okfVersionComputed = true;
-            return _okfVersion;
-        }
-    }
+    public string? OkfVersion => _okfVersion.Value;
 
     private string? ComputeOkfVersion()
     {
