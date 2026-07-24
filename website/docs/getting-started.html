@@ -102,7 +102,9 @@ Each order belongs to a customer and carries a total.</pre>
           <div class="chead"><span class="h">##</span><h2>Validate it</h2><span class="ref">§9 — conformance</span></div>
           <p>From the command line, <code>okf validate</code> checks the bundle and exits non-zero if anything is off — so it drops straight into CI:</p>
 <pre class="block">$ okf validate ./my_bundle
-<span class="ok">OK: bundle is conformant with OKF v0.1 (1 concept)</span></pre>
+
+1 concept(s); 0 error(s), 0 warning(s), 0 info.
+<span class="ok">✓ conformant with OKF v0.1</span></pre>
           <p>Or do the same from C#. <code>Bundle.Load</code> walks the directory, parses every concept, and builds the cross-link graph — <strong>permissively</strong>, so a bad file never aborts the load:</p>
 <pre class="block"><span class="k">using</span> OKF4net;
 
