@@ -254,6 +254,26 @@ producer-grade validation, write lock and reparse-point guards — any other
 caller would use, and the provider never throws toward the invocation
 pipeline.
 
+A few known v1 caveats:
+
+- **Budget is approximate:** `TokenBudget` uses a crude chars/4 estimate and
+  does not charge the per-block `<okf-context>` framing overhead, so the
+  injected message can exceed it by a small margin (~4% at defaults) — a soft
+  budget, not a hard cap.
+- **The `<okf-context id="…">` fences are readability markers, not a security
+  boundary:** the whole injected message is untrusted user-role reference
+  data (a concept body containing a literal `</okf-context>` could visually
+  break out of its fence); this doesn't matter because nothing in that
+  message is ever treated as instructions in the first place (see the
+  security note above).
+- **Memory concurrency:** same-day capture is a read-modify-write on one
+  concept file. Two truly concurrent `StoreAIContextAsync` calls sharing a
+  provider across sessions can lose the earlier section (last-writer-wins on
+  the day's concept) while `log.md` still records both `Memory` entries — a
+  same-day count divergence between `log.md` and the memory concept is a
+  known v1 limitation. Turns within a single session are sequential, so this
+  only affects cross-session sharing.
+
 ## Mapping to the spec
 
 | Spec section                 | Implemented by                                                 |

@@ -44,7 +44,10 @@ content is treated as untrusted and is never injected as a system message.
 `OkfBundleTools` instance to automatically inject budget-bounded bundle
 context into each invocation (as a message, never as system instructions) and
 capture exchanges into deterministic, per-day memory concepts — no LLM call,
-no extra tool round-trip.
+no extra tool round-trip. Note: the token budget is a soft chars/4 estimate
+(can be exceeded slightly), its `<okf-context>` fences are readability
+markers rather than a security boundary, and same-day memory capture across
+concurrent sessions is last-writer-wins (v1 limitation).
 
 See the [project README](https://github.com/jchable/okf4net) for the full
 documentation, and NOTICE/LICENSE.Apache-2.0 for the attribution chain of the

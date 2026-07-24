@@ -259,6 +259,11 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <returns>The rendered block (or <see langword="null"/>) and the token estimate of its inner content (0 if the block is null).</returns>
     private static (string? Block, int TokensUsed) RenderBlock(string id, string content, int tokenBudget, bool alwaysInclude)
     {
+        // Intentional: TokensUsed below is the estimate of `inner` only, not
+        // of the returned Block (which also carries the "<okf-context ...>"
+        // wrapper). The wrapper's own tokens are never charged against the
+        // budget, so the final assembled message can exceed TokenBudget by a
+        // small margin (~4% at defaults) -- a soft budget, not a hard cap.
         var (kept, truncated, linesKept) = TruncateWholeLines(content, tokenBudget);
 
         if (!alwaysInclude && linesKept == 0)
