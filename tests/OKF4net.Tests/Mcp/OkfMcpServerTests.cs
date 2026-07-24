@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.IO.Pipelines;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -120,6 +122,42 @@ public sealed class OkfMcpServerTests
             Assert.DoesNotContain("okf_append_log", names);
             Assert.DoesNotContain("okf_regenerate_indexes", names);
             Assert.Contains("okf_read_concept", names);
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ConfigureServices_registers_all_nine_tools()
+    {
+        var bundle = NewBundleDir();
+        try
+        {
+            var services = new ServiceCollection();
+            OkfMcpHost.ConfigureServices(services, bundle, readOnly: false, version: "0.0.0");
+            using var provider = services.BuildServiceProvider();
+            var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
+            Assert.Equal(9, options.ToolCollection?.Count);
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ConfigureServices_readOnly_registers_six_tools()
+    {
+        var bundle = NewBundleDir();
+        try
+        {
+            var services = new ServiceCollection();
+            OkfMcpHost.ConfigureServices(services, bundle, readOnly: true, version: "0.0.0");
+            using var provider = services.BuildServiceProvider();
+            var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
+            Assert.Equal(6, options.ToolCollection?.Count);
         }
         finally
         {

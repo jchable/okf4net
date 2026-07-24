@@ -19,7 +19,7 @@ public static class OkfMcpConfig
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "1", "true", "yes", "on" };
 
     /// <summary>
-    /// Resolves configuration. The bundle root is the first non-blank argument,
+    /// Resolves configuration. The bundle root is the first positional argument,
     /// else the <c>OKF_BUNDLE_ROOT</c> environment variable. Returns
     /// <see langword="false"/> with a human-readable <paramref name="error"/>
     /// when no root is given or the root does not exist.
