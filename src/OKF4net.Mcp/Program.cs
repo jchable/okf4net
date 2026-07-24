@@ -1,15 +1,38 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-namespace OKF4net.Mcp;
+using System.Reflection;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
+using OKF4net.Mcp;
 
-/// <summary>
-/// Placeholder entry point for the <c>okf-mcp</c> stdio host. The real
-/// implementation (config resolution and wiring up <c>OkfMcpToolset</c>
-/// to a stdio-transport <c>McpServer</c>) lands in a later task; this
-/// placeholder exists only so the <c>OutputType=Exe</c> project builds.
-/// </summary>
-internal static class Program
+// Resolve configuration up front; a misconfigured launch must fail loudly on
+// stderr (stdout is reserved for the JSON-RPC stream) with a non-zero code.
+if (!OkfMcpConfig.TryResolve(args, Environment.GetEnvironmentVariable, out var bundleRoot, out var readOnly, out var error))
 {
-    private static void Main()
-    {
-    }
+    Console.Error.WriteLine($"okf-mcp: {error}");
+    Console.Error.WriteLine("Usage: okf-mcp <bundle-root>   (or set OKF_BUNDLE_ROOT; OKF_MCP_READONLY=1 for read-only)");
+    return 2;
 }
+
+var builder = Host.CreateApplicationBuilder(args);
+
+// stdio invariant: every log line goes to stderr so it can never corrupt the
+// JSON-RPC protocol carried on stdout.
+builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+
+var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
+
+builder.Services
+    .AddMcpServer(options => options.ServerInfo = new Implementation { Name = "okf", Version = version })
+    .WithStdioServerTransport();
+
+// Register the OKF tools as singletons; the SDK collects every registered
+// McpServerTool into the server's tool collection.
+foreach (var tool in OkfMcpToolset.Build(bundleRoot, readOnly))
+{
+    builder.Services.AddSingleton(tool);
+}
+
+await builder.Build().RunAsync();
+return 0;
