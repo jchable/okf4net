@@ -4,8 +4,19 @@
 > task until the tests and validation of the prior task pass. This plan adds a
 > catalog of local OKF bundles only; it does not add remote connectors.
 
+**Revised 2026-07-24 (lot split):** Task 6 (memory policy) is pulled OUT of
+this catalog plan into a separate, independent **Lot 1** done first -- it has
+no catalog dependency and finishes the Phase-3 memory story. This plan is
+**Lot 2** (catalog V1), Tasks 0-5 and 7. Task 4's resolver is revised from
+single-source to **multi-source, grouped by source** (no fusion), per the
+revised design spec §7. Lot 3 (V2 team-scoped memory + multi-source fusion) is
+a later, separately-specced effort. See
+[Lot 1 memory plan](2026-07-24-okf4net-memory-policy.md) and the V2 notes
+[2026-07-24-okf4net-v2-scoped-memory-notes.md](../specs/2026-07-24-okf4net-v2-scoped-memory-notes.md).
+
 **Goal:** Deliver a hot-reloadable `catalog.json` of local OKF bundles, a
-single-primary-source resolver, and an optional `IServiceCollection` API while
+multi-source resolver (all enabled sources searched, results grouped by source
+without cross-bundle fusion), and an optional `IServiceCollection` API while
 preserving the current format core and Agent Framework integrations.
 
 **Baseline:** The source code, README, and existing test suite are authoritative.
@@ -86,7 +97,7 @@ configured root.
 **Exit:** Operations can atomically replace `catalog.json` without restarting
 the application or causing a partial catalog to be served.
 
-## Task 4 -- Implement local OKF source and primary resolver
+## Task 4 -- Implement local OKF source and multi-source resolver
 
 **Files:** `IKnowledgeSource`, `OkfBundleKnowledgeSource`, query/result types,
 `DefaultKnowledgeResolver`; resolver tests.
@@ -95,17 +106,26 @@ the application or causing a partial catalog to be served.
   structured diagnostics with public XML documentation.
 - [ ] Ensure an `OkfBundleKnowledgeSource` uses the same full-text scoring
   ordering and score calculation as `okf_search`; extract the smallest shared
-  core or Agents seam necessary and add parity tests before refactoring.
-- [ ] Select exactly one enabled source by descending priority then ordinal ID.
-- [ ] Return `NoEnabledSources`, `SourceUnavailable`, and `NoMatches` as data,
-  never as expected exceptions.
-- [ ] Do not fall through to a lower-priority source if the selected one is
-  unavailable.
-- [ ] Include source ID, bundle-relative concept ID, score, and excerpt in all
-  passages.
+  core or Agents seam necessary (the `ScoreConceptsFor` seam) and add parity
+  tests before refactoring.
+- [ ] Search **every** enabled source, ordered by descending priority then
+  ascending ordinal ID; within each source, order passages by that source's
+  own descending score. Concatenate the per-source results in source order --
+  grouped by source, never merged into one cross-source ranking (raw scores
+  across bundles are not comparable). No score fusion, deduplication, or
+  per-source token-budget allocation (all V2, design spec §9).
+- [ ] Return `NoEnabledSources` and `NoMatches` as data, never as expected
+  exceptions. A source that cannot be searched yields a per-source
+  `SourceUnavailable` diagnostic while the other sources' results are still
+  returned (no all-or-nothing failure).
+- [ ] Tag every passage with its originating source ID, plus bundle-relative
+  concept ID, score, and excerpt.
 
-**Exit:** A resolver test over two fixture copies proves deterministic primary
-selection and scoring parity with `OkfBundleTools.Search`.
+**Exit:** A resolver test over two fixture copies proves (a) both enabled
+sources are searched and returned grouped by priority order, (b) a failing
+source degrades to a `SourceUnavailable` diagnostic without dropping the other
+source's results, and (c) per-source scoring parity with
+`OkfBundleTools.Search`.
 
 ## Task 5 -- Add the optional DI hosting facade
 
@@ -124,21 +144,15 @@ selection and scoring parity with `OkfBundleTools.Search`.
 **Exit:** The documented service registration creates a working resolver with
 no dependency leakage into the core format project.
 
-## Task 6 -- Make memory policy explicit
+## Task 6 -- (moved to Lot 1)
 
-**Files:** `src/OKF4net.Agents/OkfContextProviderOptions.cs`,
-`OkfContextProvider.cs`, direct provider tests, README files.
-
-- [ ] Add `MemoryCaptureMode.Disabled` and `MemoryCaptureMode.SharedBundle`.
-- [ ] Make `Disabled` the default.
-- [ ] Preserve `EnableMemoryCapture` temporarily as an obsolete compatibility
-  property and reject configurations that set both properties inconsistently.
-- [ ] Retain current `SharedBundle` write behavior and its security notes.
-- [ ] Add regression tests for disabled default, explicit shared capture, and
-  compatibility mapping.
-
-**Exit:** Memory sharing cannot be enabled accidentally and the API states its
-data-sharing implications directly.
+Memory policy is no longer part of this catalog plan. It has no catalog
+dependency, so it ships first as the standalone **Lot 1**
+([2026-07-24-okf4net-memory-policy.md](2026-07-24-okf4net-memory-policy.md)):
+replace `EnableMemoryCapture` outright with
+`MemoryCaptureMode { Disabled, SharedBundle }` (no obsolete shim -- pre-release),
+`Disabled` by default, plus the E2 same-day concurrent-capture serialization
+fix. This plan (Lot 2) assumes Lot 1 has already landed.
 
 ## Task 7 -- Documentation, package metadata, and final validation
 
@@ -148,8 +162,10 @@ and design docs only as needed.
 - [ ] Document that OKF means Open Knowledge Format; describe `catalog.json`
   as an OKF4net manifest, not an OKF specification file.
 - [ ] Show the DI registration and explicit `SharedBundle` opt-in.
-- [ ] State V1 limits: local filesystem bundles, shared catalog, one selected
-  source, no external connectors, no tenant-aware authorization.
+- [ ] State V1 limits: local filesystem bundles, shared catalog, all enabled
+  sources searched but returned grouped by source (no cross-bundle fusion,
+  dedup, or merged ranking), no external connectors, no tenant-aware
+  authorization.
 - [ ] Add a V2 preview for application-filtered bundles and host-scoped memory
   without presenting it as implemented.
 - [ ] Run `dotnet build OKF4net.sln -c Release`, `dotnet test OKF4net.sln`,
