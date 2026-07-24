@@ -50,8 +50,9 @@ pwsh Generate-Manifests.ps1 -Version <v> `
   -OutDir out/manifests
 ```
 
-SHA256 values are in the Release's `checksums.txt` (or each
-`okf-<v>-<rid>.zip.sha256` produced by `Publish-Cli.ps1`).
+SHA256 values come from the Release's `checksums.txt`, or from the local
+`okf-<v>-<rid>.zip.sha256` files produced when you run `Publish-Cli.ps1`
+yourself (these `.sha256` sidecars are not attached to the Release itself).
 
 ## Future: automated submission
 

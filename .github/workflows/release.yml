@@ -78,7 +78,7 @@ jobs:
 
   github-release:
     name: publish GitHub Release
-    needs: cli-binaries
+    needs: [cli-binaries, nuget]
     runs-on: ubuntu-latest
     permissions:
       contents: write

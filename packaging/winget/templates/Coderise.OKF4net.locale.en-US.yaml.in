@@ -11,7 +11,7 @@ PackageUrl: https://github.com/jchable/okf4net
 License: LGPL-3.0-or-later
 LicenseUrl: https://github.com/jchable/okf4net/blob/main/LICENSE
 Copyright: Copyright 2026 Julien CHABLE
-ShortDescription: Zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1 — parse, validate, index, and graph OKF knowledge bundles.
+ShortDescription: Zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1 -- parse, validate, index, and graph OKF knowledge bundles.
 Moniker: okf
 Tags:
   - okf
