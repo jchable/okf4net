@@ -215,9 +215,10 @@ using Microsoft.Extensions.AI;
 using OKF4net.Agents;
 
 var tools = new OkfBundleTools("./my_bundle");
-// EnableMemoryCapture defaults to false; opt in explicitly (see the memory
-// trust model caveat below) to get the capture behavior shown here.
-var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { EnableMemoryCapture = true });
+// MemoryCapture defaults to MemoryCaptureMode.Disabled; opt in explicitly
+// (see the memory trust model caveat below) to get the capture behavior
+// shown here.
+var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.SharedBundle });
 
 AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
 {
@@ -230,12 +231,12 @@ var response = await agent.RunAsync("What do we know about orders?");
 
 `OkfContextProviderOptions`:
 
-| Option                | Default    | Meaning                                                                                                  |
-|-----------------------|------------|----------------------------------------------------------------------------------------------------------|
-| `TokenBudget`         | `2000`     | Approximate token budget (chars/4 estimate) for context injected per invocation.                         |
-| `EnableMemoryCapture` | `false`    | Opt-in: whether exchanges are captured as long-term memory concepts in the bundle after each invocation. |
-| `MemoryDirectory`     | `"memory"` | Bundle subdirectory holding memory concepts, as a single `ConceptId` segment (no `/`).                   |
-| `MaxConceptsInjected` | `5`        | Maximum number of scored concepts injected into a single invocation's context.                           |
+| Option                | Default                      | Meaning                                                                                                                                                  |
+|-----------------------|------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `TokenBudget`         | `2000`                       | Approximate token budget (chars/4 estimate) for context injected per invocation.                                                                         |
+| `MemoryCapture`       | `MemoryCaptureMode.Disabled` | Opt-in: `MemoryCaptureMode.SharedBundle` captures exchanges as long-term memory concepts in the bundle after each invocation; `Disabled` writes nothing. |
+| `MemoryDirectory`     | `"memory"`                   | Bundle subdirectory holding memory concepts, as a single `ConceptId` segment (no `/`).                                                                   |
+| `MaxConceptsInjected` | `5`                          | Maximum number of scored concepts injected into a single invocation's context.                                                                           |
 
 **Security note:** as with the tools above, bundle content is untrusted.
 `ProvideAIContextAsync` injects the bundle root index plus the top scored
@@ -273,9 +274,10 @@ A few known v1 caveats:
 - **Memory is bundle-global, unscoped, and opt-in:** captured memory carries
   no session/user/tenant key, so a scored recall in `ProvideAIContextAsync`
   can surface one session's captured exchange in a completely different
-  session sharing the same bundle. That's why `EnableMemoryCapture` defaults
-  to `false` — enable it only for a bundle that's intended to be a shared,
-  non-sensitive memory across those sessions. It also means same-day capture
+  session sharing the same bundle. That's why `MemoryCapture` defaults to
+  `MemoryCaptureMode.Disabled` — set it to `MemoryCaptureMode.SharedBundle`
+  only for a bundle that's intended to be a shared, non-sensitive memory
+  across those sessions. It also means same-day capture
   is a read-modify-write on one concept file: two truly concurrent
   `StoreAIContextAsync` calls sharing a provider across sessions can lose the
   earlier section (last-writer-wins on the day's concept) while `log.md`

@@ -61,7 +61,7 @@ public class ContextProviderIntegrationTests
         using var tmp = new TempDir();
         CopyDirectory(BundlePath, tmp.Path);
         var tools = new OkfBundleTools(tmp.Path) { UtcNow = () => PinnedNow };
-        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { EnableMemoryCapture = true });
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.SharedBundle });
 
         // "nonce-zqxw77" is a made-up token that appears nowhere in the
         // fixture bundle -- once turn 1's answer is captured into memory, it
