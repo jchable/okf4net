@@ -39,6 +39,13 @@ receives an explanatory message instead. Write tools validate documents
 rely on the Agent Framework's tool-approval mechanism for gating. Bundle
 content is treated as untrusted and is never injected as a system message.
 
+`OkfContextProvider` (an `AIContextProvider`, registered via
+`ChatClientAgentOptions.AIContextProviders`) layers on top of the same
+`OkfBundleTools` instance to automatically inject budget-bounded bundle
+context into each invocation (as a message, never as system instructions) and
+capture exchanges into deterministic, per-day memory concepts — no LLM call,
+no extra tool round-trip.
+
 See the [project README](https://github.com/jchable/okf4net) for the full
 documentation, and NOTICE/LICENSE.Apache-2.0 for the attribution chain of the
 underlying OKF implementation.

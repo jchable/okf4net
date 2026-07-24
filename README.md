@@ -199,6 +199,61 @@ The core `OKF4net` library stays dependency-free (BCL only); only
 `OKF4net.Agents` references `Microsoft.Agents.AI` (see
 [Hard rules](CLAUDE.md) for the per-project dependency policy).
 
+#### Automatic context & memory (OkfContextProvider)
+
+`OkfContextProvider` is an `AIContextProvider` that, layered onto the same
+`OkfBundleTools` instance as the tools above, automatically injects relevant
+bundle context into each invocation and captures the exchange back into the
+bundle as long-term memory — no extra tool calls required from the model.
+Register it via `ChatClientAgentOptions.AIContextProviders` (the tools +
+providers convenience overload doesn't exist; this is the one API surface
+that wires both):
+
+```csharp
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using OKF4net.Agents;
+
+var tools = new OkfBundleTools("./my_bundle");
+var provider = new OkfContextProvider(tools);
+
+AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
+{
+    ChatOptions = new ChatOptions { Tools = tools.GetTools() },
+    AIContextProviders = [provider],
+});
+
+var response = await agent.RunAsync("What do we know about orders?");
+```
+
+`OkfContextProviderOptions`:
+
+| Option                | Default    | Meaning                                                                                          |
+|-----------------------|------------|--------------------------------------------------------------------------------------------------|
+| `TokenBudget`         | `2000`     | Approximate token budget (chars/4 estimate) for context injected per invocation.                 |
+| `EnableMemoryCapture` | `true`     | Whether exchanges are captured as long-term memory concepts in the bundle after each invocation. |
+| `MemoryDirectory`     | `"memory"` | Bundle subdirectory holding memory concepts, as a single `ConceptId` segment (no `/`).           |
+| `MaxConceptsInjected` | `5`        | Maximum number of scored concepts injected into a single invocation's context.                   |
+
+**Security note:** as with the tools above, bundle content is untrusted.
+`ProvideAIContextAsync` injects the bundle root index plus the top scored
+concepts (progressive disclosure, budget-bounded) as reference **data in a
+message** — it is never written into `AIContext.Instructions`, so a
+prompt-injection payload smuggled into a concept body cannot reach the
+instructions channel.
+
+**Memory design (v1, deterministic):** `StoreAIContextAsync` captures each
+exchange with no LLM call — the last user message and the agent's final
+response are appended to one memory concept per UTC day
+(`<MemoryDirectory>/<yyyy-MM-dd>`), plus a matching `log.md` entry. Captured
+text is blockquote-neutralized (each line prefixed with `>`) so injected markdown
+structure (`---`, headings, a fake `# Citations` section) can't be mistaken
+for genuine document structure. Writes go through the same
+`OkfBundleTools.WriteConcept`/`AppendLog` calls — and therefore the same
+producer-grade validation, write lock and reparse-point guards — any other
+caller would use, and the provider never throws toward the invocation
+pipeline.
+
 ## Mapping to the spec
 
 | Spec section                 | Implemented by                                                 |
