@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>OKF4net.Mcp</RootNamespace>
+    <AssemblyName>okf-mcp</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Packaging">
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>okf-mcp</ToolCommandName>
+    <PackageId>OKF4net.Mcp</PackageId>
+    <Authors>Julien CHABLE</Authors>
+    <Description>Local MCP (Model Context Protocol) server that exposes an OKF knowledge bundle to Claude Desktop / Claude Code as read/write tools.</Description>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>okf;mcp;model-context-protocol;claude;knowledge;llm-tools</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0-preview.3" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OKF4net.Agents\OKF4net.Agents.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OKF4net.Tests" />
+  </ItemGroup>
+
+</Project>
