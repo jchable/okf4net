@@ -156,26 +156,26 @@ public class BundleTests
     }
 
     [Fact]
-    public void Okf_version_is_memoized_after_first_read()
+    public void Okf_version_reflects_the_load_time_snapshot_not_the_current_file()
     {
-        // Bundle.OkfVersion re-read the root index.md and re-parsed it on
-        // every access. Prove memoization: after the first (successful)
-        // read, delete the root index.md entirely -- if OkfVersion were
-        // still doing disk I/O per access, the second read would fail to
-        // find the file and return null instead of the cached value.
+        // OkfVersion must be captured while Load builds the bundle, so it
+        // stays consistent with the rest of the (immutable) snapshot. If it
+        // were read lazily on first access, overwriting the root index.md
+        // between Load and the first access would leak the newer on-disk
+        // value ("0.2") into an instance that otherwise represents the "0.1"
+        // load. Deleting it entirely likewise must not turn the value null.
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
         var indexPath = tmp.Write("index.md", "---\nokf_version: \"0.1\"\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
 
-        var first = bundle.OkfVersion;
-        Assert.Equal("0.1", first);
+        // Mutate the file *before* the first OkfVersion read.
+        File.WriteAllText(indexPath, "---\nokf_version: \"0.2\"\n---\n\n# Listing\n");
+        Assert.Equal("0.1", bundle.OkfVersion);
 
+        // And a later disappearance of the file does not change the answer.
         File.Delete(indexPath);
-
-        var second = bundle.OkfVersion;
-        Assert.Equal(first, second);
-        Assert.Equal("0.1", second);
+        Assert.Equal("0.1", bundle.OkfVersion);
     }
 
     [Fact]

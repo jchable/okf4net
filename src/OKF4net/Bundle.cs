@@ -54,7 +54,7 @@ public sealed class Bundle
     private readonly Dictionary<ConceptId, int> _index;
     private readonly Dictionary<ConceptId, List<ResolvedLink>> _outbound;
     private readonly Dictionary<ConceptId, List<ConceptId>> _backlinks;
-    private readonly Lazy<string?> _okfVersion;
+    private readonly string? _okfVersion;
 
     private Bundle(
         string root,
@@ -74,7 +74,11 @@ public sealed class Bundle
         ParseErrors = parseErrors;
         _outbound = outbound;
         _backlinks = backlinks;
-        _okfVersion = new Lazy<string?>(ComputeOkfVersion, LazyThreadSafetyMode.ExecutionAndPublication);
+        // Computed eagerly here (not deferred) so OkfVersion reflects the same
+        // load-time snapshot as the rest of the bundle: a later change to the
+        // root index.md on disk cannot alter an already-loaded instance. Root
+        // is set above and is the only field ComputeOkfVersion reads.
+        _okfVersion = ComputeOkfVersion();
     }
 
     /// <summary>
@@ -250,18 +254,17 @@ public sealed class Bundle
     /// place frontmatter is permitted in an <c>index.md</c>. Port of
     /// <c>Bundle::okf_version</c> (bundle.rs:196-203).
     ///
-    /// A <see cref="Bundle"/> is immutable and observably stable once
-    /// <see cref="Load"/> returns, so this is computed at most once and
-    /// memoized via <see cref="Lazy{T}"/> -- including a legitimate
-    /// <c>null</c> result, which <see cref="Lazy{T}"/> caches natively.
-    /// <see cref="Bundle"/> instances may be shared and read concurrently
-    /// (e.g. across tool invocations in <c>OkfBundleTools</c>), so the
-    /// backing <see cref="Lazy{T}"/> uses
-    /// <see cref="LazyThreadSafetyMode.ExecutionAndPublication"/>: concurrent
-    /// first reads block on a single computation rather than racing a
-    /// plain field/flag pair.
+    /// Computed once while <see cref="Load"/> builds the bundle and stored, so
+    /// it reflects the same load-time snapshot as the rest of this
+    /// <see cref="Bundle"/>: a later change to the root <c>index.md</c> on disk
+    /// does not affect an already-loaded instance. A legitimate <c>null</c> (no
+    /// root <c>index.md</c>, no <c>okf_version</c> key, or an unreadable file) is
+    /// a stored value like any other. The backing field is <c>readonly</c> and
+    /// set in the constructor before the instance is published, so
+    /// <see cref="Bundle"/> instances shared and read concurrently (e.g. across
+    /// tool invocations in <c>OkfBundleTools</c>) need no lock.
     /// </summary>
-    public string? OkfVersion => _okfVersion.Value;
+    public string? OkfVersion => _okfVersion;
 
     private string? ComputeOkfVersion()
     {
