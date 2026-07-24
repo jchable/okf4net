@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Library reference — OKF4net docs</title>
+<meta name="description" content="API reference for the OKF4net C# library: Bundle, ConceptId, OkfDocument, Frontmatter, the YAML subset, links, index and changelog generation, and §9 validation — grouped by spec concern.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231a3fd6'/%3E%3Ctext x='50' y='74' font-size='72' font-family='Georgia,serif' font-weight='bold' text-anchor='middle' fill='white'%3E%C2%A7%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;700;800;900&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<div class="topline"></div>
+<header class="bar">
+  <div class="bar-in">
+    <a class="wordmark" href="../">OKF<sup>4net</sup></a>
+    <nav aria-label="Site">
+      <a href="../">okf4net.md</a>
+      <a href="../what-okf-is.html">what-okf-is.md</a>
+      <a href="../library.html">library.md</a>
+      <a href="../cli.html">cli.md</a>
+      <a href="index.html" aria-current="page">docs.md</a>
+      <a href="../contributing.html">contributing.md</a>
+    </nav>
+    <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
+  </div>
+</header>
+
+<div class="frame">
+  <div class="docs-shell">
+
+    <aside class="docs-side" aria-label="Documentation">
+      <div class="side-h">docs bundle</div>
+      <ul class="tree">
+        <li class="root">docs/</li>
+        <li><span class="b">├ </span><a href="index.html">index.md</a></li>
+        <li><span class="b">├ </span><a href="getting-started.html">getting-started.md</a></li>
+        <li class="soon"><span class="b">├ </span><span class="name">guides.md</span><span class="tag">soon</span></li>
+        <li class="current"><span class="b">├ </span><a href="library.html">library.md</a></li>
+        <li><span class="b">├ </span><a href="cli.html">cli.md</a></li>
+        <li class="soon"><span class="b">├ </span><span class="name">agents.md</span><span class="tag">soon</span></li>
+        <li class="soon"><span class="b">└ </span><span class="name">spec.md</span><span class="tag">soon</span></li>
+      </ul>
+      <div class="side-foot">
+        Every public type carries XML docs. Signatures shown as <code>member(args) → return</code>.
+      </div>
+    </aside>
+
+    <div class="docs-main">
+
+      <div class="page-doc">
+        <div class="doc-window">
+          <div class="doc-chrome">
+            <span class="path">docs/<b>library.md</b></span>
+            <span>type: Reference</span>
+          </div>
+          <div class="rendered">
+            <h1>One type per <em>spec concern.</em></h1>
+            <p class="lede">The <code>OKF4net</code> namespace mirrors the spec: <code>Bundle</code> (§3), <code>ConceptId</code> (§2), <code>OkfDocument</code>/<code>Frontmatter</code> (§4), links (§5, §8), <code>IndexGenerator</code> (§6), <code>ChangeLog</code> (§7), <code>BundleValidator</code> (§9). <strong>Zero third-party dependencies</strong> — the YAML subset and link scanner are the library's own.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="docbody">
+
+        <section class="chapter" id="start">
+          <div class="chead"><span class="h">##</span><h2>At a glance</h2><span class="ref">load · validate · traverse</span></div>
+<pre class="block"><span class="k">using</span> OKF4net;
+
+<span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);           <span class="c">// §3 — permissive walk</span>
+<span class="k">var</span> report = BundleValidator.Validate(bundle);      <span class="c">// §9 — diagnostics</span>
+Console.WriteLine(report.IsConformant
+    ? <span class="s">$"conformant with OKF v{OkfSpec.Version}"</span> : <span class="s">$"{report.ErrorCount} error(s)"</span>);
+
+<span class="k">var</span> id = ConceptId.Parse(<span class="s">"tables/orders"</span>);        <span class="c">// §2</span>
+<span class="k">foreach</span> (<span class="k">var</span> link <span class="k">in</span> bundle.LinksFrom(id))          <span class="c">// §5</span>
+    Console.WriteLine(<span class="s">$"{id} -&gt; {link.Target} (exists: {link.Exists})"</span>);
+<span class="k">foreach</span> (<span class="k">var</span> back <span class="k">in</span> bundle.Backlinks(id))
+    Console.WriteLine(<span class="s">$"cited by {back}"</span>);</pre>
+        </section>
+
+        <section class="chapter" id="bundle">
+          <div class="chead"><span class="h">##</span><h2>Bundle</h2><span class="ref">§3 — a directory of concepts</span></div>
+          <p><code>Bundle.Load</code> walks the tree, parses every concept, and builds the cross-link graph. It is <strong>permissive</strong>: a bad file lands in <code>ParseErrors</code> and never aborts the load.</p>
+          <table class="map">
+            <tr><th>Member</th><th>Description</th></tr>
+            <tr><td>Load(string root) → Bundle</td><td>Walk a directory and build the graph. Throws <code>BundleLoadException</code> only when the root itself is unreadable.</td></tr>
+            <tr><td>Root → string</td><td>The bundle's root path.</td></tr>
+            <tr><td>Concepts → IReadOnlyList&lt;Concept&gt;</td><td>All parsed concepts, in component-wise walk order.</td></tr>
+            <tr><td>Count → int · IsEmpty → bool</td><td>Number of concepts.</td></tr>
+            <tr><td>Get(ConceptId) → Concept?</td><td>Look up one concept; <code>null</code> if absent.</td></tr>
+            <tr><td>Contains(ConceptId) → bool</td><td>Whether the id resolves.</td></tr>
+            <tr><td>LinksFrom(ConceptId) → IReadOnlyList&lt;ResolvedLink&gt;</td><td>Outgoing links, each flagged <code>Exists</code>.</td></tr>
+            <tr><td>Backlinks(ConceptId) → IReadOnlyList&lt;ConceptId&gt;</td><td>Concepts that link to this one.</td></tr>
+            <tr><td>BrokenLinks() → IReadOnlyList&lt;(ConceptId, string)&gt;</td><td>Every edge to a missing concept.</td></tr>
+            <tr><td>IndexFiles · LogFiles → IReadOnlyList&lt;string&gt;</td><td>Reserved <code>index.md</code> / <code>log.md</code> paths found.</td></tr>
+            <tr><td>ParseErrors → IReadOnlyList&lt;(string Path, string Error)&gt;</td><td>Files that failed to parse, with why.</td></tr>
+            <tr><td>Concept</td><td>Record: <code>Id</code>, <code>Path</code>, <code>Document</code>.</td></tr>
+          </table>
+        </section>
+
+        <section class="chapter" id="conceptid">
+          <div class="chead"><span class="h">##</span><h2>ConceptId</h2><span class="ref">§2 — id ↔ path</span></div>
+          <p>A concept id is the file path with <code>.md</code> removed, as ordered segments. Sortable and value-equal.</p>
+          <table class="map">
+            <tr><th>Member</th><th>Description</th></tr>
+            <tr><td>Parse(string) → ConceptId</td><td>Parse <code>"tables/orders"</code>; throws <code>ConceptIdException</code> on an invalid segment.</td></tr>
+            <tr><td>TryParse(string, out ConceptId?) → bool</td><td>Non-throwing parse.</td></tr>
+            <tr><td>FromPath(root, path) → ConceptId</td><td>Derive an id from a file path under a bundle root.</td></tr>
+            <tr><td>ToPath(root) → string</td><td>Inverse: the <code>.md</code> file path under a root.</td></tr>
+            <tr><td>Segments → IReadOnlyList&lt;string&gt;</td><td>The path components.</td></tr>
+            <tr><td>Name → string · Parent → ConceptId?</td><td>Last segment; id of the containing directory.</td></tr>
+            <tr><td>ValidateSegment(string)</td><td>Throw if a single segment is not spec-legal.</td></tr>
+          </table>
+        </section>
+
+        <section class="chapter" id="document">
+          <div class="chead"><span class="h">##</span><h2>OkfDocument &amp; Frontmatter</h2><span class="ref">§4 — one concept</span></div>
+          <p><code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> and layers typed getters on top, so producer-defined keys survive round-trips. Two validation levels: <code>ValidateConformance()</code> enforces only §9 (non-empty <code>type</code>); <code>Validate()</code> is the stricter producer check (<code>type</code>, <code>title</code>, <code>description</code>, <code>timestamp</code>).</p>
+          <table class="map">
+            <tr><th>OkfDocument</th><th>Description</th></tr>
+            <tr><td>Parse(string) → OkfDocument</td><td>Parse frontmatter + body; throws <code>DocumentParseException</code>.</td></tr>
+            <tr><td>TryParse(string, out doc, out error) → bool</td><td>Non-throwing parse.</td></tr>
+            <tr><td>Serialize() → string</td><td>Re-emit; preserves key order and unknown keys.</td></tr>
+            <tr><td>Validate() · ValidateConformance()</td><td>Producer check / §9 check; throw <code>DocumentValidationException</code>.</td></tr>
+            <tr><td>Links() → IReadOnlyList&lt;ConceptLink&gt;</td><td>Markdown links in the body.</td></tr>
+            <tr><td>Citations() → IReadOnlyList&lt;Citation&gt;</td><td>Numbered citations in the body.</td></tr>
+            <tr><td>Frontmatter → Frontmatter · Body → string</td><td>The two halves of the document.</td></tr>
+          </table>
+          <table class="map">
+            <tr><th>Frontmatter</th><th>Description</th></tr>
+            <tr><td>Type · Title · Description · Resource · Timestamp → string?</td><td>Typed getters over the mapping.</td></tr>
+            <tr><td>Tags → IReadOnlyList&lt;string&gt;</td><td>The <code>tags</code> sequence, or empty.</td></tr>
+            <tr><td>ExtensionKeys → IReadOnlyList&lt;string&gt;</td><td>Producer-defined keys beyond the reserved set.</td></tr>
+            <tr><td>AsMapping() → YamlMapping</td><td>The underlying ordered mapping.</td></tr>
+            <tr><td>Set(string, YamlValue) · FromMapping(YamlMapping)</td><td>Mutate a key / wrap an existing mapping.</td></tr>
+          </table>
+        </section>
+
+        <section class="chapter" id="yaml">
+          <div class="chead"><span class="h">##</span><h2>The YAML subset</h2><span class="ref">Yaml — frontmatter only</span></div>
+          <p>A documented subset: scalars, sequences, shallow maps, block and flow styles, <code>|</code>/<code>&gt;</code> block scalars. It <strong>rejects anchors, tags, and multi-document streams</strong> with clear errors — frontmatter never needs them.</p>
+          <table class="map">
+            <tr><th>Member</th><th>Description</th></tr>
+            <tr><td>YamlValue.Parse(string) → YamlValue</td><td>Parse the subset; throws <code>YamlParseException</code> (with a line number).</td></tr>
+            <tr><td>YamlEmitter.Emit(YamlValue) → string</td><td>Serialize back to the same subset.</td></tr>
+            <tr><td>AsString() · AsBool() · AsSequence() · AsMapping()</td><td>Typed views; <code>null</code> if the node is another kind.</td></tr>
+            <tr><td>ToYamlString() → string</td><td>Emit a single value.</td></tr>
+            <tr><td>YamlMapping: Get · ContainsKey · Entries · Keys · Count</td><td>Order-preserving map access.</td></tr>
+          </table>
+        </section>
+
+        <section class="chapter" id="links">
+          <div class="chead"><span class="h">##</span><h2>Links &amp; citations</h2><span class="ref">§5, §8 — the graph edges</span></div>
+          <table class="map">
+            <tr><th>Member</th><th>Description</th></tr>
+            <tr><td>LinkScanner.ExtractLinks(body) → IReadOnlyList&lt;ConceptLink&gt;</td><td>Markdown links, classified by <code>LinkKind</code>.</td></tr>
+            <tr><td>LinkScanner.ExtractCitations(body) → IReadOnlyList&lt;Citation&gt;</td><td>Numbered <code>[n]</code> citations.</td></tr>
+            <tr><td>ConceptLink(Text, Target, Kind)</td><td>A link; <code>Resolve(source) → ConceptId?</code> turns it into a target id.</td></tr>
+            <tr><td>ResolvedLink(Target, Exists, Text, Raw)</td><td>A link resolved against the bundle — <code>Exists</code> tells you if the target is real.</td></tr>
+            <tr><td>Citation(Number, Text, Target, Raw)</td><td>One numbered citation.</td></tr>
+            <tr><td>LinkKind</td><td>Enum: absolute vs relative link classification.</td></tr>
+          </table>
+        </section>
+
+        <section class="chapter" id="index">
+          <div class="chead"><span class="h">##</span><h2>IndexGenerator &amp; ChangeLog</h2><span class="ref">§6, §7 — reserved files</span></div>
+          <table class="map">
+            <tr><th>Member</th><th>Description</th></tr>
+            <tr><td>IndexGenerator.RegenerateIndexes(root) → IReadOnlyList&lt;string&gt;</td><td>Write every <code>index.md</code>; returns the paths written.</td></tr>
+            <tr><td>RegenerateIndexesWith(root, Synthesize)</td><td>Same, with a custom description synthesizer.</td></tr>
+            <tr><td>BuildIndexText(entries) → string</td><td>Render one listing without touching disk.</td></tr>
+            <tr><td>IndexEntry(Type, Title, Link, Description)</td><td>One row of a generated index.</td></tr>
+            <tr><td>ChangeLog: Days · Title · ToMarkdown() · InvalidDates()</td><td>Parse / render a <code>log.md</code> (§7); <code>IsIsoDate(s)</code> validates a date.</td></tr>
+            <tr><td>LogDay(Date, Entries) · LogEntry(Kind, Text)</td><td>A day's block and one entry.</td></tr>
+          </table>
+        </section>
+
+        <section class="chapter" id="validation">
+          <div class="chead"><span class="h">##</span><h2>Validation</h2><span class="ref">§9 — conformance</span></div>
+          <table class="map">
+            <tr><th>Member</th><th>Description</th></tr>
+            <tr><td>BundleValidator.Validate(Bundle) → ValidationReport</td><td>Run the §9 conformance check.</td></tr>
+            <tr><td>ValidationReport.IsConformant → bool</td><td>True when there are no <code>Error</code> diagnostics.</td></tr>
+            <tr><td>Diagnostics → IReadOnlyList&lt;Diagnostic&gt;</td><td>Every finding; <code>Of(severity)</code> filters.</td></tr>
+            <tr><td>ErrorCount · WarningCount → int</td><td>Tallies by severity.</td></tr>
+            <tr><td>Diagnostic(Severity, Path, Concept, Message)</td><td>One finding; <code>ToString()</code> is the CLI line.</td></tr>
+            <tr><td>Severity</td><td>Enum: <code>Error</code>, <code>Warning</code>, <code>Info</code>.</td></tr>
+            <tr><td>OkfSpec.Version → string</td><td>The implemented spec version (<code>"0.1"</code>).</td></tr>
+          </table>
+        </section>
+
+        <section class="chapter" id="errors">
+          <div class="chead"><span class="h">##</span><h2>Errors</h2><span class="ref">one base exception</span></div>
+          <p>Every library exception derives from <code>OkfException</code>, so one <code>catch</code> covers the surface. Loading is permissive, so most day-to-day work throws nothing — failures accumulate in <code>ParseErrors</code> instead.</p>
+          <table class="map">
+            <tr><th>Exception</th><th>Thrown by</th></tr>
+            <tr><td>OkfException</td><td>Base type for all of the below.</td></tr>
+            <tr><td>ConceptIdException</td><td><code>ConceptId.Parse</code> / <code>ValidateSegment</code>.</td></tr>
+            <tr><td>BundleLoadException</td><td><code>Bundle.Load</code>, when the root is unreadable.</td></tr>
+            <tr><td>DocumentParseException</td><td><code>OkfDocument.Parse</code>.</td></tr>
+            <tr><td>DocumentValidationException</td><td><code>Validate</code> / <code>ValidateConformance</code>.</td></tr>
+            <tr><td>YamlParseException</td><td>The YAML subset parser (carries a <code>Line</code>).</td></tr>
+          </table>
+          <p class="next">→ <a href="cli.html">cli.md</a> — the same engine as a binary · <a href="getting-started.html">getting-started.md</a></p>
+        </section>
+
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<footer class="colophon">
+  <div class="frame">
+    <div class="links">
+      <a href="https://github.com/jchable/okf4net">source</a>
+      <a href="https://www.nuget.org/packages/OKF4net">nuget</a>
+      <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">okf spec v0.1</a>
+      <a href="https://github.com/jchable/okf4net/blob/main/LICENSE">license</a>
+    </div>
+    <p>OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC, by way of the former Rust okf crate by Walter van der Giessen. An independent implementation, not affiliated with or endorsed by Google.</p>
+  </div>
+</footer>
+
+</body>
+</html>
