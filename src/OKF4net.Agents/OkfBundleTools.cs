@@ -388,101 +388,299 @@ public sealed class OkfBundleTools
 
         return RunTool(() =>
         {
-            if (!ConceptId.TryParse(conceptId, out var id))
+            var targetError = ValidateConceptTarget(conceptId, out var target);
+            if (targetError is not null)
             {
-                return $"Error: invalid concept id '{conceptId}'. Concept ids are '/'-separated "
-                    + "segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.";
+                return targetError;
             }
 
-            if (string.Equals(id.Name, "index", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(id.Name, "log", StringComparison.OrdinalIgnoreCase))
+            var (content, buildError) = BuildValidatedContent(frontmatterYaml, body);
+            if (buildError is not null)
             {
-                return $"Error: '{id}' is a reserved concept id — the last segment must not be "
-                    + "'index' or 'log' in any casing (these would collide with the bundle's "
-                    + "index.md/log.md files on case-insensitive filesystems).";
+                return buildError;
             }
 
-            // Throws YamlParseException (line-tagged message) on malformed input;
-            // caught by RunTool's catch-all below, before anything is written.
-            var yaml = YamlValue.Parse(frontmatterYaml);
-            Frontmatter? frontmatter = yaml switch
-            {
-                YamlNull => new Frontmatter(),
-                YamlMapping map => Frontmatter.FromMapping(map),
-                _ => null,
-            };
-
-            if (frontmatter is null)
-            {
-                return "Error: frontmatter must be a YAML mapping of 'key: value' lines, not a list or scalar.";
-            }
-
-            var doc = new OkfDocument(frontmatter, body);
-
-            // Strict producer validation BEFORE any write. On failure this
-            // throws DocumentValidationException (message lists MissingKeys),
-            // caught by RunTool below -- nothing is written for a failed write.
-            doc.Validate();
-
-            var targetPath = id.ToPath(BundleRoot);
-
-            // Belt and braces alongside ConceptId's own segment validation
-            // (which already forbids '..' and '/' inside a segment): the same
-            // defense-in-depth check Browse uses before touching disk.
-            if (!IsWithinBundleRoot(BundleRoot, targetPath))
-            {
-                return $"Error: '{id}' resolves outside the bundle root.";
-            }
-
-            // Reject a reparse point (symlink/junction) anywhere between the
-            // bundle root and the target's parent directory: the lexical
-            // check above would happily accept "tables/refunds" even if
-            // "tables" is a junction pointing outside the bundle -- the OS
-            // follows it when Directory.CreateDirectory/File.WriteAllText
-            // below actually touch disk. Same guard Browse uses.
-            var targetParentDir = Path.GetDirectoryName(targetPath);
-            if (!string.IsNullOrEmpty(targetParentDir) && HasReparsePointAncestor(BundleRoot, targetParentDir))
-            {
-                return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
-            }
-
-            // Also reject the target FILE node itself being a reparse point
-            // (a planted file symlink at e.g. tables/x.md pointing at an
-            // external file): HasReparsePointAncestor above only walks
-            // directory ANCESTORS of targetPath, it never inspects targetPath
-            // itself, so an existing symlinked concept file would otherwise
-            // sail through both checks and File.WriteAllText below would
-            // follow the link and silently overwrite whatever it points at.
-            if (ReparsePoints.IsReparsePoint(targetPath))
-            {
-                return $"Error: '{id}' is a reparse point (symlink/junction), not a regular file -- refusing to overwrite it.";
-            }
-
-            var content = doc.Serialize();
-            bool existed;
-
-            // Serialized under _bundleLock (shared with AppendLog and
-            // RegenerateIndexes) so concurrent writers can't interleave an
-            // existence check with another writer's write, and so the cache
-            // invalidation below is atomic with the write it follows.
+            // Serialized under _bundleLock (shared with AppendLog,
+            // RegenerateIndexes, and AppendToConceptAtomic) so concurrent
+            // writers can't interleave an existence check with another
+            // writer's write, and so the cache invalidation below is atomic
+            // with the write it follows.
             lock (_bundleLock)
             {
-                existed = File.Exists(targetPath);
+                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
+            }
+        });
+    }
 
-                var parentDir = Path.GetDirectoryName(targetPath);
-                if (!string.IsNullOrEmpty(parentDir))
-                {
-                    Directory.CreateDirectory(parentDir);
-                }
+    /// <summary>
+    /// Atomically reads, transforms, and rewrites one concept's body under
+    /// <see cref="_bundleLock"/> — the seam <see cref="OKF4net.Agents.OkfContextProvider.CaptureMemory"/>
+    /// uses to close the same-day memory-capture race (E2): before this
+    /// existed, a caller that read a concept's body via <see cref="GetBundle"/>,
+    /// built a new body from it OUTSIDE any lock, then called the plain
+    /// <see cref="WriteConcept"/>, could have that read/build/write sequence
+    /// interleave with a concurrent caller doing the same for the same
+    /// concept — both read the same "before" body, and the second write
+    /// silently clobbers the first's change (a lost update), even if some
+    /// OTHER, already-locked write (e.g. <see cref="AppendLog"/>) faithfully
+    /// recorded both calls, producing a count divergence between the two.
+    /// Here, the read of the concept's CURRENT on-disk body, the caller's
+    /// <paramref name="buildBody"/> transform, and the validated write all
+    /// happen inside one unbroken hold of <see cref="_bundleLock"/>, so two
+    /// concurrent calls for the same concept id can never interleave: the
+    /// second call's read always observes the first call's completed write.
+    /// Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
+    /// producer-grade validation and serialization (<see cref="BuildValidatedContent"/>),
+    /// and write/cache-invalidation (<see cref="WriteValidatedContentLocked"/>)
+    /// steps <see cref="WriteConcept"/> itself uses — this is a locked
+    /// read-modify-write wrapped AROUND that same core, not a divergent
+    /// second write path. <see langword="internal"/>: a narrow seam for
+    /// same-process callers that need atomicity, not part of the tool's
+    /// public agent-facing surface.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>memory/2026-07-24</c>.</param>
+    /// <param name="frontmatterYamlIfCreating">
+    /// Frontmatter used only when the concept does not yet exist. When it
+    /// already exists, its own current frontmatter is re-read and
+    /// re-serialized unchanged (mirroring how a caller that read-then-called
+    /// <see cref="WriteConcept"/> would carry it forward) and this parameter
+    /// is ignored.
+    /// </param>
+    /// <param name="buildBody">
+    /// Given the concept's current body (<see langword="null"/> if it does
+    /// not yet exist), returns the full new body to write. Invoked exactly
+    /// once, inside the lock, against the freshly re-read current body —
+    /// never a caller's own stale, pre-lock snapshot.
+    /// </param>
+    /// <returns>
+    /// The same style of result text as <see cref="WriteConcept"/> (a
+    /// <c>Written ...</c> confirmation) or an <c>Error: ...</c> message;
+    /// never throws.
+    /// </returns>
+    internal string AppendToConceptAtomic(
+        string conceptId,
+        string frontmatterYamlIfCreating,
+        Func<string?, string> buildBody)
+    {
+        if (string.IsNullOrWhiteSpace(conceptId))
+        {
+            return "Error: invalid concept id — it must not be empty.";
+        }
 
-                File.WriteAllText(targetPath, content, OkfEncodings.NoBom);
-                _bundle = null;
+        if (conceptId.Contains('\0'))
+        {
+            return "Error: invalid concept id — it must not contain a null character.";
+        }
+
+        if (frontmatterYamlIfCreating is null)
+        {
+            return "Error: frontmatter must not be null.";
+        }
+
+        if (frontmatterYamlIfCreating.Contains('\0'))
+        {
+            return "Error: invalid frontmatter — it must not contain a null character.";
+        }
+
+        return RunTool(() =>
+        {
+            var targetError = ValidateConceptTarget(conceptId, out var target);
+            if (targetError is not null)
+            {
+                return targetError;
             }
 
-            var byteCount = OkfEncodings.NoBom.GetByteCount(content);
-            var status = existed ? "updated" : "new";
-            return $"Written {id} ({status}, {byteCount} bytes). Remember to run okf_regenerate_indexes.";
+            // The read of the current body, the caller's transform, and the
+            // validated write all happen inside this ONE lock acquisition —
+            // never released and reacquired in between — which is what makes
+            // the whole read-modify-write atomic against a concurrent
+            // WriteConcept/AppendToConceptAtomic call for the same concept.
+            lock (_bundleLock)
+            {
+                string frontmatterYaml;
+                string? currentBody;
+                if (File.Exists(target.TargetPath))
+                {
+                    // Strict UTF-8, matching AppendLog's own existing-file
+                    // read: a non-UTF-8 concept file throws
+                    // DecoderFallbackException (caught by RunTool below)
+                    // rather than being silently re-decoded and rewritten.
+                    var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
+                    var existingDoc = OkfDocument.Parse(text);
+                    frontmatterYaml = existingDoc.Frontmatter.AsMapping().ToYamlString();
+                    currentBody = existingDoc.Body;
+                }
+                else
+                {
+                    frontmatterYaml = frontmatterYamlIfCreating;
+                    currentBody = null;
+                }
+
+                var newBody = buildBody(currentBody);
+                if (newBody is null)
+                {
+                    return "Error: body must not be null.";
+                }
+
+                if (newBody.Contains('\0'))
+                {
+                    return "Error: invalid body — it must not contain a null character.";
+                }
+
+                var (content, buildError) = BuildValidatedContent(frontmatterYaml, newBody);
+                if (buildError is not null)
+                {
+                    return buildError;
+                }
+
+                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
+            }
         });
+    }
+
+    /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
+    private readonly record struct ConceptTarget(ConceptId Id, string TargetPath);
+
+    /// <summary>
+    /// Validates <paramref name="conceptId"/> (parseable, not the reserved
+    /// <c>index</c>/<c>log</c> name) and the filesystem path it resolves to
+    /// (within the bundle root; no reparse point among its parent
+    /// directories or at the target itself) — shared by <see cref="WriteConcept"/>
+    /// and <see cref="AppendToConceptAtomic"/> so the two can never diverge
+    /// on what counts as a valid write target. Pure: performs no I/O beyond
+    /// the reparse-point/existence checks themselves, and does not touch
+    /// <see cref="_bundleLock"/> or the bundle cache.
+    /// </summary>
+    /// <returns>
+    /// <see langword="null"/> and a populated <paramref name="target"/> on
+    /// success; otherwise the <c>Error: ...</c> message to return to the
+    /// caller (and <paramref name="target"/> is <see langword="default"/>).
+    /// </returns>
+    private string? ValidateConceptTarget(string conceptId, out ConceptTarget target)
+    {
+        target = default;
+
+        if (!ConceptId.TryParse(conceptId, out var id))
+        {
+            return $"Error: invalid concept id '{conceptId}'. Concept ids are '/'-separated "
+                + "segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.";
+        }
+
+        if (string.Equals(id.Name, "index", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(id.Name, "log", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Error: '{id}' is a reserved concept id — the last segment must not be "
+                + "'index' or 'log' in any casing (these would collide with the bundle's "
+                + "index.md/log.md files on case-insensitive filesystems).";
+        }
+
+        var targetPath = id.ToPath(BundleRoot);
+
+        // Belt and braces alongside ConceptId's own segment validation
+        // (which already forbids '..' and '/' inside a segment): the same
+        // defense-in-depth check Browse uses before touching disk.
+        if (!IsWithinBundleRoot(BundleRoot, targetPath))
+        {
+            return $"Error: '{id}' resolves outside the bundle root.";
+        }
+
+        // Reject a reparse point (symlink/junction) anywhere between the
+        // bundle root and the target's parent directory: the lexical check
+        // above would happily accept "tables/refunds" even if "tables" is a
+        // junction pointing outside the bundle -- the OS follows it when
+        // Directory.CreateDirectory/File.WriteAllText actually touch disk.
+        // Same guard Browse uses.
+        var targetParentDir = Path.GetDirectoryName(targetPath);
+        if (!string.IsNullOrEmpty(targetParentDir) && HasReparsePointAncestor(BundleRoot, targetParentDir))
+        {
+            return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+        }
+
+        // Also reject the target FILE node itself being a reparse point (a
+        // planted file symlink at e.g. tables/x.md pointing at an external
+        // file): HasReparsePointAncestor above only walks directory
+        // ANCESTORS of targetPath, it never inspects targetPath itself, so
+        // an existing symlinked concept file would otherwise sail through
+        // both checks and a later read/write would follow the link.
+        if (ReparsePoints.IsReparsePoint(targetPath))
+        {
+            return $"Error: '{id}' is a reparse point (symlink/junction), not a regular file -- refusing to overwrite it.";
+        }
+
+        target = new ConceptTarget(id, targetPath);
+        return null;
+    }
+
+    /// <summary>
+    /// Parses <paramref name="frontmatterYaml"/>, builds and validates the
+    /// resulting <see cref="OkfDocument"/> against <paramref name="body"/>,
+    /// and serializes it — the exact producer-grade validation
+    /// <see cref="WriteConcept"/> performed inline before this was
+    /// extracted, now shared verbatim with <see cref="AppendToConceptAtomic"/>
+    /// so the two can never validate divergently. Throws
+    /// <see cref="Yaml.YamlParseException"/> (malformed frontmatter YAML) or
+    /// <see cref="DocumentValidationException"/> (failed producer
+    /// validation) — both caught by the caller's <see cref="RunTool"/>
+    /// wrapper — rather than returning an error for those two cases; only
+    /// "frontmatter parses but isn't a mapping" is reported via the
+    /// returned <c>Error</c> string, matching the original inline code.
+    /// </summary>
+    private static (string? Content, string? Error) BuildValidatedContent(string frontmatterYaml, string body)
+    {
+        // Throws YamlParseException (line-tagged message) on malformed input;
+        // caught by RunTool's catch-all, before anything is written.
+        var yaml = YamlValue.Parse(frontmatterYaml);
+        Frontmatter? frontmatter = yaml switch
+        {
+            YamlNull => new Frontmatter(),
+            YamlMapping map => Frontmatter.FromMapping(map),
+            _ => null,
+        };
+
+        if (frontmatter is null)
+        {
+            return (null, "Error: frontmatter must be a YAML mapping of 'key: value' lines, not a list or scalar.");
+        }
+
+        var doc = new OkfDocument(frontmatter, body);
+
+        // Strict producer validation BEFORE any write. On failure this
+        // throws DocumentValidationException (message lists MissingKeys),
+        // caught by RunTool -- nothing is written for a failed write.
+        doc.Validate();
+
+        return (doc.Serialize(), null);
+    }
+
+    /// <summary>
+    /// Writes already-validated <paramref name="content"/> to <paramref name="targetPath"/>
+    /// and invalidates the bundle cache. CALLER MUST already hold
+    /// <see cref="_bundleLock"/> — this method does not acquire it itself,
+    /// so that <see cref="AppendToConceptAtomic"/> can enclose its own
+    /// preceding read-and-transform in the SAME lock acquisition as this
+    /// write (a nested/second acquisition here would either reintroduce the
+    /// exact gap this seam exists to close, or -- if <see cref="_bundleLock"/>
+    /// were ever changed to a non-reentrant primitive -- deadlock). Shared
+    /// verbatim by <see cref="WriteConcept"/> (which wraps a single call to
+    /// this in its own <c>lock (_bundleLock)</c>) and
+    /// <see cref="AppendToConceptAtomic"/>.
+    /// </summary>
+    private string WriteValidatedContentLocked(ConceptId id, string targetPath, string content)
+    {
+        var existed = File.Exists(targetPath);
+
+        var parentDir = Path.GetDirectoryName(targetPath);
+        if (!string.IsNullOrEmpty(parentDir))
+        {
+            Directory.CreateDirectory(parentDir);
+        }
+
+        File.WriteAllText(targetPath, content, OkfEncodings.NoBom);
+        _bundle = null;
+
+        var byteCount = OkfEncodings.NoBom.GetByteCount(content);
+        var status = existed ? "updated" : "new";
+        return $"Written {id} ({status}, {byteCount} bytes). Remember to run okf_regenerate_indexes.";
     }
 
     /// <summary>

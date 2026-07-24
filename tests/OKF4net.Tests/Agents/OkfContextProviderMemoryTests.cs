@@ -297,6 +297,67 @@ public class OkfContextProviderMemoryTests
     }
 
     [Fact]
+    public void Concurrent_same_day_captures_never_lose_a_section_E2()
+    {
+        // E2: the day concept's read-modify-write must be atomic under the
+        // shared write lock. Before OkfBundleTools.AppendToConceptAtomic
+        // existed, CaptureMemory read the day concept's body via
+        // GetBundle() and built the new body OUTSIDE any lock, then called
+        // the public WriteConcept -- so N threads racing StoreAIContextAsync
+        // for the SAME session and the SAME UTC day could each read the
+        // same "before" body and the LAST writer's WriteConcept call would
+        // silently clobber every earlier one's appended section (a lost
+        // update), even though the separately-locked AppendLog call
+        // faithfully recorded all N entries -- a section-count vs.
+        // log-entry-count divergence. This test fails against that older
+        // code (fewer sections than log entries) and passes once the
+        // read-modify-write is serialized under the shared write lock.
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tools.UtcNow = () => new DateTime(2026, 7, 22, 12, 0, 0, DateTimeKind.Utc);
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.SharedBundle });
+
+        const int Iterations = 8;
+
+        // One shared provider/tools instance, 8 concurrent captures for the
+        // same pinned UTC day -- deliberately synchronous-blocking per
+        // iteration (StoreForTest never actually awaits) so Parallel.For's
+        // own thread pool is what creates the race, not any async
+        // interleaving semantics.
+        Parallel.For(0, Iterations, i =>
+        {
+            var context = BuildInvokedContext($"user msg {i}", $"agent reply {i}");
+            provider.StoreForTest(context).AsTask().GetAwaiter().GetResult();
+        });
+
+        var memoryPath = MemoryFilePath(tmp, "2026-07-22");
+        Assert.True(File.Exists(memoryPath));
+
+        var doc = OkfDocument.Parse(File.ReadAllText(memoryPath));
+        doc.Validate(); // producer-grade validation must still pass -- throws on failure.
+
+        var sectionCount = doc.Body.Split('\n').Count(line => line.StartsWith("## ", StringComparison.Ordinal));
+
+        var logText = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        var logEntryCount = logText.Split('\n')
+            .Count(line => line.Contains("**Memory**: Captured exchange in memory/2026-07-22", StringComparison.Ordinal));
+
+        // Every one of the 8 distinct exchanges must have its own surviving
+        // section -- not just a section count that happens to match (which
+        // a bug that dropped different sections than it created could still
+        // pass by coincidence).
+        for (var i = 0; i < Iterations; i++)
+        {
+            Assert.Contains($"> user msg {i}", doc.Body, StringComparison.Ordinal);
+            Assert.Contains($"> agent reply {i}", doc.Body, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(Iterations, logEntryCount);
+        Assert.Equal(Iterations, sectionCount);
+        Assert.Equal(logEntryCount, sectionCount);
+    }
+
+    [Fact]
     public async Task MemoryCapture_Disabled_is_a_no_op()
     {
         using var tmp = new TempDir();

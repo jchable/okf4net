@@ -38,7 +38,7 @@ namespace OKF4net.Agents;
 /// <para>
 /// <see cref="StoreAIContextAsync"/> is deterministic (no LLM) long-term
 /// memory capture, gated by <see cref="OkfContextProviderOptions.MemoryCapture"/>
-/// (<see cref="MemoryCaptureMode.Disabled"/> by default: the memory
+/// (<see cref="MemoryCaptureMode.Disabled"/> by default: the memory that
 /// <see cref="MemoryCaptureMode.SharedBundle"/> writes is bundle-global
 /// and unscoped by session, user, or tenant, so it is opt-in rather than a
 /// capability every bundle gets for free):
@@ -46,11 +46,16 @@ namespace OKF4net.Agents;
 /// per-day <c>&lt;MemoryDirectory&gt;/&lt;yyyy-MM-dd&gt;</c> concept (created
 /// with full producer frontmatter the first time, appended to as a new
 /// timestamped section on every later capture that same day) plus a
-/// <c>log.md</c> entry, reusing <see cref="OkfBundleTools.WriteConcept"/> and
-/// <see cref="OkfBundleTools.AppendLog"/> exactly as any other caller would
-/// -- so every one of their guarantees (producer validation, the shared
-/// write lock, reparse-point rejection, cache invalidation) applies
-/// unchanged. See its own remarks for the full algorithm.
+/// <c>log.md</c> entry, via <see cref="OkfBundleTools.AppendToConceptAtomic"/>
+/// (an internal seam wrapped around the same validated + reparse-guarded +
+/// cache-invalidating core <see cref="OkfBundleTools.WriteConcept"/> uses,
+/// but with the day concept's read-modify-write also serialized under the
+/// shared write lock, closing a same-day concurrent-capture race that a
+/// plain read-then-<see cref="OkfBundleTools.WriteConcept"/> call would
+/// have) and <see cref="OkfBundleTools.AppendLog"/> exactly as any other
+/// caller would -- so every one of their guarantees (producer validation,
+/// the shared write lock, reparse-point rejection, cache invalidation)
+/// applies unchanged. See its own remarks for the full algorithm.
 /// </para>
 /// <para>
 /// The provider shares an existing <see cref="OkfBundleTools"/> instance
@@ -368,17 +373,25 @@ public sealed class OkfContextProvider : AIContextProvider
     /// When something is captured, both texts (whichever is present; the
     /// other renders as <c>(none)</c>) are written into the bundle via
     /// <see cref="CaptureMemory"/>: a per-day concept plus a <c>log.md</c>
-    /// entry, both through the existing public <see cref="OkfBundleTools.WriteConcept"/>/
-    /// <see cref="OkfBundleTools.AppendLog"/> -- no new internal write seam
-    /// was added to <see cref="OkfBundleTools"/> for this, since both were
-    /// already public, general-purpose, and sufficient. Calling them exactly
-    /// as any other caller would means every one of their guarantees applies
-    /// unchanged: producer frontmatter validation before writing, the shared
-    /// <c>_bundleLock</c> serializing the read-modify-write, rejection of a
-    /// reparse-point ancestor directory (a junction/symlink at
-    /// <see cref="OkfContextProviderOptions.MemoryDirectory"/> itself, or
-    /// higher) and of the target file node itself being a reparse point, and
-    /// cache invalidation on success.
+    /// entry, through <see cref="OkfBundleTools.AppendToConceptAtomic"/> and
+    /// <see cref="OkfBundleTools.AppendLog"/>. The former is a narrow
+    /// <see langword="internal"/> seam on <see cref="OkfBundleTools"/> (not
+    /// a divergent second write path -- it wraps the SAME producer
+    /// validation, reparse-point rejection, and cache-invalidating write
+    /// core that the public <see cref="OkfBundleTools.WriteConcept"/> uses)
+    /// added specifically so the day concept's read-current-body, append,
+    /// and write happen inside one unbroken hold of the shared
+    /// <c>_bundleLock</c> -- otherwise two concurrent captures on the same
+    /// UTC day could each read the same "before" body outside any lock and
+    /// the second write would silently clobber the first's appended
+    /// section, even though a separately-locked <see cref="OkfBundleTools.AppendLog"/>
+    /// call recorded both (a lost update and a section/log-count
+    /// divergence). Every one of the shared core's guarantees still
+    /// applies unchanged: producer frontmatter validation before writing,
+    /// rejection of a reparse-point ancestor directory (a junction/symlink
+    /// at <see cref="OkfContextProviderOptions.MemoryDirectory"/> itself, or
+    /// higher) and of the target file node itself being a reparse point,
+    /// and cache invalidation on success.
     /// </para>
     /// <para>
     /// Never throws: any failure -- I/O, a validation/lock/reparse-point
@@ -447,11 +460,16 @@ public sealed class OkfContextProvider : AIContextProvider
     /// Writes (creates or appends to) today's memory concept and its
     /// accompanying <c>log.md</c> entry. See <see cref="StoreAIContextAsync"/>'s
     /// remarks for the full algorithm and the guarantees this inherits from
-    /// <see cref="OkfBundleTools.WriteConcept"/>/<see cref="OkfBundleTools.AppendLog"/>.
+    /// <see cref="OkfBundleTools.AppendToConceptAtomic"/>/<see cref="OkfBundleTools.AppendLog"/>.
     /// Sets <see cref="LastMemoryError"/> (rather than throwing) if either
-    /// call reports an <c>"Error: ..."</c> result; a direct <see cref="OkfBundleTools.GetBundle"/>
-    /// failure propagates to the caller's own try/catch instead, since (unlike
-    /// the two tool calls) it is not itself never-throwing.
+    /// call reports an <c>"Error: ..."</c> result. Unlike the previous
+    /// design, this method no longer reads the day concept's current state
+    /// itself (via a raw, un-guarded <see cref="OkfBundleTools.GetBundle"/>
+    /// call outside any lock): that read now happens INSIDE
+    /// <see cref="OkfBundleTools.AppendToConceptAtomic"/>'s own locked
+    /// section, atomically with the append and the write, which is what
+    /// prevents two concurrent same-day captures from each computing their
+    /// new body against the same stale "before" body.
     /// </summary>
     private void CaptureMemory(string? userText, string? agentText)
     {
@@ -467,37 +485,22 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        // Raw GetBundle()/TryParse -- unlike WriteConcept/AppendLog below,
-        // these are NOT self-guarded, so a failure here (bundle root gone,
-        // non-UTF-8 content, ...) is deliberately left to propagate to
-        // StoreAIContextAsync's own try/catch rather than being swallowed
-        // here, mirroring ProvideAIContextAsync's identical up-front-probe
-        // pattern.
-        var bundle = _tools.GetBundle();
-        var existing = ConceptId.TryParse(memoryConceptId, out var id) ? bundle.Get(id) : null;
+        var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        var frontmatterYamlIfCreating =
+            "type: AgentMemory\n"
+            + $"title: Agent memory {dateStr}\n"
+            + $"description: Captured user/agent exchanges for {dateStr}.\n"
+            + $"timestamp: {timestamp}\n";
 
-        string frontmatterYaml;
-        string body;
-        if (existing is not null)
-        {
-            // Re-read and re-serialize the existing frontmatter unchanged
-            // (WriteConcept re-validates it before rewriting) -- only the
-            // body gains a new section.
-            frontmatterYaml = existing.Document.Frontmatter.AsMapping().ToYamlString();
-            body = existing.Document.Body.TrimEnd('\n') + "\n\n" + section;
-        }
-        else
-        {
-            var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
-            frontmatterYaml =
-                "type: AgentMemory\n"
-                + $"title: Agent memory {dateStr}\n"
-                + $"description: Captured user/agent exchanges for {dateStr}.\n"
-                + $"timestamp: {timestamp}\n";
-            body = section;
-        }
-
-        var writeResult = _tools.WriteConcept(memoryConceptId, frontmatterYaml, body);
+        // currentBody is the concept's CURRENT on-disk body, re-read by
+        // AppendToConceptAtomic itself inside its single hold of the shared
+        // write lock -- never a snapshot taken by this method before the
+        // lock, which is exactly the gap that used to let two concurrent
+        // same-day captures race a lost update.
+        var writeResult = _tools.AppendToConceptAtomic(
+            memoryConceptId,
+            frontmatterYamlIfCreating,
+            currentBody => currentBody is null ? section : currentBody.TrimEnd('\n') + "\n\n" + section);
         if (IsToolError(writeResult))
         {
             LastMemoryError = writeResult;

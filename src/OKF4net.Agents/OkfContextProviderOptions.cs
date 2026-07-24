@@ -15,7 +15,7 @@ public sealed class OkfContextProviderOptions
     /// <summary>
     /// Whether (and how) the provider captures exchanges as long-term memory
     /// concepts in the bundle after each invocation. Defaults to
-    /// <see cref="MemoryCaptureMode.Disabled"/>: the memory
+    /// <see cref="MemoryCaptureMode.Disabled"/>: the memory that
     /// <see cref="MemoryCaptureMode.SharedBundle"/> writes is bundle-global
     /// and unscoped by session, user, or tenant, so a scored recall in
     /// <see cref="OkfContextProvider.ProvideAIContextAsync"/> can surface one
