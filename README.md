@@ -284,6 +284,25 @@ A few known v1 caveats:
   single session are sequential, so the concurrency half of this only affects
   cross-session sharing.
 
+## Use OKF in Claude (MCP)
+
+`OKF4net.Mcp` is a local MCP server that plugs an OKF bundle straight into
+Claude Desktop / Claude Code, so you can read, search, and persist knowledge in
+your bundle from a chat — the way an Obsidian MCP server exposes a vault.
+
+```sh
+dotnet tool install -g OKF4net.Mcp
+```
+
+Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "okf": { "command": "okf-mcp", "args": ["/path/to/bundle"] } } }
+```
+
+See [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for read-only mode
+and the full tool list.
+
 ## Mapping to the spec
 
 | Spec section                 | Implemented by                                                 |
