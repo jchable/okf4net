@@ -21,6 +21,7 @@
       <a href="what-okf-is.html">what-okf-is.md</a>
       <a href="library.html">library.md</a>
       <a href="cli.html">cli.md</a>
+      <a href="docs/index.html">docs.md</a>
       <a href="contributing.html">contributing.md</a>
     </nav>
     <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
@@ -138,7 +139,9 @@ Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);
         <tr><td>okf fmt &lt;file&gt;</td><td>Normalize by parse + re-serialize (-w writes)</td></tr>
       </table>
 <pre class="block">$ okf validate ./bundles/ga4
-<span class="ok">OK: bundle is conformant with OKF v0.1 (42 concepts)</span>
+
+42 concept(s); 0 error(s), 0 warning(s), 0 info.
+<span class="ok">✓ conformant with OKF v0.1</span>
 $ okf graph ./bundles/ga4 --dot | dot -Tsvg &gt; graph.svg</pre>
       <p class="next">→ <a href="cli.html">cli.md</a> — building the binary, session transcripts, CI recipes</p>
     </section>

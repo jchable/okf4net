@@ -285,3 +285,77 @@ footer.colophon .links { font-family: var(--mono); font-size: 12.5px; margin-bot
   .cta { margin-left: -16px; margin-right: -16px; padding: 32px 16px; }
   footer.colophon { padding: 28px 16px 48px; }
 }
+
+/* ============ docs section — the manual is itself an OKF bundle ============ */
+/* Two columns: a bundle-tree sidebar (progressive disclosure, §6) + the page. */
+.docs-shell {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  border-top: 1.5px solid var(--ink);
+  align-items: start;
+}
+.docs-side {
+  position: sticky; top: 58px; align-self: start;
+  padding: 26px 22px 44px;
+  background: var(--white);
+}
+.docs-side .side-h {
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--gray); margin-bottom: 16px;
+}
+.tree { list-style: none; font-family: var(--mono); font-size: 13px; line-height: 1.5; }
+.tree .root { color: var(--ink); font-weight: 700; margin-bottom: 6px; }
+.tree li { display: flex; align-items: baseline; margin: 1px 0; }
+.tree li .b { color: #b6bac6; white-space: pre; user-select: none; }
+.tree li a { color: var(--gray); padding: 2px 8px; flex: 1; }
+.tree li a:hover { color: var(--ink); text-decoration: none; background: var(--blue-soft); }
+.tree li.current a { color: var(--blue); font-weight: 700; box-shadow: inset 2px 0 0 var(--blue); background: var(--blue-soft); }
+.tree li.soon { color: #c2c4cd; }
+.tree li.soon .name { padding: 2px 8px; flex: 1; }
+
+/* small "soon" / status chip, reused across the tree, index and grids */
+.tag {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: #a9abb6; border: 1px solid var(--hair); padding: 0 5px; white-space: nowrap;
+}
+.tree li.soon .tag { align-self: center; }
+.muted { color: var(--gray); }
+.docs-side .side-foot {
+  margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--hair);
+  font-family: var(--mono); font-size: 11.5px; color: var(--gray); line-height: 1.7;
+}
+.docs-side .side-foot a { border-bottom: 1px solid var(--blue); }
+
+.docs-main { min-width: 0; padding: 0 4px 0 40px; border-left: 1.5px solid var(--ink); }
+/* inside docs, the concept-document header sits flush with the shell top */
+.docs-main .page-doc { padding-top: 40px; }
+.docs-main .docbody { padding-bottom: 64px; }
+.docs-main section.chapter { margin-bottom: 56px; }
+
+/* generated-index listing — dogfoods `okf index` (§6) */
+table.index { width: 100%; border-collapse: collapse; margin: 24px 0 8px; font-size: 14.5px; }
+table.index th {
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--gray); text-align: left; border-bottom: 2px solid var(--ink); padding: 8px 14px 8px 0;
+}
+table.index td { border-bottom: 1px solid var(--hair); padding: 12px 14px 12px 0; vertical-align: top; }
+table.index td.type { font-family: var(--mono); color: var(--blue); font-weight: 700; white-space: nowrap; }
+table.index td.title a { font-weight: 600; border-bottom: 1.5px solid var(--blue); }
+table.index td.title a:hover { text-decoration: none; background: var(--blue-soft); }
+table.index td.title .soon { color: var(--gray); font-weight: 600; }
+table.index td.title .tag { margin-left: 8px; }
+table.index td.desc { color: var(--gray); }
+
+@media (max-width: 960px) {
+  .docs-shell { grid-template-columns: 1fr; }
+  .docs-side {
+    position: static; border-bottom: 1.5px solid var(--ink);
+    padding: 20px 16px 22px;
+  }
+  .docs-main { padding: 0; border-left: none; }
+  .docs-main .page-doc { padding-top: 28px; }
+}
+@media (max-width: 720px) {
+  .docs-side { padding: 18px 16px; }
+  table.index { display: block; overflow-x: auto; }
+}

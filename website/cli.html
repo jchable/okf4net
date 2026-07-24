@@ -21,6 +21,7 @@
       <a href="what-okf-is.html">what-okf-is.md</a>
       <a href="library.html">library.md</a>
       <a href="cli.html" aria-current="page">cli.md</a>
+      <a href="docs/index.html">docs.md</a>
       <a href="contributing.html">contributing.md</a>
     </nav>
     <a class="gh" href="https://github.com/jchable/okf4net">github ↗</a>
@@ -60,11 +61,23 @@
     <section class="chapter" id="session">
       <div class="chead"><span class="h">##</span><h2>A session</h2><span class="ref">what it looks like</span></div>
 <pre class="block">$ okf validate ./bundles/ga4
-<span class="ok">OK: bundle is conformant with OKF v0.1 (42 concepts)</span>
+
+42 concept(s); 0 error(s), 0 warning(s), 0 info.
+<span class="ok">✓ conformant with OKF v0.1</span>
 
 $ okf info ./bundles/ga4
-concepts: 42    types: Table(19) Metric(12) Dataset(8) …
-links: 117 (3 broken)    okf_version: 0.1
+bundle:     ./bundles/ga4
+okf_version: 0.1
+concepts:   42
+index.md:   6
+log.md:     1
+
+types:
+    22  Table
+    12  Metric
+     8  Dataset
+
+links:      117 internal (3 broken)
 
 $ okf graph ./bundles/ga4 --dot | dot -Tsvg &gt; graph.svg</pre>
       <p>Everything the library exposes — permissive loading, broken-link tracking, byte-exact serialization — is the same engine underneath. <code>okf fmt</code> is the round-trip guarantee made tangible: parse + re-serialize, and unknown frontmatter keys come out untouched.</p>
