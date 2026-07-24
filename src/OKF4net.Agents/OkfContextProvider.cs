@@ -15,9 +15,12 @@ namespace OKF4net.Agents;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="ProvideAIContextAsync"/> assembles, in order and never
-/// exceeding <see cref="OkfContextProviderOptions.TokenBudget"/> (estimated
-/// via <see cref="TokenEstimate"/>, a dependency-free chars/4 approximation):
+/// <see cref="ProvideAIContextAsync"/> assembles, in order and against an
+/// approximate soft budget of <see cref="OkfContextProviderOptions.TokenBudget"/>
+/// (estimated via <see cref="TokenEstimate"/>, a dependency-free chars/4
+/// approximation) -- per-block <c>&lt;okf-context id="..."&gt;</c> framing
+/// overhead is not charged against it, so the assembled message can exceed
+/// it by a small margin; see <see cref="RenderBlock"/>'s remarks:
 /// the bundle root's progressive-disclosure listing (<see cref="OkfBundleTools.Browse"/>
 /// with no path — its own <c>index.md</c> if one exists, otherwise a
 /// generated listing), then concepts scored against the last user message in
