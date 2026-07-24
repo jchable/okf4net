@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: Coderise.OKF4net
+PackageVersion: {{Version}}
+MinimumOSVersion: 10.0.0.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: okf.exe
+    PortableCommandAlias: okf
+Installers:
+  - Architecture: x64
+    InstallerUrl: {{Url_X64}}
+    InstallerSha256: {{Sha256_X64}}
+  - Architecture: arm64
+    InstallerUrl: {{Url_Arm64}}
+    InstallerSha256: {{Sha256_Arm64}}
+ManifestType: installer
+ManifestVersion: 1.6.0
