@@ -78,7 +78,7 @@ public class OkfContextProviderTests
         var options = new OkfContextProviderOptions();
 
         Assert.Equal(2000, options.TokenBudget);
-        Assert.True(options.EnableMemoryCapture);
+        Assert.False(options.EnableMemoryCapture);
         Assert.Equal("memory", options.MemoryDirectory);
         Assert.Equal(5, options.MaxConceptsInjected);
     }

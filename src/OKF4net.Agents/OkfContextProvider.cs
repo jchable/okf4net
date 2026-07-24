@@ -33,7 +33,10 @@ namespace OKF4net.Agents;
 /// </para>
 /// <para>
 /// <see cref="StoreAIContextAsync"/> is deterministic (no LLM) long-term
-/// memory capture, gated by <see cref="OkfContextProviderOptions.EnableMemoryCapture"/>:
+/// memory capture, gated by <see cref="OkfContextProviderOptions.EnableMemoryCapture"/>
+/// (<see langword="false"/> by default: the memory it writes is bundle-global
+/// and unscoped by session, user, or tenant, so it is opt-in rather than a
+/// capability every bundle gets for free):
 /// the last user message and the agent's final response are written into a
 /// per-day <c>&lt;MemoryDirectory&gt;/&lt;yyyy-MM-dd&gt;</c> concept (created
 /// with full producer frontmatter the first time, appended to as a new

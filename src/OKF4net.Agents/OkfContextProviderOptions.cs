@@ -14,9 +14,14 @@ public sealed class OkfContextProviderOptions
 
     /// <summary>
     /// Whether the provider captures exchanges as long-term memory concepts
-    /// in the bundle after each invocation. Defaults to <c>true</c>.
+    /// in the bundle after each invocation. Defaults to <c>false</c>: the
+    /// memory this writes is bundle-global and unscoped by session, user, or
+    /// tenant, so a scored recall in <see cref="OkfContextProvider.ProvideAIContextAsync"/>
+    /// can surface one session's captured exchange to a completely different
+    /// session sharing the same bundle. Opt in only when the bundle is
+    /// intended to be a shared, non-sensitive memory across those sessions.
     /// </summary>
-    public bool EnableMemoryCapture { get; init; } = true;
+    public bool EnableMemoryCapture { get; init; }
 
     /// <summary>
     /// The bundle subdirectory that holds memory concepts, as a single
