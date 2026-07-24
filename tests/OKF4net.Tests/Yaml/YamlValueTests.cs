@@ -123,6 +123,24 @@ public class YamlValueTests
     }
 
     [Fact]
+    public void Entries_is_not_downcast_mutable_to_the_backing_list()
+    {
+        // A consumer must not be able to `(List<...>)mapping.Entries).Add(...)`
+        // and desync the mapping's internal `_index`/lookup state -- Entries
+        // has to be a genuinely read-only view, not the internal List exposed
+        // as IEnumerable.
+        var m = new YamlMapping();
+        m.Insert("a", new YamlInt(1));
+
+        Assert.IsNotType<List<(YamlValue Key, YamlValue Value)>>(m.Entries, exactMatch: false);
+
+        var view = m.Entries;
+        Assert.Single(view);
+        m.Insert("b", new YamlInt(2));
+        Assert.Equal(2, m.Entries.Count);
+    }
+
+    [Fact]
     public void IsEmptyValue_matches_rust_semantics()
     {
         Assert.True(YamlNull.Instance.IsEmptyValue);

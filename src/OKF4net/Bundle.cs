@@ -54,6 +54,8 @@ public sealed class Bundle
     private readonly Dictionary<ConceptId, int> _index;
     private readonly Dictionary<ConceptId, List<ResolvedLink>> _outbound;
     private readonly Dictionary<ConceptId, List<ConceptId>> _backlinks;
+    private string? _okfVersion;
+    private bool _okfVersionComputed;
 
     private Bundle(
         string root,
@@ -247,46 +249,65 @@ public sealed class Bundle
     /// frontmatter, if present (<c>okf_version</c>, §11). This is the only
     /// place frontmatter is permitted in an <c>index.md</c>. Port of
     /// <c>Bundle::okf_version</c> (bundle.rs:196-203).
+    ///
+    /// A <see cref="Bundle"/> is immutable once <see cref="Load"/> returns,
+    /// so this is computed at most once and memoized -- including a
+    /// <c>null</c> result (the computed value itself can legitimately be
+    /// <c>null</c>, so a separate <see cref="_okfVersionComputed"/> flag
+    /// guards the cache rather than a plain null-check on
+    /// <see cref="_okfVersion"/> alone).
     /// </summary>
     public string? OkfVersion
     {
         get
         {
-            var rootIndex = System.IO.Path.Combine(Root, IndexFilename);
-            string text;
-            try
+            if (_okfVersionComputed)
             {
-                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(rootIndex));
-            }
-            catch (IOException)
-            {
-                return null;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return null;
-            }
-            catch (System.Text.DecoderFallbackException)
-            {
-                // Mirrors `fs::read_to_string(&root_index).ok()?` (bundle.rs:198):
-                // any read failure -- including non-UTF-8 content -- is
-                // swallowed and yields None, unlike the concept-file read
-                // above where the same failure aborts the whole Load.
-                return null;
+                return _okfVersion;
             }
 
-            OkfDocument doc;
-            try
-            {
-                doc = OkfDocument.Parse(text);
-            }
-            catch (DocumentParseException)
-            {
-                return null;
-            }
-
-            return doc.Frontmatter.Get("okf_version")?.AsDisplayString();
+            _okfVersion = ComputeOkfVersion();
+            _okfVersionComputed = true;
+            return _okfVersion;
         }
+    }
+
+    private string? ComputeOkfVersion()
+    {
+        var rootIndex = System.IO.Path.Combine(Root, IndexFilename);
+        string text;
+        try
+        {
+            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(rootIndex));
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (System.Text.DecoderFallbackException)
+        {
+            // Mirrors `fs::read_to_string(&root_index).ok()?` (bundle.rs:198):
+            // any read failure -- including non-UTF-8 content -- is
+            // swallowed and yields None, unlike the concept-file read
+            // above where the same failure aborts the whole Load.
+            return null;
+        }
+
+        OkfDocument doc;
+        try
+        {
+            doc = OkfDocument.Parse(text);
+        }
+        catch (DocumentParseException)
+        {
+            return null;
+        }
+
+        return doc.Frontmatter.Get("okf_version")?.AsDisplayString();
     }
 
     /// <summary>

@@ -156,6 +156,29 @@ public class BundleTests
     }
 
     [Fact]
+    public void Okf_version_is_memoized_after_first_read()
+    {
+        // Bundle.OkfVersion re-read the root index.md and re-parsed it on
+        // every access. Prove memoization: after the first (successful)
+        // read, delete the root index.md entirely -- if OkfVersion were
+        // still doing disk I/O per access, the second read would fail to
+        // find the file and return null instead of the cached value.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
+        var indexPath = tmp.Write("index.md", "---\nokf_version: \"0.1\"\n---\n\n# Listing\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        var first = bundle.OkfVersion;
+        Assert.Equal("0.1", first);
+
+        File.Delete(indexPath);
+
+        var second = bundle.OkfVersion;
+        Assert.Equal(first, second);
+        Assert.Equal("0.1", second);
+    }
+
+    [Fact]
     public void Walk_order_is_component_wise_not_a_flat_string_sort()
     {
         // Regression: a directory `orders/` containing `extra.md`, plus a

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using OKF4net.Internal;
 
@@ -24,9 +25,18 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     public ConceptId? Parent =>
         Segments.Count <= 1 ? null : new ConceptId(Segments.Take(Segments.Count - 1).ToList());
 
-    private ConceptId(IReadOnlyList<string> segments)
+    /// <summary>
+    /// Wraps <paramref name="segments"/> in a <see cref="ReadOnlyCollection{T}"/>
+    /// directly (no further copy) -- every call site (<see cref="New"/>,
+    /// <see cref="Parse"/>, <see cref="Parent"/>) already builds and owns a
+    /// fresh <see cref="List{T}"/> before reaching this constructor, so this
+    /// wrapper is the single allocation guarding <see cref="Segments"/>
+    /// against downcast mutation (e.g. <c>(List&lt;string&gt;)id.Segments</c>)
+    /// that could desync a <see cref="ConceptId"/> used as a dictionary key.
+    /// </summary>
+    private ConceptId(List<string> segments)
     {
-        Segments = segments;
+        Segments = new ReadOnlyCollection<string>(segments);
     }
 
     /// <summary>
