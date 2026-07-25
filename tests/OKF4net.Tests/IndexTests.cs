@@ -234,4 +234,48 @@ public class IndexTests
         // have landed in the external directory the junction points at.
         Assert.False(File.Exists(Path.Combine(external.Path, "index.md")));
     }
+
+    // ----------------------------------------------------------------
+    // A4: symlinked-root regression guard. HasReparsePointAncestor's late
+    // re-check must NEVER inspect bundleRoot itself -- only directories
+    // strictly between the write target and bundleRoot. A bundle root that
+    // is itself a symlink/junction/mount is a legitimate, common setup
+    // (symlinked project directories, container/WSL bind mounts, macOS's
+    // /var), and DirectoriesToIndex's early traversal already indexes such
+    // a root unconditionally -- it never checks its own starting root for
+    // being a reparse point. An earlier revision of the late check
+    // inspected bundleRoot too, which meant EVERY directory in such a
+    // bundle has bundleRoot on its ancestor chain, so EVERY index write was
+    // silently skipped -- `okf index <symlinked-bundle>` wrote nothing at
+    // all. This test points RegenerateIndexes directly AT a junction (the
+    // bundle root itself is the reparse point, not a subdirectory of it)
+    // and asserts the index is still written normally.
+    // Requires junction/symlink-creation privilege; probes for it up front
+    // and skips cleanly if unavailable, per the other reparse-point tests'
+    // pattern.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Symlinked_bundle_root_still_gets_its_index_written()
+    {
+        using var content = new TempDir();
+        WriteDoc(content, "a.md", "BigQuery Dataset", "A", "desc");
+
+        using var parent = new TempDir();
+        if (!parent.TryCreateJunctionToExternalDir("bundle-root-link", content.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var bundleRoot = Path.Combine(parent.Path, "bundle-root-link");
+
+        var written = IndexGenerator.RegenerateIndexes(bundleRoot);
+
+        Assert.NotEmpty(written);
+        Assert.True(File.Exists(Path.Combine(bundleRoot, "index.md")));
+        // Same physical file, reached through the real (non-linked) path --
+        // proof the write actually landed, not just that the junction makes
+        // File.Exists resolve optimistically.
+        Assert.True(File.Exists(Path.Combine(content.Path, "index.md")));
+    }
 }

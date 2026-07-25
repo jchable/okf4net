@@ -145,16 +145,21 @@ public static class IndexGenerator
     /// <para>
     /// To narrow (not close) that window, this method re-checks, immediately
     /// before each <c>index.md</c> write, that the target directory itself
-    /// and every ancestor directory up to and including <paramref name="bundleRoot"/>
-    /// is still free of reparse points (see the private
-    /// <c>HasReparsePointAncestor</c> helper, which reuses
+    /// and every ancestor directory strictly UP TO (but not including)
+    /// <paramref name="bundleRoot"/> is still free of reparse points (see
+    /// the private <c>HasReparsePointAncestor</c> helper, which reuses
     /// <see cref="ReparsePoints.IsReparsePoint"/> -- the same primitive the
     /// early skip uses -- rather than duplicating platform-specific reparse
-    /// detection). A reparse point detected at either the early or the late
-    /// point is handled the same way: that <c>index.md</c> write is SKIPPED
-    /// (not included in the returned list) and regeneration continues with
-    /// the remaining directories -- it never aborts the whole run and never
-    /// throws.
+    /// detection). <paramref name="bundleRoot"/> itself is deliberately
+    /// exempt from this check -- see <c>HasReparsePointAncestor</c>'s own
+    /// doc comment for why: a symlinked/mounted bundle root is a legitimate
+    /// setup that the early traversal already indexes unconditionally, and
+    /// treating it as suspect here would silently suppress every index
+    /// write for such a bundle. A reparse point detected at either the
+    /// early or the late point is handled the same way: that <c>index.md</c>
+    /// write is SKIPPED (not included in the returned list) and
+    /// regeneration continues with the remaining directories -- it never
+    /// aborts the whole run and never throws.
     /// </para>
     /// <para>
     /// This still does not fully close the gap: a substitution landing in
@@ -364,13 +369,28 @@ public static class IndexGenerator
 
     /// <summary>
     /// <c>true</c> if <paramref name="directory"/> itself, or any directory
-    /// between it and <paramref name="bundleRoot"/> (inclusive of
-    /// <paramref name="bundleRoot"/>), is a filesystem reparse point
+    /// strictly BETWEEN it and <paramref name="bundleRoot"/> (exclusive of
+    /// <paramref name="bundleRoot"/> itself), is a filesystem reparse point
     /// (symlink, junction, mount point) -- checked via
     /// <see cref="ReparsePoints.IsReparsePoint"/>, the same lstat-like
     /// primitive <see cref="CollectMarkdown"/>'s early skip uses, so the
     /// early and late checks can never diverge on what counts as a reparse
     /// point.
+    ///
+    /// <paramref name="bundleRoot"/> is deliberately never inspected, even
+    /// when <paramref name="directory"/> equals it: pointing <c>okf index</c>
+    /// at a symlinked/mounted bundle root is a legitimate, common setup
+    /// (symlinked project directories, container/WSL bind mounts, macOS's
+    /// <c>/var</c>), and <see cref="DirectoriesToIndex"/>'s own early
+    /// traversal already includes and indexes <paramref name="bundleRoot"/>
+    /// unconditionally -- it never checks the walk's own starting root for
+    /// being a reparse point either. Treating the root as inclusive would
+    /// silently suppress every single index write for such a bundle. This
+    /// mirrors the sibling <c>OkfBundleTools.HasReparsePointAncestor</c>
+    /// (src/OKF4net.Agents/OkfBundleTools.cs), which stops its walk via
+    /// <c>while (!Equals(current, fullRoot))</c> -- the equality-to-root
+    /// check gates entry to the loop body, so the root itself is never
+    /// passed to <see cref="ReparsePoints.IsReparsePoint"/>.
     ///
     /// Used only by <see cref="RegenerateIndexesWith"/>'s late, best-effort
     /// re-check immediately before each <c>index.md</c> write -- see that
@@ -383,16 +403,11 @@ public static class IndexGenerator
         var fullRoot = Path.GetFullPath(bundleRoot);
         var current = Path.GetFullPath(directory);
 
-        while (true)
+        while (!string.Equals(current, fullRoot, StringComparison.Ordinal))
         {
             if (ReparsePoints.IsReparsePoint(current))
             {
                 return true;
-            }
-
-            if (string.Equals(current, fullRoot, StringComparison.Ordinal))
-            {
-                return false;
             }
 
             var parent = Path.GetDirectoryName(current);
@@ -407,6 +422,8 @@ public static class IndexGenerator
 
             current = parent;
         }
+
+        return false;
     }
 
 }
