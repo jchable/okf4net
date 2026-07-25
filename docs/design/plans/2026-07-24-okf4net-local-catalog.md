@@ -87,15 +87,27 @@ public static class ConceptSearch
     /// </summary>
     public static IReadOnlyList<ScoredConcept> Search(
         IEnumerable<Concept> concepts, string query, string? tag = null);
+
+    /// <summary>
+    /// The single shared excerpt: the first non-blank, trimmed body line
+    /// containing any of the query's terms (OrdinalIgnoreCase), or null if
+    /// none. Used identically by okf_search, the context provider, and the
+    /// catalog so excerpt rendering stays consistent across all three.
+    /// </summary>
+    public static string? Excerpt(string body, string query);
 }
 ```
 
 - [ ] **Step 1:** Move the exact body of `OkfBundleTools.ScoreConceptsFor` +
-  the private `ScoreConcept(Concept, terms)` weighting into `ConceptSearch`,
-  operating on the passed `IEnumerable<Concept>` (not `GetBundle()`). Keep the
-  term split (`query.Split((char[]?)null, RemoveEmptyEntries)`), the tag filter
-  (`Frontmatter.Tags` OrdinalIgnoreCase), the `Score > 0` filter, and the
-  `OrderByDescending(Score).ThenBy(Id)` ordering **byte-identical**.
+  the private `ScoreConcept(Concept, terms)` weighting **and the private
+  `FindExcerpt`** into `ConceptSearch` (as `Search` + `Excerpt`), operating on
+  the passed `IEnumerable<Concept>` (not `GetBundle()`). Keep the term split
+  (`query.Split((char[]?)null, RemoveEmptyEntries)`), the tag filter
+  (`Frontmatter.Tags` OrdinalIgnoreCase), the `Score > 0` filter, the
+  `OrderByDescending(Score).ThenBy(Id)` ordering, and the exact excerpt
+  definition (first non-blank trimmed line containing a term) **byte-identical**.
+  `OkfBundleTools`'s `okf_search`/provider excerpt rendering delegates to
+  `ConceptSearch.Excerpt` too (no private copy remains).
 - [ ] **Step 2:** Replace `OkfBundleTools.ScoreConceptsFor`'s body with a thin
   delegate: `ConceptSearch.Search(GetBundle().Concepts, query, tag)` (adapt the
   return shape to whatever `Search`/the tool currently expects; the tool
@@ -170,11 +182,20 @@ public enum SourceRole { Knowledge } // V1: only Knowledge is legal; Memory is V
 public sealed record KnowledgeCatalogSource(
     string Id, string Path, int Priority, bool Enabled, SourceRole Role);
 
-/// <summary>An immutable, validated catalog manifest snapshot (no filesystem access yet).</summary>
+/// <summary>An immutable, validated catalog manifest snapshot (no filesystem access yet).
+/// <paramref name="Generation"/> is a monotonic counter assigned by the catalog on
+/// each successful publish (see Task 4); the parser produces snapshots with
+/// Generation 0 and the catalog stamps the real value on publish.</summary>
 public sealed record KnowledgeCatalogSnapshot(
-    int Version, IReadOnlyList<KnowledgeCatalogSource> Sources, string ManifestDirectory);
+    int Version, IReadOnlyList<KnowledgeCatalogSource> Sources, string ManifestDirectory, long Generation);
 
-public enum CatalogDiagnosticCode { /* ParseError, UnknownProperty, DuplicateSourceId, ... */ }
+// MUST enumerate EVERY reject rule below (no ad-hoc codes invented by the implementer):
+public enum CatalogDiagnosticCode
+{
+    ParseError, UnknownRootProperty, UnknownSourceProperty, WrongVersion, EmptySources,
+    DuplicateSourceId, InvalidSourceId, EmptyPath, EmbeddedNul, MalformedPriority,
+    MalformedEnabled, IllegalRole,
+}
 public sealed record CatalogDiagnostic(CatalogDiagnosticCode Code, string Message);
 
 /// <summary>Strict System.Text.Json parser. Returns a snapshot OR diagnostics; never throws for malformed input.</summary>
@@ -187,12 +208,16 @@ public static class CatalogManifestParser
 
 - [ ] **Step 1 (red tests first, one per rule):** reject -- unknown root/source
   property; `version != 1`; empty/missing `sources`; duplicate source `id`; `id`
-  not a valid `ConceptId` segment (reuse `ConceptId.ValidateSegment`); empty
-  `path`; embedded NUL anywhere; malformed optional (`priority` non-int,
-  `enabled` non-bool); `role` other than `"knowledge"`. Accept -- defaults
+  not a valid `ConceptId` segment (reuse `ConceptId.ValidateSegment`, which
+  **throws `ConceptIdException`** -- wrap it in try/catch and turn a throw into
+  an `InvalidSourceId` diagnostic, honoring never-throw); empty `path`; embedded
+  NUL anywhere; malformed optional (`priority` non-int, `enabled` non-bool);
+  `role` other than `"knowledge"` (-> `IllegalRole`). Accept -- defaults
   (`priority=0`, `enabled=true`, `role=Knowledge`), and preservation of source
-  order. Use `System.Text.Json` with `JsonSerializerOptions` set to reject
-  unknown members (`UnmappedMemberHandling.Disallow`).
+  order. Each reject maps to its specific `CatalogDiagnosticCode` above. Use
+  `System.Text.Json` with `JsonSerializerOptions` set to reject unknown members
+  (`UnmappedMemberHandling.Disallow`). Parser-produced snapshots have
+  `Generation = 0` (the catalog stamps the real generation on publish, Task 4).
 - [ ] **Step 2:** Implement `TryParse`; snapshots immutable, source order
   preserved (ordinal-stable). No filesystem access in this task.
 - [ ] **Step 3:** `dotnet format`, build, full test, goldens. Commit
@@ -261,6 +286,10 @@ namespace OKF4net.Catalog;
 public interface IKnowledgeCatalog
 {
     KnowledgeCatalogSnapshot Current { get; }
+    /// <summary>Diagnostics from the most recent reload attempt (empty on success).
+    /// A failed reload keeps <see cref="Current"/> as the last-good snapshot and
+    /// records why here -- the errors-as-data surface for reload failures.</summary>
+    IReadOnlyList<CatalogDiagnostic> LastReloadDiagnostics { get; }
     ValueTask<KnowledgeCatalogSnapshot> ReloadAsync(CancellationToken cancellationToken = default);
 }
 
@@ -280,19 +309,25 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
 ```
 
 - [ ] **Step 1 (red):** construction loads, validates (parser + path safety),
-  and publishes the first snapshot; an **invalid initial** catalog reports the
-  failure deterministically (an aggregate exception at construction OR a clearly
-  non-empty error snapshot -- pick and document; do NOT silently serve an empty
-  catalog). A valid atomic replacement changes `Current`; a **malformed**
-  replacement retains the last known-good `Current` and exposes a reload
-  diagnostic. Repeated watcher events debounce to one reload. `Dispose` is
-  cancellation-safe and idempotent.
+  and publishes the first snapshot at `Generation = 1`. **DECIDED contract (do
+  not defer to the implementer): an invalid initial catalog THROWS at
+  construction** -- a `CatalogException` (new, `: OkfException`) whose message
+  aggregates the diagnostics. This is fail-fast for DI startup (Task 6 validates
+  options at startup) and never silently serves an empty catalog; there is no
+  "error snapshot" state. **Runtime reloads are errors-as-data**: a valid atomic
+  replacement swaps `Current` and increments `Generation`, sets
+  `LastReloadDiagnostics = []`; a **malformed** replacement keeps the last-good
+  `Current` (unchanged `Generation`) and sets `LastReloadDiagnostics` to the
+  errors (never throws from `ReloadAsync`/the watcher). Repeated watcher events
+  debounce to one reload. `Dispose` is cancellation-safe and idempotent.
 - [ ] **Step 2:** Implement with `FileSystemWatcher` (debounced) swapping an
-  **atomically replaced immutable snapshot**; parse+validate the whole new
-  snapshot before swap; keep last-known-good on failure. **Document the watcher
-  as best-effort** (misses/duplicates by OS/filesystem/container); `ReloadAsync`
-  is the reliable, explicit source of truth. Only `catalog.json` is watched, not
-  every markdown file (per spec §5.2).
+  **atomically replaced immutable snapshot** (a monotonic `Generation` assigned
+  on each successful publish -- initial 1, then +1 per successful reload; wire
+  this into the snapshot the parser produced at Generation 0). Parse+validate the
+  whole new snapshot before swap; keep last-known-good on failure. **Document the
+  watcher as best-effort** (misses/duplicates by OS/filesystem/container);
+  `ReloadAsync` is the reliable, explicit source of truth. Only `catalog.json` is
+  watched, not every markdown file (per spec §5.2).
 - [ ] **Step 3:** `dotnet format`, build, full test, goldens. Commit
   `feat: file catalog with atomic snapshot swap and best-effort hot reload`.
 
@@ -343,23 +378,30 @@ public interface IKnowledgeResolver
 public sealed class DefaultKnowledgeResolver : IKnowledgeResolver { /* over IKnowledgeCatalog */ }
 ```
 
-- [ ] **Step 1:** `OkfBundleKnowledgeSource` loads its bundle
-  (`Bundle.Load(resolvedDir)`, permissive) and searches via the core
-  **`ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag)`** -- parity
-  with `okf_search` is by construction (same core scorer). Each hit ->
-  `KnowledgePassage` (SourceId, ConceptId `.ToString()`, `Frontmatter.Title`,
-  a body excerpt = first body line containing a term, Score, bundle-relative
-  path). Bundle load failure -> `SourceUnavailable` diagnostic, empty passages
+- [ ] **Step 1:** `OkfBundleKnowledgeSource` is **stateless**: each
+  `SearchAsync` loads its bundle (`Bundle.Load(resolvedDir)`, permissive) and
+  searches via the core **`ConceptSearch.Search(bundle.Concepts, query.Text,
+  query.Tag)`** -- parity with `okf_search` by construction (same core scorer).
+  (V1 loads per call for simplicity, consistent with "ReloadAsync is the
+  reliable path"; a bundle cache with its own invalidation is explicitly V2 --
+  do NOT invent one here.) Each hit -> `KnowledgePassage`: `SourceId`,
+  `concept.Id.ToString()`, `Frontmatter.Title`, `Excerpt = ConceptSearch.Excerpt(
+  concept.Document.Body, query.Text)` (the shared core excerpt -- do NOT
+  re-derive it), `Score`, and `BundleRelativePath = Path.GetRelativePath(
+  bundle.Root, concept.Path)` (note `Concept.Path` is **absolute** from
+  `Bundle.Load`, so it must be relativized). `query.Tag` reuses `ConceptSearch`'s
+  OrdinalIgnoreCase tag filter and is orthogonal to the identity data spec §8
+  forbids. Bundle load failure -> `SourceUnavailable` diagnostic, empty passages
   (never throw).
 - [ ] **Step 2:** `DefaultKnowledgeResolver.SearchAsync`: take `catalog.Current`
   enabled sources, order by **descending priority then ascending ordinal id**,
-  search **each** (construct/reuse an `OkfBundleKnowledgeSource` per enabled
+  search **each** (a fresh stateless `OkfBundleKnowledgeSource` per enabled
   source), and **concatenate passages in that source order** (grouped by source;
   within a source, `ConceptSearch`'s own descending-score order). NO cross-source
   fusion/dedup/merged ranking. Aggregate per-source `SourceUnavailable`
   diagnostics; a failing source does not drop the others. `NoEnabledSources`
   (none enabled) and `NoMatches` (all sources returned nothing) as diagnostics.
-  Stamp `CatalogGeneration` from the snapshot.
+  Stamp `KnowledgeContext.CatalogGeneration` from `catalog.Current.Generation`.
 - [ ] **Step 3 (tests):** over **two TempDir copies** of `appendix_a` registered
   as two sources with different priorities -- (a) both are searched and passages
   come back grouped in priority order, each tagged with its source id; (b) a
@@ -390,8 +432,6 @@ namespace OKF4net.Catalog.Hosting;
 public sealed class KnowledgeOptions
 {
     public void AddCatalogFile(string path); // resolves the catalog root from the file's directory
-    // Optional dev/test convenience producing the same snapshot model:
-    public void AddBundle(string id, string bundleDirectory);
 }
 
 public static class KnowledgeServiceCollectionExtensions
@@ -400,15 +440,22 @@ public static class KnowledgeServiceCollectionExtensions
 }
 ```
 
+`AddBundle` is **cut from V1 (YAGNI** -- the spec never asks for it; a single-source
+`catalog.json` covers the "one bundle" case). If a real need appears it can be
+added later, fully specified (its root, priority/role/enabled defaults, and
+routing through `CatalogPathResolver`).
+
 - [ ] **Step 1 (tests via a real `ServiceCollection`):** `AddKnowledge` +
   `AddCatalogFile` registers a working `IKnowledgeResolver`/`IKnowledgeCatalog`
   (resolve and search end-to-end over fixture copies); options are validated at
-  startup (a catalog root is **required**; **multiple catalog files rejected in
-  V1**; user input cannot alter catalog paths); the catalog/watcher is a
-  singleton with correct disposal (dispose the provider -> `FileKnowledgeCatalog`
-  disposed). `AddBundle` produces the same snapshot model as a one-source file.
-- [ ] **Step 2:** Implement with appropriate lifetimes (catalog singleton;
-  resolver singleton or scoped -- justify). Register immutable options. No
+  startup (a catalog root is **required**; **multiple `AddCatalogFile` calls
+  rejected in V1**; user input cannot alter catalog paths); the catalog/watcher
+  is a singleton with correct disposal (dispose the provider ->
+  `FileKnowledgeCatalog` disposed); an invalid initial catalog surfaces the
+  `CatalogException` from construction at startup (fail-fast).
+- [ ] **Step 2:** Implement lifetimes: **`IKnowledgeCatalog` (FileKnowledgeCatalog)
+  singleton** (owns the watcher + disposal), **`IKnowledgeResolver` singleton**
+  (it is stateless over the singleton catalog). Register immutable options. No
   dependency leakage: `Catalog` core still has no `Microsoft.Extensions.*`
   reference (only `Hosting` does).
 - [ ] **Step 3:** `dotnet format`, build, full test, goldens. Commit

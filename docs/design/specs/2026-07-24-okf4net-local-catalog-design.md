@@ -147,8 +147,12 @@ manifest, not an OKF concept.
   validation error in V1.
 - `version` must be the integer `1`.
 - `sources` must be a non-empty array.
-- Each source has `id`, `path`, optional `priority` (default `0`), and optional
-  `enabled` (default `true`); unknown source properties are errors.
+- Each source has `id`, `path`, optional `priority` (default `0`), optional
+  `enabled` (default `true`), and optional `role` (default `"knowledge"`);
+  unknown source properties are errors. In V1 only `"knowledge"` is legal --
+  a `"memory"` role is a validation error, reserved for the V2 read-only/writable
+  split (see the V2 scoped-memory notes). Carrying `role` from V1 is deliberate
+  forward-compat so V2 needs no manifest-schema bump.
 - `id` is a unique, ordinal, valid `ConceptId` segment.
 - `path` is a non-empty relative filesystem path, resolved relative to the
   directory containing `catalog.json`.
