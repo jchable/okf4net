@@ -752,17 +752,56 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// Test-only hook, invoked (if set) after <see cref="Directory.CreateDirectory(string)"/>
-    /// but immediately before the late reparse-point re-check in
-    /// <see cref="WriteValidatedContentLocked"/>. Lets a test deterministically
+    /// Test-only hook, invoked (if set) immediately before the late
+    /// reparse-point re-check in both <see cref="WriteValidatedContentLocked"/>
+    /// (after its own <see cref="Directory.CreateDirectory(string)"/> call)
+    /// and <see cref="AppendLog"/> (after computing the new log content, still
+    /// inside <see cref="_bundleLock"/>). Lets a test deterministically
     /// simulate a filesystem substitution racing the final write -- e.g.
     /// deleting the just-created parent directory and replacing it with a
-    /// junction to an external directory -- at exactly the point such a race
-    /// would need to land, instead of relying on real (flaky, unreliable)
-    /// thread timing. <see langword="internal"/>, always <see langword="null"/>
-    /// outside tests, so it has zero effect on production behavior.
+    /// junction to an external directory, or swapping <c>log.md</c> itself for
+    /// a symlink -- at exactly the point such a race would need to land,
+    /// instead of relying on real (flaky, unreliable) thread timing.
+    /// <see langword="internal"/>, always <see langword="null"/> outside
+    /// tests, so it has zero effect on production behavior.
     /// </summary>
     internal Action? BeforeLateReparseCheckForTest { get; set; }
+
+    /// <summary>
+    /// Late, best-effort reparse-point re-check shared by
+    /// <see cref="WriteValidatedContentLocked"/> and <see cref="AppendLog"/>,
+    /// both of which call this immediately before their respective
+    /// <see cref="File.WriteAllText(string, string, Encoding)"/> call, still
+    /// inside the caller's hold of <see cref="_bundleLock"/>. Re-runs the same
+    /// two checks <see cref="ValidateConceptTarget"/> (or, for
+    /// <see cref="AppendLog"/>, its own early check) already ran earlier: a
+    /// reparse point among <paramref name="targetPath"/>'s directory
+    /// ancestors (up to <see cref="BundleRoot"/>), or at
+    /// <paramref name="targetPath"/> itself. Factored out so the two call
+    /// sites can never re-check divergently -- see
+    /// <see cref="ValidateConceptTarget"/>'s remarks for the full threat model
+    /// this narrows (not closes).
+    /// </summary>
+    /// <param name="subject">
+    /// Human-readable identifier for the returned error message, e.g.
+    /// <c>"'tables/x'"</c> or <c>"log.md"</c>.
+    /// </param>
+    /// <param name="parentDir"><paramref name="targetPath"/>'s parent directory.</param>
+    /// <param name="targetPath">The file about to be written.</param>
+    /// <returns>
+    /// An <c>Error: ...</c> message if a reparse point is detected; otherwise
+    /// <see langword="null"/>.
+    /// </returns>
+    private string? LateReparseGuard(string subject, string? parentDir, string targetPath)
+    {
+        if ((!string.IsNullOrEmpty(parentDir) && HasReparsePointAncestor(BundleRoot, parentDir))
+            || ReparsePoints.IsReparsePoint(targetPath))
+        {
+            return $"Error: {subject} resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// Writes already-validated <paramref name="content"/> to <paramref name="targetPath"/>
@@ -794,6 +833,10 @@ public sealed class OkfBundleTools
     /// possible in principle. Best-effort, not a guarantee; see
     /// <see cref="ValidateConceptTarget"/>'s remarks for the full threat
     /// model this is (and is not) meant to defend against.
+    /// <see cref="AppendLog"/> has the identical validate-then-write shape
+    /// for <c>log.md</c> and runs the same re-check, via the same
+    /// <see cref="LateReparseGuard"/> this method calls below, immediately
+    /// before its own write.
     /// </remarks>
     private string WriteValidatedContentLocked(ConceptId id, string targetPath, string content)
     {
@@ -810,10 +853,10 @@ public sealed class OkfBundleTools
         // Late, best-effort re-check -- see this method's <remarks> and
         // ValidateConceptTarget's <remarks> for exactly what this does and
         // does not close.
-        if ((!string.IsNullOrEmpty(parentDir) && HasReparsePointAncestor(BundleRoot, parentDir))
-            || ReparsePoints.IsReparsePoint(targetPath))
+        var lateError = LateReparseGuard($"'{id}'", parentDir, targetPath);
+        if (lateError is not null)
         {
-            return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+            return lateError;
         }
 
         File.WriteAllText(targetPath, content, OkfEncodings.NoBom);
@@ -934,6 +977,26 @@ public sealed class OkfBundleTools
                 {
                     // New LogDay at the head: days are newest-first (§7).
                     days.Insert(0, new LogDay(today, [entry]));
+                }
+
+                BeforeLateReparseCheckForTest?.Invoke();
+
+                // Late, best-effort re-check -- same TOCTOU gap and same
+                // shared helper as WriteValidatedContentLocked's own late
+                // re-check (see its and ValidateConceptTarget's remarks);
+                // AppendLog has the identical validate-then-write shape
+                // between the early check above (run before acquiring
+                // _bundleLock) and the write below, just without an
+                // intervening Directory.CreateDirectory call. log.md always
+                // lives directly at BundleRoot, so the ancestor-walk half of
+                // the shared guard is a no-op here, same as the early check's
+                // ancestor call above -- the check that matters is log.md
+                // itself having been replaced with a reparse point in this
+                // narrow window.
+                var lateError = LateReparseGuard("log.md", Path.GetDirectoryName(logPath), logPath);
+                if (lateError is not null)
+                {
+                    return lateError;
                 }
 
                 File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), OkfEncodings.NoBom);
@@ -1466,18 +1529,20 @@ public sealed class OkfBundleTools
     /// likewise already skips reparse-point directories via the same core
     /// helper.
     ///
-    /// <see cref="AppendLog"/> does NOT use this helper for its main guard:
-    /// <c>log.md</c> always lives directly at <see cref="BundleRoot"/>, so
-    /// its only directory ancestor is <see cref="BundleRoot"/> itself, which
-    /// this helper's walk never inspects (it stops as soon as
-    /// <paramref name="path"/> equals <paramref name="bundleRoot"/>). The
-    /// real risk for <see cref="AppendLog"/> is <c>log.md</c> itself being a
-    /// planted file symlink -- <see cref="File.ReadAllBytes(string)"/>/
+    /// <see cref="AppendLog"/> calls this helper (both directly, in its early
+    /// check, and via <see cref="LateReparseGuard"/>, in its late re-check),
+    /// but it is a no-op there in practice: <c>log.md</c> always lives
+    /// directly at <see cref="BundleRoot"/>, so its only directory ancestor
+    /// is <see cref="BundleRoot"/> itself, which this helper's walk never
+    /// inspects (it stops as soon as <paramref name="path"/> equals
+    /// <paramref name="bundleRoot"/>). The real risk for
+    /// <see cref="AppendLog"/> is <c>log.md</c> itself being a planted file
+    /// symlink -- <see cref="File.ReadAllBytes(string)"/>/
     /// <see cref="File.WriteAllText(string, string)"/> would follow it and
-    /// silently overwrite whatever external file it points at -- so
-    /// <see cref="AppendLog"/> checks
-    /// <see cref="ReparsePoints.IsReparsePoint"/> on <c>log.md</c> directly
-    /// instead.
+    /// silently overwrite whatever external file it points at -- so what
+    /// actually protects <see cref="AppendLog"/> is the
+    /// <see cref="ReparsePoints.IsReparsePoint"/> check on <c>log.md</c>
+    /// itself, run both early and (via <see cref="LateReparseGuard"/>) late.
     /// </summary>
     private static bool HasReparsePointAncestor(string bundleRoot, string path)
     {

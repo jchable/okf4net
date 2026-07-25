@@ -539,6 +539,50 @@ public class OkfWriteToolsTests
         Assert.Equal("do not touch\n", File.ReadAllText(externalFile));
     }
 
+    // Mirrors WriteConcept_late_reparse_recheck_catches_a_substitution_planted_after_the_early_check
+    // for AppendLog's own late re-check (added for TOCTOU-guard parity with
+    // WriteConcept). AppendLog's early check runs before _bundleLock is
+    // acquired, and in this test log.md does not exist yet at that point, so
+    // the early check has nothing to reject. The BeforeLateReparseCheckForTest
+    // hook then plants a file symlink at log.md, pointing at an external
+    // file, right before AppendLog's late re-check runs inside the lock --
+    // exactly the narrow window such a race would need to land in, which the
+    // earlier check could never have caught. Requires symlink-creation
+    // privilege; probes for it up front (without mutating anything the real
+    // assertion depends on) and skips cleanly if unavailable, per the other
+    // reparse-point tests' pattern.
+    [Fact]
+    public void AppendLog_late_reparse_recheck_catches_a_substitution()
+    {
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(tmp.Path);
+        var tools = new OkfBundleTools(tmp.Path) { UtcNow = () => new DateTime(2026, 7, 22, 0, 0, 0, DateTimeKind.Utc) };
+        using var external = new TempDir();
+        var externalFile = external.Write("secret.txt", "do not touch\n");
+
+        if (!tmp.TryCreateFileSymlinkToExternalFile("privilege-probe.txt", externalFile))
+        {
+            return; // no symlink privilege on this machine -- skip.
+        }
+
+        File.Delete(Path.Combine(tmp.Path, "privilege-probe.txt"));
+
+        tools.BeforeLateReparseCheckForTest = () =>
+        {
+            // log.md did not exist when the early check (before _bundleLock)
+            // ran, so it had nothing to reject. Plant a file symlink at
+            // log.md right before the late re-check runs, simulating a
+            // concurrent local substitution landing in that narrow window.
+            Assert.True(tmp.TryCreateFileSymlinkToExternalFile("log.md", externalFile));
+        };
+
+        var result = tools.AppendLog("Update", "Should not be written.");
+
+        Assert.Contains("Error", result);
+        Assert.Contains("reparse point", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("do not touch\n", File.ReadAllText(externalFile));
+    }
+
     [Fact]
     public void AppendLog_concurrent_calls_same_day_lose_no_entries()
     {
