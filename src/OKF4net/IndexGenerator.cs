@@ -102,6 +102,22 @@ public static class IndexGenerator
         RegenerateIndexesWith(bundleRoot, DefaultSynthesize);
 
     /// <summary>
+    /// Test-only hook invoked immediately before the late reparse-point
+    /// re-check that runs right before each <c>index.md</c> write (see
+    /// <see cref="RegenerateIndexesWith"/>'s remarks), with the directory
+    /// about to be written as its argument. Used by <c>IndexTests</c> to
+    /// deterministically substitute a directory that already passed the
+    /// early traversal skip with a junction/symlink, in the exact narrow
+    /// window such a race would need to land in -- a substitution the
+    /// earlier, best-effort <see cref="CollectMarkdown"/> skip could never
+    /// have caught, since the directory was still real when it ran.
+    /// <c>internal</c> rather than test-conditional compilation, consistent
+    /// with this assembly's <c>InternalsVisibleTo</c> grant to
+    /// <c>OKF4net.Tests</c>. No-op (null) in production.
+    /// </summary>
+    internal static Action<string>? BeforeLateReparseCheckForTest { get; set; }
+
+    /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle, deriving each
     /// subdirectory's description with the supplied synthesizer.
     ///
@@ -110,6 +126,43 @@ public static class IndexGenerator
     /// skipped. Returns the paths of the index files written. Port of
     /// <c>regenerate_indexes_with</c> (index.rs:93-186).
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Reparse-point safety (defense-in-depth, not a full guarantee):</b>
+    /// <see cref="DirectoriesToIndex"/>'s traversal (via
+    /// <see cref="CollectMarkdown"/>) already performs an EARLY, best-effort
+    /// skip of reparse-point directories (symlinks, junctions, mount
+    /// points), matching Rust's lstat-based <c>collect_markdown</c>. That
+    /// skip only protects the directories it can see AT COLLECTION TIME,
+    /// though: a directory that was a genuine directory when collected could
+    /// still be replaced by a reparse point before this method gets around
+    /// to writing its <c>index.md</c> -- a classic check-then-write race
+    /// (TOCTOU). Since <see cref="File.WriteAllText(string, string, System.Text.Encoding)"/>
+    /// has no portable no-follow mode in .NET, such a write would silently
+    /// land wherever the reparse point resolves -- potentially outside
+    /// <paramref name="bundleRoot"/> entirely.
+    /// </para>
+    /// <para>
+    /// To narrow (not close) that window, this method re-checks, immediately
+    /// before each <c>index.md</c> write, that the target directory itself
+    /// and every ancestor directory up to and including <paramref name="bundleRoot"/>
+    /// is still free of reparse points (see the private
+    /// <c>HasReparsePointAncestor</c> helper, which reuses
+    /// <see cref="ReparsePoints.IsReparsePoint"/> -- the same primitive the
+    /// early skip uses -- rather than duplicating platform-specific reparse
+    /// detection). A reparse point detected at either the early or the late
+    /// point is handled the same way: that <c>index.md</c> write is SKIPPED
+    /// (not included in the returned list) and regeneration continues with
+    /// the remaining directories -- it never aborts the whole run and never
+    /// throws.
+    /// </para>
+    /// <para>
+    /// This still does not fully close the gap: a substitution landing in
+    /// the instant between the late check and the write itself would still
+    /// slip through. No portable, race-free "check and write without
+    /// following a symlink" primitive exists in .NET for this case.
+    /// </para>
+    /// </remarks>
     public static IReadOnlyList<string> RegenerateIndexesWith(string bundleRoot, Synthesize synthesize)
     {
         var written = new List<string>();
@@ -167,6 +220,20 @@ public static class IndexGenerator
             }
 
             if (entries.Count == 0)
+            {
+                continue;
+            }
+
+            BeforeLateReparseCheckForTest?.Invoke(directory);
+
+            // Late, best-effort re-check -- see RegenerateIndexesWith's
+            // <remarks>. `directory` passed the EARLY skip during
+            // DirectoriesToIndex's traversal, but that only proves it was a
+            // real directory (with no reparse-point ancestor) at collection
+            // time; it could have been replaced by a symlink/junction any
+            // time between then and now. Re-checking immediately before the
+            // write narrows (without closing) that window.
+            if (HasReparsePointAncestor(bundleRoot, directory))
             {
                 continue;
             }
@@ -292,6 +359,53 @@ public static class IndexGenerator
             {
                 output.Add(path);
             }
+        }
+    }
+
+    /// <summary>
+    /// <c>true</c> if <paramref name="directory"/> itself, or any directory
+    /// between it and <paramref name="bundleRoot"/> (inclusive of
+    /// <paramref name="bundleRoot"/>), is a filesystem reparse point
+    /// (symlink, junction, mount point) -- checked via
+    /// <see cref="ReparsePoints.IsReparsePoint"/>, the same lstat-like
+    /// primitive <see cref="CollectMarkdown"/>'s early skip uses, so the
+    /// early and late checks can never diverge on what counts as a reparse
+    /// point.
+    ///
+    /// Used only by <see cref="RegenerateIndexesWith"/>'s late, best-effort
+    /// re-check immediately before each <c>index.md</c> write -- see that
+    /// method's <c>&lt;remarks&gt;</c> for why a directory that already
+    /// passed <see cref="DirectoriesToIndex"/>'s early skip still needs this
+    /// second look.
+    /// </summary>
+    private static bool HasReparsePointAncestor(string bundleRoot, string directory)
+    {
+        var fullRoot = Path.GetFullPath(bundleRoot);
+        var current = Path.GetFullPath(directory);
+
+        while (true)
+        {
+            if (ReparsePoints.IsReparsePoint(current))
+            {
+                return true;
+            }
+
+            if (string.Equals(current, fullRoot, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                // Walked past the filesystem root without ever reaching
+                // bundleRoot -- DirectoriesToIndex only ever yields
+                // descendants of bundleRoot, so this should not happen in
+                // practice; stop here rather than loop forever.
+                return false;
+            }
+
+            current = parent;
         }
     }
 

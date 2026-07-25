@@ -168,4 +168,70 @@ public class IndexTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "real", "index.md")));
         Assert.False(File.Exists(Path.Combine(tmp.Path, "linked", "index.md")));
     }
+
+    // ----------------------------------------------------------------
+    // A3: late reparse re-check (TOCTOU consistency fix). DirectoriesToIndex's
+    // early skip (in CollectMarkdown) only proves a directory was real AT
+    // COLLECTION TIME -- it does not protect against the directory being
+    // replaced by a symlink/junction any time between collection and the
+    // moment RegenerateIndexesWith actually writes that directory's
+    // index.md. This test uses the internal BeforeLateReparseCheckForTest
+    // hook to deterministically substitute "real" (which legitimately
+    // passed the early skip, since it was a genuine directory containing
+    // a.md when DirectoriesToIndex ran) with a junction to an external
+    // directory, landing exactly in the narrow window between collection
+    // and write -- a substitution the early skip could never have caught.
+    // It then asserts the write did NOT follow the junction out of the
+    // bundle: no index.md appears in the external target directory.
+    // Requires junction/symlink-creation privilege; probes for it up front
+    // (without mutating anything the real assertion depends on) and skips
+    // cleanly if unavailable, per the other reparse-point tests' pattern.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Index_write_is_not_written_through_a_directory_substituted_after_collection()
+    {
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "real/a.md", "BigQuery Dataset", "A", "desc");
+        using var external = new TempDir();
+
+        if (!tmp.TryCreateJunctionToExternalDir("privilege-probe", external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        Directory.Delete(Path.Combine(tmp.Path, "privilege-probe"));
+
+        var realDir = Path.Combine(tmp.Path, "real");
+        IndexGenerator.BeforeLateReparseCheckForTest = directory =>
+        {
+            if (!string.Equals(directory, realDir, StringComparison.Ordinal))
+            {
+                return; // not the directory this test cares about -- leave it alone.
+            }
+
+            // "real" legitimately passed DirectoriesToIndex's early skip: it
+            // was a genuine directory containing a.md when collection ran.
+            // Swap it out for a junction to an external directory right
+            // before the late re-check runs, simulating a concurrent local
+            // substitution landing in that narrow window.
+            Directory.Delete(realDir, recursive: true);
+            Assert.True(tmp.TryCreateJunctionToExternalDir("real", external.Path));
+        };
+
+        try
+        {
+            var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+
+            Assert.DoesNotContain(written, p => string.Equals(p, Path.Combine(realDir, "index.md"), StringComparison.Ordinal));
+        }
+        finally
+        {
+            IndexGenerator.BeforeLateReparseCheckForTest = null;
+        }
+
+        // The write must not have followed the junction: no index.md should
+        // have landed in the external directory the junction points at.
+        Assert.False(File.Exists(Path.Combine(external.Path, "index.md")));
+    }
 }
