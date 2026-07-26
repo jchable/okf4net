@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
+using OKF4net.Internal;
+
 namespace OKF4net.Catalog;
 
 /// <summary>
@@ -193,9 +196,13 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         string json;
         try
         {
-            json = File.ReadAllText(_options.CatalogFilePath);
+            // Strict UTF-8, matching every other read in this codebase
+            // (Bundle/Validate/IndexGenerator/OkfCli): fail loudly with
+            // DecoderFallbackException on non-UTF-8 bytes rather than
+            // File.ReadAllText's silent U+FFFD replacement.
+            json = OkfEncodings.Strict.GetString(File.ReadAllBytes(_options.CatalogFilePath));
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
             snapshot = null;
 

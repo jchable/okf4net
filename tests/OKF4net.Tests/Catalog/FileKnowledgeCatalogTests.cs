@@ -32,6 +32,9 @@ public class FileKnowledgeCatalogTests
 
     private const string InvalidVersionJson = """{ "version": 2, "sources": [ { "id": "docs", "path": "./docs" } ] }""";
 
+    /// <summary>Otherwise-valid JSON bytes with a trailing byte (0xFF) that is not valid UTF-8 on its own or as a continuation -- forces <c>OkfEncodings.Strict</c>'s decode to throw.</summary>
+    private static readonly byte[] InvalidUtf8Bytes = [.. System.Text.Encoding.UTF8.GetBytes(OneSourceJson), 0xFF];
+
     private static string SetUpCatalogDirectory(TempDir temp)
     {
         Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
@@ -82,6 +85,24 @@ public class FileKnowledgeCatalogTests
 
         var ex = Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(options));
         Assert.Contains("WrongVersion", ex.Message);
+    }
+
+    [Fact]
+    public void Invalid_initial_catalog_utf8_throws_CatalogException()
+    {
+        using var temp = new TempDir();
+        var catalogPath = Path.Combine(temp.Path, "catalog.json");
+        File.WriteAllBytes(catalogPath, InvalidUtf8Bytes);
+
+        var options = new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        };
+
+        var ex = Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(options));
+        Assert.Contains("Could not read catalog file", ex.Message);
     }
 
     [Fact]
@@ -177,6 +198,32 @@ public class FileKnowledgeCatalogTests
         var goodSnapshot = catalog.Current;
 
         ReplaceCatalogAtomically(catalogPath, MalformedJson);
+
+        var result = await catalog.ReloadAsync();
+
+        Assert.Same(goodSnapshot, result);
+        Assert.Same(goodSnapshot, catalog.Current);
+        Assert.Equal(1, catalog.Current.Generation);
+        Assert.NotEmpty(catalog.LastReloadDiagnostics);
+    }
+
+    [Fact]
+    public async Task Invalid_utf8_replacement_keeps_last_good_current_and_populates_diagnostics()
+    {
+        using var temp = new TempDir();
+        var catalogPath = SetUpCatalogDirectory(temp);
+
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        });
+        var goodSnapshot = catalog.Current;
+
+        var tempFile = catalogPath + ".tmp";
+        File.WriteAllBytes(tempFile, InvalidUtf8Bytes);
+        File.Move(tempFile, catalogPath, overwrite: true);
 
         var result = await catalog.ReloadAsync();
 
