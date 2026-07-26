@@ -9,3 +9,7 @@ graphify-out/
 
 # winget packaging artifacts
 packaging/winget/out/
+
+# web/ (Vite + React + vite-react-ssg app)
+web/node_modules/
+web/dist/
