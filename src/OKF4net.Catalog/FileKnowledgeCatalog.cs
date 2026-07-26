@@ -234,9 +234,37 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         return watcher;
     }
 
-    private void OnCatalogFileEvent(object sender, FileSystemEventArgs e) => ScheduleDebouncedReload();
+    private void OnCatalogFileEvent(object sender, FileSystemEventArgs e)
+    {
+        // Runs on a FileSystemWatcher ThreadPool thread with no caller to
+        // observe or catch an exception; an unhandled exception here would
+        // terminate the whole host process (.NET's default for unhandled
+        // exceptions on a ThreadPool thread), which is exactly what this
+        // best-effort, "never take the process down" watcher must not do.
+        // Every path underneath is non-throwing today -- this is a
+        // belt-and-suspenders guard against a future change that isn't.
+        try
+        {
+            ScheduleDebouncedReload();
+        }
+        catch (Exception)
+        {
+            // Swallowed intentionally: see remarks above.
+        }
+    }
 
-    private void OnCatalogFileRenamed(object sender, RenamedEventArgs e) => ScheduleDebouncedReload();
+    private void OnCatalogFileRenamed(object sender, RenamedEventArgs e)
+    {
+        // See OnCatalogFileEvent: same ThreadPool-thread, must-not-crash-the-host reasoning.
+        try
+        {
+            ScheduleDebouncedReload();
+        }
+        catch (Exception)
+        {
+            // Swallowed intentionally: see remarks above.
+        }
+    }
 
     private void ScheduleDebouncedReload()
     {
