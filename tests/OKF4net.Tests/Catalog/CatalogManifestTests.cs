@@ -166,6 +166,7 @@ public class CatalogManifestTests
             """;
 
         Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
         Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.WrongVersion);
     }
 
@@ -309,6 +310,7 @@ public class CatalogManifestTests
             """;
 
         Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
         Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.MalformedPriority);
     }
 
@@ -348,6 +350,7 @@ public class CatalogManifestTests
             """;
 
         Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
         Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.IllegalRole);
     }
 
@@ -358,5 +361,28 @@ public class CatalogManifestTests
     {
         var exception = Record.Exception(() => TryParse("not json at all }{", out _, out _));
         Assert.Null(exception);
+    }
+
+    // ---- Sources is a genuine read-only view (not just a List<T> hidden behind an interface) --
+
+    [Fact]
+    public void Sources_cannot_be_downcast_to_a_mutable_list_and_mutated()
+    {
+        const string json = """
+            { "version": 1, "sources": [ { "id": "docs", "path": "./docs" } ] }
+            """;
+
+        Assert.True(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Empty(diagnostics);
+
+        Assert.IsType<System.Collections.ObjectModel.ReadOnlyCollection<KnowledgeCatalogSource>>(snapshot!.Sources);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<KnowledgeCatalogSource>)snapshot.Sources;
+            mutable.Add(new KnowledgeCatalogSource("intruder", "./x", 0, true, SourceRole.Knowledge));
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
     }
 }

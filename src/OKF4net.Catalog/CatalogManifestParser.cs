@@ -103,7 +103,7 @@ public static class CatalogManifestParser
                 return false;
             }
 
-            snapshot = new KnowledgeCatalogSnapshot(version, sources, manifestDirectory, Generation: 0);
+            snapshot = new KnowledgeCatalogSnapshot(version, sources.AsReadOnly(), manifestDirectory, Generation: 0);
             return true;
         }
     }

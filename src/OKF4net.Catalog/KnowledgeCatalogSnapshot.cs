@@ -7,6 +7,9 @@ namespace OKF4net.Catalog;
 /// <param name="Version">The manifest schema version; always <c>1</c> for a successfully parsed snapshot.</param>
 /// <param name="Sources">
 /// The manifest's sources, in the order they appeared in the manifest (ordinal-stable).
+/// A genuine read-only view (<see cref="System.Collections.ObjectModel.ReadOnlyCollection{T}"/>
+/// as produced by the parser): it cannot be downcast to a mutable list and modified, which
+/// matters because published snapshots are shared across concurrent readers.
 /// </param>
 /// <param name="ManifestDirectory">
 /// The directory the manifest was loaded from, as supplied by the caller; recorded
