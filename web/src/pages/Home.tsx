@@ -108,6 +108,16 @@ export default function Home() {
           <p className="next">→ <Link to="/cli">cli.md</Link> — building the binary, session transcripts, CI recipes</p>
         </section>
 
+        <section className="chapter" id="mcp">
+          <div className="chead">
+            <span className="h">##</span>
+            <h2>In Claude & your editor</h2>
+            <span className="ref">MCP — the bundle as tools</span>
+          </div>
+          <p>Run <code>okf-mcp</code>, point it at a bundle, and its nine operations become tools inside <strong>Claude Desktop, Claude Code, and Cursor</strong> — read, search, and write concepts from a conversation, over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>. Same engine as the library and the CLI, exposed to any MCP client.</p>
+          <p className="next">→ <Link to="/docs/mcp">docs/mcp.md</Link> — install <code>okf-mcp</code> and connect each client, step by step</p>
+        </section>
+
         <section className="chapter" id="contribute">
           <div className="chead">
             <span className="h">##</span>

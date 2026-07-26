@@ -145,6 +145,10 @@ export default function GettingStarted() {
               <strong>Understand the format.</strong> Reserved files, conformance, and the section-by-section spec
               mapping. → <Link to="/what-okf-is">what-okf-is.md</Link>
             </li>
+            <li>
+              <strong>Use it in Claude.</strong> Serve the bundle to Claude Desktop, Claude Code, or Cursor as
+              read/write tools. → <Link to="/docs/mcp">mcp.md</Link>
+            </li>
           </ul>
           <Next>
             → <Link to="/docs">docs.md</Link> — back to the docs index
