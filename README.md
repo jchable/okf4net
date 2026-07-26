@@ -307,6 +307,48 @@ A few known v1 caveats:
   an accidental escape more than it defends against a hostile, already
   co-resident writer.
 
+### Local catalog (OKF4net.Catalog)
+
+`src/OKF4net.Catalog/` and `src/OKF4net.Catalog.Hosting/` add a catalog of
+local OKF bundles: a hot-reloadable `catalog.json` manifest naming one or more
+bundles as *sources*, and a resolver that searches every enabled source.
+`catalog.json` is an **OKF4net manifest, not an OKF concept** — it configures
+the catalog from the outside and is not part of the OKF spec.
+
+```csharp
+using OKF4net.Catalog;
+using OKF4net.Catalog.Hosting;
+
+services.AddKnowledge(o => o.AddCatalogFile("./config/catalog.json"));
+
+// Elsewhere, resolve and search:
+IKnowledgeResolver resolver = provider.GetRequiredService<IKnowledgeResolver>();
+KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund policy"));
+```
+
+**V1 limits, stated exactly:**
+
+- Local filesystem bundles only.
+- One shared catalog (no per-caller or per-tenant filtering of which sources
+  are visible).
+- All enabled sources are searched, but results are **grouped by source — no
+  fusion, deduplication, or merged cross-source ranking**.
+- No external connectors.
+- No tenant-aware authorization of any kind.
+
+**V2 preview (not implemented):** application-filtered bundles (per-caller
+source visibility), a read-only `knowledge` vs writable `memory` source
+`role` split, and host-scoped, layered memory tiers (session / user /
+tenant) so captured memory can be enabled on a multi-user deployment without
+cross-scope leakage. See
+[the V2 scoped-memory design notes](docs/design/specs/2026-07-24-okf4net-v2-scoped-memory-notes.md)
+for the full reasoning — these are design notes only, not approved for
+implementation, and nothing described there ships in the current package.
+
+See [OKF4net.Catalog](src/OKF4net.Catalog/README.md) and
+[OKF4net.Catalog.Hosting](src/OKF4net.Catalog.Hosting/README.md) for full
+package documentation.
+
 ## Use OKF in Claude (MCP)
 
 `OKF4net.Mcp` is a local MCP server that plugs an OKF bundle straight into

@@ -7,6 +7,29 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
+  <PropertyGroup Label="Packaging">
+    <PackageId>OKF4net.Catalog</PackageId>
+    <Authors>Julien CHABLE</Authors>
+    <Description>A catalog of local OKF knowledge bundles for .NET: hot-reloadable catalog.json, multi-source search grouped by source, over the OKF4net format core.</Description>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>okf;knowledge;catalog;search;knowledge-base</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\OKF4net\OKF4net.csproj" />
   </ItemGroup>

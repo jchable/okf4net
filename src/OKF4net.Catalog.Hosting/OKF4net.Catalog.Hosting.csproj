@@ -7,6 +7,29 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
+  <PropertyGroup Label="Packaging">
+    <PackageId>OKF4net.Catalog.Hosting</PackageId>
+    <Authors>Julien CHABLE</Authors>
+    <Description>Microsoft.Extensions.DependencyInjection integration for the OKF4net local knowledge catalog: services.AddKnowledge(...).</Description>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>okf;knowledge;catalog;dependency-injection;aspnetcore</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- The one, explicit dependency-policy exception (see CLAUDE.md): this
          is the only project in the solution allowed a Microsoft.Extensions.*
