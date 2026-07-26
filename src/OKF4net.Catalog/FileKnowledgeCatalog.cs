@@ -201,6 +201,20 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             // DecoderFallbackException on non-UTF-8 bytes rather than
             // File.ReadAllText's silent U+FFFD replacement.
             json = OkfEncodings.Strict.GetString(File.ReadAllBytes(_options.CatalogFilePath));
+
+            // Strict-UTF8 GetString decodes a leading U+FEFF byte-order mark
+            // as a literal character rather than stripping it the way
+            // File.ReadAllText used to -- so a BOM-prefixed catalog.json
+            // (common from some editors/tools on Windows) would otherwise
+            // fail JsonDocument.Parse on the leading U+FEFF even though the
+            // manifest itself is perfectly valid. Strip a single leading BOM
+            // character here, after the strict decode has already rejected
+            // genuinely invalid UTF-8, to restore BOM tolerance without
+            // loosening that validation (F9).
+            if (json.Length > 0 && json[0] == '﻿')
+            {
+                json = json[1..];
+            }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
@@ -241,7 +255,14 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         if (pathDiagnostics.Count > 0)
         {
             snapshot = null;
-            diagnostics = pathDiagnostics;
+
+            // .AsReadOnly() wraps `pathDiagnostics` in a genuine
+            // ReadOnlyCollection<T> view -- otherwise a caller could
+            // downcast LastReloadDiagnostics back to List<CatalogDiagnostic>
+            // and mutate published diagnostics (F4), matching the same
+            // hardening the read-failure path above already applies via
+            // Array.AsReadOnly().
+            diagnostics = pathDiagnostics.AsReadOnly();
             return false;
         }
 

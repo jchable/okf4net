@@ -104,7 +104,12 @@ public static class CatalogManifestParser
             var version = ParseVersion(root, diags);
             var sources = ParseSources(root, diags);
 
-            diagnostics = diags;
+            // .AsReadOnly() wraps `diags` in a genuine ReadOnlyCollection<T>
+            // view -- otherwise a caller could downcast this back to
+            // List<CatalogDiagnostic> and mutate published diagnostics (F4),
+            // matching the same hardening FileKnowledgeCatalog's read-failure
+            // path already applies via Array.AsReadOnly().
+            diagnostics = diags.AsReadOnly();
             if (diags.Count > 0)
             {
                 return false;

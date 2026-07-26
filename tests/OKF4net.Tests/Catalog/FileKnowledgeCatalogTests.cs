@@ -87,6 +87,38 @@ public class FileKnowledgeCatalogTests
         Assert.Contains("WrongVersion", ex.Message);
     }
 
+    /// <summary>
+    /// F9 regression: a strict-UTF8 <c>File.ReadAllBytes</c> + <c>GetString</c>
+    /// decode (adopted to reject genuinely invalid UTF-8, unlike the old
+    /// <c>File.ReadAllText</c>) does NOT strip a leading U+FEFF byte-order
+    /// mark the way <c>File.ReadAllText</c> used to -- so a BOM-prefixed
+    /// <c>catalog.json</c> (common from some editors/tools on Windows) would
+    /// otherwise fail to parse as JSON (<c>JsonDocument.Parse</c> chokes on
+    /// the leading U+FEFF) even though the manifest is perfectly valid.
+    /// </summary>
+    [Fact]
+    public void Bom_prefixed_valid_catalog_loads_successfully()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
+        var catalogPath = Path.Combine(temp.Path, "catalog.json");
+        byte[] bom = [0xEF, 0xBB, 0xBF];
+        var jsonBytes = System.Text.Encoding.UTF8.GetBytes(OneSourceJson);
+        File.WriteAllBytes(catalogPath, [.. bom, .. jsonBytes]);
+
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        });
+
+        Assert.Equal(1, catalog.Current.Generation);
+        var source = Assert.Single(catalog.Current.Sources);
+        Assert.Equal("docs", source.Id);
+        Assert.Empty(catalog.LastReloadDiagnostics);
+    }
+
     [Fact]
     public void Invalid_initial_catalog_utf8_throws_CatalogException()
     {
@@ -264,6 +296,51 @@ public class FileKnowledgeCatalogTests
         Assert.Equal(1, result.Generation);
         Assert.Single(catalog.Current.Sources);
         Assert.Contains(catalog.LastReloadDiagnostics, d => d.Code == CatalogDiagnosticCode.AbsolutePath);
+    }
+
+    /// <summary>
+    /// F4: <see cref="FileKnowledgeCatalog.LastReloadDiagnostics"/>'s path-escape
+    /// rejection path (<c>pathDiagnostics</c> in <c>TryLoadSnapshot</c>) must be
+    /// just as genuinely read-only as the read-failure path already is (that one
+    /// uses <c>Array.AsReadOnly</c>) -- otherwise a caller could downcast and
+    /// mutate published diagnostics out from under the catalog.
+    /// </summary>
+    [Fact]
+    public async Task Reload_diagnostics_from_a_source_path_escape_cannot_be_downcast_to_a_mutable_list()
+    {
+        using var temp = new TempDir();
+        using var outsideRoot = new TempDir();
+        Directory.CreateDirectory(Path.Combine(outsideRoot.Path, "elsewhere"));
+        var catalogPath = SetUpCatalogDirectory(temp);
+
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        });
+
+        var badJson = $$"""
+            {
+              "version": 1,
+              "sources": [
+                { "id": "docs", "path": "./docs" },
+                { "id": "outside", "path": {{System.Text.Json.JsonSerializer.Serialize(Path.Combine(outsideRoot.Path, "elsewhere"))}} }
+              ]
+            }
+            """;
+        ReplaceCatalogAtomically(catalogPath, badJson);
+
+        await catalog.ReloadAsync();
+        Assert.NotEmpty(catalog.LastReloadDiagnostics);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<CatalogDiagnostic>)catalog.LastReloadDiagnostics;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
     }
 
     [Fact]

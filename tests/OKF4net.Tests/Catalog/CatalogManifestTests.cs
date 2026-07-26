@@ -378,6 +378,26 @@ public class CatalogManifestTests
         Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.ParseError);
     }
 
+    // ---- F4: diagnostics is a genuine read-only view on a parse failure too --
+
+    [Fact]
+    public void Diagnostics_cannot_be_downcast_to_a_mutable_list_on_parse_failure()
+    {
+        const string json = """{ "version": 2, "sources": [ { "id": "docs", "path": "./docs" } ] }""";
+
+        Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
+        Assert.NotEmpty(diagnostics);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<CatalogDiagnostic>)diagnostics;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
+    }
+
     // ---- Sources is a genuine read-only view (not just a List<T> hidden behind an interface) --
 
     [Fact]
