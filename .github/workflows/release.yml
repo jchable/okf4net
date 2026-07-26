@@ -50,6 +50,12 @@ jobs:
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 
+      - name: Pack (Mcp)
+        run: >
+          dotnet pack src/OKF4net.Mcp/OKF4net.Mcp.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
       # Trusted Publishing: exchanges this job's OIDC token for a short-lived
       # (1 h, single-use) API key — no long-lived secret stored. Requires a
       # trusted publishing policy on nuget.org pointing at this repository and
