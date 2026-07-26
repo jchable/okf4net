@@ -544,7 +544,8 @@ public sealed class OkfBundleTools
             {
                 string frontmatterYaml;
                 string? currentBody;
-                if (File.Exists(target.TargetPath))
+                var existedBefore = File.Exists(target.TargetPath);
+                if (existedBefore)
                 {
                     // Strict UTF-8, matching AppendLog's own existing-file
                     // read: a non-UTF-8 concept file throws
@@ -586,7 +587,7 @@ public sealed class OkfBundleTools
                     return buildError;
                 }
 
-                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
+                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!, existedBefore);
             }
         });
     }
@@ -819,9 +820,22 @@ public sealed class OkfBundleTools
     /// <see cref="LateReparseGuard"/> this method calls below, immediately
     /// before its own write.
     /// </remarks>
-    private string WriteValidatedContentLocked(ConceptId id, string targetPath, string content)
+    /// <param name="id">The concept id being written, used only for the returned confirmation message.</param>
+    /// <param name="targetPath">The absolute path to write <paramref name="content"/> to.</param>
+    /// <param name="content">The fully serialized, already-validated document content to write.</param>
+    /// <param name="existedBefore">
+    /// Whether <paramref name="targetPath"/> already existed, if the caller
+    /// already knows this from a check performed earlier under the same
+    /// <see cref="_bundleLock"/> hold (<see cref="AppendToConceptAtomic"/>
+    /// passes its own earlier <see cref="File.Exists(string)"/> result here
+    /// to avoid a redundant second stat of the same path). <see langword="null"/>
+    /// (the default, used by <see cref="WriteConcept"/>'s single-call site)
+    /// means "no such check has happened yet" -- this method then performs
+    /// it itself, exactly as before.
+    /// </param>
+    private string WriteValidatedContentLocked(ConceptId id, string targetPath, string content, bool? existedBefore = null)
     {
-        var existed = File.Exists(targetPath);
+        var existed = existedBefore ?? File.Exists(targetPath);
 
         var parentDir = Path.GetDirectoryName(targetPath);
         if (!string.IsNullOrEmpty(parentDir))
