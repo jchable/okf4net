@@ -155,11 +155,20 @@ public static class IndexGenerator
     /// doc comment for why: a symlinked/mounted bundle root is a legitimate
     /// setup that the early traversal already indexes unconditionally, and
     /// treating it as suspect here would silently suppress every index
-    /// write for such a bundle. A reparse point detected at either the
-    /// early or the late point is handled the same way: that <c>index.md</c>
-    /// write is SKIPPED (not included in the returned list) and
-    /// regeneration continues with the remaining directories -- it never
-    /// aborts the whole run and never throws.
+    /// write for such a bundle. The <c>index.md</c> FILE NODE itself is
+    /// ALSO re-checked via <see cref="ReparsePoints.IsReparsePoint"/> right
+    /// before the write -- the ancestor walk only covers directories
+    /// strictly between the target directory and <paramref name="bundleRoot"/>,
+    /// so it would never notice a pre-planted <c>index.md</c> symlink sitting
+    /// directly in an otherwise-genuine directory (a gap <c>OkfBundleTools</c>'s
+    /// <c>WriteConcept</c>/<c>AppendLog</c> (in the separate <c>OKF4net.Agents</c>
+    /// project) already close for their own target files). A reparse point
+    /// detected at any of these three points
+    /// (early skip, late ancestor re-check, late target-node re-check) is
+    /// handled the same way: that <c>index.md</c> write is SKIPPED (not
+    /// included in the returned list) and regeneration continues with the
+    /// remaining directories -- it never aborts the whole run and never
+    /// throws.
     /// </para>
     /// <para>
     /// This still does not fully close the gap: a substitution landing in
@@ -244,6 +253,26 @@ public static class IndexGenerator
             }
 
             var indexPath = Path.Combine(directory, IndexFile);
+
+            // Also guard the index.md FILE NODE itself (F2): the ancestor
+            // check above only walks directories STRICTLY BETWEEN `directory`
+            // and `bundleRoot` -- it never inspects `indexPath` itself. A
+            // pre-planted "bundle/tables/index.md" symlink pointing at an
+            // external file would otherwise sail through that ancestor check
+            // (its only ancestor, `directory`, is a genuine directory) and
+            // get silently overwritten, since File.WriteAllText follows a
+            // file symlink. This mirrors WriteConcept/AppendLog, which both
+            // check ReparsePoints.IsReparsePoint on their own target FILE
+            // node in addition to its ancestor chain -- IndexGenerator was
+            // asymmetric with those until this check was added. Same
+            // skip-not-abort handling as the ancestor check above: this
+            // directory's index.md write is skipped and regeneration
+            // continues with the rest of the bundle.
+            if (ReparsePoints.IsReparsePoint(indexPath))
+            {
+                continue;
+            }
+
             File.WriteAllText(indexPath, BuildIndexText(entries), OkfEncodings.NoBom);
             written.Add(indexPath);
 

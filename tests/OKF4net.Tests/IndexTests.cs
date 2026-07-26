@@ -236,6 +236,55 @@ public class IndexTests
     }
 
     // ----------------------------------------------------------------
+    // F2 [Security]: the late guard re-checked HasReparsePointAncestor
+    // (ancestors of the directory about to be indexed) but never the
+    // index.md file node itself -- asymmetric with WriteConcept/AppendLog,
+    // which both check ReparsePoints.IsReparsePoint on the target FILE node
+    // in addition to its ancestor chain. A pre-planted "bundle/tables/index.md"
+    // symlink pointing at an external file would otherwise sail through the
+    // ancestor check (index.md's only ancestor, "tables", is a genuine
+    // directory) and get silently overwritten via File.WriteAllText
+    // following the link. This test pre-plants such a symlink BEFORE calling
+    // RegenerateIndexes (not via the BeforeLateReparseCheckForTest race hook
+    // used by A3 -- this is a plain pre-existing-file scenario, not a race)
+    // and asserts the write through it is skipped (consistent with the
+    // existing skip-not-abort behavior) while the bundle root's own
+    // unrelated index.md is still written normally. Requires symlink-
+    // creation privilege; skips cleanly if unavailable.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Index_write_is_skipped_when_the_target_index_md_is_itself_a_planted_symlink()
+    {
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "tables/a.md", "BigQuery Table", "A", "desc");
+        using var external = new TempDir();
+        var externalFile = external.Write("external.md", "external content, must not be overwritten\n");
+
+        if (!tmp.TryCreateFileSymlinkToExternalFile(Path.Combine("tables", "index.md"), externalFile))
+        {
+            return; // no symlink-creation privilege on this machine -- skip.
+        }
+
+        var before = File.ReadAllText(externalFile);
+
+        var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        var tablesIndexPath = Path.Combine(tmp.Path, "tables", "index.md");
+        Assert.DoesNotContain(written, p => string.Equals(p, tablesIndexPath, StringComparison.Ordinal));
+
+        // The external file must be untouched -- proof the write was
+        // skipped, not merely that "tables/index.md" is absent from the
+        // returned list while the write still silently landed elsewhere.
+        Assert.Equal(before, File.ReadAllText(externalFile));
+
+        // The bundle root's own, unrelated index.md must still be written
+        // normally -- the symlinked child must not suppress regeneration for
+        // the rest of the bundle.
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
+    }
+
+    // ----------------------------------------------------------------
     // A4: symlinked-root regression guard. HasReparsePointAncestor's late
     // re-check must NEVER inspect bundleRoot itself -- only directories
     // strictly between the write target and bundleRoot. A bundle root that
