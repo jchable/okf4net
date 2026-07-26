@@ -13,10 +13,15 @@ public interface IKnowledgeSource
     string Id { get; }
 
     /// <summary>
-    /// Searches this source for <paramref name="query"/>. Never throws --
-    /// any failure (e.g. the source's bundle could not be loaded) is
-    /// reported via <see cref="KnowledgeSearchResult.Diagnostic"/> with an
-    /// empty <see cref="KnowledgeSearchResult.Passages"/> instead.
+    /// Searches this source for <paramref name="query"/>. Never throws for a
+    /// <em>data</em> condition -- any failure (e.g. the source's bundle could
+    /// not be loaded) is reported via <see cref="KnowledgeSearchResult.Diagnostic"/>
+    /// with an empty <see cref="KnowledgeSearchResult.Passages"/> instead. The
+    /// only exceptions this method throws are <see cref="ArgumentNullException"/>
+    /// for a <see langword="null"/> <paramref name="query"/> and
+    /// <see cref="OperationCanceledException"/> when <paramref name="ct"/> is
+    /// cancelled -- both caller/programming errors or explicit cancellation,
+    /// not source-data failures.
     /// </summary>
     ValueTask<KnowledgeSearchResult> SearchAsync(KnowledgeQuery query, CancellationToken ct = default);
 }

@@ -52,6 +52,13 @@ public static class CatalogManifestParser
         var diags = new List<CatalogDiagnostic>();
         snapshot = null;
 
+        if (json is null)
+        {
+            diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.ParseError, "Manifest JSON must not be null."));
+            diagnostics = diags;
+            return false;
+        }
+
         JsonDocument document;
         try
         {

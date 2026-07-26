@@ -280,4 +280,24 @@ public class DefaultKnowledgeResolverTests
 
         Assert.IsType<InvalidCastException>(castAttempt);
     }
+
+    [Fact]
+    public async Task SearchAsync_NoEnabledSources_Diagnostics_cannot_be_downcast_to_a_mutable_array_and_mutated()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root, hiEnabled: false, loEnabled: false);
+        var resolver = new DefaultKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+        var diagnostic = Assert.Single(context.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.NoEnabledSources, diagnostic.Code);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (KnowledgeDiagnostic[])context.Diagnostics;
+            mutable[0] = diagnostic;
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
+    }
 }

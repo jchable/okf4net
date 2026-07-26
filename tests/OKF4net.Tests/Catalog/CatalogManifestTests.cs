@@ -363,6 +363,21 @@ public class CatalogManifestTests
         Assert.Null(exception);
     }
 
+    [Fact]
+    public void Never_throws_for_null_json_and_reports_ParseError()
+    {
+        KnowledgeCatalogSnapshot? snapshot = null;
+        IReadOnlyList<CatalogDiagnostic> diagnostics = [];
+        bool result = false;
+
+        var exception = Record.Exception(() => result = TryParse(null!, out snapshot, out diagnostics));
+
+        Assert.Null(exception);
+        Assert.False(result);
+        Assert.Null(snapshot);
+        Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.ParseError);
+    }
+
     // ---- Sources is a genuine read-only view (not just a List<T> hidden behind an interface) --
 
     [Fact]

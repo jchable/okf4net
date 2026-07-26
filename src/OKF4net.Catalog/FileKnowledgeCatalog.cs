@@ -86,7 +86,22 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         if (options.WatchForChanges)
         {
             _debounceTimer = new Timer(FireDebouncedReload, state: null, Timeout.Infinite, Timeout.Infinite);
-            _watcher = CreateWatcher();
+
+            // If CreateWatcher() throws (e.g. the manifest directory is
+            // otherwise unwatchable), the constructor itself throws and never
+            // returns a disposable instance for a caller to clean up --
+            // without this try/catch the already-constructed _debounceTimer
+            // would leak. CreateWatcher() applies the same belt-and-suspenders
+            // disposal to its own partially-constructed FileSystemWatcher.
+            try
+            {
+                _watcher = CreateWatcher();
+            }
+            catch
+            {
+                _debounceTimer.Dispose();
+                throw;
+            }
         }
     }
 
@@ -183,12 +198,17 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             snapshot = null;
-            diagnostics = new[]
+
+            // Array.AsReadOnly() wraps the array in a genuine
+            // ReadOnlyCollection<T> view -- otherwise a caller could
+            // `(CatalogDiagnostic[])catalog.LastReloadDiagnostics` and mutate
+            // published diagnostics.
+            diagnostics = Array.AsReadOnly(new[]
             {
                 new CatalogDiagnostic(
                     CatalogDiagnosticCode.ParseError,
                     $"Could not read catalog file '{_options.CatalogFilePath}': {e.Message}"),
-            };
+            });
             return false;
         }
 
@@ -224,17 +244,28 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     private FileSystemWatcher CreateWatcher()
     {
         var fileName = Path.GetFileName(_options.CatalogFilePath);
-        var watcher = new FileSystemWatcher(_manifestDirectory, fileName)
-        {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.FileName | NotifyFilters.Size,
-        };
+        var watcher = new FileSystemWatcher(_manifestDirectory, fileName);
 
-        watcher.Changed += OnCatalogFileEvent;
-        watcher.Created += OnCatalogFileEvent;
-        watcher.Deleted += OnCatalogFileEvent;
-        watcher.Renamed += OnCatalogFileRenamed;
-        watcher.EnableRaisingEvents = true;
-        return watcher;
+        // Guards the watcher itself: if any post-construction step below
+        // throws, this disposes the partially-configured watcher rather than
+        // leaking its native handle -- the constructor's own try/catch around
+        // CreateWatcher() only ever sees a fully-disposed-or-fully-returned
+        // watcher, never a half-built one.
+        try
+        {
+            watcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.FileName | NotifyFilters.Size;
+            watcher.Changed += OnCatalogFileEvent;
+            watcher.Created += OnCatalogFileEvent;
+            watcher.Deleted += OnCatalogFileEvent;
+            watcher.Renamed += OnCatalogFileRenamed;
+            watcher.EnableRaisingEvents = true;
+            return watcher;
+        }
+        catch
+        {
+            watcher.Dispose();
+            throw;
+        }
     }
 
     private void OnCatalogFileEvent(object sender, FileSystemEventArgs e)

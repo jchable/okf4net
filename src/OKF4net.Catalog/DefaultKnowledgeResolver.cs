@@ -65,11 +65,16 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
 
         if (enabledSources.Count == 0)
         {
+            // Array.AsReadOnly() wraps the array in a genuine
+            // ReadOnlyCollection<T> view -- otherwise a caller could
+            // `(KnowledgeDiagnostic[])context.Diagnostics` and mutate a
+            // published KnowledgeContext (same reasoning as the main path's
+            // .AsReadOnly() below).
             return new KnowledgeContext(
                 query,
                 snapshot.Generation,
                 Array.Empty<KnowledgePassage>(),
-                new[] { new KnowledgeDiagnostic(KnowledgeDiagnosticCode.NoEnabledSources, null, "No enabled knowledge sources are configured.") });
+                Array.AsReadOnly(new[] { new KnowledgeDiagnostic(KnowledgeDiagnosticCode.NoEnabledSources, null, "No enabled knowledge sources are configured.") }));
         }
 
         var passages = new List<KnowledgePassage>();
