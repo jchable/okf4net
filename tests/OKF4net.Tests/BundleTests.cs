@@ -156,6 +156,29 @@ public class BundleTests
     }
 
     [Fact]
+    public void Okf_version_reflects_the_load_time_snapshot_not_the_current_file()
+    {
+        // OkfVersion must be captured while Load builds the bundle, so it
+        // stays consistent with the rest of the (immutable) snapshot. If it
+        // were read lazily on first access, overwriting the root index.md
+        // between Load and the first access would leak the newer on-disk
+        // value ("0.2") into an instance that otherwise represents the "0.1"
+        // load. Deleting it entirely likewise must not turn the value null.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
+        var indexPath = tmp.Write("index.md", "---\nokf_version: \"0.1\"\n---\n\n# Listing\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        // Mutate the file *before* the first OkfVersion read.
+        File.WriteAllText(indexPath, "---\nokf_version: \"0.2\"\n---\n\n# Listing\n");
+        Assert.Equal("0.1", bundle.OkfVersion);
+
+        // And a later disappearance of the file does not change the answer.
+        File.Delete(indexPath);
+        Assert.Equal("0.1", bundle.OkfVersion);
+    }
+
+    [Fact]
     public void Walk_order_is_component_wise_not_a_flat_string_sort()
     {
         // Regression: a directory `orders/` containing `extra.md`, plus a
@@ -207,5 +230,54 @@ public class BundleTests
         Assert.Empty(bundle.ParseErrors);
         Assert.Equal(1, bundle.Count);
         Assert.Equal("a", bundle.Concepts[0].Id.ToString());
+    }
+
+    // ----------------------------------------------------------------
+    // A2: symlink walk fidelity. Rust's collect_markdown (bundle.rs:207-222)
+    // recurses via `entry.file_type()`, an lstat-based query reporting the
+    // type of the directory entry ITSELF rather than its target. A symlink's
+    // file_type() has is_dir() == false AND is_file() == false, so it
+    // matches neither match arm and the entry is skipped outright --
+    // different from Directory.Exists/File.Exists, which resolve through
+    // the link like Rust's (following) Path::is_dir()/Path::is_file().
+    //
+    // Both tests require symlink-creation privilege
+    // (SeCreateSymbolicLinkPrivilege on Windows, absent without Developer
+    // Mode or an elevated process); they skip themselves via
+    // TempDir.TryCreate*Symlink's bool return when unavailable, per xunit v2
+    // having no Assert.Skip.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Symlinked_markdown_file_is_skipped_not_loaded_as_a_concept()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("real.md", "---\ntype: Note\ntitle: Real\n---\nbody\n");
+        if (!tmp.TryCreateFileSymlink("link.md", "real.md"))
+        {
+            return; // no symlink privilege on this machine -- skip.
+        }
+
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Equal(1, bundle.Count);
+        Assert.Equal("real", bundle.Concepts[0].Id.ToString());
+        Assert.False(bundle.Contains(ConceptId.Parse("link")));
+        Assert.Empty(bundle.ParseErrors);
+    }
+
+    [Fact]
+    public void Symlinked_directory_is_not_descended_into()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("real/a.md", "---\ntype: Note\ntitle: A\n---\nbody\n");
+        if (!tmp.TryCreateDirectorySymlink("linked", "real"))
+        {
+            return; // no symlink privilege on this machine -- skip.
+        }
+
+        var bundle = Bundle.Load(tmp.Path);
+        Assert.Equal(1, bundle.Count);
+        Assert.Equal("real/a", bundle.Concepts[0].Id.ToString());
+        Assert.DoesNotContain(bundle.Concepts, c => c.Id.ToString().StartsWith("linked", StringComparison.Ordinal));
     }
 }

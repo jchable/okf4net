@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
+using OKF4net.Internal;
 
 namespace OKF4net;
 
@@ -112,17 +113,6 @@ public static class BundleValidator
     private const string IndexFilename = "index.md";
 
     /// <summary>
-    /// UTF-8 decoder configured to throw on invalid byte sequences, matching
-    /// the strictness of Rust's <c>fs::read_to_string</c> used by
-    /// <c>validate_reserved</c> (validate.rs:164, 194) -- a non-UTF-8 index
-    /// or log file is skipped (<c>let Ok(text) = ... else { continue }</c>)
-    /// rather than silently decoded with replacement characters. See
-    /// <c>Bundle.StrictUtf8</c> for the same rationale.
-    /// </summary>
-    private static readonly System.Text.UTF8Encoding StrictUtf8 =
-        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-
-    /// <summary>
     /// Validates a loaded bundle against §9, returning all findings. Port of
     /// <c>validate_bundle</c> (validate.rs:97-158).
     /// </summary>
@@ -174,7 +164,7 @@ public static class BundleValidator
                     Severity.Warning,
                     concept.Path,
                     concept.Id,
-                    $"`timestamp` is not ISO-8601: {DebugQuote(ts)}"));
+                    $"`timestamp` is not ISO-8601: {RustDebugQuote.Quote(ts)}"));
             }
         }
 
@@ -213,7 +203,7 @@ public static class BundleValidator
             string text;
             try
             {
-                text = StrictUtf8.GetString(File.ReadAllBytes(path));
+                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
             }
             catch (IOException)
             {
@@ -273,7 +263,7 @@ public static class BundleValidator
             string text;
             try
             {
-                text = StrictUtf8.GetString(File.ReadAllBytes(path));
+                text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
             }
             catch (IOException)
             {
@@ -295,7 +285,7 @@ public static class BundleValidator
                     Severity.Warning,
                     path,
                     null,
-                    $"log date heading is not ISO-8601 `YYYY-MM-DD`: {DebugQuote(bad)}"));
+                    $"log date heading is not ISO-8601 `YYYY-MM-DD`: {RustDebugQuote.Quote(bad)}"));
             }
         }
     }
@@ -314,51 +304,4 @@ public static class BundleValidator
         return ChangeLog.IsIsoDate(datePart);
     }
 
-    /// <summary>
-    /// Renders a string the way Rust's <c>{:?}</c> (Debug) format does for
-    /// <c>&amp;str</c>: double-quoted, with <c>\</c>, <c>"</c>, and common
-    /// control characters escaped. Duplicated from <c>ConceptId</c> (which
-    /// keeps its own copy private) to keep error messages byte-for-byte
-    /// identical to the Rust crate's <c>format!("...{s:?}")</c> calls.
-    /// </summary>
-    private static string DebugQuote(string s)
-    {
-        var sb = new StringBuilder(s.Length + 2);
-        sb.Append('"');
-        foreach (var c in s)
-        {
-            switch (c)
-            {
-                case '"':
-                    sb.Append("\\\"");
-                    break;
-                case '\\':
-                    sb.Append("\\\\");
-                    break;
-                case '\n':
-                    sb.Append("\\n");
-                    break;
-                case '\r':
-                    sb.Append("\\r");
-                    break;
-                case '\t':
-                    sb.Append("\\t");
-                    break;
-                default:
-                    if (char.IsControl(c))
-                    {
-                        sb.Append("\\u{").Append(((int)c).ToString("x")).Append('}');
-                    }
-                    else
-                    {
-                        sb.Append(c);
-                    }
-
-                    break;
-            }
-        }
-
-        sb.Append('"');
-        return sb.ToString();
-    }
 }

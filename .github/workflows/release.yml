@@ -32,6 +32,24 @@ jobs:
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 
+      - name: Pack (Agents)
+        run: >
+          dotnet pack src/OKF4net.Agents/OKF4net.Agents.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Pack (Catalog)
+        run: >
+          dotnet pack src/OKF4net.Catalog/OKF4net.Catalog.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Pack (Catalog.Hosting)
+        run: >
+          dotnet pack src/OKF4net.Catalog.Hosting/OKF4net.Catalog.Hosting.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
       # Trusted Publishing: exchanges this job's OIDC token for a short-lived
       # (1 h, single-use) API key — no long-lived secret stored. Requires a
       # trusted publishing policy on nuget.org pointing at this repository and

@@ -4,5 +4,15 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <LangVersion>14</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Single source of truth for the package version across every project
+      (src/OKF4net, src/OKF4net.Agents), harmless for the non-packed
+      projects (OKF4net.Cli, OKF4net.Tests), which just inherit an unused
+      MSBuild property. release.yml's `dotnet pack -p:Version=$VERSION`
+      passes the version as a command-line property at tag time, which
+      overrides this MSBuild-file value, so this default only matters for
+      local/dev builds and `dotnet pack` runs without an explicit -p:Version.
+    -->
+    <Version>0.2.0</Version>
   </PropertyGroup>
 </Project>

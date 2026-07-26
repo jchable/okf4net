@@ -9,7 +9,6 @@
 
   <PropertyGroup Label="Packaging">
     <PackageId>OKF4net</PackageId>
-    <Version>0.1.1</Version>
     <Authors>Julien CHABLE</Authors>
     <Description>Zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1: parse, validate, index, and graph OKF knowledge bundles (markdown + YAML frontmatter).</Description>
     <Copyright>Copyright 2026 Julien CHABLE</Copyright>
@@ -35,6 +34,16 @@
     <!-- Lets the test project exercise internal Rust-port helpers (e.g.
          RustCaseFold) directly, without inflating the public API surface. -->
     <InternalsVisibleTo Include="OKF4net.Tests" />
+    <!-- Lets OKF4net.Cli and OKF4net.Agents share the internal helpers in
+         Internal/ (encodings, debug quoting, path ordering) without
+         promoting them to public API. The CLI project's assembly name is
+         "okf" (see OKF4net.Cli.csproj's AssemblyName), not "OKF4net.Cli":
+         InternalsVisibleTo must match the actual assembly name. -->
+    <InternalsVisibleTo Include="okf" />
+    <InternalsVisibleTo Include="OKF4net.Agents" />
+    <!-- Lets OKF4net.Catalog reuse the internal ReparsePoints helper instead
+         of duplicating a platform-specific implementation. -->
+    <InternalsVisibleTo Include="OKF4net.Catalog" />
   </ItemGroup>
 
 </Project>

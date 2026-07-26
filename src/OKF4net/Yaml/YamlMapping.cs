@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.ObjectModel;
+
 namespace OKF4net.Yaml;
 
 /// <summary>
@@ -15,6 +17,7 @@ namespace OKF4net.Yaml;
 public sealed class YamlMapping : YamlValue
 {
     private readonly List<(YamlValue Key, YamlValue Value)> _entries = [];
+    private ReadOnlyCollection<(YamlValue Key, YamlValue Value)>? _entriesView;
 
     /// <summary>Creates an empty mapping.</summary>
     public YamlMapping()
@@ -101,11 +104,16 @@ public sealed class YamlMapping : YamlValue
     internal void PushRaw(YamlValue key, YamlValue value) => _entries.Add((key, value));
 
     /// <summary>
-    /// Iterates over ALL <c>(key, value)</c> pairs in insertion order,
-    /// including duplicate and non-string keys. Port of <c>Mapping::iter</c>
-    /// (mod.rs:103-106).
+    /// ALL <c>(key, value)</c> pairs in insertion order, including duplicate
+    /// and non-string keys. Port of <c>Mapping::iter</c> (mod.rs:103-106).
+    /// This is a genuinely read-only live view over the internal list (a
+    /// cached <see cref="ReadOnlyCollection{T}"/> wrapper, created once) — it
+    /// cannot be downcast back to the mutable backing <c>List</c> to desync
+    /// the mapping's key lookups, unlike returning the list itself typed as
+    /// <c>IEnumerable</c>.
     /// </summary>
-    public IEnumerable<(YamlValue Key, YamlValue Value)> Entries => _entries;
+    public IReadOnlyList<(YamlValue Key, YamlValue Value)> Entries =>
+        _entriesView ??= new ReadOnlyCollection<(YamlValue Key, YamlValue Value)>(_entries);
 
     /// <summary>
     /// Iterates over string keys only, in insertion order, skipping any
