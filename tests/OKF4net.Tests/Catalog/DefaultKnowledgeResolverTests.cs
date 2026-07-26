@@ -239,4 +239,45 @@ public class DefaultKnowledgeResolverTests
 
         Assert.Equal(query, context.Query);
     }
+
+    // ---- Passages / Diagnostics are genuine read-only views (not just a List<T> hidden behind an interface) --
+
+    [Fact]
+    public async Task SearchAsync_Passages_cannot_be_downcast_to_a_mutable_list_and_mutated()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new DefaultKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.NotEmpty(context.Passages);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<KnowledgePassage>)context.Passages;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
+    }
+
+    [Fact]
+    public async Task SearchAsync_Diagnostics_cannot_be_downcast_to_a_mutable_list_and_mutated()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        Directory.Delete(Path.Combine(root.Path, "source-lo"), recursive: true);
+        var resolver = new DefaultKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.NotEmpty(context.Diagnostics);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<KnowledgeDiagnostic>)context.Diagnostics;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
+    }
 }

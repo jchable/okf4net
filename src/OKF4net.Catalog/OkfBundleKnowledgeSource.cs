@@ -41,16 +41,31 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
 
     /// <inheritdoc/>
     /// <remarks>
-    /// A blank <see cref="KnowledgeQuery.Text"/> is handled defensively here
-    /// too (<see cref="ConceptSearch.Search"/> already returns an empty list
-    /// for zero query terms) even though <see cref="DefaultKnowledgeResolver"/>
-    /// rejects it earlier -- this type has no other caller-contract to lean
-    /// on.
+    /// A null/blank <see cref="KnowledgeQuery.Text"/> is handled defensively
+    /// here, before it ever reaches <see cref="ConceptSearch.Search"/>: the
+    /// nullable-reference annotation on <see cref="KnowledgeQuery.Text"/> is
+    /// only a compile-time hint, not a runtime guarantee (a
+    /// deserialized/reflected/`!`-suppressed <see langword="null"/> reaches
+    /// this method just fine), and <c>string.Split</c> on a
+    /// <see langword="null"/> receiver would otherwise throw a
+    /// <see cref="NullReferenceException"/> -- violating this type's own
+    /// documented never-throw contract. Returning an empty result (no
+    /// diagnostic) here, rather than throwing, mirrors
+    /// <see cref="ConceptSearch.Search"/>'s own "zero query terms -&gt; empty
+    /// list" behaviour for a merely-blank (non-null) query: a blank query is
+    /// not a *source* error, even though <see cref="DefaultKnowledgeResolver"/>
+    /// treats it as a caller error one layer up (this type has no such
+    /// caller-contract to lean on).
     /// </remarks>
     public ValueTask<KnowledgeSearchResult> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         ct.ThrowIfCancellationRequested();
+
+        if (string.IsNullOrWhiteSpace(query.Text))
+        {
+            return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(Array.Empty<KnowledgePassage>(), null));
+        }
 
         Bundle bundle;
         try
@@ -60,7 +75,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
         catch (OkfException e)
         {
             return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(
-                [],
+                Array.Empty<KnowledgePassage>(),
                 new KnowledgeDiagnostic(
                     KnowledgeDiagnosticCode.SourceUnavailable,
                     Id,
@@ -76,9 +91,18 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
                 Title: hit.Concept.Document.Frontmatter.Title,
                 Excerpt: ConceptSearch.Excerpt(hit.Concept.Document.Body, query.Text) ?? string.Empty,
                 Score: hit.Score,
-                BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path)))
+                // Normalized to '/' regardless of OS -- matches ConceptId's
+                // '/' segment convention and travels correctly for a future
+                // <okf-context> adapter, rather than leaking a Windows
+                // backslash-separated path into cross-platform output.
+                BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/')))
             .ToList();
 
-        return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(passages, null));
+        // .AsReadOnly() wraps the mutable List<T> in a genuine
+        // ReadOnlyCollection<T> view -- otherwise a caller could
+        // `(List<KnowledgePassage>)result.Passages` and mutate a published
+        // KnowledgeSearchResult (same reasoning as KnowledgeContext's own
+        // passages/diagnostics; see DefaultKnowledgeResolver).
+        return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(passages.AsReadOnly(), null));
     }
 }

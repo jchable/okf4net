@@ -63,7 +63,7 @@ public class OkfBundleKnowledgeSourceTests
             Assert.Equal(e.Concept.Document.Frontmatter.Title, p.Title);
             Assert.Equal(e.Score, p.Score);
             Assert.Equal(ConceptSearch.Excerpt(e.Concept.Document.Body, query.Text) ?? string.Empty, p.Excerpt);
-            Assert.Equal(Path.GetRelativePath(bundle.Root, e.Concept.Path), p.BundleRelativePath);
+            Assert.Equal(Path.GetRelativePath(bundle.Root, e.Concept.Path).Replace(Path.DirectorySeparatorChar, '/'), p.BundleRelativePath);
         }
 
         // The scorer's own contract: descending score, ties broken by ascending concept id --
@@ -127,5 +127,62 @@ public class OkfBundleKnowledgeSourceTests
         Assert.Equal(3, unfiltered.Passages.Count);
         Assert.Equal(2, filtered.Passages.Count);
         Assert.DoesNotContain(filtered.Passages, p => p.ConceptId == "tables/users");
+    }
+
+    // ---- Defensive null-Text guard (NRT is a compile-time hint only) -------
+
+    [Fact]
+    public async Task SearchAsync_with_null_query_Text_returns_empty_without_throwing()
+    {
+        using var tmp = new TempDir();
+        CopyDirectory(BundlePath, tmp.Path);
+        var source = new OkfBundleKnowledgeSource("mine", tmp.Path);
+
+        // KnowledgeQuery.Text is annotated non-null, but nothing at runtime
+        // stops a null from arriving here (deserialization, reflection, an
+        // explicit `!`) -- this must never throw a NullReferenceException,
+        // per this type's documented never-throw contract.
+        var result = await source.SearchAsync(new KnowledgeQuery(null!));
+
+        Assert.Null(result.Diagnostic);
+        Assert.Empty(result.Passages);
+    }
+
+    // ---- BundleRelativePath is normalized to '/' regardless of OS ---------
+
+    [Fact]
+    public async Task SearchAsync_normalizes_nested_BundleRelativePath_to_forward_slashes()
+    {
+        using var tmp = new TempDir();
+        CopyDirectory(BundlePath, tmp.Path);
+        var source = new OkfBundleKnowledgeSource("mine", tmp.Path);
+
+        var result = await source.SearchAsync(new KnowledgeQuery("orders"));
+
+        // appendix_a's concepts live under nested directories (e.g. tables/orders.md),
+        // so this exercises an actual multi-segment relative path, not just a bare filename.
+        Assert.Contains(result.Passages, p => p.BundleRelativePath.Contains('/'));
+        Assert.All(result.Passages, p => Assert.DoesNotContain('\\', p.BundleRelativePath));
+    }
+
+    // ---- Passages is a genuine read-only view (not just a List<T> hidden behind an interface) --
+
+    [Fact]
+    public async Task SearchAsync_Passages_cannot_be_downcast_to_a_mutable_list_and_mutated()
+    {
+        using var tmp = new TempDir();
+        CopyDirectory(BundlePath, tmp.Path);
+        var source = new OkfBundleKnowledgeSource("mine", tmp.Path);
+
+        var result = await source.SearchAsync(new KnowledgeQuery("orders"));
+        Assert.NotEmpty(result.Passages);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<KnowledgePassage>)result.Passages;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
     }
 }

@@ -68,8 +68,8 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
             return new KnowledgeContext(
                 query,
                 snapshot.Generation,
-                [],
-                [new KnowledgeDiagnostic(KnowledgeDiagnosticCode.NoEnabledSources, null, "No enabled knowledge sources are configured.")]);
+                Array.Empty<KnowledgePassage>(),
+                new[] { new KnowledgeDiagnostic(KnowledgeDiagnosticCode.NoEnabledSources, null, "No enabled knowledge sources are configured.") });
         }
 
         var passages = new List<KnowledgePassage>();
@@ -108,6 +108,11 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
                 KnowledgeDiagnosticCode.NoMatches, null, $"No passages matched query '{query.Text}'."));
         }
 
-        return new KnowledgeContext(query, snapshot.Generation, passages, diagnostics);
+        // .AsReadOnly() wraps each list in a genuine ReadOnlyCollection<T>
+        // view rather than exposing the mutable List<T> behind IReadOnlyList<T>
+        // -- otherwise a caller could `(List<T>)context.Passages` and mutate a
+        // published KnowledgeContext (same containment reasoning as
+        // KnowledgeCatalogSnapshot.Sources; see CatalogManifestParser).
+        return new KnowledgeContext(query, snapshot.Generation, passages.AsReadOnly(), diagnostics.AsReadOnly());
     }
 }
