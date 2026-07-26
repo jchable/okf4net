@@ -257,7 +257,7 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             watcher.Changed += OnCatalogFileEvent;
             watcher.Created += OnCatalogFileEvent;
             watcher.Deleted += OnCatalogFileEvent;
-            watcher.Renamed += OnCatalogFileRenamed;
+            watcher.Renamed += OnCatalogFileEvent;
             watcher.EnableRaisingEvents = true;
             return watcher;
         }
@@ -277,19 +277,6 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
         // best-effort, "never take the process down" watcher must not do.
         // Every path underneath is non-throwing today -- this is a
         // belt-and-suspenders guard against a future change that isn't.
-        try
-        {
-            ScheduleDebouncedReload();
-        }
-        catch (Exception)
-        {
-            // Swallowed intentionally: see remarks above.
-        }
-    }
-
-    private void OnCatalogFileRenamed(object sender, RenamedEventArgs e)
-    {
-        // See OnCatalogFileEvent: same ThreadPool-thread, must-not-crash-the-host reasoning.
         try
         {
             ScheduleDebouncedReload();
