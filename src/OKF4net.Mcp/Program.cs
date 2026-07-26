@@ -9,8 +9,10 @@ using OKF4net.Mcp;
 // stderr (stdout is reserved for the JSON-RPC stream) with a non-zero code.
 if (!OkfMcpConfig.TryResolve(args, Environment.GetEnvironmentVariable, out var bundleRoot, out var readOnly, out var error))
 {
-    Console.Error.WriteLine($"okf-mcp: {error}");
-    Console.Error.WriteLine("Usage: okf-mcp <bundle-root>   (or set OKF_BUNDLE_ROOT; OKF_MCP_READONLY=1 for read-only)");
+    // Spec: print a one-line usage/error to stderr and exit non-zero. Kept as a
+    // single line via OkfMcpConfig.FormatStartupError (unit-tested) rather than
+    // an error line + a separate usage line.
+    Console.Error.WriteLine(OkfMcpConfig.FormatStartupError(error));
     return 2;
 }
 

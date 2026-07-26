@@ -72,4 +72,55 @@ public sealed class OkfMcpConfigTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    // ---- One-line startup error contract -------------------------------------
+    // Spec (docs/design/specs/2026-07-24-okf-mcp-server-design.md): on a missing
+    // or invalid bundle root, "print a one-line usage/error to stderr". Program.cs
+    // writes exactly OkfMcpConfig.FormatStartupError(error) with a single
+    // Console.Error.WriteLine, so guarding this string to a single line (no CR/LF)
+    // guards the on-the-wire contract without spawning a process.
+
+    [Fact]
+    public void Formatted_missing_root_error_is_a_single_line_with_message_and_usage()
+    {
+        OkfMcpConfig.TryResolve([], Env(), out _, out _, out var error);
+
+        var line = OkfMcpConfig.FormatStartupError(error);
+
+        Assert.DoesNotContain('\n', line);
+        Assert.DoesNotContain('\r', line);
+        Assert.StartsWith("okf-mcp: ", line);
+        Assert.Contains("OKF_BUNDLE_ROOT", line);
+        Assert.Contains("Usage:", line);
+    }
+
+    [Fact]
+    public void Formatted_not_found_error_is_a_single_line_with_message_and_usage()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "okf-does-not-exist-" + Guid.NewGuid().ToString("N"));
+        OkfMcpConfig.TryResolve([missing], Env(), out _, out _, out var error);
+
+        var line = OkfMcpConfig.FormatStartupError(error);
+
+        Assert.DoesNotContain('\n', line);
+        Assert.DoesNotContain('\r', line);
+        Assert.Contains("not found", line);
+        Assert.Contains("Usage:", line);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("bundle root not found: /x")]
+    [InlineData("no bundle root given. Pass it as the first argument or set OKF_BUNDLE_ROOT.")]
+    public void Formatted_startup_error_is_always_one_line(string? error)
+    {
+        var line = OkfMcpConfig.FormatStartupError(error);
+
+        Assert.DoesNotContain('\n', line);
+        Assert.DoesNotContain('\r', line);
+        Assert.StartsWith("okf-mcp: ", line);
+        Assert.Contains("Usage:", line);
+    }
 }

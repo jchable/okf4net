@@ -61,4 +61,24 @@ public static class OkfMcpConfig
         error = null;
         return true;
     }
+
+    /// <summary>
+    /// Formats a <em>single-line</em> startup usage/error for stderr, per the
+    /// server design spec's "print a one-line usage/error to stderr and exit
+    /// non-zero" contract. The returned string contains no line break, so the
+    /// caller writes it with a single <see cref="Console.Error"/> call rather
+    /// than an error line plus a separate usage line.
+    /// </summary>
+    /// <param name="error">The failure reason from <see cref="TryResolve"/> (may be <see langword="null"/>).</param>
+    /// <returns>A one-line message combining the error and the usage hint.</returns>
+    public static string FormatStartupError(string? error)
+    {
+        var message = string.IsNullOrWhiteSpace(error) ? "startup configuration error." : error.Trim();
+        if (!message.EndsWith('.'))
+        {
+            message += ".";
+        }
+
+        return $"okf-mcp: {message} Usage: okf-mcp <bundle-root> (or set {BundleRootEnv}; {ReadOnlyEnv}=1 for read-only).";
+    }
 }
