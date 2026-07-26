@@ -41,6 +41,9 @@
          InternalsVisibleTo must match the actual assembly name. -->
     <InternalsVisibleTo Include="okf" />
     <InternalsVisibleTo Include="OKF4net.Agents" />
+    <!-- Lets OKF4net.Catalog reuse the internal ReparsePoints helper instead
+         of duplicating a platform-specific implementation. -->
+    <InternalsVisibleTo Include="OKF4net.Catalog" />
   </ItemGroup>
 
 </Project>
