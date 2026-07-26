@@ -343,6 +343,41 @@ public class FileKnowledgeCatalogTests
         Assert.IsType<InvalidCastException>(castAttempt);
     }
 
+    /// <summary>
+    /// F4 (extended): a <em>syntactically invalid</em> reload publishes the
+    /// parser's early-exit diagnostics verbatim through
+    /// <see cref="FileKnowledgeCatalog.LastReloadDiagnostics"/>. Those early
+    /// exits (malformed JSON / null / non-object root) previously returned the
+    /// raw mutable <c>List&lt;CatalogDiagnostic&gt;</c>, so a caller could
+    /// downcast and clear the published diagnostics after a bad reload. They
+    /// now wrap identically to the validation and path-escape paths.
+    /// </summary>
+    [Fact]
+    public async Task Reload_diagnostics_from_malformed_json_cannot_be_downcast_to_a_mutable_list()
+    {
+        using var temp = new TempDir();
+        var catalogPath = SetUpCatalogDirectory(temp);
+
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        });
+
+        ReplaceCatalogAtomically(catalogPath, MalformedJson);
+        await catalog.ReloadAsync();
+        Assert.NotEmpty(catalog.LastReloadDiagnostics);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<CatalogDiagnostic>)catalog.LastReloadDiagnostics;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
+    }
+
     [Fact]
     public async Task Successful_reload_after_a_failed_one_clears_diagnostics()
     {

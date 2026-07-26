@@ -55,7 +55,7 @@ public static class CatalogManifestParser
         if (json is null)
         {
             diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.ParseError, "Manifest JSON must not be null."));
-            diagnostics = diags;
+            diagnostics = diags.AsReadOnly();
             return false;
         }
 
@@ -67,7 +67,7 @@ public static class CatalogManifestParser
         catch (JsonException ex)
         {
             diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.ParseError, $"Malformed JSON: {ex.Message}"));
-            diagnostics = diags;
+            diagnostics = diags.AsReadOnly();
             return false;
         }
 
@@ -87,7 +87,7 @@ public static class CatalogManifestParser
                 diags.Add(new CatalogDiagnostic(
                     CatalogDiagnosticCode.ParseError,
                     $"Manifest root must be a JSON object, found {root.ValueKind}."));
-                diagnostics = diags;
+                diagnostics = diags.AsReadOnly();
                 return false;
             }
 
@@ -108,7 +108,11 @@ public static class CatalogManifestParser
             // view -- otherwise a caller could downcast this back to
             // List<CatalogDiagnostic> and mutate published diagnostics (F4),
             // matching the same hardening FileKnowledgeCatalog's read-failure
-            // path already applies via Array.AsReadOnly().
+            // path already applies via Array.AsReadOnly(). EVERY failure exit
+            // above (null / malformed JSON / non-object root) wraps identically,
+            // so no path ever hands the mutable list out -- important because
+            // FileKnowledgeCatalog.LastReloadDiagnostics republishes this list
+            // verbatim after an invalid reload.
             diagnostics = diags.AsReadOnly();
             if (diags.Count > 0)
             {

@@ -398,6 +398,45 @@ public class CatalogManifestTests
         Assert.IsType<InvalidCastException>(castAttempt);
     }
 
+    // ---- F4 (extended): the EARLY-exit failure paths also hand out a read-only view --
+    // Regression: null JSON / malformed JSON / non-object root used to return the
+    // raw mutable List<CatalogDiagnostic> (only the late validation path wrapped
+    // via AsReadOnly). FileKnowledgeCatalog republishes this list verbatim through
+    // LastReloadDiagnostics, so a caller could downcast and mutate the published
+    // diagnostics after an invalid reload. Every early exit now wraps identically.
+
+    [Theory]
+    [InlineData("{")]           // malformed JSON  -> JsonException early exit
+    [InlineData("[1, 2, 3]")]   // non-object root -> ParseError early exit
+    public void Diagnostics_cannot_be_downcast_to_a_mutable_list_on_early_exit(string json)
+    {
+        Assert.False(TryParse(json, out _, out var diagnostics));
+        Assert.NotEmpty(diagnostics);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<CatalogDiagnostic>)diagnostics;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
+    }
+
+    [Fact]
+    public void Diagnostics_cannot_be_downcast_to_a_mutable_list_on_null_json()
+    {
+        Assert.False(TryParse(null!, out _, out var diagnostics));
+        Assert.NotEmpty(diagnostics);
+
+        var castAttempt = Record.Exception(() =>
+        {
+            var mutable = (List<CatalogDiagnostic>)diagnostics;
+            mutable.Clear();
+        });
+
+        Assert.IsType<InvalidCastException>(castAttempt);
+    }
+
     // ---- Sources is a genuine read-only view (not just a List<T> hidden behind an interface) --
 
     [Fact]
