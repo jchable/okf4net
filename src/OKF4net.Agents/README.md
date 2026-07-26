@@ -42,9 +42,13 @@ content is treated as untrusted and is never injected as a system message.
 `OkfContextProvider` (an `AIContextProvider`, registered via
 `ChatClientAgentOptions.AIContextProviders`) layers on top of the same
 `OkfBundleTools` instance to automatically inject budget-bounded bundle
-context into each invocation (as a message, never as system instructions) and
-capture exchanges into deterministic, per-day memory concepts — no LLM call,
-no extra tool round-trip. Note: the token budget is a soft chars/4 estimate
+context into each invocation (as a message, never as system instructions).
+Memory capture into deterministic, per-day memory concepts is **off by
+default** (`MemoryCaptureMode.Disabled`) — no LLM call, no extra tool
+round-trip — and only happens once a caller explicitly opts in via
+`OkfContextProviderOptions.MemoryCapture = MemoryCaptureMode.SharedBundle`,
+which writes captured exchanges into the same bundle the agent reads from.
+Note: the token budget is a soft chars/4 estimate
 (can be exceeded slightly), its `<okf-context>` fences are readability
 markers rather than a security boundary, and same-day memory capture is safe
 across concurrent sessions **within one process** — `OkfBundleTools` shares
