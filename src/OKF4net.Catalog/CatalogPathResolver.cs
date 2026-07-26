@@ -24,6 +24,35 @@ namespace OKF4net.Catalog;
 public static class CatalogPathResolver
 {
     /// <summary>
+    /// The comparison used for both containment (<see cref="IsWithinRoot"/>)
+    /// and the reparse-point-ancestor walk's root-stop test
+    /// (<see cref="HasReparsePointInPath"/>).
+    /// </summary>
+    /// <remarks>
+    /// A <c>catalog.json</c> source path is LESS-TRUSTED input (see this
+    /// type's own <see cref="CatalogPathResolver"/> remarks), and <c>..</c>
+    /// is legitimately allowed in it -- containment is therefore the primary
+    /// defense against it escaping the catalog root, not a secondary check.
+    /// On a case-SENSITIVE filesystem (Linux, the CI/container target), a
+    /// case-variant of the root (e.g. <c>/srv/KB</c> vs. a configured root of
+    /// <c>/srv/kb</c>) is a genuinely different, real directory -- an
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> comparison would
+    /// wrongly treat a source path resolving through it as contained within
+    /// the root (F1), AND would stop the reparse-point-ancestor walk one
+    /// level too early (at the case-variant "root"), so a reparse point
+    /// planted at that case-variant directory would never be inspected
+    /// either. Using <see cref="StringComparison.Ordinal"/> there closes both
+    /// gaps at once. On Windows/macOS, the filesystem itself is normally
+    /// case-insensitive, so <c>OrdinalIgnoreCase</c> matches the filesystem's
+    /// own equality semantics and is kept for those platforms (also
+    /// consistent with <c>OkfBundleTools</c>' and <c>IndexGenerator</c>'s own
+    /// conventions, whose inputs are trusted/validated and so are unaffected
+    /// by this distinction).
+    /// </remarks>
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    /// <summary>
     /// Resolves <paramref name="sourcePath"/> relative to <paramref name="manifestDirectory"/>,
     /// canonicalizes it, and confirms it stays at/below <paramref name="catalogRoot"/> with
     /// no reparse-point ancestor and no reparse-point target. Returns the resolved absolute
@@ -113,14 +142,16 @@ public static class CatalogPathResolver
 
     /// <summary>
     /// <c>true</c> if <paramref name="candidate"/> is <paramref name="root"/> itself or a
-    /// descendant of it, comparing resolved absolute paths case-insensitively -- the same
-    /// canonicalize-then-prefix-compare convention <c>OkfBundleTools.IsWithinBundleRoot</c>
-    /// already uses for bundle-root containment. Both <paramref name="root"/> and
-    /// <paramref name="candidate"/> are expected to already be the result of
-    /// <see cref="Path.GetFullPath(string)"/>.
+    /// descendant of it, comparing resolved absolute paths with <see cref="PathComparison"/>
+    /// -- an OS-appropriate comparison, NOT unconditionally case-insensitive (see
+    /// <see cref="PathComparison"/>'s remarks for why: this input is less-trusted, unlike
+    /// <c>OkfBundleTools.IsWithinBundleRoot</c>'s trusted callers, which keep
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> unconditionally). Both
+    /// <paramref name="root"/> and <paramref name="candidate"/> are expected to already be
+    /// the result of <see cref="Path.GetFullPath(string)"/>.
     /// </summary>
     private static bool IsWithinRoot(string root, string candidate) =>
-        ReparsePoints.IsWithin(root, candidate, StringComparison.OrdinalIgnoreCase);
+        ReparsePoints.IsWithin(root, candidate, PathComparison);
 
     /// <summary>
     /// <c>true</c> if <paramref name="path"/> itself, or any directory strictly between it
@@ -134,9 +165,12 @@ public static class CatalogPathResolver
     /// same reasoning that keeps <c>IndexGenerator</c>'s and <c>OkfBundleTools</c>' own
     /// <c>HasReparsePointAncestor</c> helpers from ever inspecting the root they walk up to.
     /// Both parameters are expected to already be the result of
-    /// <see cref="Path.GetFullPath(string)"/>, so the loop's exit test can use an ordinal
-    /// string comparison the same way those helpers do.
+    /// <see cref="Path.GetFullPath(string)"/>. The walk's root-stop test uses
+    /// <see cref="PathComparison"/> (an OS-appropriate comparison, see its remarks) rather
+    /// than an unconditional ordinal-ignore-case comparison: on a case-sensitive filesystem,
+    /// stopping at a case-variant of <paramref name="root"/> would skip inspecting that
+    /// case-variant directory for a planted reparse point entirely.
     /// </summary>
     private static bool HasReparsePointInPath(string root, string path) =>
-        ReparsePoints.HasReparsePointAncestor(root, path, StringComparison.OrdinalIgnoreCase);
+        ReparsePoints.HasReparsePointAncestor(root, path, PathComparison);
 }

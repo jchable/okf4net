@@ -169,6 +169,62 @@ public class CatalogPathSafetyTests
     }
 
     // ----------------------------------------------------------------
+    // F1 [Security]: case-insensitive containment must not escape the
+    // catalog root on a case-sensitive filesystem. catalog.json source paths
+    // are LESS-TRUSTED input and ".." is legitimately allowed (spec example
+    // uses "../bundles/product"), so containment is the primary defense. On
+    // a case-sensitive filesystem (Linux, the CI/container target), "root"
+    // and "ROOT" are two distinct, real directories -- an
+    // OrdinalIgnoreCase-only containment check would wrongly treat a source
+    // path resolving through the case-variant as "in root" even though it
+    // points at a completely different directory the operator never
+    // intended to expose. CatalogPathResolver must compare with an
+    // OS-appropriate StringComparison (Ordinal on case-sensitive
+    // filesystems), so this test asserts per-platform: on a case-insensitive
+    // filesystem the case-variant genuinely IS the same directory (accepting
+    // it is correct there); on a case-sensitive one, it is a real escape and
+    // must be rejected as OutsideRoot. See ReparsePointsTests for the
+    // platform-independent pin of the underlying comparison behavior.
+    // ----------------------------------------------------------------
+    [Fact]
+    public void Rejects_case_variant_of_root_as_escape_on_case_sensitive_filesystems()
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "root");
+        Directory.CreateDirectory(root);
+
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        {
+            // Case-insensitive filesystem: "ROOT" and "root" are the SAME
+            // physical directory, so resolving through the case-variant
+            // spelling is legitimately in-root -- matches
+            // CatalogPathResolver's own platform-aware comparison choice.
+            var ok = CatalogPathResolver.TryResolve(root, root, Path.Combine("..", "ROOT"), out _, out var diagnostic);
+
+            Assert.True(ok);
+            Assert.Null(diagnostic);
+        }
+        else
+        {
+            // Case-sensitive filesystem (Linux): "ROOT" is a genuinely
+            // different, real directory from "root". Creating it here
+            // simulates an attacker-controlled catalog.json path riding a
+            // case-variant of the root to reach a directory the operator
+            // never intended to expose -- must be rejected, not silently
+            // treated as in-root (the F1 regression this test guards
+            // against).
+            var escapeDir = Path.Combine(tmp.Path, "ROOT");
+            Directory.CreateDirectory(Path.Combine(escapeDir, "x"));
+
+            var ok = CatalogPathResolver.TryResolve(root, root, Path.Combine("..", "ROOT", "x"), out var resolved, out var diagnostic);
+
+            Assert.False(ok);
+            Assert.Null(resolved);
+            Assert.Equal(CatalogDiagnosticCode.OutsideRoot, diagnostic!.Code);
+        }
+    }
+
+    // ----------------------------------------------------------------
     // Symlinked catalog root itself: exclusive-of-root regression guard,
     // mirroring IndexTests.Symlinked_bundle_root_still_gets_its_index_written.
     // The catalog root being reached through a junction/symlink is a

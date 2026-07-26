@@ -107,6 +107,21 @@ internal static class ReparsePoints
     /// be resolved (typically via <see cref="Path.GetFullPath(string)"/>) by
     /// the caller; this method performs no canonicalization of its own.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="comparison"/> is entirely the caller's choice, and that
+    /// choice matters: callers whose <paramref name="path"/> can come from
+    /// UNTRUSTED input (e.g. a manifest's relative source path, which may
+    /// legitimately contain <c>..</c>) and who run on a case-SENSITIVE
+    /// filesystem (Linux, the CI/container target) must pass
+    /// <see cref="StringComparison.Ordinal"/> -- <c>OrdinalIgnoreCase</c>
+    /// would treat a case-variant of <paramref name="root"/> (a genuinely
+    /// different directory on such a filesystem) as contained within it,
+    /// silently defeating this method's entire purpose. Callers whose input
+    /// is already validated/trusted, or who only ever run where the
+    /// filesystem itself is case-insensitive, may still choose
+    /// <c>OrdinalIgnoreCase</c> to match that filesystem's own equality
+    /// semantics.
+    /// </remarks>
     internal static bool IsWithin(string root, string path, StringComparison comparison)
     {
         if (string.Equals(root, path, comparison))
