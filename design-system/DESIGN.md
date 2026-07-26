@@ -4,8 +4,9 @@
 document. This file is the written reference; [`styleguide.html`](./styleguide.html)
 is the living one (open it in a browser — it renders the real stylesheet).
 
-> This directory is **not deployed**. `.github/workflows/pages.yml` publishes only
-> `website/`. Keep design-system files here so they never ship.
+> This directory is **not deployed**. `.github/workflows/pages.yml` builds and
+> publishes only `web/` (its `dist/` output). Keep design-system files here so
+> they never ship.
 
 ## Principles
 
@@ -25,7 +26,7 @@ is the living one (open it in a browser — it renders the real stylesheet).
 
 ## Tokens
 
-Defined in [`../website/assets/site.css`](../website/assets/site.css) `:root`.
+Defined in [`../web/src/styles/site.css`](../web/src/styles/site.css) `:root`.
 
 | Variable | Value | Role |
 |---|---|---|
@@ -82,21 +83,24 @@ Each lives in `site.css`; the styleguide renders every one with its source.
 
 ## Build conventions
 
-- **No build step.** Hand-authored static HTML + one shared stylesheet
-  (`website/assets/site.css`) + one small script (`website/assets/site.js`, only
-  the home toggle). No framework, no bundler, no dependencies.
-- **Only `website/` deploys.** `pages.yml` triggers on `website/**`. Anything
-  outside — including this `design-system/` folder — is never served.
-- **Adding a page:** copy the nearest existing page as a template
-  (`library.html` for a subpage, `docs/index.html` for a docs page), keep the
-  full `<head>` (fonts + favicon + `site.css`), wire it into every nav bar
-  (`docs.md` etc.), and mind relative paths — docs pages sit one level down, so
-  they use `../assets/…` and `../page.html`.
+- **Vite + React 19, static-generated.** The site is a `web/` app built with
+  `vite-react-ssg` and one shared stylesheet, `web/src/styles/site.css`,
+  imported globally — the design system itself hasn't changed, only where it
+  lives and how it ships. `pages.yml` runs `npm run build` in `web/` and
+  deploys `web/dist`.
+- **Only `web/` deploys.** `pages.yml` triggers on `web/**`. Anything outside
+  — including this `design-system/` folder — is never served.
+- **Adding a page:** create a `.tsx` page under `web/src/pages/` (or
+  `web/src/pages/docs/` for a docs page), wrap it in the shared `Layout` (or
+  `DocsLayout` for docs pages) so it picks up the nav bar, doc-window chrome,
+  and colophon, and register its route. Docs pages get their sidebar for free
+  from `web/src/content/docs.ts` — add an entry there rather than hand-copying
+  a tree.
 - **New shared styles go in `site.css`**, grouped and commented by section.
   Page-specific scaffolding that will never be reused (e.g. the styleguide's
   specimen chrome) stays inline in that page so `site.css` stays lean.
-- **The docs section is a bundle.** Pages are `docs/<concept>.html` presented as
-  `<concept>.md`; the sidebar tree mirrors the directory; the landing is the
+- **The docs section is a bundle.** Pages are presented as `<concept>.md`; the
+  sidebar tree is generated from `web/src/content/docs.ts`; the landing is the
   generated `index.md`. Extend that fiction faithfully.
 
 ## Voice & content
@@ -112,5 +116,5 @@ Each lives in `site.css`; the styleguide renders every one with its source.
 
 ## Files
 
-- `styleguide.html` — living styleguide; renders `../website/assets/site.css`.
+- `styleguide.html` — living styleguide; renders `../web/src/styles/site.css`.
 - `DESIGN.md` — this file.
