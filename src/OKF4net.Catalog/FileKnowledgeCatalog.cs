@@ -91,6 +91,9 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
     }
 
     /// <inheritdoc/>
+    public string CatalogRoot => _options.CatalogRoot;
+
+    /// <inheritdoc/>
     public KnowledgeCatalogSnapshot Current
     {
         get

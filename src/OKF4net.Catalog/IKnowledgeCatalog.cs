@@ -16,6 +16,19 @@ public interface IKnowledgeCatalog
     KnowledgeCatalogSnapshot Current { get; }
 
     /// <summary>
+    /// The catalog's configured root directory -- the containment boundary
+    /// every enabled source's <c>path</c> was (and, on reload, is re-)
+    /// validated against via <see cref="CatalogPathResolver.TryResolve"/>
+    /// (see <see cref="KnowledgeCatalogOptions.CatalogRoot"/>). Exposed so a
+    /// caller holding only an <see cref="IKnowledgeCatalog"/> -- e.g. a
+    /// <see cref="DefaultKnowledgeResolver"/> -- can re-resolve a source's
+    /// resolved bundle directory from <see cref="KnowledgeCatalogSource.Path"/>
+    /// and <see cref="KnowledgeCatalogSnapshot.ManifestDirectory"/> without
+    /// the snapshot itself having to carry resolved, absolute paths.
+    /// </summary>
+    string CatalogRoot { get; }
+
+    /// <summary>
     /// Diagnostics from the most recent reload attempt; empty on success. A
     /// failed reload keeps <see cref="Current"/> as the last-known-good
     /// snapshot (its <see cref="KnowledgeCatalogSnapshot.Generation"/>
