@@ -20,8 +20,12 @@ const NAV_ITEMS: readonly NavItem[] = [
 ]
 
 export interface SiteBarProps {
-  /** Which nav item represents the page currently being rendered. */
-  current: NavKey
+  /**
+   * Which nav item represents the page currently being rendered. `undefined`
+   * (e.g. the 404 page, which isn't any of these chapters) leaves every item
+   * inactive.
+   */
+  current?: NavKey
 }
 
 /**

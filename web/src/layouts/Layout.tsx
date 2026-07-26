@@ -9,8 +9,8 @@ export interface LayoutProps {
   title: string
   /** `<meta name="description">` content. */
   description: string
-  /** Which SiteBar nav item is active for this page. */
-  current: NavKey
+  /** Which SiteBar nav item is active for this page; omit to leave every item inactive (404 page). */
+  current?: NavKey
   /** Colophon variant; defaults to the full footer with the `.links` row. */
   footerVariant?: ColophonVariant
   children: ReactNode
