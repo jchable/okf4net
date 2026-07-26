@@ -1,0 +1,47 @@
+# Type-checks, tests, and builds web/ (Vite + React SSG) on every change that
+# touches it, so regressions are caught at PR time instead of at deploy
+# (pages.yml only builds, and only on push to main).
+name: Web CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/web-ci.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: typecheck, test & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: web
+        run: npm run test
+
+      - name: Build
+        working-directory: web
+        run: npm run build

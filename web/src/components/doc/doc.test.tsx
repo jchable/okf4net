@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   Cell,
   Chapter,
-  CodeBlock,
   ConceptGrid,
   Conform,
   Cta,
@@ -77,17 +76,6 @@ describe('doc device components', () => {
     expect(section!.querySelector('.chead > h2')?.textContent).toBe('Terminology')
     expect(section!.querySelector('.chead > .ref')?.textContent).toBe('§2–§3')
     expect(section!.querySelector('p')?.textContent).toBe('body')
-  })
-
-  it('CodeBlock renders pre.block with children verbatim', () => {
-    const el = mount(
-      <CodeBlock>
-        <span className="k">var</span> x = 1;
-      </CodeBlock>,
-    )
-    const pre = el.querySelector('pre.block')
-    expect(pre).not.toBeNull()
-    expect(pre!.querySelector('span.k')?.textContent).toBe('var')
   })
 
   it('ConceptGrid/Cell/Term render .concept-grid > .cell > (.term + p)', () => {

@@ -3,6 +3,7 @@ dist
 dist-ssr
 _serve
 *.local
+*.tsbuildinfo
 
 # Editor directories and files
 .vscode/*
