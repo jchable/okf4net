@@ -3,8 +3,10 @@ namespace OKF4net.Catalog;
 
 /// <summary>
 /// Enumerates every way a <c>catalog.json</c> manifest can be rejected by
-/// <see cref="CatalogManifestParser.TryParse"/>. This list is closed: no
-/// additional codes are introduced ad hoc by the parser implementation.
+/// <see cref="CatalogManifestParser.TryParse"/>, plus every way a source's
+/// <c>path</c> can be rejected by <see cref="CatalogPathResolver.TryResolve"/>
+/// once the manifest itself is structurally valid. Both lists are closed: no
+/// additional codes are introduced ad hoc by either implementation.
 /// </summary>
 public enum CatalogDiagnosticCode
 {
@@ -43,4 +45,27 @@ public enum CatalogDiagnosticCode
 
     /// <summary>A source's <c>role</c> is present but is not the string <c>"knowledge"</c>.</summary>
     IllegalRole,
+
+    /// <summary>
+    /// A source's resolved <c>path</c> could not be canonicalized at all (e.g. an embedded
+    /// NUL character or another OS-rejected character), as reported by <see cref="CatalogPathResolver.TryResolve"/>.
+    /// </summary>
+    InvalidPath,
+
+    /// <summary>A source's <c>path</c> is rooted (absolute) rather than relative to the manifest directory (see <see cref="CatalogPathResolver.TryResolve"/>).</summary>
+    AbsolutePath,
+
+    /// <summary>A source's <c>path</c>, resolved against the manifest directory, escapes the catalog root (see <see cref="CatalogPathResolver.TryResolve"/>).</summary>
+    OutsideRoot,
+
+    /// <summary>A source's resolved <c>path</c> is not an existing directory (see <see cref="CatalogPathResolver.TryResolve"/>).</summary>
+    TargetNotFound,
+
+    /// <summary>
+    /// A source's resolved <c>path</c>, or a directory strictly between it and the catalog
+    /// root, is a filesystem reparse point (symlink/junction/mount point) -- see
+    /// <see cref="CatalogPathResolver.TryResolve"/>. The catalog root itself is exempt: a
+    /// symlinked/mounted root is a legitimate, explicit operator choice.
+    /// </summary>
+    ReparsePointInPath,
 }
