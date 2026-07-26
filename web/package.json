@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite-react-ssg build",
+    "postbuild": "node scripts/postbuild.mjs",
     "preview": "vite preview",
     "test": "vitest run"
   },

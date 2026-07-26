@@ -13,6 +13,8 @@ export interface LayoutProps {
   current?: NavKey
   /** Colophon variant; defaults to the full footer with the `.links` row. */
   footerVariant?: ColophonVariant
+  /** When true, renders `<meta name="robots" content="noindex">` (404 page). */
+  noindex?: boolean
   children: ReactNode
 }
 
@@ -25,12 +27,13 @@ export interface LayoutProps {
  * `<div class="frame">` between the header and the footer, so that wrapper
  * lives here rather than being repeated per page.
  */
-export default function Layout({ title, description, current, footerVariant, children }: LayoutProps) {
+export default function Layout({ title, description, current, footerVariant, noindex, children }: LayoutProps) {
   return (
     <>
       <Head>
         <title>{title}</title>
         <meta name="description" content={description} />
+        {noindex && <meta name="robots" content="noindex" />}
       </Head>
       <div className="topline" />
       <SiteBar current={current} />

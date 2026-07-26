@@ -33,6 +33,7 @@ export default function NotFound() {
       title="Concept not found — OKF4net"
       description="Concept not found — OKF4net"
       footerVariant="minimal"
+      noindex
     >
       <div className="page-doc">
         <div className="doc-window">
