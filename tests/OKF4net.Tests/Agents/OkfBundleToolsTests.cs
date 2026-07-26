@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Reflection;
 using OKF4net.Agents;
 
 namespace OKF4net.Tests.Agents;
@@ -24,6 +25,38 @@ public class OkfBundleToolsTests
     {
         var tools = new OkfBundleTools(BundlePath);
         Assert.Equal(4, tools.GetBundle().Count);
+    }
+
+    /// <summary>
+    /// F3: two spellings of the same bundle directory that differ only by a
+    /// trailing directory separator (e.g. <c>/foo</c> vs. <c>/foo/</c>) must
+    /// resolve to the SAME entry in the process-wide <c>BundleLocks</c>
+    /// registry -- otherwise <see cref="Path.GetFullPath(string)"/> alone
+    /// (without <see cref="Path.TrimEndingDirectorySeparator(string)"/>) would
+    /// treat them as two different keys, silently defeating the per-path
+    /// write lock the registry's own doc comment claims two such instances
+    /// share. Reflection is used only to read the private <c>_bundleLock</c>
+    /// instance field for the assertion -- the fix itself is a one-line
+    /// normalization in the constructor, not a public API change.
+    /// </summary>
+    [Fact]
+    public void Trailing_separator_spelling_of_the_same_bundle_root_shares_the_same_lock()
+    {
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(tmp.Path);
+
+        var toolsA = new OkfBundleTools(tmp.Path);
+        var trailingSpelling = tmp.Path.EndsWith(Path.DirectorySeparatorChar)
+            ? tmp.Path
+            : tmp.Path + Path.DirectorySeparatorChar;
+        var toolsB = new OkfBundleTools(trailingSpelling);
+
+        var lockField = typeof(OkfBundleTools).GetField("_bundleLock", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var lockA = lockField.GetValue(toolsA);
+        var lockB = lockField.GetValue(toolsB);
+
+        Assert.NotNull(lockA);
+        Assert.Same(lockA, lockB);
     }
 
     /// <summary>

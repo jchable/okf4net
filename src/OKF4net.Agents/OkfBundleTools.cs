@@ -101,7 +101,13 @@ public sealed class OkfBundleTools
         // trailing separator) still resolve to the same registry entry --
         // the same Path.GetFullPath canonicalization IsWithinBundleRoot and
         // HasReparsePointAncestor already use for their own comparisons.
-        var canonicalRoot = Path.GetFullPath(bundleRoot);
+        // Path.GetFullPath alone is not enough: "/foo" and "/foo/" both
+        // survive it as distinct strings (GetFullPath does not strip a
+        // trailing separator), so TrimEndingDirectorySeparator is applied on
+        // top -- otherwise those two spellings would land in different
+        // registry entries and defeat the very serialization this lock
+        // exists to provide (F3).
+        var canonicalRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleRoot));
         _bundleLock = BundleLocks.GetOrAdd(canonicalRoot, static _ => new object());
     }
 
