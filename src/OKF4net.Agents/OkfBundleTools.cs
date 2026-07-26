@@ -348,7 +348,7 @@ public sealed class OkfBundleTools
                     : $"No results for query '{query}' with tag '{effectiveTag}'.";
             }
 
-            return FormatSearchResults(query, effectiveTag, terms, scored);
+            return FormatSearchResults(query, effectiveTag, scored);
         });
     }
 
@@ -357,37 +357,18 @@ public sealed class OkfBundleTools
     /// (optionally restricted to concepts carrying <paramref name="tag"/>):
     /// the shared seam behind <see cref="Search"/> and
     /// <see cref="OKF4net.Agents.OkfContextProvider"/>'s progressive
-    /// disclosure. Same candidate selection, <see cref="ScoreConcept"/>
-    /// weights, score&gt;0 filter, and ordering (descending score, then
-    /// ascending concept id) that <see cref="Search"/> used inline before
-    /// this was extracted, so the two can never drift apart. Assumes
-    /// <paramref name="query"/> has already been validated non-null/blank by
-    /// the caller (mirroring <see cref="Search"/>'s own precondition); a
-    /// query that splits into zero terms yields an empty result rather than
-    /// throwing.
+    /// disclosure. A thin delegate onto the core, byte-identical
+    /// <see cref="OKF4net.ConceptSearch.Search"/> (weights, score&gt;0 filter,
+    /// ordering) over <see cref="GetBundle"/>'s concepts, so the two can
+    /// never drift apart. Assumes <paramref name="query"/> has already been
+    /// validated non-null/blank by the caller (mirroring <see cref="Search"/>'s
+    /// own precondition); a query that splits into zero terms yields an empty
+    /// result rather than throwing.
     /// </summary>
-    internal IReadOnlyList<(Concept Concept, int Score)> ScoreConceptsFor(string query, string? tag = null)
-    {
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (terms.Length == 0)
-        {
-            return [];
-        }
-
-        var bundle = GetBundle();
-        var effectiveTag = string.IsNullOrWhiteSpace(tag) ? null : tag;
-
-        var candidates = effectiveTag is null
-            ? bundle.Concepts
-            : bundle.Concepts.Where(c => c.Document.Frontmatter.Tags.Any(t => string.Equals(t, effectiveTag, StringComparison.OrdinalIgnoreCase)));
-
-        return candidates
-            .Select(c => (Concept: c, Score: ScoreConcept(c, terms)))
-            .Where(x => x.Score > 0)
-            .OrderByDescending(x => x.Score)
-            .ThenBy(x => x.Concept.Id)
+    internal IReadOnlyList<(Concept Concept, int Score)> ScoreConceptsFor(string query, string? tag = null) =>
+        ConceptSearch.Search(GetBundle().Concepts, query, tag)
+            .Select(s => (s.Concept, s.Score))
             .ToList();
-    }
 
     /// <summary>
     /// Creates or updates one concept document. Producer-grade validation
@@ -1225,7 +1206,7 @@ public sealed class OkfBundleTools
     };
 
     /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
-    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<string> terms, IReadOnlyList<(Concept Concept, int Score)> scored)
+    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored)
     {
         const int MaxResults = 20;
         var shown = scored.Take(MaxResults).ToList();
@@ -1245,7 +1226,7 @@ public sealed class OkfBundleTools
             var title = concept.Document.Frontmatter.Title ?? concept.Id.ToString();
             sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')').Append('\n');
 
-            var excerpt = FindExcerpt(concept.Document.Body, terms);
+            var excerpt = ConceptSearch.Excerpt(concept.Document.Body, query);
             if (excerpt is not null)
             {
                 sb.Append("  ").Append(excerpt).Append('\n');
@@ -1253,61 +1234,6 @@ public sealed class OkfBundleTools
         }
 
         return sb.ToString();
-    }
-
-    /// <summary>
-    /// A concept's relevance score for <paramref name="terms"/>: the sum,
-    /// over all terms, of the weights of every field the term is found in
-    /// (<see cref="StringComparison.OrdinalIgnoreCase"/> substring match):
-    /// title ×3, tags/description ×2, body ×1.
-    /// </summary>
-    private static int ScoreConcept(Concept concept, IReadOnlyList<string> terms)
-    {
-        var frontmatter = concept.Document.Frontmatter;
-        var title = frontmatter.Title ?? string.Empty;
-        var tagsAndDescription = string.Join(' ', frontmatter.Tags) + ' ' + (frontmatter.Description ?? string.Empty);
-        var body = concept.Document.Body;
-
-        var score = 0;
-        foreach (var term in terms)
-        {
-            if (title.Contains(term, StringComparison.OrdinalIgnoreCase))
-            {
-                score += 3;
-            }
-
-            if (tagsAndDescription.Contains(term, StringComparison.OrdinalIgnoreCase))
-            {
-                score += 2;
-            }
-
-            if (body.Contains(term, StringComparison.OrdinalIgnoreCase))
-            {
-                score += 1;
-            }
-        }
-
-        return score;
-    }
-
-    /// <summary>The first non-blank line of <paramref name="body"/> containing any of <paramref name="terms"/> (substring, ordinal-ignore-case), or <c>null</c> if none does.</summary>
-    private static string? FindExcerpt(string body, IReadOnlyList<string> terms)
-    {
-        foreach (var rawLine in body.Split('\n'))
-        {
-            var line = rawLine.Trim();
-            if (line.Length == 0)
-            {
-                continue;
-            }
-
-            if (terms.Any(term => line.Contains(term, StringComparison.OrdinalIgnoreCase)))
-            {
-                return line;
-            }
-        }
-
-        return null;
     }
 
     /// <summary>
