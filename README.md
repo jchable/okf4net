@@ -22,6 +22,11 @@ a directory of markdown files with YAML frontmatter.
 > [`tests/fixtures/`](tests/fixtures/README.md)); OKF4net is now the sole
 > implementation in this repository.
 
+**📖 [Documentation & project site → jchable.github.io/okf4net](https://jchable.github.io/okf4net/)** —
+a guided project overview, getting-started walkthroughs, and developer docs.
+This README is the technical reference; the site is the friendlier entry point
+for newcomers.
+
 ## What OKF is
 
 - A **bundle** is a directory tree of UTF-8 markdown files (the unit of
