@@ -1425,13 +1425,7 @@ public sealed class OkfBundleTools
     {
         var fullRoot = Path.GetFullPath(root);
         var fullCandidate = Path.GetFullPath(candidate);
-        if (string.Equals(fullRoot, fullCandidate, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var rootWithSeparator = fullRoot.EndsWith(Path.DirectorySeparatorChar) ? fullRoot : fullRoot + Path.DirectorySeparatorChar;
-        return fullCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+        return ReparsePoints.IsWithin(fullRoot, fullCandidate, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -1488,27 +1482,7 @@ public sealed class OkfBundleTools
     {
         var fullRoot = Path.GetFullPath(bundleRoot);
         var current = Path.GetFullPath(path);
-
-        while (!string.Equals(current, fullRoot, StringComparison.OrdinalIgnoreCase))
-        {
-            if (ReparsePoints.IsReparsePoint(current))
-            {
-                return true;
-            }
-
-            var parent = Path.GetDirectoryName(current);
-            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
-            {
-                // Walked past the filesystem root without ever reaching
-                // bundleRoot -- callers already guard containment via
-                // IsWithinBundleRoot, but stop here rather than loop forever.
-                break;
-            }
-
-            current = parent;
-        }
-
-        return false;
+        return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

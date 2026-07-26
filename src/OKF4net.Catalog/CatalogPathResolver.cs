@@ -14,11 +14,12 @@ namespace OKF4net.Catalog;
 /// surface beyond that root, whether via an absolute path, <c>..</c> traversal, or a
 /// reparse point (symlink/junction/mount point) planted somewhere along the way that would
 /// make the OS silently follow the link out of the root the moment anything actually
-/// touches disk. This mirrors the containment convention <c>Bundle.IsWithinBundleRoot</c>
-/// and <c>OkfBundleTools.IsWithinBundleRoot</c> already use for bundle roots, and reuses
-/// the same <see cref="ReparsePoints"/> primitive those use for reparse-point detection
-/// (via <c>OKF4net</c>'s <c>InternalsVisibleTo</c> grant to this assembly) rather than
-/// duplicating a second, platform-specific implementation.
+/// touches disk. This mirrors the containment convention <c>OkfBundleTools.IsWithinBundleRoot</c>
+/// uses for bundle roots, and reuses the same shared <see cref="ReparsePoints.IsWithin"/>
+/// and <see cref="ReparsePoints.HasReparsePointAncestor"/> core helpers those use for
+/// containment and reparse-point-ancestor detection (via <c>OKF4net</c>'s
+/// <c>InternalsVisibleTo</c> grant to this assembly) rather than duplicating a second,
+/// platform-specific implementation.
 /// </remarks>
 public static class CatalogPathResolver
 {
@@ -118,16 +119,8 @@ public static class CatalogPathResolver
     /// <paramref name="candidate"/> are expected to already be the result of
     /// <see cref="Path.GetFullPath(string)"/>.
     /// </summary>
-    private static bool IsWithinRoot(string root, string candidate)
-    {
-        if (string.Equals(root, candidate, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
-        return candidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool IsWithinRoot(string root, string candidate) =>
+        ReparsePoints.IsWithin(root, candidate, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// <c>true</c> if <paramref name="path"/> itself, or any directory strictly between it
@@ -144,29 +137,6 @@ public static class CatalogPathResolver
     /// <see cref="Path.GetFullPath(string)"/>, so the loop's exit test can use an ordinal
     /// string comparison the same way those helpers do.
     /// </summary>
-    private static bool HasReparsePointInPath(string root, string path)
-    {
-        var current = path;
-
-        while (!string.Equals(current, root, StringComparison.OrdinalIgnoreCase))
-        {
-            if (ReparsePoints.IsReparsePoint(current))
-            {
-                return true;
-            }
-
-            var parent = Path.GetDirectoryName(current);
-            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
-            {
-                // Walked past the filesystem root without ever reaching root -- callers
-                // already guard containment via IsWithinRoot, but stop here rather than
-                // loop forever.
-                break;
-            }
-
-            current = parent;
-        }
-
-        return false;
-    }
+    private static bool HasReparsePointInPath(string root, string path) =>
+        ReparsePoints.HasReparsePointAncestor(root, path, StringComparison.OrdinalIgnoreCase);
 }

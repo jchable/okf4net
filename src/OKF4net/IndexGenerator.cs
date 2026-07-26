@@ -402,28 +402,7 @@ public static class IndexGenerator
     {
         var fullRoot = Path.GetFullPath(bundleRoot);
         var current = Path.GetFullPath(directory);
-
-        while (!string.Equals(current, fullRoot, StringComparison.Ordinal))
-        {
-            if (ReparsePoints.IsReparsePoint(current))
-            {
-                return true;
-            }
-
-            var parent = Path.GetDirectoryName(current);
-            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
-            {
-                // Walked past the filesystem root without ever reaching
-                // bundleRoot -- DirectoriesToIndex only ever yields
-                // descendants of bundleRoot, so this should not happen in
-                // practice; stop here rather than loop forever.
-                return false;
-            }
-
-            current = parent;
-        }
-
-        return false;
+        return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.Ordinal);
     }
 
 }
