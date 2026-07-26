@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Styleguide — OKF4net Design System</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%231a3fd6'/%3E%3Ctext x='50' y='74' font-size='72' font-family='Georgia,serif' font-weight='bold' text-anchor='middle' fill='white'%3E%C2%A7%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;700;800;900&family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<!-- Dogfoods the REAL site stylesheet — single source of truth. This page is
+     never deployed (design-system/ is outside the deployed web/ app), so it
+     links up and out to the live CSS. -->
+<link rel="stylesheet" href="../web/src/styles/site.css">
+<style>
+  /* Styleguide-only scaffolding. Everything a real page uses comes from
+     site.css above; these rules only build the specimen chrome around it. */
+  .sg-banner {
+    background: var(--ink); color: #e8e8ee;
+    font-family: var(--mono); font-size: 12.5px; text-align: center;
+    padding: 8px 16px; letter-spacing: .04em;
+  }
+  .sg-banner b { color: #ffd166; }
+
+  .swatches {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+    border-top: 1px solid var(--hair); border-left: 1px solid var(--hair); margin: 22px 0 8px;
+  }
+  .sw { border-right: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+  .sw .chip { height: 76px; border-bottom: 1px solid var(--hair); }
+  .sw .meta { padding: 11px 13px; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+  .sw .meta .nm { color: var(--ink); font-weight: 700; }
+  .sw .meta .hex { color: var(--gray); }
+  .sw .meta .role { display: block; margin-top: 5px; font-size: 11px; color: var(--gray); }
+
+  .type-spec { border-bottom: 1px solid var(--hair); padding: 20px 0; }
+  .type-spec:last-child { border-bottom: none; }
+  .type-spec .label {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--gray); margin-bottom: 12px;
+  }
+  .type-spec .label b { color: var(--blue); }
+
+  .specimen { border: 1.5px solid var(--ink); margin: 24px 0; }
+  .specimen .sp-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+    padding: 10px 16px; background: var(--blue-soft); border-bottom: 1.5px solid var(--ink);
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .specimen .sp-head .cls { color: var(--blue); font-weight: 700; }
+  .specimen .sp-head .intent { color: var(--gray); text-align: right; }
+  .specimen .sp-live { padding: 26px 24px; }
+  .specimen details { border-top: 1px solid var(--hair); }
+  .specimen summary {
+    font-family: var(--mono); font-size: 12px; color: var(--gray);
+    padding: 9px 16px; cursor: pointer; user-select: none;
+  }
+  .specimen summary:hover { color: var(--ink); background: var(--blue-soft); }
+  .specimen details pre {
+    background: var(--ink); color: #e8e8ee; margin: 0;
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
+    padding: 16px 20px; overflow-x: auto;
+  }
+  .specimen details pre .t { color: #7e9bff; }  /* tag */
+  .specimen details pre .a { color: #ffd166; }  /* attr value */
+
+  @media (max-width: 720px) {
+    .specimen .sp-live { padding: 20px 16px; }
+    .specimen .sp-head { flex-wrap: wrap; }
+    .specimen .sp-head .intent { text-align: left; }
+  }
+</style>
+</head>
+<body>
+
+<div class="sg-banner">design-system/styleguide.html — <b>internal reference, not deployed</b>. Renders the live <code>web/src/styles/site.css</code>.</div>
+<div class="topline"></div>
+<header class="bar">
+  <div class="bar-in">
+    <a class="wordmark" href="#">OKF<sup>4net</sup></a>
+    <nav aria-label="Styleguide sections">
+      <a href="#foundations">foundations.md</a>
+      <a href="#metaphor">metaphor.md</a>
+      <a href="#components">components.md</a>
+      <a href="#patterns">patterns.md</a>
+    </nav>
+    <a class="gh" href="DESIGN.md">DESIGN.md ↗</a>
+  </div>
+</header>
+
+<div class="frame">
+
+  <!-- ============ HERO: the styleguide is itself a concept document ============ -->
+  <div class="page-doc">
+    <div class="doc-window">
+      <div class="doc-chrome">
+        <span class="path">design-system/<b>styleguide.md</b></span>
+        <span>type: DesignSystem</span>
+      </div>
+      <div class="rendered">
+        <h1>The <em>§Document.</em></h1>
+        <p class="lede">The OKF4net site has one idea: <strong>every page is a concept document</strong>. Editor-tab navigation, a framed document window, <code>##</code> chapter markers with <code>§</code> spec references, a raw⇄rendered duality. This page is the system's mirror — it renders the real stylesheet, so it can't drift from what ships.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="docbody">
+
+    <!-- ==================== FOUNDATIONS ==================== -->
+    <section class="chapter" id="foundations">
+      <div class="chead"><span class="h">##</span><h2>Foundations</h2><span class="ref">tokens — the only values you may use</span></div>
+
+      <p><strong>Colour.</strong> One brand hue (Klein blue), near-black ink, and a narrow set of neutrals. Every colour is a CSS variable in <code>:root</code>; never hard-code a hex in a page.</p>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#ffffff;box-shadow:inset 0 0 0 1px var(--hair)"></div><div class="meta"><span class="nm">--white</span> <span class="hex">#ffffff</span><span class="role">page background</span></div></div>
+        <div class="sw"><div class="chip" style="background:#101014"></div><div class="meta"><span class="nm">--ink</span> <span class="hex">#101014</span><span class="role">text, borders, code blocks</span></div></div>
+        <div class="sw"><div class="chip" style="background:#1a3fd6"></div><div class="meta"><span class="nm">--blue</span> <span class="hex">#1a3fd6</span><span class="role">brand — links, accents, primary</span></div></div>
+        <div class="sw"><div class="chip" style="background:#eef1fd"></div><div class="meta"><span class="nm">--blue-soft</span> <span class="hex">#eef1fd</span><span class="role">tints — fm cells, code, hovers</span></div></div>
+        <div class="sw"><div class="chip" style="background:#6a6a72"></div><div class="meta"><span class="nm">--gray</span> <span class="hex">#6a6a72</span><span class="role">secondary text</span></div></div>
+        <div class="sw"><div class="chip" style="background:#e3e3e8"></div><div class="meta"><span class="nm">--hair</span> <span class="hex">#e3e3e8</span><span class="role">hairline borders</span></div></div>
+        <div class="sw"><div class="chip" style="background:#0e8a4d"></div><div class="meta"><span class="nm">--ok</span> <span class="hex">#0e8a4d</span><span class="role">success, YAML strings</span></div></div>
+      </div>
+      <p>Inside <code>pre.block</code> (dark) the syntax palette shifts to hold contrast on ink: <code>.k</code> <span style="color:#1a3fd6;font-weight:700">#7e9bff</span> keywords · <code>.s</code> #ffd166 strings · <code>.c</code> #7a7a85 comments · <code>.ok</code> #6fd18a success.</p>
+
+      <p style="margin-top:28px"><strong>Type.</strong> Three families, three jobs. Never introduce a fourth.</p>
+      <div class="type-spec">
+        <div class="label">display — <b>Inter Tight</b>, 800/900, tight tracking · h1, h2, blockquote, cta</div>
+        <div style="font-family:var(--display);font-weight:900;font-size:52px;letter-spacing:-.03em;line-height:1.02">Knowledge is a directory of markdown files.</div>
+      </div>
+      <div class="type-spec">
+        <div class="label">body — <b>Inter</b>, 400/500/600, 16px / 1.6 · prose, lede, lists</div>
+        <div style="font-size:17px;color:var(--gray);max-width:60ch">Load a bundle, check conformance, walk the cross-link graph. <strong style="color:var(--ink);font-weight:600">Bundle.Load never aborts on a bad file</strong> — parse failures land in ParseErrors.</div>
+      </div>
+      <div class="type-spec">
+        <div class="label">mono — <b>Space Mono</b>, 400/700 · nav, labels, paths, code, data</div>
+        <div style="font-family:var(--mono);font-size:14px">okf validate ./my_bundle → <span style="color:var(--ok)">OK: conformant with OKF v0.1</span></div>
+      </div>
+
+      <p style="margin-top:28px"><strong>Layout &amp; rhythm.</strong> One centred column, <code>.frame</code> at <code>max-width: 1200px</code> with fluid gutters (<code>clamp(16px, 3.5vw, 48px)</code>). Prose measures are capped (<code>64ch</code> body, <code>44ch</code> blockquote) for readability. Borders are <code>1.5px</code> solid ink for structure, <code>1px</code> hair for internal grids. <strong>Zero border-radius</strong> — the system is orthogonal by design.</p>
+    </section>
+
+    <!-- ==================== METAPHOR ==================== -->
+    <section class="chapter" id="metaphor">
+      <div class="chead"><span class="h">##</span><h2>The metaphor</h2><span class="ref">every page is a concept document</span></div>
+      <blockquote>If you can <code>cat</code> a file, you can read OKF — so every page looks like a file you could <code>cat</code>.</blockquote>
+      <p>The whole identity derives from the product. Pages don't decorate; they <em>impersonate</em> an OKF concept document:</p>
+      <ul class="plain">
+        <li>The top navigation is a strip of <strong>editor tabs</strong> — each link is a <code>*.md</code> concept id, the current page marked with an inset blue underline.</li>
+        <li>Content opens inside a framed <strong>document window</strong> (<code>.doc-window</code>) with a chrome bar showing the file path (<code>my_bundle/<b>page.md</b></code>) and its <code>type:</code>.</li>
+        <li>The home hero carries a live <strong>raw ⇄ rendered</strong> toggle — the same duality OKF has between markdown source and its rendered view.</li>
+        <li>Chapters are numbered with a <code>##</code> markdown-heading badge and annotated with the <strong>spec section</strong> they map to (<code>§4–§5</code>).</li>
+      </ul>
+      <p>Structure encodes something true: the <code>§</code> references are real spec citations, the file paths are plausible concept ids, the sidebar in <code>/docs</code> is a real bundle tree. Decoration that doesn't map to the product gets cut.</p>
+    </section>
+
+    <!-- ==================== COMPONENTS ==================== -->
+    <section class="chapter" id="components">
+      <div class="chead"><span class="h">##</span><h2>Components</h2><span class="ref">rendered live · reveal the source</span></div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">.doc-window / .doc-chrome</span><span class="intent">framed page opening — path + type</span></div>
+        <div class="sp-live">
+          <div class="doc-window">
+            <div class="doc-chrome"><span class="path">tables/<b>orders.md</b></span><span>type: Table</span></div>
+            <div class="rendered" style="padding:20px 24px"><p class="lede" style="margin:0">The document window frames every page. Its chrome names the file and its type.</p></div>
+          </div>
+        </div>
+        <details><summary>source</summary><pre>&lt;<span class="t">div</span> class=<span class="a">"doc-window"</span>&gt;
+  &lt;<span class="t">div</span> class=<span class="a">"doc-chrome"</span>&gt;
+    &lt;<span class="t">span</span> class=<span class="a">"path"</span>&gt;tables/&lt;<span class="t">b</span>&gt;orders.md&lt;/<span class="t">b</span>&gt;&lt;/<span class="t">span</span>&gt;
+    &lt;<span class="t">span</span>&gt;type: Table&lt;/<span class="t">span</span>&gt;
+  &lt;/<span class="t">div</span>&gt;
+  &lt;<span class="t">div</span> class=<span class="a">"rendered"</span>&gt; … &lt;/<span class="t">div</span>&gt;
+&lt;/<span class="t">div</span>&gt;</pre></details>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">.chead</span><span class="intent">chapter head — ## badge, title, § ref</span></div>
+        <div class="sp-live">
+          <div class="chead"><span class="h">##</span><h2>Load a bundle</h2><span class="ref">§3, §5 — Bundle · LinkScanner</span></div>
+        </div>
+        <details><summary>source</summary><pre>&lt;<span class="t">div</span> class=<span class="a">"chead"</span>&gt;
+  &lt;<span class="t">span</span> class=<span class="a">"h"</span>&gt;##&lt;/<span class="t">span</span>&gt;
+  &lt;<span class="t">h2</span>&gt;Load a bundle&lt;/<span class="t">h2</span>&gt;
+  &lt;<span class="t">span</span> class=<span class="a">"ref"</span>&gt;§3, §5 — Bundle · LinkScanner&lt;/<span class="t">span</span>&gt;
+&lt;/<span class="t">div</span>&gt;</pre></details>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">.concept-grid / .cell</span><span class="intent">defined terms — 2-up bordered grid</span></div>
+        <div class="sp-live">
+          <div class="concept-grid">
+            <div class="cell"><div class="term">bundle</div><p>A directory tree of markdown files — the unit of distribution.</p></div>
+            <div class="cell"><div class="term">concept</div><p>One document: YAML frontmatter, then a markdown body.</p></div>
+          </div>
+        </div>
+        <details><summary>source</summary><pre>&lt;<span class="t">div</span> class=<span class="a">"concept-grid"</span>&gt;
+  &lt;<span class="t">div</span> class=<span class="a">"cell"</span>&gt;
+    &lt;<span class="t">div</span> class=<span class="a">"term"</span>&gt;bundle&lt;/<span class="t">div</span>&gt;
+    &lt;<span class="t">p</span>&gt;A directory tree of markdown files.&lt;/<span class="t">p</span>&gt;
+  &lt;/<span class="t">div</span>&gt; …
+&lt;/<span class="t">div</span>&gt;</pre></details>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">pre.block</span><span class="intent">code — ink panel, blue rule, .k/.s/.c/.ok tokens</span></div>
+        <div class="sp-live">
+<pre class="block" style="margin:0"><span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);
+<span class="c">// permissive: a bad file never aborts</span>
+Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);</pre>
+        </div>
+        <details><summary>source</summary><pre>&lt;<span class="t">pre</span> class=<span class="a">"block"</span>&gt;&lt;<span class="t">span</span> class=<span class="a">"k"</span>&gt;var&lt;/<span class="t">span</span>&gt; bundle = Bundle.Load(
+  &lt;<span class="t">span</span> class=<span class="a">"s"</span>&gt;"./my_bundle"&lt;/<span class="t">span</span>&gt;);
+&lt;<span class="t">span</span> class=<span class="a">"c"</span>&gt;// comment&lt;/<span class="t">span</span>&gt;&lt;/<span class="t">pre</span>&gt;</pre></details>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">table.map</span><span class="intent">reference rows — mono key + prose</span></div>
+        <div class="sp-live">
+          <table class="map" style="margin:0">
+            <tr><th>Command</th><th>Does</th></tr>
+            <tr><td>okf validate</td><td>Conformance check (§9), non-zero exit on failure</td></tr>
+            <tr><td>okf graph</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">table.index</span><span class="intent">generated index.md listing (§6) — docs only</span></div>
+        <div class="sp-live">
+          <table class="index" style="margin:0">
+            <tr><th>Type</th><th>Concept</th><th>Description</th></tr>
+            <tr><td class="type">Guide</td><td class="title"><a href="#">getting-started</a></td><td class="desc">Install and validate your first bundle.</td></tr>
+            <tr><td class="type">Reference</td><td class="title"><span class="soon">agents</span><span class="tag">soon</span></td><td class="desc">The Agent Framework tools.</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">ol.steps</span><span class="intent">a real sequence — numbered process</span></div>
+        <div class="sp-live">
+          <ol class="steps" style="margin:0">
+            <li><strong>Fork</strong> and branch from <code>main</code>.</li>
+            <li><strong>Add tests</strong> — never touch <code>tests/fixtures/</code>.</li>
+            <li><strong>Open a PR</strong> citing the spec section (§).</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">blockquote</span><span class="intent">the thesis line — display weight, blue rule</span></div>
+        <div class="sp-live">
+          <blockquote style="margin:0">If you can <code>cat</code> a file, you can read OKF; if you can <code>git clone</code> a repo, you can ship it.</blockquote>
+        </div>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">.warn</span><span class="intent">a rule that must not be broken</span></div>
+        <div class="sp-live">
+          <div class="warn" style="margin:0"><div class="t">GOLDEN FIXTURES</div><p>Never edit <code>tests/fixtures/</code>. If C# output differs from a golden file, the C# is wrong — fix the port.</p></div>
+        </div>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">.btn · .btn.primary · .conform</span><span class="intent">actions &amp; the dashed conformance badge</span></div>
+        <div class="sp-live">
+          <div class="hero-actions" style="margin:0 0 18px">
+            <a class="btn primary" href="#">dotnet add package OKF4net</a>
+            <a class="btn" href="#">Read library.md</a>
+          </div>
+          <div class="conform">conformant with OKF v0.1 · <b>218/218</b> tests · 5 byte-exact golden comparisons</div>
+        </div>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">.next</span><span class="intent">cross-link teaser closing a chapter</span></div>
+        <div class="sp-live">
+          <p class="next" style="margin:0">→ <a href="#">cli.md</a> — the same engine, as one AOT binary for CI</p>
+        </div>
+      </div>
+
+      <div class="specimen">
+        <div class="sp-head"><span class="cls">.cta</span><span class="intent">closing call to action — soft-blue panel</span></div>
+        <div class="sp-live" style="padding:0">
+          <div class="cta" style="margin:0">
+            <h2>Ship knowledge as files.</h2>
+            <p>The spec is short, the codebase is dependency-free, and the test suite tells you immediately whether you're right.</p>
+            <div class="hero-actions"><a class="btn primary" href="#">github.com/jchable/okf4net</a></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== PATTERNS ==================== -->
+    <section class="chapter" id="patterns">
+      <div class="chead"><span class="h">##</span><h2>Patterns &amp; guardrails</h2><span class="ref">how to assemble a page</span></div>
+
+      <p><strong>Page skeletons.</strong> Two openings, one body.</p>
+      <table class="map">
+        <tr><th>Skeleton</th><th>When</th></tr>
+        <tr><td>hero + raw/rendered</td><td>Home only — the marquee concept document with the live toggle and <code>site.js</code>.</td></tr>
+        <tr><td>.page-doc</td><td>Every subpage — a slimmer document window (path + type + h1 + lede), no toggle.</td></tr>
+        <tr><td>.docs-shell</td><td>Reference pages under <code>/docs</code> — bundle-tree sidebar + the <code>.page-doc</code> opening.</td></tr>
+      </table>
+      <p>Below the opening, content is always a <code>.docbody</code> of <code>section.chapter</code> blocks, each led by a <code>.chead</code>.</p>
+
+      <p style="margin-top:24px"><strong>Responsive.</strong> Three stops. At <code>960px</code> the editor-tab nav is hidden and the docs sidebar stacks above content. At <code>720px</code> the frame goes <strong>full-bleed</strong>: it drops its gutters, the document window loses its side borders, and code blocks bleed edge to edge while text keeps a 16px inset.</p>
+
+      <p style="margin-top:24px"><strong>Accessibility floor</strong> (non-negotiable):</p>
+      <ul class="plain">
+        <li>Visible keyboard focus everywhere — <code>:focus-visible</code> draws a 2px blue outline; never remove it.</li>
+        <li><code>prefers-reduced-motion</code> disables smooth scroll and all transitions.</li>
+        <li>Ink-on-white and blue-on-white clear WCAG AA; the dashed <code>.conform</code> badge and <code>.tag</code> chips are never the sole carrier of meaning.</li>
+        <li>Every interactive tab and toggle exposes state (<code>aria-current</code>, <code>aria-pressed</code>).</li>
+      </ul>
+
+      <p class="next">→ <a href="DESIGN.md">DESIGN.md</a> — the written spec: token table, build conventions, and voice rules</p>
+    </section>
+
+  </div>
+</div>
+
+<footer class="colophon">
+  <div class="frame">
+    <div class="links">
+      <a href="DESIGN.md">DESIGN.md</a>
+      <a href="https://jchable.github.io/okf4net/">live site</a>
+      <a href="https://github.com/jchable/okf4net">source</a>
+    </div>
+    <p>OKF4net design system — "The §Document". Internal reference; not part of the deployed site. Renders <code>web/src/styles/site.css</code> directly, so it always reflects what ships.</p>
+  </div>
+</footer>
+
+</body>
+</html>

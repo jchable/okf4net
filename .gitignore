@@ -10,3 +10,10 @@ graphify-out/
 # Claude Code local state (skills are tracked; worktrees/settings are not)
 .claude/worktrees/
 .claude/settings.local.json
+
+# winget packaging artifacts
+packaging/winget/out/
+
+# web/ (Vite + React + vite-react-ssg app)
+web/node_modules/
+web/dist/

@@ -1,0 +1,16 @@
+node_modules
+dist
+dist-ssr
+_serve
+*.local
+*.tsbuildinfo
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln.docstates
