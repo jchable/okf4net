@@ -279,15 +279,23 @@ public sealed class OkfContextProvider : AIContextProvider
         if (context.Session is { } session)
         {
             var box = _scopeBySession.GetValue(session, static _ => new ScopeBox());
-            if (box.Scope is null)
+            // Locked so a session provided CONCURRENTLY under two different
+            // scopes can't have both threads observe box.Scope == null before
+            // either writes it (which would let neither set Poisoned). Locked
+            // on the SAME box object StoreScopedAsync reads under, so that
+            // read and this write are mutually consistent.
+            lock (box)
             {
-                box.Scope = scope;
-            }
-            else if (!box.Poisoned && !SameScope(box.Scope, scope))
-            {
-                // A second, different scope on the same session: latch the box
-                // poisoned (never cleared) so the paired capture fails closed.
-                box.Poisoned = true;
+                if (box.Scope is null)
+                {
+                    box.Scope = scope;
+                }
+                else if (!box.Poisoned && !SameScope(box.Scope, scope))
+                {
+                    // A second, different scope on the same session: latch the box
+                    // poisoned (never cleared) so the paired capture fails closed.
+                    box.Poisoned = true;
+                }
             }
         }
 
@@ -647,9 +655,28 @@ public sealed class OkfContextProvider : AIContextProvider
         {
             scope = KnowledgeAccessScope.Local;
         }
-        else if (context.Session is { } session && _scopeBySession.TryGetValue(session, out var box) && box.Scope is { } cached)
+        else if (context.Session is { } session && _scopeBySession.TryGetValue(session, out var box))
         {
-            if (box.Poisoned)
+            // Snapshot box.Scope/box.Poisoned atomically (locked on the SAME
+            // box instance ProvideScopedAsync writes under), then branch on
+            // the copied locals outside the lock -- no async work happens
+            // inside it. Without this lock, this read could race a concurrent
+            // ProvideScopedAsync write to the same box.
+            KnowledgeAccessScope? cached;
+            bool poisoned;
+            lock (box)
+            {
+                cached = box.Scope;
+                poisoned = box.Poisoned;
+            }
+
+            if (cached is null)
+            {
+                LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
+                return;
+            }
+
+            if (poisoned)
             {
                 // FAIL-CLOSED: this session was provided under multiple scopes,
                 // so the capture cannot be safely attributed to one. Skip it
