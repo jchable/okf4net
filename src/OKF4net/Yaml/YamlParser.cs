@@ -6,20 +6,17 @@ using OKF4net.Internal;
 namespace OKF4net.Yaml;
 
 /// <summary>
-/// Recursive-descent parser for the OKF YAML subset. Port of
-/// src/yaml/parser.rs (the Rust reference — authoritative for grammar,
-/// error messages, and 1-based line numbers).
+/// Recursive-descent parser for the OKF YAML subset, defining this
+/// implementation's grammar, error messages, and 1-based line numbers.
 /// </summary>
 internal static class YamlParser
 {
     /// <summary>
-    /// Maximum recursive-descent nesting depth (block and flow alike)
-    /// before the parser gives up. This is an INTENTIONAL divergence from
-    /// the Rust reference, which has no such guard and simply overflows the
-    /// stack (an uncatchable crash) on pathological input like
-    /// "tags: [[[[...]]]]" with thousands of levels of nesting. Here that
-    /// input throws a catchable <see cref="YamlParseException"/> instead —
-    /// a deliberate safety improvement, not a port of Rust behaviour.
+    /// Maximum recursive-descent nesting depth (block and flow alike) before
+    /// the parser gives up. A safety guard: pathological input like
+    /// "tags: [[[[...]]]]" with thousands of levels of nesting throws a
+    /// catchable <see cref="YamlParseException"/> here instead of overflowing
+    /// the stack (an uncatchable crash).
     /// </summary>
     private const int MaxNestingDepth = 1000;
 
@@ -28,8 +25,7 @@ internal static class YamlParser
 
     /// <summary>
     /// Parses a YAML document (the OKF subset) into a <see cref="YamlValue"/>.
-    /// Empty or comment/whitespace-only input parses to <see cref="YamlNull"/>,
-    /// mirroring PyYAML's <c>safe_load("") is None</c>.
+    /// Empty or comment/whitespace-only input parses to <see cref="YamlNull"/>.
     /// </summary>
     public static YamlValue Parse(string text)
     {
@@ -58,8 +54,7 @@ internal static class YamlParser
 
     /// <summary>
     /// Block-context parser: indentation, mappings/sequences, literal (`|`) and
-    /// folded (`>`) block scalars, comments. Port of Rust's <c>Parser</c>
-    /// struct (src/yaml/parser.rs lines 48-280).
+    /// folded (`>`) block scalars, comments.
     /// </summary>
     private sealed class BlockParser(List<string> lines)
     {
@@ -759,10 +754,8 @@ internal static class YamlParser
     }
 
     /// <summary>
-    /// Appends the character for a Unicode scalar value, mirroring Rust's
-    /// `char::from_u32` (which silently rejects invalid scalars such as
-    /// surrogate-range code points, matching the `if let Some(ch) = ...` in
-    /// the Rust source).
+    /// Appends the character for a Unicode scalar value, silently rejecting
+    /// invalid scalars such as surrogate-range or out-of-range code points.
     /// </summary>
     private static void AppendUnicodeScalar(StringBuilder sb, int codePoint)
     {

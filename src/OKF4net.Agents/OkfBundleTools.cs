@@ -1030,7 +1030,7 @@ public sealed class OkfBundleTools
     /// Not needed by <see cref="ReadConcept"/>, <see cref="Graph"/>, or
     /// <see cref="Search"/> -- they only query the already-loaded
     /// <see cref="Bundle"/>, whose own load walk already skips reparse-point
-    /// entries (mirroring Rust's lstat-based <c>collect_markdown</c>); nor by
+    /// entries (via lstat-based detection); nor by
     /// <see cref="RegenerateIndexes"/>, whose whole-root walk (<see cref="IndexGenerator"/>)
     /// likewise already skips reparse-point directories via the same core
     /// helper.

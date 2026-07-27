@@ -2,19 +2,16 @@
 namespace OKF4net.Internal;
 
 /// <summary>
-/// Detects filesystem reparse points (symlinks, junctions, mount points),
-/// mirroring the lstat-based semantics of Rust's <c>DirEntry::file_type()</c>
-/// (bundle.rs:207-222, index.rs:223-234).
+/// Detects filesystem reparse points (symlinks, junctions, mount points)
+/// using lstat-based semantics: it reports the type of the directory entry
+/// ITSELF without following a symlink.
 ///
-/// Rust's directory walks call <c>entry.file_type()</c>, which reports the
-/// type of the directory entry ITSELF without following a symlink -- unlike
-/// <c>Path::is_dir()</c>/<c>Path::is_file()</c> (and .NET's
+/// This is the semantics the bundle and index directory walks need: unlike
+/// <c>Path.is_dir()</c>/<c>is_file()</c> (and .NET's
 /// <see cref="Directory.Exists(string)"/>/<see cref="File.Exists(string)"/>),
-/// which resolve through any symlink to the type of its target. For a
-/// symlink entry, <c>file_type().is_dir()</c> and <c>file_type().is_file()</c>
-/// are BOTH <c>false</c> -- it matches neither match arm in either Rust
-/// <c>collect_markdown</c>, so the entry is skipped (bundle.rs) or excluded
-/// from directory recursion (index.rs).
+/// which resolve through any symlink to the type of its target, a
+/// reparse-point entry is treated as neither a plain file nor a plain
+/// directory, so it is skipped rather than traversed or collected.
 ///
 /// On Windows, <see cref="File.GetAttributes(string)"/> reproduces this
 /// (Win32 <c>GetFileAttributes</c> reports the entry's own
@@ -52,9 +49,9 @@ internal static class ReparsePoints
             // resolves THROUGH a symlink (stat, not lstat), so a symlink to a
             // directory reports as a plain Directory with no ReparsePoint flag --
             // which would let a symlinked subdirectory be walked/indexed as if
-            // real (index.rs/bundle.rs skip it via lstat's is_dir()==false).
-            // FileSystemInfo.LinkTarget reads the entry itself and is non-null
-            // exactly when the entry is a link, on every platform.
+            // it were a real directory. FileSystemInfo.LinkTarget reads the
+            // entry itself and is non-null exactly when the entry is a link,
+            // on every platform.
             return new DirectoryInfo(path).LinkTarget is not null
                 || new FileInfo(path).LinkTarget is not null;
         }

@@ -2,11 +2,8 @@
 namespace OKF4net.Yaml;
 
 /// <summary>
-/// An error produced while parsing YAML frontmatter. Port of the Rust
-/// <c>YamlError</c> (src/yaml/parser.rs, lines 7-26): a 1-based source line
-/// (0 if not known) plus a human-readable message. The exception
-/// <see cref="Exception.Message"/> mirrors <c>YamlError</c>'s
-/// <c>Display</c> implementation.
+/// An error produced while parsing YAML frontmatter: a 1-based source line
+/// (0 if not known) plus a human-readable message.
 /// </summary>
 public sealed class YamlParseException : OkfException
 {

@@ -5,8 +5,7 @@ using OKF4net.Internal;
 namespace OKF4net;
 
 /// <summary>
-/// How a link target is interpreted under §5. Port of the Rust
-/// <c>LinkKind</c> (src/links.rs:14-24).
+/// How a link target is interpreted under §5.
 /// </summary>
 public enum LinkKind
 {
@@ -27,15 +26,12 @@ public enum LinkKind
 }
 
 /// <summary>
-/// A markdown link found in a concept body. Port of the Rust <c>Link</c>
-/// (src/links.rs:27-72). Field order (<see cref="Text"/>, <see cref="Target"/>,
-/// <see cref="Kind"/>) matches the Rust struct.
+/// A markdown link found in a concept body.
 /// </summary>
 public sealed record ConceptLink(string Text, string Target, LinkKind Kind)
 {
     /// <summary>
-    /// Classifies a raw target string per §5. Port of <c>Link::classify</c>
-    /// (links.rs:39-51).
+    /// Classifies a raw target string per §5.
     /// </summary>
     public static LinkKind Classify(string target)
     {
@@ -70,8 +66,7 @@ public sealed record ConceptLink(string Text, string Target, LinkKind Kind)
     /// Returns <c>null</c> for external links, anchors, links to directories
     /// (targets ending in <c>/</c>), or targets that cannot form a valid
     /// concept id. The result is *not* guaranteed to exist in the bundle —
-    /// broken links are permitted by the spec (§5.3). Port of
-    /// <c>Link::resolve</c> (links.rs:56-64).
+    /// broken links are permitted by the spec (§5.3).
     /// </summary>
     public ConceptId? Resolve(ConceptId source) => Kind switch
     {
@@ -91,9 +86,8 @@ public sealed record ConceptLink(string Text, string Target, LinkKind Kind)
     }
 
     /// <summary>
-    /// ASCII-only lower-casing, mirroring Rust's <c>to_ascii_lowercase</c>
-    /// (non-ASCII characters are left untouched, unlike culture-aware
-    /// <c>ToLower</c>).
+    /// ASCII-only lower-casing (non-ASCII characters are left untouched,
+    /// unlike culture-aware <c>ToLower</c>).
     /// </summary>
     private static string ToAsciiLower(string s)
     {
@@ -203,22 +197,19 @@ public sealed record ConceptLink(string Text, string Target, LinkKind Kind)
 }
 
 /// <summary>
-/// A numbered entry under the <c># Citations</c> heading (§8). Port of the
-/// Rust <c>Citation</c> (src/links.rs:75-84).
+/// A numbered entry under the <c># Citations</c> heading (§8).
 /// </summary>
 public sealed record Citation(uint Number, string? Text, string? Target, string Raw);
 
 /// <summary>
 /// Dependency-free scanner for inline <c>[text](dest)</c> links and
-/// numbered <c># Citations</c> entries. Port of the free functions in
-/// src/links.rs.
+/// numbered <c># Citations</c> entries.
 /// </summary>
 public static class LinkScanner
 {
     /// <summary>
     /// Extracts all inline markdown links from a body, skipping fenced code
-    /// blocks and inline code spans. Port of <c>extract_links</c>
-    /// (links.rs:153-159).
+    /// blocks and inline code spans.
     /// </summary>
     public static IReadOnlyList<ConceptLink> ExtractLinks(string body)
     {
@@ -233,7 +224,7 @@ public static class LinkScanner
 
     /// <summary>
     /// Extracts numbered citation entries from the <c># Citations</c>
-    /// section (§8). Port of <c>extract_citations</c> (links.rs:295-317).
+    /// section (§8).
     /// </summary>
     public static IReadOnlyList<Citation> ExtractCitations(string body)
     {
@@ -272,8 +263,7 @@ public static class LinkScanner
 
     /// <summary>
     /// Returns the body's lines with fenced code blocks removed and inline
-    /// code spans blanked out. Port of <c>code_free_lines</c>
-    /// (links.rs:163-186).
+    /// code spans blanked out.
     /// </summary>
     private static List<string> CodeFreeLines(string body)
     {
@@ -313,8 +303,7 @@ public static class LinkScanner
 
     /// <summary>
     /// Replaces inline code spans (backtick-delimited) with spaces so links
-    /// inside them are not extracted. Port of <c>blank_inline_code</c>
-    /// (links.rs:190-203).
+    /// inside them are not extracted.
     /// </summary>
     private static string BlankInlineCode(string line)
     {
@@ -341,8 +330,7 @@ public static class LinkScanner
     }
 
     /// <summary>
-    /// Scans a single (code-free) line for <c>[text](dest)</c> links. Port
-    /// of <c>scan_line_links</c> (links.rs:207-224).
+    /// Scans a single (code-free) line for <c>[text](dest)</c> links.
     /// </summary>
     private static void ScanLineLinks(string line, List<ConceptLink> output)
     {
@@ -369,7 +357,7 @@ public static class LinkScanner
     /// <summary>
     /// Attempts to parse <c>[text](dest)</c> starting at <paramref name="start"/>
     /// (the <c>[</c>). Returns the text, destination, and index just past the
-    /// closing <c>)</c>. Port of <c>parse_inline_link</c> (links.rs:228-272).
+    /// closing <c>)</c>.
     /// </summary>
     private static InlineLinkMatch? ParseInlineLink(char[] chars, int start)
     {
@@ -451,7 +439,7 @@ public static class LinkScanner
 
     /// <summary>
     /// Removes an optional <c>"title"</c> (or <c>'title'</c>) suffix from a
-    /// link destination. Port of <c>strip_title</c> (links.rs:276-286).
+    /// link destination.
     /// </summary>
     private static string StripTitle(string dest)
     {
@@ -471,8 +459,7 @@ public static class LinkScanner
     }
 
     /// <summary>
-    /// Parses a single <c>[n] …</c> citation line. Port of
-    /// <c>parse_citation_line</c> (links.rs:320-338).
+    /// Parses a single <c>[n] …</c> citation line.
     /// </summary>
     private static Citation? ParseCitationLine(string line)
     {
@@ -488,12 +475,11 @@ public static class LinkScanner
             return null;
         }
 
-        // Mirrors Rust's u32::from_str: a single leading '+' is stripped
-        // before parsing digits, but a leading '-' is NEVER stripped for an
-        // unsigned type -- it's simply not a valid digit, so any leading
-        // '-' is rejected outright (including "-0"). Do this by hand rather
-        // than via NumberStyles.AllowLeadingSign, which uniquely accepts
-        // "-0" for uint (a divergence from Rust, which rejects it too).
+        // Unsigned parse rule: a single leading '+' is stripped before
+        // parsing digits, but a leading '-' is never valid for an unsigned
+        // value -- any leading '-' is rejected outright (including "-0"). Done
+        // by hand rather than via NumberStyles.AllowLeadingSign, which would
+        // uniquely accept "-0" for uint.
         var numberText = rest[..close].Trim();
         if (numberText.StartsWith('-'))
         {

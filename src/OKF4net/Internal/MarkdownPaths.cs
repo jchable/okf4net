@@ -2,18 +2,16 @@
 namespace OKF4net.Internal;
 
 /// <summary>
-/// Filename predicate mirroring Rust's
-/// <c>path.extension() == Some("md")</c> (bundle.rs:216, index.rs:130 and
-/// 229), shared by <see cref="OKF4net.Bundle"/>'s and
-/// <see cref="OKF4net.IndexGenerator"/>'s markdown-collecting sites.
+/// Filename predicate for a real <c>.md</c> extension, shared by
+/// <see cref="OKF4net.Bundle"/>'s and <see cref="OKF4net.IndexGenerator"/>'s
+/// markdown-collecting sites.
 ///
-/// Neither .NET's <see cref="Path.GetExtension(string)"/> nor a naive
-/// <c>EndsWith(".md")</c> check matches Rust here: both treat a file named
-/// EXACTLY <c>.md</c> as having the extension <c>.md</c>
-/// (<c>Path.GetExtension(".md")</c> returns <c>".md"</c>, not <c>""</c>).
-/// Rust's <c>Path::extension()</c> instead treats a leading-dot-only file
-/// name as having NO extension — it is a dotfile (like <c>.gitignore</c>),
-/// not a <c>"stem.ext"</c> split — so <c>.md</c> alone must be excluded.
+/// A file named EXACTLY <c>.md</c> must NOT count: it is a dotfile (like
+/// <c>.gitignore</c>), not a <c>"stem.ext"</c> split. Neither .NET's
+/// <see cref="Path.GetExtension(string)"/> nor a naive <c>EndsWith(".md")</c>
+/// check gets this right on its own (<c>Path.GetExtension(".md")</c> returns
+/// <c>".md"</c>, not <c>""</c>), so the leading-dot-only name is excluded
+/// explicitly below.
 /// </summary>
 internal static class MarkdownPaths
 {

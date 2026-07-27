@@ -31,8 +31,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Lets the test project exercise internal Rust-port helpers (e.g.
-         RustCaseFold) directly, without inflating the public API surface. -->
+    <!-- Lets the test project exercise internal helpers (e.g.
+         UnicodeCaseFold) directly, without inflating the public API surface. -->
     <InternalsVisibleTo Include="OKF4net.Tests" />
     <!-- Lets OKF4net.Cli and OKF4net.Agents share the internal helpers in
          Internal/ (encodings, debug quoting, path ordering) without

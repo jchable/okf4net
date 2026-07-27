@@ -4,12 +4,10 @@ namespace OKF4net.Internal;
 /// <summary>
 /// Compares two absolute file paths component-by-component (splitting on
 /// <c>\</c> and <c>/</c>), ordinal per segment, with a shorter segment list
-/// sorting first when one path is a prefix of the other. Mirrors Rust's
-/// <c>PathBuf</c>'s derived <c>Ord</c> (which compares via the
-/// <c>Component</c> iterator, not raw bytes) — used for every deterministic
-/// file-tree ordering in this port (<c>Bundle.Load</c>'s
-/// <c>md_files.sort()</c> and <c>IndexGenerator</c>'s directory/child
-/// orderings).
+/// sorting first when one path is a prefix of the other — comparing by path
+/// component rather than raw bytes. Used for every deterministic file-tree
+/// ordering here (<c>Bundle.Load</c>'s <c>md_files.sort()</c> and
+/// <c>IndexGenerator</c>'s directory/child orderings).
 ///
 /// A flat ordinal string comparison of full paths is NOT equivalent: on
 /// Windows, <c>'.'</c> (0x2E) sorts before <c>'\'</c> (0x5C), so a raw string

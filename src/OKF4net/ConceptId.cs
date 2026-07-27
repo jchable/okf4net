@@ -9,9 +9,7 @@ namespace OKF4net;
 /// A concept identifier: an ordered list of path segments (e.g.
 /// <c>["tables", "users"]</c> for <c>tables/users</c>) — the path of a
 /// concept's file within the bundle with the <c>.md</c> suffix removed
-/// (§2). Port of the Rust <c>ConceptId</c> (src/concept_id.rs), which in
-/// turn ports the reference <c>bundle/paths.py</c>, including its segment
-/// validation rule.
+/// (§2), including its segment validation rule.
 /// </summary>
 public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, IComparable
 {
@@ -40,8 +38,8 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     }
 
     /// <summary>
-    /// Builds a concept id from segments, validating each. Port of
-    /// <c>ConceptId::new</c> (concept_id.rs:33-41). Unlike <see cref="Parse"/>,
+    /// Builds a concept id from segments, validating each. Unlike
+    /// <see cref="Parse"/>,
     /// this does NOT drop empty strings from <paramref name="segments"/> —
     /// an empty segment is passed straight to <see cref="ValidateSegment"/>
     /// and rejected there.
@@ -66,9 +64,7 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
 
     /// <summary>
     /// Parses a concept id from a <c>/</c>-separated string. Empty segments
-    /// are dropped (so leading/trailing/duplicate slashes are tolerated),
-    /// matching the reference <c>parse_concept_id</c>. Port of
-    /// <c>ConceptId::parse</c> (concept_id.rs:46-55).
+    /// are dropped (so leading/trailing/duplicate slashes are tolerated).
     /// </summary>
     /// <exception cref="ConceptIdException">
     /// <paramref name="s"/> has no non-empty segments, or a segment fails
@@ -108,7 +104,6 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     /// <summary>
     /// Derives a concept id from a file path relative to
     /// <paramref name="bundleRoot"/>, stripping the <c>.md</c> suffix.
-    /// Port of <c>ConceptId::from_path</c> (concept_id.rs:91-106).
     /// Both inputs are normalized by replacing <c>\</c> with <c>/</c> so
     /// Windows-style paths work regardless of the host OS.
     /// </summary>
@@ -136,11 +131,9 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
             throw new ConceptIdException($"{path} is not under bundle root");
         }
 
-        // Rust's Path::components() normalizes away non-leading "." segments
-        // (concept_id.rs:96-99 iterates components(), which never yields a
-        // CurDir component for a "." that isn't the whole path). ".." is NOT
-        // normalized away by components() -- it stays literal and still
-        // fails ValidateSegment, so it is intentionally not filtered here.
+        // Non-leading "." segments are normalized away (filtered out here).
+        // ".." is deliberately NOT filtered: it is left literal and still
+        // fails ValidateSegment, so a traversal-style segment is rejected.
         var segments = rel.Split('/', StringSplitOptions.RemoveEmptyEntries)
             .Where(s => s != ".")
             .ToList();
@@ -159,7 +152,6 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     /// <summary>
     /// Resolves this id to a file path under <paramref name="bundleRoot"/>
     /// (appending <c>.md</c>): <c>&lt;root&gt;/&lt;a&gt;/&lt;b&gt;.md</c>.
-    /// Port of <c>ConceptId::to_path</c> (concept_id.rs:79-87).
     /// </summary>
     public string ToPath(string bundleRoot)
     {
@@ -170,9 +162,8 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     }
 
     /// <summary>
-    /// Validates a single path segment against the reference rule
-    /// <c>[A-Za-z0-9_][A-Za-z0-9_.\-]*</c>. Port of <c>validate_segment</c>
-    /// (concept_id.rs:124-136).
+    /// Validates a single path segment against the rule
+    /// <c>[A-Za-z0-9_][A-Za-z0-9_.\-]*</c>.
     /// </summary>
     /// <exception cref="ConceptIdException">The segment is empty or malformed.</exception>
     public static void ValidateSegment(string segment)
@@ -244,13 +235,10 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     }
 
     /// <summary>
-    /// Lexicographic, element-wise ordering over <see cref="Segments"/>.
-    /// Mirrors Rust's derived <c>PartialOrd</c>/<c>Ord</c> for
-    /// <c>ConceptId</c> (concept_id.rs:26, a single-field struct wrapping
-    /// <c>Vec&lt;String&gt;</c>): segments are compared pairwise with
-    /// ordinal (byte-wise) <c>String</c> <c>Ord</c>, and if one sequence is a
-    /// strict prefix of the other, the shorter sequence sorts first —
-    /// standard slice/<c>Vec</c> <c>Ord</c> semantics.
+    /// Lexicographic, element-wise ordering over <see cref="Segments"/>:
+    /// segments are compared pairwise with ordinal (byte-wise) string
+    /// comparison, and if one sequence is a strict prefix of the other, the
+    /// shorter sequence sorts first — standard sequence ordering semantics.
     /// </summary>
     public int CompareTo(ConceptId? other)
     {
