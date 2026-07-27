@@ -77,7 +77,7 @@ public sealed class FileMemoryStore : IMemoryStore
             {
                 passages.Add(new KnowledgePassage(
                     SourceId: $"memory:{tier}",
-                    ConceptId: hit.Concept.Id.ToString(),
+                    ConceptId: $"{MemoryPath.For(tier, scope)}/{hit.Concept.Id}",
                     Title: hit.Concept.Document.Frontmatter.Title,
                     Excerpt: ConceptSearch.Excerpt(hit.Concept.Document.Body, query.Text) ?? string.Empty,
                     Score: hit.Score,
@@ -120,7 +120,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
         var tiers = tier is { } t ? [t] : ReadOrder.Where(x => IsApplicable(x, scope));
         var deleted = 0;
-        string? error = null;
+        var errors = new List<string>();
 
         foreach (var currentTier in tiers)
         {
@@ -138,7 +138,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
             if (IsReparseEscaped(root, subDir))
             {
-                error = $"Memory tier '{currentTier}' path is a reparse point; refusing to delete.";
+                errors.Add($"Memory tier '{currentTier}' path is a reparse point; refusing to delete.");
                 continue;
             }
 
@@ -149,10 +149,11 @@ public sealed class FileMemoryStore : IMemoryStore
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                error = $"Memory tier '{currentTier}' subtree could not be deleted: {e.Message}";
+                errors.Add($"Memory tier '{currentTier}' subtree could not be deleted: {e.Message}");
             }
         }
 
+        var error = errors.Count > 0 ? string.Join("; ", errors) : null;
         return new ValueTask<MemoryDeleteResult>(new MemoryDeleteResult(deleted, error));
     }
 

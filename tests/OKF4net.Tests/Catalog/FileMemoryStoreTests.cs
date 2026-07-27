@@ -75,6 +75,24 @@ public class FileMemoryStoreTests
     }
 
     [Fact]
+    public async Task Read_ConceptId_is_fully_qualified_matching_Enumerate()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        await store.WriteAsync(scope, Entry("orders and refunds notes"), MemoryTier.User);
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("orders"));
+        var passage = Assert.Single(read.Passages);
+
+        var listed = await store.EnumerateAsync(scope);
+        var concept = Assert.Single(listed);
+
+        Assert.Equal("memory-user/acme/alice/2026-07-27", passage.ConceptId);
+        Assert.Equal(concept.ConceptId, passage.ConceptId);
+    }
+
+    [Fact]
     public async Task Enumerate_lists_only_the_scopes_own_concepts()
     {
         using var tmp = new TempDir();
