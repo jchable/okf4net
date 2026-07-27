@@ -34,4 +34,12 @@ public class KnowledgeAccessScopeTests
         Assert.Throws<ArgumentException>(() => new KnowledgeAccessScope(userId: bad));
         Assert.Throws<ArgumentException>(() => new KnowledgeAccessScope(sessionId: bad));
     }
+
+    [Fact]
+    public void Reserved_local_sentinel_is_rejected()
+    {
+        Assert.Throws<ArgumentException>(() => new KnowledgeAccessScope(tenantId: MemoryPath.LocalSentinel));
+        Assert.Throws<ArgumentException>(() => new KnowledgeAccessScope(userId: MemoryPath.LocalSentinel));
+        Assert.Throws<ArgumentException>(() => new KnowledgeAccessScope(sessionId: MemoryPath.LocalSentinel));
+    }
 }
