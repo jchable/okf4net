@@ -237,7 +237,7 @@ var tools = new OkfBundleTools("./my_bundle");
 // MemoryCapture defaults to MemoryCaptureMode.Disabled; opt in explicitly
 // (see the memory trust model caveat below) to get the capture behavior
 // shown here.
-var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.SharedBundle });
+var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.Enabled });
 
 AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
 {
@@ -253,7 +253,7 @@ var response = await agent.RunAsync("What do we know about orders?");
 | Option                | Default                      | Meaning                                                                                                                                                  |
 |-----------------------|------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `TokenBudget`         | `2000`                       | Approximate token budget (chars/4 estimate) for context injected per invocation.                                                                         |
-| `MemoryCapture`       | `MemoryCaptureMode.Disabled` | Opt-in: `MemoryCaptureMode.SharedBundle` captures exchanges as long-term memory concepts in the bundle after each invocation; `Disabled` writes nothing. |
+| `MemoryCapture`       | `MemoryCaptureMode.Disabled` | Opt-in: `MemoryCaptureMode.Enabled` captures exchanges as long-term memory concepts in the bundle after each invocation; `Disabled` writes nothing. |
 | `MemoryDirectory`     | `"memory"`                   | Bundle subdirectory holding memory concepts, as a single `ConceptId` segment (no `/`).                                                                   |
 | `MaxConceptsInjected` | `5`                          | Maximum number of scored concepts injected into a single invocation's context.                                                                           |
 
@@ -296,7 +296,7 @@ A few known v1 caveats:
   no session/user/tenant key, so a scored recall in `ProvideAIContextAsync`
   can surface one session's captured exchange in a completely different
   session sharing the same bundle. That's why `MemoryCapture` defaults to
-  `MemoryCaptureMode.Disabled` — set it to `MemoryCaptureMode.SharedBundle`
+  `MemoryCaptureMode.Disabled` — set it to `MemoryCaptureMode.Enabled`
   only for a bundle that's intended to be a shared, non-sensitive memory
   across those sessions.
 - **Concurrent same-day capture is safe only within one process, and only up

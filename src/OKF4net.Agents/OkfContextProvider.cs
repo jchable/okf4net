@@ -39,7 +39,7 @@ namespace OKF4net.Agents;
 /// <see cref="StoreAIContextAsync"/> is deterministic (no LLM) long-term
 /// memory capture, gated by <see cref="OkfContextProviderOptions.MemoryCapture"/>
 /// (<see cref="MemoryCaptureMode.Disabled"/> by default: the memory that
-/// <see cref="MemoryCaptureMode.SharedBundle"/> writes is bundle-global
+/// <see cref="MemoryCaptureMode.Enabled"/> writes is bundle-global
 /// and unscoped by session, user, or tenant, so it is opt-in rather than a
 /// capability every bundle gets for free):
 /// the last user message and the agent's final response are written into a
@@ -107,7 +107,9 @@ public sealed class OkfContextProvider : AIContextProvider
 
         try
         {
+#pragma warning disable CS0618 // MemoryDirectory: deliberately retained V1 path.
             ConceptId.ValidateSegment(effectiveOptions.MemoryDirectory);
+#pragma warning restore CS0618
         }
         catch (ConceptIdException ex)
         {
@@ -360,7 +362,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// Deterministic (no LLM) long-term memory capture. A
     /// <see cref="OkfContextProviderOptions.MemoryCapture"/> of
     /// <see cref="MemoryCaptureMode.Disabled"/> makes this a complete no-op:
-    /// no bundle access, no write attempt. Otherwise (<see cref="MemoryCaptureMode.SharedBundle"/>),
+    /// no bundle access, no write attempt. Otherwise (<see cref="MemoryCaptureMode.Enabled"/>),
     /// captures nothing unless the invocation succeeded
     /// (<see cref="AIContextProvider.InvokedContext.InvokeException"/> is
     /// <see langword="null"/> and <see cref="AIContextProvider.InvokedContext.ResponseMessages"/>
@@ -408,7 +410,7 @@ public sealed class OkfContextProvider : AIContextProvider
     {
         LastMemoryError = null;
 
-        if (_options.MemoryCapture != MemoryCaptureMode.SharedBundle)
+        if (_options.MemoryCapture != MemoryCaptureMode.Enabled)
         {
             return default;
         }
@@ -475,7 +477,9 @@ public sealed class OkfContextProvider : AIContextProvider
     {
         var now = _tools.UtcNow();
         var dateStr = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+#pragma warning disable CS0618 // MemoryDirectory: deliberately retained V1 path.
         var memoryConceptId = $"{_options.MemoryDirectory}/{dateStr}";
+#pragma warning restore CS0618
 
         var section = new StringBuilder()
             .Append("## ").Append(now.ToString("HH:mm:ss", CultureInfo.InvariantCulture)).Append(" UTC").Append('\n').Append('\n')

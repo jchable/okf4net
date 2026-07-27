@@ -2,6 +2,7 @@
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
+using OKF4net.Catalog;
 
 namespace OKF4net.Tests.Agents;
 
@@ -79,8 +80,14 @@ public class OkfContextProviderTests
 
         Assert.Equal(2000, options.TokenBudget);
         Assert.Equal(MemoryCaptureMode.Disabled, options.MemoryCapture);
+#pragma warning disable CS0618 // MemoryDirectory is deprecated but the V1 default is still asserted here.
         Assert.Equal("memory", options.MemoryDirectory);
+#pragma warning restore CS0618
         Assert.Equal(5, options.MaxConceptsInjected);
+        Assert.Null(options.ScopeAccessor);
+        Assert.Equal(MemoryTier.User, options.CaptureTier);
+        Assert.Equal(0.6, options.KnowledgeBudgetShare);
+        Assert.Equal(0.4, options.MemoryBudgetShare);
     }
 
     [Fact]
@@ -129,7 +136,9 @@ public class OkfContextProviderTests
     public void Constructor_rejects_a_memory_directory_that_is_not_a_valid_concept_id_segment(string memoryDirectory)
     {
         var tools = new OkfBundleTools(BundlePath);
+#pragma warning disable CS0618 // MemoryDirectory: exercising the deprecated but retained V1 validation path.
         var options = new OkfContextProviderOptions { MemoryDirectory = memoryDirectory };
+#pragma warning restore CS0618
 
         Assert.Throws<ArgumentException>(() => new OkfContextProvider(tools, options));
     }
@@ -138,7 +147,9 @@ public class OkfContextProviderTests
     public void Constructor_accepts_a_valid_custom_memory_directory()
     {
         var tools = new OkfBundleTools(BundlePath);
+#pragma warning disable CS0618 // MemoryDirectory: exercising the deprecated but retained V1 validation path.
         var options = new OkfContextProviderOptions { MemoryDirectory = "agent_memory" };
+#pragma warning restore CS0618
 
         var provider = new OkfContextProvider(tools, options);
 
