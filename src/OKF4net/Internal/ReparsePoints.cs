@@ -14,11 +14,16 @@ namespace OKF4net.Internal;
 /// symlink entry, <c>file_type().is_dir()</c> and <c>file_type().is_file()</c>
 /// are BOTH <c>false</c> -- it matches neither match arm in either Rust
 /// <c>collect_markdown</c>, so the entry is skipped (bundle.rs) or excluded
-/// from directory recursion (index.rs). Checking
-/// <see cref="FileAttributes.ReparsePoint"/> via
-/// <see cref="File.GetAttributes(string)"/> reproduces that: like Win32's
-/// <c>GetFileAttributes</c> and POSIX's <c>lstat</c>, it reports the entry's
-/// own attributes rather than following the link.
+/// from directory recursion (index.rs).
+///
+/// On Windows, <see cref="File.GetAttributes(string)"/> reproduces this
+/// (Win32 <c>GetFileAttributes</c> reports the entry's own
+/// <see cref="FileAttributes.ReparsePoint"/> without following it). On Unix,
+/// however, <c>File.GetAttributes</c> resolves THROUGH a symlink (stat, not
+/// lstat), so a symlink to a directory reports as a plain directory with no
+/// reparse flag; <see cref="IsReparsePoint"/> therefore falls back to
+/// <see cref="FileSystemInfo.LinkTarget"/>, which reads the entry itself and
+/// is non-null exactly for a link, on every platform.
 /// </summary>
 internal static class ReparsePoints
 {
@@ -35,7 +40,23 @@ internal static class ReparsePoints
     {
         try
         {
-            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+            // Fast path: on Windows a symlink/junction/mount point sets the
+            // ReparsePoint attribute, and File.GetAttributes reports the entry
+            // itself (Win32 GetFileAttributes semantics).
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                return true;
+            }
+
+            // lstat-correct cross-platform fallback. On Unix, File.GetAttributes
+            // resolves THROUGH a symlink (stat, not lstat), so a symlink to a
+            // directory reports as a plain Directory with no ReparsePoint flag --
+            // which would let a symlinked subdirectory be walked/indexed as if
+            // real (index.rs/bundle.rs skip it via lstat's is_dir()==false).
+            // FileSystemInfo.LinkTarget reads the entry itself and is non-null
+            // exactly when the entry is a link, on every platform.
+            return new DirectoryInfo(path).LinkTarget is not null
+                || new FileInfo(path).LinkTarget is not null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
