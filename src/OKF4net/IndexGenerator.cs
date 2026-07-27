@@ -212,6 +212,18 @@ public static class IndexGenerator
                     continue;
                 }
 
+                // lstat fidelity (Rust's DirEntry::file_type()): a symlink or
+                // junction is neither is_file() nor is_dir(), so it contributes
+                // no index entry. The File.Exists / Directory.Exists checks
+                // below resolve THROUGH the link, so without this guard a
+                // symlinked subdirectory would be listed as a real
+                // subdirectory (and a symlink named *.md as a real document) --
+                // the same reparse skip CollectMarkdown already applies.
+                if (ReparsePoints.IsReparsePoint(child))
+                {
+                    continue;
+                }
+
                 if (File.Exists(child) && MarkdownPaths.HasMarkdownExtension(child))
                 {
                     var doc = LoadDoc(child);
