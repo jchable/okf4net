@@ -84,6 +84,12 @@ public class OkfContextProviderScopedTests
         ScopeAccessor = _ => scope,
     };
 
+    // The on-disk path a scope maps to under a memory-source root, DERIVED from
+    // MemoryPath.For so assertions track the encoded scope-key form rather than
+    // hardcoding it.
+    private static string MemPath(string root, MemoryTier tier, KnowledgeAccessScope scope, params string[] tail) =>
+        Path.Combine([root, .. MemoryPath.For(tier, scope).Split('/'), .. tail]);
+
     [Fact]
     public async Task Read_injects_knowledge_as_message_data_never_instructions()
     {
@@ -113,7 +119,7 @@ public class OkfContextProviderScopedTests
         await provider.StoreForTest(Invoked(session, "remember nonce-zx99", "acknowledged nonce-zx99"));
 
         Assert.Null(provider.LastMemoryError);
-        Assert.True(File.Exists(Path.Combine(root.Path, "mem", "memory-user", "acme", "alice", "2026-07-27.md")));
+        Assert.True(File.Exists(MemPath(Path.Combine(root.Path, "mem"), MemoryTier.User, scope, "2026-07-27.md")));
 
         // A later provide for the same scope recalls the captured memory.
         var recall = await provider.ProvideForTest(Invoking(session, "nonce-zx99"), CancellationToken.None);

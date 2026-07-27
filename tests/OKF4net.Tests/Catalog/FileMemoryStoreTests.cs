@@ -23,6 +23,12 @@ public class FileMemoryStoreTests
     private static FileMemoryStore UserStore(TempDir tmp) =>
         new(new Dictionary<MemoryTier, string> { [MemoryTier.User] = tmp.Path });
 
+    // The on-disk path a scope maps to, DERIVED from MemoryPath.For so the
+    // assertions track the (case-injective, encoded) scope-key form rather than
+    // hardcoding it — with an optional trailing file/segment appended.
+    private static string MemPath(string root, MemoryTier tier, KnowledgeAccessScope scope, params string[] tail) =>
+        Path.Combine([root, .. MemoryPath.For(tier, scope).Split('/'), .. tail]);
+
     [Fact]
     public async Task Write_then_read_round_trips_under_the_user_tier()
     {
@@ -34,7 +40,7 @@ public class FileMemoryStoreTests
         Assert.True(write.Written);
         Assert.Null(write.Error);
 
-        Assert.True(File.Exists(Path.Combine(tmp.Path, "memory-user", "acme", "alice", "2026-07-27.md")));
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, scope, "2026-07-27.md")));
 
         var read = await store.ReadAsync(scope, new KnowledgeQuery("orders"));
         Assert.Empty(read.Diagnostics);
@@ -57,6 +63,20 @@ public class FileMemoryStoreTests
     }
 
     [Fact]
+    public async Task Case_distinct_tenants_cannot_read_each_others_memory()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var upper = new KnowledgeAccessScope(tenantId: "Acme", userId: "alice");
+        var lower = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+
+        await store.WriteAsync(upper, Entry("case-variant-secret"), MemoryTier.User);
+
+        var readLower = await store.ReadAsync(lower, new KnowledgeQuery("case-variant-secret"));
+        Assert.Empty(readLower.Passages);
+    }
+
+    [Fact]
     public async Task Delete_removes_only_the_target_scope_subtree()
     {
         using var tmp = new TempDir();
@@ -70,8 +90,8 @@ public class FileMemoryStoreTests
         Assert.Equal(1, del.TiersDeleted);
         Assert.Null(del.Error);
 
-        Assert.False(Directory.Exists(Path.Combine(tmp.Path, "memory-user", "a", "alice")));
-        Assert.True(Directory.Exists(Path.Combine(tmp.Path, "memory-user", "a", "bob")));
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, a)));
+        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.User, b)));
     }
 
     [Fact]
@@ -88,7 +108,7 @@ public class FileMemoryStoreTests
         var listed = await store.EnumerateAsync(scope);
         var concept = Assert.Single(listed);
 
-        Assert.Equal("memory-user/acme/alice/2026-07-27", passage.ConceptId);
+        Assert.Equal($"{MemoryPath.For(MemoryTier.User, scope)}/2026-07-27", passage.ConceptId);
         Assert.Equal(concept.ConceptId, passage.ConceptId);
     }
 
@@ -103,7 +123,7 @@ public class FileMemoryStoreTests
         var listed = await store.EnumerateAsync(scope);
         var concept = Assert.Single(listed);
         Assert.Equal(MemoryTier.User, concept.Tier);
-        Assert.Equal("memory-user/acme/alice/2026-07-27", concept.ConceptId);
+        Assert.Equal($"{MemoryPath.For(MemoryTier.User, scope)}/2026-07-27", concept.ConceptId);
     }
 
     [Fact]
@@ -125,7 +145,7 @@ public class FileMemoryStoreTests
         var store = UserStore(tmp);
 
         await store.WriteAsync(KnowledgeAccessScope.Local, Entry("local orders"), MemoryTier.User);
-        Assert.True(File.Exists(Path.Combine(tmp.Path, "memory-user", "_local", "_local", "2026-07-27.md")));
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.User, KnowledgeAccessScope.Local, "2026-07-27.md")));
 
         var read = await store.ReadAsync(KnowledgeAccessScope.Local, new KnowledgeQuery("orders"));
         Assert.NotEmpty(read.Passages);

@@ -9,6 +9,11 @@ public class MemoryServiceCollectionExtensionsTests
 {
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
 
+    // The on-disk path a scope maps to under a memory-source root, DERIVED from
+    // MemoryPath.For so assertions track the encoded scope-key form.
+    private static string MemPath(string root, MemoryTier tier, KnowledgeAccessScope scope, params string[] tail) =>
+        Path.Combine([root, .. MemoryPath.For(tier, scope).Split('/'), .. tail]);
+
     [Fact]
     public async Task AddMemory_registers_a_store_wired_to_the_user_tier_source()
     {
@@ -43,7 +48,7 @@ public class MemoryServiceCollectionExtensionsTests
             MemoryTier.User);
 
         Assert.True(write.Written);
-        Assert.True(File.Exists(Path.Combine(root.Path, "mem", "user", "memory-user", "_local", "alice", "2026-07-27.md")));
+        Assert.True(File.Exists(MemPath(Path.Combine(root.Path, "mem", "user"), MemoryTier.User, scope, "2026-07-27.md")));
     }
 
     [Fact]
@@ -142,6 +147,6 @@ public class MemoryServiceCollectionExtensionsTests
             new MemoryEntry("2026-07-27", "type: AgentMemory\ntitle: t\ndescription: d\ntimestamp: 2026-07-27T00:00:00Z\n", "## s\n\nhello orders\n"),
             MemoryTier.Tenant);
         Assert.True(tenantWrite.Written);
-        Assert.True(File.Exists(Path.Combine(root.Path, "mem", "tenant", "memory-tenant", "acme", "2026-07-27.md")));
+        Assert.True(File.Exists(MemPath(Path.Combine(root.Path, "mem", "tenant"), MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: "acme"), "2026-07-27.md")));
     }
 }
