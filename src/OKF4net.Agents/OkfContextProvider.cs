@@ -88,7 +88,19 @@ public sealed class OkfContextProvider : AIContextProvider
     // Correlates the scope resolved in ProvideAIContextAsync to the paired
     // StoreAIContextAsync, keyed by the invocation's session.
     private readonly ConditionalWeakTable<AgentSession, ScopeBox> _scopeBySession = new();
-    private sealed class ScopeBox { public KnowledgeAccessScope Scope = KnowledgeAccessScope.Local; }
+
+    // Per-session correlation state. A box is POISONED the moment the same
+    // AgentSession is provided under two DIFFERENT scopes (a pooled/reused
+    // session): the paired capture can then no longer be attributed to a
+    // single scope, so StoreScopedAsync fails closed and skips it rather than
+    // misfiling the exchange under whichever scope happened to provide last.
+    // Scope starts null ("no provide seen yet") so the first provide is
+    // distinguished from a genuine resolved scope that happens to be Local.
+    private sealed class ScopeBox
+    {
+        public KnowledgeAccessScope? Scope;
+        public bool Poisoned;
+    }
 
     /// <summary>The UTC clock used by the scoped (V2) capture path; overridable in tests.</summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
@@ -266,7 +278,17 @@ public sealed class OkfContextProvider : AIContextProvider
         var scope = _options.ScopeAccessor?.Invoke(context) ?? KnowledgeAccessScope.Local;
         if (context.Session is { } session)
         {
-            _scopeBySession.GetValue(session, static _ => new ScopeBox()).Scope = scope;
+            var box = _scopeBySession.GetValue(session, static _ => new ScopeBox());
+            if (box.Scope is null)
+            {
+                box.Scope = scope;
+            }
+            else if (!box.Poisoned && !SameScope(box.Scope, scope))
+            {
+                // A second, different scope on the same session: latch the box
+                // poisoned (never cleared) so the paired capture fails closed.
+                box.Poisoned = true;
+            }
         }
 
         var query = ExtractLastUserMessageText(context);
@@ -625,9 +647,18 @@ public sealed class OkfContextProvider : AIContextProvider
         {
             scope = KnowledgeAccessScope.Local;
         }
-        else if (context.Session is { } session && _scopeBySession.TryGetValue(session, out var box))
+        else if (context.Session is { } session && _scopeBySession.TryGetValue(session, out var box) && box.Scope is { } cached)
         {
-            scope = box.Scope;
+            if (box.Poisoned)
+            {
+                // FAIL-CLOSED: this session was provided under multiple scopes,
+                // so the capture cannot be safely attributed to one. Skip it
+                // entirely rather than misfiling it under any scope.
+                LastMemoryError = "Scoped capture skipped: this AgentSession was used under multiple scopes.";
+                return;
+            }
+
+            scope = cached;
         }
         else
         {
@@ -666,6 +697,18 @@ public sealed class OkfContextProvider : AIContextProvider
             LastMemoryError = ex.Message;
         }
     }
+
+    /// <summary>
+    /// Value-equality of two scopes for session correlation: they are the
+    /// SAME only if all three of tenant/user/session match (ordinal). Two
+    /// scopes differing in any segment — case-variants included — are
+    /// DIFFERENT scopes, consistent with the case-injective memory-path
+    /// encoding, and so poison a shared session box.
+    /// </summary>
+    private static bool SameScope(KnowledgeAccessScope a, KnowledgeAccessScope b) =>
+        string.Equals(a.TenantId, b.TenantId, StringComparison.Ordinal)
+        && string.Equals(a.UserId, b.UserId, StringComparison.Ordinal)
+        && string.Equals(a.SessionId, b.SessionId, StringComparison.Ordinal);
 
     /// <summary>
     /// The error from the most recent <see cref="StoreAIContextAsync"/>

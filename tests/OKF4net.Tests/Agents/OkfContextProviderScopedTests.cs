@@ -183,6 +183,43 @@ public class OkfContextProviderScopedTests
     }
 
     [Fact]
+    public async Task Reused_session_cannot_misfile_a_prior_invocations_capture_under_a_later_scope()
+    {
+        using var root = new TempDir();
+        var (resolver, store, _) = SetUp(root);
+        var scopeX = new KnowledgeAccessScope(tenantId: "tenant-x", userId: "alice");
+        var scopeY = new KnowledgeAccessScope(tenantId: "tenant-y", userId: "bob");
+        var activeScope = scopeX;
+        var provider = new OkfContextProvider(resolver, store, new OkfContextProviderOptions
+        {
+            MemoryCapture = MemoryCaptureMode.Enabled,
+            ScopeAccessor = _ => activeScope,
+        });
+        provider.UtcNow = () => new DateTime(2026, 7, 27, 9, 0, 0, DateTimeKind.Utc);
+        var pooledSession = new TestAgentSession();
+
+        await provider.ProvideForTest(Invoking(pooledSession, "request-x"), CancellationToken.None);
+        activeScope = scopeY;
+        await provider.ProvideForTest(Invoking(pooledSession, "request-y"), CancellationToken.None);
+
+        await provider.StoreForTest(Invoked(pooledSession, "secret-from-x", "answer-for-x"));
+
+        // FAIL-CLOSED: the pooled session was provided under two different
+        // scopes (X then Y), so its correlation box is poisoned and the
+        // capture is SKIPPED entirely (recorded in LastMemoryError). The core
+        // guarantee is that X's exchange must never surface under the later
+        // scope Y; with fail-closed it is not written under X either, so it
+        // appears NOWHERE — strictly safer than rewriting it under X, which
+        // would still be a guess about which scope the capture belonged to.
+        Assert.NotNull(provider.LastMemoryError);
+
+        var readX = await store.ReadAsync(scopeX, new KnowledgeQuery("secret-from-x"));
+        var readY = await store.ReadAsync(scopeY, new KnowledgeQuery("secret-from-x"));
+        Assert.Empty(readX.Passages);
+        Assert.Empty(readY.Passages);
+    }
+
+    [Fact]
     public async Task Split_budget_reserves_a_memory_floor_so_memory_is_not_starved_by_knowledge()
     {
         using var root = new TempDir();
