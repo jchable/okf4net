@@ -51,21 +51,10 @@ public sealed class Bundle
     /// <summary>Reserved filenames with defined meaning at any level (§3.1). Port of <c>RESERVED_FILENAMES</c> (bundle.rs:19).</summary>
     public static readonly string[] ReservedFilenames = [IndexFilename, LogFilename];
 
-    /// <summary>
-    /// UTF-8 decoder configured to throw on invalid byte sequences (no
-    /// U+FFFD replacement, no BOM emission), matching the strictness of
-    /// Rust's <c>fs::read_to_string</c> (which fails with an
-    /// <c>io::Error</c> of kind <c>InvalidData</c> — message "stream did not
-    /// contain valid UTF-8" — for any file that is not valid UTF-8).
-    /// <see cref="File.ReadAllText(string)"/> is deliberately not used here:
-    /// it silently substitutes U+FFFD for invalid bytes instead of failing.
-    /// </summary>
-    private static readonly System.Text.UTF8Encoding StrictUtf8 =
-        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-
     private readonly Dictionary<ConceptId, int> _index;
     private readonly Dictionary<ConceptId, List<ResolvedLink>> _outbound;
     private readonly Dictionary<ConceptId, List<ConceptId>> _backlinks;
+    private readonly string? _okfVersion;
 
     private Bundle(
         string root,
@@ -85,6 +74,11 @@ public sealed class Bundle
         ParseErrors = parseErrors;
         _outbound = outbound;
         _backlinks = backlinks;
+        // Computed eagerly here (not deferred) so OkfVersion reflects the same
+        // load-time snapshot as the rest of the bundle: a later change to the
+        // root index.md on disk cannot alter an already-loaded instance. Root
+        // is set above and is the only field ComputeOkfVersion reads.
+        _okfVersion = ComputeOkfVersion();
     }
 
     /// <summary>
@@ -117,7 +111,7 @@ public sealed class Bundle
             throw new BundleLoadException($"I/O error: {e.Message}");
         }
 
-        mdFiles.Sort(ComparePathsComponentWise);
+        mdFiles.Sort(PathOrdering.CompareComponentWise);
 
         var concepts = new List<Concept>();
         var indexFiles = new List<string>();
@@ -140,7 +134,7 @@ public sealed class Bundle
                         string text;
                         try
                         {
-                            text = StrictUtf8.GetString(File.ReadAllBytes(path));
+                            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
                         }
                         catch (IOException e)
                         {
@@ -259,46 +253,55 @@ public sealed class Bundle
     /// frontmatter, if present (<c>okf_version</c>, §11). This is the only
     /// place frontmatter is permitted in an <c>index.md</c>. Port of
     /// <c>Bundle::okf_version</c> (bundle.rs:196-203).
+    ///
+    /// Computed once while <see cref="Load"/> builds the bundle and stored, so
+    /// it reflects the same load-time snapshot as the rest of this
+    /// <see cref="Bundle"/>: a later change to the root <c>index.md</c> on disk
+    /// does not affect an already-loaded instance. A legitimate <c>null</c> (no
+    /// root <c>index.md</c>, no <c>okf_version</c> key, or an unreadable file) is
+    /// a stored value like any other. The backing field is <c>readonly</c> and
+    /// set in the constructor before the instance is published, so
+    /// <see cref="Bundle"/> instances shared and read concurrently (e.g. across
+    /// tool invocations in <c>OkfBundleTools</c>) need no lock.
     /// </summary>
-    public string? OkfVersion
+    public string? OkfVersion => _okfVersion;
+
+    private string? ComputeOkfVersion()
     {
-        get
+        var rootIndex = System.IO.Path.Combine(Root, IndexFilename);
+        string text;
+        try
         {
-            var rootIndex = System.IO.Path.Combine(Root, IndexFilename);
-            string text;
-            try
-            {
-                text = StrictUtf8.GetString(File.ReadAllBytes(rootIndex));
-            }
-            catch (IOException)
-            {
-                return null;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return null;
-            }
-            catch (System.Text.DecoderFallbackException)
-            {
-                // Mirrors `fs::read_to_string(&root_index).ok()?` (bundle.rs:198):
-                // any read failure -- including non-UTF-8 content -- is
-                // swallowed and yields None, unlike the concept-file read
-                // above where the same failure aborts the whole Load.
-                return null;
-            }
-
-            OkfDocument doc;
-            try
-            {
-                doc = OkfDocument.Parse(text);
-            }
-            catch (DocumentParseException)
-            {
-                return null;
-            }
-
-            return doc.Frontmatter.Get("okf_version")?.AsDisplayString();
+            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(rootIndex));
         }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (System.Text.DecoderFallbackException)
+        {
+            // Mirrors `fs::read_to_string(&root_index).ok()?` (bundle.rs:198):
+            // any read failure -- including non-UTF-8 content -- is
+            // swallowed and yields None, unlike the concept-file read
+            // above where the same failure aborts the whole Load.
+            return null;
+        }
+
+        OkfDocument doc;
+        try
+        {
+            doc = OkfDocument.Parse(text);
+        }
+        catch (DocumentParseException)
+        {
+            return null;
+        }
+
+        return doc.Frontmatter.Get("okf_version")?.AsDisplayString();
     }
 
     /// <summary>
@@ -318,6 +321,20 @@ public sealed class Bundle
         foreach (var name in entries)
         {
             var path = System.IO.Path.Combine(dir, name);
+
+            // Rust's `entry.file_type()` (bundle.rs:211) is lstat-based: a
+            // symlink's file_type() has is_dir() == false AND is_file() ==
+            // false, matching neither arm below, so the entry is skipped
+            // outright -- never recursed into, never collected even if it
+            // has a `.md` name. Directory.Exists/File.Exists instead follow
+            // the link (like Rust's *non*-lstat Path::is_dir()/is_file()),
+            // so reparse points must be excluded explicitly here to preserve
+            // that fidelity.
+            if (ReparsePoints.IsReparsePoint(path))
+            {
+                continue;
+            }
+
             if (Directory.Exists(path))
             {
                 CollectMarkdown(path, output);
@@ -327,38 +344,6 @@ public sealed class Bundle
                 output.Add(path);
             }
         }
-    }
-
-    /// <summary>
-    /// Compares two absolute file paths component-by-component (splitting
-    /// on <c>\</c> and <c>/</c>), ordinal per segment, with a shorter
-    /// segment list sorting first when one path is a prefix of the other.
-    /// Mirrors Rust's <c>PathBuf</c>'s derived <c>Ord</c> (which compares
-    /// via the <c>Component</c> iterator, not raw bytes) — used for the
-    /// final <c>md_files.sort()</c> in <c>Bundle::load</c> (bundle.rs:72).
-    ///
-    /// A flat ordinal string comparison of full paths is NOT equivalent: on
-    /// Windows, <c>'.'</c> (0x2E) sorts before <c>'\'</c> (0x5C), so a raw
-    /// string sort would place <c>orders.md</c> before <c>orders\extra.md</c>
-    /// even though the directory <c>orders</c> should sort before the
-    /// sibling file <c>orders.md</c> — inverting the DFS walk order that
-    /// <see cref="CollectMarkdown"/> already produced.
-    /// </summary>
-    private static int ComparePathsComponentWise(string a, string b)
-    {
-        var segmentsA = a.Split('\\', '/');
-        var segmentsB = b.Split('\\', '/');
-        var n = Math.Min(segmentsA.Length, segmentsB.Length);
-        for (var i = 0; i < n; i++)
-        {
-            var cmp = string.CompareOrdinal(segmentsA[i], segmentsB[i]);
-            if (cmp != 0)
-            {
-                return cmp;
-            }
-        }
-
-        return segmentsA.Length.CompareTo(segmentsB.Length);
     }
 
     /// <summary>

@@ -7,6 +7,10 @@ obj/
 # Graphify knowledge graph output
 graphify-out/
 
+# Claude Code local state (skills are tracked; worktrees/settings are not)
+.claude/worktrees/
+.claude/settings.local.json
+
 # winget packaging artifacts
 packaging/winget/out/
 

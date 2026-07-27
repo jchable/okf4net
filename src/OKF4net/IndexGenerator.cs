@@ -20,22 +20,6 @@ public static class IndexGenerator
     private const string IndexFile = "index.md";
 
     /// <summary>
-    /// UTF-8 decoder configured to throw on invalid byte sequences, matching
-    /// the strictness of Rust's <c>fs::read_to_string</c>. Mirrors
-    /// <c>Bundle</c>'s private <c>StrictUtf8</c> (duplicated here since that
-    /// one is private to <see cref="Bundle"/>).
-    /// </summary>
-    private static readonly System.Text.UTF8Encoding StrictUtf8 =
-        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-
-    /// <summary>
-    /// UTF-8 encoder without a byte-order mark, for writing generated
-    /// <c>index.md</c> files (matching Rust's <c>fs::write</c>, which never
-    /// emits a BOM).
-    /// </summary>
-    private static readonly System.Text.UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
-
-    /// <summary>
     /// A synthesizer for subdirectory descriptions: given the directory's
     /// path (relative to the bundle root) and its child (title, description)
     /// pairs, returns a one-line description. Port of Rust's
@@ -118,6 +102,22 @@ public static class IndexGenerator
         RegenerateIndexesWith(bundleRoot, DefaultSynthesize);
 
     /// <summary>
+    /// Test-only hook invoked immediately before the late reparse-point
+    /// re-check that runs right before each <c>index.md</c> write (see
+    /// <see cref="RegenerateIndexesWith"/>'s remarks), with the directory
+    /// about to be written as its argument. Used by <c>IndexTests</c> to
+    /// deterministically substitute a directory that already passed the
+    /// early traversal skip with a junction/symlink, in the exact narrow
+    /// window such a race would need to land in -- a substitution the
+    /// earlier, best-effort <see cref="CollectMarkdown"/> skip could never
+    /// have caught, since the directory was still real when it ran.
+    /// <c>internal</c> rather than test-conditional compilation, consistent
+    /// with this assembly's <c>InternalsVisibleTo</c> grant to
+    /// <c>OKF4net.Tests</c>. No-op (null) in production.
+    /// </summary>
+    internal static Action<string>? BeforeLateReparseCheckForTest { get; set; }
+
+    /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle, deriving each
     /// subdirectory's description with the supplied synthesizer.
     ///
@@ -126,6 +126,57 @@ public static class IndexGenerator
     /// skipped. Returns the paths of the index files written. Port of
     /// <c>regenerate_indexes_with</c> (index.rs:93-186).
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Reparse-point safety (defense-in-depth, not a full guarantee):</b>
+    /// <see cref="DirectoriesToIndex"/>'s traversal (via
+    /// <see cref="CollectMarkdown"/>) already performs an EARLY, best-effort
+    /// skip of reparse-point directories (symlinks, junctions, mount
+    /// points), matching Rust's lstat-based <c>collect_markdown</c>. That
+    /// skip only protects the directories it can see AT COLLECTION TIME,
+    /// though: a directory that was a genuine directory when collected could
+    /// still be replaced by a reparse point before this method gets around
+    /// to writing its <c>index.md</c> -- a classic check-then-write race
+    /// (TOCTOU). Since <see cref="File.WriteAllText(string, string, System.Text.Encoding)"/>
+    /// has no portable no-follow mode in .NET, such a write would silently
+    /// land wherever the reparse point resolves -- potentially outside
+    /// <paramref name="bundleRoot"/> entirely.
+    /// </para>
+    /// <para>
+    /// To narrow (not close) that window, this method re-checks, immediately
+    /// before each <c>index.md</c> write, that the target directory itself
+    /// and every ancestor directory strictly UP TO (but not including)
+    /// <paramref name="bundleRoot"/> is still free of reparse points (see
+    /// the private <c>HasReparsePointAncestor</c> helper, which reuses
+    /// <see cref="ReparsePoints.IsReparsePoint"/> -- the same primitive the
+    /// early skip uses -- rather than duplicating platform-specific reparse
+    /// detection). <paramref name="bundleRoot"/> itself is deliberately
+    /// exempt from this check -- see <c>HasReparsePointAncestor</c>'s own
+    /// doc comment for why: a symlinked/mounted bundle root is a legitimate
+    /// setup that the early traversal already indexes unconditionally, and
+    /// treating it as suspect here would silently suppress every index
+    /// write for such a bundle. The <c>index.md</c> FILE NODE itself is
+    /// ALSO re-checked via <see cref="ReparsePoints.IsReparsePoint"/> right
+    /// before the write -- the ancestor walk only covers directories
+    /// strictly between the target directory and <paramref name="bundleRoot"/>,
+    /// so it would never notice a pre-planted <c>index.md</c> symlink sitting
+    /// directly in an otherwise-genuine directory (a gap <c>OkfBundleTools</c>'s
+    /// <c>WriteConcept</c>/<c>AppendLog</c> (in the separate <c>OKF4net.Agents</c>
+    /// project) already close for their own target files). A reparse point
+    /// detected at any of these three points
+    /// (early skip, late ancestor re-check, late target-node re-check) is
+    /// handled the same way: that <c>index.md</c> write is SKIPPED (not
+    /// included in the returned list) and regeneration continues with the
+    /// remaining directories -- it never aborts the whole run and never
+    /// throws.
+    /// </para>
+    /// <para>
+    /// This still does not fully close the gap: a substitution landing in
+    /// the instant between the late check and the write itself would still
+    /// slip through. No portable, race-free "check and write without
+    /// following a symlink" primitive exists in .NET for this case.
+    /// </para>
+    /// </remarks>
     public static IReadOnlyList<string> RegenerateIndexesWith(string bundleRoot, Synthesize synthesize)
     {
         var written = new List<string>();
@@ -141,7 +192,7 @@ public static class IndexGenerator
             var da = Depth(bundleRoot, a);
             var db = Depth(bundleRoot, b);
             var cmp = db.CompareTo(da);
-            return cmp != 0 ? cmp : ComparePathsComponentWise(a, b);
+            return cmp != 0 ? cmp : PathOrdering.CompareComponentWise(a, b);
         });
 
         var dirDescriptions = new Dictionary<string, string>();
@@ -151,7 +202,7 @@ public static class IndexGenerator
             var entries = new List<IndexEntry>();
 
             var children = Directory.GetFileSystemEntries(directory).ToList();
-            children.Sort(ComparePathsComponentWise);
+            children.Sort(PathOrdering.CompareComponentWise);
 
             foreach (var child in children)
             {
@@ -187,8 +238,42 @@ public static class IndexGenerator
                 continue;
             }
 
+            BeforeLateReparseCheckForTest?.Invoke(directory);
+
+            // Late, best-effort re-check -- see RegenerateIndexesWith's
+            // <remarks>. `directory` passed the EARLY skip during
+            // DirectoriesToIndex's traversal, but that only proves it was a
+            // real directory (with no reparse-point ancestor) at collection
+            // time; it could have been replaced by a symlink/junction any
+            // time between then and now. Re-checking immediately before the
+            // write narrows (without closing) that window.
+            if (HasReparsePointAncestor(bundleRoot, directory))
+            {
+                continue;
+            }
+
             var indexPath = Path.Combine(directory, IndexFile);
-            File.WriteAllText(indexPath, BuildIndexText(entries), Utf8NoBom);
+
+            // Also guard the index.md FILE NODE itself (F2): the ancestor
+            // check above only walks directories STRICTLY BETWEEN `directory`
+            // and `bundleRoot` -- it never inspects `indexPath` itself. A
+            // pre-planted "bundle/tables/index.md" symlink pointing at an
+            // external file would otherwise sail through that ancestor check
+            // (its only ancestor, `directory`, is a genuine directory) and
+            // get silently overwritten, since File.WriteAllText follows a
+            // file symlink. This mirrors WriteConcept/AppendLog, which both
+            // check ReparsePoints.IsReparsePoint on their own target FILE
+            // node in addition to its ancestor chain -- IndexGenerator was
+            // asymmetric with those until this check was added. Same
+            // skip-not-abort handling as the ancestor check above: this
+            // directory's index.md write is skipped and regeneration
+            // continues with the rest of the bundle.
+            if (ReparsePoints.IsReparsePoint(indexPath))
+            {
+                continue;
+            }
+
+            File.WriteAllText(indexPath, BuildIndexText(entries), OkfEncodings.NoBom);
             written.Add(indexPath);
 
             if (string.Equals(directory, bundleRoot, StringComparison.Ordinal))
@@ -220,7 +305,7 @@ public static class IndexGenerator
         string text;
         try
         {
-            text = StrictUtf8.GetString(File.ReadAllBytes(path));
+            text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
         {
@@ -260,7 +345,7 @@ public static class IndexGenerator
         var mdFiles = new List<string>();
         CollectMarkdown(bundleRoot, mdFiles);
 
-        var dirs = new SortedSet<string>(Comparer<string>.Create(ComparePathsComponentWise));
+        var dirs = new SortedSet<string>(Comparer<string>.Create(PathOrdering.CompareComponentWise));
         var rootParent = Path.GetDirectoryName(bundleRoot);
         foreach (var md in mdFiles)
         {
@@ -290,7 +375,17 @@ public static class IndexGenerator
     {
         foreach (var path in Directory.GetFileSystemEntries(dir))
         {
-            if (Directory.Exists(path))
+            // Rust checks only `entry.file_type()?.is_dir()` (lstat-based)
+            // before recursing (index.rs:227) -- a symlinked directory's
+            // file_type() reports is_dir() == false, so it is never
+            // descended into and never contributes a directory to
+            // directories_to_index. Directory.Exists instead follows the
+            // link (like Rust's *non*-lstat Path::is_dir()), so reparse
+            // points are excluded from the recursion arm here. The file
+            // branch below is a pure extension check in Rust too -- no
+            // is_file() guard -- so a symlink named `*.md` is still
+            // collected either way, matching Rust exactly.
+            if (!ReparsePoints.IsReparsePoint(path) && Directory.Exists(path))
             {
                 CollectMarkdown(path, output);
             }
@@ -302,28 +397,43 @@ public static class IndexGenerator
     }
 
     /// <summary>
-    /// Compares two absolute file paths component-by-component, mirroring
-    /// Rust's <c>PathBuf</c> derived <c>Ord</c> — used for the <c>children.sort()</c>
-    /// and directory-set ordering in <c>regenerate_indexes_with</c> /
-    /// <c>directories_to_index</c>. Duplicated from <see cref="Bundle"/>'s
-    /// private helper of the same purpose, since that one is private.
+    /// <c>true</c> if <paramref name="directory"/> itself, or any directory
+    /// strictly BETWEEN it and <paramref name="bundleRoot"/> (exclusive of
+    /// <paramref name="bundleRoot"/> itself), is a filesystem reparse point
+    /// (symlink, junction, mount point) -- checked via
+    /// <see cref="ReparsePoints.IsReparsePoint"/>, the same lstat-like
+    /// primitive <see cref="CollectMarkdown"/>'s early skip uses, so the
+    /// early and late checks can never diverge on what counts as a reparse
+    /// point.
+    ///
+    /// <paramref name="bundleRoot"/> is deliberately never inspected, even
+    /// when <paramref name="directory"/> equals it: pointing <c>okf index</c>
+    /// at a symlinked/mounted bundle root is a legitimate, common setup
+    /// (symlinked project directories, container/WSL bind mounts, macOS's
+    /// <c>/var</c>), and <see cref="DirectoriesToIndex"/>'s own early
+    /// traversal already includes and indexes <paramref name="bundleRoot"/>
+    /// unconditionally -- it never checks the walk's own starting root for
+    /// being a reparse point either. Treating the root as inclusive would
+    /// silently suppress every single index write for such a bundle. This
+    /// mirrors the sibling <c>OkfBundleTools.HasReparsePointAncestor</c>
+    /// (src/OKF4net.Agents/OkfBundleTools.cs), which stops its walk via
+    /// <c>while (!Equals(current, fullRoot))</c> -- the equality-to-root
+    /// check gates entry to the loop body, so the root itself is never
+    /// passed to <see cref="ReparsePoints.IsReparsePoint"/>.
+    ///
+    /// Used only by <see cref="RegenerateIndexesWith"/>'s late, best-effort
+    /// re-check immediately before each <c>index.md</c> write -- see that
+    /// method's <c>&lt;remarks&gt;</c> for why a directory that already
+    /// passed <see cref="DirectoriesToIndex"/>'s early skip still needs this
+    /// second look.
     /// </summary>
-    private static int ComparePathsComponentWise(string a, string b)
+    private static bool HasReparsePointAncestor(string bundleRoot, string directory)
     {
-        var segmentsA = a.Split('\\', '/');
-        var segmentsB = b.Split('\\', '/');
-        var n = Math.Min(segmentsA.Length, segmentsB.Length);
-        for (var i = 0; i < n; i++)
-        {
-            var cmp = string.CompareOrdinal(segmentsA[i], segmentsB[i]);
-            if (cmp != 0)
-            {
-                return cmp;
-            }
-        }
-
-        return segmentsA.Length.CompareTo(segmentsB.Length);
+        var fullRoot = Path.GetFullPath(bundleRoot);
+        var current = Path.GetFullPath(directory);
+        return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.Ordinal);
     }
+
 }
 
 /// <summary>

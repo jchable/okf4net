@@ -3,6 +3,17 @@
 Thanks for your interest in contributing! This document explains how to set up
 a development environment, run the tests, and submit changes.
 
+## Where to start
+
+New here? Pick an issue labelled
+[`good first issue`](https://github.com/jchable/okf4net/labels/good%20first%20issue) —
+each is scoped, names the files involved, and states how to verify it. For larger
+work see [`help wanted`](https://github.com/jchable/okf4net/labels/help%20wanted)
+and the [roadmap](ROADMAP.md). Unsure? Open a
+[Discussion](https://github.com/jchable/okf4net/discussions) and we'll help you find
+something. Three commands get you building and testing (see below): `dotnet build`,
+`dotnet test`, `dotnet format`.
+
 ## Prerequisites
 
 - [.NET SDK 10.0](https://dotnet.microsoft.com/download) or later — that's it.

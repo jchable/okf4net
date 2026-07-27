@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
+using OKF4net.Internal;
 
 namespace OKF4net.Cli;
 
@@ -18,17 +19,6 @@ public static class OkfCli
 {
     /// <summary>The crate version (Cargo.toml <c>[package] version</c>), echoed by <c>-V</c>/<c>--version</c>.</summary>
     private const string CliVersion = "0.1.0-alpha.1";
-
-    /// <summary>
-    /// UTF-8 decoder configured to throw on invalid byte sequences, matching
-    /// the strictness of Rust's <c>fs::read_to_string</c> used by
-    /// <c>cmd_parse</c>/<c>cmd_fmt</c> (okf.rs:210, 245).
-    /// </summary>
-    private static readonly UTF8Encoding StrictUtf8 =
-        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-
-    /// <summary>UTF-8 encoder without a byte-order mark, for <c>fmt -w</c> (matching Rust's <c>fs::write</c>).</summary>
-    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     /// <summary>Port of the Rust <c>USAGE</c> constant (okf.rs:57-73), verbatim.</summary>
     private const string Usage =
@@ -174,14 +164,23 @@ public static class OkfCli
         {
             bytes = File.ReadAllBytes(path);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
+            // Rust's `std::fs::read_to_string(path).map_err(|e| e.to_string())?`
+            // (okf.rs:210, 245) funnels EVERY filesystem failure -- including
+            // an interior NUL byte in the path, which Rust's std rejects with
+            // an io::Error before ever reaching the OS -- into the same
+            // `error: {msg}` exit-1 path. .NET rejects the same garbage paths
+            // (embedded NUL, reserved device names, ...) with ArgumentException
+            // or NotSupportedException rather than an I/O exception, so both
+            // must be caught here too or they escape as unhandled exceptions
+            // instead of a clean CLI error.
             throw new CliOperationException(e.Message);
         }
 
         try
         {
-            return StrictUtf8.GetString(bytes);
+            return OkfEncodings.Strict.GetString(bytes);
         }
         catch (DecoderFallbackException)
         {
@@ -194,61 +193,13 @@ public static class OkfCli
     {
         try
         {
-            File.WriteAllText(path, content, Utf8NoBom);
+            File.WriteAllText(path, content, OkfEncodings.NoBom);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
+            // See ReadFileStrict above: same funnel, same rationale.
             throw new CliOperationException(e.Message);
         }
-    }
-
-    /// <summary>
-    /// Renders a string the way Rust's <c>{:?}</c> (Debug) format does for
-    /// <c>&amp;str</c>: double-quoted, with <c>\</c>, <c>"</c>, and common
-    /// control characters escaped. Used by <c>cmd_graph</c>'s <c>--dot</c>
-    /// output (okf.rs:188), which formats node ids with <c>{:?}</c>.
-    /// Duplicated from the core library's private copies of the same helper
-    /// (e.g. <c>ConceptId.DebugQuote</c>) since those are not public API.
-    /// </summary>
-    private static string DebugQuote(string s)
-    {
-        var sb = new StringBuilder(s.Length + 2);
-        sb.Append('"');
-        foreach (var c in s)
-        {
-            switch (c)
-            {
-                case '"':
-                    sb.Append("\\\"");
-                    break;
-                case '\\':
-                    sb.Append("\\\\");
-                    break;
-                case '\n':
-                    sb.Append("\\n");
-                    break;
-                case '\r':
-                    sb.Append("\\r");
-                    break;
-                case '\t':
-                    sb.Append("\\t");
-                    break;
-                default:
-                    if (char.IsControl(c))
-                    {
-                        sb.Append("\\u{").Append(((int)c).ToString("x")).Append('}');
-                    }
-                    else
-                    {
-                        sb.Append(c);
-                    }
-
-                    break;
-            }
-        }
-
-        sb.Append('"');
-        return sb.ToString();
     }
 
     /// <summary>Port of <c>doc.validate_conformance().is_ok()</c> (okf.rs:217) without relying on exceptions for control flow at the call site.</summary>
@@ -398,7 +349,7 @@ public static class OkfCli
                 foreach (var link in bundle.LinksFrom(c.Id))
                 {
                     var style = link.Exists ? "" : " [style=dashed, color=red]";
-                    stdout.Write($"  {DebugQuote(c.Id.ToString())} -> {DebugQuote(link.Target.ToString())}{style};\n");
+                    stdout.Write($"  {RustDebugQuote.Quote(c.Id.ToString())} -> {RustDebugQuote.Quote(link.Target.ToString())}{style};\n");
                 }
             }
 

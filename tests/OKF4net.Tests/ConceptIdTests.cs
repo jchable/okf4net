@@ -338,4 +338,27 @@ public class ConceptIdTests
         Assert.True(a <= ConceptId.New(["a"]));
         Assert.True(a >= ConceptId.New(["a"]));
     }
+
+    [Fact]
+    public void Segments_is_not_downcast_mutable_via_New()
+    {
+        // ConceptId is used as a dictionary key (Bundle's `_index`); a
+        // downcast-mutable Segments would let a caller corrupt the key after
+        // insertion. New() takes an IReadOnlyList<string> -- passing a List
+        // must not let the caller reach back into the stored Segments.
+        var backing = new List<string> { "a", "b" };
+        var id = ConceptId.New(backing);
+
+        Assert.IsNotType<List<string>>(id.Segments, exactMatch: false);
+
+        backing.Add("c"); // mutating the caller's original list...
+        Assert.Equal(["a", "b"], id.Segments); // ...must not affect the ConceptId
+    }
+
+    [Fact]
+    public void Segments_is_not_downcast_mutable_via_Parse()
+    {
+        var id = ConceptId.Parse("a/b");
+        Assert.IsNotType<List<string>>(id.Segments, exactMatch: false);
+    }
 }

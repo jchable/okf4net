@@ -183,4 +183,47 @@ public class ChangeLogTests
         var log = ChangeLog.Parse("## 2026-07-21\n* a\n\n## 2026-07-20\n* b\n");
         Assert.Empty(log.InvalidDates());
     }
+
+    [Fact]
+    public void Public_constructor_from_title_and_days_roundtrips_through_parse()
+    {
+        // The public (title, days) constructor lets a caller programmatically
+        // rebuild a ChangeLog (e.g. after inserting/appending entries into a
+        // day list obtained from Parse) and re-render via ToMarkdown, without
+        // needing a private-constructor workaround.
+        var days = new List<LogDay>
+        {
+            new("2026-07-21", new List<LogEntry> { new("Update", "Added metric X."), new(null, "Plain entry.") }),
+            new("2026-07-20", new List<LogEntry> { new("Creation", "Initial.") }),
+        };
+
+        var log = new ChangeLog("Log", days);
+        var markdown = log.ToMarkdown();
+        Assert.Equal(
+            "# Log\n\n## 2026-07-21\n* **Update**: Added metric X.\n* Plain entry.\n\n## 2026-07-20\n* **Creation**: Initial.\n",
+            markdown);
+
+        var reparsed = ChangeLog.Parse(markdown);
+        Assert.Equal("Log", reparsed.Title);
+        Assert.Equal(2, reparsed.Days.Count);
+        Assert.Equal("2026-07-21", reparsed.Days[0].Date);
+        Assert.Equal("Update", reparsed.Days[0].Entries[0].Kind);
+        Assert.Equal("Added metric X.", reparsed.Days[0].Entries[0].Text);
+        Assert.Null(reparsed.Days[0].Entries[1].Kind);
+        Assert.Equal("Plain entry.", reparsed.Days[0].Entries[1].Text);
+        Assert.Equal("2026-07-20", reparsed.Days[1].Date);
+        Assert.Equal("Creation", reparsed.Days[1].Entries[0].Kind);
+        Assert.Equal("Initial.", reparsed.Days[1].Entries[0].Text);
+    }
+
+    [Fact]
+    public void Public_constructor_defensively_copies_the_days_list()
+    {
+        var days = new List<LogDay> { new("2026-07-21", new List<LogEntry> { new(null, "Entry.") }) };
+        var log = new ChangeLog(null, days);
+
+        days.Add(new LogDay("2026-07-20", new List<LogEntry> { new(null, "Later mutation.") }));
+
+        Assert.Single(log.Days);
+    }
 }

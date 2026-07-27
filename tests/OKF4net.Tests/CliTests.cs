@@ -15,28 +15,11 @@ public class CliTests
     // `dotnet test` runs with the current directory set to the test
     // assembly's output folder (bin/Debug/net10.0), not the repo root, so
     // the fixture path is resolved relative to the repo root (located by
-    // walking up from the test assembly to the .sln) rather than assumed
-    // relative to the process's current directory.
-    private static readonly string BundlePath = Path.Combine(RepoRoot(), "tests", "fixtures", "appendix_a");
+    // TestPaths.RepoRoot, walking up from the test assembly to the .sln)
+    // rather than assumed relative to the process's current directory.
+    private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
 
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "OKF4net.sln")))
-        {
-            dir = dir.Parent;
-        }
-
-        return dir?.FullName
-            ?? throw new InvalidOperationException($"could not locate OKF4net.sln above {AppContext.BaseDirectory}");
-    }
-
-    private static (int Code, string Out, string Err) Run(params string[] args)
-    {
-        var o = new StringWriter();
-        var e = new StringWriter();
-        return (OkfCli.Run(args, o, e), o.ToString(), e.ToString());
-    }
+    private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
 
     [Fact]
     public void No_args_prints_usage_and_fails()
@@ -118,6 +101,35 @@ public class CliTests
     }
 
     [Fact]
+    public void Graph_dot_styles_broken_links_dashed_and_red()
+    {
+        // okf.rs cmd_graph (okf.rs:177-206): an edge to a non-existent
+        // concept gets ` [style=dashed, color=red]` appended before the
+        // trailing `;` (OkfCli.cs CmdGraph). A resolvable edge gets no style
+        // suffix at all. Build a small bundle with one concept linking to a
+        // target that does not exist in the bundle.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nSee [missing](/does/not/exist.md).\n");
+        var r = Run("graph", tmp.Path, "--dot");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("\"a\" -> \"does/not/exist\" [style=dashed, color=red];\n", r.Out);
+    }
+
+    [Fact]
+    public void Graph_dot_does_not_style_resolvable_links()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\n---\nSee [b](/b.md).\n");
+        tmp.Write("b.md", "---\ntype: Note\n---\nbody\n");
+        var r = Run("graph", tmp.Path, "--dot");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("\"a\" -> \"b\";\n", r.Out);
+        Assert.DoesNotContain("style=dashed", r.Out);
+    }
+
+    [Fact]
     public void Parse_prints_document_structure()
     {
         var r = Run("parse", Path.Combine(BundlePath, "tables", "users.md"));
@@ -135,5 +147,80 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Contains("formatted", r.Out);
         Assert.Contains("body\n", File.ReadAllText(path));
+    }
+
+    // ----------------------------------------------------------------
+    // A3: invalid-path arguments must exit 1 with a uniform "error: ..."
+    // message on stderr, never an unhandled-exception stack trace --
+    // mirroring Rust's io::Error -> `.to_string()` -> `error: {msg}` funnel
+    // (okf.rs's `Err(msg) => { eprintln!("error: {msg}"); ... }`, main.rs:50-53).
+    // An embedded NUL byte is a convenient garbage path on every platform:
+    // .NET's filesystem APIs reject it with ArgumentException ("Null
+    // character in path"), which previously escaped uncaught from
+    // ReadFileStrict/WriteFileStrict instead of being funneled like every
+    // other I/O failure.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Parse_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("parse", "a\0b.md");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Out);
+    }
+
+    [Fact]
+    public void Validate_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("validate", "x\0y");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Out);
+    }
+
+    [Fact]
+    public void Fmt_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("fmt", "a\0b.md");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+    }
+
+    [Fact]
+    public void Info_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("info", "x\0y");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+    }
+
+    [Fact]
+    public void Graph_with_embedded_nul_path_exits_one_with_error_prefix()
+    {
+        var r = Run("graph", "x\0y");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+    }
+
+    [Fact]
+    public void Index_with_embedded_nul_path_reports_no_files_written_not_an_error()
+    {
+        // Deliberately NOT an "error: ..." exit-1 case: Rust's regenerate_indexes
+        // (index.rs:93-97) checks `bundle_root.exists()` first, which -- like
+        // .NET's Directory.Exists -- swallows the underlying failure and
+        // simply returns false for a garbage path, so the function returns
+        // Ok(empty) rather than an io::Error. cmd_index then reports "no
+        // index files written" and exits 0. Audited (A3) to confirm this
+        // command needed no change, unlike parse/fmt/validate/info/graph.
+        var r = Run("index", "x\0y");
+        Assert.Equal(0, r.Code);
+        Assert.Contains("no index files written", r.Out);
+        Assert.Equal("", r.Err);
     }
 }

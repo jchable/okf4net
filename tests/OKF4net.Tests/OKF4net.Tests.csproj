@@ -21,6 +21,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OKF4net\OKF4net.csproj" />
     <ProjectReference Include="..\..\src\OKF4net.Cli\OKF4net.Cli.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Agents\OKF4net.Agents.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Mcp\OKF4net.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Catalog\OKF4net.Catalog.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Catalog.Hosting\OKF4net.Catalog.Hosting.csproj" />
   </ItemGroup>
 
 </Project>

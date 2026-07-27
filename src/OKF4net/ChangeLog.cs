@@ -35,10 +35,23 @@ public sealed class ChangeLog
     /// <summary>Date-grouped entries, in document order (the convention is newest-first).</summary>
     public IReadOnlyList<LogDay> Days { get; }
 
-    private ChangeLog(string? title, IReadOnlyList<LogDay> days)
+    /// <summary>
+    /// Creates a change log directly from a title and a pre-built day list —
+    /// e.g. for a caller that programmatically inserts or appends entries
+    /// into the <see cref="Days"/> obtained from an earlier <see cref="Parse"/>
+    /// call, then wants to re-render via <see cref="ToMarkdown"/>. Defensively
+    /// copies <paramref name="days"/>, mirroring <see cref="Parse"/>'s own
+    /// immutable-snapshot behaviour (and <see cref="OKF4net.Yaml.YamlSequence"/>'s
+    /// constructor). A thin data constructor with no validation beyond what
+    /// the type system already enforces, matching <see cref="OkfDocument"/>'s
+    /// two-argument constructor.
+    /// </summary>
+    /// <param name="title">The top-level <c>#</c> heading text, or <c>null</c> for none.</param>
+    /// <param name="days">Date-grouped entries, in the order they should render (the convention is newest-first).</param>
+    public ChangeLog(string? title, IReadOnlyList<LogDay> days)
     {
         Title = title;
-        Days = days;
+        Days = [.. days];
     }
 
     /// <summary>
