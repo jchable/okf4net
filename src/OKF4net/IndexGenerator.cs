@@ -441,7 +441,14 @@ public static class IndexGenerator
     /// </summary>
     private static bool HasReparsePointAncestor(string bundleRoot, string directory)
     {
-        var fullRoot = Path.GetFullPath(bundleRoot);
+        // TrimEndingDirectorySeparator matters here: Path.GetFullPath alone
+        // preserves a trailing separator if bundleRoot has one, but the walk
+        // in ReparsePoints.HasReparsePointAncestor stops via exact string
+        // equality against an ancestor produced by Path.GetDirectoryName,
+        // which never carries one -- an untrimmed root would never match,
+        // overshooting the walk past the intended root into the real
+        // filesystem above it.
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleRoot));
         var current = Path.GetFullPath(directory);
         return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.Ordinal);
     }

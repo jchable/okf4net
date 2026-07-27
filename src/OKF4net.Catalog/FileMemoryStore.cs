@@ -217,7 +217,12 @@ public sealed class FileMemoryStore : IMemoryStore
 
     private static bool IsReparseEscaped(string root, string subDir)
     {
-        var fullRoot = Path.GetFullPath(root);
+        // TrimEndingDirectorySeparator matters here: a host-configured tier
+        // root with a trailing separator would otherwise never string-equal
+        // the ancestor HasReparsePointAncestor's walk produces via
+        // Path.GetDirectoryName (which never carries one), overshooting the
+        // walk past the intended root into the real filesystem above it.
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         var full = Path.GetFullPath(subDir);
         return ReparsePoints.IsReparsePoint(full) || ReparsePoints.HasReparsePointAncestor(fullRoot, full, PathComparison);
     }
