@@ -31,11 +31,15 @@ Ne pas confondre version *package* et version *spec* :
 | | Version package | Version spec cible |
 |---|---|---|
 | Python `reference-agent` | 0.1.0 | **OKF v0.2** |
-| OKF4net | 0.2.0 | **OKF v0.1** (`OkfSpec.Version = "0.1"`) |
+| OKF4net | 0.2.0 (publiée) | **OKF v0.1** (`OkfSpec.Version = "0.1"`) |
 
 La spec upstream (`okf/SPEC.md`) est passée à **v0.2**, sur-ensemble de v0.1 avec
 2 renommages breaking + des ajouts. OKF4net implémente fidèlement v0.1 — donc est
 en retard d'une version de spec.
+
+> **Plan de version** : le support d'OKF v0.2 fera passer `OkfSpec.Version` à
+> `"0.2"` et le package OKF4net à **0.3.0** (la 0.2.0 étant déjà publiée). Design
+> détaillé : [`docs/superpowers/specs/2026-07-27-okf-v0.2-upgrade-design.md`](../superpowers/specs/2026-07-27-okf-v0.2-upgrade-design.md).
 
 ### Ce que v0.2 introduit et qu'OKF4net ne gère pas encore
 
