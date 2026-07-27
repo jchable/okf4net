@@ -194,8 +194,8 @@ public static class CatalogManifestParser
         var path = ParsePath(source, diags);
         var priority = ParsePriority(source, diags);
         var enabled = ParseEnabled(source, diags);
-        var role = ParseRole(source, diags);
-        var tier = ParseTier(source, role, diags);
+        var (role, roleWasValid) = ParseRole(source, diags);
+        var tier = ParseTier(source, role, roleWasValid, diags);
 
         return new KnowledgeCatalogSource(id, path, priority, enabled, role, tier);
     }
@@ -278,11 +278,21 @@ public static class CatalogManifestParser
         return true;
     }
 
-    private static SourceRole ParseRole(JsonElement source, List<CatalogDiagnostic> diags)
+    /// <summary>
+    /// Parses the source's <c>role</c>. <c>RoleWasValid</c> is <see langword="false"/>
+    /// when the property was present but neither "knowledge" nor "memory" --
+    /// distinct from a role that validly parsed to <see cref="SourceRole.Knowledge"/>
+    /// (either by default or explicitly), so <see cref="ParseTier"/> can avoid
+    /// piling a second, misleading "tier is only valid on role:memory"
+    /// diagnostic onto a source whose real problem is just an illegal role
+    /// value (that source is rejected either way; this only keeps its
+    /// diagnostic list from implying <c>tier</c> is also wrong).
+    /// </summary>
+    private static (SourceRole Role, bool RoleWasValid) ParseRole(JsonElement source, List<CatalogDiagnostic> diags)
     {
         if (!source.TryGetProperty(RoleProperty, out var roleProperty))
         {
-            return SourceRole.Knowledge;
+            return (SourceRole.Knowledge, true);
         }
 
         if (roleProperty.ValueKind == JsonValueKind.String)
@@ -290,26 +300,26 @@ public static class CatalogManifestParser
             var value = roleProperty.GetString();
             if (value == KnowledgeRoleValue)
             {
-                return SourceRole.Knowledge;
+                return (SourceRole.Knowledge, true);
             }
 
             if (value == MemoryRoleValue)
             {
-                return SourceRole.Memory;
+                return (SourceRole.Memory, true);
             }
         }
 
         diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalRole, "Source 'role' must be \"knowledge\" or \"memory\"."));
-        return SourceRole.Knowledge;
+        return (SourceRole.Knowledge, false);
     }
 
-    private static MemoryTier? ParseTier(JsonElement source, SourceRole role, List<CatalogDiagnostic> diags)
+    private static MemoryTier? ParseTier(JsonElement source, SourceRole role, bool roleWasValid, List<CatalogDiagnostic> diags)
     {
         var hasTier = source.TryGetProperty(TierProperty, out var tierProperty);
 
         if (role != SourceRole.Memory)
         {
-            if (hasTier)
+            if (hasTier && roleWasValid)
             {
                 diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalTier, "Source 'tier' is only valid on a role:\"memory\" source."));
             }

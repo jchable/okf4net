@@ -73,11 +73,15 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
+            // Invariant across every hit in this tier -- computed once rather
+            // than per hit (MemoryPath.For hashes a segment per call).
+            var conceptIdPrefix = MemoryPath.For(tier, scope);
+
             foreach (var hit in ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag))
             {
                 passages.Add(new KnowledgePassage(
                     SourceId: $"memory:{tier}",
-                    ConceptId: $"{MemoryPath.For(tier, scope)}/{hit.Concept.Id}",
+                    ConceptId: $"{conceptIdPrefix}/{hit.Concept.Id}",
                     Title: hit.Concept.Document.Frontmatter.Title,
                     Excerpt: ConceptSearch.Excerpt(hit.Concept.Document.Body, query.Text) ?? string.Empty,
                     Score: hit.Score,

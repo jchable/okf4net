@@ -112,6 +112,69 @@ public class FileKnowledgeCatalogTests
     }
 
     /// <summary>
+    /// Isolates the disabled-source skip in <c>TryLoadSnapshot</c> (<c>if
+    /// (!source.Enabled) continue;</c> before <c>CatalogPathResolver.TryResolve</c>)
+    /// from <see cref="CatalogPathResolver"/>'s own missing-directory
+    /// rejection: this and <see cref="An_enabled_source_with_the_same_nonexistent_path_fails_construction"/>
+    /// differ only in the "ghost" source's <c>enabled</c> flag, so together
+    /// they prove it is specifically the disabled skip -- not some other
+    /// reason a nonexistent path might be tolerated -- that lets construction
+    /// succeed here.
+    /// </summary>
+    [Fact]
+    public void Disabled_source_with_a_nonexistent_path_does_not_fail_construction()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
+        var catalogPath = temp.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "docs", "path": "./docs" },
+                { "id": "ghost", "path": "./does-not-exist", "enabled": false }
+              ]
+            }
+            """);
+
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        });
+
+        Assert.Equal(2, catalog.Current.Sources.Count);
+        var ghost = catalog.Current.Sources.Single(s => s.Id == "ghost");
+        Assert.False(ghost.Enabled);
+    }
+
+    /// <summary>Companion to <see cref="Disabled_source_with_a_nonexistent_path_does_not_fail_construction"/> -- see that test's remarks.</summary>
+    [Fact]
+    public void An_enabled_source_with_the_same_nonexistent_path_fails_construction()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
+        var catalogPath = temp.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "docs", "path": "./docs" },
+                { "id": "ghost", "path": "./does-not-exist", "enabled": true }
+              ]
+            }
+            """);
+
+        var options = new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        };
+
+        Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(options));
+    }
+
+    /// <summary>
     /// F9 regression: a strict-UTF8 <c>File.ReadAllBytes</c> + <c>GetString</c>
     /// decode (adopted to reject genuinely invalid UTF-8, unlike the old
     /// <c>File.ReadAllText</c>) does NOT strip a leading U+FEFF byte-order
