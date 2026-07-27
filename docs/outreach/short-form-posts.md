@@ -135,7 +135,7 @@ for .NET. A few things that were genuinely interesting to design in C#:
   endings, significant trailing whitespace, the works).
 
 Article: https://dev.to/REPLACE-WITH-ARTICLE-URL
-Repo (MIT-adjacent-but-actually-LGPL-3.0-or-later): https://github.com/jchable/okf4net
+Repo (LGPL-3.0-or-later): https://github.com/jchable/okf4net
 
 Curious what this sub thinks of the order-preserving-mapping-over-DTO
 choice in particular — it's the one I keep going back and forth on.
