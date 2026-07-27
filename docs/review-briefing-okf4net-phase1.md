@@ -1,5 +1,12 @@
 # External Review Briefing — OKF4net Phase 1 (branch `okf4net-migration`)
 
+> **Historical document (Phase 1 review).** This briefing was written during
+> the one-time migration, when observable-behavior fidelity to the original
+> source was the review standard. That standard is retired: OKF4net is now an
+> **independent .NET implementation** of the OKF spec and does not track any
+> other implementation. Kept as a record of the Phase 1 review; the source
+> code, `README`, and the OKF spec are authoritative for current behaviour.
+
 You are an external reviewer with no prior context. This document is self-contained: it tells you what to review, how to verify claims independently, which divergences are intentional (do not re-flag), and which issues are already known (do not re-report). Everything else is fair game — the goal of this review is **fresh eyes**.
 
 ## 1. What this project is

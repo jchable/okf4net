@@ -158,7 +158,7 @@ public static class BundleValidator
                     Severity.Warning,
                     concept.Path,
                     concept.Id,
-                    $"`timestamp` is not ISO-8601: {RustDebugQuote.Quote(ts)}"));
+                    $"`timestamp` is not ISO-8601: {DebugQuote.Quote(ts)}"));
             }
         }
 
@@ -279,7 +279,7 @@ public static class BundleValidator
                     Severity.Warning,
                     path,
                     null,
-                    $"log date heading is not ISO-8601 `YYYY-MM-DD`: {RustDebugQuote.Quote(bad)}"));
+                    $"log date heading is not ISO-8601 `YYYY-MM-DD`: {DebugQuote.Quote(bad)}"));
             }
         }
     }

@@ -2,11 +2,9 @@
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Port of the Rust <c>ConceptId</c> semantics (src/concept_id.rs). The Rust
-/// crate has no dedicated test file for this module — rules are exercised by
-/// bundle/links tests — so these are written directly from the doc comments
-/// and the <c>validate_segment</c> / <c>parse</c> / <c>new</c> / <c>from_path</c>
-/// implementations (concept_id.rs:31-136).
+/// Tests for <c>ConceptId</c> semantics, covering the
+/// <c>ValidateSegment</c> / <c>Parse</c> / <c>New</c> / <c>FromPath</c>
+/// rules (§2).
 /// </summary>
 public class ConceptIdTests
 {
@@ -24,7 +22,7 @@ public class ConceptIdTests
     }
 
     // --- parse() tolerance: empty segments produced by leading/trailing/duplicate
-    // slashes are silently dropped (concept_id.rs:43-47), NOT an error. ---
+    // slashes are silently dropped, NOT an error. ---
 
     [Theory]
     [InlineData("a//b", "a/b")]     // duplicate slash collapses
@@ -34,11 +32,10 @@ public class ConceptIdTests
     public void Parse_tolerates_redundant_slashes(string input, string expected)
         => Assert.Equal(expected, ConceptId.Parse(input).ToString());
 
-    // --- invalid ids: corrected/completed from the ACTUAL rules in
-    // validate_segment (concept_id.rs:124-136) and parse (concept_id.rs:46-55).
-    // NOTE: the brief's draft listed "a//b" as invalid — that's wrong per the
-    // Rust source (see Parse_tolerates_redundant_slashes above); it is dropped
-    // here and replaced with real invalid segments. ---
+    // --- invalid ids: drawn from the actual rules in ValidateSegment and
+    // Parse. Note that "a//b" is NOT invalid (see
+    // Parse_tolerates_redundant_slashes above) -- only genuinely invalid
+    // segments appear here. ---
 
     [Theory]
     [InlineData("")]                 // empty string -> zero segments
@@ -58,14 +55,14 @@ public class ConceptIdTests
         => Assert.Throws<ConceptIdException>(() => ConceptId.Parse(bad));
 
     [Fact]
-    public void Empty_string_error_message_matches_rust_debug_format()
+    public void Empty_string_error_message_uses_debug_quote_format()
     {
         var ex = Assert.Throws<ConceptIdException>(() => ConceptId.Parse(""));
         Assert.Equal("Empty concept id: \"\"", ex.Message);
     }
 
     [Fact]
-    public void Invalid_segment_error_message_matches_rust_debug_format()
+    public void Invalid_segment_error_message_uses_debug_quote_format()
     {
         var ex = Assert.Throws<ConceptIdException>(() => ConceptId.Parse("-abc"));
         Assert.Equal("Invalid concept id segment: \"-abc\"", ex.Message);
@@ -86,8 +83,8 @@ public class ConceptIdTests
         Assert.Equal("Invalid concept id segment: \"\"", ex.Message);
     }
 
-    // --- new(): validates each segment and requires at least one (concept_id.rs:33-41).
-    // Unlike parse(), it does NOT drop empty strings from the caller-supplied list. ---
+    // --- New(): validates each segment and requires at least one.
+    // Unlike Parse(), it does NOT drop empty strings from the caller-supplied list. ---
 
     [Fact]
     public void New_requires_at_least_one_segment()
@@ -142,8 +139,8 @@ public class ConceptIdTests
     [Fact]
     public void FromPath_leaves_non_md_suffix_untouched()
     {
-        // from_path only strips a ".md" suffix if present (strip_suffix,
-        // concept_id.rs:100-104) -- it does not require or enforce it.
+        // FromPath only strips a ".md" suffix if present -- it does not
+        // require or enforce it.
         var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\log");
         Assert.Equal("log", id.ToString());
     }
@@ -186,10 +183,9 @@ public class ConceptIdTests
     [Fact]
     public void FromPath_normalizes_away_non_leading_dot_segments()
     {
-        // Rust's from_path iterates Path::components() (concept_id.rs:96-99),
-        // which normalizes away a non-leading "." path segment (it never
-        // yields a CurDir component for it), so "root/a/./b.md" resolves to
-        // "a/b" in Rust, not an error.
+        // FromPath iterates path components, which normalize away a
+        // non-leading "." path segment (no CurDir component is yielded for
+        // it), so "root/a/./b.md" resolves to "a/b", not an error.
         var id = ConceptId.FromPath(@"C:\bundle", @"C:\bundle\a\.\b.md");
         Assert.Equal("a/b", id.ToString());
     }
@@ -197,9 +193,9 @@ public class ConceptIdTests
     [Fact]
     public void FromPath_still_rejects_dotdot_segments()
     {
-        // Unlike ".", ".." is NOT normalized away by Path::components() --
-        // it survives as a literal segment and fails ValidateSegment (its
-        // first char '.' is not a valid leading char), in both Rust and here.
+        // Unlike ".", ".." is NOT normalized away by path-component
+        // iteration -- it survives as a literal segment and fails
+        // ValidateSegment (its first char '.' is not a valid leading char).
         Assert.Throws<ConceptIdException>(
             () => ConceptId.FromPath(@"C:\bundle", @"C:\bundle\a\..\b.md"));
     }
@@ -250,14 +246,14 @@ public class ConceptIdTests
         Assert.False(a.Equals((object)"tables/users"));
     }
 
-    // --- Ordering (F13): Rust derives PartialOrd/Ord (concept_id.rs:26) over
-    // the single Vec<String> field -- element-wise, ordinal String Ord, and
-    // shorter-is-less on a strict-prefix tie. ---
+    // --- Ordering (F13): ids are ordered over their segment list --
+    // element-wise, ordinal string comparison, and shorter-is-less on a
+    // strict-prefix tie. ---
 
     [Fact]
     public void CompareTo_orders_segment_wise_not_by_joined_string()
     {
-        // Per Vec<String> Ord: compare element-wise. "a/b" vs "ab":
+        // Compare element-wise over segments. "a/b" vs "ab":
         // first elements "a" vs "ab" -> "a" < "ab" (ordinal), so "a/b" < "ab"
         // even though the joined strings would sort the other way
         // ('/' (0x2F) < 'b' (0x62), so a joined-string compare would also

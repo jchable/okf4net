@@ -340,7 +340,7 @@ public static class OkfCli
                 foreach (var link in bundle.LinksFrom(c.Id))
                 {
                     var style = link.Exists ? "" : " [style=dashed, color=red]";
-                    stdout.Write($"  {RustDebugQuote.Quote(c.Id.ToString())} -> {RustDebugQuote.Quote(link.Target.ToString())}{style};\n");
+                    stdout.Write($"  {DebugQuote.Quote(c.Id.ToString())} -> {DebugQuote.Quote(link.Target.ToString())}{style};\n");
                 }
             }
 

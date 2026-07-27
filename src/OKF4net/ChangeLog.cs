@@ -64,7 +64,7 @@ public sealed class ChangeLog
         string? currentDate = null;
         List<LogEntry>? currentEntries = null;
 
-        foreach (var line in RustLines.Split(text))
+        foreach (var line in LfLines.Split(text))
         {
             var t = line.TrimEnd().TrimStart();
             if (t.StartsWith("## ", StringComparison.Ordinal))

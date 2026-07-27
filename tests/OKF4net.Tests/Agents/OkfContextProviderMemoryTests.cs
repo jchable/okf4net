@@ -179,7 +179,7 @@ public class OkfContextProviderMemoryTests
         tools.UtcNow = () => new DateTime(2026, 7, 22, 8, 0, 0, DateTimeKind.Utc);
         var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.Enabled });
 
-        // A naive `Split('\n')` (rather than the shared RustLines.Split,
+        // A naive `Split('\n')` (rather than the shared LfLines.Split,
         // whose documented semantics say a trailing '\n' produces no
         // trailing empty line) would turn this trailing newline into a
         // spurious empty "> " blockquote line after neutralization.

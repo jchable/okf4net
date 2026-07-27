@@ -230,7 +230,7 @@ public static class LinkScanner
     {
         var result = new List<Citation>();
         var inSection = false;
-        foreach (var line in RustLines.Split(body))
+        foreach (var line in LfLines.Split(body))
         {
             var trimmed = line.Trim();
             if (trimmed.StartsWith('#'))
@@ -269,7 +269,7 @@ public static class LinkScanner
     {
         var result = new List<string>();
         char? fence = null;
-        foreach (var line in RustLines.Split(body))
+        foreach (var line in LfLines.Split(body))
         {
             var trimmed = line.TrimStart();
             if (fence is { } f)

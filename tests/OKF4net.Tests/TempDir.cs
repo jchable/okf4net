@@ -6,10 +6,8 @@ namespace OKF4net.Tests;
 
 /// <summary>
 /// Shared test helper: a tiny dependency-free temporary-directory fixture.
-/// Port of <c>tests/common/mod.rs</c>. Only the subset of members exercised
-/// by the ported tests is included (<see cref="Path"/>, <see cref="Write"/>,
-/// <see cref="Dispose"/>) — Rust's <c>read</c>/<c>mkdir</c> helpers are
-/// unused by the Task 8 tests and are omitted.
+/// Only the subset of members exercised by the tests is included
+/// (<see cref="Path"/>, <see cref="Write"/>, <see cref="Dispose"/>).
 /// </summary>
 public sealed class TempDir : IDisposable
 {
@@ -227,7 +225,7 @@ public sealed class TempDir : IDisposable
         }
         catch
         {
-            // Best-effort cleanup, mirroring Rust's `Drop` impl (tests/common/mod.rs:57-61).
+            // Best-effort cleanup on Dispose.
         }
     }
 }

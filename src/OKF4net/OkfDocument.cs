@@ -43,7 +43,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     /// </exception>
     public static OkfDocument Parse(string text)
     {
-        var lines = RustLines.Split(text);
+        var lines = LfLines.Split(text);
         if (lines.Count == 0 || lines[0].Trim() != FrontmatterDelim)
         {
             return new OkfDocument(new Frontmatter(), text);

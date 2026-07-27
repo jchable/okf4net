@@ -47,15 +47,15 @@ public static class IndexGenerator
         var sections = new List<string>();
         foreach (var (typ, items) in grouped)
         {
-            // Stable sort by lowercased title, using RustCaseFold for full
+            // Stable sort by lowercased title, using UnicodeCaseFold for full
             // Unicode case folding over the Basic Multilingual Plane rather
             // than string.ToLowerInvariant()/StringComparer.Ordinal, which
             // handle characters like U+0130 (İ) and code points outside the
-            // Basic Multilingual Plane differently -- see RustCaseFold's doc
+            // Basic Multilingual Plane differently -- see UnicodeCaseFold's doc
             // comments.
             var sorted = items
                 .Select((item, ordinal) => (item, ordinal))
-                .OrderBy(x => RustCaseFold.ToLowercase(x.item.Title), Comparer<string>.Create(RustCaseFold.CompareCodePoints))
+                .OrderBy(x => UnicodeCaseFold.ToLowercase(x.item.Title), Comparer<string>.Create(UnicodeCaseFold.CompareCodePoints))
                 .ThenBy(x => x.ordinal)
                 .Select(x => x.item)
                 .ToList();

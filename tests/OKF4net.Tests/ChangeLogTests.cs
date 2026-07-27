@@ -2,23 +2,21 @@
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Port of the Rust <c>Log</c> semantics (src/log.rs). <c>Log::parse</c> is
-/// permissive by construction — it never fails, it just tolerates whatever
-/// shape the input has — so most cases here assert graceful degradation
-/// rather than exceptions.
+/// <c>ChangeLog.Parse</c> is permissive by construction — it never fails, it
+/// just tolerates whatever shape the input has — so most cases here assert
+/// graceful degradation rather than exceptions.
 /// </summary>
 public class ChangeLogTests
 {
     [Fact]
     public void Parse_roundtrips_wellformed_log()
     {
-        // NOTE: the exact literal below differs from the task brief's draft.
-        // to_markdown (log.rs:77) never inserts a blank line between a "## "
+        // NOTE: ToMarkdown never inserts a blank line between a "## "
         // heading and its first bullet, always renders bullets as "* " (never
         // "- "), and always renders a kind as "**Kind**: text" (with a
         // colon) — so a source using "- " bullets or omitting the colon
-        // would NOT round-trip byte-for-byte. This literal mirrors the
-        // doc-comment example at the top of log.rs (lines 5-11) instead.
+        // would NOT round-trip byte-for-byte. This literal uses the canonical
+        // rendering shape so it survives a parse -> ToMarkdown round-trip.
         var src = "# Log\n\n## 2026-07-21\n* **Update**: Added metric X.\n* Plain entry.\n\n## 2026-07-20\n* **Creation**: Initial.\n";
         var log = ChangeLog.Parse(src);
         Assert.Equal("Log", log.Title);
@@ -53,12 +51,12 @@ public class ChangeLogTests
 
     [Theory]
     [InlineData("2026-07-21", true)]
-    [InlineData("2026-13-01", false)] // month out of range: is_iso_date DOES validate the 1..=12 range
+    [InlineData("2026-13-01", false)] // month out of range: IsIsoDate DOES validate the 1-12 range
     [InlineData("26-07-21", false)] // wrong length (8, not 10)
     [InlineData("2026-00-01", false)] // month 0 out of range
     [InlineData("2026-07-00", false)] // day 0 out of range
-    [InlineData("2026-07-32", false)] // day out of range: is_iso_date only checks 1..=31, no calendar awareness
-    [InlineData("2026-02-30", true)] // is_iso_date is NOT calendar-aware: Feb 30 passes the 1..=31 day check
+    [InlineData("2026-07-32", false)] // day out of range: IsIsoDate only checks 1-31, no calendar awareness
+    [InlineData("2026-02-30", true)] // IsIsoDate is NOT calendar-aware: Feb 30 passes the 1-31 day check
     [InlineData("2026/07/21", false)] // wrong separator
     [InlineData("2026-07-2a", false)] // non-digit in day
     public void IsIsoDate_checks_shape_and_ranges(string s, bool ok)
@@ -104,8 +102,8 @@ public class ChangeLogTests
     [Fact]
     public void Parse_bullet_with_unclosed_bold_marker_falls_back_to_plain_text()
     {
-        // No closing "**" found -> parse_entry (log.rs:114) falls through to
-        // the None arm and keeps the whole trimmed body, "**" included.
+        // No closing "**" found -> the parser falls through and keeps the
+        // whole trimmed body, "**" included.
         var log = ChangeLog.Parse("## 2026-07-21\n* **Unclosed bold text.\n");
         var entry = log.Days[0].Entries[0];
         Assert.Null(entry.Kind);
@@ -115,8 +113,8 @@ public class ChangeLogTests
     [Fact]
     public void Parse_bullet_bold_marker_without_colon_still_parses_kind()
     {
-        // strip_prefix(':') is optional (unwrap_or) -> a marker with no
-        // trailing colon still yields a Kind, just no ':' to strip.
+        // The trailing ':' is optional -> a marker with no trailing colon
+        // still yields a Kind, just no ':' to strip.
         var log = ChangeLog.Parse("## 2026-07-21\n* **Update** Added metric X.\n");
         var entry = log.Days[0].Entries[0];
         Assert.Equal("Update", entry.Kind);
@@ -135,9 +133,9 @@ public class ChangeLogTests
     [Fact]
     public void Parse_ignores_a_second_h1_heading_once_a_day_has_started()
     {
-        // title is only ever set while `current` (the open day) is still
-        // None (log.rs:61); a "# " line seen after the first "## " heading
-        // is simply dropped (it matches neither bullet nor "## " prefix).
+        // title is only ever set while the open day is still absent; a "# "
+        // line seen after the first "## " heading is simply dropped (it
+        // matches neither bullet nor "## " prefix).
         var log = ChangeLog.Parse("# Log\n\n## 2026-07-21\n# Not a title\n* Entry.\n");
         Assert.Equal("Log", log.Title);
         Assert.Single(log.Days[0].Entries);

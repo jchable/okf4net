@@ -50,16 +50,15 @@ public class YamlValueTests
     [Fact]
     public void ToString_matches_ToYamlString()
     {
-        // Rust `impl fmt::Display for Value` (yaml/mod.rs:213-217) writes
-        // to_yaml_string(); the C# override must match exactly.
+        // The ToString override must produce exactly the same text as
+        // ToYamlString.
         var v = YamlValue.Parse("a: 1\n");
         Assert.Equal(v.ToYamlString(), v.ToString());
         Assert.Equal(v.ToYamlString(), $"{v}");
     }
 
-    // --- F14: implicit conversions, porting Rust's From<&str>/From<bool>/
-    // From<i64>/From<Vec<T>> for Value (yaml/mod.rs:219-247). There is
-    // intentionally no From<f64> port -- Rust has none. ---
+    // --- F14: implicit conversions from string/bool/long/array to
+    // YamlValue. There is intentionally no conversion from double. ---
 
     [Fact]
     public void Implicit_conversion_from_string_yields_YamlString()
@@ -106,10 +105,9 @@ public class YamlValueTests
     [Fact]
     public void Sequence_constructor_defensively_copies_the_backing_list()
     {
-        // Rust's `From<Vec<Value>>` consumes (moves) the Vec, so mutating it
-        // after construction is impossible there. The C# constructor must
-        // not alias the caller's list, so post-construction mutation of the
-        // caller's list must not be observable through the sequence.
+        // The constructor must not alias the caller's list: it defensively
+        // copies its input, so post-construction mutation of the caller's
+        // list is not observable through the sequence.
         var list = new List<YamlValue> { new YamlInt(1), new YamlInt(2) };
         var seq = new YamlSequence(list);
 
@@ -141,7 +139,7 @@ public class YamlValueTests
     }
 
     [Fact]
-    public void IsEmptyValue_matches_rust_semantics()
+    public void IsEmptyValue_treats_falsy_scalars_and_empty_collections_as_empty()
     {
         Assert.True(YamlNull.Instance.IsEmptyValue);
         Assert.True(new YamlString("").IsEmptyValue);

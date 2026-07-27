@@ -2,16 +2,13 @@
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Port of the Rust bundle-loading and cross-link-graph tests
-/// (tests/bundle.rs), exercised against the spec's Appendix A minimal
-/// example bundle.
+/// Tests for bundle loading and the cross-link graph, exercised against the
+/// spec's Appendix A minimal example bundle.
 /// </summary>
 public class BundleTests
 {
     /// <summary>
-    /// Builds the Appendix A example bundle and returns its temp dir. Port
-    /// of <c>appendix_a()</c> (tests/bundle.rs:10-49); literals copied
-    /// verbatim.
+    /// Builds the Appendix A example bundle and returns its temp dir.
     /// </summary>
     private static TempDir AppendixA()
     {
@@ -55,7 +52,6 @@ public class BundleTests
     [Fact]
     public void Loads_all_concepts()
     {
-        // tests/bundle.rs:51-59
         using var tmp = AppendixA();
         var bundle = Bundle.Load(tmp.Path);
         Assert.Equal(3, bundle.Count);
@@ -67,7 +63,6 @@ public class BundleTests
     [Fact]
     public void Resolves_cross_links_and_backlinks()
     {
-        // tests/bundle.rs:61-81
         using var tmp = AppendixA();
         var bundle = Bundle.Load(tmp.Path);
 
@@ -91,7 +86,6 @@ public class BundleTests
     [Fact]
     public void Broken_links_are_detected_but_not_fatal()
     {
-        // tests/bundle.rs:83-99.
         using var tmp = new TempDir();
         tmp.Write(
             "a.md",
@@ -110,7 +104,6 @@ public class BundleTests
     [Fact]
     public void Appendix_a_is_conformant()
     {
-        // tests/bundle.rs:101-108
         using var tmp = AppendixA();
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
@@ -121,7 +114,6 @@ public class BundleTests
     [Fact]
     public void Missing_type_is_a_conformance_error()
     {
-        // tests/bundle.rs:110-118
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntitle: No Type\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -133,7 +125,6 @@ public class BundleTests
     [Fact]
     public void Reserved_files_are_recognized_not_concepts()
     {
-        // tests/bundle.rs:120-130
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
         tmp.Write("index.md", "# Listing\n\n* [a](a.md)\n");
@@ -147,7 +138,6 @@ public class BundleTests
     [Fact]
     public void Okf_version_read_from_root_index()
     {
-        // tests/bundle.rs:132-139
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
         tmp.Write("index.md", "---\nokf_version: \"0.1\"\n---\n\n# Listing\n");
@@ -186,9 +176,9 @@ public class BundleTests
         // `orders` directory before the `orders.md` file (the directory
         // name "orders" sorts before "orders.md" since it's a string
         // prefix), so the correct concept order is `orders/extra` before
-        // `orders` -- matching Rust's PathBuf (component-wise) Ord. A flat
-        // ordinal sort of full path strings would invert this, since '.'
-        // (0x2E) sorts before '\' (0x5C).
+        // `orders` -- component-wise path ordering (directories sort before
+        // sibling files). A flat ordinal sort of full path strings would
+        // invert this, since '.' (0x2E) sorts before '\' (0x5C).
         using var tmp = new TempDir();
         tmp.Write("orders/extra.md", "---\ntype: Note\n---\nbody\n");
         tmp.Write("orders.md", "---\ntype: Note\n---\nbody\n");
@@ -202,9 +192,8 @@ public class BundleTests
     public void Invalid_utf8_aborts_the_whole_load()
     {
         // Regression: File.ReadAllText silently substitutes U+FFFD for
-        // invalid UTF-8 byte sequences instead of failing, unlike Rust's
-        // fs::read_to_string (which yields an io::Error, propagated by `?`
-        // and turned into BundleError::Io -- aborting the whole load).
+        // invalid UTF-8 byte sequences instead of failing. The loader must
+        // instead surface an I/O error and abort the whole load.
         using var tmp = new TempDir();
         File.WriteAllBytes(System.IO.Path.Combine(tmp.Path, "bad.md"), [0xC3, 0x28]);
         Assert.Throws<BundleLoadException>(() => Bundle.Load(tmp.Path));
@@ -213,16 +202,15 @@ public class BundleTests
     [Fact]
     public void Dotfile_named_dot_md_is_not_treated_as_a_markdown_file()
     {
-        // Regression: Rust's path.extension() == Some("md") (bundle.rs:216)
-        // is false for a file named EXACTLY ".md" -- a leading-dot-only
-        // filename has no extension in Rust's model (it's a dotfile, not a
-        // "stem.ext" split). Both .NET's Path.GetExtension(".md") and a
-        // naive EndsWith(".md") check return/match ".md", wrongly treating
-        // it as a markdown file. If collected, it would even fail to parse
-        // -- ConceptId::from_path strips ".md", leaving an empty segment,
-        // which ValidateSegment rejects -- surfacing as a spurious
-        // ParseErrors entry instead of being silently skipped like any
-        // other non-.md file.
+        // Regression: a file named EXACTLY ".md" has no extension -- a
+        // leading-dot-only filename is a dotfile, not a "stem.ext" split --
+        // so it must not be treated as a markdown file. Both .NET's
+        // Path.GetExtension(".md") and a naive EndsWith(".md") check
+        // return/match ".md", wrongly treating it as a markdown file. If
+        // collected, it would even fail to parse -- FromPath strips ".md",
+        // leaving an empty segment, which segment validation rejects --
+        // surfacing as a spurious ParseErrors entry instead of being
+        // silently skipped like any other non-.md file.
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
         File.WriteAllText(System.IO.Path.Combine(tmp.Path, ".md"), "not a real concept file");
@@ -233,13 +221,12 @@ public class BundleTests
     }
 
     // ----------------------------------------------------------------
-    // A2: symlink walk fidelity. Rust's collect_markdown (bundle.rs:207-222)
-    // recurses via `entry.file_type()`, an lstat-based query reporting the
-    // type of the directory entry ITSELF rather than its target. A symlink's
-    // file_type() has is_dir() == false AND is_file() == false, so it
-    // matches neither match arm and the entry is skipped outright --
-    // different from Directory.Exists/File.Exists, which resolve through
-    // the link like Rust's (following) Path::is_dir()/Path::is_file().
+    // A2: symlink walk fidelity. The bundle walk classifies each directory
+    // entry by its own type via lstat-based detection, reporting the type of
+    // the entry ITSELF rather than its target. A symlink is neither a
+    // directory nor a regular file, so it matches neither arm and the entry
+    // is skipped outright -- different from Directory.Exists/File.Exists,
+    // which resolve through the link.
     //
     // Both tests require symlink-creation privilege
     // (SeCreateSymbolicLinkPrivilege on Windows, absent without Developer

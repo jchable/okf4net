@@ -21,7 +21,7 @@ namespace OKF4net.Internal;
 /// disagrees with code-point order across the surrogate range.</description></item>
 /// </list>
 /// </summary>
-internal static class RustCaseFold
+internal static class UnicodeCaseFold
 {
     /// <summary>LATIN CAPITAL LETTER I WITH DOT ABOVE.</summary>
     private const int CapitalIWithDotAbove = 0x0130;

@@ -14,7 +14,7 @@ namespace OKF4net.Internal;
 /// <c>'\n'</c> does not produce a trailing empty line, and the empty
 /// string produces no lines.
 /// </summary>
-internal static class RustLines
+internal static class LfLines
 {
     internal static List<string> Split(string text)
     {

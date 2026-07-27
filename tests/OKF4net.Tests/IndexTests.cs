@@ -2,13 +2,11 @@
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Index generation tests, mirroring the reference <c>tests/test_index.py</c>
-/// via the Rust port (tests/index.rs). Literals and assertions copied
-/// verbatim.
+/// Index generation tests.
 /// </summary>
 public class IndexTests
 {
-    /// <summary>Port of <c>write_doc</c> (tests/index.rs:8-13).</summary>
+    /// <summary>Writes a concept document into the temp bundle.</summary>
     private static void WriteDoc(TempDir tmp, string rel, string type_, string title, string description)
     {
         var contents =
@@ -26,7 +24,6 @@ public class IndexTests
     [Fact]
     public void Regenerate_groups_by_type_and_links_relative()
     {
-        // tests/index.rs:15-37
         using var tmp = new TempDir();
         WriteDoc(tmp, "datasets/ga4.md", "BigQuery Dataset", "GA4 Dataset", "GA4 obfuscated ecommerce sample.");
         WriteDoc(tmp, "tables/events_.md", "BigQuery Table", "events_*", "Daily-sharded GA4 event tables.");
@@ -52,7 +49,6 @@ public class IndexTests
     [Fact]
     public void Regenerate_skips_empty_directories()
     {
-        // tests/index.rs:39-46
         using var tmp = new TempDir();
         Directory.CreateDirectory(Path.Combine(tmp.Path, "empty_dir"));
         var written = IndexGenerator.RegenerateIndexes(tmp.Path);
@@ -63,7 +59,6 @@ public class IndexTests
     [Fact]
     public void Regenerate_single_child_reuses_description()
     {
-        // tests/index.rs:48-66
         using var tmp = new TempDir();
         WriteDoc(tmp, "datasets/only.md", "BigQuery Dataset", "Only Dataset", "The only dataset in this bundle.");
 
@@ -81,12 +76,12 @@ public class IndexTests
     }
 
     [Fact]
-    public void BuildIndexText_sorts_unicode_titles_like_rust_to_lowercase()
+    public void BuildIndexText_sorts_unicode_titles_with_full_unicode_case_folding()
     {
         // Reviewer's scenario: .NET's ToLowerInvariant leaves U+0130 (İ)
         // unchanged, so under the old StringComparer.Ordinal sort "İtem"
         // (starting with U+0130) sorted AFTER "j-item" (U+0130 > 'j' in
-        // UTF-16 ordinal order). Rust's `to_lowercase` maps U+0130 to "i̇"
+        // UTF-16 ordinal order). Full Unicode lowercasing maps U+0130 to "i̇"
         // (lowercase i + combining dot above), which sorts BEFORE "j-item".
         var entries = new List<IndexEntry>
         {
@@ -99,7 +94,7 @@ public class IndexTests
         var iTemIndex = text.IndexOf("[İtem]", StringComparison.Ordinal);
         var jItemIndex = text.IndexOf("[j-item]", StringComparison.Ordinal);
         Assert.True(iTemIndex >= 0 && jItemIndex >= 0);
-        Assert.True(iTemIndex < jItemIndex, "İtem must sort before j-item, matching Rust's to_lowercase.");
+        Assert.True(iTemIndex < jItemIndex, "İtem must sort before j-item under full Unicode lowercasing.");
     }
 
     [Fact]
@@ -127,9 +122,9 @@ public class IndexTests
     public void Regenerate_does_not_list_a_dotfile_named_dot_md()
     {
         // Regression: same underlying bug as Bundle.CollectMarkdown -- a
-        // file named EXACTLY ".md" has no extension under Rust's
-        // path.extension() (index.rs:130, 229), so it must not be treated
-        // as a markdown entry to list or recurse into as a concept.
+        // file named EXACTLY ".md" is treated as having no extension (a
+        // leading-dot name, not a ".md" concept file), so it must not be
+        // listed as a markdown entry or recursed into as a concept.
         using var tmp = new TempDir();
         WriteDoc(tmp, "datasets/only.md", "BigQuery Dataset", "Only Dataset", "The only dataset in this bundle.");
         File.WriteAllText(Path.Combine(tmp.Path, "datasets", ".md"), "not a real concept file");
@@ -144,13 +139,12 @@ public class IndexTests
 
     // ----------------------------------------------------------------
     // A2: symlink walk fidelity, mirroring BundleTests' equivalent pair.
-    // index.rs's own collect_markdown (index.rs:223-234, used only to
-    // compute which directories need an index.md at all) recurses via
-    // `entry.file_type()?.is_dir()` -- lstat-based, so a symlinked directory
-    // is never descended into and never contributes to
-    // directories_to_index. This test requires symlink-creation privilege
-    // and skips itself (via TempDir.TryCreateDirectorySymlink's bool return)
-    // when unavailable.
+    // The internal CollectMarkdown (used only to compute which directories
+    // need an index.md at all) recurses using lstat-based directory
+    // detection, so a symlinked directory is never descended into and never
+    // contributes to DirectoriesToIndex. This test requires symlink-creation
+    // privilege and skips itself (via TempDir.TryCreateDirectorySymlink's
+    // bool return) when unavailable.
     // ----------------------------------------------------------------
 
     [Fact]
@@ -169,8 +163,8 @@ public class IndexTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "real", "index.md")));
 
         // The symlinked "linked" is neither descended into nor listed as a
-        // subdirectory in the parent index -- matching Rust's lstat-based
-        // collect_markdown, which skips it entirely. We assert on the parent
+        // subdirectory in the parent index -- matching the lstat-based
+        // CollectMarkdown, which skips it entirely. We assert on the parent
         // index's CONTENT rather than File.Exists("linked/index.md"), which
         // would be meaningless: "linked" resolves to "real", so that path IS
         // "real/index.md" and always exists on any symlink-resolving filesystem.

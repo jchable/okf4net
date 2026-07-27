@@ -2,12 +2,11 @@
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Port of the Rust conformance-checking tests, exercised rule-by-rule
-/// against <c>validate_bundle</c> (src/validate.rs:97-208). Each test targets
-/// exactly one diagnostic-producing rule and asserts its exact severity and
-/// message shape, per the doc comment at the top of validate.rs: only true
-/// §9 violations (unparseable frontmatter, missing/empty `type`) are
-/// <see cref="Severity.Error"/>; everything else is
+/// Conformance-checking tests, exercised rule-by-rule against
+/// <c>BundleValidator.Validate</c>. Each test targets exactly one
+/// diagnostic-producing rule and asserts its exact severity and message
+/// shape: only true §9 violations (unparseable frontmatter, missing/empty
+/// `type`) are <see cref="Severity.Error"/>; everything else is
 /// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>
 public class ValidateTests
@@ -15,7 +14,6 @@ public class ValidateTests
     [Fact]
     public void Unparseable_frontmatter_is_an_error()
     {
-        // validate.rs:100-108
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntype: [unterminated\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -31,7 +29,6 @@ public class ValidateTests
     [Fact]
     public void Missing_type_is_an_error()
     {
-        // validate.rs:112-121
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntitle: No Type\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -45,8 +42,8 @@ public class ValidateTests
     [Fact]
     public void Empty_type_string_is_an_error()
     {
-        // Document.ValidateConformance requires a non-empty `type`
-        // (document.rs:118-129); an explicit empty string is empty_value too.
+        // Document.ValidateConformance requires a non-empty `type`; an
+        // explicit empty string counts as empty too.
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntype: \"\"\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -58,7 +55,7 @@ public class ValidateTests
     [Fact]
     public void Missing_recommended_fields_are_warnings()
     {
-        // validate.rs:122-131: title/description/timestamp are soft guidance.
+        // title/description/timestamp are soft guidance.
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntype: Note\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -74,9 +71,8 @@ public class ValidateTests
     [Fact]
     public void Empty_recommended_field_values_are_also_warnings()
     {
-        // fm.get(field).map(|v| v.is_empty_value()).unwrap_or(true) -- an
-        // explicit but empty value (empty string) is treated the same as an
-        // absent one.
+        // An explicit but empty value (empty string) is treated the same as
+        // an absent one.
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntype: Note\ntitle: \"\"\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -101,7 +97,6 @@ public class ValidateTests
     [Fact]
     public void Non_iso_timestamp_is_a_warning()
     {
-        // validate.rs:132-141
         using var tmp = new TempDir();
         tmp.Write(
             "bad.md",
@@ -129,8 +124,7 @@ public class ValidateTests
     [Fact]
     public void Nonroot_index_with_frontmatter_is_a_warning()
     {
-        // validate.rs:170-179: frontmatter is only permitted in the
-        // bundle-root index.md.
+        // frontmatter is only permitted in the bundle-root index.md.
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
         tmp.Write("sub/index.md", "---\ntitle: nope\n---\n\n# Listing\n");
@@ -157,7 +151,6 @@ public class ValidateTests
     [Fact]
     public void Root_index_frontmatter_with_extra_keys_is_a_warning()
     {
-        // validate.rs:180-189
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
         tmp.Write("index.md", "---\nokf_version: \"0.1\"\ntitle: extra\n---\n\n# Listing\n");
@@ -183,7 +176,6 @@ public class ValidateTests
     [Fact]
     public void Invalid_log_date_heading_is_a_warning()
     {
-        // validate.rs:193-204
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
         tmp.Write("log.md", "# Log\n\n## not-a-date\n* **Update**: did a thing.\n");
@@ -210,7 +202,6 @@ public class ValidateTests
     [Fact]
     public void Broken_link_is_info_not_error_or_warning()
     {
-        // validate.rs:147-155 / tests/bundle.rs:83-99
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nSee [missing](/does/not/exist.md).\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -246,8 +237,8 @@ public class ValidateTests
     [InlineData("2026/05/28", false)]
     [InlineData("2026-13-01", false)]
     public void IsIso8601DateTime_splits_on_T_or_space_then_checks_the_date_part(string s, bool expected)
-        // is_iso8601_datetime (validate.rs:210-213): split on 'T' or ' ',
-        // then delegate to is_iso_date on the date part only.
+        // IsIso8601DateTime: split on 'T' or ' ', then delegate to the
+        // date-only ISO check on the date part.
         => Assert.Equal(expected, BundleValidator.IsIso8601DateTime(s));
 
     [Fact]

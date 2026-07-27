@@ -24,7 +24,7 @@ namespace OKF4net.Internal;
 /// DerivedCoreProperties.txt). Mn/Me covers the overwhelming majority of
 /// combining marks in practice (e.g. U+0301 COMBINING ACUTE ACCENT is Mn) and
 /// is the same category-based approximation strategy used elsewhere here (see
-/// <c>RustCaseFold.IsCaseIgnorable</c>) rather than a full derived-property
+/// <c>UnicodeCaseFold.IsCaseIgnorable</c>) rather than a full derived-property
 /// table.
 ///
 /// Iterates by <see cref="Rune"/> (not <c>char</c>) so a supplementary-plane
@@ -32,7 +32,7 @@ namespace OKF4net.Internal;
 /// never a broken-apart UTF-16 surrogate pair): each unit is a full Unicode
 /// scalar value rather than a UTF-16 code unit.
 /// </summary>
-internal static class RustDebugQuote
+internal static class DebugQuote
 {
     /// <summary>
     /// Returns <paramref name="s"/> as a debug-style quoted literal -- see the

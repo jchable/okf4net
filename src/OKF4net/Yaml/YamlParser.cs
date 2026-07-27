@@ -29,7 +29,7 @@ internal static class YamlParser
     /// </summary>
     public static YamlValue Parse(string text)
     {
-        var p = new BlockParser(RustLines.Split(text));
+        var p = new BlockParser(LfLines.Split(text));
         p.SkipBlankAndComments();
         if (p.Pos >= p.Lines.Count)
         {

@@ -820,15 +820,15 @@ public sealed class OkfContextProvider : AIContextProvider
     /// line (which <see cref="OkfDocument.Citations"/> would otherwise parse
     /// as real citation data) cannot be mistaken for genuine document
     /// structure, while the captured text stays human-readable. Lines are
-    /// split via the shared <see cref="RustLines.Split"/> (the same helper
+    /// split via the shared <see cref="LfLines.Split"/> (the same helper
     /// <see cref="OkfDocument"/>/<see cref="LinkScanner"/> use) rather than a
     /// second, ad hoc <c>Split('\n')</c> copy -- as a side effect, content
     /// ending in a trailing newline yields no spurious empty trailing
-    /// blockquote line, matching <see cref="RustLines.Split"/>'s documented
+    /// blockquote line, matching <see cref="LfLines.Split"/>'s documented
     /// "a trailing '\n' does not produce a trailing empty line" semantics.
     /// </summary>
     private static string Neutralize(string content) =>
-        string.Join('\n', RustLines.Split(content).Select(line => "> " + line));
+        string.Join('\n', LfLines.Split(content).Select(line => "> " + line));
 
     /// <summary>
     /// Replaces every U+0000 (NUL) in <paramref name="content"/> with U+FFFD

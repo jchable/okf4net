@@ -2,8 +2,8 @@
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Port of the Rust <c>okf::OKF_VERSION</c> constant (former
-/// <c>src/lib.rs:68</c>), now exposed publicly as <see cref="OkfSpec.Version"/>.
+/// Tests for the OKF spec version constant, exposed publicly as
+/// <see cref="OkfSpec.Version"/>.
 /// </summary>
 public class OkfSpecTests
 {

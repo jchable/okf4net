@@ -75,7 +75,7 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
         var segments = s.Split('/').Where(p => p.Length > 0).ToList();
         if (segments.Count == 0)
         {
-            throw new ConceptIdException($"Empty concept id: {RustDebugQuote.Quote(s)}");
+            throw new ConceptIdException($"Empty concept id: {DebugQuote.Quote(s)}");
         }
 
         foreach (var seg in segments)
@@ -170,14 +170,14 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
     {
         if (segment.Length == 0 || !IsValidFirstChar(segment[0]))
         {
-            throw new ConceptIdException($"Invalid concept id segment: {RustDebugQuote.Quote(segment)}");
+            throw new ConceptIdException($"Invalid concept id segment: {DebugQuote.Quote(segment)}");
         }
 
         for (var i = 1; i < segment.Length; i++)
         {
             if (!IsValidLaterChar(segment[i]))
             {
-                throw new ConceptIdException($"Invalid concept id segment: {RustDebugQuote.Quote(segment)}");
+                throw new ConceptIdException($"Invalid concept id segment: {DebugQuote.Quote(segment)}");
             }
         }
     }
