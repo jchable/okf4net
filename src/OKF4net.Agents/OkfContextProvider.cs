@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using OKF4net.Catalog;
 using OKF4net.Internal;
 
 namespace OKF4net.Agents;
@@ -78,8 +80,18 @@ public sealed class OkfContextProvider : AIContextProvider
     private const string TruncatedMarker = "… (truncated)";
     private const string RootBlockId = "index";
 
-    private readonly OkfBundleTools _tools;
+    private readonly OkfBundleTools? _tools;              // V1 mode
+    private readonly IKnowledgeResolver? _resolver;       // V2 mode
+    private readonly IMemoryStore? _memoryStore;          // V2 mode
     private readonly OkfContextProviderOptions _options;
+
+    // Correlates the scope resolved in ProvideAIContextAsync to the paired
+    // StoreAIContextAsync, keyed by the invocation's session.
+    private readonly ConditionalWeakTable<AgentSession, ScopeBox> _scopeBySession = new();
+    private sealed class ScopeBox { public KnowledgeAccessScope Scope = KnowledgeAccessScope.Local; }
+
+    /// <summary>The UTC clock used by the scoped (V2) capture path; overridable in tests.</summary>
+    internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
     /// <summary>
     /// Creates the provider over <paramref name="tools"/>.
@@ -123,6 +135,28 @@ public sealed class OkfContextProvider : AIContextProvider
         _options = effectiveOptions;
     }
 
+    /// <summary>
+    /// Creates the scoped (V2) provider: READ = knowledge (resolver) ∪ memory
+    /// (store) under a split token budget; WRITE = deterministic scoped capture
+    /// to <see cref="OkfContextProviderOptions.CaptureTier"/> via the store.
+    /// </summary>
+    public OkfContextProvider(IKnowledgeResolver resolver, IMemoryStore memoryStore, OkfContextProviderOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(memoryStore);
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (options.KnowledgeBudgetShare < 0 || options.MemoryBudgetShare < 0
+            || options.KnowledgeBudgetShare + options.MemoryBudgetShare > 1.0)
+        {
+            throw new ArgumentException("KnowledgeBudgetShare and MemoryBudgetShare must be >= 0 and sum to <= 1.", nameof(options));
+        }
+
+        _resolver = resolver;
+        _memoryStore = memoryStore;
+        _options = options;
+    }
+
     /// <inheritdoc/>
     /// <remarks>
     /// Never throws: <see cref="OkfContextProviderOptions.TokenBudget"/>
@@ -139,6 +173,11 @@ public sealed class OkfContextProvider : AIContextProvider
         if (totalBudget <= 0)
         {
             return new(new AIContext());
+        }
+
+        if (_resolver is not null && _memoryStore is not null)
+        {
+            return ProvideScopedAsync(context, totalBudget, cancellationToken);
         }
 
         // Everything from here on — the initial (re)load, Browse, the
@@ -159,7 +198,7 @@ public sealed class OkfContextProvider : AIContextProvider
             // fails to load is reported as our specific "bundle unavailable"
             // note even in the no-query path below, where ScoreConceptsFor
             // is never called at all and so could never surface it.
-            _tools.GetBundle();
+            _tools!.GetBundle();
 
             var query = ExtractLastUserMessageText(context);
             var remaining = totalBudget;
@@ -170,7 +209,7 @@ public sealed class OkfContextProvider : AIContextProvider
             // budget so concepts have room; with no query (nothing else
             // will use the budget) it gets to use all of it.
             var rootBudget = query is null ? remaining : totalBudget / 4;
-            var (rootBlock, rootUsed) = RenderBlock(RootBlockId, _tools.Browse(null), rootBudget, alwaysInclude: true);
+            var (rootBlock, rootUsed) = RenderBlock(RootBlockId, _tools!.Browse(null), rootBudget, alwaysInclude: true);
             sb.Append(rootBlock);
             remaining -= rootUsed;
 
@@ -180,14 +219,14 @@ public sealed class OkfContextProvider : AIContextProvider
             // all, since every following concept has the same or less room.
             if (query is not null)
             {
-                foreach (var (concept, _) in _tools.ScoreConceptsFor(query).Take(_options.MaxConceptsInjected))
+                foreach (var (concept, _) in _tools!.ScoreConceptsFor(query).Take(_options.MaxConceptsInjected))
                 {
                     if (remaining <= 0)
                     {
                         break;
                     }
 
-                    var (block, used) = RenderBlock(concept.Id.ToString(), _tools.ReadConcept(concept.Id.ToString()), remaining, alwaysInclude: false);
+                    var (block, used) = RenderBlock(concept.Id.ToString(), _tools!.ReadConcept(concept.Id.ToString()), remaining, alwaysInclude: false);
                     if (block is null)
                     {
                         break;
@@ -212,6 +251,106 @@ public sealed class OkfContextProvider : AIContextProvider
                 Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {ex.Message}")],
             });
         }
+    }
+
+    private async ValueTask<AIContext> ProvideScopedAsync(InvokingContext context, int totalBudget, CancellationToken ct)
+    {
+        var scope = _options.ScopeAccessor?.Invoke(context) ?? KnowledgeAccessScope.Local;
+        if (context.Session is { } session)
+        {
+            _scopeBySession.GetValue(session, static _ => new ScopeBox()).Scope = scope;
+        }
+
+        var query = ExtractLastUserMessageText(context);
+        if (query is null)
+        {
+            return new AIContext();
+        }
+
+        var knowledge = new List<KnowledgePassage>();
+        var memory = new List<KnowledgePassage>();
+        try
+        {
+            var kc = await _resolver!.SearchAsync(new KnowledgeQuery(query), ct).ConfigureAwait(false);
+            knowledge.AddRange(kc.Passages);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException) { throw; }
+        catch (Exception) { /* errors-as-data: knowledge degrades to empty */ }
+
+        try
+        {
+            var mr = await _memoryStore!.ReadAsync(scope, new KnowledgeQuery(query), ct).ConfigureAwait(false);
+            memory.AddRange(mr.Passages);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException) { throw; }
+        catch (Exception) { /* errors-as-data: memory degrades to empty */ }
+
+        // Split budget with floors + spillover (spec §6.3).
+        var mFloor = (int)(totalBudget * _options.MemoryBudgetShare);
+        var knowledgeCap = Math.Max(0, totalBudget - mFloor);
+        var sb = new StringBuilder();
+
+        var kUsed = AppendPassages(sb, knowledge, "knowledge", knowledgeCap);
+        var mUsed = AppendPassages(sb, memory, "memory", totalBudget - kUsed);
+        // Spill unused memory back to any remaining knowledge.
+        AppendPassages(sb, knowledge.Skip(CountRendered(sb, "knowledge")), "knowledge", totalBudget - kUsed - mUsed);
+
+        if (sb.Length == 0)
+        {
+            return new AIContext();
+        }
+
+        return new AIContext
+        {
+            Instructions = FixedInstructions,
+            Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
+        };
+    }
+
+    private static int CountRendered(StringBuilder sb, string surface)
+    {
+        var text = sb.ToString();
+        var marker = $"<okf-context id=\"{surface}:";
+        var count = 0;
+        var i = 0;
+        while ((i = text.IndexOf(marker, i, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            i += marker.Length;
+        }
+
+        return count;
+    }
+
+    private static int AppendPassages(StringBuilder sb, IEnumerable<KnowledgePassage> passages, string surface, int budget)
+    {
+        var used = 0;
+        var remaining = budget;
+        foreach (var p in passages)
+        {
+            if (remaining <= 0)
+            {
+                break;
+            }
+
+            var content = (p.Title is null ? string.Empty : p.Title + "\n") + p.Excerpt;
+            var (block, blockUsed) = RenderBlock($"{surface}:{p.SourceId}:{p.ConceptId}", content, remaining, alwaysInclude: false);
+            if (block is null)
+            {
+                break;
+            }
+
+            if (sb.Length > 0)
+            {
+                sb.Append('\n');
+            }
+
+            sb.Append(block);
+            remaining -= blockUsed;
+            used += blockUsed;
+        }
+
+        return used;
     }
 
     /// <summary>
@@ -410,6 +549,11 @@ public sealed class OkfContextProvider : AIContextProvider
     {
         LastMemoryError = null;
 
+        if (_resolver is not null && _memoryStore is not null)
+        {
+            return StoreScopedAsync(context, cancellationToken);
+        }
+
         if (_options.MemoryCapture != MemoryCaptureMode.Enabled)
         {
             return default;
@@ -445,6 +589,77 @@ public sealed class OkfContextProvider : AIContextProvider
         return default;
     }
 
+    private async ValueTask StoreScopedAsync(InvokedContext context, CancellationToken ct)
+    {
+        if (_options.MemoryCapture == MemoryCaptureMode.Disabled)
+        {
+            return;
+        }
+
+        if (context.InvokeException is not null || context.ResponseMessages is null)
+        {
+            return;
+        }
+
+        var userText = ExtractLastMessageText(context.RequestMessages, ChatRole.User);
+        var agentText = ExtractLastMessageText(context.ResponseMessages, ChatRole.Assistant);
+        if (userText is null && agentText is null)
+        {
+            return;
+        }
+
+        // Scope resolution for capture (arbitration B):
+        //  - No ScopeAccessor configured  => local mode; capture to the local subtree.
+        //  - ScopeAccessor configured but we cannot recover the invocation's scope
+        //    (no session, or no prior ProvideAIContextAsync in this session) => SKIP
+        //    the capture and record why, rather than misfiling it into _local.
+        KnowledgeAccessScope scope;
+        if (_options.ScopeAccessor is null)
+        {
+            scope = KnowledgeAccessScope.Local;
+        }
+        else if (context.Session is { } session && _scopeBySession.TryGetValue(session, out var box))
+        {
+            scope = box.Scope;
+        }
+        else
+        {
+            LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
+            return;
+        }
+
+        var now = UtcNow();
+        var dateStr = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var section = new StringBuilder()
+            .Append("## ").Append(now.ToString("HH:mm:ss", CultureInfo.InvariantCulture)).Append(" UTC").Append('\n').Append('\n')
+            .Append("**User:**").Append('\n')
+            .Append(Neutralize(SanitizeNul(userText) ?? NoContentPlaceholder)).Append('\n').Append('\n')
+            .Append("**Agent:**").Append('\n')
+            .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
+            .ToString();
+
+        var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        var frontmatter =
+            "type: AgentMemory\n"
+            + $"title: Agent memory {dateStr}\n"
+            + $"description: Captured user/agent exchanges for {dateStr}.\n"
+            + $"timestamp: {timestamp}\n";
+
+        try
+        {
+            var result = await _memoryStore!.WriteAsync(scope, new MemoryEntry(dateStr, frontmatter, section), _options.CaptureTier, ct).ConfigureAwait(false);
+            if (!result.Written)
+            {
+                LastMemoryError = result.Error;
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            LastMemoryError = ex.Message;
+        }
+    }
+
     /// <summary>
     /// The error from the most recent <see cref="StoreAIContextAsync"/>
     /// call, or <see langword="null"/> if that call captured nothing --
@@ -475,7 +690,7 @@ public sealed class OkfContextProvider : AIContextProvider
     /// </summary>
     private void CaptureMemory(string? userText, string? agentText)
     {
-        var now = _tools.UtcNow();
+        var now = _tools!.UtcNow();
         var dateStr = now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 #pragma warning disable CS0618 // MemoryDirectory: deliberately retained V1 path.
         var memoryConceptId = $"{_options.MemoryDirectory}/{dateStr}";
@@ -501,7 +716,7 @@ public sealed class OkfContextProvider : AIContextProvider
         // write lock -- never a snapshot taken by this method before the
         // lock, which is exactly the gap that used to let two concurrent
         // same-day captures race a lost update.
-        var writeResult = _tools.AppendToConceptAtomic(
+        var writeResult = _tools!.AppendToConceptAtomic(
             memoryConceptId,
             frontmatterYamlIfCreating,
             currentBody => currentBody is null ? section : currentBody.TrimEnd('\n') + "\n\n" + section);
@@ -511,7 +726,7 @@ public sealed class OkfContextProvider : AIContextProvider
             return;
         }
 
-        var logResult = _tools.AppendLog("Memory", $"Captured exchange in {memoryConceptId}");
+        var logResult = _tools!.AppendLog("Memory", $"Captured exchange in {memoryConceptId}");
         if (IsToolError(logResult))
         {
             LastMemoryError = logResult;
