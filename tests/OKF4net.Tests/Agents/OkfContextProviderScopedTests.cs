@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
@@ -205,5 +206,83 @@ public class OkfContextProviderScopedTests
         // Both surfaces are represented (memory got its floor share).
         Assert.Contains("memory:User", text, StringComparison.Ordinal);
         Assert.Contains("tables/orders", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Split_budget_honors_both_floors_before_knowledge_spillover()
+    {
+        using var root = new TempDir();
+        var (resolver, store, _) = SetUp(root);
+        var scope = new KnowledgeAccessScope(userId: "alice");
+        var session = new TestAgentSession();
+
+        // Abundant KNOWLEDGE content: far more matching concepts than fit in
+        // a 0.2-share floor of a 200-token budget (each renders ~34 tokens;
+        // the 40-token floor below fits only one), so knowledge alone would
+        // happily consume the whole budget if handed it -- exactly what the
+        // pre-fix formula (knowledgeCap = totalBudget - memoryFloor, ignoring
+        // KnowledgeBudgetShare entirely) let it do.
+        for (var i = 0; i < 40; i++)
+        {
+            root.Write($"kb/extra/k{i:D2}.md",
+                $"---\ntype: Note\ntitle: Zorbknow item {i:D2}\ndescription: filler\ntimestamp: 2026-07-27T00:00:00Z\n---\n\nZorbknow filler detail line {i:D2} with some padding text for length.\n");
+        }
+
+        // Abundant MEMORY content: several distinct day concepts, so memory
+        // too would use more than its own floor if given the room.
+        for (var i = 0; i < 5; i++)
+        {
+            await store.WriteAsync(
+                scope,
+                new MemoryEntry(
+                    $"2026-06-{i + 1:D2}",
+                    $"type: AgentMemory\ntitle: Quixomem entry {i:D2}\ndescription: x\ntimestamp: 2026-06-{i + 1:D2}T00:00:00Z\n",
+                    $"## Quixomem note {i:D2}\n\nQuixomem detail line {i:D2}.\n"),
+                MemoryTier.User);
+        }
+
+        // Shares that do NOT sum to 1 (0.4 total) -- each a small floor of a
+        // small budget, so a real spillover pool exists beyond both floors.
+        var provider = new OkfContextProvider(resolver, store, new OkfContextProviderOptions
+        {
+            ScopeAccessor = _ => scope,
+            TokenBudget = 200,
+            KnowledgeBudgetShare = 0.2,
+            MemoryBudgetShare = 0.2,
+        });
+
+        var result = await provider.ProvideForTest(Invoking(session, "zorbknow quixomem"), CancellationToken.None);
+        var text = Assert.Single(result.Messages!).Text;
+
+        // Both surfaces are represented.
+        Assert.Contains("<okf-context id=\"knowledge:", text, StringComparison.Ordinal);
+        Assert.Contains("<okf-context id=\"memory:", text, StringComparison.Ordinal);
+
+        // The genuine regression guard: memory's floor block must render
+        // BEFORE knowledge's *spillover* portion -- i.e. memory gets its own
+        // reserved share up front, not merely "whatever knowledge left
+        // over". Against the pre-fix arithmetic, a single generous
+        // knowledge-first pass (sized totalBudget-memoryFloor, never
+        // reading KnowledgeBudgetShare) fully consumes abundant knowledge
+        // content -- several concepts -- before memory ever gets a look in,
+        // so the message's SECOND "<okf-context id=\"knowledge:" block
+        // (proving multiple concepts rendered) appears well BEFORE the
+        // memory block. The fixed arithmetic reserves and renders both
+        // floors first -- knowledge capped at its own small share, fitting
+        // exactly one concept -- so the memory block appears immediately
+        // after that single floor-sized knowledge block, with knowledge's
+        // spillover portion (its second+ concept) rendering only
+        // afterward. This was verified empirically against the pre-fix
+        // arithmetic: it renders knowledge's first five concepts, then
+        // memory, last -- failing this exact assertion.
+        const string KnowledgeMarker = "<okf-context id=\"knowledge:";
+        var firstMemoryIndex = text.IndexOf("<okf-context id=\"memory:", StringComparison.Ordinal);
+        var firstKnowledgeIndex = text.IndexOf(KnowledgeMarker, StringComparison.Ordinal);
+        var secondKnowledgeIndex = text.IndexOf(KnowledgeMarker, firstKnowledgeIndex + 1, StringComparison.Ordinal);
+
+        Assert.True(secondKnowledgeIndex >= 0, "need at least two rendered knowledge blocks to distinguish the floor pass from spillover");
+        Assert.True(
+            firstMemoryIndex < secondKnowledgeIndex,
+            "memory's floor block must render before knowledge's spillover portion -- both floors are meant to be honored independently, not just whatever is left after knowledge's own content is exhausted");
     }
 }

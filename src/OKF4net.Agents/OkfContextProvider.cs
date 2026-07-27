@@ -140,6 +140,14 @@ public sealed class OkfContextProvider : AIContextProvider
     /// (store) under a split token budget; WRITE = deterministic scoped capture
     /// to <see cref="OkfContextProviderOptions.CaptureTier"/> via the store.
     /// </summary>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="resolver"/>, <paramref name="memoryStore"/>, or <paramref name="options"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="options"/>.<see cref="OkfContextProviderOptions.KnowledgeBudgetShare"/> or
+    /// <see cref="OkfContextProviderOptions.MemoryBudgetShare"/> is negative, or the two do not
+    /// satisfy <c>KnowledgeBudgetShare + MemoryBudgetShare &lt;= 1</c>.
+    /// </exception>
     public OkfContextProvider(IKnowledgeResolver resolver, IMemoryStore memoryStore, OkfContextProviderOptions options)
     {
         ArgumentNullException.ThrowIfNull(resolver);
@@ -285,15 +293,26 @@ public sealed class OkfContextProvider : AIContextProvider
         catch (Exception ex) when (ex is OperationCanceledException) { throw; }
         catch (Exception) { /* errors-as-data: memory degrades to empty */ }
 
-        // Split budget with floors + spillover (spec §6.3).
+        // Split budget with BOTH floors reserved + spillover (spec §6.3: "each
+        // a configurable floor + spillover"). Each surface first gets its own
+        // configured floor share (kFloor/mFloor); whatever of totalBudget
+        // remains unallocated after those two passes (either because a floor
+        // went completely unused, e.g. no matching content, or because a
+        // passage didn't consume its whole floor) is then spilled
+        // knowledge-first, then to memory -- unlike the previous formula,
+        // which reserved only a memory floor and handed knowledge the entire
+        // remainder, silently ignoring KnowledgeBudgetShare.
+        var kFloor = (int)(totalBudget * _options.KnowledgeBudgetShare);
         var mFloor = (int)(totalBudget * _options.MemoryBudgetShare);
-        var knowledgeCap = Math.Max(0, totalBudget - mFloor);
-        var sb = new StringBuilder();
 
-        var kUsed = AppendPassages(sb, knowledge, "knowledge", knowledgeCap);
-        var mUsed = AppendPassages(sb, memory, "memory", totalBudget - kUsed);
-        // Spill unused memory back to any remaining knowledge.
-        AppendPassages(sb, knowledge.Skip(CountRendered(sb, "knowledge")), "knowledge", totalBudget - kUsed - mUsed);
+        var sb = new StringBuilder();
+        var (kCount1, kUsed1) = AppendPassages(sb, knowledge, "knowledge", kFloor);
+        var (mCount1, mUsed1) = AppendPassages(sb, memory, "memory", mFloor);
+
+        var remaining = totalBudget - kUsed1 - mUsed1;
+        var (_, kUsed2) = AppendPassages(sb, knowledge.Skip(kCount1), "knowledge", remaining);
+        remaining -= kUsed2;
+        AppendPassages(sb, memory.Skip(mCount1), "memory", remaining);
 
         if (sb.Length == 0)
         {
@@ -307,24 +326,11 @@ public sealed class OkfContextProvider : AIContextProvider
         };
     }
 
-    private static int CountRendered(StringBuilder sb, string surface)
-    {
-        var text = sb.ToString();
-        var marker = $"<okf-context id=\"{surface}:";
-        var count = 0;
-        var i = 0;
-        while ((i = text.IndexOf(marker, i, StringComparison.Ordinal)) >= 0)
-        {
-            count++;
-            i += marker.Length;
-        }
-
-        return count;
-    }
-
-    private static int AppendPassages(StringBuilder sb, IEnumerable<KnowledgePassage> passages, string surface, int budget)
+    /// <returns>How many passages were rendered (a contiguous prefix of <paramref name="passages"/>), and the total token estimate they used.</returns>
+    private static (int Rendered, int TokensUsed) AppendPassages(StringBuilder sb, IEnumerable<KnowledgePassage> passages, string surface, int budget)
     {
         var used = 0;
+        var rendered = 0;
         var remaining = budget;
         foreach (var p in passages)
         {
@@ -348,9 +354,10 @@ public sealed class OkfContextProvider : AIContextProvider
             sb.Append(block);
             remaining -= blockUsed;
             used += blockUsed;
+            rendered++;
         }
 
-        return used;
+        return (rendered, used);
     }
 
     /// <summary>

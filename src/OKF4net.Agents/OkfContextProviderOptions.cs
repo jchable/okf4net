@@ -48,6 +48,16 @@ public sealed class OkfContextProviderOptions
     /// ⇒ <see cref="KnowledgeAccessScope.Local"/>. Used only by the scoped (V2)
     /// provider constructor. Never derive scope from a message.
     /// </summary>
+    /// <remarks>
+    /// If this delegate throws, the exception is <b>not</b> swallowed: it
+    /// propagates straight out of <c>ProvideAIContextAsync</c>/<c>StoreAIContextAsync</c>
+    /// to the caller. That is a deliberate asymmetry with the provider's
+    /// otherwise-documented never-throw guarantee, which covers failures in
+    /// bundle/resolver/memory-store I/O -- not a host-supplied delegate that
+    /// is itself broken. A <see cref="ScopeAccessor"/> that throws is a
+    /// host-contract violation, not a data or I/O failure, so it is
+    /// deliberately left unguarded rather than silently degraded.
+    /// </remarks>
     public Func<AIContextProvider.InvokingContext, KnowledgeAccessScope>? ScopeAccessor { get; init; }
 
     /// <summary>The tier scoped memory capture writes to. Defaults to <see cref="MemoryTier.User"/>.</summary>
