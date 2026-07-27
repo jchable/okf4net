@@ -41,12 +41,36 @@ public class FileKnowledgeCatalogTests
         return temp.Write("catalog.json", OneSourceJson);
     }
 
-    /// <summary>Atomically replaces the manifest content via write-to-temp then move-over (matches the brief's "temp file then File.Move/replace" recipe).</summary>
+    /// <summary>
+    /// Atomically replaces the manifest content via write-to-temp then
+    /// move-over (matches the brief's "temp file then File.Move/replace"
+    /// recipe). Retries a bounded number of times on a transient Windows
+    /// sharing violation: even with a reader opened with generous FileShare
+    /// flags, a concurrent read of <paramref name="catalogPath"/> (this
+    /// test's own watcher-triggered reload) can transiently overlap
+    /// <see cref="File.Move(string, string, bool)"/>'s replace -- exactly
+    /// what a real external editor/deploy-tool replacing the file underneath
+    /// a live reader has to tolerate, so the test's stand-in for that
+    /// external writer does too.
+    /// </summary>
     private static void ReplaceCatalogAtomically(string catalogPath, string newJson)
     {
+        const int maxAttempts = 20;
         var tempFile = catalogPath + ".tmp";
         File.WriteAllText(tempFile, newJson);
-        File.Move(tempFile, catalogPath, overwrite: true);
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                File.Move(tempFile, catalogPath, overwrite: true);
+                return;
+            }
+            catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && attempt < maxAttempts)
+            {
+                Thread.Sleep(5);
+            }
+        }
     }
 
     // ---- Construction ------------------------------------------------

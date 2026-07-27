@@ -77,15 +77,26 @@ public class BundleConceptWriterTests
         var writerA = new BundleConceptWriter(tmp.Path);
         var writerB = new BundleConceptWriter(tmp.Path + Path.DirectorySeparatorChar); // different spelling, same canonical root
         const int iterations = 16;
+        var results = new string[iterations];
 
         Parallel.For(0, iterations, i =>
         {
             var w = i % 2 == 0 ? writerA : writerB;
-            w.AppendToConceptAtomic(
+            results[i] = w.AppendToConceptAtomic(
                 "memory/day",
                 ValidFrontmatter,
                 cur => (cur is null ? string.Empty : cur.TrimEnd('\n') + "\n") + $"line {i}\n");
         });
+
+        // Surface the actual per-call failure -- rather than the bare "line N
+        // missing" the body check below would give -- if the shared lock
+        // ever let a concurrent call observe a transient I/O error:
+        // RunTool (BundleConceptWriter's single "never throw" boundary)
+        // converts any such exception into this string instead of throwing.
+        for (var i = 0; i < iterations; i++)
+        {
+            Assert.False(results[i].StartsWith("Error:", StringComparison.Ordinal), $"iteration {i} failed: {results[i]}");
+        }
 
         var body = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "memory", "day.md"))).Body;
         for (var i = 0; i < iterations; i++)

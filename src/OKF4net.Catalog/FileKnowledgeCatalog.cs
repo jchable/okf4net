@@ -200,7 +200,29 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
             // (Bundle/Validate/IndexGenerator/OkfCli): fail loudly with
             // DecoderFallbackException on non-UTF-8 bytes rather than
             // File.ReadAllText's silent U+FFFD replacement.
-            json = OkfEncodings.Strict.GetString(File.ReadAllBytes(_options.CatalogFilePath));
+            //
+            // Opened via FileStream (not File.ReadAllBytes) so the share mode
+            // can be widened to FileShare.ReadWrite | FileShare.Delete: the
+            // documented external-writer contract for catalog.json is an
+            // atomic temp-file-then-File.Move(overwrite:true) replace, and on
+            // Windows that replace requires FileShare.Delete on any
+            // concurrent reader -- File.ReadAllBytes's default FileShare.Read
+            // would otherwise let this watcher's own reload transiently block
+            // a legitimate external atomic replace with a sharing-violation
+            // IOException.
+            byte[] rawBytes;
+            using (var stream = new FileStream(
+                _options.CatalogFilePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete))
+            {
+                using var buffer = new MemoryStream();
+                stream.CopyTo(buffer);
+                rawBytes = buffer.ToArray();
+            }
+
+            json = OkfEncodings.Strict.GetString(rawBytes);
 
             // Strict-UTF8 GetString decodes a leading U+FEFF byte-order mark
             // as a literal character rather than stripping it the way
