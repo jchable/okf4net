@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-27
+
+This release grows OKF4net from a core library + CLI into an agent- and
+tooling-ready stack: three new integration packages, a new MCP tool, and
+host-scopeable long-term memory — all built on the same zero-dependency core.
+
 ### Added
 
 - **Scoped memory (V2)** for `OkfContextProvider` — host-scoped long-term memory
@@ -18,7 +24,8 @@ and this project adheres to
   - `role:"memory"` catalog sources with a `MemoryTier` (`session`/`user`/
     `tenant`), a scoped `IMemoryStore` / `FileMemoryStore` (**user tier
     implemented**; session/tenant are contract/parse-only for now), and readable
-    path prefixes via `MemoryPath.For` (`memory-user/<tenant>/<user>/…`).
+    path prefixes via `MemoryPath.For` (`memory-user/<tenant>/<user>/…`), encoded
+    case-insensitive-safe so distinct scopes never collide on Windows/macOS.
   - The provider's V2 mode reads knowledge (resolver) ∪ scoped memory under a
     **split token budget** (knowledge + memory floors with spillover) and
     captures each exchange deterministically to one tier; it never throws toward
@@ -29,25 +36,6 @@ and this project adheres to
 - **`OKF4net.BundleConceptWriter`** — the atomic, reparse-guarded, per-path-locked
   concept-write primitive, promoted to core so `OkfBundleTools` and the memory
   store share one write path.
-
-### Changed
-
-- **Breaking:** `MemoryCaptureMode.SharedBundle` is renamed to
-  `MemoryCaptureMode.Enabled` (reads correctly in both single-bundle and scoped
-  modes).
-- `role:"memory"` catalog sources are excluded from `IKnowledgeResolver` search
-  (they feed `IMemoryStore`, never shared knowledge).
-- `OkfContextProviderOptions.MemoryDirectory` is deprecated in favour of scoped
-  `role:memory` catalog sources.
-
-## [0.2.0] - 2026-07-26
-
-This release grows OKF4net from a core library + CLI into an agent- and
-tooling-ready stack: three new integration packages and a new MCP tool, all
-built on the same zero-dependency core.
-
-### Added
-
 - **`OKF4net.Agents`** — Microsoft Agent Framework integration (new package):
   - `OkfBundleTools` exposes nine OKF bundle operations as `AIFunction` tools
     (`okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`,
@@ -62,7 +50,7 @@ built on the same zero-dependency core.
     deterministic per-day long-term memory (no LLM call) written back through
     the same validated, locked, reparse-guarded write path. Memory capture is
     off by default: `MemoryCaptureMode.Disabled` unless explicitly set to
-    `SharedBundle`.
+    `Enabled`.
 - **`OKF4net.Catalog`** and **`OKF4net.Catalog.Hosting`** — a local knowledge
   catalog (two new packages):
   - A hot-reloadable `catalog.json` manifest naming one or more local OKF
@@ -90,6 +78,13 @@ built on the same zero-dependency core.
 
 ### Changed
 
+- **Breaking:** `MemoryCaptureMode.SharedBundle` is renamed to
+  `MemoryCaptureMode.Enabled` (reads correctly in both single-bundle and scoped
+  modes).
+- `role:"memory"` catalog sources are excluded from `IKnowledgeResolver` search
+  (they feed `IMemoryStore`, never shared knowledge).
+- `OkfContextProviderOptions.MemoryDirectory` is deprecated in favour of scoped
+  `role:memory` catalog sources.
 - The package version is now sourced solely from `Directory.Build.props` (one
   source of truth across every project).
 - Public read-only surfaces hardened against downcast-and-mutate:
@@ -100,6 +95,11 @@ built on the same zero-dependency core.
 
 ### Fixed
 
+- `IndexGenerator` no longer walks into or lists a symlinked/junctioned
+  subdirectory as if it were real: reparse-point detection now uses an
+  lstat-correct `FileSystemInfo.LinkTarget` fallback on Unix (where
+  `File.GetAttributes` resolves *through* a link), matching the Rust
+  reference's `file_type()` semantics.
 - `Bundle.OkfVersion` is computed eagerly at `Bundle.Load` so it reflects a
   true snapshot of the bundle at load time (previously deferred, which could
   observe later mutation).
