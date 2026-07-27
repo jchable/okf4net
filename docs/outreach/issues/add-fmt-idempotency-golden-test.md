@@ -1,0 +1,13 @@
+### Title: Add a golden-parity idempotency test for `okf fmt`
+**Labels:** help wanted ; test
+**Difficulty / est. effort:** ~2-3h, medium
+
+**Context:** `tests/OKF4net.Tests/GoldenParityTests.cs` diffs the C# port's output against the Rust-captured fixtures in `tests/fixtures/golden/`, but per `CONTRIBUTING.md` and `CLAUDE.md`, `tests/fixtures/` must never be modified or extended — the Rust reference binary that produced those captures no longer exists in this repository (removed at commit `d20343c`), so no *new* byte-exact Rust captures can be generated. There's still a useful, zero-new-fixture parity property worth testing: `okf fmt` should be idempotent — reformatting an already-normalized document (i.e. the golden fixture `tests/fixtures/golden/fmt/users.md`, which is itself the captured output of `OkfDocument.Parse` + `Serialize` on `tests/fixtures/appendix_a/tables/users.md`) should reproduce byte-identical output. This is currently untested and would have caught a `Serialize()` regression that only manifests on the second pass (e.g. a non-canonical quoting or spacing choice that "corrects itself" once but drifts further on a second format).
+**Files to touch:** `tests/OKF4net.Tests/GoldenParityTests.cs`
+**What to do:**
+1. Add a new `[Fact]` in `tests/OKF4net.Tests/GoldenParityTests.cs`, e.g. `Fmt_of_already_normalized_golden_output_is_idempotent`.
+2. Read `tests/fixtures/golden/fmt/users.md` (via the existing `Golden(...)` helper) as input text — this file is already the captured, normalized output for `tables/users.md`, so it is safe to read (never write) without touching the fixture.
+3. Write that text to a `TempDir` file, run `okf fmt <path>` (no `-w`, stdout mode — see the sibling issue `test-cli-fmt-without-write-flag.md` if it hasn't landed yet) against it, and assert the CLI's stdout output is byte-identical to the original golden text (`Assert.Equal(Golden(Path.Combine("fmt", "users.md")), r.Out)`, following the same strict byte-for-byte comparison style already used elsewhere in this file).
+4. Optionally, also verify `OkfDocument.Parse(golden).Serialize()` equals the golden text directly at the library level (no CLI round-trip), for a second, narrower confirmation of the same property.
+**How to verify:** `dotnet test OKF4net.sln --filter "FullyQualifiedName~GoldenParityTests"` — expect all tests in the class, including the new one, to pass.
+**Good to know:** This reads `tests/fixtures/golden/fmt/users.md` but never modifies it or any file under `tests/fixtures/` — see `CONTRIBUTING.md`'s "Golden fixtures — do not reformat" section and `CLAUDE.md`'s "Never touch `tests/fixtures/`" hard rule.
