@@ -165,8 +165,18 @@ public class IndexTests
 
         IndexGenerator.RegenerateIndexes(tmp.Path);
 
+        // "real" (which contains a markdown file) gets its own index.
         Assert.True(File.Exists(Path.Combine(tmp.Path, "real", "index.md")));
-        Assert.False(File.Exists(Path.Combine(tmp.Path, "linked", "index.md")));
+
+        // The symlinked "linked" is neither descended into nor listed as a
+        // subdirectory in the parent index -- matching Rust's lstat-based
+        // collect_markdown, which skips it entirely. We assert on the parent
+        // index's CONTENT rather than File.Exists("linked/index.md"), which
+        // would be meaningless: "linked" resolves to "real", so that path IS
+        // "real/index.md" and always exists on any symlink-resolving filesystem.
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        Assert.Contains("real/index.md", rootIndex);
+        Assert.DoesNotContain("linked", rootIndex);
     }
 
     // ----------------------------------------------------------------
