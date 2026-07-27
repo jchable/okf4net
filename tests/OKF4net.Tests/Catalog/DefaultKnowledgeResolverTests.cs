@@ -101,6 +101,46 @@ public class DefaultKnowledgeResolverTests
         Assert.Equal(expectedLoCount, context.Passages.Count(p => p.SourceId == "lo"));
     }
 
+    // ---- (a2) role:memory sources are excluded from knowledge search ------
+
+    [Fact]
+    public async Task Memory_role_sources_are_not_searched()
+    {
+        using var root = new TempDir();
+        CopyDirectory(BundlePath, Path.Combine(root.Path, "source-knowledge"));
+        // The memory source also carries fixture content that matches the
+        // query below -- if the resolver ever stopped filtering by role, its
+        // passages would show up under SourceId "mem" too, making this a
+        // genuine red/green test rather than one that passes trivially
+        // because an empty directory yields zero passages either way.
+        CopyDirectory(BundlePath, Path.Combine(root.Path, "source-memory"));
+
+        var json = """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "kb", "path": "./source-knowledge", "priority": 1, "enabled": true, "role": "knowledge" },
+                { "id": "mem", "path": "./source-memory", "priority": 10, "enabled": true, "role": "memory", "tier": "user" }
+              ]
+            }
+            """;
+        root.Write("catalog.json", json);
+
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = Path.Combine(root.Path, "catalog.json"),
+            CatalogRoot = root.Path,
+            WatchForChanges = false,
+        });
+        var resolver = new DefaultKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales"));
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("kb", p.SourceId));
+        Assert.DoesNotContain(context.Passages, p => p.SourceId == "mem");
+    }
+
     // ---- (b) failure isolation --------------------------------------------
 
     [Fact]

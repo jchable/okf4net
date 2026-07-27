@@ -3,9 +3,11 @@ namespace OKF4net.Catalog;
 
 /// <summary>
 /// The V1 <see cref="IKnowledgeResolver"/>: fans a query out across every
-/// currently enabled source of an <see cref="IKnowledgeCatalog"/> and
-/// concatenates the results **grouped by source, in priority order** -- no
-/// cross-source fusion, deduplication, or merged ranking.
+/// currently enabled <see cref="SourceRole.Knowledge"/> source of an
+/// <see cref="IKnowledgeCatalog"/> and concatenates the results **grouped by
+/// source, in priority order** -- no cross-source fusion, deduplication, or
+/// merged ranking. <see cref="SourceRole.Memory"/> sources are never
+/// searched here; they feed <c>IMemoryStore</c> instead (spec §5.3).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -58,7 +60,7 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
 
         var snapshot = _catalog.Current;
         var enabledSources = snapshot.Sources
-            .Where(s => s.Enabled)
+            .Where(s => s.Enabled && s.Role == SourceRole.Knowledge)
             .OrderByDescending(s => s.Priority)
             .ThenBy(s => s.Id, StringComparer.Ordinal)
             .ToList();
