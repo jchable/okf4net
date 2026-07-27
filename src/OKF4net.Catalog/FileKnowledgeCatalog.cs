@@ -217,9 +217,8 @@ public sealed class FileKnowledgeCatalog : IKnowledgeCatalog, IDisposable
                 FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete))
             {
-                using var buffer = new MemoryStream();
-                stream.CopyTo(buffer);
-                rawBytes = buffer.ToArray();
+                rawBytes = new byte[stream.Length];
+                stream.ReadExactly(rawBytes);
             }
 
             json = OkfEncodings.Strict.GetString(rawBytes);

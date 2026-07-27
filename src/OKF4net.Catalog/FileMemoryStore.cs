@@ -45,7 +45,11 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var subDir = ScopedDir(root, tier, scope);
+            // Computed once per tier -- MemoryPath.For hashes a segment per
+            // call -- and reused both to build subDir below and as every
+            // hit's ConceptId prefix further down.
+            var conceptIdPrefix = MemoryPath.For(tier, scope);
+            var subDir = ScopedDir(root, conceptIdPrefix);
             if (!Directory.Exists(subDir))
             {
                 continue;
@@ -72,10 +76,6 @@ public sealed class FileMemoryStore : IMemoryStore
             {
                 continue;
             }
-
-            // Invariant across every hit in this tier -- computed once rather
-            // than per hit (MemoryPath.For hashes a segment per call).
-            var conceptIdPrefix = MemoryPath.For(tier, scope);
 
             foreach (var hit in ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag))
             {
@@ -134,7 +134,7 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var subDir = ScopedDir(root, currentTier, scope);
+            var subDir = ScopedDir(root, MemoryPath.For(currentTier, scope));
             if (!Directory.Exists(subDir))
             {
                 continue;
@@ -175,7 +175,8 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var subDir = ScopedDir(root, tier, scope);
+            var prefix = MemoryPath.For(tier, scope);
+            var subDir = ScopedDir(root, prefix);
             if (!Directory.Exists(subDir) || IsReparseEscaped(root, subDir))
             {
                 continue;
@@ -191,7 +192,6 @@ public sealed class FileMemoryStore : IMemoryStore
                 continue;
             }
 
-            var prefix = MemoryPath.For(tier, scope);
             foreach (var concept in bundle.Concepts)
             {
                 concepts.Add(new MemoryConcept(tier, $"{prefix}/{concept.Id}", concept.Document.Frontmatter.Title));
@@ -209,20 +209,23 @@ public sealed class FileMemoryStore : IMemoryStore
         _ => false,
     };
 
-    private static string ScopedDir(string root, MemoryTier tier, KnowledgeAccessScope scope)
-    {
-        var relative = MemoryPath.For(tier, scope).Split('/');
-        return Path.Combine([root, .. relative]);
-    }
+    /// <summary>
+    /// Combines <paramref name="root"/> with an already-computed
+    /// <see cref="MemoryPath.For"/> prefix. Takes the prefix rather than
+    /// <c>(tier, scope)</c> so callers that also need the prefix for another
+    /// purpose (e.g. a concept id) compute it once and pass it in, instead
+    /// of this method silently recomputing it (<see cref="MemoryPath.For"/>
+    /// hashes a segment per call).
+    /// </summary>
+    private static string ScopedDir(string root, string prefix) =>
+        Path.Combine([root, .. prefix.Split('/')]);
 
     private static bool IsReparseEscaped(string root, string subDir)
     {
-        // TrimEndingDirectorySeparator matters here: a host-configured tier
-        // root with a trailing separator would otherwise never string-equal
-        // the ancestor HasReparsePointAncestor's walk produces via
-        // Path.GetDirectoryName (which never carries one), overshooting the
-        // walk past the intended root into the real filesystem above it.
-        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        // CanonicalizeRoot matters here: a host-configured tier root with a
+        // trailing separator would otherwise defeat the ancestor walk -- see
+        // its remarks.
+        var fullRoot = ReparsePoints.CanonicalizeRoot(root);
         var full = Path.GetFullPath(subDir);
         return ReparsePoints.IsReparsePoint(full) || ReparsePoints.HasReparsePointAncestor(fullRoot, full, PathComparison);
     }

@@ -427,11 +427,15 @@ public static class IndexGenerator
     /// unconditionally -- it never checks the walk's own starting root for
     /// being a reparse point either. Treating the root as inclusive would
     /// silently suppress every single index write for such a bundle. This
-    /// mirrors the sibling <c>OkfBundleTools.HasReparsePointAncestor</c>
-    /// (src/OKF4net.Agents/OkfBundleTools.cs), which stops its walk via
+    /// mirrors the shared <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
+    /// convenience overload's own walk, which stops via
     /// <c>while (!Equals(current, fullRoot))</c> -- the equality-to-root
     /// check gates entry to the loop body, so the root itself is never
-    /// passed to <see cref="ReparsePoints.IsReparsePoint"/>.
+    /// passed to <see cref="ReparsePoints.IsReparsePoint"/>. Kept as its own
+    /// wrapper rather than folded into that overload because this walk needs
+    /// <see cref="StringComparison.Ordinal"/>, not
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/>, for byte-exact
+    /// parity with the golden-tested Rust reference on case-sensitive Linux.
     ///
     /// Used only by <see cref="RegenerateIndexesWith"/>'s late, best-effort
     /// re-check immediately before each <c>index.md</c> write -- see that
@@ -441,14 +445,7 @@ public static class IndexGenerator
     /// </summary>
     private static bool HasReparsePointAncestor(string bundleRoot, string directory)
     {
-        // TrimEndingDirectorySeparator matters here: Path.GetFullPath alone
-        // preserves a trailing separator if bundleRoot has one, but the walk
-        // in ReparsePoints.HasReparsePointAncestor stops via exact string
-        // equality against an ancestor produced by Path.GetDirectoryName,
-        // which never carries one -- an untrimmed root would never match,
-        // overshooting the walk past the intended root into the real
-        // filesystem above it.
-        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleRoot));
+        var fullRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
         var current = Path.GetFullPath(directory);
         return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.Ordinal);
     }

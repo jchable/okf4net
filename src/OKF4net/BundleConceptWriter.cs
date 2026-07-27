@@ -84,15 +84,12 @@ public sealed class BundleConceptWriter
         // Canonicalize BEFORE looking up the shared lock so two different
         // spellings of the same bundle directory (e.g. with/without a
         // trailing separator) still resolve to the same registry entry --
-        // the same Path.GetFullPath canonicalization IsWithinBundleRoot and
-        // HasReparsePointAncestor already use for their own comparisons.
-        // Path.GetFullPath alone is not enough: "/foo" and "/foo/" both
-        // survive it as distinct strings (GetFullPath does not strip a
-        // trailing separator), so TrimEndingDirectorySeparator is applied on
-        // top -- otherwise those two spellings would land in different
-        // registry entries and defeat the very serialization this lock
-        // exists to provide (F3).
-        var canonicalRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleRoot));
+        // the same canonicalization ReparsePoints.IsWithinBundleRoot and
+        // ReparsePoints.HasReparsePointAncestor use for their own root (see
+        // ReparsePoints.CanonicalizeRoot's remarks); otherwise those two
+        // spellings would land in different registry entries and defeat the
+        // very serialization this lock exists to provide (F3).
+        var canonicalRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
         _bundleLock = BundleLocks.GetOrAdd(canonicalRoot, static _ => new object());
     }
 

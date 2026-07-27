@@ -101,14 +101,10 @@ public static class CatalogPathResolver
         string resolved;
         try
         {
-            // TrimEndingDirectorySeparator matters here: an operator-configured
-            // catalogRoot with a trailing separator would otherwise never
-            // string-equal the ancestor HasReparsePointInPath's walk produces
-            // via Path.GetDirectoryName (which never carries one), overshooting
-            // the walk past the intended root into the real filesystem above
-            // it -- notably reaching a genuine reparse point like macOS's
-            // /var symlink and rejecting an entirely valid source.
-            fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(catalogRoot));
+            // CanonicalizeRoot matters here: an operator-configured catalogRoot
+            // with a trailing separator would otherwise defeat the
+            // HasReparsePointInPath ancestor walk below -- see its remarks.
+            fullRoot = ReparsePoints.CanonicalizeRoot(catalogRoot);
             resolved = Path.GetFullPath(Path.Combine(manifestDirectory, sourcePath));
         }
         catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)

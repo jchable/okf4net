@@ -32,6 +32,28 @@ public class FileKnowledgeCatalogTests
 
     private const string InvalidVersionJson = """{ "version": 2, "sources": [ { "id": "docs", "path": "./docs" } ] }""";
 
+    /// <summary>Second source ("ghost") points at a directory that is never created; used with <see cref="GhostSourceEnabledJson"/> to isolate the disabled-source path-validation skip.</summary>
+    private const string GhostSourceDisabledJson = """
+        {
+          "version": 1,
+          "sources": [
+            { "id": "docs", "path": "./docs" },
+            { "id": "ghost", "path": "./does-not-exist", "enabled": false }
+          ]
+        }
+        """;
+
+    /// <summary>Same as <see cref="GhostSourceDisabledJson"/> but "ghost" is enabled -- the two differ only in that flag.</summary>
+    private const string GhostSourceEnabledJson = """
+        {
+          "version": 1,
+          "sources": [
+            { "id": "docs", "path": "./docs" },
+            { "id": "ghost", "path": "./does-not-exist", "enabled": true }
+          ]
+        }
+        """;
+
     /// <summary>Otherwise-valid JSON bytes with a trailing byte (0xFF) that is not valid UTF-8 on its own or as a continuation -- forces <c>OkfEncodings.Strict</c>'s decode to throw.</summary>
     private static readonly byte[] InvalidUtf8Bytes = [.. System.Text.Encoding.UTF8.GetBytes(OneSourceJson), 0xFF];
 
@@ -126,15 +148,7 @@ public class FileKnowledgeCatalogTests
     {
         using var temp = new TempDir();
         Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
-        var catalogPath = temp.Write("catalog.json", """
-            {
-              "version": 1,
-              "sources": [
-                { "id": "docs", "path": "./docs" },
-                { "id": "ghost", "path": "./does-not-exist", "enabled": false }
-              ]
-            }
-            """);
+        var catalogPath = temp.Write("catalog.json", GhostSourceDisabledJson);
 
         using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
         {
@@ -154,15 +168,7 @@ public class FileKnowledgeCatalogTests
     {
         using var temp = new TempDir();
         Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
-        var catalogPath = temp.Write("catalog.json", """
-            {
-              "version": 1,
-              "sources": [
-                { "id": "docs", "path": "./docs" },
-                { "id": "ghost", "path": "./does-not-exist", "enabled": true }
-              ]
-            }
-            """);
+        var catalogPath = temp.Write("catalog.json", GhostSourceEnabledJson);
 
         var options = new KnowledgeCatalogOptions
         {
