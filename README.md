@@ -3,6 +3,7 @@
 [![CI](https://github.com/jchable/okf4net/actions/workflows/ci.yml/badge.svg)](https://github.com/jchable/okf4net/actions/workflows/ci.yml)
 [![NuGet](https://img.shields.io/nuget/v/OKF4net.svg)](https://www.nuget.org/packages/OKF4net)
 [![License: LGPL-3.0-or-later](https://img.shields.io/badge/License-LGPL--3.0--or--later-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-jchable.github.io%2Fokf4net-6f42c1.svg)](https://jchable.github.io/okf4net/)
 
 A **zero-dependency .NET (C#) implementation** of the [Open Knowledge Format
 (OKF) v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) —
@@ -21,6 +22,17 @@ a directory of markdown files with YAML frontmatter.
 > including 5 byte-exact golden CLI comparisons — see
 > [`tests/fixtures/`](tests/fixtures/README.md)); OKF4net is now the sole
 > implementation in this repository.
+
+**📖 [Documentation & project site → jchable.github.io/okf4net](https://jchable.github.io/okf4net/)** —
+a guided project overview, getting-started walkthroughs, and developer docs:
+[getting started](https://jchable.github.io/okf4net/docs/getting-started/) ·
+[guides](https://jchable.github.io/okf4net/docs/guides/) ·
+[CLI reference](https://jchable.github.io/okf4net/docs/cli/) ·
+[library reference](https://jchable.github.io/okf4net/docs/library/) ·
+[MCP](https://jchable.github.io/okf4net/docs/mcp/) ·
+[spec mapping](https://jchable.github.io/okf4net/docs/spec/).
+This README is the technical reference; the site is the friendlier entry point
+for newcomers.
 
 <!-- -->
 
@@ -47,7 +59,8 @@ a directory of markdown files with YAML frontmatter.
   keys, broken links, and missing optional fields are all tolerated).
 
 See [mapping to the spec](#mapping-to-the-spec) below for the section-by-section
-mapping.
+mapping, or the longer
+[What OKF is](https://jchable.github.io/okf4net/what-okf-is/) page on the site.
 
 ## Library overview
 
@@ -94,6 +107,10 @@ against the removed Rust binary's captured output.
 ## Usage
 
 ### As a library
+
+A concern-by-concern API walkthrough lives in the
+[library docs on the site](https://jchable.github.io/okf4net/docs/library/);
+below is the short version.
 
 ```csharp
 using OKF4net;
@@ -155,7 +172,8 @@ okf graph ./bundles/ga4 --dot | dot -Tsvg > graph.svg
 `okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
 single-file binary — no .NET runtime installation required on the target
 machine (see [Building & testing](#building--testing)). Invocations are
-unchanged from the Rust binary it replaces.
+unchanged from the Rust binary it replaces. Full command reference with real
+output samples: [CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
 
 ### Using OKF4net with Microsoft Agent Framework
 
@@ -373,9 +391,13 @@ Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
 ```
 
 See [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for read-only mode
-and the full tool list.
+and the full tool list, or the
+[MCP setup guide on the site](https://jchable.github.io/okf4net/docs/mcp/).
 
 ## Mapping to the spec
+
+This table is also published as the
+[spec-mapping page on the site](https://jchable.github.io/okf4net/docs/spec/).
 
 | Spec section                 | Implemented by                                                 |
 |-------------------------------|-------------------------------------------------------------------|
