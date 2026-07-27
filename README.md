@@ -22,6 +22,13 @@ a directory of markdown files with YAML frontmatter.
 > [`tests/fixtures/`](tests/fixtures/README.md)); OKF4net is now the sole
 > implementation in this repository.
 
+<!-- -->
+
+> **Want to contribute?** OKF4net is a young, welcoming project with a clear
+> [roadmap](ROADMAP.md) and issues labelled
+> [`good first issue`](https://github.com/jchable/okf4net/labels/good%20first%20issue).
+> No prior OKF knowledge required — see [Contributing & roadmap](#contributing--roadmap).
+
 ## What OKF is
 
 - A **bundle** is a directory tree of UTF-8 markdown files (the unit of
@@ -381,6 +388,19 @@ and the full tool list.
 | §8 Citations                  | `LinkScanner`, `OkfDocument.Citations()`                       |
 | §9 Conformance                | `OKF4net.BundleValidator`                                      |
 | §11 Versioning                | `Bundle.OkfVersion`, `OKF4net.OkfSpec.Version`                 |
+
+## Contributing & roadmap
+
+Contributions are welcome and the barrier to entry is deliberately low — the
+library is pure BCL C# with no third-party runtime dependencies, so there is
+no framework to learn before you can help.
+
+- **Where the project is going:** [`ROADMAP.md`](ROADMAP.md).
+- **Good first issues:** [browse the label](https://github.com/jchable/okf4net/labels/good%20first%20issue)
+  — each names the files to touch and the test to make pass.
+- **Bigger pieces:** [`help wanted`](https://github.com/jchable/okf4net/labels/help%20wanted).
+- **Questions before you code:** open a [Discussion](https://github.com/jchable/okf4net/discussions).
+- **How to build, test, and submit:** [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Building & testing
 
