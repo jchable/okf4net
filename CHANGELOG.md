@@ -8,6 +8,38 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Scoped memory (V2)** for `OkfContextProvider` — host-scoped long-term memory
+  that can be enabled on a multi-user deployment without cross-scope leakage:
+  - `KnowledgeAccessScope` (tenant / user / session; every segment path-safe by
+    construction), supplied per invocation by a host `ScopeAccessor` delegate —
+    never derived from a message.
+  - `role:"memory"` catalog sources with a `MemoryTier` (`session`/`user`/
+    `tenant`), a scoped `IMemoryStore` / `FileMemoryStore` (**user tier
+    implemented**; session/tenant are contract/parse-only for now), and readable
+    path prefixes via `MemoryPath.For` (`memory-user/<tenant>/<user>/…`).
+  - The provider's V2 mode reads knowledge (resolver) ∪ scoped memory under a
+    **split token budget** (knowledge + memory floors with spillover) and
+    captures each exchange deterministically to one tier; it never throws toward
+    the invocation pipeline and injects only as message data.
+  - RGPD/audit: `IMemoryStore.DeleteScopeAsync` / `EnumerateAsync`.
+  - `AddMemory(this IServiceCollection)` DI facade wiring a store from the
+    catalog's `role:memory` sources.
+- **`OKF4net.BundleConceptWriter`** — the atomic, reparse-guarded, per-path-locked
+  concept-write primitive, promoted to core so `OkfBundleTools` and the memory
+  store share one write path.
+
+### Changed
+
+- **Breaking:** `MemoryCaptureMode.SharedBundle` is renamed to
+  `MemoryCaptureMode.Enabled` (reads correctly in both single-bundle and scoped
+  modes).
+- `role:"memory"` catalog sources are excluded from `IKnowledgeResolver` search
+  (they feed `IMemoryStore`, never shared knowledge).
+- `OkfContextProviderOptions.MemoryDirectory` is deprecated in favour of scoped
+  `role:memory` catalog sources.
+
 ## [0.2.0] - 2026-07-26
 
 This release grows OKF4net from a core library + CLI into an agent- and
