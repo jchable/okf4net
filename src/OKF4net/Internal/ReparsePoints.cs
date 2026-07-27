@@ -122,6 +122,32 @@ internal static class ReparsePoints
     }
 
     /// <summary>
+    /// <c>true</c> if <paramref name="path"/> itself, or any directory
+    /// strictly between it and <paramref name="bundleRoot"/>, is a
+    /// filesystem reparse point (symlink, junction, mount point) -- resolves
+    /// both to full paths first, then delegates to
+    /// <see cref="HasReparsePointAncestor(string, string, StringComparison)"/>
+    /// case-insensitively. Complements <see cref="IsWithinBundleRoot"/>: that
+    /// check only compares resolved path STRINGS, so a junction that
+    /// lexically resolves under <paramref name="bundleRoot"/> still passes it
+    /// even though the OS follows the junction the moment something actually
+    /// touches disk (<see cref="Directory.Exists(string)"/>,
+    /// <see cref="File.ReadAllText(string)"/>, <see cref="File.WriteAllText(string, string)"/>)
+    /// -- silently reading or writing outside the bundle. Walking every
+    /// intermediate directory and rejecting on the first reparse point closes
+    /// that gap. Never inspects <paramref name="path"/> itself -- a caller
+    /// whose target could itself be a planted file symlink (not just an
+    /// ancestor directory) must separately check <see cref="IsReparsePoint"/>
+    /// on it.
+    /// </summary>
+    internal static bool HasReparsePointAncestor(string bundleRoot, string path)
+    {
+        var fullRoot = Path.GetFullPath(bundleRoot);
+        var current = Path.GetFullPath(path);
+        return HasReparsePointAncestor(fullRoot, current, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// <c>true</c> if <paramref name="path"/> is <paramref name="root"/>
     /// itself or a descendant of it, comparing the two path strings with
     /// <paramref name="comparison"/>. Both parameters are expected to already
@@ -152,5 +178,23 @@ internal static class ReparsePoints
 
         var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
         return path.StartsWith(rootWithSeparator, comparison);
+    }
+
+    /// <summary>
+    /// <c>true</c> if <paramref name="candidate"/> is <paramref name="root"/>
+    /// itself or a descendant of it, resolving both to full paths first and
+    /// comparing case-insensitively (Windows/macOS filesystems are typically
+    /// case-insensitive; a stricter check would reject legitimate paths
+    /// there). A lexical check alone: a junction/symlink among
+    /// <paramref name="candidate"/>'s ancestors can still resolve here even
+    /// though the OS would follow it to somewhere else entirely once actual
+    /// I/O touches disk -- pair with <see cref="HasReparsePointAncestor(string, string)"/>
+    /// for that.
+    /// </summary>
+    internal static bool IsWithinBundleRoot(string root, string candidate)
+    {
+        var fullRoot = Path.GetFullPath(root);
+        var fullCandidate = Path.GetFullPath(candidate);
+        return IsWithin(fullRoot, fullCandidate, StringComparison.OrdinalIgnoreCase);
     }
 }

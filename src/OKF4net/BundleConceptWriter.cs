@@ -21,8 +21,9 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Process-wide registry of one lock object per canonicalized bundle
     /// root, keyed by <see cref="Path.GetFullPath(string)"/> of the bundle
-    /// root -- the SAME canonical form <see cref="IsWithinBundleRoot"/> and
-    /// <see cref="HasReparsePointAncestor"/> resolve to, so two different
+    /// root -- the SAME canonical form <see cref="ReparsePoints.IsWithinBundleRoot"/>
+    /// and <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
+    /// resolve to, so two different
     /// spellings of the same directory (e.g. a trailing separator, or a
     /// relative vs. absolute path) still share one lock. Every
     /// <see cref="BundleConceptWriter"/> instance constructed over the same
@@ -34,7 +35,7 @@ public sealed class BundleConceptWriter
     /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept"/> calls,
     /// even though each instance's OWN calls were already serialized against
     /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/>, matching
-    /// the ordinal-ignore-case comparisons <see cref="IsWithinBundleRoot"/>
+    /// the ordinal-ignore-case comparisons <see cref="ReparsePoints.IsWithinBundleRoot"/>
     /// and the reserved-id check already use (Windows/macOS filesystems are
     /// typically case-insensitive). The registry grows by one small object
     /// per distinct bundle path for the process's lifetime -- bounded in
@@ -405,7 +406,7 @@ public sealed class BundleConceptWriter
         // (which already forbids '..' and '/' inside a segment): the same
         // defense-in-depth check the reparse helpers below use before
         // touching disk.
-        if (!IsWithinBundleRoot(BundleRoot, targetPath))
+        if (!ReparsePoints.IsWithinBundleRoot(BundleRoot, targetPath))
         {
             return $"Error: '{id}' resolves outside the bundle root.";
         }
@@ -416,7 +417,7 @@ public sealed class BundleConceptWriter
         // junction pointing outside the bundle -- the OS follows it when
         // Directory.CreateDirectory/File.WriteAllText actually touch disk.
         var targetParentDir = Path.GetDirectoryName(targetPath);
-        if (!string.IsNullOrEmpty(targetParentDir) && HasReparsePointAncestor(BundleRoot, targetParentDir))
+        if (!string.IsNullOrEmpty(targetParentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, targetParentDir))
         {
             return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
         }
@@ -500,7 +501,7 @@ public sealed class BundleConceptWriter
     /// </returns>
     private string? LateReparseGuard(string subject, string? parentDir, string targetPath)
     {
-        if ((!string.IsNullOrEmpty(parentDir) && HasReparsePointAncestor(BundleRoot, parentDir))
+        if ((!string.IsNullOrEmpty(parentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, parentDir))
             || ReparsePoints.IsReparsePoint(targetPath))
         {
             return $"Error: {subject} resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
@@ -604,45 +605,5 @@ public sealed class BundleConceptWriter
         {
             return $"Error: {ex.Message}";
         }
-    }
-
-    /// <summary>
-    /// <c>true</c> if <paramref name="candidate"/> is <paramref name="root"/>
-    /// itself or a descendant of it, comparing resolved absolute paths
-    /// case-insensitively (Windows/macOS filesystems are typically
-    /// case-insensitive; a stricter check would reject legitimate paths
-    /// there).
-    /// </summary>
-    private static bool IsWithinBundleRoot(string root, string candidate)
-    {
-        var fullRoot = Path.GetFullPath(root);
-        var fullCandidate = Path.GetFullPath(candidate);
-        return ReparsePoints.IsWithin(fullRoot, fullCandidate, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// <c>true</c> if <paramref name="path"/> itself, or any directory
-    /// strictly between it and <paramref name="bundleRoot"/>, is a
-    /// filesystem reparse point (symlink, junction, mount point) -- checked
-    /// via <see cref="ReparsePoints.IsReparsePoint"/>, which reports the
-    /// entry's own type (lstat-like) without following it.
-    ///
-    /// <see cref="IsWithinBundleRoot"/> only compares resolved path STRINGS:
-    /// a junction at, say, <c>bundleRoot/tables</c> pointing at an external
-    /// directory still lexically resolves to a path under
-    /// <paramref name="bundleRoot"/> via <see cref="Path.GetFullPath(string)"/>,
-    /// so that check alone would accept it -- but the OS follows the
-    /// junction the moment a write actually touches disk
-    /// (<see cref="Directory.Exists(string)"/>,
-    /// <see cref="File.ReadAllText(string)"/>,
-    /// <see cref="File.WriteAllText(string, string)"/>), silently reading or
-    /// writing outside the bundle. Walking every intermediate directory and
-    /// rejecting on the first reparse point closes that gap.
-    /// </summary>
-    private static bool HasReparsePointAncestor(string bundleRoot, string path)
-    {
-        var fullRoot = Path.GetFullPath(bundleRoot);
-        var current = Path.GetFullPath(path);
-        return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.OrdinalIgnoreCase);
     }
 }

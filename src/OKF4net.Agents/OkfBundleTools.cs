@@ -227,9 +227,9 @@ public sealed class OkfBundleTools
             var bundle = GetBundle();
             var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
 
-            if (!IsWithinBundleRoot(bundle.Root, fullDir)
+            if (!ReparsePoints.IsWithinBundleRoot(bundle.Root, fullDir)
                 || !Directory.Exists(fullDir)
-                || HasReparsePointAncestor(bundle.Root, fullDir))
+                || ReparsePoints.HasReparsePointAncestor(bundle.Root, fullDir))
             {
                 return $"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.";
             }
@@ -505,7 +505,7 @@ public sealed class OkfBundleTools
             // node itself (not its ancestor chain) is the check that matters
             // here; both are included for the same defense-in-depth shape as
             // WriteConcept's guard.
-            if (ReparsePoints.IsReparsePoint(logPath) || HasReparsePointAncestor(BundleRoot, BundleRoot))
+            if (ReparsePoints.IsReparsePoint(logPath) || ReparsePoints.HasReparsePointAncestor(BundleRoot, BundleRoot))
             {
                 return "Error: log.md is a reparse point (symlink/junction), not a regular file -- refusing to write through it.";
             }
@@ -560,7 +560,7 @@ public sealed class OkfBundleTools
                 // itself having been replaced with a reparse point in this
                 // narrow window.
                 var logParentDir = Path.GetDirectoryName(logPath);
-                if ((!string.IsNullOrEmpty(logParentDir) && HasReparsePointAncestor(BundleRoot, logParentDir))
+                if ((!string.IsNullOrEmpty(logParentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, logParentDir))
                     || ReparsePoints.IsReparsePoint(logPath))
                 {
                     return "Error: log.md resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
@@ -984,78 +984,6 @@ public sealed class OkfBundleTools
 
     private static string ConceptNotFoundMessage(string conceptId) =>
         $"Concept '{conceptId}' not found. Use okf_browse to list available concepts.";
-
-    /// <summary>
-    /// <c>true</c> if <paramref name="candidate"/> is <paramref name="root"/>
-    /// itself or a descendant of it, comparing resolved absolute paths
-    /// case-insensitively (Windows/macOS filesystems are typically
-    /// case-insensitive; a stricter check would reject legitimate paths
-    /// there). Defense in depth alongside the explicit <c>..</c>/rooted-path
-    /// rejection in <see cref="Browse"/>.
-    /// </summary>
-    private static bool IsWithinBundleRoot(string root, string candidate)
-    {
-        var fullRoot = Path.GetFullPath(root);
-        var fullCandidate = Path.GetFullPath(candidate);
-        return ReparsePoints.IsWithin(fullRoot, fullCandidate, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// <c>true</c> if <paramref name="path"/> itself, or any directory
-    /// strictly between it and <paramref name="bundleRoot"/>, is a
-    /// filesystem reparse point (symlink, junction, mount point) -- checked
-    /// via <see cref="ReparsePoints.IsReparsePoint"/>, which reports the
-    /// entry's own type (lstat-like) without following it.
-    ///
-    /// <see cref="IsWithinBundleRoot"/> only compares resolved path STRINGS:
-    /// a junction at, say, <c>bundleRoot/tables</c> pointing at an external
-    /// directory still lexically resolves to a path under
-    /// <paramref name="bundleRoot"/> via <see cref="Path.GetFullPath(string)"/>,
-    /// so that check alone would accept it -- but the OS follows the
-    /// junction the moment <see cref="Browse"/> or <see cref="WriteConcept"/>
-    /// actually touches disk (<see cref="Directory.Exists(string)"/>,
-    /// <see cref="File.ReadAllText(string)"/>, <see cref="File.WriteAllText(string, string)"/>),
-    /// silently reading or writing outside the bundle. Walking every
-    /// intermediate directory and rejecting on the first reparse point
-    /// closes that gap.
-    ///
-    /// Used by <see cref="Browse"/> (on the resolved directory) and
-    /// <see cref="WriteConcept"/> (on the target file's parent directory --
-    /// <see cref="WriteConcept"/> separately checks
-    /// <see cref="ReparsePoints.IsReparsePoint"/> on the target FILE itself,
-    /// since this helper only walks directory ancestors and never inspects
-    /// the leaf path passed to it, so it would miss an existing concept file
-    /// that is itself a planted symlink).
-    ///
-    /// Not needed by <see cref="ReadConcept"/>, <see cref="Graph"/>, or
-    /// <see cref="Search"/> -- they only query the already-loaded
-    /// <see cref="Bundle"/>, whose own load walk already skips reparse-point
-    /// entries (mirroring Rust's lstat-based <c>collect_markdown</c>); nor by
-    /// <see cref="RegenerateIndexes"/>, whose whole-root walk (<see cref="IndexGenerator"/>)
-    /// likewise already skips reparse-point directories via the same core
-    /// helper.
-    ///
-    /// <see cref="AppendLog"/> calls this helper (both directly, in its early
-    /// check, and again in its own inline late re-check),
-    /// but it is a no-op there in practice: <c>log.md</c> always lives
-    /// directly at <see cref="BundleRoot"/>, so its only directory ancestor
-    /// is <see cref="BundleRoot"/> itself, which this helper's walk never
-    /// inspects (it stops as soon as <paramref name="path"/> equals
-    /// <paramref name="bundleRoot"/>). The real risk for
-    /// <see cref="AppendLog"/> is <c>log.md</c> itself being a planted file
-    /// symlink -- <see cref="File.ReadAllBytes(string)"/>/
-    /// <see cref="File.WriteAllText(string, string)"/> would follow it and
-    /// silently overwrite whatever external file it points at -- so what
-    /// actually protects <see cref="AppendLog"/> is the
-    /// <see cref="ReparsePoints.IsReparsePoint"/> check on <c>log.md</c>
-    /// itself, run both early and again late.
-    /// </summary>
-    private static bool HasReparsePointAncestor(string bundleRoot, string path)
-    {
-        var fullRoot = Path.GetFullPath(bundleRoot);
-        var current = Path.GetFullPath(path);
-        return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.OrdinalIgnoreCase);
-    }
 
     /// <summary>
     /// Renders a frontmatter value as a single display line: scalars via

@@ -14,9 +14,10 @@ namespace OKF4net.Catalog;
 /// surface beyond that root, whether via an absolute path, <c>..</c> traversal, or a
 /// reparse point (symlink/junction/mount point) planted somewhere along the way that would
 /// make the OS silently follow the link out of the root the moment anything actually
-/// touches disk. This mirrors the containment convention <c>OkfBundleTools.IsWithinBundleRoot</c>
+/// touches disk. This mirrors the containment convention <see cref="ReparsePoints.IsWithinBundleRoot"/>
 /// uses for bundle roots, and reuses the same shared <see cref="ReparsePoints.IsWithin"/>
-/// and <see cref="ReparsePoints.HasReparsePointAncestor"/> core helpers those use for
+/// and <see cref="ReparsePoints.HasReparsePointAncestor(string, string, System.StringComparison)"/>
+/// core helpers those use for
 /// containment and reparse-point-ancestor detection (via <c>OKF4net</c>'s
 /// <c>InternalsVisibleTo</c> grant to this assembly) rather than duplicating a second,
 /// platform-specific implementation.
