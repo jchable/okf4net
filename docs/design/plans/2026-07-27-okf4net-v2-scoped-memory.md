@@ -1103,6 +1103,19 @@ EOF
 
 ---
 
+### Task 2.5 — Exclude `role:memory` sources from the knowledge resolver
+
+**Added during execution** to close spec §5.3 (`role:memory` sources are not
+searched by `IKnowledgeResolver`), which no original task covered.
+`DefaultKnowledgeResolver.SearchAsync` filtered candidate sources by `s.Enabled`
+only; add `&& s.Role == SourceRole.Knowledge` so memory sources are never
+searched as shared knowledge (a memory-only catalog then yields the existing
+`NoEnabledSources`). One new fact in `DefaultKnowledgeResolverTests`
+(`Memory_role_sources_are_not_searched`). Full brief:
+`.superpowers/sdd/task-2.5-brief.md`.
+
+---
+
 ## Task Group 3 — `FileMemoryStore` (user tier) (spec §4, §6, §7, §11.3)
 
 ### Task 3.1 — `FileMemoryStore` over the core write primitive
