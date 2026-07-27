@@ -24,7 +24,9 @@ public static class CatalogManifestParser
     private const string PriorityProperty = "priority";
     private const string EnabledProperty = "enabled";
     private const string RoleProperty = "role";
+    private const string TierProperty = "tier";
     private const string KnowledgeRoleValue = "knowledge";
+    private const string MemoryRoleValue = "memory";
 
     /// <summary>
     /// Attempts to parse and validate <paramref name="json"/> as a <c>catalog.json</c>
@@ -164,6 +166,15 @@ public static class CatalogManifestParser
             sources.Add(ParseSource(sourceElement, seenIds, diags));
         }
 
+        var seenTiers = new HashSet<MemoryTier>();
+        foreach (var s in sources)
+        {
+            if (s.Role == SourceRole.Memory && s.Tier is { } t && !seenTiers.Add(t))
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.DuplicateMemoryTier, $"More than one role:\"memory\" source declares tier '{t}'."));
+            }
+        }
+
         return sources;
     }
 
@@ -171,7 +182,7 @@ public static class CatalogManifestParser
     {
         foreach (var property in source.EnumerateObject())
         {
-            if (property.Name is not (IdProperty or PathProperty or PriorityProperty or EnabledProperty or RoleProperty))
+            if (property.Name is not (IdProperty or PathProperty or PriorityProperty or EnabledProperty or RoleProperty or TierProperty))
             {
                 diags.Add(new CatalogDiagnostic(
                     CatalogDiagnosticCode.UnknownSourceProperty,
@@ -184,8 +195,9 @@ public static class CatalogManifestParser
         var priority = ParsePriority(source, diags);
         var enabled = ParseEnabled(source, diags);
         var role = ParseRole(source, diags);
+        var tier = ParseTier(source, role, diags);
 
-        return new KnowledgeCatalogSource(id, path, priority, enabled, role);
+        return new KnowledgeCatalogSource(id, path, priority, enabled, role, tier);
     }
 
     private static string ParseId(JsonElement source, HashSet<string> seenIds, List<CatalogDiagnostic> diags)
@@ -273,13 +285,48 @@ public static class CatalogManifestParser
             return SourceRole.Knowledge;
         }
 
-        if (roleProperty.ValueKind == JsonValueKind.String && roleProperty.GetString() == KnowledgeRoleValue)
+        if (roleProperty.ValueKind == JsonValueKind.String)
         {
-            return SourceRole.Knowledge;
+            var value = roleProperty.GetString();
+            if (value == KnowledgeRoleValue)
+            {
+                return SourceRole.Knowledge;
+            }
+
+            if (value == MemoryRoleValue)
+            {
+                return SourceRole.Memory;
+            }
         }
 
-        diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalRole, "Source 'role' must be \"knowledge\"."));
+        diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalRole, "Source 'role' must be \"knowledge\" or \"memory\"."));
         return SourceRole.Knowledge;
+    }
+
+    private static MemoryTier? ParseTier(JsonElement source, SourceRole role, List<CatalogDiagnostic> diags)
+    {
+        var hasTier = source.TryGetProperty(TierProperty, out var tierProperty);
+
+        if (role != SourceRole.Memory)
+        {
+            if (hasTier)
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalTier, "Source 'tier' is only valid on a role:\"memory\" source."));
+            }
+
+            return null;
+        }
+
+        var value = hasTier && tierProperty.ValueKind == JsonValueKind.String ? tierProperty.GetString() : null;
+        switch (value)
+        {
+            case "session": return MemoryTier.Session;
+            case "user": return MemoryTier.User;
+            case "tenant": return MemoryTier.Tenant;
+            default:
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalTier, "A role:\"memory\" source requires 'tier' to be \"session\", \"user\", or \"tenant\"."));
+                return null;
+        }
     }
 
     private static bool HasEmbeddedNul(JsonElement element)

@@ -16,7 +16,7 @@ public enum CatalogDiagnosticCode
     /// <summary>The manifest root object contains a property other than <c>version</c> or <c>sources</c>.</summary>
     UnknownRootProperty,
 
-    /// <summary>A source entry contains a property other than <c>id</c>, <c>path</c>, <c>priority</c>, <c>enabled</c>, or <c>role</c>.</summary>
+    /// <summary>A source entry contains a property other than <c>id</c>, <c>path</c>, <c>priority</c>, <c>enabled</c>, <c>role</c>, or <c>tier</c>.</summary>
     UnknownSourceProperty,
 
     /// <summary>The root <c>version</c> property is missing, not a number, or not exactly <c>1</c>.</summary>
@@ -43,8 +43,14 @@ public enum CatalogDiagnosticCode
     /// <summary>A source's <c>enabled</c> is present but not a boolean.</summary>
     MalformedEnabled,
 
-    /// <summary>A source's <c>role</c> is present but is not the string <c>"knowledge"</c>.</summary>
+    /// <summary>A source's <c>role</c> is present but is not the string <c>"knowledge"</c> or <c>"memory"</c>.</summary>
     IllegalRole,
+
+    /// <summary>A <c>role:"memory"</c> source is missing a valid <c>tier</c>, or a non-memory source carries a <c>tier</c>.</summary>
+    IllegalTier,
+
+    /// <summary>Two or more <c>role:"memory"</c> sources declare the same <c>tier</c> (one memory source per tier is allowed).</summary>
+    DuplicateMemoryTier,
 
     /// <summary>
     /// A source's resolved <c>path</c> could not be canonicalized at all (e.g. an embedded

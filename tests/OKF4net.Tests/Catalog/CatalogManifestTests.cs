@@ -331,10 +331,10 @@ public class CatalogManifestTests
     // ---- IllegalRole --------------------------------------------------------------
 
     [Fact]
-    public void Rejects_role_other_than_knowledge()
+    public void Rejects_role_other_than_knowledge_or_memory()
     {
         const string json = """
-            { "version": 1, "sources": [ { "id": "docs", "path": "./docs", "role": "memory" } ] }
+            { "version": 1, "sources": [ { "id": "docs", "path": "./docs", "role": "audit" } ] }
             """;
 
         Assert.False(TryParse(json, out var snapshot, out var diagnostics));
@@ -352,6 +352,114 @@ public class CatalogManifestTests
         Assert.False(TryParse(json, out var snapshot, out var diagnostics));
         Assert.Null(snapshot);
         Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.IllegalRole);
+    }
+
+    // ---- role:memory + tier (V2) ----------------------------------------
+
+    [Fact]
+    public void Accepts_role_memory_with_valid_tier()
+    {
+        const string json = """
+            {
+              "version": 1,
+              "sources": [ { "id": "user-mem", "path": "./mem/user", "role": "memory", "tier": "user" } ]
+            }
+            """;
+
+        Assert.True(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Empty(diagnostics);
+        var source = Assert.Single(snapshot!.Sources);
+        Assert.Equal(SourceRole.Memory, source.Role);
+        Assert.Equal(MemoryTier.User, source.Tier);
+    }
+
+    [Theory]
+    [InlineData("session", MemoryTier.Session)]
+    [InlineData("user", MemoryTier.User)]
+    [InlineData("tenant", MemoryTier.Tenant)]
+    public void Accepts_every_memory_tier(string tier, MemoryTier expected)
+    {
+        var json = $$"""
+            { "version": 1, "sources": [ { "id": "m", "path": "./m", "role": "memory", "tier": "{{tier}}" } ] }
+            """;
+
+        Assert.True(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Empty(diagnostics);
+        Assert.Equal(expected, Assert.Single(snapshot!.Sources).Tier);
+    }
+
+    [Fact]
+    public void Rejects_role_memory_without_a_tier()
+    {
+        const string json = """
+            { "version": 1, "sources": [ { "id": "m", "path": "./m", "role": "memory" } ] }
+            """;
+
+        Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
+        Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.IllegalTier);
+    }
+
+    [Fact]
+    public void Rejects_role_memory_with_an_unknown_tier()
+    {
+        const string json = """
+            { "version": 1, "sources": [ { "id": "m", "path": "./m", "role": "memory", "tier": "global" } ] }
+            """;
+
+        Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
+        Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.IllegalTier);
+    }
+
+    [Fact]
+    public void Rejects_tier_on_a_non_memory_source()
+    {
+        const string json = """
+            { "version": 1, "sources": [ { "id": "d", "path": "./d", "role": "knowledge", "tier": "user" } ] }
+            """;
+
+        Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
+        Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.IllegalTier);
+    }
+
+    [Fact]
+    public void Rejects_two_memory_sources_of_the_same_tier()
+    {
+        const string json = """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "u1", "path": "./u1", "role": "memory", "tier": "user" },
+                { "id": "u2", "path": "./u2", "role": "memory", "tier": "user" }
+              ]
+            }
+            """;
+
+        Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
+        Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.DuplicateMemoryTier);
+    }
+
+    [Fact]
+    public void Accepts_up_to_three_memory_sources_one_per_tier_alongside_knowledge()
+    {
+        const string json = """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "docs", "path": "./docs" },
+                { "id": "sess", "path": "./m/s", "role": "memory", "tier": "session" },
+                { "id": "usr",  "path": "./m/u", "role": "memory", "tier": "user" },
+                { "id": "ten",  "path": "./m/t", "role": "memory", "tier": "tenant" }
+              ]
+            }
+            """;
+
+        Assert.True(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Empty(diagnostics);
+        Assert.Equal(4, snapshot!.Sources.Count);
     }
 
     // ---- Never-throw guarantee ---------------------------------------------------
