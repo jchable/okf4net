@@ -24,7 +24,9 @@ public static class CatalogManifestParser
     private const string PriorityProperty = "priority";
     private const string EnabledProperty = "enabled";
     private const string RoleProperty = "role";
+    private const string TierProperty = "tier";
     private const string KnowledgeRoleValue = "knowledge";
+    private const string MemoryRoleValue = "memory";
 
     /// <summary>
     /// Attempts to parse and validate <paramref name="json"/> as a <c>catalog.json</c>
@@ -55,7 +57,7 @@ public static class CatalogManifestParser
         if (json is null)
         {
             diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.ParseError, "Manifest JSON must not be null."));
-            diagnostics = diags;
+            diagnostics = diags.AsReadOnly();
             return false;
         }
 
@@ -67,7 +69,7 @@ public static class CatalogManifestParser
         catch (JsonException ex)
         {
             diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.ParseError, $"Malformed JSON: {ex.Message}"));
-            diagnostics = diags;
+            diagnostics = diags.AsReadOnly();
             return false;
         }
 
@@ -87,7 +89,7 @@ public static class CatalogManifestParser
                 diags.Add(new CatalogDiagnostic(
                     CatalogDiagnosticCode.ParseError,
                     $"Manifest root must be a JSON object, found {root.ValueKind}."));
-                diagnostics = diags;
+                diagnostics = diags.AsReadOnly();
                 return false;
             }
 
@@ -108,7 +110,11 @@ public static class CatalogManifestParser
             // view -- otherwise a caller could downcast this back to
             // List<CatalogDiagnostic> and mutate published diagnostics (F4),
             // matching the same hardening FileKnowledgeCatalog's read-failure
-            // path already applies via Array.AsReadOnly().
+            // path already applies via Array.AsReadOnly(). EVERY failure exit
+            // above (null / malformed JSON / non-object root) wraps identically,
+            // so no path ever hands the mutable list out -- important because
+            // FileKnowledgeCatalog.LastReloadDiagnostics republishes this list
+            // verbatim after an invalid reload.
             diagnostics = diags.AsReadOnly();
             if (diags.Count > 0)
             {
@@ -160,6 +166,15 @@ public static class CatalogManifestParser
             sources.Add(ParseSource(sourceElement, seenIds, diags));
         }
 
+        var seenTiers = new HashSet<MemoryTier>();
+        foreach (var s in sources)
+        {
+            if (s.Role == SourceRole.Memory && s.Tier is { } t && !seenTiers.Add(t))
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.DuplicateMemoryTier, $"More than one role:\"memory\" source declares tier '{t}'."));
+            }
+        }
+
         return sources;
     }
 
@@ -167,7 +182,7 @@ public static class CatalogManifestParser
     {
         foreach (var property in source.EnumerateObject())
         {
-            if (property.Name is not (IdProperty or PathProperty or PriorityProperty or EnabledProperty or RoleProperty))
+            if (property.Name is not (IdProperty or PathProperty or PriorityProperty or EnabledProperty or RoleProperty or TierProperty))
             {
                 diags.Add(new CatalogDiagnostic(
                     CatalogDiagnosticCode.UnknownSourceProperty,
@@ -180,8 +195,9 @@ public static class CatalogManifestParser
         var priority = ParsePriority(source, diags);
         var enabled = ParseEnabled(source, diags);
         var role = ParseRole(source, diags);
+        var tier = ParseTier(source, role, diags);
 
-        return new KnowledgeCatalogSource(id, path, priority, enabled, role);
+        return new KnowledgeCatalogSource(id, path, priority, enabled, role, tier);
     }
 
     private static string ParseId(JsonElement source, HashSet<string> seenIds, List<CatalogDiagnostic> diags)
@@ -269,13 +285,48 @@ public static class CatalogManifestParser
             return SourceRole.Knowledge;
         }
 
-        if (roleProperty.ValueKind == JsonValueKind.String && roleProperty.GetString() == KnowledgeRoleValue)
+        if (roleProperty.ValueKind == JsonValueKind.String)
         {
-            return SourceRole.Knowledge;
+            var value = roleProperty.GetString();
+            if (value == KnowledgeRoleValue)
+            {
+                return SourceRole.Knowledge;
+            }
+
+            if (value == MemoryRoleValue)
+            {
+                return SourceRole.Memory;
+            }
         }
 
-        diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalRole, "Source 'role' must be \"knowledge\"."));
+        diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalRole, "Source 'role' must be \"knowledge\" or \"memory\"."));
         return SourceRole.Knowledge;
+    }
+
+    private static MemoryTier? ParseTier(JsonElement source, SourceRole role, List<CatalogDiagnostic> diags)
+    {
+        var hasTier = source.TryGetProperty(TierProperty, out var tierProperty);
+
+        if (role != SourceRole.Memory)
+        {
+            if (hasTier)
+            {
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalTier, "Source 'tier' is only valid on a role:\"memory\" source."));
+            }
+
+            return null;
+        }
+
+        var value = hasTier && tierProperty.ValueKind == JsonValueKind.String ? tierProperty.GetString() : null;
+        switch (value)
+        {
+            case "session": return MemoryTier.Session;
+            case "user": return MemoryTier.User;
+            case "tenant": return MemoryTier.Tenant;
+            default:
+                diags.Add(new CatalogDiagnostic(CatalogDiagnosticCode.IllegalTier, "A role:\"memory\" source requires 'tier' to be \"session\", \"user\", or \"tenant\"."));
+                return null;
+        }
     }
 
     private static bool HasEmbeddedNul(JsonElement element)

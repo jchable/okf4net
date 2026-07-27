@@ -46,7 +46,7 @@ context into each invocation (as a message, never as system instructions).
 Memory capture into deterministic, per-day memory concepts is **off by
 default** (`MemoryCaptureMode.Disabled`) — no LLM call, no extra tool
 round-trip — and only happens once a caller explicitly opts in via
-`OkfContextProviderOptions.MemoryCapture = MemoryCaptureMode.SharedBundle`,
+`OkfContextProviderOptions.MemoryCapture = MemoryCaptureMode.Enabled`,
 which writes captured exchanges into the same bundle the agent reads from.
 Note: the token budget is a soft chars/4 estimate
 (can be exceeded slightly), its `<okf-context>` fences are readability

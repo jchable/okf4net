@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using Microsoft.Agents.AI;
+using OKF4net.Catalog;
+
 namespace OKF4net.Agents;
 
 /// <summary>Options for <see cref="OkfContextProvider"/>.</summary>
@@ -16,7 +19,7 @@ public sealed class OkfContextProviderOptions
     /// Whether (and how) the provider captures exchanges as long-term memory
     /// concepts in the bundle after each invocation. Defaults to
     /// <see cref="MemoryCaptureMode.Disabled"/>: the memory that
-    /// <see cref="MemoryCaptureMode.SharedBundle"/> writes is bundle-global
+    /// <see cref="MemoryCaptureMode.Enabled"/> writes is bundle-global
     /// and unscoped by session, user, or tenant, so a scored recall in
     /// <see cref="OkfContextProvider.ProvideAIContextAsync"/> can surface one
     /// session's captured exchange to a completely different session sharing
@@ -31,6 +34,7 @@ public sealed class OkfContextProviderOptions
     /// <see cref="ConceptId.ValidateSegment"/>). Defaults to <c>"memory"</c>.
     /// Validated by <see cref="OkfContextProvider"/>'s constructor.
     /// </summary>
+    [Obsolete("MemoryDirectory (single-bundle capture) is deprecated in favour of role:memory catalog sources and the scoped IMemoryStore. Used only by the V1 OkfBundleTools-based provider constructor.")]
     public string MemoryDirectory { get; init; } = "memory";
 
     /// <summary>
@@ -38,6 +42,40 @@ public sealed class OkfContextProviderOptions
     /// invocation's context. Defaults to <c>5</c>.
     /// </summary>
     public int MaxConceptsInjected { get; init; } = 5;
+
+    /// <summary>
+    /// The host-authenticated scope for an invocation. Absent (<see langword="null"/>)
+    /// ⇒ <see cref="KnowledgeAccessScope.Local"/>. Used only by the scoped (V2)
+    /// provider constructor. Never derive scope from a message.
+    /// </summary>
+    /// <remarks>
+    /// If this delegate throws, the exception is <b>not</b> swallowed: it
+    /// propagates straight out of <c>ProvideAIContextAsync</c>/<c>StoreAIContextAsync</c>
+    /// to the caller. That is a deliberate asymmetry with the provider's
+    /// otherwise-documented never-throw guarantee, which covers failures in
+    /// bundle/resolver/memory-store I/O -- not a host-supplied delegate that
+    /// is itself broken. A <see cref="ScopeAccessor"/> that throws is a
+    /// host-contract violation, not a data or I/O failure, so it is
+    /// deliberately left unguarded rather than silently degraded.
+    /// </remarks>
+    public Func<AIContextProvider.InvokingContext, KnowledgeAccessScope>? ScopeAccessor { get; init; }
+
+    /// <summary>The tier scoped memory capture writes to. Defaults to <see cref="MemoryTier.User"/>.</summary>
+    public MemoryTier CaptureTier { get; init; } = MemoryTier.User;
+
+    /// <summary>
+    /// The floor fraction (0..1) of <see cref="TokenBudget"/> guaranteed to the
+    /// knowledge surface before spillover. Defaults to <c>0.6</c> (knowledge
+    /// slightly prioritized; memory augments).
+    /// </summary>
+    public double KnowledgeBudgetShare { get; init; } = 0.6;
+
+    /// <summary>
+    /// The floor fraction (0..1) of <see cref="TokenBudget"/> guaranteed to the
+    /// memory surface before spillover. Defaults to <c>0.4</c>. Must satisfy
+    /// <see cref="KnowledgeBudgetShare"/> + this ≤ 1.
+    /// </summary>
+    public double MemoryBudgetShare { get; init; } = 0.4;
 }
 
 /// <summary>
@@ -53,11 +91,13 @@ public enum MemoryCaptureMode
     Disabled,
 
     /// <summary>
-    /// Writes the current deterministic daily memory (the last user message
+    /// Captures the deterministic exchange into memory (V1: the single
+    /// bundle; V2: the scope's tier via <c>IMemoryStore</c>). In V1, this
+    /// writes the current deterministic daily memory (the last user message
     /// and the agent's final response, deterministically formatted -- no
     /// LLM involved) into the shared bundle. Any session that can read the
     /// bundle may later retrieve the captured exchange, since the write is
     /// bundle-global and unscoped by session, user, or tenant.
     /// </summary>
-    SharedBundle,
+    Enabled,
 }

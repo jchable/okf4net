@@ -16,8 +16,12 @@ namespace OKF4net.Catalog;
 /// </param>
 /// <param name="Enabled">Whether the source is active; defaults to <c>true</c> when omitted.</param>
 /// <param name="Role">
-/// The source's role; defaults to <see cref="SourceRole.Knowledge"/>, the only legal
-/// value in V1.
+/// The source's role; defaults to <see cref="SourceRole.Knowledge"/> when omitted from
+/// the manifest.
+/// </param>
+/// <param name="Tier">
+/// The memory tier, for a <see cref="SourceRole.Memory"/> source; <see langword="null"/>
+/// for a <see cref="SourceRole.Knowledge"/> source.
 /// </param>
 public sealed record KnowledgeCatalogSource(
-    string Id, string Path, int Priority, bool Enabled, SourceRole Role);
+    string Id, string Path, int Priority, bool Enabled, SourceRole Role, MemoryTier? Tier = null);
