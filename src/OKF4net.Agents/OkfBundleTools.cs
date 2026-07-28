@@ -345,7 +345,7 @@ public sealed class OkfBundleTools
                     : $"No results for query '{query}' with tag '{effectiveTag}'.";
             }
 
-            return FormatSearchResults(query, effectiveTag, scored);
+            return FormatSearchResults(query, effectiveTag, scored, DateOnly.FromDateTime(UtcNow().Date));
         });
     }
 
@@ -806,7 +806,7 @@ public sealed class OkfBundleTools
     };
 
     /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
-    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored)
+    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored, DateOnly today)
     {
         const int MaxResults = 20;
         var shown = scored.Take(MaxResults).ToList();
@@ -824,7 +824,19 @@ public sealed class OkfBundleTools
         foreach (var (concept, score) in shown)
         {
             var title = concept.Document.Frontmatter.Title ?? concept.Id.ToString();
-            sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')').Append('\n');
+            var lc = concept.Document.Frontmatter.Lifecycle;
+            sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')');
+            if (lc.Status == ConceptStatus.Deprecated)
+            {
+                sb.Append(" [deprecated]");
+            }
+
+            if (lc.IsStale(today))
+            {
+                sb.Append(" [stale]");
+            }
+
+            sb.Append('\n');
 
             var excerpt = ConceptSearch.Excerpt(concept.Document.Body, query);
             if (excerpt is not null)
