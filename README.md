@@ -422,6 +422,15 @@ This table is also published as the
 | §9 Conformance                | `OKF4net.BundleValidator`                                      |
 | §11 Versioning                | `Bundle.OkfVersion`, `OKF4net.OkfSpec.Version`                 |
 
+### OKF4net version ↔ OKF spec version
+
+| OKF4net                                | OKF spec | Highlights                                                                                                                                   |
+|----------------------------------------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| [0.1.0](CHANGELOG.md#010---2026-07-22) | v0.1     | Core library + `okf` CLI (`validate`/`info`/`index`/`graph`/`parse`/`fmt`), Native AOT                                                       |
+| [0.1.1](CHANGELOG.md#011---2026-07-24) | v0.1     | winget distribution; project website and developer docs                                                                                      |
+| [0.2.0](CHANGELOG.md#020---2026-07-27) | v0.1     | `OKF4net.Agents` (Agent Framework tools + context provider), `OKF4net.Catalog(.Hosting)`, `OKF4net.Mcp` server, scoped long-term memory (V2) |
+| [0.3.0](CHANGELOG.md#030---2026-07-28) | v0.2     | Provenance/trust/lifecycle frontmatter model, v0.1 legacy-field fallbacks, v0.2 validator diagnostics                                        |
+
 ## Contributing & roadmap
 
 Contributions are welcome and the barrier to entry is deliberately low — the
