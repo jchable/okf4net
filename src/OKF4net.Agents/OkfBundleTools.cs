@@ -805,7 +805,12 @@ public sealed class OkfBundleTools
         _ => "unreadable",
     };
 
-    /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
+    /// <summary>
+    /// Renders the ranked, bounded (top 20) search results as markdown, with the total match count.
+    /// Each hit is annotated with a trailing <c>[deprecated]</c> marker when its lifecycle status is
+    /// <see cref="ConceptStatus.Deprecated"/> and/or a <c>[stale]</c> marker when it is stale as of
+    /// <paramref name="today"/>.
+    /// </summary>
     private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored, DateOnly today)
     {
         const int MaxResults = 20;

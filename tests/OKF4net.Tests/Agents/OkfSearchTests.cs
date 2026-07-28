@@ -251,10 +251,10 @@ public class OkfSearchTests
     [Fact]
     public void Search_marks_deprecated_and_stale_hits()
     {
-        var dir = Directory.CreateTempSubdirectory("okfsearch").FullName;
-        File.WriteAllText(Path.Combine(dir, "dau.md"),
+        using var tmp = new TempDir();
+        tmp.Write("dau.md",
             "---\ntype: Metric\ntitle: DAU active users\nstatus: deprecated\nstale_after: 2026-01-01\n---\nActive users metric.\n");
-        var tools = new OkfBundleTools(dir) { UtcNow = () => new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc) };
+        var tools = new OkfBundleTools(tmp.Path) { UtcNow = () => new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc) };
 
         var output = tools.Search("active users", null);
         Assert.Contains("[deprecated]", output);
