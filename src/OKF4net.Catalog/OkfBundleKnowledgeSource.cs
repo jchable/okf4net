@@ -9,7 +9,7 @@ namespace OKF4net.Catalog;
 /// </summary>
 /// <remarks>
 /// <b>Stateless by design.</b> Each <see cref="SearchAsync"/> call performs
-/// its own <see cref="Bundle.Load(string)"/> (permissive, §9) and searches
+/// its own <see cref="Bundle.Load(string)"/> (permissive, §11) and searches
 /// via the core <see cref="ConceptSearch.Search"/> -- the same scorer
 /// <c>okf search</c>/<c>OkfBundleTools.Search</c> use, so ranking and scoring
 /// are identical by construction rather than by parallel re-implementation.
@@ -85,17 +85,24 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
         var scored = ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag);
 
         var passages = scored
-            .Select(hit => new KnowledgePassage(
-                SourceId: Id,
-                ConceptId: hit.Concept.Id.ToString(),
-                Title: hit.Concept.Document.Frontmatter.Title,
-                Excerpt: ConceptSearch.Excerpt(hit.Concept.Document.Body, query.Text) ?? string.Empty,
-                Score: hit.Score,
-                // Normalized to '/' regardless of OS -- matches ConceptId's
-                // '/' segment convention and travels correctly for a future
-                // <okf-context> adapter, rather than leaking a Windows
-                // backslash-separated path into cross-platform output.
-                BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/')))
+            .Select(hit =>
+            {
+                var fm = hit.Concept.Document.Frontmatter;
+                return new KnowledgePassage(
+                    SourceId: Id,
+                    ConceptId: hit.Concept.Id.ToString(),
+                    Title: fm.Title,
+                    Excerpt: ConceptSearch.Excerpt(hit.Concept.Document.Body, query.Text) ?? string.Empty,
+                    Score: hit.Score,
+                    // Normalized to '/' regardless of OS -- matches ConceptId's
+                    // '/' segment convention and travels correctly for a future
+                    // <okf-context> adapter, rather than leaking a Windows
+                    // backslash-separated path into cross-platform output.
+                    BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/'),
+                    TrustTier: fm.TrustTier,
+                    Status: fm.Lifecycle.Status,
+                    StaleAfter: fm.Lifecycle.StaleAfterRaw);
+            })
             .ToList();
 
         // .AsReadOnly() wraps the mutable List<T> in a genuine
