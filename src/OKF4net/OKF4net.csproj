@@ -10,7 +10,7 @@
   <PropertyGroup Label="Packaging">
     <PackageId>OKF4net</PackageId>
     <Authors>Julien CHABLE</Authors>
-    <Description>Zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1: parse, validate, index, and graph OKF knowledge bundles (markdown + YAML frontmatter).</Description>
+    <Description>Zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.2: parse, validate, index, and graph OKF knowledge bundles (markdown + YAML frontmatter).</Description>
     <Copyright>Copyright 2026 Julien CHABLE</Copyright>
     <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>

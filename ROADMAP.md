@@ -1,6 +1,6 @@
 # OKF4net Roadmap
 
-OKF4net implements the [Open Knowledge Format (OKF) v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+OKF4net implements the [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 on the .NET base class library with zero third-party runtime dependencies.
 This roadmap shows where the project is heading. It is a living document —
 issues labelled [`good first issue`](https://github.com/jchable/okf4net/labels/good%20first%20issue)
@@ -21,12 +21,12 @@ are the concrete entry points.
 ## Later
 
 - Ecosystem integrations driven by user demand.
-- Tracking upstream OKF spec evolution beyond v0.1.
+- Tracking upstream OKF spec evolution beyond v0.2.
 
 ## Out of scope
 
 - Third-party runtime dependencies in the library or CLI (BCL-only is a hard rule).
-- Divergence from the OKF v0.1 spec without a documented, cited reason.
+- Divergence from the OKF v0.2 spec without a documented, cited reason.
 
 ## How to influence the roadmap
 

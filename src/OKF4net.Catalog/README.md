@@ -1,6 +1,6 @@
 # OKF4net.Catalog
 
-A catalog of local [Open Knowledge Format (OKF) v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+A catalog of local [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 knowledge bundles for .NET: a hot-reloadable `catalog.json` manifest naming
 one or more bundles as *sources*, and a resolver that searches every enabled
 source and returns results grouped by source.

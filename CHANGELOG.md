@@ -31,6 +31,20 @@ v0.2-sanctioned legacy fallbacks so v0.1 bundles keep loading unchanged.
   the frontmatter `sources` field, or the legacy `# Citations` body list when it
   is absent. `Frontmatter.LastChangedAt` falls back `generated.at ?? timestamp`.
 - **v0.2 conformance fixture** (`tests/fixtures/okf_v02`) and its byte-exact golden.
+- **Consumer-layer v0.2 wiring** — the provenance/trust/lifecycle model is now
+  surfaced through `OKF4net.Agents` and `OKF4net.Catalog`:
+  - `okf_write_concept` auto-stamps a `generated` block (§5.2) —
+    `{by: okf4net/<version>, at: <UTC>}` — when the frontmatter has none (opt-in
+    per tool; the scoped-memory write path is deliberately never auto-stamped).
+  - `okf_read_concept` prints a `status | trust | stale` meta line, and
+    `okf_search` marks hits `[deprecated]` / `[stale]`, when those differ from
+    the defaults.
+  - `OkfContextProvider`, `DefaultKnowledgeResolver`, and `KnowledgeQuery` honor
+    a `StalePolicy` (default `Use` — surface everything, never silently drop)
+    when admitting concepts, with staleness resolved against an injectable clock.
+  - `KnowledgePassage` carries the matching concept's `TrustTier` and full
+    `Lifecycle`, so a resolver or host can filter and render provenance without
+    reparsing frontmatter.
 
 ### Changed
 

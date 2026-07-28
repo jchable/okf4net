@@ -50,5 +50,5 @@ registered).
 `okf_append_log`, `okf_regenerate_indexes`, `okf_validate_bundle`,
 `okf_changes_since`.
 
-Each is the corresponding `OkfBundleTools` operation, so all OKF v0.1 behaviour,
+Each is the corresponding `OkfBundleTools` operation, so all OKF v0.2 behaviour,
 producer-grade validation, path-safety, and locking apply unchanged.

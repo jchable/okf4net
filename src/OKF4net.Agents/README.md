@@ -1,7 +1,7 @@
 # OKF4net.Agents
 
 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) function
-tools for [Open Knowledge Format (OKF) v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
+tools for [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
 knowledge bundles. This package exposes the operations of the
 [OKF4net](https://www.nuget.org/packages/OKF4net) library — reading, browsing,
 searching, writing, indexing and validating OKF bundles — as `AIFunction` tools
