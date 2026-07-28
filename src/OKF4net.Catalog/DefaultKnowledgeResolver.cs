@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net;
+
 namespace OKF4net.Catalog;
 
 /// <summary>
@@ -33,11 +35,13 @@ namespace OKF4net.Catalog;
 public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
 {
     private readonly IKnowledgeCatalog _catalog;
+    private readonly IOkfClock _clock;
 
-    /// <summary>Creates a resolver over <paramref name="catalog"/>.</summary>
-    public DefaultKnowledgeResolver(IKnowledgeCatalog catalog)
+    /// <summary>Creates a resolver over <paramref name="catalog"/>; <paramref name="clock"/> supplies "today" for stale-policy filtering (defaults to the system clock).</summary>
+    public DefaultKnowledgeResolver(IKnowledgeCatalog catalog, IOkfClock? clock = null)
     {
         _catalog = catalog;
+        _clock = clock ?? new SystemClock();
     }
 
     /// <inheritdoc/>
@@ -109,7 +113,12 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
             passages.AddRange(result.Passages);
         }
 
-        if (passages.Count == 0 && anySourceSearchedSuccessfully)
+        var today = _clock.Today;
+        var admitted = passages
+            .Where(p => query.StalePolicy.Admits(Lifecycle.From(null, p.StaleAfter), today))
+            .ToList();
+
+        if (admitted.Count == 0 && anySourceSearchedSuccessfully)
         {
             diagnostics.Add(new KnowledgeDiagnostic(
                 KnowledgeDiagnosticCode.NoMatches, null, $"No passages matched query '{query.Text}'."));
@@ -120,6 +129,6 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
         // -- otherwise a caller could `(List<T>)context.Passages` and mutate a
         // published KnowledgeContext (same containment reasoning as
         // KnowledgeCatalogSnapshot.Sources; see CatalogManifestParser).
-        return new KnowledgeContext(query, snapshot.Generation, passages.AsReadOnly(), diagnostics.AsReadOnly());
+        return new KnowledgeContext(query, snapshot.Generation, admitted.AsReadOnly(), diagnostics.AsReadOnly());
     }
 }
