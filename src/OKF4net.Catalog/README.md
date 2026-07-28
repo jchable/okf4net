@@ -139,10 +139,10 @@ choices:
 
 - Run the **whole catalog root** on ephemeral storage (e.g. a container's
   tmpfs mount or ephemeral volume) — every source under it, including a
-  session-tier one at a perfectly ordinary relative `path` like
-  `mem-session` above, is then ephemeral by construction. The catalog root
-  itself is exempt from the reparse-point walk, so this is the one place a
-  mount point is fine.
+  session-tier source like `mem-session` above at its own ordinary relative
+  `path`, is then ephemeral by construction. The catalog root itself is
+  exempt from the reparse-point walk, so this is the one place a mount
+  point is fine.
 - Treat any tier's subtree as revocable at will via
   `IMemoryStore.DeleteScopeAsync` — nothing purges automatically, but
   nothing stops a host from calling it the moment a conversation ends.
