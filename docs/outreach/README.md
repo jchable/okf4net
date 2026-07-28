@@ -4,6 +4,13 @@ Ready-to-publish drafts for the OKF4net launch. Publication is a manual step —
 here posts itself. See the plan (`docs/superpowers/plans/2026-07-27-okf4net-outreach-onramp.md`)
 and spec (`docs/superpowers/specs/2026-07-27-communication-plan-design.md`) for the strategy.
 
+> **Note:** `devto-launch-article.md` and `short-form-posts.md` were removed — both were
+> built around a "ported from Rust" launch narrative that no longer fits the project
+> (OKF4net is now framed as an independent .NET implementation of the OKF spec, not a
+> Rust port). The publication sequence below needs a new flagship-article draft with an
+> updated angle before the J1–J5 sequence can proceed; `ecosystem-blurbs.md` (no Rust
+> framing) is still valid as-is.
+
 ## Onramp gate (Phase 0) — status
 
 Do not publish anything until the onramp is in place. Current state:
@@ -22,19 +29,15 @@ Do not publish anything until the onramp is in place. Current state:
 | Day | Asset | Platform | Source file | Done |
 |-----|-------|----------|-------------|------|
 | Pre-J1 | awesome-dotnet PR + newsletter submissions | GitHub / newsletters | `ecosystem-blurbs.md` | [ ] |
-| J1 | Flagship article | dev.to (canonical → personal site) | `devto-launch-article.md` | [ ] |
-| J1 | Republish | Personal site (canonical), Medium (`rel=canonical`) | `devto-launch-article.md` | [ ] |
-| J2 | Show HN | news.ycombinator.com | `short-form-posts.md` | [ ] |
-| J3 | Reddit | r/dotnet, r/csharp | `short-form-posts.md` | [ ] |
-| J4 | Personal post | LinkedIn + Bluesky/Mastodon | `short-form-posts.md` | [ ] |
-| J5 | Agents angle | dev.to / micro-blog | `short-form-posts.md` | [ ] |
+| J1 | Flagship article | dev.to (canonical → personal site) | *(needs a new draft — independent-implementation angle)* | [ ] |
+| J1 | Republish | Personal site (canonical), Medium (`rel=canonical`) | *(same, once drafted)* | [ ] |
+| J2 | Show HN | news.ycombinator.com | *(needs a new draft)* | [ ] |
+| J3 | Reddit | r/dotnet, r/csharp | *(needs a new draft)* | [ ] |
+| J4 | Personal post | LinkedIn + Bluesky/Mastodon | *(needs a new draft)* | [ ] |
+| J5 | Agents angle | dev.to / micro-blog | *(needs a new draft)* | [ ] |
 
 ## Before you publish — placeholders to replace
 
-- `devto-launch-article.md`: set `canonical_url` to the real personal-site URL
-  (placeholder `https://REPLACE-WITH-PERSONAL-SITE/okf4net-launch`).
-- `short-form-posts.md`: replace `https://dev.to/REPLACE-WITH-ARTICLE-URL` in the Reddit
-  and LinkedIn posts with the live dev.to article URL (do this after J1).
 - `ecosystem-blurbs.md`: verify the "The week in .NET" submission path before submitting —
   the historical URL now redirects elsewhere; the file flags this.
 
