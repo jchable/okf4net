@@ -6,11 +6,14 @@ namespace OKF4net.Tests;
 /// <summary>
 /// Golden parity tests: every output the CLI produces is diffed against the
 /// corresponding byte-exact reference output under
-/// <c>tests/fixtures/golden/</c>, captured against
-/// <c>tests/fixtures/appendix_a</c> on Linux. Any divergence beyond the one
-/// documented platform artifact (see
-/// <see cref="Validate_output_and_exitcode_match_golden"/>) is a bug in the
-/// CLI, never a reason to touch a golden fixture.
+/// <c>tests/fixtures/golden/</c>. Most goldens (including <c>validate.out</c>)
+/// were captured against <c>tests/fixtures/appendix_a</c> on Linux;
+/// <c>validate-v02.out</c>, checked against the <c>tests/fixtures/okf_v02</c>
+/// bundle (see <see cref="Validate_v02_fixture_matches_golden"/>), is instead
+/// a hand-authored v0.2 fixture verified against the v0.2 spec text, since no
+/// reference binary implements v0.2. Any divergence beyond the one documented
+/// platform artifact (see <see cref="Validate_output_and_exitcode_match_golden"/>)
+/// is a bug in the CLI, never a reason to touch a golden fixture.
 /// </summary>
 public class GoldenParityTests
 {

@@ -5,7 +5,7 @@ using OKF4net.Internal;
 namespace OKF4net;
 
 /// <summary>
-/// Conformance checking against OKF v0.1 §9.
+/// Conformance checking against OKF v0.2 §11.
 ///
 /// A bundle is <b>conformant</b> if (1) every non-reserved <c>.md</c> file
 /// has a parseable frontmatter block, (2) every frontmatter has a non-empty
@@ -14,13 +14,13 @@ namespace OKF4net;
 /// missing optional fields, unknown types/keys, broken links, or missing
 /// <c>index.md</c> files.
 ///
-/// Accordingly, <see cref="BundleValidator.Validate"/> reports only true §9
+/// Accordingly, <see cref="BundleValidator.Validate"/> reports only true §11
 /// violations as <see cref="Severity.Error"/>; all softer issues are
 /// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>
 public enum Severity
 {
-    /// <summary>A §9 conformance violation.</summary>
+    /// <summary>A §11 conformance violation.</summary>
     Error,
 
     /// <summary>A soft-guidance deviation (the bundle is still conformant).</summary>
@@ -86,7 +86,7 @@ public sealed class ValidationReport
 
     /// <summary>
     /// <c>true</c> if there are no <see cref="Severity.Error"/> diagnostics
-    /// -- i.e. the bundle conforms to §9.
+    /// -- i.e. the bundle conforms to §11.
     /// </summary>
     public bool IsConformant => !Diagnostics.Any(d => d.Severity == Severity.Error);
 
@@ -101,14 +101,14 @@ public sealed class ValidationReport
 }
 
 /// <summary>
-/// Validates a loaded <see cref="Bundle"/> against §9.
+/// Validates a loaded <see cref="Bundle"/> against §11.
 /// </summary>
 public static class BundleValidator
 {
     private const string IndexFilename = "index.md";
 
     /// <summary>
-    /// Validates a loaded bundle against §9, returning all findings.
+    /// Validates a loaded bundle against §11, returning all findings.
     /// </summary>
     /// <param name="bundle">The loaded bundle to validate.</param>
     /// <param name="clock">Supplies "today" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
@@ -254,7 +254,7 @@ public static class BundleValidator
 
     private static readonly string[] RecommendedFields = ["title", "description", "resource", "tags"];
 
-    /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§9), without relying on exceptions for control flow.</summary>
+    /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§11), without relying on exceptions for control flow.</summary>
     private static bool HasConformantType(OkfDocument document)
     {
         var value = document.Frontmatter.Get("type");

@@ -18,7 +18,7 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// <summary>
     /// Frontmatter keys a producer's enrichment workflow requires before a
     /// document is considered publishable. Note this is *stricter* than spec
-    /// conformance (§9), which requires only <c>type</c>.
+    /// conformance (§11), which requires only <c>type</c>.
     /// </summary>
     public static readonly string[] RequiredKeys = ["type", "title", "description"];
 

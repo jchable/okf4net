@@ -128,7 +128,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     /// <c>description</c>, and <c>timestamp</c> to all be present and
     /// non-empty.
     ///
-    /// For spec **conformance** (§9), which requires only a non-empty
+    /// For spec **conformance** (§11), which requires only a non-empty
     /// <c>type</c>, use <see cref="ValidateConformance"/>.
     /// </summary>
     /// <exception cref="DocumentValidationException">One or more required keys are missing or empty.</exception>
@@ -152,7 +152,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     }
 
     /// <summary>
-    /// Spec-conformance validation (§9): the frontmatter must contain a
+    /// Spec-conformance validation (§11): the frontmatter must contain a
     /// non-empty <c>type</c> field. Optional fields are not required.
     /// </summary>
     /// <exception cref="DocumentValidationException"><c>type</c> is missing or empty.</exception>
