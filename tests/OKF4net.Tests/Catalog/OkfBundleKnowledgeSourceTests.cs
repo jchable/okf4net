@@ -171,10 +171,10 @@ public class OkfBundleKnowledgeSourceTests
     [Fact]
     public async Task Passage_carries_trust_status_and_stale_after()
     {
-        var dir = Directory.CreateTempSubdirectory("okfsrc").FullName;
-        File.WriteAllText(Path.Combine(dir, "dau.md"),
+        using var tmp = new TempDir();
+        tmp.Write("dau.md",
             "---\ntype: Metric\ntitle: DAU active\ndescription: d\nstatus: deprecated\nverified: {by: human:ada}\nstale_after: 2026-01-01\n---\nActive users.\n");
-        var source = new OkfBundleKnowledgeSource("s1", dir);
+        var source = new OkfBundleKnowledgeSource("s1", tmp.Path);
 
         var result = await source.SearchAsync(new KnowledgeQuery("active"));
         var p = Assert.Single(result.Passages);
