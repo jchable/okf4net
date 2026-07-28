@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Concurrent;
+using System.Globalization;
 using OKF4net.Internal;
 using OKF4net.Yaml;
 
@@ -67,6 +68,15 @@ public sealed class BundleConceptWriter
 
     private readonly Action? _onWriteCommitted;
 
+    /// <summary>When true, <see cref="WriteConcept"/> stamps a <c>generated</c> block (§5.2) if the caller omitted one. Off by default so only opt-in producer paths (the Agents write tool) auto-stamp.</summary>
+    internal bool AutoStampGenerated { get; set; }
+
+    /// <summary>Clock seam for the auto-stamp; overridable in tests. Only consulted when <see cref="AutoStampGenerated"/> is true.</summary>
+    internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
+
+    /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
+    internal string ProducerActor { get; set; } = "okf4net/" + OkfSpec.Version;
+
     /// <summary>Creates a writer rooted at <paramref name="bundleRoot"/>.</summary>
     /// <param name="bundleRoot">The bundle's root directory.</param>
     /// <param name="onWriteCommitted">
@@ -122,7 +132,7 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Creates or updates one concept document. Producer-grade validation
     /// (<see cref="OkfDocument.Validate"/>: non-empty <c>type</c>,
-    /// <c>title</c>, <c>description</c> and <c>timestamp</c>) runs BEFORE
+    /// <c>title</c>, and <c>description</c>) runs BEFORE
     /// anything is written — on failure, the file on disk (if any) is left
     /// untouched. Never throws for expected errors (a null/blank/malformed
     /// concept id, a reserved id, invalid frontmatter YAML, or a failed
@@ -171,7 +181,7 @@ public sealed class BundleConceptWriter
                 return targetError;
             }
 
-            var (content, buildError) = BuildValidatedContent(frontmatterYaml, body);
+            var (content, buildError) = BuildValidatedContent(MaybeStampGenerated(frontmatterYaml), body);
             if (buildError is not null)
             {
                 return buildError;
@@ -432,6 +442,43 @@ public sealed class BundleConceptWriter
 
         target = new ConceptTarget(id, targetPath);
         return null;
+    }
+
+    /// <summary>
+    /// Stamps a <c>generated: { by, at }</c> block (§5.2) into <paramref name="frontmatterYaml"/>
+    /// when <see cref="AutoStampGenerated"/> is on and the caller's frontmatter has no
+    /// <c>generated</c> key of its own. A no-op (returns the input unchanged) when the flag is
+    /// off, when the frontmatter fails to parse (the resulting error is left for
+    /// <see cref="BuildValidatedContent"/> to surface unchanged), when it isn't a mapping, or
+    /// when a <c>generated</c> key is already present.
+    /// </summary>
+    private string MaybeStampGenerated(string frontmatterYaml)
+    {
+        if (!AutoStampGenerated)
+        {
+            return frontmatterYaml;
+        }
+
+        YamlValue parsed;
+        try
+        {
+            parsed = YamlValue.Parse(frontmatterYaml);
+        }
+        catch (Yaml.YamlParseException)
+        {
+            return frontmatterYaml; // let BuildValidatedContent surface the parse error unchanged
+        }
+
+        if (parsed is not YamlMapping map || map.ContainsKey("generated"))
+        {
+            return frontmatterYaml;
+        }
+
+        var generated = new YamlMapping();
+        generated.Insert("by", new YamlString(ProducerActor));
+        generated.Insert("at", new YamlString(UtcNow().ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z"));
+        map.Insert("generated", generated);
+        return map.ToYamlString();
     }
 
     /// <summary>

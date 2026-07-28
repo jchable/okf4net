@@ -86,6 +86,8 @@ public sealed class OkfBundleTools
 
         _writer = new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null);
         _bundleLock = _writer.WriteLock;
+        _writer.AutoStampGenerated = true;
+        _writer.UtcNow = () => UtcNow();
     }
 
     /// <summary>The bundle's root directory, as passed to the constructor.</summary>
