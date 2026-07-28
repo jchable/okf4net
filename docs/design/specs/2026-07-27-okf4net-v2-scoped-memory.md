@@ -87,6 +87,8 @@ subpath, relative to a memory source's root:
 tenant   → memory-tenant/<tenant>/
 user     → memory-user/<tenant>/<user>/     ← implemented this lot
 session  → memory-session/<session>/        ← contract only; storage staged
+                                               (superseded: nests under tenant/user too,
+                                               see 2026-07-28-okf4net-v2-session-tenant-tiers.md)
 ```
 
 - A null `<tenant>` renders as the sentinel segment `_local` (desktop/CLI).

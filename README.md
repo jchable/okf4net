@@ -372,14 +372,21 @@ KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund 
 - No external connectors.
 - No tenant-aware authorization of any kind.
 
-**V2 preview (not implemented):** application-filtered bundles (per-caller
-source visibility), a read-only `knowledge` vs writable `memory` source
-`role` split, and host-scoped, layered memory tiers (session / user /
+**Scoped memory (shipped):** a read-only `knowledge` vs writable `memory`
+source `role` split, and host-scoped, layered memory tiers (session / user /
 tenant) so captured memory can be enabled on a multi-user deployment without
-cross-scope leakage. See
-[the V2 scoped-memory design notes](docs/design/specs/2026-07-24-okf4net-v2-scoped-memory-notes.md)
-for the full reasoning — these are design notes only, not approved for
-implementation, and nothing described there ships in the current package.
+cross-scope leakage — see
+[the scoped-memory design](docs/design/specs/2026-07-27-okf4net-v2-scoped-memory.md)
+for the full reasoning and
+[`OKF4net.Catalog`'s README](src/OKF4net.Catalog/README.md#scoped-memory-role-memory)
+for the deployment example.
+
+**V2 preview (not implemented):** application-filtered bundles (per-caller
+source visibility) and cross-source result fusion (score normalization,
+deduplication, a single merged ranking across sources — today's resolver
+groups results by source instead). See
+[§9 of the local catalog design](docs/design/specs/2026-07-24-okf4net-local-catalog-design.md#9-v2-design-team-scoped-bundles)
+for the open questions there.
 
 See [OKF4net.Catalog](src/OKF4net.Catalog/README.md) and
 [OKF4net.Catalog.Hosting](src/OKF4net.Catalog.Hosting/README.md) for full

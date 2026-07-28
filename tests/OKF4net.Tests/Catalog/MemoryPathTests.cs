@@ -48,12 +48,14 @@ public class MemoryPathTests
     }
 
     [Fact]
-    public void Session_tier_keeps_its_literal_prefix_with_an_encoded_segment()
+    public void Session_tier_nests_an_encoded_session_segment_under_tenant_and_user()
     {
-        var segments = MemoryPath.For(MemoryTier.Session, new KnowledgeAccessScope(sessionId: "s1")).Split('/');
-        Assert.Equal(2, segments.Length);
+        var segments = MemoryPath.For(MemoryTier.Session, new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "s1")).Split('/');
+        Assert.Equal(4, segments.Length);
         Assert.Equal("memory-session", segments[0]);
-        AssertEncoded(segments[1], "s1");
+        AssertEncoded(segments[1], "acme");
+        AssertEncoded(segments[2], "alice");
+        AssertEncoded(segments[3], "s1");
     }
 
     [Fact]
@@ -79,7 +81,7 @@ public class MemoryPathTests
     {
         var local = KnowledgeAccessScope.Local;
         Assert.Equal("memory-user/_local/_local", MemoryPath.For(MemoryTier.User, local));
-        Assert.Equal("memory-session/_local", MemoryPath.For(MemoryTier.Session, local));
+        Assert.Equal("memory-session/_local/_local/_local", MemoryPath.For(MemoryTier.Session, local));
         Assert.Equal("memory-tenant/_local", MemoryPath.For(MemoryTier.Tenant, local));
     }
 
