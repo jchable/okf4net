@@ -33,8 +33,12 @@ namespace OKF4net.Catalog;
 /// carries a <c>-{hash}</c> suffix, the bare sentinel is provably distinct from
 /// any encoded value (and <see cref="KnowledgeAccessScope"/> additionally
 /// rejects <c>"_local"</c> as an explicit segment). User memory nests under
-/// tenant, so cross-tenant collision is impossible by construction, and the
-/// all-null "local" scope is a valid path for every tier.
+/// tenant, and session memory nests under both tenant and user, so
+/// cross-tenant and cross-user collision are impossible by construction, and
+/// the all-null "local" scope is a valid path for every tier. Because the
+/// session tier now encodes three segments instead of one, hosts using long
+/// tenant/user/session identifiers on Windows should consider enabling long-path
+/// support.
 /// </para>
 /// </remarks>
 public static class MemoryPath
@@ -48,7 +52,12 @@ public static class MemoryPath
     /// Each non-null scope segment is <see cref="Encode(string)">encoded</see>;
     /// a null segment is the bare <see cref="LocalSentinel"/>. The fixed tier
     /// prefixes (<c>memory-tenant</c>/<c>memory-user</c>/<c>memory-session</c>)
-    /// are literals.
+    /// are literals. <see cref="MemoryTier.Session"/> nests under both tenant
+    /// and user (<c>memory-session/&lt;tenant&gt;/&lt;user&gt;/&lt;session&gt;</c>),
+    /// the same way <see cref="MemoryTier.User"/> nests under tenant: a bare
+    /// <c>memory-session/&lt;session&gt;</c> path would make isolation depend
+    /// entirely on the host guaranteeing globally-unique session ids, rather
+    /// than being impossible-by-construction the way tenant/user isolation is.
     /// </summary>
     public static string For(MemoryTier tier, KnowledgeAccessScope scope)
     {
@@ -65,7 +74,7 @@ public static class MemoryPath
         {
             MemoryTier.Tenant => $"memory-tenant/{tenant}",
             MemoryTier.User => $"memory-user/{tenant}/{user}",
-            MemoryTier.Session => $"memory-session/{session}",
+            MemoryTier.Session => $"memory-session/{tenant}/{user}/{session}",
             _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unknown memory tier."),
         };
     }

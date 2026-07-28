@@ -58,8 +58,11 @@ runtime dependencies.
 - `priority` (optional, default `0`) — higher priority sources are searched
   first and their passages appear first in a grouped result.
 - `enabled` (optional, default `true`).
-- `role` (optional, default `"knowledge"`) — the only legal value in V1; any
+- `role` (optional, default `"knowledge"`) — `"knowledge"` (read-only, searched
+  by the resolver) or `"memory"` (writable, scoped by tier — see below); any
   other string is rejected.
+- `tier` — required when `role` is `"memory"`, one of `"session"`, `"user"`,
+  or `"tenant"`; not allowed otherwise.
 
 ## Quick start
 
@@ -93,6 +96,64 @@ source, in source-priority then per-source descending-score order) and
 `Diagnostics` (e.g. `NoEnabledSources`, `SourceUnavailable`, `NoMatches`) let a
 caller distinguish "no results" from "a source failed" from "no source is
 enabled" without parsing text.
+
+## Scoped memory (`role: "memory"`)
+
+A `role: "memory"` source is written by capture (e.g.
+`OkfContextProviderOptions.CaptureTier` in `OKF4net.Agents`), not searched by
+`IKnowledgeResolver` — it feeds an `IMemoryStore` instead. Configure one
+source per tier you need:
+
+```json
+{
+  "version": 1,
+  "sources": [
+    { "id": "kb", "path": "./bundles/products", "role": "knowledge" },
+    { "id": "mem-user", "path": "./memory/user", "role": "memory", "tier": "user" },
+    { "id": "mem-tenant", "path": "./memory/tenant", "role": "memory", "tier": "tenant" },
+    { "id": "mem-session", "path": "./memory/session", "role": "memory", "tier": "session" }
+  ]
+}
+```
+
+```csharp
+using OKF4net.Catalog;
+using OKF4net.Catalog.Hosting;
+
+services.AddKnowledge(o => o.AddCatalogFile("./config/catalog.json"));
+services.AddMemory();
+
+// Elsewhere:
+IMemoryStore memory = provider.GetRequiredService<IMemoryStore>();
+await memory.DeleteScopeAsync(scope, MemoryTier.Session); // e.g. when a conversation ends
+```
+
+**There is no code-level distinction between ephemeral and persistent
+tiers** — every `role:"memory"` source's `path`, like every other source's,
+must be relative to the manifest directory and resolve inside the catalog
+root (`CatalogPathResolver.TryResolve` rejects absolute paths, paths that
+escape the root, and reparse points anywhere along the way), so a source
+cannot point directly at an OS temp directory or a symlink into one.
+"Ephemeral" therefore isn't a per-source path trick; it's one of two real
+choices:
+
+- Run the **whole catalog root** on ephemeral storage (e.g. a container's
+  tmpfs mount or ephemeral volume) — every source under it, including a
+  session-tier source like `mem-session` above at its own ordinary relative
+  `path`, is then ephemeral by construction. The catalog root itself is
+  exempt from the reparse-point walk, so this is the one place a mount
+  point is fine.
+- Treat any tier's subtree as revocable at will via
+  `IMemoryStore.DeleteScopeAsync` — nothing purges automatically, but
+  nothing stops a host from calling it the moment a conversation ends.
+
+**V1 limitation:** `OKF4net.Catalog.Hosting`'s `AddMemory()` resolves the set
+of `role:memory` sources once, at first `IMemoryStore` resolution from the
+container, and does not pick up a source added/removed/edited afterward
+(including via `IKnowledgeCatalog.ReloadAsync()`) — see `AddMemory`'s own XML
+doc for the full explanation. Per-scope path resolution (the tenant/user/session
+segments) stays fully live on every call; only the fixed set of configured
+tiers is frozen.
 
 ## V1 limits
 

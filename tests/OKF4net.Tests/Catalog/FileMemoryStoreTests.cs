@@ -23,6 +23,12 @@ public class FileMemoryStoreTests
     private static FileMemoryStore UserStore(TempDir tmp) =>
         new(new Dictionary<MemoryTier, string> { [MemoryTier.User] = tmp.Path });
 
+    private static FileMemoryStore SessionStore(TempDir tmp) =>
+        new(new Dictionary<MemoryTier, string> { [MemoryTier.Session] = tmp.Path });
+
+    private static FileMemoryStore TenantStore(TempDir tmp) =>
+        new(new Dictionary<MemoryTier, string> { [MemoryTier.Tenant] = tmp.Path });
+
     // The on-disk path a scope maps to, DERIVED from MemoryPath.For so the
     // assertions track the (case-injective, encoded) scope-key form rather than
     // hardcoding it — with an optional trailing file/segment appended.
@@ -208,5 +214,218 @@ public class FileMemoryStoreTests
 
         var read = await store.ReadAsync(KnowledgeAccessScope.Local, new KnowledgeQuery("orders"));
         Assert.NotEmpty(read.Passages);
+    }
+
+    [Fact]
+    public async Task Write_then_read_round_trips_under_the_session_tier()
+    {
+        using var tmp = new TempDir();
+        var store = SessionStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess-1");
+
+        var write = await store.WriteAsync(scope, Entry("orders and refunds notes"), MemoryTier.Session);
+        Assert.True(write.Written);
+        Assert.Null(write.Error);
+
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.Session, scope, "2026-07-27.md")));
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("orders"));
+        Assert.Empty(read.Diagnostics);
+        Assert.NotEmpty(read.Passages);
+        Assert.All(read.Passages, p => Assert.Equal("memory:Session", p.SourceId));
+    }
+
+    [Fact]
+    public async Task Two_scopes_with_the_same_SessionId_but_different_tenant_and_user_do_not_collide()
+    {
+        // The regression test for the Task 1 fix: before it, MemoryPath.For
+        // produced "memory-session/{session}" with no tenant/user segment,
+        // so two different tenants sharing the same SessionId would have
+        // written to and read from the exact same path.
+        using var tmp = new TempDir();
+        var store = SessionStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "tenant-a", userId: "alice", sessionId: "shared-session-id");
+        var b = new KnowledgeAccessScope(tenantId: "tenant-b", userId: "bob", sessionId: "shared-session-id");
+
+        await store.WriteAsync(a, Entry("tenant-a-secret-nonce"), MemoryTier.Session);
+
+        var readB = await store.ReadAsync(b, new KnowledgeQuery("tenant-a-secret-nonce"));
+        Assert.Empty(readB.Passages);
+
+        Assert.NotEqual(
+            MemPath(tmp.Path, MemoryTier.Session, a),
+            MemPath(tmp.Path, MemoryTier.Session, b));
+    }
+
+    [Fact]
+    public async Task Case_distinct_sessions_cannot_read_each_others_memory()
+    {
+        using var tmp = new TempDir();
+        var store = SessionStore(tmp);
+        var upper = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "Sess1");
+        var lower = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess1");
+
+        await store.WriteAsync(upper, Entry("case-variant-secret"), MemoryTier.Session);
+
+        var readLower = await store.ReadAsync(lower, new KnowledgeQuery("case-variant-secret"));
+        Assert.Empty(readLower.Passages);
+    }
+
+    [Fact]
+    public async Task Delete_removes_only_the_target_session_scope_subtree()
+    {
+        using var tmp = new TempDir();
+        var store = SessionStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess-a");
+        var b = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess-b");
+        await store.WriteAsync(a, Entry("session a data"), MemoryTier.Session);
+        await store.WriteAsync(b, Entry("session b data"), MemoryTier.Session);
+
+        var del = await store.DeleteScopeAsync(a, MemoryTier.Session);
+        Assert.Equal(1, del.TiersDeleted);
+        Assert.Null(del.Error);
+
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.Session, a)));
+        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.Session, b)));
+    }
+
+    [Fact]
+    public async Task Session_Read_ConceptId_is_fully_qualified_matching_Enumerate()
+    {
+        using var tmp = new TempDir();
+        var store = SessionStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess-1");
+        await store.WriteAsync(scope, Entry("orders and refunds notes"), MemoryTier.Session);
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("orders"));
+        var passage = Assert.Single(read.Passages);
+
+        var listed = await store.EnumerateAsync(scope);
+        var concept = Assert.Single(listed);
+
+        Assert.Equal($"{MemoryPath.For(MemoryTier.Session, scope)}/2026-07-27", passage.ConceptId);
+        Assert.Equal(concept.ConceptId, passage.ConceptId);
+    }
+
+    [Fact]
+    public async Task Session_Enumerate_does_not_list_a_different_scopes_concepts()
+    {
+        using var tmp = new TempDir();
+        var store = SessionStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess-a");
+        var b = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess-b");
+        await store.WriteAsync(a, Entry("session a's day"), MemoryTier.Session);
+
+        var listedAsB = await store.EnumerateAsync(b);
+        Assert.Empty(listedAsB);
+    }
+
+    [Fact]
+    public async Task Local_scope_reads_and_writes_the_local_session_subtree()
+    {
+        using var tmp = new TempDir();
+        var store = SessionStore(tmp);
+
+        await store.WriteAsync(KnowledgeAccessScope.Local, Entry("local session notes"), MemoryTier.Session);
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.Session, KnowledgeAccessScope.Local, "2026-07-27.md")));
+
+        var read = await store.ReadAsync(KnowledgeAccessScope.Local, new KnowledgeQuery("notes"));
+        Assert.NotEmpty(read.Passages);
+    }
+
+    [Fact]
+    public async Task Write_then_read_round_trips_under_the_tenant_tier()
+    {
+        using var tmp = new TempDir();
+        var store = TenantStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme");
+
+        var write = await store.WriteAsync(scope, Entry("company-wide policy notes"), MemoryTier.Tenant);
+        Assert.True(write.Written);
+        Assert.Null(write.Error);
+
+        Assert.True(File.Exists(MemPath(tmp.Path, MemoryTier.Tenant, scope, "2026-07-27.md")));
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("policy"));
+        Assert.Empty(read.Diagnostics);
+        Assert.NotEmpty(read.Passages);
+        Assert.All(read.Passages, p => Assert.Equal("memory:Tenant", p.SourceId));
+    }
+
+    [Fact]
+    public async Task A_tenant_A_scope_cannot_read_tenant_B_tenant_tier_memory()
+    {
+        using var tmp = new TempDir();
+        var store = TenantStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "a");
+        var b = new KnowledgeAccessScope(tenantId: "b");
+
+        await store.WriteAsync(a, Entry("tenant-a-secret-nonce"), MemoryTier.Tenant);
+
+        var readB = await store.ReadAsync(b, new KnowledgeQuery("tenant-a-secret-nonce"));
+        Assert.Empty(readB.Passages);
+    }
+
+    [Fact]
+    public async Task Case_distinct_tenants_cannot_read_each_others_tenant_tier_memory()
+    {
+        using var tmp = new TempDir();
+        var store = TenantStore(tmp);
+        var upper = new KnowledgeAccessScope(tenantId: "Acme");
+        var lower = new KnowledgeAccessScope(tenantId: "acme");
+
+        await store.WriteAsync(upper, Entry("case-variant-secret"), MemoryTier.Tenant);
+
+        var readLower = await store.ReadAsync(lower, new KnowledgeQuery("case-variant-secret"));
+        Assert.Empty(readLower.Passages);
+    }
+
+    [Fact]
+    public async Task Delete_removes_only_the_target_tenant_scope_subtree()
+    {
+        using var tmp = new TempDir();
+        var store = TenantStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "a");
+        var b = new KnowledgeAccessScope(tenantId: "b");
+        await store.WriteAsync(a, Entry("tenant a data"), MemoryTier.Tenant);
+        await store.WriteAsync(b, Entry("tenant b data"), MemoryTier.Tenant);
+
+        var del = await store.DeleteScopeAsync(a, MemoryTier.Tenant);
+        Assert.Equal(1, del.TiersDeleted);
+        Assert.Null(del.Error);
+
+        Assert.False(Directory.Exists(MemPath(tmp.Path, MemoryTier.Tenant, a)));
+        Assert.True(Directory.Exists(MemPath(tmp.Path, MemoryTier.Tenant, b)));
+    }
+
+    [Fact]
+    public async Task Tenant_Read_ConceptId_is_fully_qualified_matching_Enumerate()
+    {
+        using var tmp = new TempDir();
+        var store = TenantStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme");
+        await store.WriteAsync(scope, Entry("company-wide policy notes"), MemoryTier.Tenant);
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("policy"));
+        var passage = Assert.Single(read.Passages);
+
+        var listed = await store.EnumerateAsync(scope);
+        var concept = Assert.Single(listed);
+
+        Assert.Equal($"{MemoryPath.For(MemoryTier.Tenant, scope)}/2026-07-27", passage.ConceptId);
+        Assert.Equal(concept.ConceptId, passage.ConceptId);
+    }
+
+    [Fact]
+    public async Task Tenant_Enumerate_does_not_list_a_different_scopes_concepts()
+    {
+        using var tmp = new TempDir();
+        var store = TenantStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "a");
+        var b = new KnowledgeAccessScope(tenantId: "b");
+        await store.WriteAsync(a, Entry("tenant a's notes"), MemoryTier.Tenant);
+
+        var listedAsB = await store.EnumerateAsync(b);
+        Assert.Empty(listedAsB);
     }
 }

@@ -7,9 +7,10 @@ namespace OKF4net.Catalog;
 /// Filesystem <see cref="IMemoryStore"/>. Path derivation is isolated in
 /// <see cref="MemoryPath.For"/>; writes reuse the core
 /// <see cref="OKF4net.BundleConceptWriter"/> (producer validation + per-path
-/// lock + reparse guards) over the tier's memory source root. The user tier is
-/// implemented; a tier absent from the configured roots is treated as "no
-/// source configured" (errors-as-data), so session/tenant remain staged.
+/// lock + reparse guards) over the tier's memory source root. Read/write/
+/// delete/enumerate are all generic over <see cref="MemoryTier"/> -- a tier
+/// absent from the configured roots is simply treated as "no source
+/// configured" (errors-as-data), not a special case per tier.
 /// </summary>
 public sealed class FileMemoryStore : IMemoryStore
 {
