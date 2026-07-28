@@ -86,6 +86,8 @@ public sealed class OkfBundleTools
 
         _writer = new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null);
         _bundleLock = _writer.WriteLock;
+        _writer.AutoStampGenerated = true;
+        _writer.UtcNow = () => UtcNow();
     }
 
     /// <summary>The bundle's root directory, as passed to the constructor.</summary>
@@ -98,6 +100,9 @@ public sealed class OkfBundleTools
     /// implementation seam, not part of the tool's public surface.
     /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
+
+    /// <summary>Today's date, derived from <see cref="UtcNow"/> — the shared seam behind <see cref="ReadConcept"/>'s and <see cref="Search"/>'s staleness checks.</summary>
+    private DateOnly Today => DateOnly.FromDateTime(UtcNow().Date);
 
     /// <summary>
     /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
@@ -184,6 +189,19 @@ public sealed class OkfBundleTools
 
             var sb = new StringBuilder();
             sb.Append("# ").Append(concept.Document.Frontmatter.Title ?? concept.Id.ToString()).Append('\n').Append('\n');
+
+            var fm = concept.Document.Frontmatter;
+            var lc = fm.Lifecycle;
+            var trust = fm.TrustTier;
+            var stale = lc.IsStale(Today);
+            if (lc.Status != ConceptStatus.Stable || trust != TrustTier.Unverified || stale)
+            {
+                sb.Append("> status: ").Append(StatusLabel(lc.Status))
+                  .Append(" | trust: ").Append(TrustLabel(trust))
+                  .Append(" | stale: ").Append(stale ? "yes" : "no")
+                  .Append("\n\n");
+            }
+
             AppendFrontmatterBlock(sb, concept.Document.Frontmatter);
             sb.Append(concept.Document.Body.TrimEnd('\n')).Append('\n').Append('\n');
             AppendSection(sb, "Outgoing links", FormatOutgoingLinks(bundle.LinksFrom(id)));
@@ -331,7 +349,7 @@ public sealed class OkfBundleTools
                     : $"No results for query '{query}' with tag '{effectiveTag}'.";
             }
 
-            return FormatSearchResults(query, effectiveTag, scored);
+            return FormatSearchResults(query, effectiveTag, scored, Today);
         });
     }
 
@@ -616,14 +634,14 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// Validates the bundle against OKF v0.1 conformance (§9) and renders the
+    /// Validates the bundle against OKF v0.2 conformance (§11) and renders the
     /// report the same way the CLI's <c>validate</c> command does: one line
     /// per <see cref="Diagnostic"/> (via its own <see cref="Diagnostic.ToString"/>),
     /// then a summary line with the concept/error/warning/info counts and a
     /// conformant ✓/✗ verdict. Never throws for expected errors (a bundle
     /// that fails to (re)load) — reported as a plain-text message instead.
     /// </summary>
-    [Description("Validate the bundle against OKF v0.1 conformance (§9). Returns the diagnostics report.")]
+    [Description("Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.")]
     public string ValidateBundle()
     {
         return RunTool(() =>
@@ -791,8 +809,13 @@ public sealed class OkfBundleTools
         _ => "unreadable",
     };
 
-    /// <summary>Renders the ranked, bounded (top 20) search results as markdown, with the total match count.</summary>
-    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored)
+    /// <summary>
+    /// Renders the ranked, bounded (top 20) search results as markdown, with the total match count.
+    /// Each hit is annotated with a trailing <c>[deprecated]</c> marker when its lifecycle status is
+    /// <see cref="ConceptStatus.Deprecated"/> and/or a <c>[stale]</c> marker when it is stale as of
+    /// <paramref name="today"/>.
+    /// </summary>
+    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored, DateOnly today)
     {
         const int MaxResults = 20;
         var shown = scored.Take(MaxResults).ToList();
@@ -810,7 +833,19 @@ public sealed class OkfBundleTools
         foreach (var (concept, score) in shown)
         {
             var title = concept.Document.Frontmatter.Title ?? concept.Id.ToString();
-            sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')').Append('\n');
+            var lc = concept.Document.Frontmatter.Lifecycle;
+            sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')');
+            if (lc.Status == ConceptStatus.Deprecated)
+            {
+                sb.Append(" [deprecated]");
+            }
+
+            if (lc.IsStale(today))
+            {
+                sb.Append(" [stale]");
+            }
+
+            sb.Append('\n');
 
             var excerpt = ConceptSearch.Excerpt(concept.Document.Body, query);
             if (excerpt is not null)
@@ -936,6 +971,20 @@ public sealed class OkfBundleTools
             sb.Append(NoneLine).Append('\n');
         }
     }
+
+    private static string StatusLabel(ConceptStatus status) => status switch
+    {
+        ConceptStatus.Draft => "draft",
+        ConceptStatus.Deprecated => "deprecated",
+        _ => "stable",
+    };
+
+    private static string TrustLabel(TrustTier tier) => tier switch
+    {
+        TrustTier.HumanReviewed => "human-reviewed",
+        TrustTier.MachineConfirmed => "machine-confirmed",
+        _ => "unverified",
+    };
 
     private static void AppendFrontmatterBlock(StringBuilder sb, Frontmatter frontmatter)
     {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net;
 using OKF4net.Catalog;
 
 namespace OKF4net.Tests.Catalog;
@@ -58,6 +59,60 @@ public class DefaultKnowledgeResolverTests
             CatalogRoot = root.Path,
             WatchForChanges = false,
         });
+    }
+
+    /// <summary>
+    /// Sets up a single-source catalog root whose one source directory
+    /// contains a single concept file named <paramref name="fileName"/> with
+    /// raw <paramref name="content"/> (frontmatter + body) -- for tests that
+    /// only need one concept's lifecycle behaviour rather than the full
+    /// <c>appendix_a</c> fixture. Returns the constructed catalog plus its
+    /// backing <see cref="TempDir"/> (kept alive for the test's <c>using</c>
+    /// scope; the catalog reads from it lazily on every search).
+    /// </summary>
+    private static (FileKnowledgeCatalog Catalog, TempDir Root) BuildCatalogWithConcept(string fileName, string content)
+    {
+        var root = new TempDir();
+        root.Write(Path.Combine("source", fileName), content);
+
+        var json = """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "s1", "path": "./source", "priority": 1, "enabled": true }
+              ]
+            }
+            """;
+        root.Write("catalog.json", json);
+
+        var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = Path.Combine(root.Path, "catalog.json"),
+            CatalogRoot = root.Path,
+            WatchForChanges = false,
+        });
+
+        return (catalog, root);
+    }
+
+    // ---- (g) StalePolicy filters passages by lifecycle ---------------------
+
+    [Fact]
+    public async Task Strict_policy_filters_out_stale_passages()
+    {
+        // Arrange: a catalog with one bundle containing one stale concept.
+        var (catalog, root) = BuildCatalogWithConcept(
+            "old.md",
+            "---\ntype: Metric\ntitle: Churn cohort\ndescription: d\nstale_after: 2026-01-01\n---\nChurn cohort.\n");
+        using var disposableRoot = root;
+        using var disposableCatalog = catalog;
+        var resolver = new DefaultKnowledgeResolver(catalog, new FixedClock(new DateOnly(2026, 7, 27)));
+
+        var strict = await resolver.SearchAsync(new KnowledgeQuery("churn") { StalePolicy = StalePolicy.Strict });
+        Assert.Empty(strict.Passages);
+
+        var used = await resolver.SearchAsync(new KnowledgeQuery("churn")); // default Use
+        Assert.Single(used.Passages);
     }
 
     // ---- (a) grouped by priority, tagged with source id ------------------

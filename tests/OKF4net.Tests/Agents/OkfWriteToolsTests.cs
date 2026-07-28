@@ -383,6 +383,36 @@ public class OkfWriteToolsTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "reports", "q1.md")));
     }
 
+    [Fact]
+    public void WriteConcept_auto_stamps_generated_when_absent()
+    {
+        using var tmp = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path) { UtcNow = () => new DateTime(2026, 7, 27, 10, 0, 0, DateTimeKind.Utc) };
+
+        var result = tools.WriteConcept("metrics/dau", "type: Metric\ntitle: DAU\ndescription: Daily active users.", "Body.");
+        Assert.StartsWith("Written", result);
+
+        var doc = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
+        var gen = doc.Frontmatter.Generated;
+        Assert.NotNull(gen);
+        Assert.Equal("okf4net/0.2", gen!.Value.By!.Value.Raw);
+        Assert.Equal("2026-07-27T10:00:00Z", gen.Value.At);
+    }
+
+    [Fact]
+    public void WriteConcept_keeps_caller_supplied_generated()
+    {
+        using var tmp = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path) { UtcNow = () => new DateTime(2026, 7, 27, 10, 0, 0, DateTimeKind.Utc) };
+
+        tools.WriteConcept("metrics/dau",
+            "type: Metric\ntitle: DAU\ndescription: D\ngenerated: {by: human:ada, at: 2020-01-01T00:00:00Z}", "Body.");
+
+        var doc = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
+        Assert.Equal("human:ada", doc.Frontmatter.Generated!.Value.By!.Value.Raw);
+        Assert.Equal("2020-01-01T00:00:00Z", doc.Frontmatter.Generated.Value.At);
+    }
+
     // ---------------------------------------------------------------
     // AppendLog
     // ---------------------------------------------------------------

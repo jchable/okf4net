@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net;
 using OKF4net.Catalog;
 
 namespace OKF4net.Tests.Catalog;
@@ -163,6 +164,23 @@ public class OkfBundleKnowledgeSourceTests
         // so this exercises an actual multi-segment relative path, not just a bare filename.
         Assert.Contains(result.Passages, p => p.BundleRelativePath.Contains('/'));
         Assert.All(result.Passages, p => Assert.DoesNotContain('\\', p.BundleRelativePath));
+    }
+
+    // ---- Trust/status/stale_after are carried through from frontmatter -----
+
+    [Fact]
+    public async Task Passage_carries_trust_status_and_stale_after()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("dau.md",
+            "---\ntype: Metric\ntitle: DAU active\ndescription: d\nstatus: deprecated\nverified: {by: human:ada}\nstale_after: 2026-01-01\n---\nActive users.\n");
+        var source = new OkfBundleKnowledgeSource("s1", tmp.Path);
+
+        var result = await source.SearchAsync(new KnowledgeQuery("active"));
+        var p = Assert.Single(result.Passages);
+        Assert.Equal(TrustTier.HumanReviewed, p.TrustTier);
+        Assert.Equal(ConceptStatus.Deprecated, p.Lifecycle.Status);
+        Assert.Equal("2026-01-01", p.Lifecycle.StaleAfterRaw);
     }
 
     // ---- Passages is a genuine read-only view (not just a List<T> hidden behind an interface) --

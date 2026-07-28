@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net;
+
 namespace OKF4net.Catalog;
 
 /// <summary>
@@ -24,4 +26,8 @@ namespace OKF4net.Catalog;
 /// adding them here would be premature surface before an actual multi-tenant
 /// consumer exists.
 /// </remarks>
-public sealed record KnowledgeQuery(string Text, string? Tag = null);
+public sealed record KnowledgeQuery(string Text, string? Tag = null)
+{
+    /// <summary>How stale concepts (§5.5) are treated. Default <see cref="StalePolicy.Use"/>: surface everything.</summary>
+    public StalePolicy StalePolicy { get; init; }
+}

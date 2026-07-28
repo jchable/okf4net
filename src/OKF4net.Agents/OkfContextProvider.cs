@@ -239,7 +239,10 @@ public sealed class OkfContextProvider : AIContextProvider
             // all, since every following concept has the same or less room.
             if (query is not null)
             {
-                foreach (var (concept, _) in _tools!.ScoreConceptsFor(query).Take(_options.MaxConceptsInjected))
+                var today = DateOnly.FromDateTime(UtcNow().Date);
+                foreach (var (concept, _) in _tools!.ScoreConceptsFor(query)
+                    .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, today))
+                    .Take(_options.MaxConceptsInjected))
                 {
                     if (remaining <= 0)
                     {
@@ -703,7 +706,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        var timestamp = OkfTimestamp.FormatUtc(now);
         var frontmatter =
             "type: AgentMemory\n"
             + $"title: Agent memory {dateStr}\n"
@@ -781,7 +784,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        var timestamp = OkfTimestamp.FormatUtc(now);
         var frontmatterYamlIfCreating =
             "type: AgentMemory\n"
             + $"title: Agent memory {dateStr}\n"

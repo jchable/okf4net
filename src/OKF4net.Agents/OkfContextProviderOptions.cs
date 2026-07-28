@@ -76,6 +76,9 @@ public sealed class OkfContextProviderOptions
     /// <see cref="KnowledgeBudgetShare"/> + this ≤ 1.
     /// </summary>
     public double MemoryBudgetShare { get; init; } = 0.4;
+
+    /// <summary>How stale concepts (§5.5) are treated when building context. Default <see cref="StalePolicy.Use"/>: surface everything (the read tool flags staleness), never silently drop.</summary>
+    public StalePolicy StalePolicy { get; init; } = StalePolicy.Use;
 }
 
 /// <summary>
