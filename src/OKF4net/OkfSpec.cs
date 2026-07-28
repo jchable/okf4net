@@ -10,5 +10,5 @@ namespace OKF4net;
 public static class OkfSpec
 {
     /// <summary>The OKF spec version this library implements (§11).</summary>
-    public const string Version = "0.1";
+    public const string Version = "0.2";
 }

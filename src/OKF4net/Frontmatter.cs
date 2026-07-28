@@ -18,13 +18,19 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// <summary>
     /// Frontmatter keys a producer's enrichment workflow requires before a
     /// document is considered publishable. Note this is *stricter* than spec
-    /// conformance (§9), which requires only <c>type</c>.
+    /// conformance (§11), which requires only <c>type</c>.
     /// </summary>
-    public static readonly string[] RequiredKeys = ["type", "title", "description", "timestamp"];
+    public static readonly string[] RequiredKeys = ["type", "title", "description"];
 
     /// <summary>Well-known OKF fields excluded from <see cref="ExtensionKeys"/>.</summary>
     private static readonly string[] KnownKeys =
-        ["type", "title", "description", "resource", "tags", "timestamp"];
+    [
+        "type", "title", "description", "resource", "tags",
+        "timestamp",              // legacy §13.1, still recognized (not an extension)
+        "generated", "verified",  // §5.2
+        "sources", "usage_window",// §5.1
+        "status", "stale_after",  // §5.4/§5.5
+    ];
 
     private readonly YamlMapping _map;
 
@@ -68,6 +74,33 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
 
     /// <summary>The optional ISO-8601 <c>timestamp</c> of last meaningful change.</summary>
     public string? Timestamp => _map.Get("timestamp")?.AsDisplayString();
+
+    /// <summary>The §5.1 provenance sources (frontmatter field only; empty if the field is absent or malformed).</summary>
+    public IReadOnlyList<Source> Sources => Provenance.ParseSources(_map.Get("sources"));
+
+    /// <summary>The §5.1 <c>usage_window</c> sibling of <c>sources</c>, if present.</summary>
+    public UsageWindow? UsageWindow => Provenance.ParseUsageWindow(_map.Get("usage_window"));
+
+    /// <summary>The §5.2 <c>generated</c> stamp, if present.</summary>
+    public Stamp? Generated => Trust.ParseGenerated(_map.Get("generated"));
+
+    /// <summary>The §5.2 <c>verified</c> stamps (a bare mapping normalizes to one element).</summary>
+    public IReadOnlyList<Stamp> Verified => Trust.ParseVerified(_map.Get("verified"));
+
+    /// <summary>The §5.3 trust tier derived from <see cref="Verified"/>.</summary>
+    public TrustTier TrustTier => Trust.DeriveTier(Verified);
+
+    /// <summary>The §5.4/§5.5 lifecycle (<c>status</c>, <c>stale_after</c>).</summary>
+    // The static factory is namespace-qualified because this property shares
+    // its name with the Lifecycle type (the C# "Color Color" case) — qualifying
+    // keeps the static call unambiguous.
+    public Lifecycle Lifecycle => OKF4net.Lifecycle.From(_map.Get("status")?.AsDisplayString(), _map.Get("stale_after")?.AsDisplayString());
+
+    /// <summary>The §5.2 <c>generated.at</c> timestamp, if any.</summary>
+    public string? GeneratedAt => Generated?.At;
+
+    /// <summary>The canonical "last meaningful change" time: <see cref="GeneratedAt"/>, falling back to the legacy <see cref="Timestamp"/> (§13.1).</summary>
+    public string? LastChangedAt => GeneratedAt ?? Timestamp;
 
     /// <summary>
     /// The optional <c>tags</c> list. Non-scalar elements are dropped; a

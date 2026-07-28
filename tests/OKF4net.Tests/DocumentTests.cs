@@ -4,10 +4,9 @@ using OKF4net.Yaml;
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Tests for OKF document parse/serialize/validate behaviour. Link/citation
-/// extraction (§8) is deferred to Task 7 (<c>ConceptLink</c>/<c>Citation</c>
-/// do not exist yet), so <c>OkfDocument</c> has no <c>Links()</c>/<c>Citations()</c>
-/// members in this task — none of the tests below exercise them.
+/// A port of the document parse/serialize/validate tests, plus the v0.2
+/// <c>Sources()</c> fallback: <c>Sources_falls_back_to_legacy_citations_when_frontmatter_absent</c>
+/// below exercises the legacy <c>Citations()</c> path.
 /// </summary>
 public class DocumentTests
 {
@@ -77,10 +76,7 @@ public class DocumentTests
         var doc = OkfDocument.Parse("---\ntype: X\ntitle: Y\n---\n");
         var ex = Assert.Throws<DocumentValidationException>(() => doc.Validate());
         Assert.Contains("description", ex.Message);
-        Assert.Contains("timestamp", ex.Message);
-        // Structured MissingKeys: order follows the required-frontmatter-key
-        // list.
-        Assert.Equal(new[] { "description", "timestamp" }, ex.MissingKeys);
+        Assert.Equal(new[] { "description" }, ex.MissingKeys);
     }
 
     [Fact]
@@ -133,5 +129,41 @@ public class DocumentTests
         // semantics); serialize restores it.
         Assert.Equal("body", doc.Body);
         Assert.EndsWith("body\n", doc.Serialize());
+    }
+
+    [Fact]
+    public void Sources_reads_frontmatter_sources_when_present()
+    {
+        var doc = OkfDocument.Parse("---\ntype: T\nsources:\n  - resource: https://a\n---\nbody\n");
+        var s = doc.Sources();
+        Assert.Single(s);
+        Assert.Equal("https://a", s[0].Resource);
+        Assert.False(doc.UsesLegacyCitations());
+    }
+
+    [Fact]
+    public void Sources_falls_back_to_legacy_citations_when_frontmatter_absent()
+    {
+        var doc = OkfDocument.Parse("---\ntype: T\n---\n\n# Citations\n\n[1] [Schema](https://a)\n");
+        var s = doc.Sources();
+        Assert.Single(s);
+        Assert.Equal("https://a", s[0].Resource);
+        Assert.Equal("Schema", s[0].Title);
+        Assert.True(doc.UsesLegacyCitations());
+    }
+
+    [Fact]
+    public void Sources_is_empty_with_neither_field_nor_citations()
+        => Assert.Empty(OkfDocument.Parse("---\ntype: T\n---\nbody\n").Sources());
+
+    [Fact]
+    public void Validate_requires_type_title_description_but_not_timestamp()
+    {
+        // v0.2: timestamp is no longer required by the producer-side check.
+        OkfDocument.Parse("---\ntype: T\ntitle: X\ndescription: D\n---\nbody\n").Validate();
+
+        var ex = Assert.Throws<DocumentValidationException>(
+            () => OkfDocument.Parse("---\ntype: T\ntitle: X\n---\nbody\n").Validate());
+        Assert.Contains("description", ex.Message);
     }
 }

@@ -124,11 +124,10 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     }
 
     /// <summary>
-    /// Producer-side validation: requires <c>type</c>, <c>title</c>,
-    /// <c>description</c>, and <c>timestamp</c> to all be present and
-    /// non-empty.
+    /// Producer-side validation: requires <c>type</c>, <c>title</c>, and
+    /// <c>description</c> to all be present and non-empty.
     ///
-    /// For spec **conformance** (§9), which requires only a non-empty
+    /// For spec **conformance** (§11), which requires only a non-empty
     /// <c>type</c>, use <see cref="ValidateConformance"/>.
     /// </summary>
     /// <exception cref="DocumentValidationException">One or more required keys are missing or empty.</exception>
@@ -152,7 +151,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     }
 
     /// <summary>
-    /// Spec-conformance validation (§9): the frontmatter must contain a
+    /// Spec-conformance validation (§11): the frontmatter must contain a
     /// non-empty <c>type</c> field. Optional fields are not required.
     /// </summary>
     /// <exception cref="DocumentValidationException"><c>type</c> is missing or empty.</exception>
@@ -179,6 +178,50 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     /// <see cref="LinkScanner.ExtractCitations"/>.
     /// </summary>
     public IReadOnlyList<Citation> Citations() => LinkScanner.ExtractCitations(Body);
+
+    /// <summary>
+    /// The concept's provenance sources with v0.2 consumer semantics: the
+    /// frontmatter <c>sources</c> field (§5.1) when present, otherwise the
+    /// legacy <c># Citations</c> body list mapped to <see cref="Source"/>s
+    /// (§13.1 sanctions this fallback for v0.1 documents). Each citation maps
+    /// to a source with <see cref="Source.Resource"/> = its link target (or
+    /// raw text) and <see cref="Source.Title"/> = its link text.
+    /// </summary>
+    /// <remarks>
+    /// Not to be confused with <see cref="Frontmatter.Sources"/>, which reads
+    /// only the literal frontmatter <c>sources</c> field and never falls back
+    /// to <c># Citations</c>; use this method for consumer-facing reads and
+    /// <see cref="Frontmatter.Sources"/> only when the frontmatter-only value
+    /// is specifically what is needed.
+    /// </remarks>
+    public IReadOnlyList<Source> Sources()
+    {
+        var fromFrontmatter = Frontmatter.Sources;
+        if (fromFrontmatter.Count > 0)
+        {
+            return fromFrontmatter;
+        }
+
+        var citations = Citations();
+        if (citations.Count == 0)
+        {
+            return [];
+        }
+
+        return citations
+            .Select(c => new Source(Id: null, Resource: c.Target ?? c.Raw, Title: c.Text, Author: null, UsageCount: null, LastModified: null))
+            .ToList();
+    }
+
+    /// <summary>
+    /// <c>true</c> when <see cref="Sources"/> would fall back to the legacy
+    /// <c># Citations</c> body list: the frontmatter <c>sources</c> field
+    /// (§5.1) is absent or empty, but the body has a <c># Citations</c>
+    /// section with at least one entry. Lets consumers (and the validator)
+    /// flag documents still using the pre-v0.2 citation form instead of the
+    /// <c>sources</c> field.
+    /// </summary>
+    public bool UsesLegacyCitations() => Frontmatter.Sources.Count == 0 && Citations().Count > 0;
 
     /// <summary>
     /// Structural equality: <see cref="Frontmatter"/> equality AND ordinal

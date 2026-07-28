@@ -7,7 +7,7 @@ namespace OKF4net;
 /// Error raised when loading or operating on a bundle on disk, restricted to
 /// the conditions <see cref="Bundle.Load"/> itself can raise: I/O failures and
 /// a non-directory root. Per-file parse failures are recorded in
-/// <see cref="Bundle.ParseErrors"/> instead (loading is permissive, §9).
+/// <see cref="Bundle.ParseErrors"/> instead (loading is permissive, §11).
 /// </summary>
 public sealed class BundleLoadException : OkfException
 {
@@ -35,7 +35,7 @@ public sealed record ResolvedLink(ConceptId Target, bool Exists, string Text, st
 /// <see cref="Load"/> walks a directory, parses every non-reserved
 /// <c>.md</c> file into a <see cref="Concept"/>, records the reserved
 /// <c>index.md</c> / <c>log.md</c> files, and builds the cross-link graph
-/// (§5). Loading is **permissive** by design (§9): files whose frontmatter
+/// (§5). Loading is **permissive** by design (§11): files whose frontmatter
 /// cannot be parsed are collected into <see cref="ParseErrors"/> rather than
 /// aborting the load, and broken links are retained as edges to
 /// non-existent concepts.

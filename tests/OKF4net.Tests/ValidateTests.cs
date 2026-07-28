@@ -5,7 +5,7 @@ namespace OKF4net.Tests;
 /// Conformance-checking tests, exercised rule-by-rule against
 /// <c>BundleValidator.Validate</c>. Each test targets exactly one
 /// diagnostic-producing rule and asserts its exact severity and message
-/// shape: only true §9 violations (unparseable frontmatter, missing/empty
+/// shape: only true §11 violations (unparseable frontmatter, missing/empty
 /// `type`) are <see cref="Severity.Error"/>; everything else is
 /// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>
@@ -55,7 +55,7 @@ public class ValidateTests
     [Fact]
     public void Missing_recommended_fields_are_warnings()
     {
-        // title/description/timestamp are soft guidance.
+        // title/description/resource/tags are soft guidance.
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntype: Note\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
@@ -65,7 +65,9 @@ public class ValidateTests
         var warnings = report.Of(Severity.Warning).ToList();
         Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `title`");
         Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `description`");
-        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `timestamp`");
+        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `resource`");
+        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `tags`");
+        Assert.DoesNotContain(warnings, d => d.Message.Contains("`timestamp`"));
     }
 
     [Fact]
@@ -87,7 +89,7 @@ public class ValidateTests
         using var tmp = new TempDir();
         tmp.Write(
             "ok.md",
-            "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
+            "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\ntimestamp: 2026-05-28\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
@@ -104,8 +106,8 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        var diag = Assert.Single(report.Of(Severity.Warning));
-        Assert.Equal("`timestamp` is not ISO-8601: \"not-a-date\"", diag.Message);
+        Assert.DoesNotContain(report.Of(Severity.Warning), d => d.Message.Contains("timestamp"));
+        Assert.Contains(report.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -126,7 +128,7 @@ public class ValidateTests
     {
         // frontmatter is only permitted in the bundle-root index.md.
         using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\ntimestamp: 2026-05-28\n---\nbody\n");
         tmp.Write("sub/index.md", "---\ntitle: nope\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
@@ -141,7 +143,7 @@ public class ValidateTests
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
-        tmp.Write("index.md", "---\nokf_version: \"0.1\"\n---\n\n# Listing\n");
+        tmp.Write("index.md", "---\nokf_version: \"0.2\"\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
@@ -153,12 +155,11 @@ public class ValidateTests
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
-        tmp.Write("index.md", "---\nokf_version: \"0.1\"\ntitle: extra\n---\n\n# Listing\n");
+        tmp.Write("index.md", "---\nokf_version: \"0.2\"\ntitle: extra\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        var diag = Assert.Single(report.Of(Severity.Warning));
-        Assert.Equal("root index.md frontmatter should declare only `okf_version` (§11)", diag.Message);
+        Assert.Contains(report.Of(Severity.Warning), d => d.Message == "root index.md frontmatter should declare only `okf_version` (§11)");
     }
 
     [Fact]
@@ -177,7 +178,7 @@ public class ValidateTests
     public void Invalid_log_date_heading_is_a_warning()
     {
         using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\ntimestamp: 2026-05-28\n---\nbody\n");
         tmp.Write("log.md", "# Log\n\n## not-a-date\n* **Update**: did a thing.\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
@@ -218,13 +219,13 @@ public class ValidateTests
     public void ErrorCount_and_WarningCount_reflect_only_their_own_severity()
     {
         using var tmp = new TempDir();
-        tmp.Write("bad.md", "---\ntitle: No Type\n---\nbody\n"); // 1 error (missing type), 2 recommended-field warnings (description, timestamp)
+        tmp.Write("bad.md", "---\ntitle: No Type\n---\nbody\n"); // 1 error (missing type), 3 recommended-field warnings (description, resource, tags)
         tmp.Write("log.md", "# Log\n\n## nope\n* x\n"); // 1 more warning
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
         Assert.Equal(1, report.ErrorCount);
-        Assert.Equal(3, report.WarningCount);
+        Assert.Equal(4, report.WarningCount);
         Assert.False(report.IsConformant);
     }
 
@@ -242,12 +243,11 @@ public class ValidateTests
         => Assert.Equal(expected, BundleValidator.IsIso8601DateTime(s));
 
     [Fact]
-    public void Appendix_a_bundle_is_fully_conformant_with_zero_diagnostics_of_any_kind()
+    public void Appendix_a_bundle_is_conformant_with_only_soft_diagnostics()
     {
-        // The Appendix A example is not just conformant (no errors) -- it is
-        // clean: it should also have no warnings or info diagnostics, since
-        // all recommended fields are present, timestamps are ISO, and there
-        // are no broken links.
+        // The Appendix A example is conformant (no errors), but under v0.2 it
+        // still carries soft diagnostics: customers.md lacks resource/tags,
+        // and all three concepts carry the legacy `timestamp` field (Info).
         using var tmp = new TempDir();
         tmp.Write(
             "datasets/sales.md",
@@ -285,7 +285,140 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.Empty(report.Diagnostics);
         Assert.True(report.IsConformant);
+        Assert.Equal(0, report.ErrorCount);
+    }
+
+    private static ValidationReport ValidateConcept(string frontmatter, IOkfClock? clock = null)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c.md", $"---\n{frontmatter}---\nbody\n");
+        return BundleValidator.Validate(Bundle.Load(tmp.Path), clock);
+    }
+
+    private static bool HasWarning(ValidationReport r, string needle)
+        => r.Of(Severity.Warning).Any(d => d.Message.Contains(needle, StringComparison.Ordinal));
+
+    [Fact]
+    public void Missing_resource_and_tags_now_warn()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\n");
+        Assert.True(HasWarning(r, "missing recommended frontmatter field `resource`"));
+        Assert.True(HasWarning(r, "missing recommended frontmatter field `tags`"));
+        Assert.True(r.IsConformant); // all Warning, no Error
+    }
+
+    [Fact]
+    public void Generated_without_by_warns_but_stays_conformant()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {at: '2026-07-27'}\n");
+        Assert.True(HasWarning(r, "generated is missing required `by`"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Malformed_actor_warns_strictly()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {by: bob, at: '2026-07-27'}\n");
+        Assert.True(HasWarning(r, "generated.by is not a valid §7 actor"));
+    }
+
+    [Fact]
+    public void Verified_list_entry_not_a_mapping_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified: [human:ada]\n");
+        Assert.True(HasWarning(r, "verified entry is not a `{by, at}` mapping"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Verified_bare_scalar_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified: notamapping\n");
+        Assert.True(HasWarning(r, "verified must be a"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Unknown_status_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstatus: archived\n");
+        Assert.True(HasWarning(r, "unknown status"));
+    }
+
+    [Fact]
+    public void Non_scalar_status_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstatus: [draft]\n");
+        Assert.True(HasWarning(r, "status is not a scalar"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Stale_concept_warns_using_injected_clock()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '2026-01-01'\n",
+            new FixedClock(new DateOnly(2026, 7, 27)));
+        Assert.True(HasWarning(r, "concept is stale (stale_after 2026-01-01)"));
+    }
+
+    [Fact]
+    public void Source_without_resource_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - title: no resource\n");
+        Assert.True(HasWarning(r, "source entry is missing required `resource`"));
+    }
+
+    [Fact]
+    public void Sources_list_entry_not_a_mapping_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources: [just-a-string]\n");
+        Assert.True(HasWarning(r, "source entry is not a mapping"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Source_last_modified_bad_date_warns()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: not-a-date\n");
+        Assert.True(HasWarning(r, "source last_modified is not `YYYY-MM-DD`"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Well_formed_verified_status_sources_produce_none_of_the_new_warnings()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "status: stable\n" +
+            "verified:\n  - by: human:ada\n    at: '2026-07-27'\n" +
+            "sources:\n  - resource: https://x\n    last_modified: '2026-07-27'\n");
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("verified entry is not"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("verified must be"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("status is not a scalar"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("source entry is not a mapping"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("sources must be a list"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("source last_modified is not"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Legacy_timestamp_is_info_not_warning()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ntimestamp: '2026-05-28'\n");
+        Assert.Contains(r.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Root_okf_version_other_than_current_warns()
+    {
+        var dir = Directory.CreateTempSubdirectory("okfv02root").FullName;
+        File.WriteAllText(Path.Combine(dir, "index.md"), "---\nokf_version: \"0.9\"\n---\n\n# Index\n");
+        File.WriteAllText(Path.Combine(dir, "c.md"), "---\ntype: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n---\nbody\n");
+        var r = BundleValidator.Validate(Bundle.Load(dir));
+        Assert.True(HasWarning(r, "declared okf_version"));
     }
 }

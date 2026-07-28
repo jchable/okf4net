@@ -108,6 +108,35 @@ public class YamlParserTests
     }
 
     [Fact]
+    public void Flow_scalar_keeps_a_bare_colon_that_is_not_a_key_value_separator()
+    {
+        // A ':' inside a flow-style plain scalar only terminates the scalar
+        // when it is a genuine key/value colon (followed by whitespace, a
+        // flow indicator, or end-of-input) -- mirroring the block-style
+        // SplitKeyValue rule. A bare ':' inside a value (e.g. "human:ada",
+        // a URL, or an ISO timestamp) must be kept.
+        var byHuman = YamlValue.Parse("x: {by: human:ada}\n");
+        Assert.Equal("human:ada", byHuman.AsMapping()!.Get("x")!.AsMapping()!.Get("by")!.AsString());
+
+        var resource = YamlValue.Parse("x: {resource: https://example.com/a}\n");
+        Assert.Equal("https://example.com/a", resource.AsMapping()!.Get("x")!.AsMapping()!.Get("resource")!.AsString());
+
+        var at = YamlValue.Parse("x: {at: 2026-07-03T00:00:00Z}\n");
+        Assert.Equal("2026-07-03T00:00:00Z", at.AsMapping()!.Get("x")!.AsMapping()!.Get("at")!.AsString());
+
+        var seq = YamlValue.Parse("v: [{by: human:ada}, {by: bot/1}]\n");
+        var entries = seq.AsMapping()!.Get("v")!.AsSequence()!;
+        Assert.Equal(2, entries.Count);
+        Assert.Equal("human:ada", entries[0].AsMapping()!.Get("by")!.AsString());
+        Assert.Equal("bot/1", entries[1].AsMapping()!.Get("by")!.AsString());
+
+        // Regression guard: a genuine key/value colon still splits normally.
+        var m = YamlValue.Parse("m: {a: b, c: d}\n").AsMapping()!.Get("m")!.AsMapping()!;
+        Assert.Equal("b", m.Get("a")!.AsString());
+        Assert.Equal("d", m.Get("c")!.AsString());
+    }
+
+    [Fact]
     public void Comments_are_ignored()
     {
         var v = YamlValue.Parse("# leading comment\ntype: X  # trailing\ntitle: Y\n");

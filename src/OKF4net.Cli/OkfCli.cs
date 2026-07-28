@@ -26,7 +26,7 @@ public static class OkfCli
         "    okf <command> [args]\n" +
         "\n" +
         "COMMANDS:\n" +
-        "    validate <bundle>    Check a bundle against OKF v0.1 conformance (§9)\n" +
+        "    validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)\n" +
         "    info     <bundle>    Summarize a bundle (concepts, types, links, version)\n" +
         "    index    <bundle>    (Re)generate every index.md in the bundle\n" +
         "    graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)\n" +

@@ -8,6 +8,47 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-28
+
+OKF4net now targets **OKF specification v0.2**. The core library and `okf` CLI
+implement v0.2's provenance, trust, and lifecycle model, with the two
+v0.2-sanctioned legacy fallbacks so v0.1 bundles keep loading unchanged.
+
+### Added
+
+- **Provenance / trust / lifecycle frontmatter (§5)** — typed, order-preserving
+  accessors on `Frontmatter`, each projected lazily and never throwing on
+  malformed input (permissive loading, §3):
+  - `sources` with per-entry credibility signals (`author`, `usage_count`,
+    `last_modified`) and the `usage_window` sibling (`Source`, `UsageWindow`).
+  - `generated` / `verified` stamps and the derived trust tier (`Stamp`,
+    `TrustTier`: unverified / machine-confirmed / human-reviewed).
+  - `status` (draft|stable|deprecated) and `stale_after` (`Lifecycle`,
+    `ConceptStatus`), with staleness computed against an injectable `IOkfClock`.
+  - The §7 actor convention (`Actor`: `human:`/`process:`/`<producer>/<version>`).
+  - `StalePolicy` (Use / Tolerate / Strict) for consumers.
+- **`OkfDocument.Sources()`** — v0.2 provenance with the §13.1 legacy fallback:
+  the frontmatter `sources` field, or the legacy `# Citations` body list when it
+  is absent. `Frontmatter.LastChangedAt` falls back `generated.at ?? timestamp`.
+- **v0.2 conformance fixture** (`tests/fixtures/okf_v02`) and its byte-exact golden.
+
+### Changed
+
+- **`OkfSpec.Version` is now `"0.2"`** — `okf validate` and `-V` report OKF v0.2.
+  Conformance (§11) still requires only a non-empty `type`, a parseable
+  frontmatter block, and well-formed reserved files; every new
+  provenance/trust/lifecycle/actor check is a Warning or Info, never an Error.
+- **`BundleValidator`** emits the v0.2 soft-guidance diagnostics and takes an
+  optional `IOkfClock` for deterministic staleness.
+- The producer-side `OkfDocument.Validate()` now requires `type`/`title`/
+  `description` (no longer `timestamp`).
+
+### Fixed
+
+- **YAML flow-style plain scalars** now keep bare colons inside values, so v0.2
+  frontmatter written in flow style (`generated: { by: human:ada, at: … }`,
+  URLs, ISO timestamps) parses correctly.
+
 ## [0.2.0] - 2026-07-27
 
 This release grows OKF4net from a core library + CLI into an agent- and
@@ -140,7 +181,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.2.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.3.0...main
+[0.3.0]: https://github.com/jchable/okf4net/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jchable/okf4net/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jchable/okf4net/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jchable/okf4net/releases/tag/v0.1.0

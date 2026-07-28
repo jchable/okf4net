@@ -51,7 +51,7 @@ public class CliTests
         var r = Run("--version");
         Assert.Equal(0, r.Code);
         Assert.Contains("okf ", r.Out);
-        Assert.Contains("OKF spec v0.1", r.Out);
+        Assert.Contains("OKF spec v0.2", r.Out);
     }
 
     [Fact]
@@ -59,7 +59,7 @@ public class CliTests
     {
         var r = Run("validate", BundlePath);
         Assert.Equal(0, r.Code);
-        Assert.Contains("conformant with OKF v0.1", r.Out);
+        Assert.Contains("conformant with OKF v0.2", r.Out);
     }
 
     [Fact]

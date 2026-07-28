@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
 using OKF4net.Internal;
+using OKF4net.Yaml;
 
 namespace OKF4net;
 
 /// <summary>
-/// Conformance checking against OKF v0.1 §9.
+/// Conformance checking against OKF v0.2 §11.
 ///
 /// A bundle is <b>conformant</b> if (1) every non-reserved <c>.md</c> file
 /// has a parseable frontmatter block, (2) every frontmatter has a non-empty
@@ -14,13 +15,13 @@ namespace OKF4net;
 /// missing optional fields, unknown types/keys, broken links, or missing
 /// <c>index.md</c> files.
 ///
-/// Accordingly, <see cref="BundleValidator.Validate"/> reports only true §9
+/// Accordingly, <see cref="BundleValidator.Validate"/> reports only true §11
 /// violations as <see cref="Severity.Error"/>; all softer issues are
 /// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>
 public enum Severity
 {
-    /// <summary>A §9 conformance violation.</summary>
+    /// <summary>A §11 conformance violation.</summary>
     Error,
 
     /// <summary>A soft-guidance deviation (the bundle is still conformant).</summary>
@@ -86,7 +87,7 @@ public sealed class ValidationReport
 
     /// <summary>
     /// <c>true</c> if there are no <see cref="Severity.Error"/> diagnostics
-    /// -- i.e. the bundle conforms to §9.
+    /// -- i.e. the bundle conforms to §11.
     /// </summary>
     public bool IsConformant => !Diagnostics.Any(d => d.Severity == Severity.Error);
 
@@ -101,17 +102,20 @@ public sealed class ValidationReport
 }
 
 /// <summary>
-/// Validates a loaded <see cref="Bundle"/> against §9.
+/// Validates a loaded <see cref="Bundle"/> against §11.
 /// </summary>
 public static class BundleValidator
 {
     private const string IndexFilename = "index.md";
 
     /// <summary>
-    /// Validates a loaded bundle against §9, returning all findings.
+    /// Validates a loaded bundle against §11, returning all findings.
     /// </summary>
-    public static ValidationReport Validate(Bundle bundle)
+    /// <param name="bundle">The loaded bundle to validate.</param>
+    /// <param name="clock">Supplies "today" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
+    public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null)
     {
+        var today = (clock ?? new SystemClock()).Today;
         var diagnostics = new List<Diagnostic>();
 
         // (1) Files whose frontmatter could not be parsed are conformance errors.
@@ -151,14 +155,128 @@ public static class BundleValidator
                 }
             }
 
-            var ts = fm.Timestamp;
-            if (ts is not null && !IsIso8601DateTime(ts))
+            var gen = fm.Generated;
+            if (gen is { } g)
             {
-                diagnostics.Add(new Diagnostic(
-                    Severity.Warning,
-                    concept.Path,
-                    concept.Id,
-                    $"`timestamp` is not ISO-8601: {DebugQuote.Quote(ts)}"));
+                if (g.By is null)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "generated is missing required `by`"));
+                }
+                else if (!g.By.Value.IsWellFormed)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.by is not a valid §7 actor: {DebugQuote.Quote(g.By.Value.Raw)}"));
+                }
+
+                if (g.At is { } gat && !IsIso8601DateTime(gat))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.at is not ISO-8601: {DebugQuote.Quote(gat)}"));
+                }
+            }
+
+            foreach (var stamp in fm.Verified)
+            {
+                if (stamp.By is null)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "verified entry is missing `by`"));
+                }
+                else if (!stamp.By.Value.IsWellFormed)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.by is not a valid §7 actor: {DebugQuote.Quote(stamp.By.Value.Raw)}"));
+                }
+
+                if (stamp.At is { } vat && !IsIso8601DateTime(vat))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.at is not ISO-8601: {DebugQuote.Quote(vat)}"));
+                }
+            }
+
+            var verifiedRaw = fm.Get("verified");
+            if (verifiedRaw is YamlSequence verifiedSeq)
+            {
+                foreach (var item in verifiedSeq.Items)
+                {
+                    if (item is not YamlMapping)
+                    {
+                        diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "verified entry is not a `{by, at}` mapping"));
+                    }
+                }
+            }
+            else if (verifiedRaw is not null and not YamlNull and not YamlMapping)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "verified must be a `{by, at}` mapping or a list of them"));
+            }
+
+            var sourcesRaw = fm.Get("sources");
+            if (sourcesRaw is YamlSequence sourcesSeq)
+            {
+                foreach (var item in sourcesSeq.Items)
+                {
+                    if (item is not YamlMapping)
+                    {
+                        diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "source entry is not a mapping"));
+                    }
+                }
+            }
+            else if (sourcesRaw is not null and not YamlNull)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "sources must be a list of entries"));
+            }
+
+            foreach (var src in fm.Sources)
+            {
+                if (src.Resource.Length == 0)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "source entry is missing required `resource`"));
+                }
+
+                if (src.LastModified is { } lastModified && !ChangeLog.IsIsoDate(lastModified))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"source last_modified is not `YYYY-MM-DD`: {DebugQuote.Quote(lastModified)}"));
+                }
+            }
+
+            if (fm.UsageWindow is { } uw)
+            {
+                if (uw.From is { } uf && !ChangeLog.IsIsoDate(uf))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"usage_window from is not `YYYY-MM-DD`: {DebugQuote.Quote(uf)}"));
+                }
+
+                if (uw.To is { } ut && !ChangeLog.IsIsoDate(ut))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"usage_window to is not `YYYY-MM-DD`: {DebugQuote.Quote(ut)}"));
+                }
+            }
+
+            var statusRaw = fm.Get("status");
+            if (statusRaw is not null && statusRaw is not YamlNull && statusRaw.AsDisplayString() is null)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "status is not a scalar `draft|stable|deprecated`"));
+            }
+
+            var lc = fm.Lifecycle;
+            if (!lc.StatusIsKnown)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"unknown status {DebugQuote.Quote(fm.Get("status")!.AsDisplayString() ?? string.Empty)}; treated as stable"));
+            }
+
+            if (lc.StaleAfterMalformed)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after is not `YYYY-MM-DD`: {DebugQuote.Quote(lc.StaleAfterRaw!)}"));
+            }
+            else if (lc.IsStale(today))
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"concept is stale (stale_after {lc.StaleAfterRaw})"));
+            }
+
+            if (concept.Document.UsesLegacyCitations())
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "body `# Citations` is legacy; move provenance to the `sources` frontmatter field"));
+            }
+
+            if (fm.Generated is null && fm.Timestamp is not null)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Info, concept.Path, concept.Id, "`timestamp` is a legacy field; prefer `generated.at`"));
             }
         }
 
@@ -178,9 +296,9 @@ public static class BundleValidator
         return new ValidationReport(diagnostics);
     }
 
-    private static readonly string[] RecommendedFields = ["title", "description", "timestamp"];
+    private static readonly string[] RecommendedFields = ["title", "description", "resource", "tags"];
 
-    /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§9), without relying on exceptions for control flow.</summary>
+    /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§11), without relying on exceptions for control flow.</summary>
     private static bool HasConformantType(OkfDocument document)
     {
         var value = document.Frontmatter.Get("type");
@@ -248,6 +366,16 @@ public static class BundleValidator
                         path,
                         null,
                         "root index.md frontmatter should declare only `okf_version` (§11)"));
+                }
+
+                var declaredVersion = doc.Frontmatter.Get("okf_version")?.AsDisplayString();
+                if (declaredVersion is not null && !string.Equals(declaredVersion, OkfSpec.Version, StringComparison.Ordinal))
+                {
+                    diagnostics.Add(new Diagnostic(
+                        Severity.Warning,
+                        path,
+                        null,
+                        $"declared okf_version {DebugQuote.Quote(declaredVersion)} is not supported; consuming best-effort as v{OkfSpec.Version}"));
                 }
             }
         }
