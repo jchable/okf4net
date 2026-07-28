@@ -33,6 +33,16 @@ public class ActorTests
         Assert.True(a.IsWellFormed);
     }
 
+    [Fact]
+    public void Producer_with_multiple_slashes_splits_on_the_first()
+    {
+        var a = Actor.Parse("a/b/c");
+        Assert.Equal(ActorKind.Producer, a.Kind);
+        Assert.Equal("a", a.Producer);
+        Assert.Equal("b/c", a.Version);
+        Assert.True(a.IsWellFormed);
+    }
+
     [Theory]
     [InlineData("bob")]          // no prefix, no slash
     [InlineData("human:")]       // empty id

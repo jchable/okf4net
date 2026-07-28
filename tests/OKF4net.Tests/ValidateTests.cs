@@ -291,9 +291,9 @@ public class ValidateTests
 
     private static ValidationReport ValidateConcept(string frontmatter, IOkfClock? clock = null)
     {
-        var dir = Directory.CreateTempSubdirectory("okfv02").FullName;
-        File.WriteAllText(Path.Combine(dir, "c.md"), $"---\n{frontmatter}---\nbody\n");
-        return BundleValidator.Validate(Bundle.Load(dir), clock);
+        using var tmp = new TempDir();
+        tmp.Write("c.md", $"---\n{frontmatter}---\nbody\n");
+        return BundleValidator.Validate(Bundle.Load(tmp.Path), clock);
     }
 
     private static bool HasWarning(ValidationReport r, string needle)

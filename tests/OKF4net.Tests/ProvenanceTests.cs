@@ -49,4 +49,11 @@ public class ProvenanceTests
         Assert.Equal("2026-06-01", w!.Value.From);
         Assert.Equal("2026-06-30", w.Value.To);
     }
+
+    [Fact]
+    public void ParseUsageWindow_null_or_non_mapping_is_null()
+    {
+        Assert.Null(Provenance.ParseUsageWindow(null));
+        Assert.Null(Provenance.ParseUsageWindow(Yaml("scalar")));
+    }
 }
