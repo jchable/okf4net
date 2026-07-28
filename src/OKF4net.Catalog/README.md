@@ -111,7 +111,7 @@ source per tier you need:
     { "id": "kb", "path": "./bundles/products", "role": "knowledge" },
     { "id": "mem-user", "path": "./memory/user", "role": "memory", "tier": "user" },
     { "id": "mem-tenant", "path": "./memory/tenant", "role": "memory", "tier": "tenant" },
-    { "id": "mem-session", "path": "/tmp/okf-session-memory", "role": "memory", "tier": "session" }
+    { "id": "mem-session", "path": "./memory/session", "role": "memory", "tier": "session" }
   ]
 }
 ```
@@ -128,13 +128,24 @@ IMemoryStore memory = provider.GetRequiredService<IMemoryStore>();
 await memory.DeleteScopeAsync(scope, MemoryTier.Session); // e.g. when a conversation ends
 ```
 
-**Ephemeral vs. persistent is entirely which path you configure** — there is
-no code-level distinction between them. Point a tier's source `path` at a
-temp/ephemeral location (as `mem-session` does above) for data that should
-not outlive that location's lifecycle, or at a durable directory (like
-`mem-user`/`mem-tenant` above) for data meant to persist. Either way,
-`IMemoryStore.DeleteScopeAsync` is the explicit cleanup call — nothing purges
-automatically.
+**There is no code-level distinction between ephemeral and persistent
+tiers** — every `role:"memory"` source's `path`, like every other source's,
+must be relative to the manifest directory and resolve inside the catalog
+root (`CatalogPathResolver.TryResolve` rejects absolute paths, paths that
+escape the root, and reparse points anywhere along the way), so a source
+cannot point directly at an OS temp directory or a symlink into one.
+"Ephemeral" therefore isn't a per-source path trick; it's one of two real
+choices:
+
+- Run the **whole catalog root** on ephemeral storage (e.g. a container's
+  tmpfs mount or ephemeral volume) — every source under it, including a
+  session-tier one at a perfectly ordinary relative `path` like
+  `mem-session` above, is then ephemeral by construction. The catalog root
+  itself is exempt from the reparse-point walk, so this is the one place a
+  mount point is fine.
+- Treat any tier's subtree as revocable at will via
+  `IMemoryStore.DeleteScopeAsync` — nothing purges automatically, but
+  nothing stops a host from calling it the moment a conversation ends.
 
 **V1 limitation:** `OKF4net.Catalog.Hosting`'s `AddMemory()` resolves the set
 of `role:memory` sources once, at first `IMemoryStore` resolution from the

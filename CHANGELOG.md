@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **`MemoryPath.For`'s session-tier path now nests under tenant and user**
+  (`memory-session/<tenant>/<user>/<session>`, matching how the user tier
+  already nests under tenant), closing an isolation gap where two different
+  tenants sharing the same session id would have collided on
+  `memory-session/<session>`. Any deployment that had already enabled the
+  session tier (undocumented and untested before this release) will need to
+  re-capture session memory under the new path -- existing session-tier
+  content at the old path is orphaned, not migrated.
+
 ## [0.3.0] - 2026-07-28
 
 OKF4net now targets **OKF specification v0.2**. The core library and `okf` CLI

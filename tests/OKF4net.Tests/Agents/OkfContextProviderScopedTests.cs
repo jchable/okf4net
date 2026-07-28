@@ -9,10 +9,10 @@ namespace OKF4net.Tests.Agents;
 
 /// <summary>
 /// Scoped (V2) <see cref="OkfContextProvider"/>: split-budget READ (knowledge
-/// ∪ memory), scoped user-tier capture WRITE, never-throw, and
+/// ∪ memory), scoped capture WRITE (user or session tier), never-throw, and
 /// injection-as-message-not-instructions. Builds a resolver over a fixture-copy
-/// knowledge source and a user-tier <see cref="FileMemoryStore"/> over a
-/// TempDir; never touches tests/fixtures/ directly.
+/// knowledge source and a <see cref="FileMemoryStore"/> with user and session
+/// tier roots over a TempDir; never touches tests/fixtures/ directly.
 /// </summary>
 public class OkfContextProviderScopedTests
 {
@@ -147,6 +147,7 @@ public class OkfContextProviderScopedTests
 
         Assert.Null(provider.LastMemoryError);
         Assert.True(File.Exists(MemPath(Path.Combine(root.Path, "mem-session"), MemoryTier.Session, scope, "2026-07-27.md")));
+        Assert.False(Directory.Exists(Path.Combine(root.Path, "mem", "memory-user")));
 
         var recall = await provider.ProvideForTest(Invoking(session, "nonce-sx77"), CancellationToken.None);
         var text = Assert.Single(recall.Messages!).Text;

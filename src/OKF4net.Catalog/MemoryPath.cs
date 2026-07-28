@@ -35,7 +35,10 @@ namespace OKF4net.Catalog;
 /// rejects <c>"_local"</c> as an explicit segment). User memory nests under
 /// tenant, and session memory nests under both tenant and user, so
 /// cross-tenant and cross-user collision are impossible by construction, and
-/// the all-null "local" scope is a valid path for every tier.
+/// the all-null "local" scope is a valid path for every tier. Because the
+/// session tier now encodes three segments instead of one, hosts using long
+/// tenant/user/session identifiers on Windows should consider enabling long-path
+/// support.
 /// </para>
 /// </remarks>
 public static class MemoryPath
