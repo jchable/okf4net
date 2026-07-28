@@ -186,6 +186,18 @@ public sealed class OkfBundleTools
 
             var sb = new StringBuilder();
             sb.Append("# ").Append(concept.Document.Frontmatter.Title ?? concept.Id.ToString()).Append('\n').Append('\n');
+
+            var fm = concept.Document.Frontmatter;
+            var lc = fm.Lifecycle;
+            var stale = lc.IsStale(DateOnly.FromDateTime(UtcNow().Date));
+            if (lc.Status != ConceptStatus.Stable || fm.TrustTier != TrustTier.Unverified || stale)
+            {
+                sb.Append("> status: ").Append(StatusLabel(lc.Status))
+                  .Append(" | trust: ").Append(TrustLabel(fm.TrustTier))
+                  .Append(" | stale: ").Append(stale ? "yes" : "no")
+                  .Append("\n\n");
+            }
+
             AppendFrontmatterBlock(sb, concept.Document.Frontmatter);
             sb.Append(concept.Document.Body.TrimEnd('\n')).Append('\n').Append('\n');
             AppendSection(sb, "Outgoing links", FormatOutgoingLinks(bundle.LinksFrom(id)));
@@ -618,14 +630,14 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// Validates the bundle against OKF v0.1 conformance (§9) and renders the
+    /// Validates the bundle against OKF v0.2 conformance (§11) and renders the
     /// report the same way the CLI's <c>validate</c> command does: one line
     /// per <see cref="Diagnostic"/> (via its own <see cref="Diagnostic.ToString"/>),
     /// then a summary line with the concept/error/warning/info counts and a
     /// conformant ✓/✗ verdict. Never throws for expected errors (a bundle
     /// that fails to (re)load) — reported as a plain-text message instead.
     /// </summary>
-    [Description("Validate the bundle against OKF v0.1 conformance (§9). Returns the diagnostics report.")]
+    [Description("Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.")]
     public string ValidateBundle()
     {
         return RunTool(() =>
@@ -938,6 +950,20 @@ public sealed class OkfBundleTools
             sb.Append(NoneLine).Append('\n');
         }
     }
+
+    private static string StatusLabel(ConceptStatus status) => status switch
+    {
+        ConceptStatus.Draft => "draft",
+        ConceptStatus.Deprecated => "deprecated",
+        _ => "stable",
+    };
+
+    private static string TrustLabel(TrustTier tier) => tier switch
+    {
+        TrustTier.HumanReviewed => "human-reviewed",
+        TrustTier.MachineConfirmed => "machine-confirmed",
+        _ => "unverified",
+    };
 
     private static void AppendFrontmatterBlock(StringBuilder sb, Frontmatter frontmatter)
     {

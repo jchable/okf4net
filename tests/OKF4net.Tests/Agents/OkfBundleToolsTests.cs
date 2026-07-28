@@ -110,6 +110,30 @@ public class OkfBundleToolsTests
     }
 
     [Fact]
+    public void ReadConcept_shows_meta_line_for_deprecated_stale_concept()
+    {
+        var dir = Directory.CreateTempSubdirectory("okfmeta").FullName;
+        Directory.CreateDirectory(Path.Combine(dir, "m"));
+        File.WriteAllText(Path.Combine(dir, "m", "old.md"),
+            "---\ntype: Metric\ntitle: Old\nstatus: deprecated\nstale_after: 2026-01-01\nverified: {by: human:ada}\n---\nBody.\n");
+        var tools = new OkfBundleTools(dir) { UtcNow = () => new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc) };
+
+        var output = tools.ReadConcept("m/old");
+        Assert.Contains("status: deprecated", output);
+        Assert.Contains("trust: human-reviewed", output);
+        Assert.Contains("stale: yes", output);
+    }
+
+    [Fact]
+    public void ReadConcept_omits_meta_line_for_plain_stable_concept()
+    {
+        var dir = Directory.CreateTempSubdirectory("okfmeta2").FullName;
+        File.WriteAllText(Path.Combine(dir, "c.md"), "---\ntype: Metric\ntitle: Plain\n---\nBody.\n");
+        var tools = new OkfBundleTools(dir);
+        Assert.DoesNotContain("trust:", tools.ReadConcept("c"));
+    }
+
+    [Fact]
     public void Browse_without_path_lists_bundle_root_entries()
     {
         using var tmp = new TempDir();
