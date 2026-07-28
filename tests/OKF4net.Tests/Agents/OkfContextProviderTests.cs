@@ -383,6 +383,28 @@ public class OkfContextProviderTests
         Assert.Contains("okf-context", text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Strict_policy_excludes_stale_concept_from_injected_context()
+    {
+        using var tmp = new TempDir();
+        File.WriteAllText(Path.Combine(tmp.Path, "old.md"),
+            "---\ntype: Metric\ntitle: Retention cohort\ndescription: retention cohort metric\nstale_after: 2026-01-01\n---\nRetention cohort analysis body.\n");
+
+        var strict = new OkfContextProvider(
+            new OkfBundleTools(tmp.Path),
+            new OkfContextProviderOptions { StalePolicy = StalePolicy.Strict })
+        { UtcNow = () => new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc) };
+        var strictCtx = await strict.ProvideForTest(BuildInvokingContext("retention cohort"));
+        Assert.DoesNotContain("Retention cohort analysis body", Assert.Single(strictCtx.Messages!).Text);
+
+        var use = new OkfContextProvider(
+            new OkfBundleTools(tmp.Path),
+            new OkfContextProviderOptions()) // default StalePolicy.Use
+        { UtcNow = () => new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc) };
+        var useCtx = await use.ProvideForTest(BuildInvokingContext("retention cohort"));
+        Assert.Contains("Retention cohort analysis body", Assert.Single(useCtx.Messages!).Text);
+    }
+
     private static int CountOccurrences(string text, string substring)
     {
         var count = 0;
