@@ -77,10 +77,7 @@ public class DocumentTests
         var doc = OkfDocument.Parse("---\ntype: X\ntitle: Y\n---\n");
         var ex = Assert.Throws<DocumentValidationException>(() => doc.Validate());
         Assert.Contains("description", ex.Message);
-        Assert.Contains("timestamp", ex.Message);
-        // Structured MissingKeys: order follows the required-frontmatter-key
-        // list.
-        Assert.Equal(new[] { "description", "timestamp" }, ex.MissingKeys);
+        Assert.Equal(new[] { "description" }, ex.MissingKeys);
     }
 
     [Fact]

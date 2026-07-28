@@ -88,13 +88,51 @@ public class FrontmatterTests
     }
 
     [Fact]
-    public void Extension_keys_excludes_exactly_the_six_known_keys()
+    public void Extension_keys_exclude_all_known_v02_keys()
     {
         var fm = Frontmatter.FromMapping(
             YamlValue.Parse(
-                "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ntimestamp: '2026-07-21'\nextra: 1\n")
+                "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ntimestamp: '2026-07-21'\n" +
+                "generated: {by: okf4net/0.3.0, at: '2026-07-21'}\nverified: {by: human:ada}\n" +
+                "sources: [{resource: r}]\nusage_window: {from: '2026-06-01', to: '2026-06-30'}\n" +
+                "status: stable\nstale_after: '2027-01-01'\nextra: 1\n")
                 .AsMapping()!);
         Assert.Equal(new[] { "extra" }, fm.ExtensionKeys);
+    }
+
+    [Fact]
+    public void Required_keys_are_type_title_description()
+        => Assert.Equal(new[] { "type", "title", "description" }, Frontmatter.RequiredKeys);
+
+    [Fact]
+    public void LastChangedAt_prefers_generated_at_then_falls_back_to_timestamp()
+    {
+        var withGen = Frontmatter.FromMapping(
+            YamlValue.Parse("generated: {by: okf4net/0.3.0, at: '2026-07-27'}\ntimestamp: '2020-01-01'\n").AsMapping()!);
+        Assert.Equal("2026-07-27", withGen.LastChangedAt);
+
+        var legacyOnly = Frontmatter.FromMapping(YamlValue.Parse("timestamp: '2020-01-01'\n").AsMapping()!);
+        Assert.Equal("2020-01-01", legacyOnly.LastChangedAt);
+
+        Assert.Null(new Frontmatter().LastChangedAt);
+    }
+
+    [Fact]
+    public void Trust_tier_reads_from_verified()
+    {
+        var fm = Frontmatter.FromMapping(YamlValue.Parse("verified: {by: human:ada}\n").AsMapping()!);
+        Assert.Equal(TrustTier.HumanReviewed, fm.TrustTier);
+        Assert.Equal(TrustTier.Unverified, new Frontmatter().TrustTier);
+    }
+
+    [Fact]
+    public void Lifecycle_and_sources_getters_project_fields()
+    {
+        var fm = Frontmatter.FromMapping(
+            YamlValue.Parse("status: deprecated\nstale_after: '2026-01-01'\nsources: [{resource: https://x}]\n").AsMapping()!);
+        Assert.Equal(ConceptStatus.Deprecated, fm.Lifecycle.Status);
+        Assert.Single(fm.Sources);
+        Assert.Equal("https://x", fm.Sources[0].Resource);
     }
 
     [Fact]
