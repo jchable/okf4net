@@ -1,0 +1,6 @@
+[warning] tests/fixtures/okf_v02/metrics/legacy.md: generated.by is not a valid §7 actor: "bob"
+[warning] tests/fixtures/okf_v02/metrics/legacy.md: unknown status "retired"; treated as stable
+[warning] tests/fixtures/okf_v02/metrics/legacy.md: body `# Citations` is legacy; move provenance to the `sources` frontmatter field
+
+2 concept(s); 0 error(s), 3 warning(s), 0 info.
+✓ conformant with OKF v0.2
