@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Concurrent;
-using System.Globalization;
 using OKF4net.Internal;
 using OKF4net.Yaml;
 
@@ -181,7 +180,7 @@ public sealed class BundleConceptWriter
                 return targetError;
             }
 
-            var (content, buildError) = BuildValidatedContent(MaybeStampGenerated(frontmatterYaml), body);
+            var (content, buildError) = BuildValidatedContent(ParseFrontmatterAndMaybeStamp(frontmatterYaml), body);
             if (buildError is not null)
             {
                 return buildError;
@@ -230,7 +229,7 @@ public sealed class BundleConceptWriter
     /// method (see <see cref="ValidateConceptTarget"/>'s remarks for that
     /// separate, residual check-then-write limitation, which this lock does
     /// not close). Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
-    /// producer-grade validation and serialization (<see cref="BuildValidatedContent"/>),
+    /// producer-grade validation and serialization (<see cref="BuildValidatedContent(string, string)"/>),
     /// and write/callback (<see cref="WriteValidatedContentLocked"/>)
     /// steps <see cref="WriteConcept"/> itself uses — this is a locked
     /// read-modify-write wrapped AROUND that same core, not a divergent
@@ -445,73 +444,76 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
-    /// Stamps a <c>generated: { by, at }</c> block (§5.2) into <paramref name="frontmatterYaml"/>
-    /// when <see cref="AutoStampGenerated"/> is on and the caller's frontmatter has no
-    /// <c>generated</c> key of its own. A no-op (returns the input unchanged) when the flag is
-    /// off, when the frontmatter fails to parse (the resulting error is left for
-    /// <see cref="BuildValidatedContent"/> to surface unchanged), when it isn't a mapping, or
-    /// when a <c>generated</c> key is already present.
+    /// Parses <paramref name="frontmatterYaml"/> once and, when
+    /// <see cref="AutoStampGenerated"/> is on and the parsed frontmatter is a
+    /// mapping with no <c>generated</c> key of its own, stamps a
+    /// <c>generated: { by, at }</c> block (§5.2) into it in place. Returns the
+    /// parsed (and possibly stamped) <see cref="YamlValue"/> for
+    /// <see cref="BuildValidatedContent(YamlValue, string)"/> to validate and
+    /// serialize directly — so the write path parses exactly once, never
+    /// re-serializing and re-parsing a stamped mapping. Stamping is a no-op when
+    /// the flag is off, when the frontmatter isn't a mapping, or when a
+    /// <c>generated</c> key is already present. Throws
+    /// <see cref="Yaml.YamlParseException"/> on malformed frontmatter, caught by
+    /// the caller's <see cref="RunTool"/> wrapper before anything is written —
+    /// exactly as re-parsing in <see cref="BuildValidatedContent(string, string)"/>
+    /// did previously.
     /// </summary>
-    private string MaybeStampGenerated(string frontmatterYaml)
+    private YamlValue ParseFrontmatterAndMaybeStamp(string frontmatterYaml)
     {
-        if (!AutoStampGenerated)
+        var parsed = YamlValue.Parse(frontmatterYaml);
+
+        if (AutoStampGenerated && parsed is YamlMapping map && !map.ContainsKey("generated"))
         {
-            return frontmatterYaml;
+            var generated = new YamlMapping();
+            generated.Insert("by", new YamlString(ProducerActor));
+            generated.Insert("at", new YamlString(OkfTimestamp.FormatUtc(UtcNow())));
+            map.Insert("generated", generated);
         }
 
-        YamlValue parsed;
-        try
-        {
-            parsed = YamlValue.Parse(frontmatterYaml);
-        }
-        catch (Yaml.YamlParseException)
-        {
-            return frontmatterYaml; // let BuildValidatedContent surface the parse error unchanged
-        }
-
-        if (parsed is not YamlMapping map || map.ContainsKey("generated"))
-        {
-            return frontmatterYaml;
-        }
-
-        var generated = new YamlMapping();
-        generated.Insert("by", new YamlString(ProducerActor));
-        generated.Insert("at", new YamlString(UtcNow().ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z"));
-        map.Insert("generated", generated);
-        return map.ToYamlString();
+        return parsed;
     }
 
     /// <summary>
-    /// Parses <paramref name="frontmatterYaml"/>, builds and validates the
-    /// resulting <see cref="OkfDocument"/> against <paramref name="body"/>,
-    /// and serializes it — the exact producer-grade validation
+    /// Parses <paramref name="frontmatterYaml"/> and delegates to the
+    /// <see cref="BuildValidatedContent(YamlValue, string)"/> overload. The
+    /// <see cref="AppendToConceptAtomic"/> path enters here (it parses only
+    /// once); <see cref="WriteConcept"/> parses up front in
+    /// <see cref="ParseFrontmatterAndMaybeStamp"/> and enters the overload
+    /// directly. Throws <see cref="Yaml.YamlParseException"/> (line-tagged
+    /// message) on malformed input, caught by the caller's
+    /// <see cref="RunTool"/> wrapper before anything is written.
+    /// </summary>
+    private static (string? Content, string? Error) BuildValidatedContent(string frontmatterYaml, string body) =>
+        BuildValidatedContent(YamlValue.Parse(frontmatterYaml), body);
+
+    /// <summary>
+    /// Builds and validates the <see cref="OkfDocument"/> for the already-parsed
+    /// <paramref name="frontmatter"/> against <paramref name="body"/>, then
+    /// serializes it — the exact producer-grade validation
     /// <see cref="WriteConcept"/> performs, shared verbatim with
     /// <see cref="AppendToConceptAtomic"/> so the two can never validate
-    /// divergently. Throws <see cref="Yaml.YamlParseException"/> (malformed
-    /// frontmatter YAML) or <see cref="DocumentValidationException"/> (failed
-    /// producer validation) — both caught by the caller's <see cref="RunTool"/>
-    /// wrapper — rather than returning an error for those two cases; only
-    /// "frontmatter parses but isn't a mapping" is reported via the
-    /// returned <c>Error</c> string.
+    /// divergently. Throws <see cref="DocumentValidationException"/> (failed
+    /// producer validation), caught by the caller's <see cref="RunTool"/>
+    /// wrapper, rather than returning an error for that case; only
+    /// "frontmatter parses but isn't a mapping" is reported via the returned
+    /// <c>Error</c> string.
     /// </summary>
-    private static (string? Content, string? Error) BuildValidatedContent(string frontmatterYaml, string body)
+    private static (string? Content, string? Error) BuildValidatedContent(YamlValue frontmatter, string body)
     {
-        // Throws YamlParseException (line-tagged message) on malformed input;
-        // caught by RunTool's catch-all, before anything is written.
-        var yaml = YamlValue.Parse(frontmatterYaml);
-        Frontmatter? frontmatter = yaml switch
+        Frontmatter? fm = frontmatter switch
         {
             YamlNull => new Frontmatter(),
             YamlMapping map => Frontmatter.FromMapping(map),
             _ => null,
         };
 
-        if (frontmatter is null)
+        if (fm is null)
         {
             return (null, "Error: frontmatter must be a YAML mapping of 'key: value' lines, not a list or scalar.");
         }
 
-        var doc = new OkfDocument(frontmatter, body);
+        var doc = new OkfDocument(fm, body);
 
         // Strict producer validation BEFORE any write. On failure this
         // throws DocumentValidationException (message lists MissingKeys),

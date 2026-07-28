@@ -115,7 +115,7 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
 
         var today = _clock.Today;
         var admitted = passages
-            .Where(p => query.StalePolicy.Admits(Lifecycle.From(null, p.StaleAfter), today))
+            .Where(p => query.StalePolicy.Admits(p.Lifecycle, today))
             .ToList();
 
         if (admitted.Count == 0 && anySourceSearchedSuccessfully)

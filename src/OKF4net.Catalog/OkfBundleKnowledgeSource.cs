@@ -101,8 +101,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
                     // backslash-separated path into cross-platform output.
                     BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/'),
                     TrustTier: fm.TrustTier,
-                    Status: lc.Status,
-                    StaleAfter: lc.StaleAfterRaw);
+                    Lifecycle: lc);
             })
             .ToList();
 

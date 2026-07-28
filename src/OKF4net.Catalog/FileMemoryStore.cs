@@ -79,13 +79,15 @@ public sealed class FileMemoryStore : IMemoryStore
 
             foreach (var hit in ConceptSearch.Search(bundle.Concepts, query.Text, query.Tag))
             {
+                var fm = hit.Concept.Document.Frontmatter;
                 passages.Add(new KnowledgePassage(
                     SourceId: $"memory:{tier}",
                     ConceptId: $"{conceptIdPrefix}/{hit.Concept.Id}",
-                    Title: hit.Concept.Document.Frontmatter.Title,
+                    Title: fm.Title,
                     Excerpt: ConceptSearch.Excerpt(hit.Concept.Document.Body, query.Text) ?? string.Empty,
                     Score: hit.Score,
-                    BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/')));
+                    BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/'),
+                    Lifecycle: fm.Lifecycle));
             }
         }
 

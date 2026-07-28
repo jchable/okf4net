@@ -706,7 +706,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        var timestamp = OkfTimestamp.FormatUtc(now);
         var frontmatter =
             "type: AgentMemory\n"
             + $"title: Agent memory {dateStr}\n"
@@ -784,7 +784,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        var timestamp = OkfTimestamp.FormatUtc(now);
         var frontmatterYamlIfCreating =
             "type: AgentMemory\n"
             + $"title: Agent memory {dateStr}\n"

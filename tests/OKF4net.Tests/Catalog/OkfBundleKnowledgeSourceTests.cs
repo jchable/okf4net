@@ -179,8 +179,8 @@ public class OkfBundleKnowledgeSourceTests
         var result = await source.SearchAsync(new KnowledgeQuery("active"));
         var p = Assert.Single(result.Passages);
         Assert.Equal(TrustTier.HumanReviewed, p.TrustTier);
-        Assert.Equal(ConceptStatus.Deprecated, p.Status);
-        Assert.Equal("2026-01-01", p.StaleAfter);
+        Assert.Equal(ConceptStatus.Deprecated, p.Lifecycle.Status);
+        Assert.Equal("2026-01-01", p.Lifecycle.StaleAfterRaw);
     }
 
     // ---- Passages is a genuine read-only view (not just a List<T> hidden behind an interface) --

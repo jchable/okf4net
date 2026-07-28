@@ -30,16 +30,15 @@ namespace OKF4net.Catalog;
 /// §5.3) -- defaults to <see cref="OKF4net.TrustTier.Unverified"/> so
 /// existing constructions predating this parameter keep their prior meaning.
 /// </param>
-/// <param name="Status">
-/// The matching concept's lifecycle status (<c>Frontmatter.Lifecycle.Status</c>,
-/// §5.4) -- defaults to <see cref="ConceptStatus.Stable"/>, the spec's own
-/// default for an absent <c>status</c> field.
-/// </param>
-/// <param name="StaleAfter">
-/// The matching concept's raw <c>stale_after</c> frontmatter value
-/// (<c>Frontmatter.Lifecycle.StaleAfterRaw</c>), or <see langword="null"/> if
-/// absent -- kept as the original string rather than a parsed date so a
-/// malformed value can still be surfaced verbatim rather than silently lost.
+/// <param name="Lifecycle">
+/// The matching concept's full lifecycle projection (<c>Frontmatter.Lifecycle</c>,
+/// §5.4/§5.5): status, raw and parsed <c>stale_after</c>, and derived staleness.
+/// Carried whole -- rather than split into flattened status/stale fields a
+/// consumer would have to reassemble -- so <see cref="IKnowledgeResolver"/>
+/// stale filtering (<see cref="StalePolicy.Admits"/>) reads it directly, and a
+/// malformed <c>stale_after</c> is still surfaced verbatim via
+/// <c>Lifecycle.StaleAfterRaw</c> rather than silently lost. Defaults to
+/// <c>default</c> (no <c>stale_after</c>, so admitted under every policy).
 /// </param>
 public sealed record KnowledgePassage(
     string SourceId,
@@ -49,5 +48,4 @@ public sealed record KnowledgePassage(
     int Score,
     string BundleRelativePath,
     TrustTier TrustTier = TrustTier.Unverified,
-    ConceptStatus Status = ConceptStatus.Stable,
-    string? StaleAfter = null);
+    Lifecycle Lifecycle = default);
