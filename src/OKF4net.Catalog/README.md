@@ -58,8 +58,11 @@ runtime dependencies.
 - `priority` (optional, default `0`) — higher priority sources are searched
   first and their passages appear first in a grouped result.
 - `enabled` (optional, default `true`).
-- `role` (optional, default `"knowledge"`) — the only legal value in V1; any
+- `role` (optional, default `"knowledge"`) — `"knowledge"` (read-only, searched
+  by the resolver) or `"memory"` (writable, scoped by tier — see below); any
   other string is rejected.
+- `tier` — required when `role` is `"memory"`, one of `"session"`, `"user"`,
+  or `"tenant"`; not allowed otherwise.
 
 ## Quick start
 
@@ -93,6 +96,53 @@ source, in source-priority then per-source descending-score order) and
 `Diagnostics` (e.g. `NoEnabledSources`, `SourceUnavailable`, `NoMatches`) let a
 caller distinguish "no results" from "a source failed" from "no source is
 enabled" without parsing text.
+
+## Scoped memory (`role: "memory"`)
+
+A `role: "memory"` source is written by capture (e.g.
+`OkfContextProvider.CaptureTier` in `OKF4net.Agents`), not searched by
+`IKnowledgeResolver` — it feeds an `IMemoryStore` instead. Configure one
+source per tier you need:
+
+```json
+{
+  "version": 1,
+  "sources": [
+    { "id": "kb", "path": "./bundles/products", "role": "knowledge" },
+    { "id": "mem-user", "path": "./memory/user", "role": "memory", "tier": "user" },
+    { "id": "mem-tenant", "path": "./memory/tenant", "role": "memory", "tier": "tenant" },
+    { "id": "mem-session", "path": "/tmp/okf-session-memory", "role": "memory", "tier": "session" }
+  ]
+}
+```
+
+```csharp
+using OKF4net.Catalog;
+using OKF4net.Catalog.Hosting;
+
+services.AddKnowledge(o => o.AddCatalogFile("./config/catalog.json"));
+services.AddMemory();
+
+// Elsewhere:
+IMemoryStore memory = provider.GetRequiredService<IMemoryStore>();
+await memory.DeleteScopeAsync(scope, MemoryTier.Session); // e.g. when a conversation ends
+```
+
+**Ephemeral vs. persistent is entirely which path you configure** — there is
+no code-level distinction between them. Point a tier's source `path` at a
+temp/ephemeral location (as `mem-session` does above) for data that should
+not outlive that location's lifecycle, or at a durable directory (like
+`mem-user`/`mem-tenant` above) for data meant to persist. Either way,
+`IMemoryStore.DeleteScopeAsync` is the explicit cleanup call — nothing purges
+automatically.
+
+**V1 limitation:** `OKF4net.Catalog.Hosting`'s `AddMemory()` resolves the set
+of `role:memory` sources once, at first `IMemoryStore` resolution from the
+container, and does not pick up a source added/removed/edited afterward
+(including via `IKnowledgeCatalog.ReloadAsync()`) — see `AddMemory`'s own XML
+doc for the full explanation. Per-scope path resolution (the tenant/user/session
+segments) stays fully live on every call; only the fixed set of configured
+tiers is frozen.
 
 ## V1 limits
 

@@ -16,9 +16,11 @@ public static class MemoryServiceCollectionExtensions
     /// Registers a singleton <see cref="IMemoryStore"/> (<see cref="FileMemoryStore"/>)
     /// whose per-tier roots are the catalog's currently-enabled
     /// <c>role:memory</c> sources, each resolved via
-    /// <see cref="CatalogPathResolver.TryResolve"/>. This lot wires the user
-    /// tier; a source that fails to resolve, or a tier not present in the
-    /// manifest, is simply absent from the store.
+    /// <see cref="CatalogPathResolver.TryResolve"/>. Wires whichever tiers
+    /// (<see cref="MemoryTier.Session"/>, <see cref="MemoryTier.User"/>,
+    /// <see cref="MemoryTier.Tenant"/>) the manifest declares — a source
+    /// that fails to resolve, or a tier not present in the manifest, is
+    /// simply absent from the store.
     /// </summary>
     /// <remarks>
     /// <para>
