@@ -423,8 +423,9 @@ public static class IndexGenerator
     /// passed to <see cref="ReparsePoints.IsReparsePoint"/>. Kept as its own
     /// wrapper rather than folded into that overload because this walk needs
     /// <see cref="StringComparison.Ordinal"/>, not
-    /// <see cref="StringComparison.OrdinalIgnoreCase"/>, for byte-exact
-    /// parity with the golden-tested Rust reference on case-sensitive Linux.
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/>: path components must
+    /// compare case-sensitively to match filesystem semantics on
+    /// case-sensitive platforms (Linux).
     ///
     /// Used only by <see cref="RegenerateIndexesWith"/>'s late, best-effort
     /// re-check immediately before each <c>index.md</c> write -- see that
