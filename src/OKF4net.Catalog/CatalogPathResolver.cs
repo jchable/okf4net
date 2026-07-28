@@ -149,10 +149,12 @@ public static class CatalogPathResolver
     /// descendant of it, comparing resolved absolute paths with <see cref="PathComparison"/>
     /// -- an OS-appropriate comparison, NOT unconditionally case-insensitive (see
     /// <see cref="PathComparison"/>'s remarks for why: this input is less-trusted, unlike
-    /// <c>OkfBundleTools.IsWithinBundleRoot</c>'s trusted callers, which keep
-    /// <see cref="StringComparison.OrdinalIgnoreCase"/> unconditionally). Both
-    /// <paramref name="root"/> and <paramref name="candidate"/> are expected to already be
-    /// the result of <see cref="Path.GetFullPath(string)"/>.
+    /// <see cref="ReparsePoints.IsWithinBundleRoot"/>'s trusted callers, which keep
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> unconditionally).
+    /// <paramref name="root"/> is expected to already be the result of
+    /// <see cref="ReparsePoints.CanonicalizeRoot"/> (see its remarks for why a bare
+    /// <see cref="Path.GetFullPath(string)"/> is not enough here); <paramref name="candidate"/>
+    /// only needs <see cref="Path.GetFullPath(string)"/>.
     /// </summary>
     private static bool IsWithinRoot(string root, string candidate) =>
         ReparsePoints.IsWithin(root, candidate, PathComparison);
@@ -166,10 +168,13 @@ public static class CatalogPathResolver
     /// <paramref name="root"/> itself is deliberately exempt from this walk: a
     /// symlinked/mounted catalog root is a legitimate, explicit operator choice (symlinked
     /// project directories, container/WSL bind mounts, macOS's <c>/var</c>) -- exactly the
-    /// same reasoning that keeps <c>IndexGenerator</c>'s and <c>OkfBundleTools</c>' own
-    /// <c>HasReparsePointAncestor</c> helpers from ever inspecting the root they walk up to.
-    /// Both parameters are expected to already be the result of
-    /// <see cref="Path.GetFullPath(string)"/>. The walk's root-stop test uses
+    /// same reasoning that keeps <c>IndexGenerator</c>'s own <c>HasReparsePointAncestor</c>
+    /// wrapper, and the shared <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
+    /// convenience overload other callers use, from ever inspecting the root they walk up to.
+    /// <paramref name="root"/> is expected to already be the result of
+    /// <see cref="ReparsePoints.CanonicalizeRoot"/> (see its remarks for why a bare
+    /// <see cref="Path.GetFullPath(string)"/> is not enough here); <paramref name="path"/>
+    /// only needs <see cref="Path.GetFullPath(string)"/>. The walk's root-stop test uses
     /// <see cref="PathComparison"/> (an OS-appropriate comparison, see its remarks) rather
     /// than an unconditional ordinal-ignore-case comparison: on a case-sensitive filesystem,
     /// stopping at a case-variant of <paramref name="root"/> would skip inspecting that

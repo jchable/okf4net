@@ -20,8 +20,8 @@ public sealed class BundleConceptWriter
 {
     /// <summary>
     /// Process-wide registry of one lock object per canonicalized bundle
-    /// root, keyed by <see cref="Path.GetFullPath(string)"/> of the bundle
-    /// root -- the SAME canonical form <see cref="ReparsePoints.IsWithinBundleRoot"/>
+    /// root, keyed by <see cref="ReparsePoints.CanonicalizeRoot"/> of the
+    /// bundle root -- the SAME canonical form <see cref="ReparsePoints.IsWithinBundleRoot"/>
     /// and <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
     /// resolve to, so two different
     /// spellings of the same directory (e.g. a trailing separator, or a
