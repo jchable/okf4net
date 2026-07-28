@@ -4,10 +4,9 @@ using OKF4net.Yaml;
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Tests for OKF document parse/serialize/validate behaviour. Link/citation
-/// extraction (§8) is deferred to Task 7 (<c>ConceptLink</c>/<c>Citation</c>
-/// do not exist yet), so <c>OkfDocument</c> has no <c>Links()</c>/<c>Citations()</c>
-/// members in this task — none of the tests below exercise them.
+/// A port of the document parse/serialize/validate tests, plus the v0.2
+/// <c>Sources()</c> fallback: <c>Sources_falls_back_to_legacy_citations_when_frontmatter_absent</c>
+/// below exercises the legacy <c>Citations()</c> path.
 /// </summary>
 public class DocumentTests
 {

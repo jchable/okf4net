@@ -5,7 +5,7 @@ namespace OKF4net.Tests;
 /// Conformance-checking tests, exercised rule-by-rule against
 /// <c>BundleValidator.Validate</c>. Each test targets exactly one
 /// diagnostic-producing rule and asserts its exact severity and message
-/// shape: only true §9 violations (unparseable frontmatter, missing/empty
+/// shape: only true §11 violations (unparseable frontmatter, missing/empty
 /// `type`) are <see cref="Severity.Error"/>; everything else is
 /// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>

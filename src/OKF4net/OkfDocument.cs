@@ -124,9 +124,8 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     }
 
     /// <summary>
-    /// Producer-side validation: requires <c>type</c>, <c>title</c>,
-    /// <c>description</c>, and <c>timestamp</c> to all be present and
-    /// non-empty.
+    /// Producer-side validation: requires <c>type</c>, <c>title</c>, and
+    /// <c>description</c> to all be present and non-empty.
     ///
     /// For spec **conformance** (§11), which requires only a non-empty
     /// <c>type</c>, use <see cref="ValidateConformance"/>.
