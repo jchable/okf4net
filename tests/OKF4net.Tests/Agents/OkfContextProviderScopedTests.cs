@@ -45,6 +45,7 @@ public class OkfContextProviderScopedTests
     {
         CopyDirectory(BundlePath, Path.Combine(root.Path, "kb"));
         Directory.CreateDirectory(Path.Combine(root.Path, "mem"));
+        Directory.CreateDirectory(Path.Combine(root.Path, "mem-session"));
         root.Write("catalog.json", """
             { "version": 1, "sources": [ { "id": "kb", "path": "./kb", "role": "knowledge" } ] }
             """);
@@ -56,7 +57,11 @@ public class OkfContextProviderScopedTests
             WatchForChanges = false,
         });
         var resolver = new DefaultKnowledgeResolver(catalog);
-        var store = new FileMemoryStore(new Dictionary<MemoryTier, string> { [MemoryTier.User] = Path.Combine(root.Path, "mem") });
+        var store = new FileMemoryStore(new Dictionary<MemoryTier, string>
+        {
+            [MemoryTier.User] = Path.Combine(root.Path, "mem"),
+            [MemoryTier.Session] = Path.Combine(root.Path, "mem-session"),
+        });
         return (resolver, store, root);
     }
 
@@ -77,10 +82,10 @@ public class OkfContextProviderScopedTests
 #pragma warning restore MAAI001
     }
 
-    private static OkfContextProviderOptions ScopedOptions(KnowledgeAccessScope scope) => new()
+    private static OkfContextProviderOptions ScopedOptions(KnowledgeAccessScope scope, MemoryTier captureTier = MemoryTier.User) => new()
     {
         MemoryCapture = MemoryCaptureMode.Enabled,
-        CaptureTier = MemoryTier.User,
+        CaptureTier = captureTier,
         ScopeAccessor = _ => scope,
     };
 
@@ -125,6 +130,27 @@ public class OkfContextProviderScopedTests
         var recall = await provider.ProvideForTest(Invoking(session, "nonce-zx99"), CancellationToken.None);
         var text = Assert.Single(recall.Messages!).Text;
         Assert.Contains("nonce-zx99", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Capture_then_recall_round_trips_under_the_session_tier()
+    {
+        using var root = new TempDir();
+        var (resolver, store, _) = SetUp(root);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice", sessionId: "sess-42");
+        var session = new TestAgentSession();
+        var provider = new OkfContextProvider(resolver, store, ScopedOptions(scope, MemoryTier.Session));
+        provider.UtcNow = () => new DateTime(2026, 7, 27, 9, 0, 0, DateTimeKind.Utc);
+
+        await provider.ProvideForTest(Invoking(session, "hello"), CancellationToken.None);
+        await provider.StoreForTest(Invoked(session, "remember nonce-sx77", "acknowledged nonce-sx77"));
+
+        Assert.Null(provider.LastMemoryError);
+        Assert.True(File.Exists(MemPath(Path.Combine(root.Path, "mem-session"), MemoryTier.Session, scope, "2026-07-27.md")));
+
+        var recall = await provider.ProvideForTest(Invoking(session, "nonce-sx77"), CancellationToken.None);
+        var text = Assert.Single(recall.Messages!).Text;
+        Assert.Contains("nonce-sx77", text, StringComparison.Ordinal);
     }
 
     [Fact]
