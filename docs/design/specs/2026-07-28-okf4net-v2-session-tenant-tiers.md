@@ -47,10 +47,55 @@ Verified directly in the code (not assumed) before any design decision below:
   generically.
 
 **Consequence:** this is not a "design and build session/tenant tiers"
-project. It is "prove, through real test coverage, that the tier-agnostic
-mechanism Lot 3 already built actually works for session and tenant" — plus
-one documentation fix and one deployment-pattern write-up. No new storage
-abstraction, no new API surface.
+project. It is mostly "prove, through real test coverage, that the
+tier-agnostic mechanism Lot 3 already built actually works for session and
+tenant" — plus one documentation fix and one deployment-pattern write-up. It
+also surfaces one genuine, small isolation gap (below) that needs an actual
+one-line production fix, found only by re-deriving `MemoryPath.For`'s output
+by hand rather than trusting that "generic code" means "correct for every
+tier."
+
+## Decision: session-tier paths must nest under tenant/user, matching user's
+
+Re-checking `MemoryPath.For` line by line surfaced a real gap the "it's all
+generic" framing above would otherwise have missed:
+
+```csharp
+MemoryTier.Tenant  => $"memory-tenant/{tenant}",
+MemoryTier.User    => $"memory-user/{tenant}/{user}",   // nests under tenant
+MemoryTier.Session => $"memory-session/{session}",       // does NOT nest under tenant/user
+```
+
+`MemoryPath.cs`'s own doc comment states "User memory nests under tenant, so
+cross-tenant collision is impossible by construction" — true for `User`, but
+that reasoning never extended to `Session`: its path carries no tenant or user
+segment at all, so session-tier isolation currently depends entirely on the
+host guaranteeing `SessionId` is globally unique across every tenant and user,
+not just unique per-tenant. Lot 3's adversarial review already found and fixed
+one bug in this exact family (C2, session-reuse misfile) — this is the same
+class of risk in a tier the original review never exercised.
+
+**Resolved: close it in code, not by documented convention.** `MemoryPath.For`
+nests session under tenant and user the same way user nests under tenant:
+
+```csharp
+MemoryTier.Session => $"memory-session/{tenant}/{user}/{session}",
+```
+
+`tenant` and `user` are already computed unconditionally at the top of the
+method (used by the `User`/`Tenant` branches) — this is a one-line change, not
+a new mechanism. Two consequences to carry into the Work section below:
+
+- Two existing `MemoryPathTests.cs` facts hardcode the current 2-segment
+  session shape and must be updated:
+  `Session_tier_keeps_its_literal_prefix_with_an_encoded_segment` (asserts
+  exactly 2 segments for a session-only scope) and
+  `Fully_local_scope_is_all_bare_sentinels_for_every_tier` (asserts
+  `"memory-session/_local"`, which becomes
+  `"memory-session/_local/_local/_local"`).
+- This is safe to change now, not a breaking change to any real deployment:
+  per the Discovery section above, session tier has zero production test
+  coverage today, so nothing has ever depended on its current path shape.
 
 ## Decision: ephemeral vs. persistent session memory is a deployment choice, not a code branch
 
@@ -100,13 +145,27 @@ between them.
 
 ## Work
 
-1. **Test coverage for `FileMemoryStore`, mirrored per tier.** For both
+1. **Fix `MemoryPath.For`'s session path to nest under tenant/user.** The one
+   production code change in this lot (see Decision above):
+   `MemoryTier.Session => $"memory-session/{tenant}/{user}/{session}"`. Update
+   the two existing `MemoryPathTests.cs` facts that hardcode the old
+   2-segment shape (`Session_tier_keeps_its_literal_prefix_with_an_encoded_segment`,
+   `Fully_local_scope_is_all_bare_sentinels_for_every_tier`) to the new
+   4-segment one. Do this first — the tests in item 2 below depend on the
+   corrected path shape.
+2. **Test coverage for `FileMemoryStore`, mirrored per tier.** For both
    `MemoryTier.Session` and `MemoryTier.Tenant`, add the same shape of test
    `FileMemoryStoreTests.cs` already has for `User`:
    - Write-then-read round-trip.
    - Cross-scope isolation (two distinct sessions/tenants cannot read each
      other's entries) — the existing `A_tenant_A_scope_cannot_read_tenant_B_memory`-style
      test, parameterized or duplicated per tier.
+   - **The specific case item 1 fixes**: two scopes with the SAME `SessionId`
+     but different `TenantId`/`UserId` must not collide (write under one,
+     confirm the other cannot read it) — this is the regression test for the
+     isolation gap; a same-session-different-tenant test with the old path
+     shape would have passed today (wrongly) since the store didn't exist
+     under a colliding path until real content was written by both.
    - `EnumerateAsync` isolation — Lot A's
      `Enumerate_does_not_list_a_different_scopes_concepts` proved cross-scope
      isolation but only ever wrote/read `MemoryTier.User`; add the same
@@ -115,15 +174,15 @@ between them.
    - A `Local` scope round-trip for session tier specifically, since
      `KnowledgeAccessScope.IsLocal` is the single-user desktop/CLI degenerate
      case every tier must still support.
-2. **`OkfContextProvider` capture-tier coverage.** Extend
+3. **`OkfContextProvider` capture-tier coverage.** Extend
    `OkfContextProviderMemoryTests.cs` (or equivalent) with a scripted E2E case
    setting `CaptureTier = MemoryTier.Session` (today only `User` is exercised
    end-to-end through the provider), confirming capture writes to the
    configured session root and a subsequent read recalls it within the same
    scope.
-3. **Fix `AddMemory`'s stale doc comment** — remove "this lot wires the user
+4. **Fix `AddMemory`'s stale doc comment** — remove "this lot wires the user
    tier," describe the tier-agnostic wiring accurately.
-4. **Deployment pattern documentation** — a `catalog.json` example (README or
+5. **Deployment pattern documentation** — a `catalog.json` example (README or
    a doc under `docs/`) showing all three `role:memory` sources configured
    together, with the session source pointed at a temp path and an inline
    note on the ephemeral-vs-persistent path choice and `DeleteScopeAsync`'s
@@ -140,11 +199,18 @@ stay green throughout, per repo convention.
 
 ## Acceptance criteria
 
+- `MemoryPath.For`'s session path nests under tenant and user
+  (`memory-session/{tenant}/{user}/{session}`), and the two `MemoryPathTests.cs`
+  facts that hardcoded the old shape are updated to match.
+- A test proves that two scopes sharing the same `SessionId` but different
+  `TenantId`/`UserId` no longer collide.
 - Session and tenant tiers have the same depth of test coverage the user tier
-  already has: round-trip, cross-scope isolation, enumerate, delete — no gaps
-  relative to `User`.
+  already has otherwise: round-trip, cross-scope isolation, enumerate, delete
+  — no gaps relative to `User`.
 - `AddMemory`'s doc comment accurately describes its already-generic behavior.
 - A documented `catalog.json` example demonstrates configuring all three
   tiers, including the ephemeral-session-via-temp-path pattern.
-- No new public API surface, no new storage implementation, no TTL/expiry
-  mechanism added.
+- No new public API surface (no new types/methods/parameters), no new storage
+  implementation, no TTL/expiry mechanism added — the one production change is
+  the one-line `MemoryPath.For` fix in item 1, using variables the method
+  already computes.
