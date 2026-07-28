@@ -131,4 +131,40 @@ public class DocumentTests
         Assert.Equal("body", doc.Body);
         Assert.EndsWith("body\n", doc.Serialize());
     }
+
+    [Fact]
+    public void Sources_reads_frontmatter_sources_when_present()
+    {
+        var doc = OkfDocument.Parse("---\ntype: T\nsources:\n  - resource: https://a\n---\nbody\n");
+        var s = doc.Sources();
+        Assert.Single(s);
+        Assert.Equal("https://a", s[0].Resource);
+        Assert.False(doc.UsesLegacyCitations());
+    }
+
+    [Fact]
+    public void Sources_falls_back_to_legacy_citations_when_frontmatter_absent()
+    {
+        var doc = OkfDocument.Parse("---\ntype: T\n---\n\n# Citations\n\n[1] [Schema](https://a)\n");
+        var s = doc.Sources();
+        Assert.Single(s);
+        Assert.Equal("https://a", s[0].Resource);
+        Assert.Equal("Schema", s[0].Title);
+        Assert.True(doc.UsesLegacyCitations());
+    }
+
+    [Fact]
+    public void Sources_is_empty_with_neither_field_nor_citations()
+        => Assert.Empty(OkfDocument.Parse("---\ntype: T\n---\nbody\n").Sources());
+
+    [Fact]
+    public void Validate_requires_type_title_description_but_not_timestamp()
+    {
+        // v0.2: timestamp is no longer required by the producer-side check.
+        OkfDocument.Parse("---\ntype: T\ntitle: X\ndescription: D\n---\nbody\n").Validate();
+
+        var ex = Assert.Throws<DocumentValidationException>(
+            () => OkfDocument.Parse("---\ntype: T\ntitle: X\n---\nbody\n").Validate());
+        Assert.Contains("description", ex.Message);
+    }
 }

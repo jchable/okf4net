@@ -181,6 +181,36 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     public IReadOnlyList<Citation> Citations() => LinkScanner.ExtractCitations(Body);
 
     /// <summary>
+    /// The concept's provenance sources with v0.2 consumer semantics: the
+    /// frontmatter <c>sources</c> field (§5.1) when present, otherwise the
+    /// legacy <c># Citations</c> body list mapped to <see cref="Source"/>s
+    /// (§13.1 sanctions this fallback for v0.1 documents). Each citation maps
+    /// to a source with <see cref="Source.Resource"/> = its link target (or
+    /// raw text) and <see cref="Source.Title"/> = its link text.
+    /// </summary>
+    public IReadOnlyList<Source> Sources()
+    {
+        var fromFrontmatter = Frontmatter.Sources;
+        if (fromFrontmatter.Count > 0)
+        {
+            return fromFrontmatter;
+        }
+
+        var citations = Citations();
+        if (citations.Count == 0)
+        {
+            return [];
+        }
+
+        return citations
+            .Select(c => new Source(Id: null, Resource: c.Target ?? c.Raw, Title: c.Text, Author: null, UsageCount: null, LastModified: null))
+            .ToList();
+    }
+
+    /// <summary>True when <see cref="Sources"/> fell back to the legacy <c># Citations</c> body list (no frontmatter <c>sources</c>, but citations present). The validator warns on this.</summary>
+    public bool UsesLegacyCitations() => Frontmatter.Sources.Count == 0 && Citations().Count > 0;
+
+    /// <summary>
     /// Structural equality: <see cref="Frontmatter"/> equality AND ordinal
     /// <see cref="Body"/> equality — componentwise over the document's two
     /// fields.
