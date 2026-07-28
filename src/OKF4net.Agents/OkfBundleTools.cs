@@ -384,7 +384,7 @@ public sealed class OkfBundleTools
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
     /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
     /// <param name="body">The markdown body.</param>
-    [Description("Create or update a concept document. The frontmatter must contain non-empty type, title, description and timestamp (producer-grade validation is enforced before writing).")]
+    [Description("Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).")]
     public string WriteConcept(
         [Description("The concept id (path without .md), e.g. 'tables/refunds'.")] string conceptId,
         [Description("Frontmatter as 'key: value' lines (YAML subset).")] string frontmatterYaml,
