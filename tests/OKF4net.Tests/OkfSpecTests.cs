@@ -8,8 +8,8 @@ namespace OKF4net.Tests;
 public class OkfSpecTests
 {
     [Fact]
-    public void Version_is_0_1()
+    public void Version_is_0_2()
     {
-        Assert.Equal("0.1", OkfSpec.Version);
+        Assert.Equal("0.2", OkfSpec.Version);
     }
 }

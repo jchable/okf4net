@@ -143,7 +143,7 @@ public class ValidateTests
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nbody\n");
-        tmp.Write("index.md", "---\nokf_version: \"0.1\"\n---\n\n# Listing\n");
+        tmp.Write("index.md", "---\nokf_version: \"0.2\"\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
@@ -155,7 +155,7 @@ public class ValidateTests
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
-        tmp.Write("index.md", "---\nokf_version: \"0.1\"\ntitle: extra\n---\n\n# Listing\n");
+        tmp.Write("index.md", "---\nokf_version: \"0.2\"\ntitle: extra\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
