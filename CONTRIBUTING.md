@@ -50,7 +50,7 @@ significant.
 
 ## Spec fidelity
 
-OKF4net implements the [OKF v0.1 spec](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
+OKF4net implements the [OKF v0.2 spec](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
 Behavioural changes must stay conformant with the spec — cite the relevant
 section (§) in your PR description. Behaviour intentionally mirrors the OKF
 reference implementation; divergences need a documented reason.

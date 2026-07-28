@@ -4,7 +4,7 @@
 
 ## Spec impact
 
-<!-- Does this touch behaviour covered by the OKF v0.1 spec? Cite the section
+<!-- Does this touch behaviour covered by the OKF v0.2 spec? Cite the section
 (§) and explain how conformance is preserved. Write "none" otherwise. -->
 
 ## Checklist
