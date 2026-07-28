@@ -100,7 +100,7 @@ enabled" without parsing text.
 ## Scoped memory (`role: "memory"`)
 
 A `role: "memory"` source is written by capture (e.g.
-`OkfContextProvider.CaptureTier` in `OKF4net.Agents`), not searched by
+`OkfContextProviderOptions.CaptureTier` in `OKF4net.Agents`), not searched by
 `IKnowledgeResolver` — it feeds an `IMemoryStore` instead. Configure one
 source per tier you need:
 
