@@ -127,6 +127,65 @@ public class FileMemoryStoreTests
     }
 
     [Fact]
+    public async Task Enumerate_does_not_list_a_different_scopes_concepts()
+    {
+        // The test above only proves a scope sees what IT wrote; this proves
+        // isolation -- the actual crux -- by writing under tenant "a" and
+        // enumerating as tenant "b".
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var a = new KnowledgeAccessScope(tenantId: "a", userId: "alice");
+        var b = new KnowledgeAccessScope(tenantId: "b", userId: "bob");
+        await store.WriteAsync(a, Entry("alice's day"), MemoryTier.User);
+
+        var listedAsB = await store.EnumerateAsync(b);
+        Assert.Empty(listedAsB);
+    }
+
+    [Fact]
+    public async Task Reparse_escaped_scope_directory_reports_a_diagnostic_and_never_throws()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var store = UserStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+
+        if (!tmp.TryCreateJunctionToExternalDir(MemoryPath.For(MemoryTier.User, scope), external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
+
+        Assert.Empty(read.Passages);
+        var diagnostic = Assert.Single(read.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceUnavailable, diagnostic.Code);
+    }
+
+    [Fact]
+    public async Task Malformed_bundle_reports_a_diagnostic_and_never_throws()
+    {
+        using var tmp = new TempDir();
+        var store = UserStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+
+        var scopeDir = MemPath(tmp.Path, MemoryTier.User, scope);
+        Directory.CreateDirectory(scopeDir);
+        // A lone continuation byte is not valid UTF-8 on its own or as a
+        // continuation, forcing Bundle.Load's strict-UTF8 decode to throw
+        // BundleLoadException -- distinct from the permissive per-file
+        // ParseErrors path malformed FRONTMATTER/markdown content takes.
+        File.WriteAllBytes(Path.Combine(scopeDir, "bad.md"), [0x80, 0x81, 0x82]);
+
+        var read = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
+
+        Assert.Empty(read.Passages);
+        var diagnostic = Assert.Single(read.Diagnostics);
+        Assert.Equal(KnowledgeDiagnosticCode.SourceUnavailable, diagnostic.Code);
+        Assert.Contains("could not be loaded", diagnostic.Message);
+    }
+
+    [Fact]
     public async Task Write_to_an_unconfigured_tier_is_reported_not_thrown()
     {
         using var tmp = new TempDir();

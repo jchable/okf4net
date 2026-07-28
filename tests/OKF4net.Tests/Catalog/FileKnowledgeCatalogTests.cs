@@ -32,6 +32,28 @@ public class FileKnowledgeCatalogTests
 
     private const string InvalidVersionJson = """{ "version": 2, "sources": [ { "id": "docs", "path": "./docs" } ] }""";
 
+    /// <summary>Second source ("ghost") points at a directory that is never created; used with <see cref="GhostSourceEnabledJson"/> to isolate the disabled-source path-validation skip.</summary>
+    private const string GhostSourceDisabledJson = """
+        {
+          "version": 1,
+          "sources": [
+            { "id": "docs", "path": "./docs" },
+            { "id": "ghost", "path": "./does-not-exist", "enabled": false }
+          ]
+        }
+        """;
+
+    /// <summary>Same as <see cref="GhostSourceDisabledJson"/> but "ghost" is enabled -- the two differ only in that flag.</summary>
+    private const string GhostSourceEnabledJson = """
+        {
+          "version": 1,
+          "sources": [
+            { "id": "docs", "path": "./docs" },
+            { "id": "ghost", "path": "./does-not-exist", "enabled": true }
+          ]
+        }
+        """;
+
     /// <summary>Otherwise-valid JSON bytes with a trailing byte (0xFF) that is not valid UTF-8 on its own or as a continuation -- forces <c>OkfEncodings.Strict</c>'s decode to throw.</summary>
     private static readonly byte[] InvalidUtf8Bytes = [.. System.Text.Encoding.UTF8.GetBytes(OneSourceJson), 0xFF];
 
@@ -41,12 +63,36 @@ public class FileKnowledgeCatalogTests
         return temp.Write("catalog.json", OneSourceJson);
     }
 
-    /// <summary>Atomically replaces the manifest content via write-to-temp then move-over (matches the brief's "temp file then File.Move/replace" recipe).</summary>
+    /// <summary>
+    /// Atomically replaces the manifest content via write-to-temp then
+    /// move-over (matches the brief's "temp file then File.Move/replace"
+    /// recipe). Retries a bounded number of times on a transient Windows
+    /// sharing violation: even with a reader opened with generous FileShare
+    /// flags, a concurrent read of <paramref name="catalogPath"/> (this
+    /// test's own watcher-triggered reload) can transiently overlap
+    /// <see cref="File.Move(string, string, bool)"/>'s replace -- exactly
+    /// what a real external editor/deploy-tool replacing the file underneath
+    /// a live reader has to tolerate, so the test's stand-in for that
+    /// external writer does too.
+    /// </summary>
     private static void ReplaceCatalogAtomically(string catalogPath, string newJson)
     {
+        const int maxAttempts = 20;
         var tempFile = catalogPath + ".tmp";
         File.WriteAllText(tempFile, newJson);
-        File.Move(tempFile, catalogPath, overwrite: true);
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                File.Move(tempFile, catalogPath, overwrite: true);
+                return;
+            }
+            catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && attempt < maxAttempts)
+            {
+                Thread.Sleep(5);
+            }
+        }
     }
 
     // ---- Construction ------------------------------------------------
@@ -85,6 +131,53 @@ public class FileKnowledgeCatalogTests
 
         var ex = Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(options));
         Assert.Contains("WrongVersion", ex.Message);
+    }
+
+    /// <summary>
+    /// Isolates the disabled-source skip in <c>TryLoadSnapshot</c> (<c>if
+    /// (!source.Enabled) continue;</c> before <c>CatalogPathResolver.TryResolve</c>)
+    /// from <see cref="CatalogPathResolver"/>'s own missing-directory
+    /// rejection: this and <see cref="An_enabled_source_with_the_same_nonexistent_path_fails_construction"/>
+    /// differ only in the "ghost" source's <c>enabled</c> flag, so together
+    /// they prove it is specifically the disabled skip -- not some other
+    /// reason a nonexistent path might be tolerated -- that lets construction
+    /// succeed here.
+    /// </summary>
+    [Fact]
+    public void Disabled_source_with_a_nonexistent_path_does_not_fail_construction()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
+        var catalogPath = temp.Write("catalog.json", GhostSourceDisabledJson);
+
+        using var catalog = new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        });
+
+        Assert.Equal(2, catalog.Current.Sources.Count);
+        var ghost = catalog.Current.Sources.Single(s => s.Id == "ghost");
+        Assert.False(ghost.Enabled);
+    }
+
+    /// <summary>Companion to <see cref="Disabled_source_with_a_nonexistent_path_does_not_fail_construction"/> -- see that test's remarks.</summary>
+    [Fact]
+    public void An_enabled_source_with_the_same_nonexistent_path_fails_construction()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(temp.Path, "docs"));
+        var catalogPath = temp.Write("catalog.json", GhostSourceEnabledJson);
+
+        var options = new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = temp.Path,
+            WatchForChanges = false,
+        };
+
+        Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(options));
     }
 
     /// <summary>

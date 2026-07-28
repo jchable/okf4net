@@ -425,6 +425,23 @@ public class CatalogManifestTests
     }
 
     [Fact]
+    public void An_illegal_role_with_a_tier_reports_only_IllegalRole()
+    {
+        // An illegal role value already fully explains why this source is
+        // rejected; layering a second "tier is only valid on role:memory"
+        // diagnostic on top would misleadingly suggest tier is also wrong,
+        // when it may well have been fine had role parsed correctly.
+        const string json = """
+            { "version": 1, "sources": [ { "id": "d", "path": "./d", "role": "audit", "tier": "user" } ] }
+            """;
+
+        Assert.False(TryParse(json, out var snapshot, out var diagnostics));
+        Assert.Null(snapshot);
+        Assert.Contains(diagnostics, d => d.Code == CatalogDiagnosticCode.IllegalRole);
+        Assert.DoesNotContain(diagnostics, d => d.Code == CatalogDiagnosticCode.IllegalTier);
+    }
+
+    [Fact]
     public void Rejects_two_memory_sources_of_the_same_tier()
     {
         const string json = """
