@@ -28,7 +28,7 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
         "type", "title", "description", "resource", "tags",
         "timestamp",              // legacy §13.1, still recognized (not an extension)
         "generated", "verified",  // §5.2
-        "sources", "usage_window", // §5.1
+        "sources", "usage_window",// §5.1
         "status", "stale_after",  // §5.4/§5.5
     ];
 

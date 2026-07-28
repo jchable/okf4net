@@ -188,6 +188,13 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     /// to a source with <see cref="Source.Resource"/> = its link target (or
     /// raw text) and <see cref="Source.Title"/> = its link text.
     /// </summary>
+    /// <remarks>
+    /// Not to be confused with <see cref="Frontmatter.Sources"/>, which reads
+    /// only the literal frontmatter <c>sources</c> field and never falls back
+    /// to <c># Citations</c>; use this method for consumer-facing reads and
+    /// <see cref="Frontmatter.Sources"/> only when the frontmatter-only value
+    /// is specifically what is needed.
+    /// </remarks>
     public IReadOnlyList<Source> Sources()
     {
         var fromFrontmatter = Frontmatter.Sources;
@@ -207,7 +214,14 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
             .ToList();
     }
 
-    /// <summary>True when <see cref="Sources"/> fell back to the legacy <c># Citations</c> body list (no frontmatter <c>sources</c>, but citations present). The validator warns on this.</summary>
+    /// <summary>
+    /// <c>true</c> when <see cref="Sources"/> would fall back to the legacy
+    /// <c># Citations</c> body list: the frontmatter <c>sources</c> field
+    /// (§5.1) is absent or empty, but the body has a <c># Citations</c>
+    /// section with at least one entry. Lets consumers (and the validator)
+    /// flag documents still using the pre-v0.2 citation form instead of the
+    /// <c>sources</c> field.
+    /// </summary>
     public bool UsesLegacyCitations() => Frontmatter.Sources.Count == 0 && Citations().Count > 0;
 
     /// <summary>
