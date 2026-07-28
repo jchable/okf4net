@@ -4,10 +4,9 @@ using OKF4net.Internal;
 namespace OKF4net;
 
 /// <summary>
-/// Error raised when loading or operating on a bundle on disk. Port of the
-/// Rust <c>BundleError</c> (error.rs:46), restricted to the conditions
-/// <see cref="Bundle.Load"/> itself can raise: I/O failures and a
-/// non-directory root. Per-file parse failures are recorded in
+/// Error raised when loading or operating on a bundle on disk, restricted to
+/// the conditions <see cref="Bundle.Load"/> itself can raise: I/O failures and
+/// a non-directory root. Per-file parse failures are recorded in
 /// <see cref="Bundle.ParseErrors"/> instead (loading is permissive, §9).
 /// </summary>
 public sealed class BundleLoadException : OkfException
@@ -20,20 +19,18 @@ public sealed class BundleLoadException : OkfException
 }
 
 /// <summary>
-/// A single concept within a bundle (one markdown document). Port of the
-/// Rust <c>Concept</c> (src/bundle.rs:22-30).
+/// A single concept within a bundle (one markdown document).
 /// </summary>
 public sealed record Concept(ConceptId Id, string Path, OkfDocument Document);
 
 /// <summary>
-/// A cross-link from one concept to another, after resolution (§5.3). Port
-/// of the Rust <c>ResolvedLink</c> (src/bundle.rs:32-44).
+/// A cross-link from one concept to another, after resolution (§5.3).
 /// </summary>
 public sealed record ResolvedLink(ConceptId Target, bool Exists, string Text, string Raw);
 
 /// <summary>
 /// Loading and traversing an OKF *bundle*: a directory tree of markdown
-/// files (§3). Port of the Rust <c>Bundle</c> (src/bundle.rs).
+/// files (§3).
 ///
 /// <see cref="Load"/> walks a directory, parses every non-reserved
 /// <c>.md</c> file into a <see cref="Concept"/>, records the reserved
@@ -48,7 +45,7 @@ public sealed class Bundle
     private const string IndexFilename = "index.md";
     private const string LogFilename = "log.md";
 
-    /// <summary>Reserved filenames with defined meaning at any level (§3.1). Port of <c>RESERVED_FILENAMES</c> (bundle.rs:19).</summary>
+    /// <summary>Reserved filenames with defined meaning at any level (§3.1).</summary>
     public static readonly string[] ReservedFilenames = [IndexFilename, LogFilename];
 
     private readonly Dictionary<ConceptId, int> _index;
@@ -85,8 +82,7 @@ public sealed class Bundle
     /// Loads a bundle from a directory tree.
     ///
     /// Throws only for I/O failures or a non-directory root. Per-file parse
-    /// failures are recorded in <see cref="ParseErrors"/>. Port of
-    /// <c>Bundle::load</c> (bundle.rs:64-120).
+    /// failures are recorded in <see cref="ParseErrors"/>.
     /// </summary>
     /// <exception cref="BundleLoadException"><paramref name="root"/> does not exist or is not a directory, or an I/O error occurred.</exception>
     public static Bundle Load(string root)
@@ -146,11 +142,9 @@ public sealed class Bundle
                         }
                         catch (System.Text.DecoderFallbackException)
                         {
-                            // Mirrors the io::Error kind ErrorKind::InvalidData
-                            // that Rust's fs::read_to_string produces for
-                            // non-UTF-8 input, propagated by `?` (bundle.rs:88)
-                            // and aborting the whole load — same as any other
-                            // I/O failure during the walk.
+                            // Non-UTF-8 content is treated as an I/O failure and
+                            // aborts the whole load, like any other error during
+                            // the walk (bundle files must be valid UTF-8, §3).
                             throw new BundleLoadException("I/O error: stream did not contain valid UTF-8");
                         }
 
@@ -229,7 +223,7 @@ public sealed class Bundle
     /// <summary>
     /// All broken internal links in the bundle, as (source, raw target)
     /// pairs. Broken links are permitted by the spec (§5.3) — this is
-    /// informational. Port of <c>Bundle::broken_links</c> (bundle.rs:181-191).
+    /// informational.
     /// </summary>
     public IReadOnlyList<(ConceptId Source, string RawTarget)> BrokenLinks()
     {
@@ -251,8 +245,7 @@ public sealed class Bundle
     /// <summary>
     /// The declared OKF version from the bundle-root <c>index.md</c>
     /// frontmatter, if present (<c>okf_version</c>, §11). This is the only
-    /// place frontmatter is permitted in an <c>index.md</c>. Port of
-    /// <c>Bundle::okf_version</c> (bundle.rs:196-203).
+    /// place frontmatter is permitted in an <c>index.md</c>.
     ///
     /// Computed once while <see cref="Load"/> builds the bundle and stored, so
     /// it reflects the same load-time snapshot as the rest of this
@@ -284,10 +277,10 @@ public sealed class Bundle
         }
         catch (System.Text.DecoderFallbackException)
         {
-            // Mirrors `fs::read_to_string(&root_index).ok()?` (bundle.rs:198):
-            // any read failure -- including non-UTF-8 content -- is
-            // swallowed and yields None, unlike the concept-file read
-            // above where the same failure aborts the whole Load.
+            // Any read failure here -- including non-UTF-8 content -- is
+            // swallowed and yields null, unlike the concept-file read above
+            // where the same failure aborts the whole Load. A missing or
+            // unreadable root index.md simply means "no declared version".
             return null;
         }
 
@@ -307,7 +300,6 @@ public sealed class Bundle
     /// <summary>
     /// Recursively collects <c>*.md</c> file paths under <paramref name="dir"/>,
     /// in deterministic order (directory entries sorted by name, ordinal).
-    /// Port of <c>collect_markdown</c> (bundle.rs:207-222).
     /// </summary>
     private static void CollectMarkdown(string dir, List<string> output)
     {
@@ -322,14 +314,12 @@ public sealed class Bundle
         {
             var path = System.IO.Path.Combine(dir, name);
 
-            // Rust's `entry.file_type()` (bundle.rs:211) is lstat-based: a
-            // symlink's file_type() has is_dir() == false AND is_file() ==
-            // false, matching neither arm below, so the entry is skipped
-            // outright -- never recursed into, never collected even if it
-            // has a `.md` name. Directory.Exists/File.Exists instead follow
-            // the link (like Rust's *non*-lstat Path::is_dir()/is_file()),
-            // so reparse points must be excluded explicitly here to preserve
-            // that fidelity.
+            // lstat-based semantics: a symlink or junction is neither a
+            // directory nor a file, so it matches neither arm below and is
+            // skipped outright -- never recursed into, never collected even
+            // if it has a `.md` name. Directory.Exists/File.Exists would
+            // instead follow the link, so reparse points are excluded
+            // explicitly here to keep bundle walks from crossing them.
             if (ReparsePoints.IsReparsePoint(path))
             {
                 continue;
@@ -347,8 +337,7 @@ public sealed class Bundle
     }
 
     /// <summary>
-    /// Builds the outbound link and backlink maps for all concepts. Port of
-    /// <c>build_graph</c> (bundle.rs:225-258).
+    /// Builds the outbound link and backlink maps for all concepts.
     /// </summary>
     private static (Dictionary<ConceptId, List<ResolvedLink>> Outbound, Dictionary<ConceptId, List<ConceptId>> Backlinks) BuildGraph(
         List<Concept> concepts,

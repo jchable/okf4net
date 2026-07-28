@@ -4,11 +4,9 @@ using OKF4net.Yaml;
 namespace OKF4net.Tests.Yaml;
 
 /// <summary>
-/// Port of the "parse" half of tests/yaml.rs (lines 14-180). Round-trip
-/// assertions (the <c>roundtrip</c> helper: parse -> emit -> parse) are
-/// deferred to Task 3; here we call <see cref="YamlValue.Parse"/> directly,
-/// and assert on scalar values via accessors since <see cref="YamlValue"/>
-/// structural equality is not implemented until Task 3.
+/// Parser tests: they call <see cref="YamlValue.Parse"/> directly and assert
+/// on scalar values via accessors. Round-trip assertions (parse -> emit ->
+/// parse) live in <see cref="YamlRoundtripTests"/>.
 /// </summary>
 public class YamlParserTests
 {
@@ -38,10 +36,9 @@ public class YamlParserTests
     [Fact]
     public void Duplicate_string_keys_are_all_preserved_first_match_wins_on_get()
     {
-        // Port of Rust's push_raw (parser.rs:132): the block-mapping parser
-        // appends every entry unconditionally, it does not dedup like
-        // Mapping::insert does. get() then returns the FIRST match
-        // (mod.rs:65-70).
+        // The block-mapping parser appends every entry unconditionally; it
+        // does not dedup like Mapping.Insert does. Get() then returns the
+        // FIRST match.
         var v = YamlValue.Parse("type: foo\ntype: bar\n");
         var m = v.AsMapping()!;
         Assert.Equal("foo", m.Get("type")!.AsString());
@@ -52,12 +49,11 @@ public class YamlParserTests
     [Fact]
     public void Non_string_keys_are_invisible_to_get_and_keys_but_kept_in_entries()
     {
-        // Port of Mapping::get/keys (mod.rs:64-75): both filter on the
-        // String variant via as_str(), so a bool or float key is invisible
-        // to them, but iter()/Entries still yields it (raw, typed). The
-        // emitter's emit_mapping (emitter.rs:26-42) runs every key through
-        // emit_scalar, so a float key "1.50" re-emits via format_float as
-        // "1.5" (trailing zero dropped), same as any float scalar value.
+        // Mapping.Get/Keys both filter on the string variant, so a bool or
+        // float key is invisible to them, but Entries still yields it (raw,
+        // typed). The emitter runs every key through scalar emission, so a
+        // float key "1.50" re-emits as "1.5" (trailing zero dropped), same
+        // as any float scalar value.
         var v = YamlValue.Parse("true: x\n1.50: y\n");
         var m = v.AsMapping()!;
         Assert.Null(m.Get("true"));
@@ -178,9 +174,9 @@ public class YamlParserTests
         // zero-width "format" characters -- e.g. U+00AD SOFT HYPHEN -- as
         // ignorable: "­- x".StartsWith("- ") is empirically true under
         // CurrentCulture/InvariantCulture, but false under ordinal
-        // (byte-exact) comparison. Rust's str::starts_with (parser.rs:84,
-        // 113, 153, 217) is always byte-exact, so a line beginning with a
-        // soft hyphen must NOT be misread as a block-sequence item ("- ").
+        // (byte-exact) comparison. The parser uses ordinal (byte-exact)
+        // prefix checks, so a line beginning with a soft hyphen must NOT be
+        // misread as a block-sequence item ("- ").
         var v = YamlValue.Parse("outer:\n  ­- x\n");
         var value = v.AsMapping()!.Get("outer")!;
         Assert.Equal("­- x", value.AsString());
@@ -195,13 +191,11 @@ public class YamlParserTests
     [Fact]
     public void Deeply_nested_flow_sequence_throws_instead_of_overflowing_the_stack()
     {
-        // Unlike Rust (which has no depth guard and hard-crashes on
-        // pathological input like this), the C# port adds an explicit
-        // recursion-depth limit as a deliberate safety improvement -- an
-        // uncatchable StackOverflowException would otherwise take down the
-        // whole process. A flow sequence with 5000 nested '[' must throw a
-        // catchable YamlParseException, and the parser (and process) must
-        // survive to run subsequent tests.
+        // The parser adds an explicit recursion-depth limit as a deliberate
+        // safety measure -- an uncatchable StackOverflowException would
+        // otherwise take down the whole process. A flow sequence with 5000
+        // nested '[' must throw a catchable YamlParseException, and the
+        // parser (and process) must survive to run subsequent tests.
         var text = "tags: " + new string('[', 5000);
         var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(text));
         Assert.Contains("nesting depth", ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -224,11 +218,11 @@ public class YamlParserTests
     [Fact]
     public void Lone_carriage_return_stays_embedded_in_the_line()
     {
-        // Rust's str::lines() only splits on '\n' (stripping one preceding
-        // '\r' when present, i.e. it understands "\r\n"). A lone '\r' NOT
-        // followed by '\n' is not a line terminator at all, so the whole
-        // input is a single line and "title: foo" is part of the scalar
-        // value rather than a second mapping entry.
+        // LfLines splits only on '\n' (stripping one preceding '\r' when
+        // present, i.e. it understands "\r\n"). A lone '\r' NOT followed by
+        // '\n' is not a line terminator at all, so the whole input is a
+        // single line and "title: foo" is part of the scalar value rather
+        // than a second mapping entry.
         var v = YamlValue.Parse("type: doc\rtitle: foo");
         var m = v.AsMapping()!;
         Assert.Single(m.Keys);

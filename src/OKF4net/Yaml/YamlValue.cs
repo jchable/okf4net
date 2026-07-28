@@ -2,8 +2,7 @@
 namespace OKF4net.Yaml;
 
 /// <summary>
-/// A parsed YAML value. Mirror of the Rust <c>Value</c> enum
-/// (src/yaml/mod.rs, lines 114-211): Null, Bool, Int, Float, Str, Seq, Map.
+/// A parsed YAML value: Null, Bool, Int, Float, Str, Seq, Map.
 /// </summary>
 public abstract class YamlValue
 {
@@ -18,39 +17,32 @@ public abstract class YamlValue
     public string ToYamlString() => YamlEmitter.Emit(this);
 
     /// <summary>
-    /// Wraps a string as a <see cref="YamlString"/>. Port of Rust's
-    /// <c>impl From&lt;&amp;str&gt; for Value</c> (yaml/mod.rs:219-223).
+    /// Wraps a string as a <see cref="YamlString"/>.
     /// </summary>
     public static implicit operator YamlValue(string value) => new YamlString(value);
 
     /// <summary>
-    /// Wraps a bool as a <see cref="YamlBool"/>. Port of Rust's
-    /// <c>impl From&lt;bool&gt; for Value</c> (yaml/mod.rs:231-235).
+    /// Wraps a bool as a <see cref="YamlBool"/>.
     /// </summary>
     public static implicit operator YamlValue(bool value) => new YamlBool(value);
 
     /// <summary>
-    /// Wraps a 64-bit integer as a <see cref="YamlInt"/>. Port of Rust's
-    /// <c>impl From&lt;i64&gt; for Value</c> (yaml/mod.rs:237-241).
+    /// Wraps a 64-bit integer as a <see cref="YamlInt"/>.
     /// </summary>
     public static implicit operator YamlValue(long value) => new YamlInt(value);
 
     /// <summary>
-    /// Wraps an array of values as a <see cref="YamlSequence"/>. Closest C#
-    /// idiom to Rust's <c>impl&lt;T: Into&lt;Value&gt;&gt; From&lt;Vec&lt;T&gt;&gt; for Value</c>
-    /// (yaml/mod.rs:243-247).
+    /// Wraps an array of values as a <see cref="YamlSequence"/>.
     /// </summary>
     public static implicit operator YamlValue(YamlValue[] items) => new YamlSequence(items);
 
-    // Rust also has `impl From<Mapping> for Value` (yaml/mod.rs:249-253), but
-    // that has no C# equivalent to write: YamlMapping already IS-A YamlValue
-    // (it's a subclass, not a wrapped field), so a YamlMapping needs no
-    // conversion to be used as a YamlValue -- the "conversion" is a no-op
-    // upcast the compiler already performs.
+    // No conversion is needed for a mapping: YamlMapping already IS-A
+    // YamlValue (a subclass, not a wrapped field), so using one as a
+    // YamlValue is just a no-op upcast the compiler performs.
     //
-    // Rust has no `impl From<f64> for Value`, so there is intentionally no
-    // implicit `double` -> YamlValue operator here (would introduce a
-    // conversion the Rust surface doesn't have).
+    // There is intentionally no implicit `double` -> YamlValue operator:
+    // floats must be wrapped explicitly via `new YamlFloat(...)` to keep the
+    // conversion surface small and unambiguous.
 
     /// <summary>Returns the string contents if this is a <see cref="YamlString"/>.</summary>
     public string? AsString() => (this as YamlString)?.Value;
@@ -69,9 +61,8 @@ public abstract class YamlValue
 
     /// <summary>
     /// True for null, an empty string, an empty sequence, an empty mapping,
-    /// <c>false</c>, or <c>0</c>. Port of the Rust <c>is_empty_value</c>
-    /// (src/yaml/mod.rs lines 187-197) — note there is no Float arm there,
-    /// so <see cref="YamlFloat"/>(0.0) is intentionally NOT empty.
+    /// <c>false</c>, or <c>0</c>. Note there is deliberately no Float arm, so
+    /// <see cref="YamlFloat"/>(0.0) is NOT empty.
     /// </summary>
     public bool IsEmptyValue => this switch
     {
@@ -86,19 +77,14 @@ public abstract class YamlValue
 
     /// <summary>
     /// Renders a scalar as a plain display string (used for typed frontmatter
-    /// accessors that coerce scalars to text). Port of the Rust
-    /// <c>as_display_string</c> (src/yaml/mod.rs lines 199-210).
+    /// accessors that coerce scalars to text).
     ///
-    /// The float branch there is <c>format!("{f}")</c> — Rust's f64
-    /// <c>Display</c> impl, which is a *different* format than the emitter's
-    /// <c>format_float</c> (Rust's f64 <c>Debug</c> impl, used by
-    /// <see cref="ToYamlString"/>): Display never uses scientific notation
-    /// and never forces a trailing ".0", and non-finite values print as
-    /// "NaN"/"inf"/"-inf" (not the YAML tokens ".nan"/".inf"/"-.inf"). See
-    /// <see cref="YamlEmitter.FormatDisplayFloat"/> for the port of that
-    /// exact format (previously this used
-    /// <c>double.ToString(InvariantCulture)</c>, which diverges from Rust on
-    /// both points).
+    /// The float branch uses a *different* format than
+    /// <see cref="ToYamlString"/>'s emitter: the plain display format never
+    /// uses scientific notation and never forces a trailing ".0", and
+    /// non-finite values print as "NaN"/"inf"/"-inf" (not the YAML tokens
+    /// ".nan"/".inf"/"-.inf"). See <see cref="YamlEmitter.FormatDisplayFloat"/>
+    /// for that exact format.
     /// </summary>
     public string? AsDisplayString() => this switch
     {
@@ -110,19 +96,15 @@ public abstract class YamlValue
     };
 
     /// <summary>
-    /// Renders this value as YAML text, matching Rust's <c>impl fmt::Display
-    /// for Value</c> (src/yaml/mod.rs lines 213-217), which writes
-    /// <c>to_yaml_string()</c>.
+    /// Renders this value as YAML text (equivalent to <see cref="ToYamlString"/>).
     /// </summary>
     public override string ToString() => ToYamlString();
 
     /// <summary>
-    /// Structural (deep) equality, mirroring Rust's derived <c>PartialEq</c>
-    /// for <c>Value</c>/<c>Mapping</c> (src/yaml/mod.rs lines 42 and 116):
-    /// same variant/type, recursively equal contents, mapping entries
-    /// compared in order (not just by key set). Floats compare with IEEE-754
-    /// semantics (via <c>==</c>), like Rust's <c>f64: PartialEq</c> — so
-    /// <c>NaN</c> never equals <c>NaN</c>, and <c>-0.0</c> equals <c>0.0</c>.
+    /// Structural (deep) equality: same type, recursively equal contents,
+    /// mapping entries compared in order (not just by key set). Floats compare
+    /// with IEEE-754 semantics (via <c>==</c>) — so <c>NaN</c> never equals
+    /// <c>NaN</c>, and <c>-0.0</c> equals <c>0.0</c>.
     /// </summary>
     public override bool Equals(object? obj) => obj is YamlValue other && ValueEquals(this, other);
 
@@ -262,12 +244,10 @@ public sealed class YamlString : YamlValue
 public sealed class YamlSequence : YamlValue
 {
     /// <summary>
-    /// Wraps <paramref name="items"/> as a YAML sequence, defensively
-    /// copying it. Rust's <c>impl From&lt;Vec&lt;Value&gt;&gt; for Value</c>
-    /// consumes (moves) the <c>Vec</c>, so the caller cannot mutate it after
-    /// construction there; a plain reference assignment here would alias the
-    /// caller's list and let post-construction mutation leak through, which
-    /// is impossible in Rust. Copying preserves that "moved" invariant.
+    /// Wraps <paramref name="items"/> as a YAML sequence, defensively copying
+    /// it. A plain reference assignment would alias the caller's list and let
+    /// post-construction mutation leak through; copying makes the sequence
+    /// immutable once constructed.
     /// </summary>
     public YamlSequence(IReadOnlyList<YamlValue> items) => Items = [.. items];
 

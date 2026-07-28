@@ -16,12 +16,11 @@ a directory of markdown files with YAML frontmatter.
 > **no third-party dependencies** (it includes its own YAML-subset parser,
 > markdown link scanner, directory walker, and CLI argument parsing).
 >
-> OKF4net is a from-scratch C# port of this repository's former Rust `okf`
-> implementation, itself a port of the OKF reference implementation. The Rust
-> sources were removed once the port was proven byte-exact (182/182 tests,
-> including 5 byte-exact golden CLI comparisons — see
-> [`tests/fixtures/`](tests/fixtures/README.md)); OKF4net is now the sole
-> implementation in this repository.
+> OKF4net is an independent, zero-dependency .NET implementation of the Open
+> Knowledge Format, built from the OKF v0.1 specification. It is backed by an
+> extensive test suite, including byte-exact golden CLI comparisons (see
+> [`tests/fixtures/`](tests/fixtures/README.md)). For the full derivation and
+> attribution chain, see [`NOTICE`](NOTICE).
 
 **📖 [Documentation & project site → jchable.github.io/okf4net](https://jchable.github.io/okf4net/)** —
 a guided project overview, getting-started walkthroughs, and developer docs:
@@ -91,12 +90,10 @@ other project layers a specific integration on top and points back to it.
 | `OKF4net.ChangeLog`                        | Parse / build `log.md` update histories (§7)                               |
 | `OKF4net.BundleValidator`                  | §9 conformance checking with severity-tagged diagnostics                   |
 
-The split mirrors the reference Python implementation's `bundle/` package
-(`document.py`, `index.py`, `paths.py`) — and the Rust `okf` crate that
-preceded this port — so behaviour stays compatible: the document parser,
-validator, and index generator are faithful ports, verified by tests adapted
-from the reference test suite and, for the CLI, by byte-exact comparison
-against the removed Rust binary's captured output.
+The split follows the OKF reference implementation's `bundle/` package
+(`document.py`, `index.py`, `paths.py`) so behaviour stays spec-compatible:
+the document parser, validator, and index generator are verified by an
+extensive test suite, including byte-exact golden CLI comparisons.
 
 ### Design choices
 
@@ -185,9 +182,9 @@ okf graph ./bundles/ga4 --dot | dot -Tsvg > graph.svg
 
 `okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
 single-file binary — no .NET runtime installation required on the target
-machine (see [Building & testing](#building--testing)). Invocations are
-unchanged from the Rust binary it replaces. Full command reference with real
-output samples: [CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
+machine (see [Building & testing](#building--testing)). Full command
+reference with real output samples:
+[CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
 
 ### Using OKF4net with Microsoft Agent Framework
 
@@ -454,14 +451,12 @@ text and [`LICENSE.GPL-3.0`](LICENSE.GPL-3.0) for the GPLv3 text it
 incorporates by reference.
 
 This is a derivative work: its document parser, concept-id conventions, and
-index generator are ports of the Apache-2.0-licensed
+index generator derive from the Apache-2.0-licensed
 [OKF reference implementation](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-by Google LLC, by way of this repository's former Rust implementation `okf`
-by Walter van der Giessen (also Apache-2.0, removed from this repository at
-commit `d20343c` once byte-exact parity with this C# port was proven).
-Portions derived from those upstream works remain subject to the Apache
-License, Version 2.0 — see [`LICENSE.Apache-2.0`](LICENSE.Apache-2.0). Full
-attribution is in [`NOTICE`](NOTICE).
+by Google LLC. Portions derived from that and prior upstream work remain
+subject to the Apache License, Version 2.0 — see
+[`LICENSE.Apache-2.0`](LICENSE.Apache-2.0). Full attribution, including the
+complete derivation chain, is in [`NOTICE`](NOTICE).
 
 This is an independent implementation and is not affiliated with or endorsed by
 Google.

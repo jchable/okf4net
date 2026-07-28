@@ -4,9 +4,9 @@ using OKF4net.Yaml;
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Port of the Rust <c>Frontmatter</c> semantics (src/frontmatter.rs). Typed
-/// accessors go through <c>as_display_string</c>, so scalars other than
-/// strings are coerced to their display form and non-scalars yield null.
+/// Tests for <c>Frontmatter</c> semantics. Typed accessors go through a
+/// display-string coercion, so scalars other than strings are coerced to
+/// their display form and non-scalars yield null.
 /// </summary>
 public class FrontmatterTests
 {
@@ -65,10 +65,9 @@ public class FrontmatterTests
     [Fact]
     public void Tags_is_empty_when_value_is_a_single_scalar_not_a_sequence()
     {
-        // frontmatter.rs:96-101: only the Value::Sequence arm is handled;
-        // any other shape (including a bare scalar) falls through to the
-        // wildcard arm and yields an empty Vec. A single scalar `tags` is
-        // therefore NOT treated as a one-element list.
+        // Only a sequence value is treated as tags; any other shape
+        // (including a bare scalar) yields an empty list. A single scalar
+        // `tags` is therefore NOT treated as a one-element list.
         var fm = Frontmatter.FromMapping(YamlValue.Parse("tags: solo\n").AsMapping()!);
         Assert.Empty(fm.Tags);
     }
@@ -136,8 +135,8 @@ public class FrontmatterTests
     [Fact]
     public void Equality_is_structural_over_the_underlying_mapping()
     {
-        // F11: Rust derives PartialEq on Frontmatter (frontmatter.rs:18), a
-        // single-field wrapper over Mapping, whose PartialEq is structural.
+        // F11: Frontmatter equality is structural over its underlying
+        // mapping (a single-field wrapper whose equality is structural).
         var a = Frontmatter.FromMapping(YamlValue.Parse("type: T\ncustom: 1\n").AsMapping()!);
         var b = Frontmatter.FromMapping(YamlValue.Parse("type: T\ncustom: 1\n").AsMapping()!);
         Assert.Equal(a, b);

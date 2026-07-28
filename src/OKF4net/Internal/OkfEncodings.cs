@@ -4,13 +4,11 @@ using System.Text;
 namespace OKF4net.Internal;
 
 /// <summary>
-/// The two UTF-8 <see cref="UTF8Encoding"/> configurations this port needs
-/// everywhere it touches bundle files on disk, mirroring Rust's <c>std::fs</c>
-/// string I/O exactly: <see cref="Strict"/> for reads (matching
-/// <c>fs::read_to_string</c>, which fails outright on invalid UTF-8 rather
-/// than substituting U+FFFD) and <see cref="NoBom"/> for writes (matching
-/// <c>fs::write</c>, which never emits a byte-order mark). Neither of .NET's
-/// <see cref="Encoding.UTF8"/> defaults matches Rust here: the BCL's
+/// The two UTF-8 <see cref="UTF8Encoding"/> configurations needed everywhere
+/// this library touches bundle files on disk: <see cref="Strict"/> for reads
+/// (fails outright on invalid UTF-8 rather than substituting U+FFFD) and
+/// <see cref="NoBom"/> for writes (never emits a byte-order mark). Neither of
+/// .NET's <see cref="Encoding.UTF8"/> defaults is suitable: the BCL's
 /// singleton silently replaces invalid bytes with U+FFFD on decode and emits
 /// a BOM on encode.
 ///
@@ -25,10 +23,9 @@ internal static class OkfEncodings
 {
     /// <summary>
     /// UTF-8 decoder configured to throw on invalid byte sequences (no
-    /// U+FFFD replacement, no BOM emission), matching the strictness of
-    /// Rust's <c>fs::read_to_string</c> (which fails with an <c>io::Error</c>
-    /// of kind <c>InvalidData</c> — message "stream did not contain valid
-    /// UTF-8" — for any file that is not valid UTF-8).
+    /// U+FFFD replacement, no BOM emission): any file that is not valid UTF-8
+    /// fails with the message "stream did not contain valid UTF-8" rather than
+    /// decoding to replacement characters.
     /// <see cref="System.IO.File.ReadAllText(string)"/> is deliberately not
     /// used at any call site: it silently substitutes U+FFFD for invalid
     /// bytes instead of failing.
@@ -36,8 +33,8 @@ internal static class OkfEncodings
     internal static readonly UTF8Encoding Strict = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>
-    /// UTF-8 encoder without a byte-order mark, for every file this port
-    /// writes (matching Rust's <c>fs::write</c>, which never emits a BOM).
+    /// UTF-8 encoder without a byte-order mark, for every file this library
+    /// writes (BOM-less output).
     /// </summary>
     internal static readonly UTF8Encoding NoBom = new(encoderShouldEmitUTF8Identifier: false);
 }

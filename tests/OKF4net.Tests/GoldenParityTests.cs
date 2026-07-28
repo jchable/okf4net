@@ -4,13 +4,13 @@ using OKF4net.Cli;
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Golden parity tests: every output the C# port produces is diffed against
-/// the corresponding reference file under <c>tests/fixtures/golden/</c>,
-/// captured (Task 12) by running the real Rust <c>okf</c> binary against
+/// Golden parity tests: every output the CLI produces is diffed against the
+/// corresponding byte-exact reference output under
+/// <c>tests/fixtures/golden/</c>, captured against
 /// <c>tests/fixtures/appendix_a</c> on Linux. Any divergence beyond the one
 /// documented platform artifact (see
-/// <see cref="Validate_output_and_exitcode_match_rust"/>) is a port bug in
-/// the C# side, never a reason to touch a golden fixture.
+/// <see cref="Validate_output_and_exitcode_match_golden"/>) is a bug in the
+/// CLI, never a reason to touch a golden fixture.
 /// </summary>
 public class GoldenParityTests
 {
@@ -30,10 +30,10 @@ public class GoldenParityTests
     /// temporarily set to the repo root, restoring it afterward. Needed only
     /// by <c>validate</c>/<c>info</c>: their output embeds the bundle path
     /// exactly as given on the command line (<c>Bundle.Root</c>,
-    /// <c>Diagnostic.Path</c>), and per the Task 12 report the goldens were
-    /// captured by invoking the Rust binary from the repo root with the
-    /// relative argument <c>tests/fixtures/appendix_a</c> -- reproducing
-    /// that exact embedded string requires doing the same here. No other
+    /// <c>Diagnostic.Path</c>), and the goldens were captured by invoking the
+    /// CLI from the repo root with the relative argument
+    /// <c>tests/fixtures/appendix_a</c> -- reproducing that exact embedded
+    /// string requires doing the same here. No other
     /// test in this assembly consults <see cref="Environment.CurrentDirectory"/>
     /// (all others resolve fixtures to absolute paths), and xunit runs the
     /// methods of a single class sequentially by default, so this is safe.
@@ -53,13 +53,13 @@ public class GoldenParityTests
     }
 
     [Fact]
-    public void Validate_output_and_exitcode_match_rust()
+    public void Validate_output_and_exitcode_match_golden()
     {
         var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/appendix_a"));
         Assert.Equal(int.Parse(Golden("validate.exitcode")), r.Code);
 
-        // The golden was captured on Linux, where Rust's PathBuf::display
-        // prints '/'. Our port's per-file diagnostic paths are built by
+        // The golden was captured on Linux, where paths display with '/'.
+        // The per-file diagnostic paths are built by
         // combining the literal root "tests/fixtures/appendix_a" with
         // Path.Combine for every subsequent path component, and
         // Path.Combine emits the OS-native separator -- so on Windows the
@@ -73,7 +73,7 @@ public class GoldenParityTests
     }
 
     [Fact]
-    public void Info_output_matches_rust()
+    public void Info_output_matches_golden()
     {
         var r = WithRepoRootAsCwd(() => Run("info", "tests/fixtures/appendix_a"));
         Assert.Equal(0, r.Code);
@@ -81,7 +81,7 @@ public class GoldenParityTests
     }
 
     [Fact]
-    public void Graph_dot_matches_rust()
+    public void Graph_dot_matches_golden()
     {
         // Concept ids -- and therefore every string `graph --dot` prints --
         // are always normalized to '/' by ConceptId.FromPath regardless of
@@ -94,7 +94,7 @@ public class GoldenParityTests
     }
 
     [Fact]
-    public void Fmt_output_matches_rust()
+    public void Fmt_output_matches_golden()
     {
         var r = Run("fmt", Path.Combine(BundlePath, "tables", "users.md"));
         Assert.Equal(0, r.Code);
@@ -102,7 +102,7 @@ public class GoldenParityTests
     }
 
     [Fact]
-    public void Index_generation_matches_rust()
+    public void Index_generation_matches_golden()
     {
         using var tmp = new TempDir();
         CopyDirectory(BundlePath, tmp.Path);

@@ -56,8 +56,7 @@ export default function Cli() {
         lede={
           <>
             <code>okf</code> is published as a <strong>self-contained, Native AOT single-file binary</strong> — no
-            .NET runtime installation required on the target machine. Invocations are unchanged from the Rust binary
-            it replaces.
+            .NET runtime installation required on the target machine.
           </>
         }
       />

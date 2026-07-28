@@ -4,22 +4,19 @@ using OKF4net.Yaml;
 namespace OKF4net.Tests.Yaml;
 
 /// <summary>
-/// Port of the round-trip invariant tests from tests/yaml.rs: the
-/// <c>roundtrip</c> helper (lines 5-11: parse -> emit -> re-parse) and the
-/// tests that use it (lines 41-73), plus the dedicated quoting/float
-/// round-trip tests (lines 101-169). This is where <see cref="YamlValue.ToYamlString"/>
+/// Round-trip invariant tests: the <c>Roundtrip</c> helper (parse -> emit ->
+/// re-parse) and the tests that use it, plus the dedicated quoting/float
+/// round-trip tests. This is where <see cref="YamlValue.ToYamlString"/>
 /// (backed by <see cref="YamlEmitter"/>) and structural <see cref="YamlValue"/>
-/// equality get exercised together for the first time.
+/// equality get exercised together.
 /// </summary>
 public class YamlRoundtripTests
 {
     /// <summary>
-    /// Port of Rust's <c>roundtrip</c> helper (tests/yaml.rs:5-11): parse ->
-    /// emit -> re-parse must produce a structurally equal value, mirroring
-    /// <c>assert_eq!(v, reparsed)</c>. Also asserts emitter stability
-    /// (re-emitting the reparsed value reproduces the same text), per the
-    /// brief's docstring for this helper. Returns the original parsed value,
-    /// like the Rust helper does.
+    /// Round-trip helper: parse -> emit -> re-parse must produce a
+    /// structurally equal value. Also asserts emitter stability (re-emitting
+    /// the reparsed value reproduces the same text). Returns the original
+    /// parsed value.
     /// </summary>
     private static YamlValue Roundtrip(string src)
     {
@@ -71,8 +68,7 @@ public class YamlRoundtripTests
     public void Strings_needing_quotes_roundtrip()
     {
         // A string that looks like a number / bool / has special chars must be
-        // quoted on emit so it re-parses as a string. Exact list from
-        // tests/yaml.rs:105.
+        // quoted on emit so it re-parses as a string.
         foreach (var s in new[] { "42", "true", "null", "a: b", "value # x", "", "  spaced  " })
         {
             YamlValue v = new YamlString(s);
@@ -87,9 +83,8 @@ public class YamlRoundtripTests
     [Fact]
     public void Non_finite_and_large_floats_roundtrip()
     {
-        // Port of tests/yaml.rs:151-169: .inf / -.inf / large & tiny finite
-        // floats compare by bit pattern (NaN gets a separate, special-cased
-        // assertion since NaN != NaN).
+        // .inf / -.inf / large & tiny finite floats compare by bit pattern
+        // (NaN gets a separate, special-cased assertion since NaN != NaN).
         foreach (var f in new[] { double.PositiveInfinity, double.NegativeInfinity, 1e30, -2.5e-12, 1.0 })
         {
             var m = new YamlMapping();
@@ -114,8 +109,8 @@ public class YamlRoundtripTests
     {
         // Construct the deep YamlSequence directly (not via the parser,
         // which has its own independent depth guard) so this exercises
-        // YamlEmitter's guard specifically. An INTENTIONAL divergence from
-        // Rust, which has no such guard in emitter.rs.
+        // YamlEmitter's guard specifically. The emitter adds a depth guard so
+        // a pathologically deep value throws instead of overflowing the stack.
         YamlValue v = new YamlSequence([]);
         for (var i = 0; i < 5000; i++)
         {

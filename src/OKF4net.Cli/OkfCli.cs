@@ -5,11 +5,9 @@ using OKF4net.Internal;
 namespace OKF4net.Cli;
 
 /// <summary>
-/// The <c>okf</c> command-line tool: a byte-for-byte port of the reference
-/// <c>src/bin/okf.rs</c> (~480 lines). Six subcommands (<c>validate</c>,
+/// The <c>okf</c> command-line tool. Six subcommands (<c>validate</c>,
 /// <c>info</c>, <c>index</c>, <c>graph</c>, <c>parse</c>, <c>fmt</c>) over
-/// hand-rolled argument parsing -- no third-party dependencies, matching the
-/// dependency-free spirit of the Rust crate.
+/// hand-rolled argument parsing -- no third-party dependencies.
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// CLI in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -17,10 +15,10 @@ namespace OKF4net.Cli;
 /// </summary>
 public static class OkfCli
 {
-    /// <summary>The crate version (Cargo.toml <c>[package] version</c>), echoed by <c>-V</c>/<c>--version</c>.</summary>
+    /// <summary>The CLI version string, echoed by <c>-V</c>/<c>--version</c>.</summary>
     private const string CliVersion = "0.1.0-alpha.1";
 
-    /// <summary>Port of the Rust <c>USAGE</c> constant (okf.rs:57-73), verbatim.</summary>
+    /// <summary>The <c>--help</c> / usage text.</summary>
     private const string Usage =
         "okf — Open Knowledge Format toolkit\n" +
         "\n" +
@@ -40,20 +38,17 @@ public static class OkfCli
         "    -V, --version        Show version";
 
     /// <summary>
-    /// Internal control-flow signal for the <c>Result&lt;ExitCode, String&gt;</c>
-    /// error arm of the Rust command functions: caught once at the top of
-    /// <see cref="Run"/> and rendered as <c>error: {msg}</c> on stderr with
-    /// exit code 1, mirroring <c>main</c>'s <c>Err(msg) =&gt; {'{'} eprintln!("error: {msg}"); ExitCode::FAILURE {'}'}</c>
-    /// (okf.rs:50-53). Never escapes this file.
+    /// Internal control-flow signal for a command failure: caught once at the
+    /// top of <see cref="Run"/> and rendered as <c>error: {msg}</c> on stderr
+    /// with exit code 1. Never escapes this file.
     /// </summary>
     private sealed class CliOperationException(string message) : Exception(message);
 
     /// <summary>
     /// Runs the CLI against <paramref name="args"/> (excluding the program
-    /// name, matching Rust's <c>std::env::args().skip(1)</c>), writing to the
-    /// given writers, and returns the process exit code. Forces "\n"-only
-    /// line endings on both writers regardless of platform, since the golden
-    /// fixtures this must match byte-for-byte are LF-terminated.
+    /// name), writing to the given writers, and returns the process exit code.
+    /// Forces "\n"-only line endings on both writers regardless of platform:
+    /// LF is the tool's canonical output.
     /// </summary>
     public static int Run(string[] args, TextWriter stdout, TextWriter stderr)
     {
@@ -101,7 +96,7 @@ public static class OkfCli
         }
     }
 
-    /// <summary>Port of the <c>other =&gt; {'{'} ... {'}'}</c> match arm (okf.rs:42-45). Writes directly and returns, bypassing the <c>error: </c> prefix.</summary>
+    /// <summary>Handles an unknown subcommand: writes the message and usage directly, bypassing the <c>error: </c> prefix.</summary>
     private static int UnknownSubcommand(string other, TextWriter stderr)
     {
         stderr.Write($"unknown subcommand: {other}\n\n{Usage}\n");
@@ -109,13 +104,13 @@ public static class OkfCli
     }
 
     // ----------------------------------------------------------------
-    // Argument parsing helpers -- ports of okf.rs:75-91.
+    // Argument parsing helpers.
     // ----------------------------------------------------------------
 
     /// <summary>
     /// Returns the first positional argument, or throws. Everything after a
     /// <c>--</c> separator is treated as positional (so paths beginning with
-    /// <c>-</c> work). Port of <c>positional</c> (okf.rs:77-87).
+    /// <c>-</c> work).
     /// </summary>
     private static string Positional(string[] args, string what)
     {
@@ -136,10 +131,10 @@ public static class OkfCli
         throw new CliOperationException($"missing {what}");
     }
 
-    /// <summary>Port of <c>has_flag</c> (okf.rs:89-91).</summary>
+    /// <summary>True if <paramref name="flag"/> is present in <paramref name="args"/>.</summary>
     private static bool HasFlag(string[] args, string flag) => Array.IndexOf(args, flag) >= 0;
 
-    /// <summary>Port of <c>load</c> (okf.rs:93-95): loads a bundle, converting a failure into the CLI's error arm.</summary>
+    /// <summary>Loads a bundle, converting a failure into the CLI's error arm.</summary>
     private static Bundle Load(string path)
     {
         try
@@ -154,8 +149,7 @@ public static class OkfCli
 
     /// <summary>
     /// Reads a file as strict UTF-8, converting I/O and decode failures into
-    /// the CLI's error arm. Port of the <c>std::fs::read_to_string(path).map_err(|e| e.to_string())?</c>
-    /// pattern shared by <c>cmd_parse</c> (okf.rs:210) and <c>cmd_fmt</c> (okf.rs:245).
+    /// the CLI's error arm. Shared by the <c>parse</c> and <c>fmt</c> commands.
     /// </summary>
     private static string ReadFileStrict(string path)
     {
@@ -166,11 +160,8 @@ public static class OkfCli
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            // Rust's `std::fs::read_to_string(path).map_err(|e| e.to_string())?`
-            // (okf.rs:210, 245) funnels EVERY filesystem failure -- including
-            // an interior NUL byte in the path, which Rust's std rejects with
-            // an io::Error before ever reaching the OS -- into the same
-            // `error: {msg}` exit-1 path. .NET rejects the same garbage paths
+            // Every filesystem failure must funnel into the same
+            // `error: {msg}` exit-1 path. .NET rejects garbage paths
             // (embedded NUL, reserved device names, ...) with ArgumentException
             // or NotSupportedException rather than an I/O exception, so both
             // must be caught here too or they escape as unhandled exceptions
@@ -202,7 +193,7 @@ public static class OkfCli
         }
     }
 
-    /// <summary>Port of <c>doc.validate_conformance().is_ok()</c> (okf.rs:217) without relying on exceptions for control flow at the call site.</summary>
+    /// <summary>True if the document has conformant frontmatter, without relying on exceptions for control flow at the call site.</summary>
     private static bool IsConformant(OkfDocument doc)
     {
         try
@@ -220,7 +211,7 @@ public static class OkfCli
     // Commands.
     // ----------------------------------------------------------------
 
-    /// <summary>Port of <c>cmd_validate</c> (okf.rs:97-121).</summary>
+    /// <summary>Implements the <c>validate</c> subcommand.</summary>
     private static int CmdValidate(string[] args, TextWriter stdout)
     {
         var path = Positional(args, "<bundle>");
@@ -248,7 +239,7 @@ public static class OkfCli
         return 1;
     }
 
-    /// <summary>Port of <c>cmd_info</c> (okf.rs:123-161).</summary>
+    /// <summary>Implements the <c>info</c> subcommand.</summary>
     private static int CmdInfo(string[] args, TextWriter stdout)
     {
         var path = Positional(args, "<bundle>");
@@ -302,7 +293,7 @@ public static class OkfCli
         return 0;
     }
 
-    /// <summary>Port of <c>cmd_index</c> (okf.rs:163-175).</summary>
+    /// <summary>Implements the <c>index</c> subcommand.</summary>
     private static int CmdIndex(string[] args, TextWriter stdout)
     {
         var path = Positional(args, "<bundle>");
@@ -333,7 +324,7 @@ public static class OkfCli
         return 0;
     }
 
-    /// <summary>Port of <c>cmd_graph</c> (okf.rs:177-206).</summary>
+    /// <summary>Implements the <c>graph</c> subcommand.</summary>
     private static int CmdGraph(string[] args, TextWriter stdout)
     {
         var path = Positional(args, "<bundle>");
@@ -349,7 +340,7 @@ public static class OkfCli
                 foreach (var link in bundle.LinksFrom(c.Id))
                 {
                     var style = link.Exists ? "" : " [style=dashed, color=red]";
-                    stdout.Write($"  {RustDebugQuote.Quote(c.Id.ToString())} -> {RustDebugQuote.Quote(link.Target.ToString())}{style};\n");
+                    stdout.Write($"  {DebugQuote.Quote(c.Id.ToString())} -> {DebugQuote.Quote(link.Target.ToString())}{style};\n");
                 }
             }
 
@@ -377,7 +368,7 @@ public static class OkfCli
         return 0;
     }
 
-    /// <summary>Port of <c>cmd_parse</c> (okf.rs:208-240).</summary>
+    /// <summary>Implements the <c>parse</c> subcommand.</summary>
     private static int CmdParse(string[] args, TextWriter stdout)
     {
         var path = Positional(args, "<file>");
@@ -398,12 +389,9 @@ public static class OkfCli
         {
             // Note: both k.ToYamlString() and v.ToYamlString() already end in
             // "\n" (the emitter always terminates its output that way), and
-            // the line itself adds another -- an exact port of the Rust
-            // `println!("  {k}: {v}")` where `k` and `v` are both `&Value`,
-            // and `Value`'s Display is `to_yaml_string()` (yaml/mod.rs:213-216).
-            // Since mapping keys are (post F2/F6) typed raw Values rather
-            // than plain strings, this reproduces the Rust CLI's output
-            // exactly, embedded newline quirk included.
+            // the line itself adds another. Mapping keys are typed raw Values
+            // (whose Display rendering is the YAML text), not plain strings, so
+            // this output carries that embedded-newline quirk deliberately.
             stdout.Write($"  {k.ToYamlString()}: {v.ToYamlString()}\n");
         }
 
@@ -434,7 +422,7 @@ public static class OkfCli
         return conformant ? 0 : 1;
     }
 
-    /// <summary>Port of <c>cmd_fmt</c> (okf.rs:242-256).</summary>
+    /// <summary>Implements the <c>fmt</c> subcommand.</summary>
     private static int CmdFmt(string[] args, TextWriter stdout)
     {
         var path = Positional(args, "<file>");

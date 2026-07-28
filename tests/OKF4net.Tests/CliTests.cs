@@ -6,9 +6,8 @@ namespace OKF4net.Tests;
 /// <summary>
 /// Smoke tests for the <c>okf</c> CLI, exercising <see cref="OkfCli.Run"/>
 /// in-process (no subprocess spawn). One test per subcommand plus the
-/// no-args/usage path, mirroring the shape of <c>src/bin/okf.rs</c>'s
-/// dispatch table. Exact exit codes and output text are read from
-/// <c>okf.rs</c> (the port's source of truth) rather than invented.
+/// no-args/usage path. Exact exit codes and output text follow the CLI's
+/// documented behaviour.
 /// </summary>
 public class CliTests
 {
@@ -103,11 +102,11 @@ public class CliTests
     [Fact]
     public void Graph_dot_styles_broken_links_dashed_and_red()
     {
-        // okf.rs cmd_graph (okf.rs:177-206): an edge to a non-existent
-        // concept gets ` [style=dashed, color=red]` appended before the
-        // trailing `;` (OkfCli.cs CmdGraph). A resolvable edge gets no style
-        // suffix at all. Build a small bundle with one concept linking to a
-        // target that does not exist in the bundle.
+        // CmdGraph: an edge to a non-existent concept gets
+        // ` [style=dashed, color=red]` appended before the trailing `;`.
+        // A resolvable edge gets no style suffix at all. Build a small bundle
+        // with one concept linking to a target that does not exist in the
+        // bundle.
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\n---\nSee [missing](/does/not/exist.md).\n");
         var r = Run("graph", tmp.Path, "--dot");
@@ -151,9 +150,8 @@ public class CliTests
 
     // ----------------------------------------------------------------
     // A3: invalid-path arguments must exit 1 with a uniform "error: ..."
-    // message on stderr, never an unhandled-exception stack trace --
-    // mirroring Rust's io::Error -> `.to_string()` -> `error: {msg}` funnel
-    // (okf.rs's `Err(msg) => { eprintln!("error: {msg}"); ... }`, main.rs:50-53).
+    // message on stderr, never an unhandled-exception stack trace -- every
+    // I/O failure is funneled to a single `error: {msg}` on stderr.
     // An embedded NUL byte is a convenient garbage path on every platform:
     // .NET's filesystem APIs reject it with ArgumentException ("Null
     // character in path"), which previously escaped uncaught from
@@ -211,13 +209,13 @@ public class CliTests
     [Fact]
     public void Index_with_embedded_nul_path_reports_no_files_written_not_an_error()
     {
-        // Deliberately NOT an "error: ..." exit-1 case: Rust's regenerate_indexes
-        // (index.rs:93-97) checks `bundle_root.exists()` first, which -- like
-        // .NET's Directory.Exists -- swallows the underlying failure and
-        // simply returns false for a garbage path, so the function returns
-        // Ok(empty) rather than an io::Error. cmd_index then reports "no
-        // index files written" and exits 0. Audited (A3) to confirm this
-        // command needed no change, unlike parse/fmt/validate/info/graph.
+        // Deliberately NOT an "error: ..." exit-1 case: RegenerateIndexes
+        // checks whether the bundle root exists first, and Directory.Exists
+        // swallows the underlying failure and simply returns false for a
+        // garbage path, so the function returns an empty result rather than
+        // an I/O error. CmdIndex then reports "no index files written" and
+        // exits 0. Audited (A3) to confirm this command needed no change,
+        // unlike parse/fmt/validate/info/graph.
         var r = Run("index", "x\0y");
         Assert.Equal(0, r.Code);
         Assert.Contains("no index files written", r.Out);

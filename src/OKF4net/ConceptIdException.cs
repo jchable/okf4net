@@ -3,8 +3,7 @@ namespace OKF4net;
 
 /// <summary>
 /// Error thrown when a concept id (or one of its segments) is malformed, or
-/// when a file path cannot be resolved to/from a concept id. Port of the
-/// Rust <c>ConceptIdError</c> (src/concept_id.rs:14).
+/// when a file path cannot be resolved to/from a concept id.
 /// </summary>
 public sealed class ConceptIdException : OkfException
 {

@@ -33,9 +33,8 @@ export default function Colophon({ variant = 'full' }: ColophonProps) {
           <a href="https://github.com/jchable/okf4net/blob/main/LICENSE">license</a>
         </div>
         <p>
-          OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC,
-          by way of the former Rust okf crate by Walter van der Giessen. An independent implementation, not affiliated
-          with or endorsed by Google.
+          OKF4net — LGPL-3.0-or-later. Portions derive from the Apache-2.0 OKF reference implementation by Google LLC
+          (full attribution in NOTICE). An independent implementation, not affiliated with or endorsed by Google.
         </p>
       </div>
     </footer>

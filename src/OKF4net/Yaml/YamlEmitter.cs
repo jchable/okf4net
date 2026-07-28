@@ -5,9 +5,9 @@ using System.Text;
 namespace OKF4net.Yaml;
 
 /// <summary>
-/// Block-style YAML emitter for the OKF subset. Port of src/yaml/emitter.rs
-/// (the Rust reference — authoritative for quoting rules, escape sequences,
-/// indentation, and float formatting).
+/// Block-style YAML emitter for the OKF subset, defining this
+/// implementation's quoting rules, escape sequences, indentation, and float
+/// formatting.
 ///
 /// The emitter targets one property: re-parsing its output reproduces the
 /// input value (<c>parse(emit(v)) == v</c>), with mapping key order
@@ -20,10 +20,9 @@ public static class YamlEmitter
 
     /// <summary>
     /// Maximum recursion depth for <see cref="EmitMapping"/>/
-    /// <see cref="EmitSequence"/>, mirroring the parser's
-    /// <c>YamlParser.MaxNestingDepth</c>. An INTENTIONAL divergence from
-    /// Rust (which has no such guard): a pathologically deep
-    /// <see cref="YamlValue"/> tree — however it was constructed, since
+    /// <see cref="EmitSequence"/>, matching the parser's
+    /// <c>YamlParser.MaxNestingDepth</c>. A safety guard: a pathologically
+    /// deep <see cref="YamlValue"/> tree — however it was constructed, since
     /// this guards the emitter independently of the parser's own limit —
     /// throws a catchable <see cref="InvalidOperationException"/> here
     /// instead of overflowing the stack.
@@ -31,8 +30,7 @@ public static class YamlEmitter
     private const int MaxNestingDepth = 1000;
 
     /// <summary>
-    /// Emits a value as YAML text (always ends with "\n", like PyYAML's
-    /// <c>safe_dump</c>). Port of Rust's <c>emit</c> (emitter.rs lines 13-24).
+    /// Emits a value as YAML text (always ends with "\n").
     /// </summary>
     public static string Emit(YamlValue value)
     {
@@ -54,7 +52,7 @@ public static class YamlEmitter
         return outSb.ToString();
     }
 
-    /// <summary>Port of Rust's <c>emit_mapping</c> (emitter.rs lines 26-42).</summary>
+    /// <summary>Emits a non-empty mapping in block style.</summary>
     private static void EmitMapping(YamlMapping map, int indent, int depth, StringBuilder outSb)
     {
         if (depth > MaxNestingDepth)
@@ -83,7 +81,7 @@ public static class YamlEmitter
         }
     }
 
-    /// <summary>Port of Rust's <c>emit_sequence</c> (emitter.rs lines 44-59).</summary>
+    /// <summary>Emits a non-empty sequence in block style.</summary>
     private static void EmitSequence(IReadOnlyList<YamlValue> seq, int indent, int depth, StringBuilder outSb)
     {
         if (depth > MaxNestingDepth)
@@ -112,11 +110,9 @@ public static class YamlEmitter
     }
 
     /// <summary>
-    /// Emits a scalar (or an empty collection) inline. Port of Rust's
-    /// <c>emit_scalar</c> (emitter.rs lines 62-75). Non-empty collections
-    /// never reach here in block context; matching the Rust source, both
-    /// fall back to "[]" (not "{}" for a non-empty mapping) if they somehow
-    /// do.
+    /// Emits a scalar (or an empty collection) inline. Non-empty collections
+    /// never reach here in block context; as a defensive fallback both render
+    /// as "[]" (not "{}" for a non-empty mapping) if they somehow do.
     /// </summary>
     private static string EmitScalar(YamlValue value) => value switch
     {
@@ -133,11 +129,10 @@ public static class YamlEmitter
     };
 
     /// <summary>
-    /// Port of Rust's <c>format_float</c> (emitter.rs lines 77-95): special
-    /// tokens for non-finite values, otherwise the shortest round-tripping
-    /// representation (Rust's <c>{:?}</c> Debug format for f64), with a "."
-    /// guaranteed to be present so the value re-parses as a float rather than
-    /// a string (see <see cref="DebugFormat"/>).
+    /// Emits a float scalar: special tokens for non-finite values, otherwise
+    /// the shortest round-tripping representation (see <see cref="DebugFormat"/>)
+    /// with a "." guaranteed to be present so the value re-parses as a float
+    /// rather than a string.
     /// </summary>
     internal static string FormatFloat(double f)
     {
@@ -169,13 +164,13 @@ public static class YamlEmitter
     }
 
     /// <summary>
-    /// Reproduces Rust's <c>format!("{f:?}")</c> (the <c>Debug</c> impl for
-    /// f64): the shortest round-tripping decimal digit sequence, rendered in
-    /// plain decimal notation with a forced fractional digit
-    /// (e.g. <c>1.0</c>) when the magnitude is in Rust's "general format"
-    /// range (<c>1e-4 &lt;= |f| &lt; 1e16</c>, or exactly zero), and in
-    /// lowercase exponential notation with no forced fractional digit
-    /// (e.g. <c>1e30</c>) otherwise.
+    /// Renders the shortest round-tripping decimal digit sequence in plain
+    /// decimal notation with a forced fractional digit (e.g. <c>1.0</c>) when
+    /// the magnitude is in the "general format" range
+    /// (<c>1e-4 &lt;= |f| &lt; 1e16</c>, or exactly zero), and in lowercase
+    /// exponential notation with no forced fractional digit (e.g. <c>1e30</c>)
+    /// otherwise. Used for the float <c>Debug</c>-style rendering this emitter
+    /// targets.
     /// </summary>
     private static string DebugFormat(double f)
     {
@@ -201,11 +196,10 @@ public static class YamlEmitter
     }
 
     /// <summary>
-    /// Reproduces Rust's <c>format!("{f}")</c> (the <c>Display</c> impl for
-    /// f64, used by <c>as_display_string</c> — src/yaml/mod.rs line 207):
-    /// like <see cref="DebugFormat"/> but always plain decimal notation
-    /// (Display never uses scientific notation, regardless of magnitude) and
-    /// no forced fractional digit (e.g. <c>3</c>, not <c>3.0</c>).
+    /// The plain <c>Display</c>-style rendering used by
+    /// <see cref="YamlValue.AsDisplayString"/>: like <see cref="DebugFormat"/>
+    /// but always plain decimal notation (never scientific, regardless of
+    /// magnitude) and no forced fractional digit (e.g. <c>3</c>, not <c>3.0</c>).
     /// </summary>
     internal static string FormatDisplayFloat(double f)
     {
@@ -260,8 +254,8 @@ public static class YamlEmitter
     /// Relies on .NET's default (culture-invariant) <see cref="double.ToString()"/>
     /// already being the shortest round-tripping representation (true since
     /// .NET Core 3.0), just re-normalized here since .NET's own choice of
-    /// decimal vs. scientific notation, and exponent padding, differ from
-    /// Rust's.
+    /// decimal vs. scientific notation, and exponent padding, differ from the
+    /// format this emitter targets.
     /// </summary>
     private static (string Digits, int Exponent) DecomposeShortest(double absValue)
     {
@@ -304,7 +298,7 @@ public static class YamlEmitter
         return (digits, exponent);
     }
 
-    /// <summary>Port of Rust's <c>emit_string</c> (emitter.rs lines 97-103).</summary>
+    /// <summary>Emits a string as a plain scalar when safe, otherwise double-quoted.</summary>
     private static string EmitString(string s) => IsSafePlain(s) ? s : DoubleQuote(s);
 
     private static readonly char[] Indicators =
@@ -314,8 +308,7 @@ public static class YamlEmitter
 
     /// <summary>
     /// Whether a string can be emitted as a plain (unquoted) scalar without
-    /// being misread on re-parse. Port of Rust's <c>is_safe_plain</c>
-    /// (emitter.rs lines 105-137).
+    /// being misread on re-parse.
     /// </summary>
     private static bool IsSafePlain(string s)
     {
@@ -369,7 +362,7 @@ public static class YamlEmitter
         return true;
     }
 
-    /// <summary>Port of Rust's <c>double_quote</c> (emitter.rs lines 139-158).</summary>
+    /// <summary>Renders a string as a double-quoted scalar with C-style escapes.</summary>
     private static string DoubleQuote(string s)
     {
         var outSb = new StringBuilder(s.Length + 2);

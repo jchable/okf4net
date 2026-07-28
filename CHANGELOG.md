@@ -98,8 +98,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - `IndexGenerator` no longer walks into or lists a symlinked/junctioned
   subdirectory as if it were real: reparse-point detection now uses an
   lstat-correct `FileSystemInfo.LinkTarget` fallback on Unix (where
-  `File.GetAttributes` resolves *through* a link), matching the Rust
-  reference's `file_type()` semantics.
+  `File.GetAttributes` resolves *through* a link): a reparse point is treated
+  as neither a file nor a directory, so it is never traversed or listed.
 - `Bundle.OkfVersion` is computed eagerly at `Bundle.Load` so it reflects a
   true snapshot of the bundle at load time (previously deferred, which could
   observe later mutation).
@@ -126,8 +126,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 
 ### Added
 
-- Initial C# implementation of OKF v0.1, ported from this repository's former
-  Rust `okf` implementation (byte-exact parity proven before removal):
+- Initial C# implementation of OKF v0.1 (see [`NOTICE`](NOTICE) for the full
+  derivation and attribution chain):
   - `OKF4net` library — YAML-subset parser/emitter, `OkfDocument`,
     `Frontmatter`, `ConceptId`, `LinkScanner`, `Bundle`, `IndexGenerator`,
     `ChangeLog`, `BundleValidator`.

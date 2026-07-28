@@ -11,19 +11,18 @@ namespace OKF4net;
 /// preserve when round-tripping. <see cref="Frontmatter"/> therefore stores
 /// the full <see cref="YamlMapping"/> verbatim and layers typed accessors on
 /// top, rather than deserializing into a fixed shape that would drop unknown
-/// keys. Port of the Rust <c>Frontmatter</c> (src/frontmatter.rs).
+/// keys.
 /// </summary>
 public sealed class Frontmatter : IEquatable<Frontmatter>
 {
     /// <summary>
-    /// Frontmatter keys the reference enrichment agent requires before a
+    /// Frontmatter keys a producer's enrichment workflow requires before a
     /// document is considered publishable. Note this is *stricter* than spec
-    /// conformance (§9), which requires only <c>type</c>. Port of
-    /// <c>REQUIRED_FRONTMATTER_KEYS</c> (frontmatter.rs:16).
+    /// conformance (§9), which requires only <c>type</c>.
     /// </summary>
     public static readonly string[] RequiredKeys = ["type", "title", "description", "timestamp"];
 
-    /// <summary>Well-known OKF fields excluded from <see cref="ExtensionKeys"/>. Port of frontmatter.rs:107.</summary>
+    /// <summary>Well-known OKF fields excluded from <see cref="ExtensionKeys"/>.</summary>
     private static readonly string[] KnownKeys =
         ["type", "title", "description", "resource", "tags", "timestamp"];
 
@@ -73,7 +72,7 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// <summary>
     /// The optional <c>tags</c> list. Non-scalar elements are dropped; a
     /// non-sequence <c>tags</c> value (including a bare scalar) yields an
-    /// empty list. Port of <c>tags()</c> (frontmatter.rs:96-101).
+    /// empty list.
     /// </summary>
     public IReadOnlyList<string> Tags =>
         _map.Get("tags") is YamlSequence seq
@@ -82,18 +81,14 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
 
     /// <summary>
     /// The keys present that are not well-known OKF fields — i.e. the
-    /// producer-defined extension keys consumers must preserve (§4.1). Port
-    /// of <c>extension_keys()</c> (frontmatter.rs:105-110).
+    /// producer-defined extension keys consumers must preserve (§4.1).
     /// </summary>
     public IReadOnlyList<string> ExtensionKeys =>
         _map.Keys.Where(k => !KnownKeys.Contains(k, StringComparer.Ordinal)).ToList();
 
     /// <summary>
     /// Structural equality: the underlying <see cref="YamlMapping"/>s are
-    /// structurally equal. Mirrors Rust's derived <c>PartialEq</c> for
-    /// <c>Frontmatter</c> (frontmatter.rs:18, a single-field struct wrapping
-    /// <c>Mapping</c>), whose <c>Mapping</c> derives <c>PartialEq</c> in turn
-    /// (yaml/mod.rs:42).
+    /// structurally equal (key/value-wise, order-preserving).
     /// </summary>
     public bool Equals(Frontmatter? other) => other is not null && (ReferenceEquals(this, other) || _map.Equals(other._map));
 

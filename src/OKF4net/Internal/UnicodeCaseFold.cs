@@ -5,25 +5,23 @@ using System.Text;
 namespace OKF4net.Internal;
 
 /// <summary>
-/// A close port of two pieces of Rust's <c>&amp;str</c> surface that
-/// <c>StringComparer.Ordinal</c> / <c>string.ToLowerInvariant()</c> do NOT
-/// reproduce, needed so title sorting (<see cref="OKF4net.IndexGenerator"/>)
-/// matches the Rust reference bit-for-bit on non-ASCII input:
+/// Two Unicode string operations that <c>StringComparer.Ordinal</c> /
+/// <c>string.ToLowerInvariant()</c> do NOT reproduce, needed so title sorting
+/// (<see cref="OKF4net.IndexGenerator"/>) is well-defined and stable on
+/// non-ASCII input:
 ///
 /// <list type="bullet">
-/// <item><description><see cref="ToLowercase"/> mirrors Rust's
-/// <c>str::to_lowercase</c> (full Unicode default case folding, including
-/// the one unconditional multi-character mapping and the language-
-/// independent Final_Sigma rule) rather than .NET's
-/// <c>string.ToLowerInvariant</c>, which differs on both points.</description></item>
-/// <item><description><see cref="CompareCodePoints"/> mirrors Rust's
-/// <c>String::cmp</c> (byte-wise UTF-8 comparison, equivalently Unicode
-/// code-point order) rather than <c>StringComparer.Ordinal</c>, which
-/// compares UTF-16 *code units* and so disagrees with code-point order
-/// across the surrogate range.</description></item>
+/// <item><description><see cref="ToLowercase"/> performs full Unicode default
+/// case folding (including the one unconditional multi-character mapping and
+/// the language-independent Final_Sigma rule), which .NET's
+/// <c>string.ToLowerInvariant</c> does not.</description></item>
+/// <item><description><see cref="CompareCodePoints"/> compares by Unicode
+/// code point (equivalently, byte-wise UTF-8 order) rather than
+/// <c>StringComparer.Ordinal</c>, which compares UTF-16 *code units* and so
+/// disagrees with code-point order across the surrogate range.</description></item>
 /// </list>
 /// </summary>
-internal static class RustCaseFold
+internal static class UnicodeCaseFold
 {
     /// <summary>LATIN CAPITAL LETTER I WITH DOT ABOVE.</summary>
     private const int CapitalIWithDotAbove = 0x0130;
@@ -35,11 +33,10 @@ internal static class RustCaseFold
     private const string GreekFinalSigma = "ς";
 
     /// <summary>
-    /// Lowercases <paramref name="s"/> the way Rust's <c>str::to_lowercase</c>
-    /// does: Unicode default case folding (<c>Rune.ToLowerInvariant</c> per
-    /// code point) plus the two documented departures from a simple
-    /// per-character mapping that Rust's algorithm (and .NET's
-    /// <c>string.ToLowerInvariant</c>) diverge on:
+    /// Lowercases <paramref name="s"/> with full Unicode default case folding
+    /// (<c>Rune.ToLowerInvariant</c> per code point) plus the two documented
+    /// departures from a simple per-character mapping that .NET's
+    /// <c>string.ToLowerInvariant</c> does not handle:
     ///
     /// <list type="bullet">
     /// <item><description>U+0130 (İ) LATIN CAPITAL LETTER I WITH DOT ABOVE
@@ -51,25 +48,21 @@ internal static class RustCaseFold
     /// — preceded by a cased character (skipping any case-ignorable
     /// characters in between) and not followed by one (again skipping
     /// case-ignorable characters). This is a language-*independent* rule
-    /// (unlike Turkish/Lithuanian-style locale casing, which Rust's
-    /// <c>to_lowercase</c> also does not apply).</description></item>
+    /// (unlike Turkish/Lithuanian-style locale casing, which is also not
+    /// applied here).</description></item>
     /// </list>
     ///
-    /// <see cref="IsCased"/> mirrors Rust's <c>char::is_cased</c> and
-    /// <see cref="IsCaseIgnorable"/> mirrors Rust's
-    /// <c>char::is_case_ignorable</c> (whose ASCII fast path is reproduced
-    /// exactly; see each method's doc comment for exactly which non-ASCII
-    /// derived-property members are and are not covered) — sufficient to
-    /// place Final_Sigma correctly for title sorting, though not a full
-    /// Unicode conformance claim on every exotic combination of combining
-    /// marks.
+    /// <see cref="IsCased"/> and <see cref="IsCaseIgnorable"/> implement the
+    /// Unicode <c>Cased</c> and <c>Case_Ignorable</c> derived properties
+    /// (their ASCII fast path exactly; see each method's doc comment for which
+    /// non-ASCII members are and are not covered) — sufficient to place
+    /// Final_Sigma correctly for title sorting, though not a full Unicode
+    /// conformance claim on every exotic combination of combining marks.
     ///
-    /// Caveat shared with the rest of this port: this delegates single
-    /// code-point mapping to .NET's (ICU-backed) Unicode tables, which may
-    /// be a different Unicode version than the Rust reference's
-    /// <c>to_lowercase</c> (backed by Rust's own generated tables). For the
-    /// overwhelming majority of code points — including everything above
-    /// plus every ASCII and Latin-1 character — the two agree.
+    /// Caveat: this delegates single code-point mapping to .NET's (ICU-backed)
+    /// Unicode tables, whose Unicode version can vary by runtime. For the
+    /// overwhelming majority of code points — including everything above plus
+    /// every ASCII and Latin-1 character — the mapping is stable.
     /// </summary>
     internal static string ToLowercase(string s)
     {
@@ -102,18 +95,15 @@ internal static class RustCaseFold
 
     /// <summary>
     /// Compares two strings by successive Unicode code point (
-    /// <see cref="Rune"/>) values, matching Rust's <c>String::cmp</c> /
-    /// <c>Ord for str</c> (byte-wise comparison of the UTF-8 encoding, which
-    /// is equivalent to code-point order since UTF-8 preserves code-point
-    /// ordering). This differs from <c>StringComparer.Ordinal</c> /
-    /// <c>string.CompareOrdinal</c>, which compare UTF-16 *code units*: a
-    /// supplementary-plane character (code point &gt; U+FFFF) is encoded as a
-    /// surrogate pair starting at or above U+D800, which sorts BELOW any
-    /// BMP character in the U+E000-U+FFFF range under ordinal comparison but
-    /// ABOVE it in code-point order.
+    /// <see cref="Rune"/>) values — equivalent to byte-wise comparison of the
+    /// UTF-8 encoding, since UTF-8 preserves code-point ordering. This differs
+    /// from <c>StringComparer.Ordinal</c> / <c>string.CompareOrdinal</c>,
+    /// which compare UTF-16 *code units*: a supplementary-plane character
+    /// (code point &gt; U+FFFF) is encoded as a surrogate pair starting at or
+    /// above U+D800, which sorts BELOW any BMP character in the U+E000-U+FFFF
+    /// range under ordinal comparison but ABOVE it in code-point order.
     ///
-    /// A shorter string that is a prefix of a longer one sorts first, as in
-    /// Rust.
+    /// A shorter string that is a prefix of a longer one sorts first.
     /// </summary>
     internal static int CompareCodePoints(string a, string b)
     {
@@ -125,7 +115,7 @@ internal static class RustCaseFold
             var hasB = runesB.MoveNext();
             if (!hasA || !hasB)
             {
-                // Shorter-is-first, matching Rust's Ord for str/slices.
+                // Shorter-is-first: a prefix sorts before the longer string.
                 return hasA.CompareTo(hasB);
             }
 
@@ -178,8 +168,7 @@ internal static class RustCaseFold
     }
 
     /// <summary>
-    /// Approximates Rust's derived <c>Cased</c> property (which
-    /// <c>char::is_cased</c> uses, and which this mirrors for
+    /// Approximates Unicode's derived <c>Cased</c> property (used here by
     /// <see cref="IsFinalSigmaPosition"/>): General_Category Lu/Ll/Lt,
     /// PLUS the <c>Other_Lowercase</c>/<c>Other_Uppercase</c> members
     /// outside those categories that the full derived property also
@@ -213,11 +202,11 @@ internal static class RustCaseFold
     }
 
     /// <summary>
-    /// Mirrors Rust's <c>char::is_case_ignorable</c>: an ASCII fast path of
-    /// exactly <c>'\'' | '.' | ':' | '^' | '`'</c>, plus — for non-ASCII —
-    /// the full Unicode <c>Case_Ignorable</c> derived property. This port
-    /// reproduces the ASCII fast path exactly (it is a closed, five-member
-    /// set) and approximates the non-ASCII side via UnicodeCategory
+    /// Implements Unicode's <c>Case_Ignorable</c> derived property: an ASCII
+    /// fast path of exactly <c>'\'' | '.' | ':' | '^' | '`'</c>, plus — for
+    /// non-ASCII — the derived property. The ASCII fast path is exact (a
+    /// closed, five-member set) and the non-ASCII side is approximated via
+    /// UnicodeCategory
     /// groupings (NonSpacingMark, EnclosingMark, Format, ModifierLetter,
     /// ModifierSymbol) plus the explicit Word_Break MidLetter/MidNumLet
     /// punctuation members and a few named single code points that fall
@@ -234,7 +223,7 @@ internal static class RustCaseFold
     /// </summary>
     private static bool IsCaseIgnorable(Rune rune)
     {
-        // ASCII fast path, matching Rust's is_case_ignorable exactly.
+        // ASCII fast path (closed five-member set).
         if (rune.Value is 0x0027 or 0x002E or 0x003A or 0x005E or 0x0060)
         {
             return true;

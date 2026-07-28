@@ -2,10 +2,9 @@
 namespace OKF4net.Internal;
 
 /// <summary>
-/// A single, correct port of Rust's <c>str::lines()</c>, shared by every
-/// place in this codebase that needs Rust-identical line splitting
-/// (previously four near-identical, and in one case divergent, private
-/// copies).
+/// A single, correct line-splitter shared by every place in this codebase
+/// that needs <c>'\n'</c>-based line splitting (previously four
+/// near-identical, and in one case divergent, private copies).
 ///
 /// Semantics: splits only on <c>'\n'</c>. If the character immediately
 /// preceding a <c>'\n'</c> is <c>'\r'</c>, that single <c>'\r'</c> is
@@ -15,7 +14,7 @@ namespace OKF4net.Internal;
 /// <c>'\n'</c> does not produce a trailing empty line, and the empty
 /// string produces no lines.
 /// </summary>
-internal static class RustLines
+internal static class LfLines
 {
     internal static List<string> Split(string text)
     {

@@ -1,5 +1,11 @@
 # OKF4net — Migration du projet `okf` (Rust) vers .NET pour Microsoft Agent Framework
 
+> **Document historique.** Ce document décrit la migration ponctuelle qui a
+> produit OKF4net. Le projet est aujourd'hui une **implémentation .NET
+> indépendante** de la spec OKF et ne suit plus aucune autre implémentation ;
+> les mentions de parité avec le Rust ci-dessous sont un instantané de
+> l'époque, pas un objectif courant.
+
 **Date** : 2026-07-21
 **Statut** : validé en brainstorming, en attente de plan d'implémentation
 

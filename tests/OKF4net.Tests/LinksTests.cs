@@ -2,17 +2,15 @@
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Port of the Rust link-scanning and citation-extraction tests
-/// (tests/links.rs), guaranteeing behavioural parity with the reference
-/// implementation's <c>extract_links</c>/<c>extract_citations</c> and
-/// <c>Link::classify</c>/<c>Link::resolve</c>.
+/// Tests for link-scanning and citation-extraction behaviour:
+/// <c>LinkScanner.ExtractLinks</c>/<c>LinkScanner.ExtractCitations</c> and
+/// <c>ConceptLink.Classify</c>/<c>ConceptLink.Resolve</c>.
 /// </summary>
 public class LinksTests
 {
     [Fact]
     public void Classify_link_kinds()
     {
-        // tests/links.rs:8-15
         Assert.Equal(LinkKind.Absolute, ConceptLink.Classify("/tables/users.md"));
         Assert.Equal(LinkKind.Relative, ConceptLink.Classify("./other.md"));
         Assert.Equal(LinkKind.Relative, ConceptLink.Classify("../sibling.md"));
@@ -24,7 +22,6 @@ public class LinksTests
     [Fact]
     public void Extract_inline_links()
     {
-        // tests/links.rs:18-27
         var body = "See [customers](/tables/customers.md) and [docs](https://example.com \"title\").";
         var links = LinkScanner.ExtractLinks(body);
         Assert.Equal(2, links.Count);
@@ -38,7 +35,6 @@ public class LinksTests
     [Fact]
     public void Links_inside_code_are_ignored()
     {
-        // tests/links.rs:30-35
         var body = "Real [a](/a.md).\n\n```\nNot a [link](/b.md) in code.\n```\n\nInline `[c](/c.md)` ignored.\n";
         var links = LinkScanner.ExtractLinks(body);
         var targets = links.Select(l => l.Target).ToList();
@@ -48,7 +44,6 @@ public class LinksTests
     [Fact]
     public void Resolve_absolute_link()
     {
-        // tests/links.rs:38-49
         var source = ConceptId.Parse("tables/orders");
         var link = new ConceptLink("customers", "/tables/customers.md", LinkKind.Absolute);
         Assert.Equal(ConceptId.Parse("tables/customers"), link.Resolve(source));
@@ -57,7 +52,6 @@ public class LinksTests
     [Fact]
     public void Resolve_relative_link()
     {
-        // tests/links.rs:52-68
         var source = ConceptId.Parse("tables/orders");
         var link = new ConceptLink("neighbor", "./customers.md", LinkKind.Relative);
         Assert.Equal(ConceptId.Parse("tables/customers"), link.Resolve(source));
@@ -69,14 +63,12 @@ public class LinksTests
     [Fact]
     public void Protocol_relative_url_is_external()
     {
-        // tests/links.rs:71-74
         Assert.Equal(LinkKind.External, ConceptLink.Classify("//cdn.example.com/x.js"));
     }
 
     [Fact]
     public void Absolute_link_normalizes_dot_segments()
     {
-        // tests/links.rs:77-88
         var source = ConceptId.Parse("a/b");
         var link = new ConceptLink("x", "/tables/../datasets/sales.md", LinkKind.Absolute);
         Assert.Equal(ConceptId.Parse("datasets/sales"), link.Resolve(source));
@@ -85,7 +77,6 @@ public class LinksTests
     [Fact]
     public void External_links_do_not_resolve()
     {
-        // tests/links.rs:91-99
         var source = ConceptId.Parse("a");
         var link = new ConceptLink("x", "https://example.com", LinkKind.External);
         Assert.Null(link.Resolve(source));
@@ -94,7 +85,6 @@ public class LinksTests
     [Fact]
     public void Citations_section_parsed()
     {
-        // tests/links.rs:102-112
         var body = "Prose.\n\n# Citations\n\n[1] [BigQuery schema](https://bq.example/schema)\n[2] [Runbook](https://wiki.acme.internal/runbook)\n";
         var citations = LinkScanner.ExtractCitations(body);
         Assert.Equal(2, citations.Count);
@@ -107,7 +97,6 @@ public class LinksTests
     [Fact]
     public void Citations_stop_at_next_heading()
     {
-        // tests/links.rs:115-120
         var body = "# Citations\n[1] [a](https://a)\n\n# Other\n[2] [b](https://b)\n";
         var citations = LinkScanner.ExtractCitations(body);
         Assert.Single(citations);
@@ -116,12 +105,12 @@ public class LinksTests
     [Fact]
     public void Citation_number_accepts_a_leading_plus_but_rejects_a_leading_minus()
     {
-        // Rust's u32::from_str (links.rs:323's rest[..close].trim().parse())
-        // strips one leading '+' before parsing digits, but never strips a
-        // leading '-' for an unsigned type -- it's simply an invalid digit,
-        // so ANY leading '-' is rejected (including "-0", unlike .NET's
-        // NumberStyles.AllowLeadingSign, which uniquely accepts "-0" for
-        // uint -- verified empirically and avoided below).
+        // The unsigned citation-number parse strips one leading '+' before
+        // parsing digits, but never strips a leading '-' -- for an unsigned
+        // value that's simply an invalid digit, so ANY leading '-' is
+        // rejected (including "-0", unlike .NET's NumberStyles.AllowLeadingSign,
+        // which uniquely accepts "-0" for uint -- verified empirically and
+        // avoided below).
         var plus = LinkScanner.ExtractCitations("# Citations\n[+3] Src\n");
         Assert.Single(plus);
         Assert.Equal(3u, plus[0].Number);
@@ -133,7 +122,6 @@ public class LinksTests
     [Fact]
     public void Document_links_and_citations_integration()
     {
-        // tests/links.rs:123-135
         var doc = OkfDocument.Parse(
             "---\ntype: BigQuery Table\n---\n\nJoined with [customers](/tables/customers.md).\n\n# Citations\n[1] [BQ](https://bq)\n");
         // links() returns every body link, including the one in the citation list.

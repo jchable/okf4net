@@ -6,14 +6,11 @@ namespace OKF4net;
 /// <summary>
 /// Generation of <c>index.md</c> directory listings (§6).
 ///
-/// This is a port of the reference <c>bundle/index.py</c>'s
-/// <c>regenerate_indexes</c> and <c>_build_index_text</c>. The reference
-/// synthesizes subdirectory descriptions with an LLM; since OKF tooling must
-/// not require any particular model or network access, the description
-/// synthesizer here is a pluggable delegate with a deterministic,
-/// dependency-free default (<see cref="DefaultSynthesize"/>). Port of the
-/// Rust <c>index</c> module (src/index.rs). Ported to Rust and modified from
-/// the original Apache-2.0 Python source; see the NOTICE file.
+/// Some producers synthesize subdirectory descriptions with an LLM; since
+/// OKF tooling must not require any particular model or network access, the
+/// description synthesizer here is a pluggable delegate with a deterministic,
+/// dependency-free default (<see cref="DefaultSynthesize"/>). Adapted and
+/// modified from the original Apache-2.0 source; see the NOTICE file.
 /// </summary>
 public static class IndexGenerator
 {
@@ -22,8 +19,7 @@ public static class IndexGenerator
     /// <summary>
     /// A synthesizer for subdirectory descriptions: given the directory's
     /// path (relative to the bundle root) and its child (title, description)
-    /// pairs, returns a one-line description. Port of Rust's
-    /// <c>Synthesize</c> type alias (index.rs:70).
+    /// pairs, returns a one-line description.
     /// </summary>
     public delegate string Synthesize(string relativeDir, IReadOnlyList<(string Title, string Description)> children);
 
@@ -31,7 +27,7 @@ public static class IndexGenerator
     /// Builds the markdown text of an <c>index.md</c> from a set of entries:
     /// entries are grouped by type under <c>#</c>-headings (types sorted
     /// ascending, ordinal), and within each group sorted by title
-    /// (case-insensitive). Port of <c>build_index_text</c> (index.rs:36-65).
+    /// (case-insensitive).
     /// </summary>
     public static string BuildIndexText(IReadOnlyList<IndexEntry> entries)
     {
@@ -51,15 +47,15 @@ public static class IndexGenerator
         var sections = new List<string>();
         foreach (var (typ, items) in grouped)
         {
-            // Stable sort by lowercased title, mirroring Rust's stable
-            // `sort_by` on `title.to_lowercase()`. Uses RustCaseFold rather
+            // Stable sort by lowercased title, using UnicodeCaseFold for full
+            // Unicode case folding over the Basic Multilingual Plane rather
             // than string.ToLowerInvariant()/StringComparer.Ordinal, which
-            // diverge from Rust's `to_lowercase` + `String::cmp` on
-            // characters like U+0130 (İ) and on code points outside the
-            // Basic Multilingual Plane -- see RustCaseFold's doc comments.
+            // handle characters like U+0130 (İ) and code points outside the
+            // Basic Multilingual Plane differently -- see UnicodeCaseFold's doc
+            // comments.
             var sorted = items
                 .Select((item, ordinal) => (item, ordinal))
-                .OrderBy(x => RustCaseFold.ToLowercase(x.item.Title), Comparer<string>.Create(RustCaseFold.CompareCodePoints))
+                .OrderBy(x => UnicodeCaseFold.ToLowercase(x.item.Title), Comparer<string>.Create(UnicodeCaseFold.CompareCodePoints))
                 .ThenBy(x => x.ordinal)
                 .Select(x => x.item)
                 .ToList();
@@ -79,8 +75,7 @@ public static class IndexGenerator
 
     /// <summary>
     /// The default, deterministic synthesizer: lists the child titles. Used
-    /// when no custom (e.g. LLM-backed) synthesizer is supplied. Port of
-    /// <c>default_synthesize</c> (index.rs:74-80).
+    /// when no custom (e.g. LLM-backed) synthesizer is supplied.
     /// </summary>
     public static string DefaultSynthesize(string relativeDir, IReadOnlyList<(string Title, string Description)> children)
     {
@@ -95,8 +90,7 @@ public static class IndexGenerator
 
     /// <summary>
     /// Regenerates every <c>index.md</c> in the bundle using
-    /// <see cref="DefaultSynthesize"/>. Port of <c>regenerate_indexes</c>
-    /// (index.rs:82-85).
+    /// <see cref="DefaultSynthesize"/>.
     /// </summary>
     public static IReadOnlyList<string> RegenerateIndexes(string bundleRoot) =>
         RegenerateIndexesWith(bundleRoot, DefaultSynthesize);
@@ -123,8 +117,7 @@ public static class IndexGenerator
     ///
     /// Directories are processed deepest-first so a parent index can reuse
     /// the descriptions computed for its children. Empty directories are
-    /// skipped. Returns the paths of the index files written. Port of
-    /// <c>regenerate_indexes_with</c> (index.rs:93-186).
+    /// skipped. Returns the paths of the index files written.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -132,7 +125,7 @@ public static class IndexGenerator
     /// <see cref="DirectoriesToIndex"/>'s traversal (via
     /// <see cref="CollectMarkdown"/>) already performs an EARLY, best-effort
     /// skip of reparse-point directories (symlinks, junctions, mount
-    /// points), matching Rust's lstat-based <c>collect_markdown</c>. That
+    /// points) using lstat-based semantics. That
     /// skip only protects the directories it can see AT COLLECTION TIME,
     /// though: a directory that was a genuine directory when collected could
     /// still be replaced by a reparse point before this method gets around
@@ -212,8 +205,8 @@ public static class IndexGenerator
                     continue;
                 }
 
-                // lstat fidelity (Rust's DirEntry::file_type()): a symlink or
-                // junction is neither is_file() nor is_dir(), so it contributes
+                // lstat-based semantics: a symlink or junction is neither a
+                // file nor a directory, so it contributes
                 // no index entry. The File.Exists / Directory.Exists checks
                 // below resolve THROUGH the link, so without this guard a
                 // symlinked subdirectory would be listed as a real
@@ -311,7 +304,7 @@ public static class IndexGenerator
         return written;
     }
 
-    /// <summary>Port of <c>load_doc</c> (index.rs:188-191).</summary>
+    /// <summary>Loads and parses a document, returning <c>null</c> on read or parse failure.</summary>
     private static OkfDocument? LoadDoc(string path)
     {
         string text;
@@ -334,7 +327,7 @@ public static class IndexGenerator
         }
     }
 
-    /// <summary>Port of <c>depth</c> (index.rs:193-197).</summary>
+    /// <summary>Directory depth relative to the bundle root (0 for the root itself).</summary>
     private static int Depth(string root, string dir)
     {
         var rel = Path.GetRelativePath(root, dir);
@@ -348,9 +341,7 @@ public static class IndexGenerator
 
     /// <summary>
     /// All directories that contain at least one <c>.md</c> file at any
-    /// depth, including the bundle root (matching the reference
-    /// <c>_directories_to_index</c>). Port of <c>directories_to_index</c>
-    /// (index.rs:201-221).
+    /// depth, including the bundle root.
     /// </summary>
     private static List<string> DirectoriesToIndex(string bundleRoot)
     {
@@ -382,21 +373,19 @@ public static class IndexGenerator
         return dirs.ToList();
     }
 
-    /// <summary>Port of <c>collect_markdown</c> (index.rs:223-234).</summary>
+    /// <summary>Recursively collects every <c>.md</c> file path under a directory, skipping reparse-point directories.</summary>
     private static void CollectMarkdown(string dir, List<string> output)
     {
         foreach (var path in Directory.GetFileSystemEntries(dir))
         {
-            // Rust checks only `entry.file_type()?.is_dir()` (lstat-based)
-            // before recursing (index.rs:227) -- a symlinked directory's
-            // file_type() reports is_dir() == false, so it is never
-            // descended into and never contributes a directory to
-            // directories_to_index. Directory.Exists instead follows the
-            // link (like Rust's *non*-lstat Path::is_dir()), so reparse
-            // points are excluded from the recursion arm here. The file
-            // branch below is a pure extension check in Rust too -- no
-            // is_file() guard -- so a symlink named `*.md` is still
-            // collected either way, matching Rust exactly.
+            // lstat-based semantics: a symlinked or junctioned directory is
+            // treated as neither a directory to descend into nor a document,
+            // so it never contributes a directory to directories_to_index.
+            // Directory.Exists on its own would follow the link, so the
+            // explicit reparse-point check excludes such points from the
+            // recursion arm here. The file branch below is a pure extension
+            // check -- no is-file guard -- so a symlink named `*.md` is still
+            // collected either way.
             if (!ReparsePoints.IsReparsePoint(path) && Directory.Exists(path))
             {
                 CollectMarkdown(path, output);
@@ -453,9 +442,8 @@ public static class IndexGenerator
 }
 
 /// <summary>
-/// One row in a generated index, mirroring the reference's <c>(type, title,
-/// relative_link, description)</c> tuple. Port of Rust's <c>IndexEntry</c>
-/// (index.rs:22-31).
+/// One row in a generated index: a <c>(type, title, relative_link,
+/// description)</c> tuple.
 /// </summary>
 /// <param name="Type">The concept type, or <c>"Subdirectories"</c> for a child directory.</param>
 /// <param name="Title">Display title.</param>

@@ -1,5 +1,10 @@
 # OKF4net Phase 1 — Core + Tests + CLI + suppression du Rust
 
+> **Document historique**, conservé tel quel comme trace du plan d'exécution
+> de la migration ponctuelle. OKF4net est aujourd'hui une **implémentation
+> .NET indépendante** de la spec OKF ; les critères de « parité Rust »
+> ci-dessous ne s'appliquent plus au développement courant.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Porter la bibliothèque Rust `okf` (parseur OKF v0.1 : YAML subset, documents, bundle, index, log, validation) et son CLI en .NET 10 sous le nom OKF4net, prouver la parité par les tests portés + golden tests, puis supprimer tout le code Rust.

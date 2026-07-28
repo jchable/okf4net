@@ -16,8 +16,7 @@ namespace OKF4net;
 ///
 /// Accordingly, <see cref="BundleValidator.Validate"/> reports only true §9
 /// violations as <see cref="Severity.Error"/>; all softer issues are
-/// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>. Port of the
-/// Rust <c>validate</c> module (src/validate.rs).
+/// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>
 public enum Severity
 {
@@ -32,18 +31,17 @@ public enum Severity
 }
 
 /// <summary>
-/// A single finding about a bundle. Port of the Rust <c>Diagnostic</c>
-/// (validate.rs:42-52): <see cref="Path"/> and <see cref="Concept"/> are each
-/// populated only when the finding relates to a file or a concept
-/// respectively (never both, per <see cref="BundleValidator.Validate"/>).
+/// A single finding about a bundle: <see cref="Path"/> and
+/// <see cref="Concept"/> are each populated only when the finding relates to a
+/// file or a concept respectively (never both, per
+/// <see cref="BundleValidator.Validate"/>).
 /// </summary>
 public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Concept, string Message)
 {
     /// <summary>
     /// Renders as <c>[severity] path: message</c> or <c>[severity] concept:
     /// message</c> (falling back to a bare <c>[severity] message</c> if
-    /// neither is set). Port of the Rust <c>Diagnostic</c>'s <c>Display</c>
-    /// impl (validate.rs:54-64).
+    /// neither is set).
     /// </summary>
     public override string ToString()
     {
@@ -62,7 +60,7 @@ public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Conc
         return sb.ToString();
     }
 
-    /// <summary>Lower-case severity label, matching the Rust <c>Severity</c>'s <c>Display</c> impl (validate.rs:31-39).</summary>
+    /// <summary>Lower-case severity label.</summary>
     private static string SeverityText(Severity severity) => severity switch
     {
         Severity.Error => "error",
@@ -73,8 +71,7 @@ public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Conc
 }
 
 /// <summary>
-/// The result of validating a bundle. Port of the Rust <c>Report</c>
-/// (validate.rs:66-94).
+/// The result of validating a bundle.
 /// </summary>
 public sealed class ValidationReport
 {
@@ -89,32 +86,29 @@ public sealed class ValidationReport
 
     /// <summary>
     /// <c>true</c> if there are no <see cref="Severity.Error"/> diagnostics
-    /// -- i.e. the bundle conforms to §9. Port of <c>Report::is_conformant</c>
-    /// (validate.rs:76-78).
+    /// -- i.e. the bundle conforms to §9.
     /// </summary>
     public bool IsConformant => !Diagnostics.Any(d => d.Severity == Severity.Error);
 
-    /// <summary>Diagnostics of a given severity. Port of <c>Report::of</c> (validate.rs:81-83).</summary>
+    /// <summary>Diagnostics of a given severity.</summary>
     public IEnumerable<Diagnostic> Of(Severity severity) => Diagnostics.Where(d => d.Severity == severity);
 
-    /// <summary>Count of error-level diagnostics. Port of <c>Report::error_count</c> (validate.rs:86-88).</summary>
+    /// <summary>Count of error-level diagnostics.</summary>
     public int ErrorCount => Of(Severity.Error).Count();
 
-    /// <summary>Count of warning-level diagnostics. Port of <c>Report::warning_count</c> (validate.rs:91-93).</summary>
+    /// <summary>Count of warning-level diagnostics.</summary>
     public int WarningCount => Of(Severity.Warning).Count();
 }
 
 /// <summary>
-/// Validates a loaded <see cref="Bundle"/> against §9. Port of
-/// <c>validate_bundle</c> and its helpers (src/validate.rs).
+/// Validates a loaded <see cref="Bundle"/> against §9.
 /// </summary>
 public static class BundleValidator
 {
     private const string IndexFilename = "index.md";
 
     /// <summary>
-    /// Validates a loaded bundle against §9, returning all findings. Port of
-    /// <c>validate_bundle</c> (validate.rs:97-158).
+    /// Validates a loaded bundle against §9, returning all findings.
     /// </summary>
     public static ValidationReport Validate(Bundle bundle)
     {
@@ -164,7 +158,7 @@ public static class BundleValidator
                     Severity.Warning,
                     concept.Path,
                     concept.Id,
-                    $"`timestamp` is not ISO-8601: {RustDebugQuote.Quote(ts)}"));
+                    $"`timestamp` is not ISO-8601: {DebugQuote.Quote(ts)}"));
             }
         }
 
@@ -186,14 +180,14 @@ public static class BundleValidator
 
     private static readonly string[] RecommendedFields = ["title", "description", "timestamp"];
 
-    /// <summary>Port of <c>concept.document.validate_conformance().is_err()</c> (validate.rs:114), without relying on exceptions for control flow.</summary>
+    /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§9), without relying on exceptions for control flow.</summary>
     private static bool HasConformantType(OkfDocument document)
     {
         var value = document.Frontmatter.Get("type");
         return value is not null && !value.IsEmptyValue;
     }
 
-    /// <summary>Port of <c>validate_reserved</c> (validate.rs:160-205).</summary>
+    /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§6/§7).</summary>
     private static void ValidateReserved(Bundle bundle, List<Diagnostic> diagnostics)
     {
         var rootIndex = System.IO.Path.Combine(bundle.Root, IndexFilename);
@@ -285,7 +279,7 @@ public static class BundleValidator
                     Severity.Warning,
                     path,
                     null,
-                    $"log date heading is not ISO-8601 `YYYY-MM-DD`: {RustDebugQuote.Quote(bad)}"));
+                    $"log date heading is not ISO-8601 `YYYY-MM-DD`: {DebugQuote.Quote(bad)}"));
             }
         }
     }
@@ -294,8 +288,7 @@ public static class BundleValidator
     /// Light ISO-8601 datetime check: a valid <c>YYYY-MM-DD</c> date,
     /// optionally followed by <c>T&lt;time&gt;</c> with an optional zone.
     /// This is intentionally permissive -- the spec treats <c>timestamp</c>
-    /// formatting as soft guidance. Port of <c>is_iso8601_datetime</c>
-    /// (validate.rs:210-213).
+    /// formatting as soft guidance.
     /// </summary>
     public static bool IsIso8601DateTime(string s)
     {
