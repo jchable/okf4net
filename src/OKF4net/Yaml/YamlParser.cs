@@ -982,13 +982,27 @@ internal static class YamlParser
                 return new YamlString(s);
             }
 
-            // Plain flow scalar: read until , : ] } or end.
+            // Plain flow scalar: read until a flow indicator (`,`/`]`/`}`) or a
+            // key/value colon. A ':' terminates the scalar only when followed by
+            // whitespace, a flow indicator, or end-of-input — mirroring the
+            // block-style SplitKeyValue rule — so a bare ':' inside a value
+            // (`human:ada`, `https://x`, an ISO time `00:00:00`) is kept.
             var startPlain = Pos;
             while (Pos < Chars.Length)
             {
-                if (Chars[Pos] is ',' or ':' or ']' or '}')
+                var ch = Chars[Pos];
+                if (ch is ',' or ']' or '}')
                 {
                     break;
+                }
+
+                if (ch == ':')
+                {
+                    var next = Pos + 1 < Chars.Length ? Chars[Pos + 1] : (char?)null;
+                    if (next is null or ' ' or '\t' or ',' or ']' or '}')
+                    {
+                        break;
+                    }
                 }
 
                 Pos += 1;
