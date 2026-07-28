@@ -324,10 +324,34 @@ public class ValidateTests
     }
 
     [Fact]
+    public void Verified_list_entry_not_a_mapping_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified: [human:ada]\n");
+        Assert.True(HasWarning(r, "verified entry is not a `{by, at}` mapping"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Verified_bare_scalar_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified: notamapping\n");
+        Assert.True(HasWarning(r, "verified must be a"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
     public void Unknown_status_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstatus: archived\n");
         Assert.True(HasWarning(r, "unknown status"));
+    }
+
+    [Fact]
+    public void Non_scalar_status_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstatus: [draft]\n");
+        Assert.True(HasWarning(r, "status is not a scalar"));
+        Assert.True(r.IsConformant);
     }
 
     [Fact]
@@ -344,6 +368,40 @@ public class ValidateTests
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - title: no resource\n");
         Assert.True(HasWarning(r, "source entry is missing required `resource`"));
+    }
+
+    [Fact]
+    public void Sources_list_entry_not_a_mapping_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources: [just-a-string]\n");
+        Assert.True(HasWarning(r, "source entry is not a mapping"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Source_last_modified_bad_date_warns()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: not-a-date\n");
+        Assert.True(HasWarning(r, "source last_modified is not `YYYY-MM-DD`"));
+        Assert.True(r.IsConformant);
+    }
+
+    [Fact]
+    public void Well_formed_verified_status_sources_produce_none_of_the_new_warnings()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "status: stable\n" +
+            "verified:\n  - by: human:ada\n    at: '2026-07-27'\n" +
+            "sources:\n  - resource: https://x\n    last_modified: '2026-07-27'\n");
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("verified entry is not"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("verified must be"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("status is not a scalar"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("source entry is not a mapping"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("sources must be a list"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("source last_modified is not"));
+        Assert.True(r.IsConformant);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
 using OKF4net.Internal;
+using OKF4net.Yaml;
 
 namespace OKF4net;
 
@@ -189,11 +190,48 @@ public static class BundleValidator
                 }
             }
 
+            var verifiedRaw = fm.Get("verified");
+            if (verifiedRaw is YamlSequence verifiedSeq)
+            {
+                foreach (var item in verifiedSeq.Items)
+                {
+                    if (item is not YamlMapping)
+                    {
+                        diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "verified entry is not a `{by, at}` mapping"));
+                    }
+                }
+            }
+            else if (verifiedRaw is not null and not YamlNull and not YamlMapping)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "verified must be a `{by, at}` mapping or a list of them"));
+            }
+
+            var sourcesRaw = fm.Get("sources");
+            if (sourcesRaw is YamlSequence sourcesSeq)
+            {
+                foreach (var item in sourcesSeq.Items)
+                {
+                    if (item is not YamlMapping)
+                    {
+                        diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "source entry is not a mapping"));
+                    }
+                }
+            }
+            else if (sourcesRaw is not null and not YamlNull)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "sources must be a list of entries"));
+            }
+
             foreach (var src in fm.Sources)
             {
                 if (src.Resource.Length == 0)
                 {
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "source entry is missing required `resource`"));
+                }
+
+                if (src.LastModified is { } lastModified && !ChangeLog.IsIsoDate(lastModified))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"source last_modified is not `YYYY-MM-DD`: {DebugQuote.Quote(lastModified)}"));
                 }
             }
 
@@ -208,6 +246,12 @@ public static class BundleValidator
                 {
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"usage_window to is not `YYYY-MM-DD`: {DebugQuote.Quote(ut)}"));
                 }
+            }
+
+            var statusRaw = fm.Get("status");
+            if (statusRaw is not null && statusRaw is not YamlNull && statusRaw.AsDisplayString() is null)
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "status is not a scalar `draft|stable|deprecated`"));
             }
 
             var lc = fm.Lifecycle;
