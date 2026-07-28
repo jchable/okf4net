@@ -88,6 +88,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
             .Select(hit =>
             {
                 var fm = hit.Concept.Document.Frontmatter;
+                var lc = fm.Lifecycle;
                 return new KnowledgePassage(
                     SourceId: Id,
                     ConceptId: hit.Concept.Id.ToString(),
@@ -100,8 +101,8 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
                     // backslash-separated path into cross-platform output.
                     BundleRelativePath: Path.GetRelativePath(bundle.Root, hit.Concept.Path).Replace(Path.DirectorySeparatorChar, '/'),
                     TrustTier: fm.TrustTier,
-                    Status: fm.Lifecycle.Status,
-                    StaleAfter: fm.Lifecycle.StaleAfterRaw);
+                    Status: lc.Status,
+                    StaleAfter: lc.StaleAfterRaw);
             })
             .ToList();
 

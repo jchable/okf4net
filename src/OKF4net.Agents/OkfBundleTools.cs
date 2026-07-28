@@ -101,6 +101,9 @@ public sealed class OkfBundleTools
     /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
+    /// <summary>Today's date, derived from <see cref="UtcNow"/> — the shared seam behind <see cref="ReadConcept"/>'s and <see cref="Search"/>'s staleness checks.</summary>
+    private DateOnly Today => DateOnly.FromDateTime(UtcNow().Date);
+
     /// <summary>
     /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
     /// first access and caching it thereafter until <see cref="InvalidateBundle"/>
@@ -189,11 +192,12 @@ public sealed class OkfBundleTools
 
             var fm = concept.Document.Frontmatter;
             var lc = fm.Lifecycle;
-            var stale = lc.IsStale(DateOnly.FromDateTime(UtcNow().Date));
-            if (lc.Status != ConceptStatus.Stable || fm.TrustTier != TrustTier.Unverified || stale)
+            var trust = fm.TrustTier;
+            var stale = lc.IsStale(Today);
+            if (lc.Status != ConceptStatus.Stable || trust != TrustTier.Unverified || stale)
             {
                 sb.Append("> status: ").Append(StatusLabel(lc.Status))
-                  .Append(" | trust: ").Append(TrustLabel(fm.TrustTier))
+                  .Append(" | trust: ").Append(TrustLabel(trust))
                   .Append(" | stale: ").Append(stale ? "yes" : "no")
                   .Append("\n\n");
             }
@@ -345,7 +349,7 @@ public sealed class OkfBundleTools
                     : $"No results for query '{query}' with tag '{effectiveTag}'.";
             }
 
-            return FormatSearchResults(query, effectiveTag, scored, DateOnly.FromDateTime(UtcNow().Date));
+            return FormatSearchResults(query, effectiveTag, scored, Today);
         });
     }
 
