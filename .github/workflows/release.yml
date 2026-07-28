@@ -95,7 +95,7 @@ jobs:
       - name: Publish + zip
         shell: pwsh
         run: packaging/winget/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:VERSION -OutDir dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.rid }}
           path: dist/*
@@ -107,7 +107,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           path: dist
@@ -118,7 +118,7 @@ jobs:
           sha256sum okf-*.zip > checksums.txt
           cat checksums.txt
       - name: Create/attach Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/okf-*.zip
@@ -132,7 +132,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           path: dist
@@ -149,6 +149,6 @@ jobs:
             -UrlArm64 "$base/okf-$ver-win-arm64.zip" -Sha256Arm64 $shaArm `
             -OutDir manifests
       - name: Attach manifests to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: manifests/*.yaml
