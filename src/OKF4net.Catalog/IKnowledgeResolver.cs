@@ -4,7 +4,7 @@ namespace OKF4net.Catalog;
 /// <summary>
 /// Searches across every enabled source of an <see cref="IKnowledgeCatalog"/>
 /// and returns a single, grouped-by-source <see cref="KnowledgeContext"/>.
-/// See <see cref="DefaultKnowledgeResolver"/> for the V1 implementation
+/// See <see cref="GroupedKnowledgeResolver"/> for the grouped-by-source implementation
 /// (no cross-source fusion/dedup/merged ranking).
 /// </summary>
 public interface IKnowledgeResolver

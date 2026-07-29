@@ -3,7 +3,7 @@ namespace OKF4net.Catalog;
 
 /// <summary>
 /// A single searchable knowledge source -- one bundle, in V1
-/// (<see cref="OkfBundleKnowledgeSource"/>). A <see cref="DefaultKnowledgeResolver"/>
+/// (<see cref="OkfBundleKnowledgeSource"/>). A <see cref="GroupedKnowledgeResolver"/>
 /// fans a query out across every enabled <see cref="KnowledgeCatalogSource"/>
 /// as one of these.
 /// </summary>

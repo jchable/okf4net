@@ -158,7 +158,7 @@ public class MemoryServiceCollectionExtensionsTests
 
         // Force the catalog to construct -- and validate both memory paths at
         // load time -- while both directories still exist. Mirrors
-        // DefaultKnowledgeResolverTests.SearchAsync_reports_SourceUnavailable_for_a_deleted_source_but_still_returns_the_other:
+        // GroupedKnowledgeResolverTests.SearchAsync_reports_SourceUnavailable_for_a_deleted_source_but_still_returns_the_other:
         // the catalog's own load-time validation must succeed first, so what
         // is observed below is AddMemory's own re-resolution at first
         // IMemoryStore resolution, not a catalog construction failure.

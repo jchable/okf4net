@@ -5,7 +5,7 @@ using OKF4net.Catalog;
 namespace OKF4net.Tests.Catalog;
 
 /// <summary>
-/// <see cref="DefaultKnowledgeResolver"/>: multi-source fan-out grouped by
+/// <see cref="GroupedKnowledgeResolver"/>: multi-source fan-out grouped by
 /// descending source priority (no cross-source fusion), per-source failure
 /// isolation, <see cref="KnowledgeDiagnosticCode.NoEnabledSources"/>/
 /// <see cref="KnowledgeDiagnosticCode.NoMatches"/> as data, the blank-query
@@ -14,7 +14,7 @@ namespace OKF4net.Tests.Catalog;
 /// <c>tests/fixtures/appendix_a</c> bundle registered as two catalog
 /// sources, never touching <c>tests/fixtures</c> directly.
 /// </summary>
-public class DefaultKnowledgeResolverTests
+public class GroupedKnowledgeResolverTests
 {
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
 
@@ -106,7 +106,7 @@ public class DefaultKnowledgeResolverTests
             "---\ntype: Metric\ntitle: Churn cohort\ndescription: d\nstale_after: 2026-01-01\n---\nChurn cohort.\n");
         using var disposableRoot = root;
         using var disposableCatalog = catalog;
-        var resolver = new DefaultKnowledgeResolver(catalog, new FixedClock(new DateOnly(2026, 7, 27)));
+        var resolver = new GroupedKnowledgeResolver(catalog, new FixedClock(new DateOnly(2026, 7, 27)));
 
         var strict = await resolver.SearchAsync(new KnowledgeQuery("churn") { StalePolicy = StalePolicy.Strict });
         Assert.Empty(strict.Passages);
@@ -122,7 +122,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales"));
 
@@ -187,7 +187,7 @@ public class DefaultKnowledgeResolverTests
             CatalogRoot = root.Path,
             WatchForChanges = false,
         });
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales"));
 
@@ -203,7 +203,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         // The catalog already validated both source paths at construction
         // (generation 1); delete one afterward so the resolver's own
@@ -228,7 +228,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
         const string queryText = "orders sales";
 
         var context = await resolver.SearchAsync(new KnowledgeQuery(queryText));
@@ -263,7 +263,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root, hiEnabled: false, loEnabled: false);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
 
@@ -278,7 +278,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("zzz-nonexistent-term"));
 
@@ -295,7 +295,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("   ")));
         await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery(string.Empty)));
@@ -309,7 +309,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var beforeReload = await resolver.SearchAsync(new KnowledgeQuery("orders"));
         Assert.Equal(1, beforeReload.CatalogGeneration);
@@ -327,7 +327,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
         var query = new KnowledgeQuery("orders", "sales");
 
         var context = await resolver.SearchAsync(query);
@@ -342,7 +342,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
         Assert.NotEmpty(context.Passages);
@@ -362,7 +362,7 @@ public class DefaultKnowledgeResolverTests
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root);
         Directory.Delete(Path.Combine(root.Path, "source-lo"), recursive: true);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
         Assert.NotEmpty(context.Diagnostics);
@@ -381,7 +381,7 @@ public class DefaultKnowledgeResolverTests
     {
         using var root = new TempDir();
         using var catalog = SetUpTwoSourceCatalog(root, hiEnabled: false, loEnabled: false);
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
 
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
         var diagnostic = Assert.Single(context.Diagnostics);

@@ -10,7 +10,7 @@ namespace OKF4net.Catalog;
 /// <param name="Text">
 /// The search text, forwarded verbatim to the core <c>ConceptSearch.Search</c>
 /// scorer (whitespace-separated, case-insensitive substring terms). Required
-/// to be non-blank -- <see cref="DefaultKnowledgeResolver.SearchAsync"/>
+/// to be non-blank -- <see cref="GroupedKnowledgeResolver.SearchAsync"/>
 /// throws <see cref="ArgumentException"/> for a blank <see cref="Text"/>,
 /// since that is a caller/programming error rather than a data condition
 /// (contrast <see cref="KnowledgeDiagnosticCode.NoMatches"/>, which is a

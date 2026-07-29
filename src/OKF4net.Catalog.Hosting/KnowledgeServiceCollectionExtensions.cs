@@ -14,7 +14,7 @@ public static class KnowledgeServiceCollectionExtensions
     /// <summary>
     /// Configures a <see cref="KnowledgeOptions"/> via <paramref name="configure"/>
     /// and registers a <see cref="FileKnowledgeCatalog"/> (as
-    /// <see cref="IKnowledgeCatalog"/>) and a <see cref="DefaultKnowledgeResolver"/>
+    /// <see cref="IKnowledgeCatalog"/>) and a <see cref="GroupedKnowledgeResolver"/>
     /// (as <see cref="IKnowledgeResolver"/>) built from it.
     /// </summary>
     /// <remarks>
@@ -23,7 +23,7 @@ public static class KnowledgeServiceCollectionExtensions
     /// <see cref="IKnowledgeResolver"/> are registered as singletons:
     /// <see cref="FileKnowledgeCatalog"/> owns a <see cref="FileSystemWatcher"/>
     /// and an in-memory snapshot that must be shared, not duplicated, across
-    /// a host's lifetime, and <see cref="DefaultKnowledgeResolver"/> is
+    /// a host's lifetime, and <see cref="GroupedKnowledgeResolver"/> is
     /// stateless over that same singleton catalog. The
     /// <see cref="OKF4net.Catalog.KnowledgeCatalogOptions"/> built here is
     /// also registered (as an immutable singleton), for callers that want to
@@ -74,7 +74,7 @@ public static class KnowledgeServiceCollectionExtensions
 
         services.TryAddSingleton(catalogOptions);
         services.TryAddSingleton<IKnowledgeCatalog>(_ => new FileKnowledgeCatalog(catalogOptions));
-        services.TryAddSingleton<IKnowledgeResolver>(sp => new DefaultKnowledgeResolver(sp.GetRequiredService<IKnowledgeCatalog>()));
+        services.TryAddSingleton<IKnowledgeResolver>(sp => new GroupedKnowledgeResolver(sp.GetRequiredService<IKnowledgeCatalog>()));
 
         return services;
     }
