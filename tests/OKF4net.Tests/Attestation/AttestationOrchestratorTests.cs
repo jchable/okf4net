@@ -178,6 +178,25 @@ public class AttestationOrchestratorTests
     }
 
     [Fact]
+    public async Task Unreadable_computation_file_is_captured_not_thrown()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
+        var sqlPath = System.IO.Path.Combine(tmp.Path, "c", "references", "revenue.sql");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sqlPath)!);
+        // Lone UTF-8 continuation bytes with no leading byte: invalid UTF-8 that
+        // isn't also a recognized BOM prefix (unlike e.g. 0xFF 0xFE), so it reliably
+        // trips OkfEncodings.Strict's decoder instead of being silently reinterpreted
+        // as a different encoding by File.ReadAllText's BOM auto-detection.
+        File.WriteAllBytes(sqlPath, [0x80, 0x81, 0x82]);
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
+        Assert.False(outcome.Displayable);
+        Assert.Contains(outcome.Reasons, r => r.Contains("revenue.sql"));
+    }
+
+    [Fact]
     public async Task Not_found_concept_is_not_displayable()
     {
         using var tmp = new TempDir();

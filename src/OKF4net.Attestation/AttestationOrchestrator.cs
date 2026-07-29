@@ -78,7 +78,16 @@ public sealed class AttestationOrchestrator
                     return Fail($"computation file '{computation.Path}' could not be resolved ({status})");
                 }
 
-                var text = bundle.ReadResourceText(absolutePath!);
+                string text;
+                try
+                {
+                    text = bundle.ReadResourceText(absolutePath!);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+                {
+                    return Fail($"computation file '{computation.Path}' could not be read: {e.Message}");
+                }
+
                 resolved = new SanctionedComputation(ComputationSource.File, text, computation.Path);
                 break;
 
