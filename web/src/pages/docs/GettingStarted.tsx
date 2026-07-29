@@ -107,13 +107,13 @@ export default function GettingStarted() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: firstBundleHtml }} />
           <p>
             The file's path with <code>.md</code> removed is its <strong>concept id</strong> — here,{' '}
-            <code>orders</code>. The only value OKF conformance strictly requires (§9) is a non-empty{' '}
+            <code>orders</code>. The only value OKF conformance strictly requires (§11) is a non-empty{' '}
             <code>type</code>; <code>title</code>, <code>description</code> and <code>timestamp</code> round out a
             producer-grade concept.
           </p>
         </Chapter>
 
-        <Chapter id="validate" title="Validate it" refText="§9 — conformance">
+        <Chapter id="validate" title="Validate it" refText="§11 — conformance">
           <p>
             From the command line, <code>okf validate</code> checks the bundle and exits non-zero if anything is
             off — so it drops straight into CI:
@@ -138,7 +138,7 @@ export default function GettingStarted() {
             </li>
             <li>
               <strong>Generate indexes and gate CI.</strong> <code>okf index</code> writes the <code>index.md</code>{' '}
-              listings (§6); <code>okf validate</code>'s exit code is your CI check. →{' '}
+              listings (§8); <code>okf validate</code>'s exit code is your CI check. →{' '}
               <Link to="/cli">cli.md</Link>
             </li>
             <li>

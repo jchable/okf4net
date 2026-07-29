@@ -36,7 +36,7 @@ export default function DocsIndex() {
       />
 
       <div className="docbody">
-        <Chapter id="contents" title="Contents" refText="§6 — generated index listing">
+        <Chapter id="contents" title="Contents" refText="§8 — generated index listing">
           <IndexTable
             rows={[
               {
@@ -53,8 +53,8 @@ export default function DocsIndex() {
                 concept: <Link to="/docs/guides">guides</Link>,
                 desc: (
                   <>
-                    Task recipes: traverse the cross-link graph, gate CI on conformance, generate indexes (§6) and
-                    changelogs (§7), round-trip with <code>fmt</code>, publish the AOT binary.
+                    Task recipes: traverse the cross-link graph, gate CI on conformance, generate indexes (§8) and
+                    changelogs (§9), round-trip with <code>fmt</code>, publish the AOT binary.
                   </>
                 ),
               },

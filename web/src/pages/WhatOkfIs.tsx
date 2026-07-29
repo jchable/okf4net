@@ -70,7 +70,7 @@ export default function WhatOkfIs() {
           </ConceptGrid>
         </Chapter>
 
-        <Chapter id="reserved" title="Reserved files" refText="§6–§7 — index.md, log.md">
+        <Chapter id="reserved" title="Reserved files" refText="§8–§9 — index.md, log.md">
           <p>Two filenames are reserved in every directory of a bundle:</p>
           <ul className="plain">
             <li>
@@ -94,7 +94,7 @@ export default function WhatOkfIs() {
           </p>
         </Chapter>
 
-        <Chapter id="conformance" title="Conformance is one rule" refText="§9 — permissive by design">
+        <Chapter id="conformance" title="Conformance is one rule" refText="§11 — permissive by design">
           <blockquote>A concept is conformant if it has a non-empty <code>type</code>. That's it.</blockquote>
           <p>
             Everything else is deliberately permissive: consumers must tolerate unknown types, unknown frontmatter
@@ -103,13 +103,13 @@ export default function WhatOkfIs() {
           </p>
           <p>
             OKF4net honors both sides of that bargain. <code>OkfDocument.ValidateConformance()</code> enforces only
-            the §9 rule; <code>OkfDocument.Validate()</code> matches the stricter producer-side check from the
+            the §11 rule; <code>OkfDocument.Validate()</code> matches the stricter producer-side check from the
             reference agent (<code>type</code>, <code>title</code>, <code>description</code>, <code>timestamp</code>
             ). And <code>Bundle.Load</code> never aborts on a bad file — it collects parse failures and keeps going.
           </p>
         </Chapter>
 
-        <Chapter id="mapping" title="Spec → implementation" refText="§2–§11, section by section">
+        <Chapter id="mapping" title="Spec → implementation" refText="§2–§13, section by section">
           <p>
             The library mirrors the spec's structure, so a spec citation in an issue or a PR points straight at the
             responsible type:
@@ -134,24 +134,24 @@ export default function WhatOkfIs() {
                 </>,
               ],
               [
-                '§5 Cross-linking',
+                '§6 Cross-linking',
                 <>
                   <code>OKF4net.LinkScanner</code>, <code>Bundle.LinksFrom</code> / <code>Bundle.Backlinks</code>
                 </>,
               ],
-              ['§6 Index files', <code key="c6">OKF4net.IndexGenerator</code>],
-              ['§7 Log files', <code key="c7">OKF4net.ChangeLog</code>],
+              ['§8 Index files', <code key="c8">OKF4net.IndexGenerator</code>],
+              ['§9 Log files', <code key="c9">OKF4net.ChangeLog</code>],
+              ['§11 Conformance', <code key="c11">OKF4net.BundleValidator</code>],
               [
-                '§8 Citations',
-                <>
-                  <code>LinkScanner</code>, <code>OkfDocument.Citations()</code>
-                </>,
-              ],
-              ['§9 Conformance', <code key="c9">OKF4net.BundleValidator</code>],
-              [
-                '§11 Versioning',
+                '§12 Versioning',
                 <>
                   <code>Bundle.OkfVersion</code>, <code>OKF4net.OkfSpec.Version</code>
+                </>,
+              ],
+              [
+                '§13.1 Citations (legacy fallback)',
+                <>
+                  <code>LinkScanner</code>, <code>OkfDocument.Citations()</code>
                 </>,
               ],
             ]}

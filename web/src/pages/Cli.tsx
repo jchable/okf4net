@@ -68,7 +68,7 @@ export default function Cli() {
             rows={[
               ['okf validate <bundle>', 'Check a bundle against OKF v0.2 conformance (§11); exits non-zero on failure'],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],
-              ['okf index <bundle>', '(Re)generate every index.md in the bundle (§6)'],
+              ['okf index <bundle>', '(Re)generate every index.md in the bundle (§8)'],
               [
                 'okf graph <bundle>',
                 <>
@@ -95,7 +95,7 @@ export default function Cli() {
           </p>
         </Chapter>
 
-        <Chapter id="ci" title="In CI" refText="§9 — exit codes are the interface">
+        <Chapter id="ci" title="In CI" refText="§11 — exit codes are the interface">
           <p>
             <code>okf validate</code> exits non-zero when a bundle is not conformant, so validating knowledge is one
             line in any pipeline:

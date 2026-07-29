@@ -158,7 +158,7 @@ export default function Cli() {
                   <a href="#index">index</a>
                 </td>
                 <td>&lt;bundle&gt;</td>
-                <td>(Re)generate every index.md (§6)</td>
+                <td>(Re)generate every index.md (§8)</td>
               </tr>
               <tr>
                 <td>
@@ -195,9 +195,9 @@ export default function Cli() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: versionHtml }} />
         </Chapter>
 
-        <Chapter id="validate" title="validate <bundle>" refText="§9 — exit code is the interface">
+        <Chapter id="validate" title="validate <bundle>" refText="§11 — exit code is the interface">
           <p>
-            Loads the bundle, runs the §9 conformance check, and prints every diagnostic followed by a tally. Exits{' '}
+            Loads the bundle, runs the §11 conformance check, and prints every diagnostic followed by a tally. Exits{' '}
             <code>0</code> when conformant, <code>1</code> otherwise. <strong>Warnings never break conformance</strong>{' '}
             — only errors do — so recommended-but-missing fields are surfaced without failing the build.
           </p>
@@ -213,7 +213,7 @@ export default function Cli() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: infoHtml }} />
         </Chapter>
 
-        <Chapter id="index" title="index <bundle>" refText="§6 — progressive disclosure">
+        <Chapter id="index" title="index <bundle>" refText="§8 — progressive disclosure">
           <p>
             Regenerates every <code>index.md</code> directory listing in the bundle and prints each path written,
             then a total. On an empty bundle it prints <code>no index files written (empty bundle?)</code>. Exits{' '}
@@ -222,7 +222,7 @@ export default function Cli() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: indexHtml }} />
         </Chapter>
 
-        <Chapter id="graph" title="graph <bundle> [--dot]" refText="§5, §8 — cross-links">
+        <Chapter id="graph" title="graph <bundle> [--dot]" refText="§6 — cross-links">
           <p>
             Prints each concept's outgoing links. Resolved links use <code>-&gt;</code>, broken ones{' '}
             <code>-x</code>. Pass <code>--dot</code> to emit Graphviz DOT (broken edges dashed and red) — pipe it

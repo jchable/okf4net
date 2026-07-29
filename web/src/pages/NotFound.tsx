@@ -48,7 +48,7 @@ export default function NotFound() {
               Concept <em>not found.</em>
             </h1>
             <p className="lede">
-              This link is retained in the graph as an edge to a non-existent concept, as §5 requires — but there is
+              This link is retained in the graph as an edge to a non-existent concept, as §6 requires — but there is
               nothing to render here.
             </p>
           </div>

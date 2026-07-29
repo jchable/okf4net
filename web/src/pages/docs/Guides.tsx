@@ -91,12 +91,12 @@ export default function Guides() {
       />
 
       <div className="docbody">
-        <Chapter id="traverse" title="Traverse the cross-link graph" refText="§5 — LinksFrom · Backlinks">
+        <Chapter id="traverse" title="Traverse the cross-link graph" refText="§6 — LinksFrom · Backlinks">
           <p>Load once, then walk edges in either direction. Broken links stay in the graph so you can find every hole in one pass.</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: traverseHtml }} />
         </Chapter>
 
-        <Chapter id="ci" title="Gate CI on conformance" refText="§9 — exit codes">
+        <Chapter id="ci" title="Gate CI on conformance" refText="§11 — exit codes">
           <p>
             <code>okf validate</code> exits non-zero on a non-conformant bundle. The binary is self-contained, so a
             runner needs no .NET installed — copy the file and run it.
@@ -106,7 +106,7 @@ export default function Guides() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: ciLibraryHtml }} />
         </Chapter>
 
-        <Chapter id="index" title="Regenerate index.md listings" refText="§6 — progressive disclosure">
+        <Chapter id="index" title="Regenerate index.md listings" refText="§8 — progressive disclosure">
           <p>After adding or renaming concepts, rewrite every directory listing. The call returns the paths it wrote.</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: indexHtml }} />
           <p>
@@ -115,7 +115,7 @@ export default function Guides() {
           </p>
         </Chapter>
 
-        <Chapter id="changelog" title="Read a change log" refText="§7 — log.md">
+        <Chapter id="changelog" title="Read a change log" refText="§9 — log.md">
           <p>
             <code>Bundle.LogFiles</code> lists every reserved <code>log.md</code>; <code>ChangeLog.Parse</code> turns
             one into date-grouped entries.

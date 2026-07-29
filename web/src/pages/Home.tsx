@@ -14,7 +14,7 @@ const libraryUsageHtml = `<span class="k">using</span> OKF4net;
 <span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);
 Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);
 
-<span class="c">// Conformance check (§9).</span>
+<span class="c">// Conformance check (§11).</span>
 <span class="k">var</span> report = BundleValidator.Validate(bundle);
 
 <span class="c">// Traverse the cross-link graph.</span>
@@ -70,7 +70,7 @@ export default function Home() {
               <p>Ordinary markdown links between concepts — absolute or relative; backlinks derived.</p>
             </div>
           </div>
-          <p>The only hard conformance requirement (§9): a non-empty <code>type</code> on every concept. Everything else — unknown types, unknown keys, broken links — must be tolerated by consumers.</p>
+          <p>The only hard conformance requirement (§11): a non-empty <code>type</code> on every concept. Everything else — unknown types, unknown keys, broken links — must be tolerated by consumers.</p>
           <p className="next">→ <Link to="/what-okf-is">what-okf-is.md</Link> — reserved files, conformance, and the section-by-section spec mapping</p>
         </section>
 
@@ -78,11 +78,11 @@ export default function Home() {
           <div className="chead">
             <span className="h">##</span>
             <h2>The library</h2>
-            <span className="ref">§4–§5 — documents, cross-linking</span>
+            <span className="ref">§4, §6 — documents, cross-linking</span>
           </div>
           <p>Load a bundle, check conformance, walk the cross-link graph. <strong><code>Bundle.Load</code> never aborts on a bad file</strong> — parse failures land in <code>ParseErrors</code>, broken links stay in the graph as edges to missing concepts.</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: libraryUsageHtml }} />
-          <p><code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> with typed getters on top — producer-defined keys survive round-trips byte for byte. Two validation levels: <code>ValidateConformance()</code> enforces only what §9 requires; <code>Validate()</code> matches the stricter producer-side check.</p>
+          <p><code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> with typed getters on top — producer-defined keys survive round-trips byte for byte. Two validation levels: <code>ValidateConformance()</code> enforces only what §11 requires; <code>Validate()</code> matches the stricter producer-side check.</p>
           <p className="next">→ <Link to="/library">library.md</Link> — install, examples, design choices, and the full API surface</p>
         </section>
 
@@ -90,15 +90,15 @@ export default function Home() {
           <div className="chead">
             <span className="h">##</span>
             <h2>The okf CLI</h2>
-            <span className="ref">§6–§9 — indexes, logs, conformance</span>
+            <span className="ref">§8–§11 — indexes, logs, conformance</span>
           </div>
           <p>Published as a <strong>self-contained Native AOT single-file binary</strong> — no .NET runtime on the target machine. <code>okf validate</code> exits non-zero on a non-conformant bundle, so it drops straight into CI.</p>
           <table className="map">
             <tbody>
               <tr><th>Command</th><th>Does</th></tr>
-              <tr><td>okf validate &lt;bundle&gt;</td><td>Conformance check (§9), non-zero exit on failure</td></tr>
+              <tr><td>okf validate &lt;bundle&gt;</td><td>Conformance check (§11), non-zero exit on failure</td></tr>
               <tr><td>okf info &lt;bundle&gt;</td><td>Concepts, types, links, version</td></tr>
-              <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md (§6)</td></tr>
+              <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md (§8)</td></tr>
               <tr><td>okf graph &lt;bundle&gt;</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
               <tr><td>okf parse &lt;file&gt;</td><td>One document's structure</td></tr>
               <tr><td>okf fmt &lt;file&gt;</td><td>Normalize by parse + re-serialize (-w writes)</td></tr>

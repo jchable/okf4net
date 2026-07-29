@@ -38,14 +38,14 @@ export default function Spec() {
       />
 
       <div className="docbody">
-        <Chapter id="one-rule" title="The one hard rule" refText="§9 — conformance">
+        <Chapter id="one-rule" title="The one hard rule" refText="§11 — conformance">
           <blockquote>
             Every concept must carry a non-empty <code>type</code>. Everything else, a consumer must tolerate.
           </blockquote>
           <p>
             That is the entire conformance bar. Unknown types, unknown frontmatter keys, broken cross-links, and
             missing optional fields are all <strong>valid</strong> — a conformant consumer keeps going and reports,
-            never rejects. OKF4net enforces exactly this in <code>BundleValidator</code> (§9) and, per document, in{' '}
+            never rejects. OKF4net enforces exactly this in <code>BundleValidator</code> (§11) and, per document, in{' '}
             <code>OkfDocument.ValidateConformance()</code>; the stricter producer check (<code>type</code>,{' '}
             <code>title</code>, <code>description</code>, <code>timestamp</code>) is a separate, opt-in{' '}
             <code>Validate()</code>.
@@ -133,7 +133,7 @@ export default function Spec() {
           />
         </Chapter>
 
-        <Chapter id="reserved" title="Reserved files" refText="§6, §7 — not concepts">
+        <Chapter id="reserved" title="Reserved files" refText="§8, §9 — not concepts">
           <p>
             Two filenames are structural, not concepts: <code>index.md</code> (generated listings) and{' '}
             <code>log.md</code> (change history). OKF4net surfaces them separately — <code>Bundle.IndexFiles</code>{' '}
@@ -152,7 +152,7 @@ export default function Spec() {
           <ul className="plain">
             <li>
               <strong>Permissive by construction.</strong> <code>Bundle.Load</code> collects parse failures in{' '}
-              <code>ParseErrors</code> and retains broken links as graph edges to missing concepts — §9's
+              <code>ParseErrors</code> and retains broken links as graph edges to missing concepts — §11's
               tolerance, made structural.
             </li>
             <li>

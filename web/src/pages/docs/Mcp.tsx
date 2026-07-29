@@ -89,23 +89,23 @@ export default function Mcp() {
             head={['Tool', 'Does']}
             rows={[
               ['okf_read_concept', 'One concept — frontmatter, body, outgoing links, backlinks'],
-              ['okf_browse', 'Progressive-disclosure listing of a directory (§6)'],
+              ['okf_browse', 'Progressive-disclosure listing of a directory (§8)'],
               ['okf_search', 'Ranked full-text search over titles, tags, and bodies'],
-              ['okf_graph', "Link stats, or one concept's links, backlinks, broken links (§5)"],
-              ['okf_write_concept', 'Create or update a concept — producer validation first (§9)'],
+              ['okf_graph', "Link stats, or one concept's links, backlinks, broken links (§6)"],
+              ['okf_write_concept', 'Create or update a concept — producer validation first (§11)'],
               [
                 'okf_append_log',
                 <>
-                  Append a dated entry to <code>log.md</code> (§7)
+                  Append a dated entry to <code>log.md</code> (§9)
                 </>,
               ],
               [
                 'okf_regenerate_indexes',
                 <>
-                  Rewrite every <code>index.md</code> (§6)
+                  Rewrite every <code>index.md</code> (§8)
                 </>,
               ],
-              ['okf_validate_bundle', 'Conformance report (§9)'],
+              ['okf_validate_bundle', 'Conformance report (§11)'],
               ['okf_changes_since', 'What changed since an ISO date, across every log'],
             ]}
           />
@@ -195,7 +195,7 @@ export default function Mcp() {
               <Term>"Note that refunds now take 3 days."</Term>
               <p>
                 <code>okf_write_concept</code> and <code>okf_append_log</code> — writes the concept and records the
-                change (§7).
+                change (§9).
               </p>
             </Cell>
             <Cell>
@@ -207,8 +207,8 @@ export default function Mcp() {
             <Cell>
               <Term>"Are there any broken links?"</Term>
               <p>
-                <code>okf_graph</code> and <code>okf_validate_bundle</code> — dangling edges (§5) and a conformance
-                report (§9).
+                <code>okf_graph</code> and <code>okf_validate_bundle</code> — dangling edges (§6) and a conformance
+                report (§11).
               </p>
             </Cell>
           </ConceptGrid>
@@ -239,7 +239,7 @@ export default function Mcp() {
           <p>
             Each tool <em>is</em> an <code>OkfBundleTools</code> operation — the same code behind{' '}
             <Link to="/cli">the CLI</Link> and the Agent Framework layer — wrapped as an MCP tool. So a concept id
-            that would escape the bundle is rejected, a write is validated against the §9 producer rules{' '}
+            that would escape the bundle is rejected, a write is validated against the §11 producer rules{' '}
             <strong>before</strong> it touches disk, and a malformed file never aborts a load. Logs go to{' '}
             <code>stderr</code>; <code>stdout</code> carries only the protocol.
           </p>

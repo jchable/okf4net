@@ -100,9 +100,9 @@ export default function Agents() {
               ],
               [
                 'okf_append_log',
-                <>Append a dated entry to <code>log.md</code> (§7) — re-renders the whole file through the strict log model.</>,
+                <>Append a dated entry to <code>log.md</code> (§9) — re-renders the whole file through the strict log model.</>,
               ],
-              ['okf_regenerate_indexes', <>Regenerate every <code>index.md</code> in the bundle (§6).</>],
+              ['okf_regenerate_indexes', <>Regenerate every <code>index.md</code> in the bundle (§8).</>],
               [
                 'okf_validate_bundle',
                 <>Run <code>BundleValidator</code> and report the full diagnostics list plus a conformance verdict.</>,
