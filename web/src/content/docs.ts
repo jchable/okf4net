@@ -36,6 +36,7 @@ export const docsTree: DocsTreeEntry[] = [
   { slug: 'library', label: 'library.md' },
   { slug: 'cli', label: 'cli.md' },
   { slug: 'agents', label: 'agents.md' },
+  { slug: 'catalog', label: 'catalog.md' },
   { slug: 'mcp', label: 'mcp.md' },
   { slug: 'spec', label: 'spec.md' },
 ]

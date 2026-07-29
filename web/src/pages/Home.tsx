@@ -118,6 +118,16 @@ export default function Home() {
           <p className="next">→ <Link to="/docs/agents">docs/agents.md</Link> — the nine tools, the context provider, and scoped memory capture</p>
         </section>
 
+        <section className="chapter" id="catalog">
+          <div className="chead">
+            <span className="h">##</span>
+            <h2>Local catalog</h2>
+            <span className="ref">catalog.json — search many bundles, host multi-tenant memory</span>
+          </div>
+          <p><code>OKF4net.Catalog</code> names one or more local bundles as <strong>sources</strong> in a hot-reloadable <code>catalog.json</code> manifest and searches every enabled one, with trust and staleness carried on every result. A <code>role: "memory"</code> source, backed by <code>FileMemoryStore</code>, gives an agent deployment host-scoped, layered memory — session, user, and tenant — without cross-scope leakage.</p>
+          <p className="next">→ <Link to="/docs/catalog">docs/catalog.md</Link> — the manifest, the resolver, and scoped memory</p>
+        </section>
+
         <section className="chapter" id="mcp">
           <div className="chead">
             <span className="h">##</span>

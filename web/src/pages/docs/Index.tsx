@@ -83,6 +83,16 @@ export default function DocsIndex() {
                 desc: 'The Microsoft Agent Framework layer — nine bundle tools and a budget-bounded context provider.',
               },
               {
+                type: 'Reference',
+                concept: <Link to="/docs/catalog">catalog</Link>,
+                desc: (
+                  <>
+                    A hot-reloadable <code>catalog.json</code> manifest naming local bundles as sources, a
+                    multi-source resolver, and a scoped memory store for multi-tenant agent deployments.
+                  </>
+                ),
+              },
+              {
                 type: 'Guide',
                 concept: <Link to="/docs/mcp">mcp</Link>,
                 desc: (
@@ -127,6 +137,12 @@ export default function DocsIndex() {
               <Term>build an agent</Term>
               <p>
                 Expose a bundle to an AI agent as tools plus bounded context. → <Link to="/docs/agents">agents.md</Link>
+              </p>
+            </Cell>
+            <Cell>
+              <Term>search many bundles</Term>
+              <p>
+                Name bundles as sources in one manifest and search them all. → <Link to="/docs/catalog">catalog.md</Link>
               </p>
             </Cell>
             <Cell>
