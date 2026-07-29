@@ -42,7 +42,7 @@ and this project adheres to
 
 ### Changed
 
-- **`DefaultKnowledgeResolver` is renamed `GroupedKnowledgeResolver`**
+- **Breaking:** `DefaultKnowledgeResolver` is renamed `GroupedKnowledgeResolver`
   (behaviour identical). Code that resolves `IKnowledgeResolver` from DI is
   unaffected; only direct references to the concrete type name need
   updating.
