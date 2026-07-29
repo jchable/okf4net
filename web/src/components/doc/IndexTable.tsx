@@ -20,7 +20,7 @@ export interface IndexTableProps {
 }
 
 /**
- * The generated `index.md` listing table (§6).
+ * The generated `index.md` listing table (§8).
  * Port of `table.index` — see the specimen source in
  * `design-system/styleguide.html:229-237` and full usage in
  * `website/docs/index.html:73-93` (the "soon" row uses `.soon` + `Tag`).

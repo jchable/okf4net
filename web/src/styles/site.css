@@ -287,7 +287,7 @@ footer.colophon .links { font-family: var(--mono); font-size: 12.5px; margin-bot
 }
 
 /* ============ docs section — the manual is itself an OKF bundle ============ */
-/* Two columns: a bundle-tree sidebar (progressive disclosure, §6) + the page. */
+/* Two columns: a bundle-tree sidebar (progressive disclosure, §8) + the page. */
 .docs-shell {
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
@@ -332,7 +332,7 @@ footer.colophon .links { font-family: var(--mono); font-size: 12.5px; margin-bot
 .docs-main .docbody { padding-bottom: 64px; }
 .docs-main section.chapter { margin-bottom: 56px; }
 
-/* generated-index listing — dogfoods `okf index` (§6) */
+/* generated-index listing — dogfoods `okf index` (§8) */
 table.index { width: 100%; border-collapse: collapse; margin: 24px 0 8px; font-size: 14.5px; }
 table.index th {
   font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase;

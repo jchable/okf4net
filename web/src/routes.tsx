@@ -5,6 +5,8 @@ import GettingStarted from './pages/docs/GettingStarted'
 import Guides from './pages/docs/Guides'
 import DocsLibrary from './pages/docs/Library'
 import DocsCli from './pages/docs/Cli'
+import Agents from './pages/docs/Agents'
+import Catalog from './pages/docs/Catalog'
 import Mcp from './pages/docs/Mcp'
 import Spec from './pages/docs/Spec'
 import WhatOkfIs from './pages/WhatOkfIs'
@@ -20,6 +22,8 @@ export const routes: RouteRecord[] = [
   { path: '/docs/guides', element: <Guides />, entry: 'src/pages/docs/Guides.tsx' },
   { path: '/docs/library', element: <DocsLibrary />, entry: 'src/pages/docs/Library.tsx' },
   { path: '/docs/cli', element: <DocsCli />, entry: 'src/pages/docs/Cli.tsx' },
+  { path: '/docs/agents', element: <Agents />, entry: 'src/pages/docs/Agents.tsx' },
+  { path: '/docs/catalog', element: <Catalog />, entry: 'src/pages/docs/Catalog.tsx' },
   { path: '/docs/mcp', element: <Mcp />, entry: 'src/pages/docs/Mcp.tsx' },
   { path: '/docs/spec', element: <Spec />, entry: 'src/pages/docs/Spec.tsx' },
   { path: '/what-okf-is', element: <WhatOkfIs />, entry: 'src/pages/WhatOkfIs.tsx' },
