@@ -52,6 +52,11 @@ public sealed class AttestationOrchestrator
         StalePolicy? policy = null,
         CancellationToken cancellationToken = default)
     {
+        // Errors-as-data (see class remarks) extends to the parameters argument
+        // itself: a caller passing null must get the normal "missing required
+        // parameter" outcome below, never a NullReferenceException.
+        parameterValues ??= new Dictionary<string, object?>();
+
         // Step 1: load the concept; it must exist and be an Attested Computation.
         var concept = bundle.Get(conceptId);
         if (concept is null || !concept.Document.Frontmatter.IsAttestedComputation)

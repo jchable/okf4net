@@ -57,6 +57,29 @@ public class ReparsePointsTests
     }
 
     /// <summary>
+    /// Pins the exact comparison boundary <see cref="OKF4net.Bundle"/>'s
+    /// <c>PathComparison</c> field relies on for its §6.2 containment check
+    /// (P1 finding): a bundle rooted at ".../Bundle" must not treat the
+    /// sibling directory ".../bundle" as contained within it under
+    /// <see cref="StringComparison.Ordinal"/> -- the comparison
+    /// <see cref="OKF4net.Bundle.TryResolveResource"/> now uses on Linux --
+    /// while an exact-case descendant of the same root must still be
+    /// accepted. This test runs on any OS: <see cref="ReparsePoints.IsWithin"/>
+    /// itself is a pure string comparison, independent of the actual
+    /// filesystem's case sensitivity.
+    /// </summary>
+    [Fact]
+    public void IsWithin_ordinal_rejects_Bundle_bundle_case_variant_but_accepts_exact_case_descendant()
+    {
+        var root = $"{Sep}tmp{Sep}Bundle";
+        var caseVariantSibling = $"{Sep}tmp{Sep}bundle{Sep}secret";
+        var exactCaseDescendant = $"{Sep}tmp{Sep}Bundle{Sep}secret";
+
+        Assert.False(ReparsePoints.IsWithin(root, caseVariantSibling, StringComparison.Ordinal));
+        Assert.True(ReparsePoints.IsWithin(root, exactCaseDescendant, StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// Regression for the false-positive that broke <c>BundleConceptWriter</c>
     /// on macOS CI: <c>Path.GetFullPath</c> preserves a trailing separator if
     /// present, but <see cref="ReparsePoints.HasReparsePointAncestor(string, string, StringComparison)"/>'s

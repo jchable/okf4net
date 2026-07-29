@@ -45,6 +45,19 @@ public sealed class Bundle
     private const string IndexFilename = "index.md";
     private const string LogFilename = "log.md";
 
+    /// <summary>
+    /// The comparison used for the §6.2 bundle-root containment check in
+    /// <see cref="TryResolveResource"/>. Windows and macOS filesystems are
+    /// typically case-insensitive, so a case-variant candidate path is the
+    /// same directory entry as <see cref="Root"/> there. On Linux (and other
+    /// case-sensitive filesystems) a case-variant is a genuinely DIFFERENT
+    /// directory -- treating it as contained would let an untrusted relative
+    /// path (e.g. containing <c>..</c>) escape the root by exploiting a case
+    /// difference. See <see cref="ReparsePoints.IsWithin"/>'s remarks.
+    /// </summary>
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     /// <summary>Reserved filenames with defined meaning at any level (§3.1).</summary>
     public static readonly string[] ReservedFilenames = [IndexFilename, LogFilename];
 
@@ -352,6 +365,17 @@ public sealed class Bundle
             }
             else
             {
+                if (Path.IsPathRooted(rawPath))
+                {
+                    // A Relative-classified path that is still rooted on this OS is a drive-relative
+                    // or drive-absolute form (e.g. "e:query.sql", "C:\x") that must NOT be treated as
+                    // concept-relative -- Path.Combine/GetFullPath would resolve it against a drive's
+                    // current directory, escaping the concept dir. Reject as Unsafe.
+                    absolutePath = null;
+                    status = ResourceResolutionStatus.Unsafe;
+                    return true;
+                }
+
                 var conceptDir = Path.GetDirectoryName(concept.Path) ?? Root;
                 candidate = Path.GetFullPath(Path.Combine(conceptDir, rawPath));
             }
@@ -370,7 +394,7 @@ public sealed class Bundle
         }
 
         var fullRoot = ReparsePoints.CanonicalizeRoot(Root);
-        if (!ReparsePoints.IsWithinBundleRoot(fullRoot, candidate)
+        if (!ReparsePoints.IsWithin(fullRoot, candidate, PathComparison)
             || ReparsePoints.IsReparsePoint(candidate)
             || ReparsePoints.HasReparsePointAncestor(fullRoot, candidate))
         {

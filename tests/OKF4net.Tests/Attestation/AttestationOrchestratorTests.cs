@@ -250,4 +250,28 @@ public class AttestationOrchestratorTests
         Assert.False(outcome.Displayable);
         Assert.NotEmpty(outcome.Reasons);
     }
+
+    /// <summary>
+    /// P2b regression: <see cref="AttestationOrchestrator.RunAsync"/> is a
+    /// direct public API (not just reached through the agent wrapper, which
+    /// already normalizes a null parameter dictionary before calling in), so
+    /// it must uphold its own errors-as-data promise for a caller who passes
+    /// <c>null!</c> directly -- never an unhandled <see cref="NullReferenceException"/>.
+    /// Before the fix, the required-parameter gate dereferenced
+    /// <c>parameterValues</c> (<c>.ContainsKey</c>) before any guarded host
+    /// call, so a null dictionary threw immediately. <see cref="InlineComputation"/>
+    /// declares a required "year" parameter, so a normalized empty dictionary
+    /// must still surface the normal missing-required-parameter outcome.
+    /// </summary>
+    [Fact]
+    public async Task Null_parameter_dictionary_does_not_throw_and_reports_missing_required_parameter()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var outcome = await new AttestationOrchestrator(reg).RunAsync(bundle, id, null!);
+        Assert.False(outcome.Displayable);
+        Assert.Contains(outcome.Reasons, r => r.Contains("year"));
+        Assert.Null(outcome.Receipt); // never reached bind/execute
+    }
 }
