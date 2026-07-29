@@ -50,11 +50,19 @@ internal static class FusedResolverEngine
     /// <see cref="ApplyFairness"/>.
     /// </param>
     /// <param name="ct">A cancellation token observed between sources.</param>
-    /// <exception cref="ArgumentException">
-    /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
-    /// empty, or whitespace, or its <see cref="KnowledgeQuery.FairnessQuota"/>
-    /// is set but not greater than zero.
-    /// </exception>
+    /// <remarks>
+    /// PRECONDITION: <paramref name="query"/> is already valid --
+    /// <see cref="ResolverGuards.ValidateQuery"/> must have been called on it
+    /// by the caller before reaching this method. Not re-checked here so
+    /// that a null/blank/malformed query throws SYNCHRONOUSLY at the
+    /// resolver's own public <c>SearchAsync</c> entry point, not deferred
+    /// into this method's <see langword="async"/> state machine (invisible
+    /// to a caller that doesn't await immediately). Both callers
+    /// (<see cref="MergedKnowledgeResolver"/>, <see cref="PriorityWeightedKnowledgeResolver"/>)
+    /// validate before invoking this method; it is <see langword="internal"/>
+    /// specifically so no caller outside this assembly can reach it without
+    /// going through one of them.
+    /// </remarks>
     internal static async ValueTask<KnowledgeContext> SearchAsync(
         IKnowledgeCatalog catalog,
         IOkfClock clock,
@@ -63,8 +71,6 @@ internal static class FusedResolverEngine
         int? fairnessQuota,
         CancellationToken ct)
     {
-        ResolverGuards.ValidateQuery(query);
-
         var snapshot = catalog.Current;
         var enabledSources = snapshot.Sources
             .Where(s => s.Enabled && s.Role == SourceRole.Knowledge)

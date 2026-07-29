@@ -134,4 +134,36 @@ public class PriorityWeightedKnowledgeResolverTests
 
         await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("   ")));
     }
+
+    [Fact]
+    public void SearchAsync_throws_synchronously_for_a_null_query()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("src", "note.md"), "---\ntype: Note\ntitle: Orders\ndescription: d\n---\nOrders.\n");
+        using var catalog = BuildCatalog(root, """
+            { "id": "src", "path": "./src", "priority": 1, "enabled": true }
+            """);
+        var resolver = new PriorityWeightedKnowledgeResolver(catalog);
+
+        // Assert.Throws (never ThrowsAsync) only passes if the exception is
+        // thrown while this delegate is RUNNING, not deferred into a faulted
+        // ValueTask -- proves this resolver's validation is synchronous.
+        Assert.Throws<ArgumentNullException>(() => resolver.SearchAsync(null!));
+    }
+
+    [Fact]
+    public async Task SearchAsync_rejects_an_undefined_ResolverStrategy()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("src", "note.md"), "---\ntype: Note\ntitle: Orders\ndescription: d\n---\nOrders.\n");
+        using var catalog = BuildCatalog(root, """
+            { "id": "src", "path": "./src", "priority": 1, "enabled": true }
+            """);
+        var resolver = new PriorityWeightedKnowledgeResolver(catalog);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = (KnowledgeResolverStrategy)99 }));
+
+        Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
+    }
 }

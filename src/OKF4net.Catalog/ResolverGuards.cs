@@ -19,8 +19,10 @@ internal static class ResolverGuards
     /// <exception cref="ArgumentNullException"><paramref name="query"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
-    /// empty, or whitespace, or its <see cref="KnowledgeQuery.FairnessQuota"/>
-    /// is set but not greater than zero.
+    /// empty, or whitespace; its <see cref="KnowledgeQuery.FairnessQuota"/>
+    /// is set but not greater than zero; or its
+    /// <see cref="KnowledgeQuery.ResolverStrategy"/> is set to a value that
+    /// is not a defined <see cref="KnowledgeResolverStrategy"/> member.
     /// </exception>
     internal static void ValidateQuery(KnowledgeQuery query)
     {
@@ -40,6 +42,35 @@ internal static class ResolverGuards
             throw new ArgumentException(
                 $"KnowledgeQuery.FairnessQuota must be greater than zero (got {query.FairnessQuota}); use null to disable fairness reordering.",
                 nameof(query));
+        }
+
+        // Checked even by GroupedKnowledgeResolver, which never reads
+        // ResolverStrategy itself: a caller can hand a KnowledgeQuery
+        // straight to any concrete resolver, not only through
+        // KnowledgeResolverRouter, so an undefined enum value (e.g. an
+        // out-of-range int surviving a config bind) must fail the same way
+        // everywhere rather than only where the router happens to notice it.
+        if (query.ResolverStrategy is { } strategy)
+        {
+            ValidateStrategy(strategy, nameof(query));
+        }
+    }
+
+    /// <summary>
+    /// Validates that <paramref name="strategy"/> is one of the members
+    /// <see cref="KnowledgeResolverStrategy"/> actually defines.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="strategy"/> is not a defined
+    /// <see cref="KnowledgeResolverStrategy"/> member.
+    /// </exception>
+    internal static void ValidateStrategy(KnowledgeResolverStrategy strategy, string paramName)
+    {
+        if (!Enum.IsDefined(strategy))
+        {
+            throw new ArgumentException(
+                $"'{strategy}' is not a defined KnowledgeResolverStrategy member.",
+                paramName);
         }
     }
 

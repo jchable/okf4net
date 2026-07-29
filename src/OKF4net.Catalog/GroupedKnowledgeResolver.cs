@@ -53,14 +53,28 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
     /// <see cref="KnowledgeDiagnosticCode.NoEnabledSources"/> (a legitimate
     /// catalog state), a blank query text is a caller/programming error --
     /// there is no sensible search to even attempt. A non-positive
-    /// <see cref="KnowledgeQuery.FairnessQuota"/> throws the same way even
-    /// though this strategy ignores the quota otherwise, so a malformed query
+    /// <see cref="KnowledgeQuery.FairnessQuota"/> or an undefined
+    /// <see cref="KnowledgeQuery.ResolverStrategy"/> throw the same way even
+    /// though this strategy ignores both otherwise, so a malformed query
     /// fails identically regardless of which strategy runs it.
     /// </remarks>
-    public async ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
+    public ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
+        // Deliberately NOT declared async: validation must throw
+        // SYNCHRONOUSLY, at the call site, the same way every other
+        // IKnowledgeResolver implementation in this codebase does it. An
+        // async method defers even its very first statement's exceptions
+        // into the returned ValueTask instead of throwing them directly --
+        // invisible to a caller that awaits immediately, but a real
+        // divergence for one that doesn't. SearchCoreAsync carries the
+        // actual (async) work; this method's only job is the validate-then-
+        // delegate split that keeps the throw synchronous.
         ResolverGuards.ValidateQuery(query);
+        return SearchCoreAsync(query, ct);
+    }
 
+    private async ValueTask<KnowledgeContext> SearchCoreAsync(KnowledgeQuery query, CancellationToken ct)
+    {
         var snapshot = _catalog.Current;
         var enabledSources = snapshot.Sources
             .Where(s => s.Enabled && s.Role == SourceRole.Knowledge)

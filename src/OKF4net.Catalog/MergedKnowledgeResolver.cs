@@ -99,12 +99,16 @@ public sealed class MergedKnowledgeResolver : IKnowledgeResolver
     /// <see cref="KnowledgeDiagnosticCode.NoEnabledSources"/> (a legitimate
     /// catalog state), a blank query is a caller error -- there is no
     /// sensible search to attempt. A non-positive
-    /// <see cref="KnowledgeQuery.FairnessQuota"/> throws the same way; see
-    /// <see cref="ResolverGuards.ValidateQuery"/>.
+    /// <see cref="KnowledgeQuery.FairnessQuota"/> or an undefined
+    /// <see cref="KnowledgeQuery.ResolverStrategy"/> throw the same way; see
+    /// <see cref="ResolverGuards.ValidateQuery"/>. Every check runs
+    /// SYNCHRONOUSLY -- this method is deliberately not <see langword="async"/>
+    /// itself, so the throw happens at the call site rather than inside the
+    /// returned <see cref="ValueTask{TResult}"/>.
     /// </remarks>
     public ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(query);
+        ResolverGuards.ValidateQuery(query);
         return FusedResolverEngine.SearchAsync(
             _catalog, _clock, query, Comparer, query.FairnessQuota ?? _defaultFairnessQuota, ct);
     }

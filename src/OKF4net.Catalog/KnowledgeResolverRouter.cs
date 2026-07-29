@@ -51,6 +51,10 @@ public sealed class KnowledgeResolverRouter : IKnowledgeResolver
     /// <see langword="null"/> (the default) disables reordering.
     /// </param>
     /// <param name="clock">Supplies "today" for stale-policy filtering; defaults to the system clock.</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="defaultStrategy"/> is not a defined
+    /// <see cref="KnowledgeResolverStrategy"/> member.
+    /// </exception>
     public KnowledgeResolverRouter(
         IKnowledgeCatalog catalog,
         KnowledgeResolverStrategy defaultStrategy = KnowledgeResolverStrategy.GroupedBySource,
@@ -58,6 +62,7 @@ public sealed class KnowledgeResolverRouter : IKnowledgeResolver
         IOkfClock? clock = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
+        ResolverGuards.ValidateStrategy(defaultStrategy, nameof(defaultStrategy));
 
         var effectiveClock = clock ?? new SystemClock();
         _grouped = new GroupedKnowledgeResolver(catalog, effectiveClock);
@@ -71,16 +76,33 @@ public sealed class KnowledgeResolverRouter : IKnowledgeResolver
     /// Delegates to the selected strategy; every contract the strategies
     /// document (the blank-query <see cref="ArgumentException"/>,
     /// errors-as-data diagnostics, generation stamping) is theirs unchanged.
+    /// <paramref name="query"/> is validated -- including
+    /// <see cref="KnowledgeQuery.ResolverStrategy"/>, if set -- before any
+    /// strategy is chosen, so an undefined enum value never silently falls
+    /// back to <see cref="KnowledgeResolverStrategy.GroupedBySource"/>; it is
+    /// rejected instead.
     /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="query"/> fails <see cref="ResolverGuards.ValidateQuery"/>
+    /// -- including a <see cref="KnowledgeQuery.ResolverStrategy"/> that is
+    /// not a defined <see cref="KnowledgeResolverStrategy"/> member.
+    /// </exception>
     public ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(query);
+        ResolverGuards.ValidateQuery(query);
 
+        // The switch is exhaustive by construction, not by convention: every
+        // reachable value of (query.ResolverStrategy ?? _defaultStrategy) was
+        // already validated above (query.ResolverStrategy, if set) or at
+        // construction (_defaultStrategy, in the constructor) -- so the
+        // fallback arm below can never actually run for a value this method
+        // itself produced.
         return (query.ResolverStrategy ?? _defaultStrategy) switch
         {
+            KnowledgeResolverStrategy.GroupedBySource => _grouped.SearchAsync(query, ct),
             KnowledgeResolverStrategy.Merged => _merged.SearchAsync(query, ct),
             KnowledgeResolverStrategy.PriorityWeighted => _priorityWeighted.SearchAsync(query, ct),
-            _ => _grouped.SearchAsync(query, ct),
+            var strategy => throw new InvalidOperationException($"unreachable KnowledgeResolverStrategy: {strategy}"),
         };
     }
 }

@@ -88,14 +88,15 @@ public sealed class PriorityWeightedKnowledgeResolver : IKnowledgeResolver
 
     /// <inheritdoc/>
     /// <remarks>
-    /// A blank <see cref="KnowledgeQuery.Text"/>, or a non-positive
-    /// <see cref="KnowledgeQuery.FairnessQuota"/>, throws
-    /// <see cref="ArgumentException"/>, exactly as in
+    /// A blank <see cref="KnowledgeQuery.Text"/>, a non-positive
+    /// <see cref="KnowledgeQuery.FairnessQuota"/>, or an undefined
+    /// <see cref="KnowledgeQuery.ResolverStrategy"/> throws
+    /// <see cref="ArgumentException"/> SYNCHRONOUSLY, exactly as in
     /// <see cref="MergedKnowledgeResolver.SearchAsync"/>.
     /// </remarks>
     public ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(query);
+        ResolverGuards.ValidateQuery(query);
         return FusedResolverEngine.SearchAsync(
             _catalog, _clock, query, Comparer, query.FairnessQuota ?? _defaultFairnessQuota, ct);
     }

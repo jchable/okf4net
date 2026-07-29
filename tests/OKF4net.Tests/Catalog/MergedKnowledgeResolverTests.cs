@@ -73,6 +73,10 @@ public class MergedKnowledgeResolverTests
         Assert.NotEmpty(context.Passages);
 
         // The defining property of a merged ranking: scores never increase.
+        // (This particular fixture is two byte-identical bundle copies, so
+        // every score ties and the assertion would hold even under grouped
+        // order -- see Scores_genuinely_interleave_across_sources_not_just_within_one
+        // below for a fixture where it wouldn't.)
         var scores = context.Passages.Select(p => p.Score).ToList();
         Assert.Equal(scores.OrderByDescending(s => s).ToList(), scores);
 
@@ -83,6 +87,50 @@ public class MergedKnowledgeResolverTests
         // score and priority orders genuinely disagree.)
         Assert.Contains(context.Passages, p => p.SourceId == "hi");
         Assert.Contains(context.Passages, p => p.SourceId == "lo");
+    }
+
+    [Fact]
+    public async Task Scores_genuinely_interleave_across_sources_not_just_within_one()
+    {
+        using var root = new TempDir();
+
+        // Four distinct, hand-controlled scores (verified against
+        // ConceptSearch.ScoreConcept's presence-based title x3/description
+        // x2/body x1 weighting) spread across two equal-priority sources so
+        // that neither GROUPED order (a's two passages, then b's two, in
+        // either priority direction) nor any accidental non-sort would
+        // satisfy "scores never increase" -- unlike the byte-identical
+        // fixture above, where every tie makes that assertion trivially true
+        // regardless of whether ranking is actually implemented.
+        root.Write(Path.Combine("a", "a1.md"),
+            "---\ntype: Note\ntitle: Orders update\ndescription: orders processed\n---\nGeneral update, no further mention.\n");
+        root.Write(Path.Combine("a", "a2.md"),
+            "---\ntype: Note\ntitle: Unrelated\ndescription: nothing here\n---\nA quick note about orders today.\n");
+        root.Write(Path.Combine("b", "b1.md"),
+            "---\ntype: Note\ntitle: Orders orders orders\ndescription: orders orders\n---\nOrders mentioned here too.\n");
+        root.Write(Path.Combine("b", "b2.md"),
+            "---\ntype: Note\ntitle: Nothing special\ndescription: orders noted\n---\nNo further mention.\n");
+
+        using var catalog = BuildCatalog(root, """
+            { "id": "a", "path": "./a", "priority": 1, "enabled": true },
+            { "id": "b", "path": "./b", "priority": 1, "enabled": true }
+            """);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        // b1=6 (title+description+body), a1=5 (title+description), b2=2
+        // (description only), a2=1 (body only) -- four distinct scores that
+        // interleave b, a, b, a. A grouped-by-source implementation could
+        // never produce this order (it would emit all of one source before
+        // the other), so this genuinely distinguishes "ranked by score" from
+        // "concatenated by source," rather than relying on ties to pass.
+        Assert.Equal(
+            new[] { "b1", "a1", "b2", "a2" },
+            context.Passages.Select(p => p.ConceptId).ToArray());
+        Assert.Equal(
+            new[] { 6, 5, 2, 1 },
+            context.Passages.Select(p => p.Score).ToArray());
     }
 
     [Fact]
@@ -262,5 +310,31 @@ public class MergedKnowledgeResolverTests
         var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
 
         Assert.Equal(catalog.Current.Generation, context.CatalogGeneration);
+    }
+
+    [Fact]
+    public void SearchAsync_throws_synchronously_for_a_null_query()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        // Assert.Throws (never ThrowsAsync) only passes if the exception is
+        // thrown while this delegate is RUNNING, not deferred into a faulted
+        // ValueTask -- proves this resolver's validation is synchronous.
+        Assert.Throws<ArgumentNullException>(() => resolver.SearchAsync(null!));
+    }
+
+    [Fact]
+    public async Task SearchAsync_rejects_an_undefined_ResolverStrategy()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = (KnowledgeResolverStrategy)99 }));
+
+        Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
     }
 }
