@@ -312,7 +312,8 @@ public sealed class OkfContextProvider : AIContextProvider
         var memory = new List<KnowledgePassage>();
         try
         {
-            var kc = await _resolver!.SearchAsync(new KnowledgeQuery(query), ct).ConfigureAwait(false);
+            var knowledgeQuery = new KnowledgeQuery(query) { FairnessQuota = _options.KnowledgeQueryFairnessQuota };
+            var kc = await _resolver!.SearchAsync(knowledgeQuery, ct).ConfigureAwait(false);
             knowledge.AddRange(kc.Passages);
         }
         catch (Exception ex) when (ex is OperationCanceledException) { throw; }
