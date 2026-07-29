@@ -27,7 +27,7 @@ export interface DocsTreeEntry {
 /**
  * The docs bundle tree, matching `website/docs/index.html`'s
  * `<ul class="tree">` (commit `40fe17f`, lines ~37-47): index,
- * getting-started, guides, library, cli, agents (soon), mcp, spec.
+ * getting-started, guides, library, cli, agents, catalog, mcp, spec.
  */
 export const docsTree: DocsTreeEntry[] = [
   { slug: 'index', label: 'index.md' },

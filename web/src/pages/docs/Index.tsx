@@ -12,7 +12,7 @@ export default function DocsIndex() {
   return (
     <DocsLayout
       title="Docs — OKF4net"
-      description="Developer documentation for OKF4net — the .NET implementation of the Open Knowledge Format. Getting started, task guides, and reference for the library, the okf CLI, and the Agent Framework tools. The manual is itself an OKF bundle."
+      description="Developer documentation for OKF4net — the .NET implementation of the Open Knowledge Format. Getting started, task guides, and reference for the library, the okf CLI, the Agent Framework tools, and the catalog. The manual is itself an OKF bundle."
       current="index"
     >
       <PageDoc
@@ -109,7 +109,7 @@ export default function DocsIndex() {
               },
             ]}
           />
-          <Next>The reference pages are landing one at a time. Until each does, the overview pages below cover the essentials.</Next>
+          <Next>Every concept above is published — guides teach, reference tells.</Next>
         </Chapter>
 
         <Chapter id="start" title="Start here" refText="what you came to do">

@@ -59,9 +59,9 @@ export default function Agents() {
       <div className="docbody">
         <Chapter id="tools" title="The nine tools" refText="OkfBundleTools.GetTools()">
           <p>
-            Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — a missing
-            concept, a malformed argument, an I/O error — the tool returns <code>"Error: ..."</code> text
-            instead of throwing, so a single bad call never crashes the agent loop.
+            Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — the tool
+            returns a plain-text failure message (<code>Error: ...</code>, <code>Concept '...' not found</code>,
+            or <code>Usage: ...</code>) instead of throwing, so a single bad call never crashes the agent loop.
           </p>
           <MapTable
             head={['Tool', 'Does']}

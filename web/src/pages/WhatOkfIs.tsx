@@ -31,7 +31,8 @@ export default function WhatOkfIs() {
             The <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">Open Knowledge Format v0.2</a>{' '}
             is Google's open, human- and agent-friendly format for representing knowledge as{' '}
             <strong>a directory of markdown files with YAML frontmatter</strong>. It is intentionally minimal — and
-            OKF4net implements all of it.
+            OKF4net implements all of it bar the new §10 attested-computations concept — see the{' '}
+            <Link to="/docs/spec">spec mapping</Link>.
           </>
         }
       />
@@ -134,9 +135,25 @@ export default function WhatOkfIs() {
                 </>,
               ],
               [
+                '§5 Provenance, trust, and lifecycle',
+                <>
+                  <code>Frontmatter.Sources</code>/<code>Generated</code>/<code>Verified</code>/
+                  <code>TrustTier</code>/<code>Status</code>/<code>StaleAfter</code>, and the{' '}
+                  <code>OKF4net.Actor</code>/<code>Trust</code>/<code>Provenance</code>/<code>Lifecycle</code> value
+                  types
+                </>,
+              ],
+              [
                 '§6 Cross-linking',
                 <>
                   <code>OKF4net.LinkScanner</code>, <code>Bundle.LinksFrom</code> / <code>Bundle.Backlinks</code>
+                </>,
+              ],
+              [
+                '§7 Actor convention',
+                <>
+                  <code>OKF4net.Actor.Parse</code> — <code>human:</code>/<code>process:</code>/
+                  <code>&lt;producer&gt;/&lt;version&gt;</code>
                 </>,
               ],
               ['§8 Index files', <code key="c8">OKF4net.IndexGenerator</code>],

@@ -17,7 +17,7 @@ const manifestHtml = `{
 const wireUpHtml = `<span class="k">using</span> OKF4net.Catalog;
 <span class="k">using</span> OKF4net.Catalog.Hosting;
 
-services.AddKnowledge(o =&gt; o.AddCatalogFile(<span class="s">"./config/catalog.json"</span>));
+services.AddKnowledge(o =&gt; o.AddCatalogFile(<span class="s">"./catalog.json"</span>));
 services.AddMemory();
 
 <span class="c">// Elsewhere, resolve and search:</span>
@@ -70,7 +70,7 @@ export default function Catalog() {
               ['id', 'required — a valid single concept-id segment, unique within the manifest'],
               ['path', 'required — resolved relative to the manifest directory, must stay inside the catalog root'],
               ['priority', '0 — higher-priority sources sort first within the grouped results'],
-              ['enabled', "true — a disabled source's path is never validated, even if it's garbage"],
+              ['enabled', "true — a disabled source's path is never resolved or checked against the filesystem"],
               ['role', '"knowledge" — or "memory"; any other string is rejected (IllegalRole)'],
               ['tier', 'required only when role is "memory": one of session, user, or tenant'],
             ]}
@@ -130,7 +130,7 @@ export default function Catalog() {
             <code>IMemoryStore</code> instead, via <code>FileMemoryStore</code>. All three tiers —{' '}
             <code>Session</code>, <code>User</code>, <code>Tenant</code> — are backed by durable storage, read
             in most-specific-first order (session → user → tenant) so a host can layer per-session scratch
-            memory over durable per-user and per-tenant memory. Every scope segment is path-encoded as
+            memory over durable per-user and per-tenant memory. Each present scope segment is path-encoded as
             <code>{'{lowercased}'}-{'{hash}'}</code> (a truncated SHA-256 of the case-sensitive raw value), so
             case-variant tenant or user ids never collide on a case-insensitive filesystem. RGPD/audit
             needs are covered by <code>DeleteScopeAsync</code> and <code>EnumerateAsync</code> — both
