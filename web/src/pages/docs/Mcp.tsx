@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 import { Link } from 'react-router-dom'
 import DocsLayout from '../../layouts/DocsLayout'
-import { PageDoc, Chapter, MapTable, ConceptGrid, Cell, Term, Steps, Warn, Next, Tag } from '../../components/doc'
+import { PageDoc, Chapter, MapTable, ConceptGrid, Cell, Term, Steps, Warn, Next } from '../../components/doc'
 
 // Whitespace-significant code samples (blank lines are part of the displayed
 // code) mixing inline syntax-highlighting spans with literal text — kept as
@@ -244,12 +244,8 @@ export default function Mcp() {
             <code>stderr</code>; <code>stdout</code> carries only the protocol.
           </p>
           <Next>
-            →{' '}
-            <span className="muted">
-              agents.md <Tag>soon</Tag>
-            </span>{' '}
-            — the same nine tools for the Microsoft Agent Framework · <Link to="/library">library.md</Link> — the API
-            underneath
+            → <Link to="/docs/agents">agents.md</Link> — the same nine tools for the Microsoft Agent Framework ·{' '}
+            <Link to="/library">library.md</Link> — the API underneath
           </Next>
         </Chapter>
 

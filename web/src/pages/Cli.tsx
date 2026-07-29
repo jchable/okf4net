@@ -62,7 +62,7 @@ export default function Cli() {
       />
 
       <div className="docbody">
-        <Chapter id="commands" title="Commands" refText="§6–§9 — the whole surface">
+        <Chapter id="commands" title="Commands" refText="§8–§11 — the whole surface">
           <MapTable
             head={['Command', 'Does']}
             rows={[
