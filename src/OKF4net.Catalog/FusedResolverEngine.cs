@@ -49,6 +49,13 @@ internal static class FusedResolverEngine
     /// validated by <see cref="ResolverGuards"/> at the public boundary. See
     /// <see cref="ApplyFairness"/>.
     /// </param>
+    /// <param name="defaultSourceVisibilityPolicy">
+    /// The host's configured default visibility policy, used when
+    /// <paramref name="query"/> sets neither
+    /// <see cref="KnowledgeQuery.PermittedSourceIds"/> nor
+    /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/>. See
+    /// <see cref="SourceVisibility.Filter"/>.
+    /// </param>
     /// <param name="ct">A cancellation token observed between sources.</param>
     /// <remarks>
     /// PRECONDITION: <paramref name="query"/> is already valid --
@@ -69,6 +76,7 @@ internal static class FusedResolverEngine
         KnowledgeQuery query,
         IComparer<RankedPassage> comparer,
         int? fairnessQuota,
+        Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? defaultSourceVisibilityPolicy,
         CancellationToken ct)
     {
         var snapshot = catalog.Current;
@@ -77,6 +85,8 @@ internal static class FusedResolverEngine
             .OrderByDescending(s => s.Priority)
             .ThenBy(s => s.Id, StringComparer.Ordinal)
             .ToList();
+
+        enabledSources = SourceVisibility.Filter(enabledSources, query, defaultSourceVisibilityPolicy);
 
         if (enabledSources.Count == 0)
         {

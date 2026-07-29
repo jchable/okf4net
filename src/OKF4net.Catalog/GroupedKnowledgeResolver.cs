@@ -36,12 +36,26 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
 {
     private readonly IKnowledgeCatalog _catalog;
     private readonly IOkfClock _clock;
+    private readonly Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? _defaultSourceVisibilityPolicy;
 
     /// <summary>Creates a resolver over <paramref name="catalog"/>; <paramref name="clock"/> supplies "today" for stale-policy filtering (defaults to the system clock).</summary>
-    public GroupedKnowledgeResolver(IKnowledgeCatalog catalog, IOkfClock? clock = null)
+    /// <param name="catalog">The catalog whose enabled knowledge sources are searched.</param>
+    /// <param name="clock">Supplies "today" for stale-policy filtering; defaults to the system clock.</param>
+    /// <param name="defaultSourceVisibilityPolicy">
+    /// The visibility policy applied when a query leaves both
+    /// <see cref="KnowledgeQuery.PermittedSourceIds"/> and
+    /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> unset;
+    /// <see langword="null"/> (the default) applies no restriction -- every
+    /// enabled source stays visible to every caller.
+    /// </param>
+    public GroupedKnowledgeResolver(
+        IKnowledgeCatalog catalog,
+        IOkfClock? clock = null,
+        Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? defaultSourceVisibilityPolicy = null)
     {
         _catalog = catalog;
         _clock = clock ?? new SystemClock();
+        _defaultSourceVisibilityPolicy = defaultSourceVisibilityPolicy;
     }
 
     /// <inheritdoc/>
@@ -81,6 +95,8 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
             .OrderByDescending(s => s.Priority)
             .ThenBy(s => s.Id, StringComparer.Ordinal)
             .ToList();
+
+        enabledSources = SourceVisibility.Filter(enabledSources, query, _defaultSourceVisibilityPolicy);
 
         if (enabledSources.Count == 0)
         {

@@ -447,4 +447,57 @@ public class GroupedKnowledgeResolverTests
 
         Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task SearchAsync_with_PermittedSourceIds_only_searches_the_named_source()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "hi" },
+        });
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_a_SourceVisibilityPolicy_receives_the_query_Scope()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+        var scope = new KnowledgeAccessScope(tenantId: "acme");
+        var observedScopes = new List<KnowledgeAccessScope>();
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            Scope = scope,
+            SourceVisibilityPolicy = (s, source) =>
+            {
+                observedScopes.Add(s);
+                return source.Id == "lo";
+            },
+        });
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("lo", p.SourceId));
+        Assert.All(observedScopes, s => Assert.Equal(scope, s));
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_a_constructor_default_policy_applies_it_when_the_query_sets_neither_field()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog, defaultSourceVisibilityPolicy: (_, source) => source.Id == "hi");
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
+    }
 }

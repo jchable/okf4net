@@ -185,4 +185,24 @@ public class PriorityWeightedKnowledgeResolverTests
 
         Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task SearchAsync_with_PermittedSourceIds_only_searches_the_named_source()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("only", "a.md"), "---\ntype: Note\ntitle: Orders a\ndescription: orders\n---\nOrders.\n");
+        using var catalog = BuildCatalog(root, """
+            { "id": "src", "path": "./only", "priority": 1, "enabled": true },
+            { "id": "hidden", "path": "./only", "priority": 2, "enabled": true }
+            """);
+        var resolver = new PriorityWeightedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "src" },
+        });
+
+        var passage = Assert.Single(context.Passages);
+        Assert.Equal("src", passage.SourceId);
+    }
 }

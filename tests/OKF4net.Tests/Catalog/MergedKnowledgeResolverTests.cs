@@ -353,4 +353,33 @@ public class MergedKnowledgeResolverTests
 
         Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task SearchAsync_with_PermittedSourceIds_only_searches_the_named_source()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales")
+        {
+            PermittedSourceIds = new HashSet<string> { "lo" },
+        });
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("lo", p.SourceId));
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_a_constructor_default_policy_applies_it_when_the_query_sets_neither_field()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog, defaultSourceVisibilityPolicy: (_, source) => source.Id == "hi");
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales"));
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
+    }
 }
