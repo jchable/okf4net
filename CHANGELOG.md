@@ -8,8 +8,53 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
+OKF4net now targets **OKF specification v0.2**. The core library and `okf` CLI
+implement v0.2's provenance, trust, and lifecycle model, with the two
+v0.2-sanctioned legacy fallbacks so v0.1 bundles keep loading unchanged.
+`OKF4net.Catalog` gains fully-implemented session/tenant memory tiers and
+three selectable knowledge-resolver ranking strategies.
+
 ### Added
 
+- **Provenance / trust / lifecycle frontmatter (§5)** — typed, order-preserving
+  accessors on `Frontmatter`, each projected lazily and never throwing on
+  malformed input (permissive loading, §3):
+  - `sources` with per-entry credibility signals (`author`, `usage_count`,
+    `last_modified`) and the `usage_window` sibling (`Source`, `UsageWindow`).
+  - `generated` / `verified` stamps and the derived trust tier (`Stamp`,
+    `TrustTier`: unverified / machine-confirmed / human-reviewed).
+  - `status` (draft|stable|deprecated) and `stale_after` (`Lifecycle`,
+    `ConceptStatus`), with staleness computed against an injectable `IOkfClock`.
+  - The §7 actor convention (`Actor`: `human:`/`process:`/`<producer>/<version>`).
+  - `StalePolicy` (Use / Tolerate / Strict) for consumers.
+- **`OkfDocument.Sources()`** — v0.2 provenance with the §13.1 legacy fallback:
+  the frontmatter `sources` field, or the legacy `# Citations` body list when it
+  is absent. `Frontmatter.LastChangedAt` falls back `generated.at ?? timestamp`.
+- **v0.2 conformance fixture** (`tests/fixtures/okf_v02`) and its byte-exact golden.
+- **Consumer-layer v0.2 wiring** — the provenance/trust/lifecycle model is now
+  surfaced through `OKF4net.Agents` and `OKF4net.Catalog`:
+  - `okf_write_concept` auto-stamps a `generated` block (§5.2) —
+    `{by: okf4net/<version>, at: <UTC>}` — when the frontmatter has none (opt-in
+    per tool; the scoped-memory write path is deliberately never auto-stamped).
+  - `okf_read_concept` prints a `status | trust | stale` meta line, and
+    `okf_search` marks hits `[deprecated]` / `[stale]`, when those differ from
+    the defaults.
+  - `OkfContextProvider`, `GroupedKnowledgeResolver`, and `KnowledgeQuery` honor
+    a `StalePolicy` (default `Use` — surface everything, never silently drop)
+    when admitting concepts, with staleness resolved against an injectable clock.
+  - `KnowledgePassage` carries the matching concept's `TrustTier` and full
+    `Lifecycle`, so a resolver or host can filter and render provenance without
+    reparsing frontmatter.
+- **Session and tenant memory tiers are now fully implemented and tested.**
+  v0.2.0 shipped only the user tier working end-to-end (session/tenant were
+  contract/parse-only). The underlying mechanism (`FileMemoryStore`, manifest
+  parsing, DI wiring, `OkfContextProviderOptions.CaptureTier`) turned out to
+  already be generic across all three tiers, so this release is primarily the
+  test coverage, one path-nesting fix (see Fixed), and doc corrections that
+  make the existing generic mechanism trustworthy for session/tenant, not new
+  surface area.
 - **Selectable resolver ranking strategies.** `IKnowledgeResolver` searches
   can now be ranked three ways: `GroupedBySource` (each source's results
   concatenated in priority order — the previous and still-default
@@ -42,6 +87,14 @@ and this project adheres to
 
 ### Changed
 
+- **`OkfSpec.Version` is now `"0.2"`** — `okf validate` and `-V` report OKF v0.2.
+  Conformance (§11) still requires only a non-empty `type`, a parseable
+  frontmatter block, and well-formed reserved files; every new
+  provenance/trust/lifecycle/actor check is a Warning or Info, never an Error.
+- **`BundleValidator`** emits the v0.2 soft-guidance diagnostics and takes an
+  optional `IOkfClock` for deterministic staleness.
+- The producer-side `OkfDocument.Validate()` now requires `type`/`title`/
+  `description` (no longer `timestamp`).
 - **Breaking:** `DefaultKnowledgeResolver` is renamed `GroupedKnowledgeResolver`
   (behaviour identical). Code that resolves `IKnowledgeResolver` from DI is
   unaffected; only direct references to the concrete type name need
@@ -55,6 +108,9 @@ and this project adheres to
 
 ### Fixed
 
+- **YAML flow-style plain scalars** now keep bare colons inside values, so v0.2
+  frontmatter written in flow style (`generated: { by: human:ada, at: … }`,
+  URLs, ISO timestamps) parses correctly.
 - **`MemoryPath.For`'s session-tier path now nests under tenant and user**
   (`memory-session/<tenant>/<user>/<session>`, matching how the user tier
   already nests under tenant), closing an isolation gap where two different
@@ -63,61 +119,6 @@ and this project adheres to
   session tier (undocumented and untested before this release) will need to
   re-capture session memory under the new path -- existing session-tier
   content at the old path is orphaned, not migrated.
-
-## [0.3.0] - 2026-07-28
-
-OKF4net now targets **OKF specification v0.2**. The core library and `okf` CLI
-implement v0.2's provenance, trust, and lifecycle model, with the two
-v0.2-sanctioned legacy fallbacks so v0.1 bundles keep loading unchanged.
-
-### Added
-
-- **Provenance / trust / lifecycle frontmatter (§5)** — typed, order-preserving
-  accessors on `Frontmatter`, each projected lazily and never throwing on
-  malformed input (permissive loading, §3):
-  - `sources` with per-entry credibility signals (`author`, `usage_count`,
-    `last_modified`) and the `usage_window` sibling (`Source`, `UsageWindow`).
-  - `generated` / `verified` stamps and the derived trust tier (`Stamp`,
-    `TrustTier`: unverified / machine-confirmed / human-reviewed).
-  - `status` (draft|stable|deprecated) and `stale_after` (`Lifecycle`,
-    `ConceptStatus`), with staleness computed against an injectable `IOkfClock`.
-  - The §7 actor convention (`Actor`: `human:`/`process:`/`<producer>/<version>`).
-  - `StalePolicy` (Use / Tolerate / Strict) for consumers.
-- **`OkfDocument.Sources()`** — v0.2 provenance with the §13.1 legacy fallback:
-  the frontmatter `sources` field, or the legacy `# Citations` body list when it
-  is absent. `Frontmatter.LastChangedAt` falls back `generated.at ?? timestamp`.
-- **v0.2 conformance fixture** (`tests/fixtures/okf_v02`) and its byte-exact golden.
-- **Consumer-layer v0.2 wiring** — the provenance/trust/lifecycle model is now
-  surfaced through `OKF4net.Agents` and `OKF4net.Catalog`:
-  - `okf_write_concept` auto-stamps a `generated` block (§5.2) —
-    `{by: okf4net/<version>, at: <UTC>}` — when the frontmatter has none (opt-in
-    per tool; the scoped-memory write path is deliberately never auto-stamped).
-  - `okf_read_concept` prints a `status | trust | stale` meta line, and
-    `okf_search` marks hits `[deprecated]` / `[stale]`, when those differ from
-    the defaults.
-  - `OkfContextProvider`, `DefaultKnowledgeResolver`, and `KnowledgeQuery` honor
-    a `StalePolicy` (default `Use` — surface everything, never silently drop)
-    when admitting concepts, with staleness resolved against an injectable clock.
-  - `KnowledgePassage` carries the matching concept's `TrustTier` and full
-    `Lifecycle`, so a resolver or host can filter and render provenance without
-    reparsing frontmatter.
-
-### Changed
-
-- **`OkfSpec.Version` is now `"0.2"`** — `okf validate` and `-V` report OKF v0.2.
-  Conformance (§11) still requires only a non-empty `type`, a parseable
-  frontmatter block, and well-formed reserved files; every new
-  provenance/trust/lifecycle/actor check is a Warning or Info, never an Error.
-- **`BundleValidator`** emits the v0.2 soft-guidance diagnostics and takes an
-  optional `IOkfClock` for deterministic staleness.
-- The producer-side `OkfDocument.Validate()` now requires `type`/`title`/
-  `description` (no longer `timestamp`).
-
-### Fixed
-
-- **YAML flow-style plain scalars** now keep bare colons inside values, so v0.2
-  frontmatter written in flow style (`generated: { by: human:ada, at: … }`,
-  URLs, ISO timestamps) parses correctly.
 
 ## [0.2.0] - 2026-07-27
 
