@@ -11,8 +11,11 @@ without breaking any existing consumer of `IKnowledgeResolver`.
 
 ## 2. Motivation
 
-The concrete driver is agent/MCP context injection under a shared token
-budget (`OkfContextProvider`, `okf_search`). Tracing
+The concrete driver is agent context injection under a shared token budget:
+`OkfContextProvider`'s scoped (V2) path, the only `IKnowledgeResolver`
+consumer in the codebase. (`okf_search` is *not* affected — it scores a
+single bundle directly via `OkfBundleTools.ScoreConceptsFor` and never goes
+through a resolver.) Tracing
 `OkfContextProvider.AppendPassages` (`src/OKF4net.Agents/OkfContextProvider.cs:342-348`)
 shows it walks `KnowledgeContext.Passages` **in the order the resolver
 returns them** and stops once its token budget is exhausted — there is no
@@ -60,13 +63,15 @@ does.
 
 Fuses all sources into one list:
 
-1. Fan out to every enabled `Knowledge`-role source, as `GroupedKnowledgeResolver`
-   does today (unchanged: `CatalogPathResolver.TryResolve` per source,
-   `SourceUnavailable` diagnostic for a source that fails re-resolution).
-2. **Dedup** (§5).
+1. Resolve every enabled `Knowledge`-role source's directory
+   (`CatalogPathResolver.TryResolve` per source, `SourceUnavailable`
+   diagnostic for a source that fails re-resolution — unchanged from
+   today), then **dedup the source list** (§5).
+2. Fan out to the deduped sources, as `GroupedKnowledgeResolver` does
+   today.
 3. Apply `KnowledgeQuery.StalePolicy` admission filtering (unchanged
    semantics, same place in the pipeline as today).
-4. Sort the admitted, deduped passages by `Score` desc, then `Priority`
+4. Sort the admitted passages by `Score` desc, then `Priority`
    desc, then `SourceId` ordinal, then `ConceptId` ordinal (full
    determinism; `Priority` here is a **tie-break only**, exactly its
    existing meaning — never a score multiplier).
@@ -82,8 +87,8 @@ comparable without adjustment.
 
 ### 4.3 `PriorityWeightedKnowledgeResolver`
 
-Identical pipeline to `MergedKnowledgeResolver` (fan-out → dedup → stale
-filter → optional fairness reorder), differing only in the sort key order
+Identical pipeline to `MergedKnowledgeResolver` (source dedup → fan-out →
+stale filter → sort → optional fairness reorder), differing only in the sort key order
 at step 4: **`Priority` desc first, `Score` desc only within a priority
 tier**, then `SourceId`/`ConceptId` ordinal. This gives an operator an
 honest "this source's results always outrank that one, regardless of
@@ -95,8 +100,8 @@ complexity and surprise for a benefit no concrete use case has
 demonstrated. The lexicographic approach needs no such mapping.
 
 `MergedKnowledgeResolver` and `PriorityWeightedKnowledgeResolver` share one
-internal engine (fan-out, dedup, stale filtering, fairness reorder) and
-differ only in the final comparator, to avoid duplicating that pipeline
+internal engine (source dedup, fan-out, stale filtering, fairness reorder)
+and differ only in the final comparator, to avoid duplicating that pipeline
 twice.
 
 ## 5. Dedup
@@ -111,19 +116,38 @@ the codebase today (`Provenance.Source`, OKF spec §5.1, is a concept's own
 citation list, not an identity signal).
 
 Given no reliable general-purpose signal, dedup in this design is
-deliberately narrow: `MergedKnowledgeResolver`/`PriorityWeightedKnowledgeResolver`
-already resolve each enabled source's absolute bundle directory during
-fan-out (`CatalogPathResolver.TryResolve`). If two enabled source entries
-resolve to the **literal same directory** (e.g. the same bundle
-accidentally mounted twice under two `catalog.json` entries), a passage
-sharing both that resolved directory and its `ConceptId` is the same
-content found twice — keep one, discard the other: whichever of the two
-source entries has the higher `Priority` (then, if still tied, the lower
-ordinal `Id`) is the survivor, matching the same source-ordering
-convention §4.2/§4.3 already use. Two different resolved
-directories that happen to produce the same `ConceptId` string are
-**never** merged — doing so would silently conflate unrelated concepts,
-which is worse than a visible duplicate.
+deliberately narrow, and happens at the **source** level, before the
+fan-out — not at the passage level after it.
+`MergedKnowledgeResolver`/`PriorityWeightedKnowledgeResolver` already
+resolve each enabled source's absolute bundle directory
+(`CatalogPathResolver.TryResolve`) before searching it. If two enabled
+source entries resolve to the **literal same directory** (e.g. the same
+bundle accidentally mounted twice under two `catalog.json` entries), only
+one of them is searched: whichever has the higher `Priority` (then, if
+still tied, the lower ordinal `Id`) survives, matching the same
+source-ordering convention §4.2/§4.3 already use.
+
+Deduping the source list rather than the resulting passages means the same
+bundle is loaded and scored **once**, not twice-then-halved — same output,
+strictly less work, and no need to reason about two identical passages
+meeting again downstream. The observable trade-off, which the resolvers'
+XML docs must state: an eliminated source entry disappears from the result
+entirely — it contributes neither passages nor diagnostics, because it is
+never searched. Two different resolved directories that happen to produce
+the same `ConceptId` string are **never** merged — doing so would silently
+conflate unrelated concepts, which is worse than a visible duplicate.
+
+Directory comparison must reuse `CatalogPathResolver`'s existing
+**OS-dependent** convention — `OrdinalIgnoreCase` on Windows/macOS,
+`Ordinal` elsewhere (`CatalogPathResolver.cs:54`), matching each
+filesystem's own equality semantics — not a hardcoded case mode. Getting
+this wrong in either direction is a real defect: `Ordinal` on Windows
+would fail to dedup two entries differing only in case (the same
+directory), while `OrdinalIgnoreCase` on Linux would falsely dedup two
+genuinely distinct directories. `CatalogPathResolver.PathComparison` is
+`private static readonly` today; since the resolvers live in the same
+assembly (`OKF4net.Catalog`), widening it to `internal` is sufficient —
+the plan must reuse it that way rather than duplicating the OS check.
 
 Fuzzy/semantic duplicate detection (similar content, different id or
 directory) is out of scope — a materially different, higher-risk feature
@@ -189,9 +213,9 @@ public enum KnowledgeResolverStrategy
     (disabled).
 - **`KnowledgeResolverRouter : IKnowledgeResolver`** (new, in
   `OKF4net.Catalog`) owns one instance of each of the three concrete
-  resolvers plus the host's default strategy/quota. On `SearchAsync`, it
-  resolves `query.ResolverStrategy ?? hostDefaultStrategy` and
-  `query.FairnessQuota ?? hostDefaultFairnessQuota`, and delegates to the
+  resolvers plus a default strategy/quota. On `SearchAsync`, it resolves
+  `query.ResolverStrategy ?? defaultStrategy` and
+  `query.FairnessQuota ?? defaultFairnessQuota`, and delegates to the
   matching concrete resolver. `KnowledgeServiceCollectionExtensions.AddKnowledge`
   registers the router as the singleton `IKnowledgeResolver` (replacing
   today's direct `new DefaultKnowledgeResolver(catalog)` registration) —
@@ -199,8 +223,33 @@ public enum KnowledgeResolverStrategy
   working unchanged, with the new per-query override now reachable through
   that same injected instance.
 
+  **Layering constraint:** the router lives in `OKF4net.Catalog` but
+  `KnowledgeOptions` lives in `OKF4net.Catalog.Hosting`, which depends on
+  `OKF4net.Catalog` — so the router must NOT reference `KnowledgeOptions`
+  (that would invert the dependency and break the acyclic graph the
+  project's hard rules require). It takes plain
+  `(KnowledgeResolverStrategy defaultStrategy, int? defaultFairnessQuota)`
+  constructor parameters, and `AddKnowledge` reads them off
+  `KnowledgeOptions` and passes them in.
+
+**Default is unchanged behavior, by design.** Because
+`DefaultResolverStrategy` defaults to `GroupedBySource`, the motivating
+scenario in §2 is *not* fixed out of the box — a host must explicitly opt
+into `Merged` (or set `KnowledgeQuery.ResolverStrategy` per call) to get
+merged ranking. This is deliberate: an existing deployment's result
+ordering must not change silently on upgrade. §9's documentation work is
+what makes the opt-in discoverable.
+
 ## 8. Existing types touched
 
+- `IKnowledgeResolver`'s own interface doc
+  (`src/OKF4net.Catalog/IKnowledgeResolver.cs:4-9`) currently states the
+  **contract** as "returns a single, grouped-by-source `KnowledgeContext`"
+  and names `DefaultKnowledgeResolver` as *the* implementation. Both halves
+  become false: the interface no longer promises one ordering, and there
+  are three implementations. This is the most load-bearing doc change in
+  this design — it is the contract every implementation is written
+  against.
 - `KnowledgeContext.Passages`'s XML doc (`src/OKF4net.Catalog/KnowledgeContext.cs:16-22`)
   currently states a fixed grouped-by-source ordering contract "(V1
   scope)". That contract becomes resolver-specific: the doc comment must
@@ -245,9 +294,10 @@ documentation.
   ordering behavior to today's `DefaultKnowledgeResolver`, source-renamed
   only.
 - A query against `MergedKnowledgeResolver` with two sources returns a
-  single list ordered by descending score across both sources, with a
-  passage found via two source entries that resolve to the same directory
-  appearing exactly once.
+  single list ordered by descending score across both sources.
+- Two enabled source entries resolving to the same directory yield each
+  matching concept exactly once, attributed to the surviving source
+  (higher `Priority`, then lower ordinal `Id`).
 - A query with the same `ConceptId` present in two *different* resolved
   directories returns **both** passages (never falsely deduped).
 - A query against `PriorityWeightedKnowledgeResolver` with two sources of
