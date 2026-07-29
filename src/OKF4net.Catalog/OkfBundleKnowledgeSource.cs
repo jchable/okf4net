@@ -53,7 +53,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
     /// diagnostic) here, rather than throwing, mirrors
     /// <see cref="ConceptSearch.Search"/>'s own "zero query terms -&gt; empty
     /// list" behaviour for a merely-blank (non-null) query: a blank query is
-    /// not a *source* error, even though <see cref="DefaultKnowledgeResolver"/>
+    /// not a *source* error, even though <see cref="GroupedKnowledgeResolver"/>
     /// treats it as a caller error one layer up (this type has no such
     /// caller-contract to lean on).
     /// </remarks>
@@ -109,7 +109,7 @@ public sealed class OkfBundleKnowledgeSource : IKnowledgeSource
         // ReadOnlyCollection<T> view -- otherwise a caller could
         // `(List<KnowledgePassage>)result.Passages` and mutate a published
         // KnowledgeSearchResult (same reasoning as KnowledgeContext's own
-        // passages/diagnostics; see DefaultKnowledgeResolver).
+        // passages/diagnostics; see GroupedKnowledgeResolver).
         return new ValueTask<KnowledgeSearchResult>(new KnowledgeSearchResult(passages.AsReadOnly(), null));
     }
 }

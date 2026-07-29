@@ -49,8 +49,18 @@ public static class CatalogPathResolver
     /// consistent with <c>OkfBundleTools</c>' and <c>IndexGenerator</c>'s own
     /// conventions, whose inputs are trusted/validated and so are unaffected
     /// by this distinction).
+    /// <para>
+    /// <see langword="internal"/> rather than <see langword="private"/>
+    /// because <see cref="FusedResolverEngine"/>'s source-level dedup must
+    /// compare two resolved source directories for equality using EXACTLY
+    /// this convention. A second, independently-written OS check there would
+    /// be a real defect in either direction: <see cref="StringComparison.Ordinal"/>
+    /// on Windows would fail to dedup two entries differing only in case (the
+    /// same directory), while <see cref="StringComparison.OrdinalIgnoreCase"/>
+    /// on Linux would falsely dedup two genuinely distinct directories.
+    /// </para>
     /// </remarks>
-    private static readonly StringComparison PathComparison =
+    internal static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     /// <summary>

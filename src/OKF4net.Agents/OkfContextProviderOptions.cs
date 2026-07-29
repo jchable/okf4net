@@ -79,6 +79,23 @@ public sealed class OkfContextProviderOptions
 
     /// <summary>How stale concepts (§5.5) are treated when building context. Default <see cref="StalePolicy.Use"/>: surface everything (the read tool flags staleness), never silently drop.</summary>
     public StalePolicy StalePolicy { get; init; } = StalePolicy.Use;
+
+    /// <summary>
+    /// The <see cref="OKF4net.Catalog.KnowledgeQuery.FairnessQuota"/> to
+    /// attach to the knowledge query this provider issues;
+    /// <see langword="null"/> (the default) attaches none, deferring to
+    /// whatever the resolver itself is configured with. When set, must be
+    /// greater than zero; validated by the V2 provider constructor.
+    /// </summary>
+    /// <remarks>
+    /// Exposed because this provider is the archetypal early-truncating
+    /// consumer: it renders passages top-down until
+    /// <see cref="TokenBudget"/> is exhausted, so without interleaving one
+    /// prolific source's run can consume the whole budget before any other
+    /// source is reached. Has no effect unless the injected resolver uses a
+    /// fusing strategy.
+    /// </remarks>
+    public int? KnowledgeQueryFairnessQuota { get; init; }
 }
 
 /// <summary>

@@ -2,17 +2,41 @@
 namespace OKF4net.Catalog;
 
 /// <summary>
-/// Searches across every enabled source of an <see cref="IKnowledgeCatalog"/>
-/// and returns a single, grouped-by-source <see cref="KnowledgeContext"/>.
-/// See <see cref="DefaultKnowledgeResolver"/> for the V1 implementation
-/// (no cross-source fusion/dedup/merged ranking).
+/// Searches across every enabled <see cref="SourceRole.Knowledge"/> source of
+/// an <see cref="IKnowledgeCatalog"/> and returns a single
+/// <see cref="KnowledgeContext"/>.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Ordering is the implementation's contract, not this interface's.</b>
+/// Each strategy documents its own, and they genuinely differ:
+/// <see cref="GroupedKnowledgeResolver"/> concatenates each source's results
+/// grouped by source; <see cref="MergedKnowledgeResolver"/> merges them into
+/// one ranking by descending score; <see cref="PriorityWeightedKnowledgeResolver"/>
+/// merges them ranked by source priority first. Callers that need a
+/// particular ordering must select it -- see
+/// <see cref="KnowledgeResolverStrategy"/> and
+/// <see cref="KnowledgeResolverRouter"/> -- rather than relying on whatever
+/// the injected implementation happens to be.
+/// </para>
+/// <para>
+/// Common to every implementation: <see cref="SourceRole.Memory"/> sources
+/// are never searched (they feed <c>IMemoryStore</c> instead), non-fatal
+/// conditions come back as <see cref="KnowledgeContext.Diagnostics"/> rather
+/// than exceptions, and a failing source never prevents the others from
+/// being searched.
+/// </para>
+/// </remarks>
 public interface IKnowledgeResolver
 {
     /// <summary>
     /// Runs <paramref name="query"/> against the catalog's currently enabled
     /// sources.
     /// </summary>
-    /// <exception cref="ArgumentException"><paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null, empty, or whitespace.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
+    /// empty, or whitespace, or its <see cref="KnowledgeQuery.FairnessQuota"/>
+    /// is set but not greater than zero.
+    /// </exception>
     ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default);
 }

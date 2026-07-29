@@ -158,7 +158,9 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <exception cref="ArgumentException">
     /// <paramref name="options"/>.<see cref="OkfContextProviderOptions.KnowledgeBudgetShare"/> or
     /// <see cref="OkfContextProviderOptions.MemoryBudgetShare"/> is negative, or the two do not
-    /// satisfy <c>KnowledgeBudgetShare + MemoryBudgetShare &lt;= 1</c>.
+    /// satisfy <c>KnowledgeBudgetShare + MemoryBudgetShare &lt;= 1</c>; or
+    /// <paramref name="options"/>.<see cref="OkfContextProviderOptions.KnowledgeQueryFairnessQuota"/>
+    /// is set but not greater than zero.
     /// </exception>
     public OkfContextProvider(IKnowledgeResolver resolver, IMemoryStore memoryStore, OkfContextProviderOptions options)
     {
@@ -170,6 +172,16 @@ public sealed class OkfContextProvider : AIContextProvider
             || options.KnowledgeBudgetShare + options.MemoryBudgetShare > 1.0)
         {
             throw new ArgumentException("KnowledgeBudgetShare and MemoryBudgetShare must be >= 0 and sum to <= 1.", nameof(options));
+        }
+
+        // Checked here (rather than left to ResolverGuards.ValidateQuery on
+        // every invocation) so a bad value fails fast at construction instead
+        // of being swallowed by ProvideScopedAsync's errors-as-data catch,
+        // which would otherwise degrade the knowledge surface to permanently
+        // empty with no diagnostic.
+        if (options.KnowledgeQueryFairnessQuota is <= 0)
+        {
+            throw new ArgumentException("KnowledgeQueryFairnessQuota must be greater than zero (or null to disable it).", nameof(options));
         }
 
         _resolver = resolver;
@@ -312,7 +324,8 @@ public sealed class OkfContextProvider : AIContextProvider
         var memory = new List<KnowledgePassage>();
         try
         {
-            var kc = await _resolver!.SearchAsync(new KnowledgeQuery(query), ct).ConfigureAwait(false);
+            var knowledgeQuery = new KnowledgeQuery(query) { FairnessQuota = _options.KnowledgeQueryFairnessQuota };
+            var kc = await _resolver!.SearchAsync(knowledgeQuery, ct).ConfigureAwait(false);
             knowledge.AddRange(kc.Passages);
         }
         catch (Exception ex) when (ex is OperationCanceledException) { throw; }

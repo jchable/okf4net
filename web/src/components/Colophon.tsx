@@ -28,7 +28,7 @@ export default function Colophon({ variant = 'full' }: ColophonProps) {
       <div className="frame">
         <div className="links">
           <a href="https://github.com/jchable/okf4net">source</a>
-          <a href="https://www.nuget.org/packages/OKF4net">nuget</a>
+          <a href="https://www.nuget.org/packages?q=OKF4net">nuget</a>
           <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">okf spec v0.2</a>
           <a href="https://github.com/jchable/okf4net/blob/main/LICENSE">license</a>
         </div>

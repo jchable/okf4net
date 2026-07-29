@@ -2,10 +2,10 @@
 namespace OKF4net.Catalog;
 
 /// <summary>
-/// A structured knowledge-search result: passages grouped by source with
-/// full provenance, plus diagnostics -- deliberately never a bare string, so
-/// a caller can distinguish "no results" from "a source failed" from "no
-/// source is enabled" without parsing text.
+/// A structured knowledge-search result: passages with full provenance, plus
+/// diagnostics -- deliberately never a bare string, so a caller can
+/// distinguish "no results" from "a source failed" from "no source is
+/// enabled" without parsing text.
 /// </summary>
 /// <param name="Query">The query this result answers.</param>
 /// <param name="CatalogGeneration">
@@ -14,11 +14,11 @@ namespace OKF4net.Catalog;
 /// reload.
 /// </param>
 /// <param name="Passages">
-/// The matching passages, concatenated **in source order** (descending
-/// <see cref="KnowledgeCatalogSource.Priority"/> then ascending ordinal
-/// <see cref="KnowledgeCatalogSource.Id"/>) and, within a source, in that
-/// source's own descending-score order. There is deliberately no
-/// cross-source fusion, deduplication, or merged ranking (V1 scope).
+/// The matching passages, each carrying its originating
+/// <see cref="KnowledgePassage.SourceId"/>. Their ORDER is defined by the
+/// <see cref="IKnowledgeResolver"/> that produced this result, not by this
+/// type: see <see cref="KnowledgeResolverStrategy"/> for the available
+/// orderings and each resolver's own documentation for its exact guarantee.
 /// </param>
 /// <param name="Diagnostics">
 /// Any non-fatal conditions encountered while producing <see cref="Passages"/>
