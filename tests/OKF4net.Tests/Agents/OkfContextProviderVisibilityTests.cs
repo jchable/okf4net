@@ -81,6 +81,7 @@ public class OkfContextProviderVisibilityTests
     [InlineData("acmeland-kb", false)] // an unrelated tenant must never collide on a bare prefix
     [InlineData("acmea", false)] // same: no "-" separator between "acme" and the rest
     [InlineData("beta-kb", false)] // a genuinely unrelated tenant
+    [InlineData("Acme-kb", false)] // Ordinal comparison: differently-cased tenant segment must not match
     public void TenantPrefixPolicy_matches_only_the_owning_tenants_sources(string sourceId, bool expectedVisible)
     {
         var scope = new KnowledgeAccessScope(tenantId: "acme");
