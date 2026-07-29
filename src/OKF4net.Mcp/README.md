@@ -48,7 +48,18 @@ registered).
 
 `okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`, `okf_write_concept`,
 `okf_append_log`, `okf_regenerate_indexes`, `okf_validate_bundle`,
-`okf_changes_since`.
+`okf_changes_since`, `okf_get_computation`.
 
 Each is the corresponding `OkfBundleTools` operation, so all OKF v0.2 behaviour,
 producer-grade validation, path-safety, and locking apply unchanged.
+
+That's ten tools full (seven read-only tools above plus the three write
+tools), or seven when `OKF_MCP_READONLY=1` drops the three write tools.
+`okf_get_computation` reads a §10 attested-computation concept's contract and
+sanctioned computation source — read-only, no attestation runtime needed. The
+eleventh `OkfBundleTools` tool, `okf_run_computation`, is **not** exposed by
+this server: it only appears in `GetTools()` when the tool set is constructed
+with an `OKF4net.Attestation` `AttestationOrchestrator` wired in, and this
+server starts `OkfBundleTools` with no orchestrator (it wires no
+host-specific binder/executor/attester runtime). Embed `OKF4net.Agents`
+directly if you need `okf_run_computation`.
