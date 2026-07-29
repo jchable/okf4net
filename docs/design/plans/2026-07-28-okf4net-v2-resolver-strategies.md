@@ -8,6 +8,8 @@
 
 **Tech Stack:** C# / net10.0, xunit. No new packages anywhere.
 
+**Task order matters:** Task 1's rename must land first (every later task names the renamed type), and Task 8's documentation must land last (it describes the finished surface). Tasks 3 → 4 → 5 build on each other in sequence. Task 7's end-to-end proof needs Tasks 1, 3 and 5 in place.
+
 **Spec:** `docs/design/specs/2026-07-28-okf4net-v2-resolver-strategies.md`
 
 ## Global Constraints
@@ -21,6 +23,7 @@
 - `dotnet test OKF4net.sln -c Release` — currently **662/662 green**; must stay green, growing only by this plan's new tests.
 - Never edit anything under `tests/fixtures/` — those are byte-exact golden captures.
 - This plan touches no CLI code and no golden fixtures; `GoldenParityTests` must remain untouched and passing.
+- `src/OKF4net.Agents/` may reference only `Microsoft.Agents.AI` (already present). Task 7 adds one option and one line there; add no packages.
 
 ---
 
@@ -502,7 +505,9 @@ public class MergedKnowledgeResolverTests
         // these would silently hide one bundle's concept behind another's.
         Assert.Equal(2, context.Passages.Count);
         Assert.All(context.Passages, p => Assert.Equal("shared", p.ConceptId));
-        Assert.Equal(["a", "b"], context.Passages.Select(p => p.SourceId).OrderBy(s => s, StringComparer.Ordinal));
+        Assert.Equal(
+            new[] { "a", "b" },
+            context.Passages.Select(p => p.SourceId).OrderBy(s => s, StringComparer.Ordinal).ToArray());
     }
 
     [Fact]
@@ -587,7 +592,7 @@ public class MergedKnowledgeResolverTests
             """);
         var resolver = new MergedKnowledgeResolver(catalog);
 
-        await Assert.ThrowsAsync<ArgumentException>(() => resolver.SearchAsync(new KnowledgeQuery("   ")).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("   ")));
     }
 
     [Fact]
@@ -1097,7 +1102,7 @@ public class PriorityWeightedKnowledgeResolverTests
             """);
         var resolver = new PriorityWeightedKnowledgeResolver(catalog);
 
-        await Assert.ThrowsAsync<ArgumentException>(() => resolver.SearchAsync(new KnowledgeQuery("   ")).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("   ")));
     }
 }
 ```
@@ -1248,12 +1253,16 @@ relating priority to score has to be invented. Same engine as Merged."
 Adds the opt-in interleaving step to the shared engine, so a caller that truncates early (an agent spending a token budget top-down) sees several sources rather than one prolific source's entire output. Reorders only — never drops a passage.
 
 **Files:**
+- Create: `src/OKF4net.Catalog/ResolverGuards.cs`
 - Modify: `src/OKF4net.Catalog/FusedResolverEngine.cs`
+- Modify: `src/OKF4net.Catalog/GroupedKnowledgeResolver.cs` (route its existing blank-query guard through the shared one)
+- Modify: `src/OKF4net.Catalog/MergedKnowledgeResolver.cs` (constructor quota check)
+- Modify: `src/OKF4net.Catalog/PriorityWeightedKnowledgeResolver.cs` (constructor quota check)
 - Test: `tests/OKF4net.Tests/Catalog/FairnessReorderTests.cs` (create)
 
 **Interfaces:**
-- Consumes: `FusedResolverEngine`, `RankedPassage` (Task 3); `MergedKnowledgeResolver` (Task 3), `PriorityWeightedKnowledgeResolver` (Task 4).
-- Produces: `internal static List<RankedPassage> FusedResolverEngine.ApplyFairness(List<RankedPassage> ranked, int quota)`, and makes the engine's previously-ignored `fairnessQuota` parameter live. No public API changes.
+- Consumes: `FusedResolverEngine`, `RankedPassage` (Task 3); `GroupedKnowledgeResolver` (Task 1); `MergedKnowledgeResolver` (Task 3), `PriorityWeightedKnowledgeResolver` (Task 4).
+- Produces: `internal static class ResolverGuards` with `ValidateQuery(KnowledgeQuery)` and `ValidateDefaultFairnessQuota(int?, string)`; `internal static List<RankedPassage> FusedResolverEngine.ApplyFairness(List<RankedPassage> ranked, int quota)`; the engine's previously-ignored `fairnessQuota` parameter becomes live. The only public-surface change is that all three resolvers now reject a non-positive `FairnessQuota`, and the two fused constructors reject a non-positive default.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1444,9 +1453,39 @@ public class FairnessReorderTests
         var resolver = new MergedKnowledgeResolver(catalog);
 
         await Assert.ThrowsAsync<ArgumentException>(
-            () => resolver.SearchAsync(new KnowledgeQuery("orders") { FairnessQuota = 0 }).AsTask());
+            async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { FairnessQuota = 0 }));
         await Assert.ThrowsAsync<ArgumentException>(
-            () => resolver.SearchAsync(new KnowledgeQuery("orders") { FairnessQuota = -1 }).AsTask());
+            async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { FairnessQuota = -1 }));
+    }
+
+    [Fact]
+    public async Task A_non_positive_quota_is_rejected_by_the_grouped_strategy_too()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpLopsidedCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        // GroupedBySource never uses a quota, but the SAME malformed query
+        // must fail the SAME way whichever strategy happens to run it --
+        // otherwise a caller's typo surfaces or hides depending on a host
+        // default they may not even know about.
+        await Assert.ThrowsAsync<ArgumentException>(
+            async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { FairnessQuota = 0 }));
+    }
+
+    [Fact]
+    public void A_non_positive_constructor_default_quota_is_rejected_at_construction()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpLopsidedCatalog(root);
+
+        // Fail at construction, not on the first search: a misconfigured
+        // default is a wiring mistake, and every later search would raise
+        // the identical error anyway.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new MergedKnowledgeResolver(catalog, clock: null, defaultFairnessQuota: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new PriorityWeightedKnowledgeResolver(catalog, clock: null, defaultFairnessQuota: -1));
     }
 
     [Fact]
@@ -1478,9 +1517,115 @@ public class FairnessReorderTests
 dotnet test OKF4net.sln -c Release --filter "FullyQualifiedName~FairnessReorderTests"
 ```
 
-Expected: the quota tests FAIL — the engine currently ignores `fairnessQuota`, so `A_quota_of_two_breaks_up_the_monopoly`, `The_quota_is_honored_until_the_smaller_source_runs_out`, and `A_non_positive_quota_is_rejected` do not hold. (`Without_a_quota_...` and `A_quota_never_drops_a_passage` may already pass.)
+Expected: the quota tests FAIL — the engine currently ignores `fairnessQuota`, and no resolver validates a quota at all.
 
-- [ ] **Step 3: Implement the reorder in the engine**
+- [ ] **Step 3: Add the shared query guard**
+
+A malformed query must fail identically whichever strategy runs it, so the check cannot live inside the fused engine (which `GroupedKnowledgeResolver` never calls). Extracting it also removes the blank-text check currently duplicated between `GroupedKnowledgeResolver` and the engine.
+
+Create `src/OKF4net.Catalog/ResolverGuards.cs`:
+
+```csharp
+// SPDX-License-Identifier: LGPL-3.0-or-later
+namespace OKF4net.Catalog;
+
+/// <summary>
+/// The argument checks every <see cref="IKnowledgeResolver"/> applies before
+/// searching, kept in one place so a malformed query fails IDENTICALLY
+/// whichever strategy happens to run it.
+/// </summary>
+/// <remarks>
+/// Strategy-dependent validation would be a genuine trap: the strategy is
+/// often chosen by a host default the calling code never sees, so the same
+/// typo would surface in one deployment and pass silently in another.
+/// </remarks>
+internal static class ResolverGuards
+{
+    /// <summary>
+    /// Validates the strategy-independent parts of <paramref name="query"/>.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="query"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
+    /// empty, or whitespace, or its <see cref="KnowledgeQuery.FairnessQuota"/>
+    /// is set but not greater than zero.
+    /// </exception>
+    internal static void ValidateQuery(KnowledgeQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        if (string.IsNullOrWhiteSpace(query.Text))
+        {
+            throw new ArgumentException("KnowledgeQuery.Text must be non-blank.", nameof(query));
+        }
+
+        // Checked even by strategies that ignore the quota: an out-of-range
+        // value is a caller mistake regardless of who would have consumed it,
+        // and null already means "disabled" -- so a non-positive number can
+        // only be an error, never an intent.
+        if (query.FairnessQuota is <= 0)
+        {
+            throw new ArgumentException(
+                $"KnowledgeQuery.FairnessQuota must be greater than zero (got {query.FairnessQuota}); use null to disable fairness reordering.",
+                nameof(query));
+        }
+    }
+
+    /// <summary>
+    /// Validates a resolver's constructor-supplied default fairness quota.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="defaultFairnessQuota"/> is set but not greater than
+    /// zero.
+    /// </exception>
+    internal static void ValidateDefaultFairnessQuota(int? defaultFairnessQuota, string paramName)
+    {
+        if (defaultFairnessQuota is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName,
+                defaultFairnessQuota,
+                "A default fairness quota must be greater than zero; use null to disable fairness reordering.");
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Route all three resolvers through the guard**
+
+In `src/OKF4net.Catalog/FusedResolverEngine.cs`, replace the method's opening guard:
+
+```csharp
+        ArgumentNullException.ThrowIfNull(query);
+        if (string.IsNullOrWhiteSpace(query.Text))
+        {
+            throw new ArgumentException("KnowledgeQuery.Text must be non-blank.", nameof(query));
+        }
+```
+
+with:
+
+```csharp
+        ResolverGuards.ValidateQuery(query);
+```
+
+In `src/OKF4net.Catalog/GroupedKnowledgeResolver.cs`, replace the identical opening guard in `SearchAsync` with the same single line. Its behaviour for a blank query is unchanged; it now additionally rejects a non-positive quota, matching the fused strategies.
+
+In `src/OKF4net.Catalog/MergedKnowledgeResolver.cs`, add the constructor check as the first statement of the constructor body:
+
+```csharp
+        ResolverGuards.ValidateDefaultFairnessQuota(defaultFairnessQuota, nameof(defaultFairnessQuota));
+```
+
+Do the same in `src/OKF4net.Catalog/PriorityWeightedKnowledgeResolver.cs`. Both constructors' XML docs gain:
+
+```csharp
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="defaultFairnessQuota"/> is set but not greater than zero.
+    /// </exception>
+```
+
+- [ ] **Step 5: Implement the reorder in the engine**
 
 In `src/OKF4net.Catalog/FusedResolverEngine.cs`, replace the `fairnessQuota` parameter's doc comment:
 
@@ -1497,30 +1642,10 @@ with:
     /// <param name="fairnessQuota">
     /// The maximum number of CONSECUTIVE passages one source may contribute
     /// before another source's next-best passage is pulled ahead of it;
-    /// <see langword="null"/> disables the reorder entirely. See
+    /// <see langword="null"/> disables the reorder entirely. Already
+    /// validated by <see cref="ResolverGuards"/> at the public boundary. See
     /// <see cref="ApplyFairness"/>.
     /// </param>
-```
-
-Extend that method's `<exception>` documentation to cover the new rejection:
-
-```csharp
-    /// <exception cref="ArgumentException">
-    /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
-    /// empty, or whitespace, or the effective
-    /// <paramref name="fairnessQuota"/> is not greater than zero.
-    /// </exception>
-```
-
-Then, immediately after the existing blank-text guard, add the quota guard:
-
-```csharp
-        if (fairnessQuota is <= 0)
-        {
-            throw new ArgumentException(
-                $"A fairness quota must be greater than zero (got {fairnessQuota}); use null to disable fairness reordering.",
-                nameof(fairnessQuota));
-        }
 ```
 
 Next, replace the single line
@@ -1617,15 +1742,15 @@ Finally, add this method to the class, after `SearchAsync`:
     }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
 dotnet test OKF4net.sln -c Release --filter "FullyQualifiedName~FairnessReorderTests"
 ```
 
-Expected: 9 passing.
+Expected: 11 passing.
 
-- [ ] **Step 5: Full build, format, test**
+- [ ] **Step 7: Full build, format, test**
 
 ```bash
 dotnet build OKF4net.sln -c Release
@@ -1633,18 +1758,25 @@ dotnet format OKF4net.sln --verify-no-changes
 dotnet test OKF4net.sln -c Release
 ```
 
-Expected: 0 warnings, format clean, **689/689** passing (680 + 9 new).
+Expected: 0 warnings, format clean, **691/691** passing (680 + 11 new).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/OKF4net.Catalog/FusedResolverEngine.cs tests/OKF4net.Tests/Catalog/FairnessReorderTests.cs
+git add src/OKF4net.Catalog/ResolverGuards.cs src/OKF4net.Catalog/FusedResolverEngine.cs src/OKF4net.Catalog/GroupedKnowledgeResolver.cs src/OKF4net.Catalog/MergedKnowledgeResolver.cs src/OKF4net.Catalog/PriorityWeightedKnowledgeResolver.cs tests/OKF4net.Tests/Catalog/FairnessReorderTests.cs
 git commit -m "feat(catalog): add opt-in fairness reordering to the fused resolvers
 
 Reorders only, never drops: the problem is early truncation by a
 budget-bounded consumer, not result size, so a caller reading the whole
-list is unaffected. A non-positive quota is rejected rather than silently
-treated as disabled -- null is the way to disable it."
+list is unaffected.
+
+Quota validation lives in a shared ResolverGuards rather than in the fused
+engine, so the same malformed query fails the same way under every
+strategy -- GroupedBySource never touches the engine, and the strategy is
+often a host default the calling code never sees, so strategy-dependent
+validation would surface a typo in one deployment and hide it in another.
+A constructor-supplied default is rejected at construction rather than on
+first search. null remains the way to disable the quota."
 ```
 
 ---
@@ -1808,9 +1940,9 @@ public class KnowledgeResolverRouterTests
         var router = new KnowledgeResolverRouter(catalog);
 
         await Assert.ThrowsAsync<ArgumentException>(
-            () => router.SearchAsync(new KnowledgeQuery("  ") { ResolverStrategy = KnowledgeResolverStrategy.Merged }).AsTask());
+            async () => await router.SearchAsync(new KnowledgeQuery("  ") { ResolverStrategy = KnowledgeResolverStrategy.Merged }));
         await Assert.ThrowsAsync<ArgumentException>(
-            () => router.SearchAsync(new KnowledgeQuery("  ") { ResolverStrategy = KnowledgeResolverStrategy.GroupedBySource }).AsTask());
+            async () => await router.SearchAsync(new KnowledgeQuery("  ") { ResolverStrategy = KnowledgeResolverStrategy.GroupedBySource }));
     }
 }
 ```
@@ -2077,7 +2209,7 @@ dotnet format OKF4net.sln --verify-no-changes
 dotnet test OKF4net.sln -c Release
 ```
 
-Expected: 0 warnings, format clean, **697/697** passing (689 + 6 router + 2 hosting).
+Expected: 0 warnings, format clean, **699/699** passing (691 + 6 router + 2 hosting).
 
 - [ ] **Step 10: Commit**
 
@@ -2094,7 +2226,229 @@ and referencing it here would make the package graph cyclic."
 
 ---
 
-### Task 7: Documentation and CHANGELOG
+### Task 7: End-to-end proof against the motivating scenario
+
+Every earlier task tests the resolver in isolation. This one proves the lot actually solves the problem it exists for: `OkfContextProvider` walking a resolver's passages top-down under a token budget and stopping when it runs out. Without a merged ranking and fairness, one prolific source's whole run consumes the budget and the agent never sees the other source at all.
+
+`OkfContextProvider` renders each passage as a block whose id is `knowledge:<SourceId>:<ConceptId>` (`OkfContextProvider.AppendPassages`), so the injected message text itself reveals which sources survived the budget — no internal seam needed.
+
+**Files:**
+- Test: `tests/OKF4net.Tests/Agents/OkfContextProviderFusionTests.cs` (create)
+
+**Interfaces:**
+- Consumes: `GroupedKnowledgeResolver` (Task 1), `MergedKnowledgeResolver` (Task 3), `KnowledgeQuery.FairnessQuota` (Task 2). Uses the existing V2 `OkfContextProvider(IKnowledgeResolver, IMemoryStore, OkfContextProviderOptions)` constructor and the existing `ProvideForTest` internal test seam.
+- Produces: no source changes — tests only.
+
+- [ ] **Step 1: Write the test**
+
+Create `tests/OKF4net.Tests/Agents/OkfContextProviderFusionTests.cs`:
+
+```csharp
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using OKF4net.Agents;
+using OKF4net.Catalog;
+
+namespace OKF4net.Tests.Agents;
+
+/// <summary>
+/// The scenario the resolver-strategy work exists for:
+/// <see cref="OkfContextProvider"/> renders a resolver's passages top-down
+/// until its token budget runs out, so the resolver's ORDER decides what an
+/// agent actually gets to see. Over a deliberately lopsided catalog, grouped
+/// order spends the whole budget on one source while a merged ranking with a
+/// fairness quota surfaces both.
+/// </summary>
+public class OkfContextProviderFusionTests
+{
+    private sealed class TestAgentSession : AgentSession { }
+
+    /// <summary>
+    /// "big" holds 6 concepts that all match strongly; "small" holds 1 that
+    /// matches weakly. Both sources share a priority, so the two strategies
+    /// differ purely in how they interleave.
+    /// </summary>
+    private static FileKnowledgeCatalog SetUpLopsidedCatalog(TempDir root)
+    {
+        for (var i = 0; i < 6; i++)
+        {
+            root.Write(Path.Combine("big", $"b{i}.md"),
+                $"---\ntype: Note\ntitle: Orders orders {i}\ndescription: orders\n---\nOrders orders body {i}.\n");
+        }
+
+        root.Write(Path.Combine("small", "s0.md"),
+            "---\ntype: Note\ntitle: Unrelated\ndescription: d\n---\nOne mention of orders here.\n");
+
+        root.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "big", "path": "./big", "priority": 1, "role": "knowledge" },
+                { "id": "small", "path": "./small", "priority": 1, "role": "knowledge" }
+              ]
+            }
+            """);
+
+        return new FileKnowledgeCatalog(new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = Path.Combine(root.Path, "catalog.json"),
+            CatalogRoot = root.Path,
+            WatchForChanges = false,
+        });
+    }
+
+    private static FileMemoryStore EmptyMemoryStore(TempDir root)
+    {
+        Directory.CreateDirectory(Path.Combine(root.Path, "mem"));
+        return new FileMemoryStore(new Dictionary<MemoryTier, string>
+        {
+            [MemoryTier.User] = Path.Combine(root.Path, "mem"),
+        });
+    }
+
+    private static AIContextProvider.InvokingContext Invoking(AgentSession? session, string userText)
+    {
+        var agent = new ScriptedChatClient([]).AsAIAgent();
+        var ai = new AIContext { Messages = [new ChatMessage(ChatRole.User, userText)] };
+#pragma warning disable MAAI001
+        return new AIContextProvider.InvokingContext(agent, session, ai);
+#pragma warning restore MAAI001
+    }
+
+    /// <summary>
+    /// A budget tight enough that only the first few passages fit -- the
+    /// whole point being that what fits depends on the resolver's ordering.
+    /// Memory is unused here, so knowledge gets the entire budget.
+    /// </summary>
+    private static OkfContextProviderOptions TightBudget(int? fairnessQuota) => new()
+    {
+        TokenBudget = 120,
+        KnowledgeBudgetShare = 1.0,
+        MemoryBudgetShare = 0.0,
+        MemoryCapture = MemoryCaptureMode.Disabled,
+        ScopeAccessor = _ => new KnowledgeAccessScope(userId: "alice"),
+        KnowledgeQueryFairnessQuota = fairnessQuota,
+    };
+
+    [Fact]
+    public async Task Grouped_order_spends_the_whole_budget_on_one_source()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpLopsidedCatalog(root);
+        var provider = new OkfContextProvider(
+            new GroupedKnowledgeResolver(catalog), EmptyMemoryStore(root), TightBudget(fairnessQuota: null));
+
+        var result = await provider.ProvideForTest(Invoking(new TestAgentSession(), "orders"), CancellationToken.None);
+        var text = Assert.Single(result.Messages!).Text;
+
+        // Grouped emits all of "big" before "small" is reached, and the
+        // budget runs out first -- this is the defect the lot addresses.
+        Assert.Contains("knowledge:big:", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("knowledge:small:", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_merged_ranking_with_a_fairness_quota_surfaces_both_sources()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpLopsidedCatalog(root);
+        var provider = new OkfContextProvider(
+            new MergedKnowledgeResolver(catalog), EmptyMemoryStore(root), TightBudget(fairnessQuota: 1));
+
+        var result = await provider.ProvideForTest(Invoking(new TestAgentSession(), "orders"), CancellationToken.None);
+        var text = Assert.Single(result.Messages!).Text;
+
+        // Same catalog, same budget, same query: interleaving puts "small"
+        // second, so it now fits.
+        Assert.Contains("knowledge:big:", text, StringComparison.Ordinal);
+        Assert.Contains("knowledge:small:", text, StringComparison.Ordinal);
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+dotnet test OKF4net.sln -c Release --filter "FullyQualifiedName~OkfContextProviderFusionTests"
+```
+
+Expected: **build failure** — `OkfContextProviderOptions` has no `KnowledgeQueryFairnessQuota`. `OkfContextProvider.ProvideScopedAsync` currently builds its query as `new KnowledgeQuery(query)`, with no way for a host to attach a fairness quota to it.
+
+- [ ] **Step 3: Let the provider pass a fairness quota through**
+
+Add to `src/OKF4net.Agents/OkfContextProviderOptions.cs`:
+
+```csharp
+    /// <summary>
+    /// The <see cref="OKF4net.Catalog.KnowledgeQuery.FairnessQuota"/> to
+    /// attach to the knowledge query this provider issues;
+    /// <see langword="null"/> (the default) attaches none, deferring to
+    /// whatever the resolver itself is configured with.
+    /// </summary>
+    /// <remarks>
+    /// Exposed because this provider is the archetypal early-truncating
+    /// consumer: it renders passages top-down until
+    /// <see cref="TokenBudget"/> is exhausted, so without interleaving one
+    /// prolific source's run can consume the whole budget before any other
+    /// source is reached. Has no effect unless the injected resolver uses a
+    /// fusing strategy.
+    /// </remarks>
+    public int? KnowledgeQueryFairnessQuota { get; init; }
+```
+
+Then in `src/OKF4net.Agents/OkfContextProvider.cs`, inside `ProvideScopedAsync`, replace:
+
+```csharp
+            var kc = await _resolver!.SearchAsync(new KnowledgeQuery(query), ct).ConfigureAwait(false);
+```
+
+with:
+
+```csharp
+            var knowledgeQuery = new KnowledgeQuery(query) { FairnessQuota = _options.KnowledgeQueryFairnessQuota };
+            var kc = await _resolver!.SearchAsync(knowledgeQuery, ct).ConfigureAwait(false);
+```
+
+Leave the memory read's own `new KnowledgeQuery(query)` untouched — `IMemoryStore` reads a single scope's subtree, so there is nothing to interleave.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+dotnet test OKF4net.sln -c Release --filter "FullyQualifiedName~OkfContextProviderFusionTests"
+```
+
+Expected: 2 passing.
+
+If `Grouped_order_spends_the_whole_budget_on_one_source` fails because "small" DID fit, the budget is too generous for the fixture: lower `TokenBudget` in `TightBudget` until the grouped case excludes it, then confirm the merged case still includes it. Both assertions must hold at the same budget — that contrast is the whole point of the pair.
+
+- [ ] **Step 5: Full build, format, test**
+
+```bash
+dotnet build OKF4net.sln -c Release
+dotnet format OKF4net.sln --verify-no-changes
+dotnet test OKF4net.sln -c Release
+```
+
+Expected: 0 warnings, format clean, **701/701** passing (699 + 2 new).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/OKF4net.Agents/OkfContextProviderOptions.cs src/OKF4net.Agents/OkfContextProvider.cs tests/OKF4net.Tests/Agents/OkfContextProviderFusionTests.cs
+git commit -m "test(agents): prove the fused strategies fix the budget-truncation case
+
+The lot's whole motivation is OkfContextProvider rendering passages
+top-down until its token budget runs out, so the resolver's order decides
+what the agent sees. Over one lopsided catalog at one budget: grouped
+order emits only 'big', while a merged ranking with a fairness quota of 1
+surfaces both sources. Adds the options field the provider needs to attach
+a quota to the query it builds internally."
+```
+
+---
+
+### Task 8: Documentation and CHANGELOG
 
 The behaviour is shipped; every doc that still describes fusion as absent or unimplemented is now wrong. `IKnowledgeResolver`'s own doc is the most load-bearing of these — it states the ordering as *the interface contract*, which is exactly what stopped being fixed.
 
@@ -2106,7 +2460,7 @@ The behaviour is shipped; every doc that still describes fusion as absent or uni
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: every type from Tasks 1–6.
+- Consumes: every type from Tasks 1–7.
 - Produces: no code changes — documentation only.
 
 - [ ] **Step 1: Rewrite `IKnowledgeResolver`'s contract doc**
@@ -2320,6 +2674,12 @@ In `CHANGELOG.md`, under the existing `## [Unreleased]` heading, add:
   that bundle once instead of twice. Two *different* directories that
   happen to share a concept id are never merged: a concept id is relative
   to its own bundle root and is not a globally stable identity.
+- **`OkfContextProviderOptions.KnowledgeQueryFairnessQuota`** — attaches a
+  fairness quota to the knowledge query the context provider issues. The
+  provider is the archetypal early-truncating consumer (it renders
+  passages top-down until its token budget is spent), so this is what lets
+  a budget-bounded agent see several sources instead of one prolific
+  source's entire run.
 
 ### Changed
 
@@ -2327,6 +2687,12 @@ In `CHANGELOG.md`, under the existing `## [Unreleased]` heading, add:
   (behaviour identical). Code that resolves `IKnowledgeResolver` from DI is
   unaffected; only direct references to the concrete type name need
   updating.
+- **A non-positive `FairnessQuota` is rejected** with an `ArgumentException`
+  by every strategy — including `GroupedBySource`, which ignores the quota
+  otherwise — so the same malformed query fails the same way whichever
+  strategy runs it. A non-positive resolver constructor default throws
+  `ArgumentOutOfRangeException` at construction. `null` remains the way to
+  disable fairness reordering.
 ```
 
 - [ ] **Step 6: Verify every documented symbol actually exists**
@@ -2351,7 +2717,7 @@ dotnet format OKF4net.sln --verify-no-changes
 dotnet test OKF4net.sln -c Release
 ```
 
-Expected: 0 warnings, format clean, **697/697** passing (unchanged — this task adds no tests).
+Expected: 0 warnings, format clean, **701/701** passing (unchanged — this task adds no tests).
 
 - [ ] **Step 8: Commit**
 
@@ -2373,7 +2739,7 @@ unimplemented half (application-filtered bundles) as preview."
 
 - `dotnet build OKF4net.sln -c Release` — 0 warnings, 0 errors.
 - `dotnet format OKF4net.sln --verify-no-changes` — clean.
-- `dotnet test OKF4net.sln -c Release` — **697/697** passing.
+- `dotnet test OKF4net.sln -c Release` — **701/701** passing.
 - `grep -rn "DefaultKnowledgeResolver" --include="*.cs" src/ tests/` — no output.
 - No `PackageReference` added to any project.
 - `tests/fixtures/` untouched.
