@@ -421,4 +421,36 @@ public class ValidateTests
         var r = BundleValidator.Validate(Bundle.Load(dir));
         Assert.True(HasWarning(r, "declared okf_version"));
     }
+
+    [Fact]
+    public void Attested_computation_missing_runtime_warns_but_stays_conformant()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n# Computation absent + pas de computation:\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.True(report.IsConformant);                                   // Error reste §11-only
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("runtime"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("no computation"));
+    }
+
+    [Fact]
+    public void Both_inline_and_path_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: ./x.sql\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        tmp.Write("c/x.sql", "SELECT 1\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("both inline and"));
+    }
+
+    [Fact]
+    public void Broken_frontmatter_path_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: ./missing.md, receipt: [job_id] }\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("not found"));
+    }
 }
