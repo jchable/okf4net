@@ -115,10 +115,7 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// non-sequence <c>tags</c> value (including a bare scalar) yields an
     /// empty list.
     /// </summary>
-    public IReadOnlyList<string> Tags =>
-        _map.Get("tags") is YamlSequence seq
-            ? seq.Items.Select(v => v.AsDisplayString()).Where(s => s is not null).Select(s => s!).ToList()
-            : [];
+    public IReadOnlyList<string> Tags => YamlValue.AsStringList(_map.Get("tags"));
 
     /// <summary>
     /// The keys present that are not well-known OKF fields — i.e. the

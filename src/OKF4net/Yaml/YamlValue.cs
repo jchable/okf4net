@@ -60,6 +60,17 @@ public abstract class YamlValue
     public YamlMapping? AsMapping() => this as YamlMapping;
 
     /// <summary>
+    /// Coerces <paramref name="value"/> to a list of strings: <c>[]</c> unless
+    /// it is a <see cref="YamlSequence"/>, in which case each element is
+    /// rendered via <see cref="AsDisplayString"/> and non-scalar (<c>null</c>)
+    /// elements are dropped.
+    /// </summary>
+    internal static IReadOnlyList<string> AsStringList(YamlValue? value)
+        => value is YamlSequence seq
+            ? seq.Items.Select(v => v.AsDisplayString()).Where(s => s is not null).Select(s => s!).ToList()
+            : [];
+
+    /// <summary>
     /// True for null, an empty string, an empty sequence, an empty mapping,
     /// <c>false</c>, or <c>0</c>. Note there is deliberately no Float arm, so
     /// <see cref="YamlFloat"/>(0.0) is NOT empty.

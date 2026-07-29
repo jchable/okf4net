@@ -341,7 +341,7 @@ public sealed class Bundle
         string candidate;
         try
         {
-            if (rawPath.Length > 0 && (rawPath[0] == '/' || rawPath[0] == '\\'))
+            if (FrontmatterResourceClassifier.KindOf(rawPath) == FrontmatterResourceKind.BundleRelative)
             {
                 // BundleRelative: strip the leading separator(s) BEFORE combining
                 // with Root -- Path.Combine(root, "/x") discards `root` entirely

@@ -222,14 +222,9 @@ public sealed class OkfBundleTools
     [Description("Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.")]
     public string ReadConcept([Description("The concept id, e.g. 'tables/orders'.")] string conceptId)
     {
-        if (string.IsNullOrWhiteSpace(conceptId))
+        if (GuardConceptId(conceptId) is { } err)
         {
-            return ConceptNotFoundMessage(conceptId ?? string.Empty);
-        }
-
-        if (conceptId.Contains('\0'))
-        {
-            return "Error: invalid concept id — it must not contain a null character.";
+            return err;
         }
 
         return RunTool(() =>
@@ -817,14 +812,9 @@ public sealed class OkfBundleTools
     [Description("Read an Attested Computation's §10 contract (runtime, parameters, executor, attester) and its sanctioned computation source (inline code, or the text of a referenced file).")]
     public string GetComputation([Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId)
     {
-        if (string.IsNullOrWhiteSpace(conceptId))
+        if (GuardConceptId(conceptId) is { } err)
         {
-            return ConceptNotFoundMessage(conceptId ?? string.Empty);
-        }
-
-        if (conceptId.Contains('\0'))
-        {
-            return "Error: invalid concept id — it must not contain a null character.";
+            return err;
         }
 
         return RunTool(() =>
@@ -925,14 +915,9 @@ public sealed class OkfBundleTools
         [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
         [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues)
     {
-        if (string.IsNullOrWhiteSpace(conceptId))
+        if (GuardConceptId(conceptId) is { } err)
         {
-            return ConceptNotFoundMessage(conceptId ?? string.Empty);
-        }
-
-        if (conceptId.Contains('\0'))
-        {
-            return "Error: invalid concept id — it must not contain a null character.";
+            return err;
         }
 
         if (_orchestrator is null)
@@ -1381,6 +1366,28 @@ public sealed class OkfBundleTools
 
     private static string ConceptNotFoundMessage(string conceptId) =>
         $"Concept '{conceptId}' not found. Use okf_browse to list available concepts.";
+
+    /// <summary>
+    /// The common conceptId guard shared by <see cref="ReadConcept"/>,
+    /// <see cref="GetComputation"/> and <see cref="RunComputation"/>: blank
+    /// (or <c>null</c>) is "not found", an embedded null character is
+    /// rejected outright. Returns the error message to return verbatim, or
+    /// <c>null</c> if <paramref name="conceptId"/> is fit to parse.
+    /// </summary>
+    private static string? GuardConceptId(string? conceptId)
+    {
+        if (string.IsNullOrWhiteSpace(conceptId))
+        {
+            return ConceptNotFoundMessage(conceptId ?? string.Empty);
+        }
+
+        if (conceptId.Contains('\0'))
+        {
+            return "Error: invalid concept id — it must not contain a null character.";
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// Renders a frontmatter value as a single display line: scalars via

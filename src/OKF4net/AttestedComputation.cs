@@ -94,8 +94,5 @@ public static class AttestedComputation
     private static Attester? ParseAttester(YamlValue? value)
         => value is YamlMapping m ? new Attester(m.Get("resource")?.AsDisplayString()) : null;
 
-    private static IReadOnlyList<string> ParseStringList(YamlValue? value)
-        => value is YamlSequence seq
-            ? seq.Items.Select(v => v.AsDisplayString()).Where(s => s is not null).Select(s => s!).ToList()
-            : [];
+    private static IReadOnlyList<string> ParseStringList(YamlValue? value) => YamlValue.AsStringList(value);
 }

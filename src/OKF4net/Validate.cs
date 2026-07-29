@@ -299,9 +299,8 @@ public static class BundleValidator
                     }
                 }
 
-                var computation = concept.Document.Computation();
                 var inlineCode = ComputationExtractor.ExtractInline(concept.Document.Body);
-                if (computation.InlineCode is null && computation.Path is null)
+                if (string.IsNullOrEmpty(contract.ComputationPath) && inlineCode is null)
                 {
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "attested computation has no computation (inline '# Computation' or 'computation:' path)"));
                 }
