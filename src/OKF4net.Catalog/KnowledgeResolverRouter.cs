@@ -50,6 +50,12 @@ public sealed class KnowledgeResolverRouter : IKnowledgeResolver
     /// <see cref="KnowledgeQuery.FairnessQuota"/> unset;
     /// <see langword="null"/> (the default) disables reordering.
     /// </param>
+    /// <param name="defaultSourceVisibilityPolicy">
+    /// The visibility policy every strategy uses when a query leaves both
+    /// <see cref="KnowledgeQuery.PermittedSourceIds"/> and
+    /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> unset;
+    /// <see langword="null"/> (the default) applies no restriction.
+    /// </param>
     /// <param name="clock">Supplies "today" for stale-policy filtering; defaults to the system clock.</param>
     /// <exception cref="ArgumentException">
     /// <paramref name="defaultStrategy"/> is not a defined
@@ -59,15 +65,16 @@ public sealed class KnowledgeResolverRouter : IKnowledgeResolver
         IKnowledgeCatalog catalog,
         KnowledgeResolverStrategy defaultStrategy = KnowledgeResolverStrategy.GroupedBySource,
         int? defaultFairnessQuota = null,
+        Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? defaultSourceVisibilityPolicy = null,
         IOkfClock? clock = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ResolverGuards.ValidateStrategy(defaultStrategy, nameof(defaultStrategy));
 
         var effectiveClock = clock ?? new SystemClock();
-        _grouped = new GroupedKnowledgeResolver(catalog, effectiveClock);
-        _merged = new MergedKnowledgeResolver(catalog, effectiveClock, defaultFairnessQuota);
-        _priorityWeighted = new PriorityWeightedKnowledgeResolver(catalog, effectiveClock, defaultFairnessQuota);
+        _grouped = new GroupedKnowledgeResolver(catalog, effectiveClock, defaultSourceVisibilityPolicy);
+        _merged = new MergedKnowledgeResolver(catalog, effectiveClock, defaultFairnessQuota, defaultSourceVisibilityPolicy);
+        _priorityWeighted = new PriorityWeightedKnowledgeResolver(catalog, effectiveClock, defaultFairnessQuota, defaultSourceVisibilityPolicy);
         _defaultStrategy = defaultStrategy;
     }
 
