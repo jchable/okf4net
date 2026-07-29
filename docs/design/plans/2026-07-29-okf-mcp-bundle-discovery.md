@@ -159,6 +159,26 @@ public sealed class OkfBundleDiscoveryTests
         Assert.Equal(string.Empty, root);
     }
 
+    [Fact]
+    public void Marked_bundle_at_the_filesystem_root_is_found()
+    {
+        var fsRoot = Path.GetPathRoot(Base)!;
+
+        var ok = OkfBundleDiscovery.TryDiscover(At("a", "b"), Fs((fsRoot, Marked)), out var root);
+
+        Assert.True(ok);
+        Assert.Equal(fsRoot, root);
+    }
+
+    [Fact]
+    public void Empty_start_directory_returns_false_instead_of_throwing()
+    {
+        var ok = OkfBundleDiscovery.TryDiscover(string.Empty, Fs(), out var root);
+
+        Assert.False(ok);
+        Assert.Equal(string.Empty, root);
+    }
+
     // ---- Production adapter (real filesystem) --------------------------------
 
     [Fact]
@@ -242,7 +262,6 @@ Create `src/OKF4net.Mcp/OkfBundleDiscovery.cs`:
 ```csharp
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
-using OKF4net;
 
 namespace OKF4net.Mcp;
 
@@ -256,6 +275,13 @@ namespace OKF4net.Mcp;
 /// bundles are deliberately not discovered: a writable server must never
 /// mistake an arbitrary docs directory for a bundle. The escape hatches are
 /// the positional argument and <c>OKF_BUNDLE_ROOT</c>.
+///
+/// Symlink stance: the walk is purely lexical
+/// (<see cref="Path.GetFullPath(string)"/> / <see cref="Path.GetDirectoryName(string)"/>
+/// resolve no links, so there is no cycle risk), and reading a candidate's
+/// <c>index.md</c> through a link mirrors <see cref="Bundle.OkfVersion"/>'s
+/// existing stance. The library's reparse-point guards apply where they
+/// always did — when the chosen root is actually loaded and served.
 /// </summary>
 public static class OkfBundleDiscovery
 {
@@ -278,13 +304,30 @@ public static class OkfBundleDiscovery
     /// unreadable), so walk order and precedence are unit-testable without a
     /// filesystem; pass <see cref="ReadRootIndexOrNull"/> in production.
     /// </summary>
-    /// <param name="startDirectory">Directory the walk starts from (made absolute first).</param>
+    /// <param name="startDirectory">Directory the walk starts from (made absolute first); an empty or invalid path yields <see langword="false"/>, never a throw.</param>
     /// <param name="readRootIndex">Candidate directory → root index text, or null.</param>
     /// <param name="bundleRoot">The discovered bundle root (empty when not found).</param>
     /// <returns><see langword="true"/> when a marked bundle was found.</returns>
     public static bool TryDiscover(string startDirectory, Func<string, string?> readRootIndex, out string bundleRoot)
     {
-        var dir = Path.GetFullPath(startDirectory);
+        bundleRoot = string.Empty;
+
+        string? dir;
+        try
+        {
+            dir = Path.GetFullPath(startDirectory);
+        }
+        catch (ArgumentException)
+        {
+            // Try-contract: an empty or malformed start path is "not found",
+            // not an exception escaping a Try* method.
+            return false;
+        }
+        catch (PathTooLongException)
+        {
+            return false;
+        }
+
         while (!string.IsNullOrEmpty(dir))
         {
             foreach (var candidate in new[] { dir, Path.Combine(dir, ConventionChildName) })
@@ -300,7 +343,6 @@ public static class OkfBundleDiscovery
             dir = Path.GetDirectoryName(dir);
         }
 
-        bundleRoot = string.Empty;
         return false;
     }
 
@@ -344,7 +386,7 @@ Note: `FileNotFoundException` and `DirectoryNotFoundException` both derive from 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~OkfBundleDiscoveryTests"`
-Expected: 11 passed.
+Expected: 13 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -365,55 +407,44 @@ git commit -m "feat(mcp): convention-based bundle discovery (walk up, okf_versio
 **Interfaces:**
 
 - Consumes: `OkfBundleDiscovery.TryDiscover` / `OkfBundleDiscovery.ReadRootIndexOrNull` (Task 1).
-- Produces: `public static bool TryResolve(IReadOnlyList<string> args, Func<string, string?> getEnv, string startDirectory, out string bundleRoot, out bool readOnly, out string? error)` — new overload. The existing 5-parameter overload keeps its signature and now delegates with `Directory.GetCurrentDirectory()`, so `Program.cs` needs **no change**.
+- Produces: two new overloads — `TryResolve(args, getEnv, string startDirectory, out ...)` (production reader) and `TryResolve(args, getEnv, string startDirectory, Func<string, string?> readRootIndex, out ...)` (fully injectable, used by hermetic tests). The existing 5-parameter overload keeps its signature and now delegates with `Directory.GetCurrentDirectory()`, so `Program.cs` needs **no change**.
 
 - [ ] **Step 1: Update and extend the tests**
 
 In `tests/OKF4net.Tests/Mcp/OkfMcpConfigTests.cs`:
 
-Replace the existing `Missing_root_fails_and_names_the_env_var` test (its old form would discover from the test runner's real CWD, making it environment-dependent) with:
+Negative tests must not walk the machine's real directory ancestry (a marked bundle anywhere above the temp dir — `C:\`, `/tmp`, a developer's home — would make them fail spuriously), so they inject a reader that finds nothing: `_ => null` through the fully-injectable overload.
+
+Replace the existing `Missing_root_fails_and_names_the_env_var` test with:
 
 ```csharp
     [Fact]
     public void Missing_root_with_no_discoverable_bundle_fails_and_names_every_fix()
     {
-        var dir = Directory.CreateTempSubdirectory("okf-cfg-").FullName;
-        try
-        {
-            var ok = OkfMcpConfig.TryResolve([], Env(), dir, out _, out _, out var error);
+        var ok = OkfMcpConfig.TryResolve([], Env(), Path.GetTempPath(), _ => null, out _, out _, out var error);
 
-            Assert.False(ok);
-            Assert.Contains("OKF_BUNDLE_ROOT", error);
-            Assert.Contains("okf-init", error);
-            Assert.DoesNotContain('\n', error);
-        }
-        finally
-        {
-            Directory.Delete(dir, recursive: true);
-        }
+        Assert.False(ok);
+        Assert.NotNull(error);
+        Assert.Contains("OKF_BUNDLE_ROOT", error);
+        Assert.Contains("okf-init", error);
+        Assert.DoesNotContain('\n', error);
     }
 ```
 
-Also update `Formatted_missing_root_error_is_a_single_line_with_message_and_usage` — its `TryResolve([], Env(), ...)` call would otherwise discover from the test runner's real CWD. Replace its first line with a pinned start directory (and wrap in the same temp-dir try/finally pattern as above):
+(The `Assert.NotNull(error)` is load-bearing: `error` is `out string?` without `[NotNullWhen(false)]`, and passing a maybe-null string to `Assert.Contains`/`Assert.DoesNotContain<char>` is CS8604 — an error under `TreatWarningsAsErrors`.)
+
+Also update `Formatted_missing_root_error_is_a_single_line_with_message_and_usage` — its `TryResolve([], Env(), ...)` call would otherwise discover from the test runner's real CWD. New body (no temp dir needed):
 
 ```csharp
-        var dir = Directory.CreateTempSubdirectory("okf-cfg-").FullName;
-        try
-        {
-            OkfMcpConfig.TryResolve([], Env(), dir, out _, out _, out var error);
+        OkfMcpConfig.TryResolve([], Env(), Path.GetTempPath(), _ => null, out _, out _, out var error);
 
-            var line = OkfMcpConfig.FormatStartupError(error);
+        var line = OkfMcpConfig.FormatStartupError(error);
 
-            Assert.DoesNotContain('\n', line);
-            Assert.DoesNotContain('\r', line);
-            Assert.StartsWith("okf-mcp: ", line);
-            Assert.Contains("OKF_BUNDLE_ROOT", line);
-            Assert.Contains("Usage:", line);
-        }
-        finally
-        {
-            Directory.Delete(dir, recursive: true);
-        }
+        Assert.DoesNotContain('\n', line);
+        Assert.DoesNotContain('\r', line);
+        Assert.StartsWith("okf-mcp: ", line);
+        Assert.Contains("OKF_BUNDLE_ROOT", line);
+        Assert.Contains("Usage:", line);
 ```
 
 Add the new discovery-behaviour tests to the same class:
@@ -465,6 +496,27 @@ Add the new discovery-behaviour tests to the same class:
     }
 
     [Fact]
+    public void Arg_beats_discovery()
+    {
+        var top = Directory.CreateTempSubdirectory("okf-cfg-disc-").FullName;
+        var explicitRoot = Directory.CreateTempSubdirectory("okf-cfg-arg-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(top, "index.md"), MarkedIndex);
+
+            var ok = OkfMcpConfig.TryResolve([explicitRoot], Env(), top, out var root, out _, out _);
+
+            Assert.True(ok);
+            Assert.Equal(explicitRoot, root);
+        }
+        finally
+        {
+            Directory.Delete(top, recursive: true);
+            Directory.Delete(explicitRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Nonexistent_env_root_fails_without_discovery_fallback()
     {
         var top = Directory.CreateTempSubdirectory("okf-cfg-disc-").FullName;
@@ -494,7 +546,7 @@ Expected: compile error — no `TryResolve` overload takes a `startDirectory`.
 
 In `src/OKF4net.Mcp/OkfMcpConfig.cs`:
 
-First, keep the existing 5-parameter `TryResolve` but replace its body with a delegation:
+First, keep the existing 5-parameter `TryResolve` but replace its body with a delegation, and add a `startDirectory` overload that plugs in the production reader:
 
 ```csharp
     public static bool TryResolve(
@@ -504,21 +556,11 @@ First, keep the existing 5-parameter `TryResolve` but replace its body with a de
         out bool readOnly,
         out string? error)
         => TryResolve(args, getEnv, Directory.GetCurrentDirectory(), out bundleRoot, out readOnly, out error);
-```
 
-(Keep its existing XML doc; add one sentence: "Discovery, when it applies, starts from the current working directory — see the `startDirectory` overload.")
-
-Then add the new overload containing the previous body plus the discovery fallback where the old code returned the "no bundle root given" error:
-
-```csharp
     /// <summary>
-    /// Resolves configuration. The bundle root is the first positional
-    /// argument, else the <c>OKF_BUNDLE_ROOT</c> environment variable, else a
-    /// bundle discovered by <see cref="OkfBundleDiscovery.TryDiscover"/>
-    /// walking up from <paramref name="startDirectory"/>. Discovery never
-    /// overrides an explicit root: a nonexistent argument or environment root
-    /// is still an error. Returns <see langword="false"/> with a
-    /// human-readable <paramref name="error"/> when no root can be resolved.
+    /// <see cref="TryResolve(IReadOnlyList{string}, Func{string, string?}, string, Func{string, string?}, out string, out bool, out string?)"/>
+    /// with the production root-index reader
+    /// (<see cref="OkfBundleDiscovery.ReadRootIndexOrNull"/>).
     /// </summary>
     /// <param name="args">Process arguments (positional bundle root at index 0).</param>
     /// <param name="getEnv">Environment-variable accessor.</param>
@@ -534,6 +576,39 @@ Then add the new overload containing the previous body plus the discovery fallba
         out string bundleRoot,
         out bool readOnly,
         out string? error)
+        => TryResolve(args, getEnv, startDirectory, OkfBundleDiscovery.ReadRootIndexOrNull, out bundleRoot, out readOnly, out error);
+```
+
+(Keep the 5-parameter overload's existing XML doc; add one sentence: "Discovery, when it applies, starts from the current working directory — see the `startDirectory` overload.")
+
+Then add the fully-injectable overload containing the previous body plus the discovery fallback where the old code returned the "no bundle root given" error (the `readRootIndex` parameter is what lets negative tests stay hermetic):
+
+```csharp
+    /// <summary>
+    /// Resolves configuration. The bundle root is the first positional
+    /// argument, else the <c>OKF_BUNDLE_ROOT</c> environment variable, else a
+    /// bundle discovered by <see cref="OkfBundleDiscovery.TryDiscover"/>
+    /// walking up from <paramref name="startDirectory"/>. Discovery never
+    /// overrides an explicit root: a nonexistent argument or environment root
+    /// is still an error. Returns <see langword="false"/> with a
+    /// human-readable <paramref name="error"/> when no root can be resolved.
+    /// </summary>
+    /// <param name="args">Process arguments (positional bundle root at index 0).</param>
+    /// <param name="getEnv">Environment-variable accessor.</param>
+    /// <param name="startDirectory">Directory discovery walks up from when no explicit root is given.</param>
+    /// <param name="readRootIndex">Candidate directory → root index text accessor handed to discovery (injectable for hermetic tests).</param>
+    /// <param name="bundleRoot">The resolved bundle root (empty on failure).</param>
+    /// <param name="readOnly">Whether read-only mode is requested.</param>
+    /// <param name="error">The failure reason, or <see langword="null"/> on success.</param>
+    /// <returns><see langword="true"/> on success.</returns>
+    public static bool TryResolve(
+        IReadOnlyList<string> args,
+        Func<string, string?> getEnv,
+        string startDirectory,
+        Func<string, string?> readRootIndex,
+        out string bundleRoot,
+        out bool readOnly,
+        out string? error)
     {
         bundleRoot = string.Empty;
         readOnly = TruthyValues.Contains(getEnv(ReadOnlyEnv)?.Trim() ?? string.Empty);
@@ -544,14 +619,20 @@ Then add the new overload containing the previous body plus the discovery fallba
 
         if (string.IsNullOrWhiteSpace(root))
         {
-            if (OkfBundleDiscovery.TryDiscover(startDirectory, OkfBundleDiscovery.ReadRootIndexOrNull, out var discovered))
+            // Directory.Exists mirrors the explicit-root check below: the root
+            // was just probed by discovery, but a delete in between must yield
+            // the one-line error contract, not an exception at load time.
+            if (OkfBundleDiscovery.TryDiscover(startDirectory, readRootIndex, out var discovered)
+                && Directory.Exists(discovered))
             {
                 bundleRoot = discovered;
                 error = null;
                 return true;
             }
 
-            error = $"no bundle root given and no marked bundle found from {startDirectory} upward. "
+            // ReplaceLineEndings guards the single-line stderr contract: a
+            // (legal, on Unix) newline in the CWD path must not break it.
+            error = $"no bundle root given and no marked bundle found from {startDirectory.ReplaceLineEndings(" ")} upward. "
                 + $"Pass a root as the first argument, set {BundleRootEnv}, or run /okf-init (OKF Claude Code plugin) to mark or create a bundle.";
             return false;
         }
