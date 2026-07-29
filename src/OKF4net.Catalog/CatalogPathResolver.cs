@@ -25,8 +25,8 @@ namespace OKF4net.Catalog;
 public static class CatalogPathResolver
 {
     /// <summary>
-    /// The comparison used for both containment (<see cref="IsWithinRoot"/>)
-    /// and the reparse-point-ancestor walk's root-stop test
+    /// The comparison used for containment (<see cref="IsWithinRoot"/>) and
+    /// the reparse-point-ancestor walk's root-stop test
     /// (<see cref="HasReparsePointInPath"/>).
     /// </summary>
     /// <remarks>
@@ -34,32 +34,26 @@ public static class CatalogPathResolver
     /// type's own <see cref="CatalogPathResolver"/> remarks), and <c>..</c>
     /// is legitimately allowed in it -- containment is therefore the primary
     /// defense against it escaping the catalog root, not a secondary check.
-    /// On a case-SENSITIVE filesystem (Linux, the CI/container target), a
-    /// case-variant of the root (e.g. <c>/srv/KB</c> vs. a configured root of
-    /// <c>/srv/kb</c>) is a genuinely different, real directory -- an
-    /// <see cref="StringComparison.OrdinalIgnoreCase"/> comparison would
-    /// wrongly treat a source path resolving through it as contained within
-    /// the root (F1), AND would stop the reparse-point-ancestor walk one
-    /// level too early (at the case-variant "root"), so a reparse point
-    /// planted at that case-variant directory would never be inspected
-    /// either. Using <see cref="StringComparison.Ordinal"/> there closes both
-    /// gaps at once. On Windows/macOS, the filesystem itself is normally
-    /// case-insensitive, so <c>OrdinalIgnoreCase</c> matches the filesystem's
-    /// own equality semantics and is kept for those platforms (also
-    /// consistent with <c>OkfBundleTools</c>' and <c>IndexGenerator</c>'s own
-    /// conventions, whose inputs are trusted/validated and so are unaffected
-    /// by this distinction).
+    /// The configured root's exact path spelling is the authority on every
+    /// platform: filesystem case sensitivity is a volume property, so an OS
+    /// check cannot safely choose a looser comparison. An ordinal comparison
+    /// rejects a path that leaves the configured spelling and re-enters it
+    /// through a case variant, which could otherwise escape on a
+    /// case-sensitive APFS volume. It also prevents the reparse-point walk
+    /// from stopping early at such a case-variant directory.
     /// <para>
-    /// <see langword="internal"/> rather than <see langword="private"/>
-    /// because <see cref="FusedResolverEngine"/>'s source-level dedup must
-    /// compare two resolved source directories for equality using EXACTLY
-    /// this convention. A second, independently-written OS check there would
-    /// be a real defect in either direction: <see cref="StringComparison.Ordinal"/>
-    /// on Windows would fail to dedup two entries differing only in case (the
-    /// same directory), while <see cref="StringComparison.OrdinalIgnoreCase"/>
-    /// on Linux would falsely dedup two genuinely distinct directories.
+    /// This security comparison is deliberately private and distinct from
+    /// <see cref="PathComparison"/>, which remains the resolver's existing
+    /// directory-deduplication convention rather than a containment boundary.
     /// </para>
     /// </remarks>
+    private const StringComparison ContainmentComparison = StringComparison.Ordinal;
+
+    /// <summary>
+    /// The existing comparison used by <see cref="FusedResolverEngine"/> to
+    /// deduplicate resolved source-directory strings. It is intentionally not
+    /// used for containment or reparse-point checks.
+    /// </summary>
     internal static readonly StringComparison PathComparison =
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
@@ -156,18 +150,16 @@ public static class CatalogPathResolver
 
     /// <summary>
     /// <c>true</c> if <paramref name="candidate"/> is <paramref name="root"/> itself or a
-    /// descendant of it, comparing resolved absolute paths with <see cref="PathComparison"/>
-    /// -- an OS-appropriate comparison, NOT unconditionally case-insensitive (see
-    /// <see cref="PathComparison"/>'s remarks for why: this input is less-trusted, unlike
-    /// <see cref="ReparsePoints.IsWithinBundleRoot"/>'s trusted callers, which keep
-    /// <see cref="StringComparison.OrdinalIgnoreCase"/> unconditionally).
+    /// descendant of it, comparing resolved absolute paths with
+    /// <see cref="ContainmentComparison"/>. A strict ordinal comparison is
+    /// required because the source path is less-trusted input.
     /// <paramref name="root"/> is expected to already be the result of
     /// <see cref="ReparsePoints.CanonicalizeRoot"/> (see its remarks for why a bare
     /// <see cref="Path.GetFullPath(string)"/> is not enough here); <paramref name="candidate"/>
     /// only needs <see cref="Path.GetFullPath(string)"/>.
     /// </summary>
     private static bool IsWithinRoot(string root, string candidate) =>
-        ReparsePoints.IsWithin(root, candidate, PathComparison);
+        ReparsePoints.IsWithin(root, candidate, ContainmentComparison);
 
     /// <summary>
     /// <c>true</c> if <paramref name="path"/> itself, or any directory strictly between it
@@ -185,11 +177,10 @@ public static class CatalogPathResolver
     /// <see cref="ReparsePoints.CanonicalizeRoot"/> (see its remarks for why a bare
     /// <see cref="Path.GetFullPath(string)"/> is not enough here); <paramref name="path"/>
     /// only needs <see cref="Path.GetFullPath(string)"/>. The walk's root-stop test uses
-    /// <see cref="PathComparison"/> (an OS-appropriate comparison, see its remarks) rather
-    /// than an unconditional ordinal-ignore-case comparison: on a case-sensitive filesystem,
-    /// stopping at a case-variant of <paramref name="root"/> would skip inspecting that
-    /// case-variant directory for a planted reparse point entirely.
+    /// <see cref="ContainmentComparison"/> so a case-variant of
+    /// <paramref name="root"/> cannot stop the walk early and skip inspection
+    /// of a planted reparse point.
     /// </summary>
     private static bool HasReparsePointInPath(string root, string path) =>
-        ReparsePoints.HasReparsePointAncestor(root, path, PathComparison);
+        ReparsePoints.HasReparsePointAncestor(root, path, ContainmentComparison);
 }

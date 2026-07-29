@@ -133,6 +133,26 @@ public class FileKnowledgeCatalogTests
         Assert.Contains("WrongVersion", ex.Message);
     }
 
+    [Fact]
+    public void Initial_catalog_rejects_a_case_variant_catalog_root()
+    {
+        using var temp = new TempDir();
+        var root = Path.Combine(temp.Path, "catalog-root");
+        Directory.CreateDirectory(Path.Combine(root, "docs"));
+        var catalogPath = Path.Combine(root, "catalog.json");
+        File.WriteAllText(catalogPath, OneSourceJson);
+
+        var options = new KnowledgeCatalogOptions
+        {
+            CatalogFilePath = catalogPath,
+            CatalogRoot = Path.Combine(temp.Path, "CATALOG-ROOT"),
+            WatchForChanges = false,
+        };
+
+        var ex = Assert.Throws<CatalogException>(() => new FileKnowledgeCatalog(options));
+        Assert.Contains("OutsideRoot", ex.Message);
+    }
+
     /// <summary>
     /// Isolates the disabled-source skip in <c>TryLoadSnapshot</c> (<c>if
     /// (!source.Enabled) continue;</c> before <c>CatalogPathResolver.TryResolve</c>)
