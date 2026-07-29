@@ -43,8 +43,11 @@ internal static class FusedResolverEngine
     /// the same catalog and query always produce the same sequence.
     /// </param>
     /// <param name="fairnessQuota">
-    /// Reserved for the fairness reordering step; currently unused (see the
-    /// fairness task). <see langword="null"/> means disabled.
+    /// The maximum number of CONSECUTIVE passages one source may contribute
+    /// before another source's next-best passage is pulled ahead of it;
+    /// <see langword="null"/> disables the reorder entirely. Already
+    /// validated by <see cref="ResolverGuards"/> at the public boundary. See
+    /// <see cref="ApplyFairness"/>.
     /// </param>
     /// <param name="ct">A cancellation token observed between sources.</param>
     /// <exception cref="ArgumentException"><paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null, empty, or whitespace.</exception>
@@ -56,11 +59,7 @@ internal static class FusedResolverEngine
         int? fairnessQuota,
         CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(query);
-        if (string.IsNullOrWhiteSpace(query.Text))
-        {
-            throw new ArgumentException("KnowledgeQuery.Text must be non-blank.", nameof(query));
-        }
+        ResolverGuards.ValidateQuery(query);
 
         var snapshot = catalog.Current;
         var enabledSources = snapshot.Sources
@@ -139,6 +138,11 @@ internal static class FusedResolverEngine
 
         ranked.Sort(comparer);
 
+        if (fairnessQuota is { } quota && ranked.Count > 1)
+        {
+            ranked = ApplyFairness(ranked, quota);
+        }
+
         if (ranked.Count == 0 && anySourceSearchedSuccessfully)
         {
             diagnostics.Add(new KnowledgeDiagnostic(
@@ -152,5 +156,78 @@ internal static class FusedResolverEngine
         // IReadOnlyList<T> -- otherwise a caller could cast a published
         // KnowledgeContext's collections back and mutate them.
         return new KnowledgeContext(query, snapshot.Generation, passages.AsReadOnly(), diagnostics.AsReadOnly());
+    }
+
+    /// <summary>
+    /// Reorders an already-ranked list so no source contributes more than
+    /// <paramref name="quota"/> CONSECUTIVE passages while another source
+    /// still has passages left. Returns a new list containing exactly the
+    /// same passages -- nothing is dropped.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Purely a reordering, because the problem it solves is early
+    /// truncation, not result size: a consumer spending a token budget
+    /// top-down (an agent context provider, say) stops partway down the list,
+    /// and without this a single prolific source's whole run can consume the
+    /// budget before any other source is reached. A consumer that reads the
+    /// entire list is unaffected by design.
+    /// </para>
+    /// <para>
+    /// When every remaining passage belongs to one source there is nothing to
+    /// pull forward, so the quota simply stops applying and the rest of that
+    /// source drains in ranked order. The quota is a fairness goal for
+    /// interleavable results, not a hard guarantee obtainable from a
+    /// single-source result set.
+    /// </para>
+    /// <para>
+    /// Quadratic in the worst case (each pick may scan the remainder for a
+    /// different source), which is deliberate: a search result is tens to low
+    /// hundreds of passages, and a linear-time bucketed variant would cost
+    /// more in complexity than it saves in time at that size.
+    /// </para>
+    /// </remarks>
+    internal static List<RankedPassage> ApplyFairness(List<RankedPassage> ranked, int quota)
+    {
+        var remaining = new LinkedList<RankedPassage>(ranked);
+        var result = new List<RankedPassage>(ranked.Count);
+
+        string? runSource = null;
+        var runLength = 0;
+
+        while (remaining.First is { } head)
+        {
+            var pick = head;
+
+            // The head would extend the current run past the quota: look for
+            // the best-ranked passage from any OTHER source to interleave. If
+            // there is none, keep the head -- draining is the only option.
+            if (runLength >= quota && string.Equals(head.Value.Passage.SourceId, runSource, StringComparison.Ordinal))
+            {
+                var candidate = head.Next;
+                while (candidate is not null && string.Equals(candidate.Value.Passage.SourceId, runSource, StringComparison.Ordinal))
+                {
+                    candidate = candidate.Next;
+                }
+
+                pick = candidate ?? head;
+            }
+
+            var chosen = pick.Value;
+            remaining.Remove(pick);
+            result.Add(chosen);
+
+            if (string.Equals(chosen.Passage.SourceId, runSource, StringComparison.Ordinal))
+            {
+                runLength++;
+            }
+            else
+            {
+                runSource = chosen.Passage.SourceId;
+                runLength = 1;
+            }
+        }
+
+        return result;
     }
 }

@@ -56,11 +56,7 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
     /// </remarks>
     public async ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(query);
-        if (string.IsNullOrWhiteSpace(query.Text))
-        {
-            throw new ArgumentException("KnowledgeQuery.Text must be non-blank.", nameof(query));
-        }
+        ResolverGuards.ValidateQuery(query);
 
         var snapshot = _catalog.Current;
         var enabledSources = snapshot.Sources

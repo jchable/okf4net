@@ -77,8 +77,13 @@ public sealed class MergedKnowledgeResolver : IKnowledgeResolver
     /// <see cref="KnowledgeQuery.FairnessQuota"/>. <see langword="null"/>
     /// (the default) disables fairness reordering entirely.
     /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="defaultFairnessQuota"/> is set but not greater than zero.
+    /// </exception>
     public MergedKnowledgeResolver(IKnowledgeCatalog catalog, IOkfClock? clock = null, int? defaultFairnessQuota = null)
     {
+        ResolverGuards.ValidateDefaultFairnessQuota(defaultFairnessQuota, nameof(defaultFairnessQuota));
+
         _catalog = catalog;
         _clock = clock ?? new SystemClock();
         _defaultFairnessQuota = defaultFairnessQuota;
