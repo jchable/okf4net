@@ -44,6 +44,12 @@ jobs:
           -p:Version=$VERSION
           -p:ContinuousIntegrationBuild=true
 
+      - name: Pack (Attestation)
+        run: >
+          dotnet pack src/OKF4net.Attestation/OKF4net.Attestation.csproj -c Release -o artifacts
+          -p:Version=$VERSION
+          -p:ContinuousIntegrationBuild=true
+
       - name: Pack (Catalog.Hosting)
         run: >
           dotnet pack src/OKF4net.Catalog.Hosting/OKF4net.Catalog.Hosting.csproj -c Release -o artifacts

@@ -22,6 +22,16 @@ and this project adheres to
   set. `OkfContextProvider`'s scoped (V2) mode now passes the same
   `KnowledgeAccessScope` it already resolves for memory into the knowledge
   query too.
+- **Attested Computation (§10).** Full v0.2 §10 support: `Frontmatter.ComputationContract`
+  projects the runtime/parameters/computation/executor/attester contract; `OkfDocument.Computation()`
+  returns the sanctioned computation (fenced `# Computation` or `computation:` file); `okf validate`
+  emits §10 + §6.2 soft-guidance warnings (never Error). New zero-dep **`OKF4net.Attestation`**
+  package: host-plugged `IParameterBinder`/`IComputationExecutor`/`IAttester` and an
+  `AttestationOrchestrator` (load → bind → execute → receipt-shape check → attest → gate on
+  verdict + `stale_after`), errors-as-data. `OKF4net.Agents` gains `okf_get_computation` and, when
+  an orchestrator is wired, `okf_run_computation`.
+- **§6.2 path-valued frontmatter resolution** — `OkfDocument.FrontmatterResources()` +
+  `Bundle.TryResolveResource`/`ReadResourceText`, with broken/unsafe-path validator warnings.
 
 ### Changed
 

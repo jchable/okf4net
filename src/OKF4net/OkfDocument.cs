@@ -224,6 +224,59 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     public bool UsesLegacyCitations() => Frontmatter.Sources.Count == 0 && Citations().Count > 0;
 
     /// <summary>
+    /// Resolves the §10.3 sanctioned computation: the frontmatter
+    /// <c>computation</c> path (§10.2) when present, otherwise the first
+    /// fenced code block under a <c># Computation</c> heading in
+    /// <see cref="Body"/> (or <c>null</c> if neither is present).
+    /// </summary>
+    public SanctionedComputation Computation()
+    {
+        var path = Frontmatter.ComputationContract.ComputationPath;
+        if (!string.IsNullOrEmpty(path))
+        {
+            return new SanctionedComputation(ComputationSource.File, null, path);
+        }
+
+        return new SanctionedComputation(ComputationSource.Inline, ComputationExtractor.ExtractInline(Body), null);
+    }
+
+    /// <summary>
+    /// Enumerates the §6.2 path-valued frontmatter fields present on this
+    /// document, in a fixed order: the top-level <c>resource</c>, each
+    /// <c>sources[i].resource</c> (labelled <c>sources[i].resource</c>), the
+    /// §10.2 <c>computation</c>, <c>executor.resource</c>, and
+    /// <c>attester.resource</c>. Only non-empty string values are included;
+    /// a field absent from the frontmatter is simply omitted.
+    /// </summary>
+    public IReadOnlyList<FrontmatterResource> FrontmatterResources()
+    {
+        var result = new List<FrontmatterResource>();
+
+        void AddIfPresent(string field, string? rawPath)
+        {
+            if (!string.IsNullOrEmpty(rawPath))
+            {
+                result.Add(new FrontmatterResource(field, rawPath, FrontmatterResourceClassifier.KindOf(rawPath)));
+            }
+        }
+
+        AddIfPresent("resource", Frontmatter.Resource);
+
+        var sources = Frontmatter.Sources;
+        for (var i = 0; i < sources.Count; i++)
+        {
+            AddIfPresent($"sources[{i}].resource", sources[i].Resource);
+        }
+
+        var contract = Frontmatter.ComputationContract;
+        AddIfPresent("computation", contract.ComputationPath);
+        AddIfPresent("executor.resource", contract.Executor?.Resource);
+        AddIfPresent("attester.resource", contract.Attester?.Resource);
+
+        return result;
+    }
+
+    /// <summary>
     /// Structural equality: <see cref="Frontmatter"/> equality AND ordinal
     /// <see cref="Body"/> equality — componentwise over the document's two
     /// fields.

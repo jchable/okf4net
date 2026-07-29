@@ -45,6 +45,24 @@ public sealed class Bundle
     private const string IndexFilename = "index.md";
     private const string LogFilename = "log.md";
 
+    /// <summary>
+    /// The comparison used for the §6.2 bundle-root containment check in
+    /// <see cref="TryResolveResource"/>. Deliberately
+    /// <see cref="StringComparison.Ordinal"/> on EVERY platform. Case-sensitivity
+    /// is a runtime property of the specific volume, NOT of the OS: APFS/HFS+ can
+    /// be mounted case-sensitive on macOS, and Windows has case-sensitive
+    /// directories (per-directory flag, ReFS, WSL) -- so an OS-based heuristic
+    /// (e.g. "OrdinalIgnoreCase on Windows/macOS") leaves this security boundary
+    /// bypassable on those volumes, exactly as on Linux. Ordinal rejects only a
+    /// candidate whose root-prefix differs from <see cref="Root"/> in CASE; since
+    /// a legitimate candidate is built from <see cref="Root"/> / <c>concept.Path</c>
+    /// (and <see cref="Path.GetFullPath(string)"/> preserves case), that can happen
+    /// only via a <c>..</c> climb re-entering a case-variant sibling of the root --
+    /// precisely the escape §6.2 must block. Legitimate paths keep Root's exact
+    /// case and are unaffected. See <see cref="ReparsePoints.IsWithin"/>'s remarks.
+    /// </summary>
+    private static readonly StringComparison PathComparison = StringComparison.Ordinal;
+
     /// <summary>Reserved filenames with defined meaning at any level (§3.1).</summary>
     public static readonly string[] ReservedFilenames = [IndexFilename, LogFilename];
 
@@ -296,6 +314,118 @@ public sealed class Bundle
 
         return doc.Frontmatter.Get("okf_version")?.AsDisplayString();
     }
+
+    /// <summary>
+    /// Resolves a §6.2 path-valued frontmatter raw value (as enumerated by
+    /// <see cref="OkfDocument.FrontmatterResources"/>) to a filesystem path,
+    /// relative to <paramref name="concept"/>.
+    ///
+    /// A <see cref="FrontmatterResourceKind.Url"/> value (<c>scheme://...</c>)
+    /// is never resolved: <paramref name="absolutePath"/> is <c>null</c> and
+    /// <paramref name="status"/> is <see cref="ResourceResolutionStatus.Url"/>.
+    ///
+    /// Otherwise the candidate path is computed and checked for containment
+    /// within the bundle root: a <see cref="FrontmatterResourceKind.BundleRelative"/>
+    /// value (leading <c>/</c> or <c>\</c>) is combined with <see cref="Root"/>
+    /// after stripping the leading separator(s) -- <see cref="Path.Combine(string, string)"/>
+    /// otherwise discards <paramref name="concept"/>'s directory (or, here,
+    /// <see cref="Root"/>) whenever the second argument looks rooted, which on
+    /// Windows an absolute-looking <c>/x</c> does. A
+    /// <see cref="FrontmatterResourceKind.Relative"/> value is combined with
+    /// the concept's own directory instead.
+    ///
+    /// The candidate is <see cref="ResourceResolutionStatus.Unsafe"/> if it
+    /// would escape the bundle root, or if it (or any ancestor directory up to
+    /// the root) is a filesystem reparse point -- see
+    /// <see cref="ReparsePoints.IsWithinBundleRoot"/>,
+    /// <see cref="ReparsePoints.IsReparsePoint"/>, and
+    /// <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>.
+    /// Otherwise it is <see cref="ResourceResolutionStatus.Resolved"/> if the
+    /// file exists, or <see cref="ResourceResolutionStatus.Missing"/> if it
+    /// does not.
+    ///
+    /// Always returns <c>true</c>: resolution never fails outright (§3,
+    /// permissive), it only reports which of the above statuses applies.
+    /// </summary>
+    public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
+    {
+        var kind = FrontmatterResourceClassifier.KindOf(rawPath);
+        if (kind == FrontmatterResourceKind.Url)
+        {
+            absolutePath = null;
+            status = ResourceResolutionStatus.Url;
+            return true;
+        }
+
+        string candidate;
+        try
+        {
+            if (kind == FrontmatterResourceKind.BundleRelative)
+            {
+                // BundleRelative: strip the leading separator(s) BEFORE combining
+                // with Root -- Path.Combine(root, "/x") discards `root` entirely
+                // on Windows, since "/x" looks rooted to it.
+                var stripped = rawPath.TrimStart('/', '\\');
+                candidate = Path.GetFullPath(Path.Combine(Root, stripped));
+            }
+            else
+            {
+                if (Path.IsPathRooted(rawPath))
+                {
+                    // A Relative-classified path that is still rooted on this OS is a drive-relative
+                    // or drive-absolute form (e.g. "e:query.sql", "C:\x") that must NOT be treated as
+                    // concept-relative -- Path.Combine/GetFullPath would resolve it against a drive's
+                    // current directory, escaping the concept dir. Reject as Unsafe.
+                    absolutePath = null;
+                    status = ResourceResolutionStatus.Unsafe;
+                    return true;
+                }
+
+                var conceptDir = Path.GetDirectoryName(concept.Path) ?? Root;
+                candidate = Path.GetFullPath(Path.Combine(conceptDir, rawPath));
+            }
+        }
+        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            // A malformed raw path -- e.g. one containing an embedded NUL,
+            // reachable through the YAML subset's own `\0` escape inside a
+            // quoted scalar -- makes Path.Combine/Path.GetFullPath throw.
+            // Resolution must never throw (§3, permissive): treat it the same
+            // as any other candidate that can't be trusted, never exposing a
+            // path to the caller.
+            absolutePath = null;
+            status = ResourceResolutionStatus.Unsafe;
+            return true;
+        }
+
+        var fullRoot = ReparsePoints.CanonicalizeRoot(Root);
+        if (!ReparsePoints.IsWithin(fullRoot, candidate, PathComparison)
+            || ReparsePoints.IsReparsePoint(candidate)
+            || ReparsePoints.HasReparsePointAncestor(fullRoot, candidate))
+        {
+            // Deliberately null, like the Url case: an Unsafe candidate must
+            // never be handed to ReadResourceText, so it is never exposed
+            // even though it was computed above.
+            absolutePath = null;
+            status = ResourceResolutionStatus.Unsafe;
+            return true;
+        }
+
+        absolutePath = candidate;
+        status = File.Exists(candidate) ? ResourceResolutionStatus.Resolved : ResourceResolutionStatus.Missing;
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a resolved resource's text content as strict UTF-8 (throws on
+    /// invalid byte sequences rather than substituting U+FFFD, and never
+    /// reinterprets a byte-order mark as a different encoding). Intended to be
+    /// called only on an <paramref name="absolutePath"/> produced by
+    /// <see cref="TryResolveResource"/> with
+    /// <see cref="ResourceResolutionStatus.Resolved"/> -- path safety is
+    /// established there, not here.
+    /// </summary>
+    public string ReadResourceText(string absolutePath) => OkfEncodings.Strict.GetString(File.ReadAllBytes(absolutePath));
 
     /// <summary>
     /// Recursively collects <c>*.md</c> file paths under <paramref name="dir"/>,
