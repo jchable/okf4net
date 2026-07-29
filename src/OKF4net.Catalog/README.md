@@ -213,11 +213,14 @@ services.AddKnowledge(o =>
         // Fails CLOSED, not open: a caller with no TenantId (KnowledgeAccessScope.Local,
         // the default when a host resolves no scope at all) sees NOTHING here -- an empty
         // "" ?? fallback would make StartsWith("") true for every source, silently exposing
-        // every tenant's catalog to an unauthenticated/unscoped caller. The "-" separator
-        // also stops a short tenant id from prefix-matching an unrelated one (e.g. "acme"
-        // must not match a source belonging to "acmeland").
+        // every tenant's catalog to an unauthenticated/unscoped caller. Matches a source
+        // named EXACTLY as the tenant, or "tenantId-" followed by anything -- the "-" is an
+        // explicit segment separator, not just a prefix, so a short tenant id (e.g. "acme")
+        // can never accidentally match an unrelated one (e.g. "acmeland-kb"). Do not drop
+        // the "-" to make a bare-named source match "more easily": that reopens exactly
+        // that collision.
         scope.TenantId is { Length: > 0 } tenantId
-        && source.Id.StartsWith(tenantId + "-", StringComparison.Ordinal);
+        && (source.Id == tenantId || source.Id.StartsWith(tenantId + "-", StringComparison.Ordinal));
 });
 
 // Per-query override, through the same injected IKnowledgeResolver:

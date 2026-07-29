@@ -60,16 +60,42 @@ public class OkfContextProviderVisibilityTests
 #pragma warning restore MAAI001
     }
 
-    // A tenant may only see the knowledge source whose id starts with its own
-    // tenant id, followed by "-" -- a simple, realistic per-tenant rule. Fails
-    // CLOSED for a caller with no TenantId: unlike `scope.TenantId ?? ""`
+    // A tenant may only see a source named EXACTLY as its tenant id, or
+    // "tenantId-" followed by anything -- a simple, realistic per-tenant rule.
+    // Fails CLOSED for a caller with no TenantId: unlike `scope.TenantId ?? ""`
     // (which would make StartsWith("") true for every source, exposing every
     // tenant's catalog to an unscoped caller), a missing tenant id here
-    // matches nothing at all. See the mirrored, equally-fixed example in
+    // matches nothing at all. The "-" is an explicit segment separator, not
+    // just a prefix, so a short tenant id (e.g. "acme") can never accidentally
+    // match an unrelated one (e.g. "acmeland-kb") -- do not drop it to make a
+    // bare-named source match "more easily," that reopens exactly that
+    // collision. See the mirrored, equally-fixed example in
     // src/OKF4net.Catalog/README.md's "Choosing source visibility" section.
     private static bool TenantPrefixPolicy(KnowledgeAccessScope scope, KnowledgeCatalogSource source) =>
         scope.TenantId is { Length: > 0 } tenantId
-        && source.Id.StartsWith(tenantId + "-", StringComparison.Ordinal);
+        && (source.Id == tenantId || source.Id.StartsWith(tenantId + "-", StringComparison.Ordinal));
+
+    [Theory]
+    [InlineData("acme", true)] // a source named exactly as the tenant id must match
+    [InlineData("acme-kb", true)] // "tenantId-" followed by anything must match
+    [InlineData("acmeland-kb", false)] // an unrelated tenant must never collide on a bare prefix
+    [InlineData("acmea", false)] // same: no "-" separator between "acme" and the rest
+    [InlineData("beta-kb", false)] // a genuinely unrelated tenant
+    public void TenantPrefixPolicy_matches_only_the_owning_tenants_sources(string sourceId, bool expectedVisible)
+    {
+        var scope = new KnowledgeAccessScope(tenantId: "acme");
+        var source = new KnowledgeCatalogSource(sourceId, $"./{sourceId}", 0, true, SourceRole.Knowledge);
+
+        Assert.Equal(expectedVisible, TenantPrefixPolicy(scope, source));
+    }
+
+    [Fact]
+    public void TenantPrefixPolicy_matches_nothing_for_an_unscoped_caller()
+    {
+        var source = new KnowledgeCatalogSource("acme", "./acme", 0, true, SourceRole.Knowledge);
+
+        Assert.False(TenantPrefixPolicy(KnowledgeAccessScope.Local, source));
+    }
 
     [Fact]
     public async Task A_router_default_visibility_policy_restricts_what_a_scoped_caller_sees()
