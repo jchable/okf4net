@@ -210,7 +210,14 @@ services.AddKnowledge(o =>
 {
     o.AddCatalogFile("./config/catalog.json");
     o.DefaultSourceVisibilityPolicy = (scope, source) =>
-        source.Id.StartsWith(scope.TenantId ?? "", StringComparison.Ordinal);
+        // Fails CLOSED, not open: a caller with no TenantId (KnowledgeAccessScope.Local,
+        // the default when a host resolves no scope at all) sees NOTHING here -- an empty
+        // "" ?? fallback would make StartsWith("") true for every source, silently exposing
+        // every tenant's catalog to an unauthenticated/unscoped caller. The "-" separator
+        // also stops a short tenant id from prefix-matching an unrelated one (e.g. "acme"
+        // must not match a source belonging to "acmeland").
+        scope.TenantId is { Length: > 0 } tenantId
+        && source.Id.StartsWith(tenantId + "-", StringComparison.Ordinal);
 });
 
 // Per-query override, through the same injected IKnowledgeResolver:
