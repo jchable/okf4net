@@ -339,18 +339,33 @@ public sealed class Bundle
         }
 
         string candidate;
-        if (rawPath.Length > 0 && (rawPath[0] == '/' || rawPath[0] == '\\'))
+        try
         {
-            // BundleRelative: strip the leading separator(s) BEFORE combining
-            // with Root -- Path.Combine(root, "/x") discards `root` entirely
-            // on Windows, since "/x" looks rooted to it.
-            var stripped = rawPath.TrimStart('/', '\\');
-            candidate = Path.GetFullPath(Path.Combine(Root, stripped));
+            if (rawPath.Length > 0 && (rawPath[0] == '/' || rawPath[0] == '\\'))
+            {
+                // BundleRelative: strip the leading separator(s) BEFORE combining
+                // with Root -- Path.Combine(root, "/x") discards `root` entirely
+                // on Windows, since "/x" looks rooted to it.
+                var stripped = rawPath.TrimStart('/', '\\');
+                candidate = Path.GetFullPath(Path.Combine(Root, stripped));
+            }
+            else
+            {
+                var conceptDir = Path.GetDirectoryName(concept.Path) ?? Root;
+                candidate = Path.GetFullPath(Path.Combine(conceptDir, rawPath));
+            }
         }
-        else
+        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
         {
-            var conceptDir = Path.GetDirectoryName(concept.Path) ?? Root;
-            candidate = Path.GetFullPath(Path.Combine(conceptDir, rawPath));
+            // A malformed raw path -- e.g. one containing an embedded NUL,
+            // reachable through the YAML subset's own `\0` escape inside a
+            // quoted scalar -- makes Path.Combine/Path.GetFullPath throw.
+            // Resolution must never throw (§3, permissive): treat it the same
+            // as any other candidate that can't be trusted, never exposing a
+            // path to the caller.
+            absolutePath = null;
+            status = ResourceResolutionStatus.Unsafe;
+            return true;
         }
 
         var fullRoot = ReparsePoints.CanonicalizeRoot(Root);

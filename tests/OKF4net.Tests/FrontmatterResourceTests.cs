@@ -73,4 +73,23 @@ public class FrontmatterResourceTests
         Assert.True(bundle.TryResolveResource(concept, "../../escape.txt", out _, out var escaped));
         Assert.Equal(ResourceResolutionStatus.Unsafe, escaped);
     }
+
+    [Fact]
+    public void Embedded_NUL_in_a_raw_path_resolves_as_Unsafe_instead_of_throwing()
+    {
+        using var tmp = new TempDir();
+        // The YAML `\0` escape inside a double-quoted scalar yields a literal
+        // NUL character in the parsed string (YamlParser.cs), which
+        // Path.GetFullPath/Path.Combine reject with an ArgumentException.
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\ncomputation: \"a\\0b\"\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        var rawPath = concept.Document.FrontmatterResources().Single(r => r.Field == "computation").RawPath;
+        Assert.Contains('\0', rawPath);
+
+        Assert.True(bundle.TryResolveResource(concept, rawPath, out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Null(abs);
+    }
 }
