@@ -374,7 +374,7 @@ public sealed class OkfBundleTools
     /// <summary>
     /// Creates or updates one concept document. Producer-grade validation
     /// (<see cref="OkfDocument.Validate"/>: non-empty <c>type</c>,
-    /// <c>title</c>, <c>description</c> and <c>timestamp</c>) runs BEFORE
+    /// <c>title</c> and <c>description</c>) runs BEFORE
     /// anything is written — on failure, the file on disk (if any) is left
     /// untouched. Never throws for expected errors (a null/blank/malformed
     /// concept id, a reserved id, invalid frontmatter YAML, or a failed
