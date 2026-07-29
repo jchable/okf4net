@@ -106,8 +106,8 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.DoesNotContain(report.Of(Severity.Warning), d => d.Message.Contains("timestamp"));
-        Assert.Contains(report.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.DoesNotContain(report.Of(Severity.Info), d => d.Message.Contains("timestamp"));
+        Assert.Contains(report.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -128,7 +128,7 @@ public class ValidateTests
     {
         // frontmatter is only permitted in the bundle-root index.md.
         using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\ntimestamp: 2026-05-28\n---\nbody\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
         tmp.Write("sub/index.md", "---\ntitle: nope\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
@@ -178,7 +178,7 @@ public class ValidateTests
     public void Invalid_log_date_heading_is_a_warning()
     {
         using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\ntimestamp: 2026-05-28\n---\nbody\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
         tmp.Write("log.md", "# Log\n\n## not-a-date\n* **Update**: did a thing.\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
@@ -405,11 +405,11 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Legacy_timestamp_is_info_not_warning()
+    public void Legacy_timestamp_is_a_warning()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ntimestamp: '2026-05-28'\n");
-        Assert.Contains(r.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
-        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.DoesNotContain(r.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
     }
 
     [Fact]

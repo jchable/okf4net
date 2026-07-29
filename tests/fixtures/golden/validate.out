@@ -1,11 +1,11 @@
-[info] tests/fixtures/appendix_a/datasets/sales.md: `timestamp` is a legacy field; prefer `generated.at`
+[warning] tests/fixtures/appendix_a/datasets/sales.md: `timestamp` is a legacy field; prefer `generated.at`
 [warning] tests/fixtures/appendix_a/tables/customers.md: missing recommended frontmatter field `resource`
 [warning] tests/fixtures/appendix_a/tables/customers.md: missing recommended frontmatter field `tags`
-[info] tests/fixtures/appendix_a/tables/customers.md: `timestamp` is a legacy field; prefer `generated.at`
-[info] tests/fixtures/appendix_a/tables/orders.md: `timestamp` is a legacy field; prefer `generated.at`
+[warning] tests/fixtures/appendix_a/tables/customers.md: `timestamp` is a legacy field; prefer `generated.at`
+[warning] tests/fixtures/appendix_a/tables/orders.md: `timestamp` is a legacy field; prefer `generated.at`
 [warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field `description`
 [warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field `resource`
 [warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field `tags`
 
-4 concept(s); 0 error(s), 5 warning(s), 3 info.
+4 concept(s); 0 error(s), 8 warning(s), 0 info.
 ✓ conformant with OKF v0.2

@@ -276,7 +276,7 @@ public static class BundleValidator
 
             if (fm.Generated is null && fm.Timestamp is not null)
             {
-                diagnostics.Add(new Diagnostic(Severity.Info, concept.Path, concept.Id, "`timestamp` is a legacy field; prefer `generated.at`"));
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "`timestamp` is a legacy field; prefer `generated.at`"));
             }
         }
 
