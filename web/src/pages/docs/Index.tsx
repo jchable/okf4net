@@ -100,7 +100,7 @@ export default function DocsIndex() {
               {
                 type: 'Reference',
                 concept: <Link to="/docs/spec">spec</Link>,
-                desc: 'OKF v0.1, section by section, mapped to the types that implement it.',
+                desc: 'OKF v0.2, section by section, mapped to the types that implement it.',
               },
             ]}
           />

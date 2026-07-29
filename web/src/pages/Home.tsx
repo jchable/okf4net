@@ -25,14 +25,14 @@ Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);
 const cliSessionHtml = `$ okf validate ./bundles/ga4
 
 42 concept(s); 0 error(s), 0 warning(s), 0 info.
-<span class="ok">✓ conformant with OKF v0.1</span>
+<span class="ok">✓ conformant with OKF v0.2</span>
 $ okf graph ./bundles/ga4 --dot | dot -Tsvg &gt; graph.svg`
 
 export default function Home() {
   return (
     <Layout
       title="OKF4net — knowledge is a directory of markdown files"
-      description="OKF4net is a zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.1 — a C# library and a Native AOT okf CLI to parse, validate, index and graph bundles of markdown concepts."
+      description="OKF4net is a zero-dependency .NET implementation of the Open Knowledge Format (OKF) v0.2 — a C# library and a Native AOT okf CLI to parse, validate, index and graph bundles of markdown concepts."
       current="home"
     >
       {/* ============ HERO: this page is itself an OKF concept document ============ */}

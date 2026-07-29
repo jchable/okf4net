@@ -29,7 +29,7 @@ Each order belongs to a customer and carries a total.`
 const validateCliHtml = `$ okf validate ./my_bundle
 
 1 concept(s); 0 error(s), 0 warning(s), 0 info.
-<span class="ok">✓ conformant with OKF v0.1</span>`
+<span class="ok">✓ conformant with OKF v0.2</span>`
 
 const validateCsharpHtml = `<span class="k">using</span> OKF4net;
 

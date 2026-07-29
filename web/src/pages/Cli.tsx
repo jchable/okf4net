@@ -10,11 +10,11 @@ import { PageDoc, Chapter, MapTable, Next } from '../components/doc'
 const sessionHtml = `$ okf validate ./bundles/ga4
 
 42 concept(s); 0 error(s), 0 warning(s), 0 info.
-<span class="ok">✓ conformant with OKF v0.1</span>
+<span class="ok">✓ conformant with OKF v0.2</span>
 
 $ okf info ./bundles/ga4
 bundle:     ./bundles/ga4
-okf_version: 0.1
+okf_version: 0.2
 concepts:   42
 index.md:   6
 log.md:     1
@@ -66,7 +66,7 @@ export default function Cli() {
           <MapTable
             head={['Command', 'Does']}
             rows={[
-              ['okf validate <bundle>', 'Check a bundle against OKF v0.1 conformance (§9); exits non-zero on failure'],
+              ['okf validate <bundle>', 'Check a bundle against OKF v0.2 conformance (§11); exits non-zero on failure'],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],
               ['okf index <bundle>', '(Re)generate every index.md in the bundle (§6)'],
               [

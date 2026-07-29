@@ -34,7 +34,7 @@ export default function RawRenderedToggle() {
         <span className="ln fm" data-n="1"><span className="delim">---</span></span>
         <span className="ln fm" data-n="2"><span className="key">type</span>: Library</span>
         <span className="ln fm" data-n="3"><span className="key">title</span>: OKF4net</span>
-        <span className="ln fm" data-n="4"><span className="key">description</span>: <span className="str">Zero-dependency .NET implementation of OKF v0.1</span></span>
+        <span className="ln fm" data-n="4"><span className="key">description</span>: <span className="str">Zero-dependency .NET implementation of OKF v0.2</span></span>
         <span className="ln fm" data-n="5"><span className="key">tags</span>: [<span className="str">dotnet</span>, <span className="str">knowledge</span>, <span className="str">markdown</span>]</span>
         <span className="ln fm" data-n="6"><span className="delim">---</span></span>
         <span className="ln" data-n="7"> </span>
@@ -53,7 +53,7 @@ export default function RawRenderedToggle() {
           <tbody>
             <tr><td>type</td><td>Library</td></tr>
             <tr><td>title</td><td>OKF4net</td></tr>
-            <tr><td>description</td><td>Zero-dependency .NET implementation of OKF v0.1</td></tr>
+            <tr><td>description</td><td>Zero-dependency .NET implementation of OKF v0.2</td></tr>
           </tbody>
         </table>
         <h1>Knowledge is a directory of <em>markdown files.</em></h1>
@@ -62,7 +62,7 @@ export default function RawRenderedToggle() {
           <a className="btn primary" href="https://www.nuget.org/packages/OKF4net">dotnet add package OKF4net</a>
           <Link className="btn" to="/library">Read library.md</Link>
         </div>
-        <div className="conform">conformant with OKF v0.1 · <b>218/218</b> tests · 5 byte-exact golden comparisons</div>
+        <div className="conform">conformant with OKF v0.2 · <b>662/662</b> tests · 5 byte-exact golden comparisons</div>
       </div>
     </div>
   )

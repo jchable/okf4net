@@ -9,14 +9,14 @@ import { PageDoc, Chapter, MapTable, Next } from '../../components/doc'
 // would collapse the blank lines. Sourced verbatim from
 // website/docs/cli.html.
 const versionHtml = `$ okf --version
-okf 0.1.0-alpha.1 (OKF spec v0.1)`
+okf 0.1.0-alpha.1 (OKF spec v0.2)`
 
 const validateHtml = `$ okf validate tests/fixtures/appendix_a
 <span class="c">[warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field \`description\`</span>
 <span class="c">[warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field \`timestamp\`</span>
 
 4 concept(s); 0 error(s), 2 warning(s), 0 info.
-<span class="ok">✓ conformant with OKF v0.1</span>`
+<span class="ok">✓ conformant with OKF v0.2</span>`
 
 const infoHtml = `$ okf info tests/fixtures/appendix_a
 bundle:     tests/fixtures/appendix_a
@@ -144,7 +144,7 @@ export default function Cli() {
                   <a href="#validate">validate</a>
                 </td>
                 <td>&lt;bundle&gt;</td>
-                <td>Check a bundle against OKF v0.1 conformance (§9)</td>
+                <td>Check a bundle against OKF v0.2 conformance (§11)</td>
               </tr>
               <tr>
                 <td>

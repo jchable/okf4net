@@ -28,7 +28,7 @@ export default function WhatOkfIs() {
         }
         lede={
           <>
-            The <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">Open Knowledge Format v0.1</a>{' '}
+            The <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">Open Knowledge Format v0.2</a>{' '}
             is Google's open, human- and agent-friendly format for representing knowledge as{' '}
             <strong>a directory of markdown files with YAML frontmatter</strong>. It is intentionally minimal — and
             OKF4net implements all of it.
