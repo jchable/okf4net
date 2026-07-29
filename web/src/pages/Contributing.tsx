@@ -70,7 +70,7 @@ export default function Contributing() {
         <Chapter id="spec" title="Spec fidelity" refText="cite your §">
           <p>
             OKF4net implements the{' '}
-            <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">OKF v0.1 spec</a>
+            <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">OKF v0.2 spec</a>
             . Behavioural changes must stay conformant — <strong>cite the relevant section (§) in your PR description</strong>.
             Behaviour intentionally mirrors the OKF reference implementation; divergences need a documented reason.
           </p>

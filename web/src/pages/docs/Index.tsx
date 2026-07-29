@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 import { Link } from 'react-router-dom'
 import DocsLayout from '../../layouts/DocsLayout'
-import { PageDoc, Chapter, IndexTable, ConceptGrid, Cell, Term, Next, Tag } from '../../components/doc'
+import { PageDoc, Chapter, IndexTable, ConceptGrid, Cell, Term, Next } from '../../components/doc'
 
 /**
  * The docs landing page — `docs/index.md`, the generated listing `okf index`
@@ -12,7 +12,7 @@ export default function DocsIndex() {
   return (
     <DocsLayout
       title="Docs — OKF4net"
-      description="Developer documentation for OKF4net — the .NET implementation of the Open Knowledge Format. Getting started, task guides, and reference for the library, the okf CLI, and the Agent Framework tools. The manual is itself an OKF bundle."
+      description="Developer documentation for OKF4net — the .NET implementation of the Open Knowledge Format. Getting started, task guides, and reference for the library, the okf CLI, the Agent Framework tools, and the catalog. The manual is itself an OKF bundle."
       current="index"
     >
       <PageDoc
@@ -36,7 +36,7 @@ export default function DocsIndex() {
       />
 
       <div className="docbody">
-        <Chapter id="contents" title="Contents" refText="§6 — generated index listing">
+        <Chapter id="contents" title="Contents" refText="§8 — generated index listing">
           <IndexTable
             rows={[
               {
@@ -53,8 +53,8 @@ export default function DocsIndex() {
                 concept: <Link to="/docs/guides">guides</Link>,
                 desc: (
                   <>
-                    Task recipes: traverse the cross-link graph, gate CI on conformance, generate indexes (§6) and
-                    changelogs (§7), round-trip with <code>fmt</code>, publish the AOT binary.
+                    Task recipes: traverse the cross-link graph, gate CI on conformance, generate indexes (§8) and
+                    changelogs (§9), round-trip with <code>fmt</code>, publish the AOT binary.
                   </>
                 ),
               },
@@ -79,13 +79,18 @@ export default function DocsIndex() {
               },
               {
                 type: 'Reference',
-                concept: (
+                concept: <Link to="/docs/agents">agents</Link>,
+                desc: 'The Microsoft Agent Framework layer — nine bundle tools and a budget-bounded context provider.',
+              },
+              {
+                type: 'Reference',
+                concept: <Link to="/docs/catalog">catalog</Link>,
+                desc: (
                   <>
-                    <span className="soon">agents</span>
-                    <Tag>soon</Tag>
+                    A hot-reloadable <code>catalog.json</code> manifest naming local bundles as sources, a
+                    multi-source resolver, and a scoped memory store for multi-tenant agent deployments.
                   </>
                 ),
-                desc: 'The Microsoft Agent Framework layer — nine bundle tools and a budget-bounded context provider.',
               },
               {
                 type: 'Guide',
@@ -100,11 +105,11 @@ export default function DocsIndex() {
               {
                 type: 'Reference',
                 concept: <Link to="/docs/spec">spec</Link>,
-                desc: 'OKF v0.1, section by section, mapped to the types that implement it.',
+                desc: 'OKF v0.2, section by section, mapped to the types that implement it.',
               },
             ]}
           />
-          <Next>The reference pages are landing one at a time. Until each does, the overview pages below cover the essentials.</Next>
+          <Next>Every concept above is published — guides teach, reference tells.</Next>
         </Chapter>
 
         <Chapter id="start" title="Start here" refText="what you came to do">
@@ -131,10 +136,13 @@ export default function DocsIndex() {
             <Cell>
               <Term>build an agent</Term>
               <p>
-                Expose a bundle to an AI agent as tools plus bounded context. →{' '}
-                <span className="muted">
-                  agents.md <Tag>soon</Tag>
-                </span>
+                Expose a bundle to an AI agent as tools plus bounded context. → <Link to="/docs/agents">agents.md</Link>
+              </p>
+            </Cell>
+            <Cell>
+              <Term>search many bundles</Term>
+              <p>
+                Name bundles as sources in one manifest and search them all. → <Link to="/docs/catalog">catalog.md</Link>
               </p>
             </Cell>
             <Cell>

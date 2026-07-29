@@ -10,11 +10,11 @@ import { PageDoc, Chapter, MapTable, Next } from '../components/doc'
 const sessionHtml = `$ okf validate ./bundles/ga4
 
 42 concept(s); 0 error(s), 0 warning(s), 0 info.
-<span class="ok">✓ conformant with OKF v0.1</span>
+<span class="ok">✓ conformant with OKF v0.2</span>
 
 $ okf info ./bundles/ga4
 bundle:     ./bundles/ga4
-okf_version: 0.1
+okf_version: 0.2
 concepts:   42
 index.md:   6
 log.md:     1
@@ -62,13 +62,13 @@ export default function Cli() {
       />
 
       <div className="docbody">
-        <Chapter id="commands" title="Commands" refText="§6–§9 — the whole surface">
+        <Chapter id="commands" title="Commands" refText="§8–§11 — the whole surface">
           <MapTable
             head={['Command', 'Does']}
             rows={[
-              ['okf validate <bundle>', 'Check a bundle against OKF v0.1 conformance (§9); exits non-zero on failure'],
+              ['okf validate <bundle>', 'Check a bundle against OKF v0.2 conformance (§11); exits non-zero on failure'],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],
-              ['okf index <bundle>', '(Re)generate every index.md in the bundle (§6)'],
+              ['okf index <bundle>', '(Re)generate every index.md in the bundle (§8)'],
               [
                 'okf graph <bundle>',
                 <>
@@ -95,7 +95,7 @@ export default function Cli() {
           </p>
         </Chapter>
 
-        <Chapter id="ci" title="In CI" refText="§9 — exit codes are the interface">
+        <Chapter id="ci" title="In CI" refText="§11 — exit codes are the interface">
           <p>
             <code>okf validate</code> exits non-zero when a bundle is not conformant, so validating knowledge is one
             line in any pipeline:
