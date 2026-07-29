@@ -372,8 +372,7 @@ KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund 
 **V1 limits, stated exactly:**
 
 - Local filesystem bundles only.
-- One shared catalog (no per-caller or per-tenant filtering of which sources
-  are visible).
+- One shared catalog.
 - No semantic/fuzzy deduplication across sources (two manifest entries
   resolving to the *same directory* are collapsed only under the two merged
   strategies; similar content in genuinely different bundles is not).
@@ -397,10 +396,12 @@ optional fairness interleaving for budget-truncated consumers. See
 [the resolver-strategies design](docs/design/specs/2026-07-28-okf4net-v2-resolver-strategies.md)
 and [`OKF4net.Catalog`'s README](src/OKF4net.Catalog/README.md#choosing-a-ranking-strategy).
 
-**V2 preview (not implemented):** application-filtered bundles — per-caller
-or per-tenant visibility of which sources are searched at all. See
-[§9 of the local catalog design](docs/design/specs/2026-07-24-okf4net-local-catalog-design.md#9-v2-design-team-scoped-bundles)
-for the open questions there.
+**Source visibility (shipped):** restrict which sources a caller may see,
+per host default or per query — a host-precomputed `PermittedSourceIds` set
+(the recommended default) or a `SourceVisibilityPolicy` function evaluated
+per source, either overridable per query. See
+[the source-visibility design](docs/design/specs/2026-07-29-okf4net-v2-source-visibility.md)
+and [`OKF4net.Catalog`'s README](src/OKF4net.Catalog/README.md#choosing-source-visibility).
 
 See [OKF4net.Catalog](src/OKF4net.Catalog/README.md) and
 [OKF4net.Catalog.Hosting](src/OKF4net.Catalog.Hosting/README.md) for full

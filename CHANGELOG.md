@@ -8,6 +8,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Per-caller source visibility.** `IKnowledgeResolver` searches can now be
+  restricted to a subset of enabled `Knowledge`-role sources, based on the
+  caller's `KnowledgeAccessScope`. Two mutually-exclusive mechanisms on
+  `KnowledgeQuery`: `PermittedSourceIds` (a host-precomputed set of source
+  IDs — the recommended default, no host-level default since a static set
+  can't represent "differs by tenant") and `SourceVisibilityPolicy` (a
+  per-source function, with a `KnowledgeOptions.DefaultSourceVisibilityPolicy`
+  host default a function can still vary per call by reading the scope it's
+  given). `PermittedSourceIds` always wins over a configured default when
+  set. `OkfContextProvider`'s scoped (V2) mode now passes the same
+  `KnowledgeAccessScope` it already resolves for memory into the knowledge
+  query too.
+
+### Changed
+
+- **`KnowledgeQuery` is no longer V1-scoped.** It gains `Scope`
+  (`KnowledgeAccessScope`, defaults to `KnowledgeAccessScope.Local`) — the
+  "actual multi-tenant consumer" an earlier doc comment said would justify
+  adding identity fields has materialized.
+
 ## [0.3.0] - 2026-07-29
 
 OKF4net now targets **OKF specification v0.2**. The core library and `okf` CLI

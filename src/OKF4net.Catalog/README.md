@@ -201,12 +201,47 @@ early — an agent context provider spending a token budget top-down, for
 instance, which would otherwise let one source's whole run consume the
 budget.
 
+## Choosing source visibility
+
+Restrict which sources a caller may see, per host default or per query:
+
+```csharp
+services.AddKnowledge(o =>
+{
+    o.AddCatalogFile("./config/catalog.json");
+    o.DefaultSourceVisibilityPolicy = (scope, source) =>
+        source.Id.StartsWith(scope.TenantId ?? "", StringComparison.Ordinal);
+});
+
+// Per-query override, through the same injected IKnowledgeResolver:
+var context = await resolver.SearchAsync(new KnowledgeQuery("refund policy")
+{
+    Scope = new KnowledgeAccessScope(tenantId: "acme"),
+    PermittedSourceIds = new HashSet<string> { "acme-support", "acme-billing" },
+});
+```
+
+Two mutually exclusive mechanisms — setting both on the same query throws:
+
+- `PermittedSourceIds` — a host-precomputed set of source IDs, the
+  recommended default. A host does whatever lookup it needs (tenant,
+  application, or both) and hands the resulting set to the query; `OKF4net.Catalog`
+  never needs to know how it was computed. Always wins over any host-level
+  default policy for that one call.
+- `SourceVisibilityPolicy` — a function evaluated per source, for rules a
+  flat ID list can't express conveniently. Configurable once per host
+  (`DefaultSourceVisibilityPolicy`) and overridable per query, mirroring
+  `DefaultResolverStrategy`.
+
+Neither has any effect on a query that sets neither field and a host that
+configures no default: every enabled source stays visible to every caller,
+exactly as before this feature existed.
+
 ## V1 limits
 
 - Local filesystem bundles only — no remote/HTTP sources, no external
   connectors.
-- One shared catalog per `FileKnowledgeCatalog` instance — no per-caller or
-  per-tenant filtering of which sources are visible.
+- One shared catalog per `FileKnowledgeCatalog` instance.
 - No semantic/fuzzy deduplication — two concepts with similar content in
   genuinely different bundles are both returned. Only under the two merged
   strategies are two manifest entries resolving to the *same directory*

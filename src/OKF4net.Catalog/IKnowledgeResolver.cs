@@ -2,9 +2,13 @@
 namespace OKF4net.Catalog;
 
 /// <summary>
-/// Searches across every enabled <see cref="SourceRole.Knowledge"/> source of
-/// an <see cref="IKnowledgeCatalog"/> and returns a single
-/// <see cref="KnowledgeContext"/>.
+/// Searches across every enabled, *visible* <see cref="SourceRole.Knowledge"/>
+/// source of an <see cref="IKnowledgeCatalog"/> and returns a single
+/// <see cref="KnowledgeContext"/>. Visibility -- which sources a given
+/// caller may see at all -- is governed by
+/// <see cref="KnowledgeQuery.PermittedSourceIds"/>/
+/// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> and any host-level
+/// default; see <see cref="SearchAsync"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -30,13 +34,17 @@ namespace OKF4net.Catalog;
 public interface IKnowledgeResolver
 {
     /// <summary>
-    /// Runs <paramref name="query"/> against the catalog's currently enabled
-    /// sources.
+    /// Runs <paramref name="query"/> against the catalog's currently
+    /// enabled, visible sources.
     /// </summary>
     /// <exception cref="ArgumentException">
     /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
-    /// empty, or whitespace, or its <see cref="KnowledgeQuery.FairnessQuota"/>
-    /// is set but not greater than zero.
+    /// empty, or whitespace; its <see cref="KnowledgeQuery.FairnessQuota"/>
+    /// is set but not greater than zero; its
+    /// <see cref="KnowledgeQuery.ResolverStrategy"/> is set to a value that
+    /// is not a defined <see cref="KnowledgeResolverStrategy"/> member; or
+    /// both <see cref="KnowledgeQuery.PermittedSourceIds"/> and
+    /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> are set.
     /// </exception>
     ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default);
 }
