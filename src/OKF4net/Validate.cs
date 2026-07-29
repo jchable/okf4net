@@ -319,7 +319,7 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "executor.receipt is not a list of receipt field names"));
                 }
 
-                if (contract.Attester is { Resource.Length: 0 })
+                if (contract.Attester is { } attester && string.IsNullOrEmpty(attester.Resource))
                 {
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "attester.resource is empty"));
                 }

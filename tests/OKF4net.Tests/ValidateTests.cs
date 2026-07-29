@@ -445,6 +445,27 @@ public class ValidateTests
     }
 
     [Fact]
+    public void Attester_present_with_no_resource_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nattester: {}\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("attester.resource"));
+        Assert.True(report.IsConformant);
+    }
+
+    [Fact]
+    public void Absent_attester_does_not_warn()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.DoesNotContain(report.Diagnostics, d => d.Message.Contains("attester.resource"));
+    }
+
+    [Fact]
     public void Broken_frontmatter_path_warns()
     {
         using var tmp = new TempDir();

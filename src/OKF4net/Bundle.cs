@@ -331,7 +331,8 @@ public sealed class Bundle
     /// </summary>
     public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
     {
-        if (FrontmatterResourceClassifier.KindOf(rawPath) == FrontmatterResourceKind.Url)
+        var kind = FrontmatterResourceClassifier.KindOf(rawPath);
+        if (kind == FrontmatterResourceKind.Url)
         {
             absolutePath = null;
             status = ResourceResolutionStatus.Url;
@@ -341,7 +342,7 @@ public sealed class Bundle
         string candidate;
         try
         {
-            if (FrontmatterResourceClassifier.KindOf(rawPath) == FrontmatterResourceKind.BundleRelative)
+            if (kind == FrontmatterResourceKind.BundleRelative)
             {
                 // BundleRelative: strip the leading separator(s) BEFORE combining
                 // with Root -- Path.Combine(root, "/x") discards `root` entirely
