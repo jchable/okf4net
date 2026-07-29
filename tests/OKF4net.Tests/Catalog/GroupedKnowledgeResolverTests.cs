@@ -395,4 +395,37 @@ public class GroupedKnowledgeResolverTests
 
         Assert.IsType<InvalidCastException>(castAttempt);
     }
+
+    [Fact]
+    public void SearchAsync_throws_synchronously_for_a_null_query()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        // Assert.Throws (never ThrowsAsync) only passes if the exception is
+        // thrown while this delegate is RUNNING -- a method that instead
+        // returned a faulted ValueTask (the old behaviour: SearchAsync was
+        // itself `async`, so its own first-line validation was deferred into
+        // the returned task) would make this assertion fail. Matches the
+        // synchronous throw every other IKnowledgeResolver already has.
+        Assert.Throws<ArgumentNullException>(() => resolver.SearchAsync(null!));
+    }
+
+    [Fact]
+    public async Task SearchAsync_rejects_an_undefined_ResolverStrategy_even_though_it_never_reads_it()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        // GroupedKnowledgeResolver never branches on ResolverStrategy -- but
+        // a KnowledgeQuery can reach any IKnowledgeResolver directly, not
+        // only through KnowledgeResolverRouter, so a malformed value must
+        // fail here too rather than only where the router happens to look.
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = (KnowledgeResolverStrategy)99 }));
+
+        Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
+    }
 }

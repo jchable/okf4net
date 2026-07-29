@@ -387,4 +387,23 @@ public class KnowledgeServiceCollectionExtensionsTests
         }));
         Assert.Contains("DefaultFairnessQuota", ex.Message);
     }
+
+    [Fact]
+    public void AddKnowledge_with_an_undefined_DefaultResolverStrategy_throws_immediately()
+    {
+        using var root = new TempDir();
+        var catalogPath = SetUpTwoSourceCatalogFile(root);
+        var services = new ServiceCollection();
+
+        // Registration-time rejection, matching DefaultFairnessQuota's own
+        // fail-fast-at-registration contract above: a config-bound host that
+        // lands an out-of-range int on this enum property finds out when
+        // AddKnowledge runs, not on the first search.
+        var ex = Assert.Throws<ArgumentException>(() => services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(catalogPath);
+            o.DefaultResolverStrategy = (KnowledgeResolverStrategy)99;
+        }));
+        Assert.Contains("DefaultResolverStrategy", ex.Message);
+    }
 }

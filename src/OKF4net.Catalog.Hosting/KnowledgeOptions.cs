@@ -113,5 +113,19 @@ public sealed class KnowledgeOptions
             throw new ArgumentException(
                 $"KnowledgeOptions.DefaultFairnessQuota must be greater than zero (got {DefaultFairnessQuota}); use null to disable fairness reordering.");
         }
+
+        // Same reasoning as the quota check above: caught here, naming the
+        // KnowledgeOptions property the host actually set, rather than left
+        // to the router constructor's own ArgumentException on first resolve
+        // (which would name "defaultStrategy", a parameter the host never
+        // typed). Reachable only via an out-of-range value surviving a
+        // config bind -- the enum type itself blocks this in ordinary C#
+        // code -- but config-bound hosts are exactly the case this method
+        // exists to fail fast for.
+        if (!Enum.IsDefined(DefaultResolverStrategy))
+        {
+            throw new ArgumentException(
+                $"KnowledgeOptions.DefaultResolverStrategy is not a defined KnowledgeResolverStrategy member (got {DefaultResolverStrategy}).");
+        }
     }
 }

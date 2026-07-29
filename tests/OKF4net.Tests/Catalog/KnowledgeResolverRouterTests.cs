@@ -211,4 +211,42 @@ public class KnowledgeResolverRouterTests
         await Assert.ThrowsAsync<ArgumentException>(
             async () => await router.SearchAsync(new KnowledgeQuery("  ") { ResolverStrategy = KnowledgeResolverStrategy.GroupedBySource }));
     }
+
+    [Fact]
+    public void An_undefined_default_strategy_is_rejected_at_construction()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpDistinguishingCatalog(root);
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => new KnowledgeResolverRouter(catalog, (KnowledgeResolverStrategy)99));
+
+        Assert.Equal("defaultStrategy", ex.ParamName);
+    }
+
+    [Fact]
+    public async Task An_undefined_query_strategy_is_rejected_rather_than_silently_falling_back_to_grouped()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpDistinguishingCatalog(root);
+        var router = new KnowledgeResolverRouter(catalog);
+
+        // The defect this closes: before it, an undefined ResolverStrategy
+        // value fell through the switch's default arm straight to
+        // GroupedBySource, with no error at all.
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            async () => await router.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = (KnowledgeResolverStrategy)99 }));
+
+        Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SearchAsync_throws_synchronously_for_a_null_query()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpDistinguishingCatalog(root);
+        var router = new KnowledgeResolverRouter(catalog);
+
+        Assert.Throws<ArgumentNullException>(() => router.SearchAsync(null!));
+    }
 }
