@@ -11,12 +11,12 @@ import { PageDoc, Chapter, MapTable, Next } from '../../components/doc'
 const glanceHtml = `<span class="k">using</span> OKF4net;
 
 <span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);           <span class="c">// §3 — permissive walk</span>
-<span class="k">var</span> report = BundleValidator.Validate(bundle);      <span class="c">// §9 — diagnostics</span>
+<span class="k">var</span> report = BundleValidator.Validate(bundle);      <span class="c">// §11 — diagnostics</span>
 Console.WriteLine(report.IsConformant
     ? <span class="s">$"conformant with OKF v{OkfSpec.Version}"</span> : <span class="s">$"{report.ErrorCount} error(s)"</span>);
 
 <span class="k">var</span> id = ConceptId.Parse(<span class="s">"tables/orders"</span>);        <span class="c">// §2</span>
-<span class="k">foreach</span> (<span class="k">var</span> link <span class="k">in</span> bundle.LinksFrom(id))          <span class="c">// §5</span>
+<span class="k">foreach</span> (<span class="k">var</span> link <span class="k">in</span> bundle.LinksFrom(id))          <span class="c">// §6</span>
     Console.WriteLine(<span class="s">$"{id} -&gt; {link.Target} (exists: {link.Exists})"</span>);
 <span class="k">foreach</span> (<span class="k">var</span> back <span class="k">in</span> bundle.Backlinks(id))
     Console.WriteLine(<span class="s">$"cited by {back}"</span>);`
@@ -30,7 +30,7 @@ export default function Library() {
   return (
     <DocsLayout
       title="Library reference — OKF4net docs"
-      description="API reference for the OKF4net C# library: Bundle, ConceptId, OkfDocument, Frontmatter, the YAML subset, links, index and changelog generation, and §9 validation — grouped by spec concern."
+      description="API reference for the OKF4net C# library: Bundle, ConceptId, OkfDocument, Frontmatter, the YAML subset, links, index and changelog generation, and §11 validation — grouped by spec concern."
       current="library"
     >
       <PageDoc
@@ -48,8 +48,8 @@ export default function Library() {
         lede={
           <>
             The <code>OKF4net</code> namespace mirrors the spec: <code>Bundle</code> (§3), <code>ConceptId</code>{' '}
-            (§2), <code>OkfDocument</code>/<code>Frontmatter</code> (§4), links (§5, §8), <code>IndexGenerator</code>{' '}
-            (§6), <code>ChangeLog</code> (§7), <code>BundleValidator</code> (§9). <strong>Zero third-party
+            (§2), <code>OkfDocument</code>/<code>Frontmatter</code> (§4), links (§6, §13.1), <code>IndexGenerator</code>{' '}
+            (§8), <code>ChangeLog</code> (§9), <code>BundleValidator</code> (§11). <strong>Zero third-party
             dependencies</strong> — the YAML subset and link scanner are the library's own.
           </>
         }
@@ -141,7 +141,7 @@ export default function Library() {
           <p>
             <code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> and layers typed getters on top,
             so producer-defined keys survive round-trips. Two validation levels:{' '}
-            <code>ValidateConformance()</code> enforces only §9 (non-empty <code>type</code>); <code>Validate()</code>{' '}
+            <code>ValidateConformance()</code> enforces only §11 (non-empty <code>type</code>); <code>Validate()</code>{' '}
             is the stricter producer check (<code>type</code>, <code>title</code>, <code>description</code>,{' '}
             <code>timestamp</code>).
           </p>
@@ -159,7 +159,7 @@ export default function Library() {
               [
                 'Validate() · ValidateConformance()',
                 <>
-                  Producer check / §9 check; throw <code>DocumentValidationException</code>.
+                  Producer check / §11 check; throw <code>DocumentValidationException</code>.
                 </>,
               ],
               ['Links() → IReadOnlyList<ConceptLink>', 'Markdown links in the body.'],
@@ -212,7 +212,7 @@ export default function Library() {
           />
         </Chapter>
 
-        <Chapter id="links" title="Links & citations" refText="§5, §8 — the graph edges">
+        <Chapter id="links" title="Links & citations" refText="§6, §13.1 — the graph edges">
           <MapTable
             head={['Member', 'Description']}
             rows={[
@@ -246,7 +246,7 @@ export default function Library() {
           />
         </Chapter>
 
-        <Chapter id="index" title="IndexGenerator & ChangeLog" refText="§6, §7 — reserved files">
+        <Chapter id="index" title="IndexGenerator & ChangeLog" refText="§8, §9 — reserved files">
           <MapTable
             head={['Member', 'Description']}
             rows={[
@@ -262,7 +262,7 @@ export default function Library() {
               [
                 'ChangeLog: Days · Title · ToMarkdown() · InvalidDates()',
                 <>
-                  Parse / render a <code>log.md</code> (§7); <code>IsIsoDate(s)</code> validates a date.
+                  Parse / render a <code>log.md</code> (§9); <code>IsIsoDate(s)</code> validates a date.
                 </>,
               ],
               ['LogDay(Date, Entries) · LogEntry(Kind, Text)', "A day's block and one entry."],
@@ -270,11 +270,11 @@ export default function Library() {
           />
         </Chapter>
 
-        <Chapter id="validation" title="Validation" refText="§9 — conformance">
+        <Chapter id="validation" title="Validation" refText="§11 — conformance">
           <MapTable
             head={['Member', 'Description']}
             rows={[
-              ['BundleValidator.Validate(Bundle) → ValidationReport', 'Run the §9 conformance check.'],
+              ['BundleValidator.Validate(Bundle) → ValidationReport', 'Run the §11 conformance check.'],
               [
                 'ValidationReport.IsConformant → bool',
                 <>
@@ -303,7 +303,7 @@ export default function Library() {
               [
                 'OkfSpec.Version → string',
                 <>
-                  The implemented spec version (<code>"0.1"</code>).
+                  The implemented spec version (<code>"0.2"</code>).
                 </>,
               ],
             ]}

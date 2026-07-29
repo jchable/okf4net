@@ -13,7 +13,7 @@ const bundleWalkHtml = `<span class="k">using</span> OKF4net;
 <span class="k">var</span> bundle = Bundle.Load(<span class="s">"./my_bundle"</span>);
 Console.WriteLine(<span class="s">$"{bundle.Count} concepts"</span>);
 
-<span class="c">// Conformance check (§9).</span>
+<span class="c">// Conformance check (§11).</span>
 <span class="k">var</span> report = BundleValidator.Validate(bundle);
 <span class="k">if</span> (report.IsConformant)
     Console.WriteLine(<span class="s">$"conformant with OKF v{OkfSpec.Version}"</span>);
@@ -67,7 +67,7 @@ export default function Library() {
           <p>One package, no transitive dependency tree. Targets modern .NET; every public API carries XML documentation.</p>
         </Chapter>
 
-        <Chapter id="bundles" title="Load a bundle, walk the graph" refText="§3, §5 — Bundle · LinkScanner">
+        <Chapter id="bundles" title="Load a bundle, walk the graph" refText="§3, §6 — Bundle · LinkScanner">
           <p>
             <code>Bundle.Load</code> walks the directory tree, parses every concept, and builds the cross-link graph
             with backlinks. It is <strong>permissive by design</strong>: a bad file never aborts the load.
@@ -97,10 +97,10 @@ export default function Library() {
             </li>
             <li>
               <strong>Permissive loading.</strong> <code>Bundle.Load</code> collects errors and keeps going —
-              exactly what §9 asks of consumers.
+              exactly what §11 asks of consumers.
             </li>
             <li>
-              <strong>Two levels of validation.</strong> §9-only conformance, or the stricter producer-side check (
+              <strong>Two levels of validation.</strong> §11-only conformance, or the stricter producer-side check (
               <code>type</code>, <code>title</code>, <code>description</code>, <code>timestamp</code>).
             </li>
             <li>
@@ -130,11 +130,11 @@ export default function Library() {
               [<code key="doc">OkfDocument</code>, 'Frontmatter + body; parse / serialize / validate (§4)'],
               [<code key="fm">Frontmatter</code>, 'Typed accessors over an order-preserving mapping (§4.1)'],
               [<code key="cid">ConceptId</code>, 'Id ↔ path conversion and segment validation (§2)'],
-              [<code key="ls">LinkScanner</code>, 'Markdown link extraction, classification, citations (§5, §8)'],
-              [<code key="bundle">Bundle</code>, 'Walk a tree, build the concept graph + backlinks (§3, §5)'],
-              [<code key="ig">IndexGenerator</code>, 'Generate index.md directory listings (§6)'],
-              [<code key="cl">ChangeLog</code>, 'Parse / build log.md update histories (§7)'],
-              [<code key="bv">BundleValidator</code>, '§9 conformance with severity-tagged diagnostics'],
+              [<code key="ls">LinkScanner</code>, 'Markdown link extraction, classification, citations (§6, §13.1)'],
+              [<code key="bundle">Bundle</code>, 'Walk a tree, build the concept graph + backlinks (§3, §6)'],
+              [<code key="ig">IndexGenerator</code>, 'Generate index.md directory listings (§8)'],
+              [<code key="cl">ChangeLog</code>, 'Parse / build log.md update histories (§9)'],
+              [<code key="bv">BundleValidator</code>, '§11 conformance with severity-tagged diagnostics'],
             ]}
           />
           <Next>
