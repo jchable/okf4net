@@ -428,4 +428,23 @@ public class GroupedKnowledgeResolverTests
 
         Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task SearchAsync_rejects_both_PermittedSourceIds_and_SourceVisibilityPolicy_set_together()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        // Even though this strategy never reads either field -- the same
+        // reasoning already established for FairnessQuota/ResolverStrategy:
+        // a malformed query fails the same way whichever strategy runs it.
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "hi" },
+            SourceVisibilityPolicy = (_, _) => true,
+        }));
+
+        Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
+    }
 }

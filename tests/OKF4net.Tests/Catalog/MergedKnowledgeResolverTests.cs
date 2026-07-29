@@ -337,4 +337,20 @@ public class MergedKnowledgeResolverTests
 
         Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task SearchAsync_rejects_both_PermittedSourceIds_and_SourceVisibilityPolicy_set_together()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "hi" },
+            SourceVisibilityPolicy = (_, _) => true,
+        }));
+
+        Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
+    }
 }
