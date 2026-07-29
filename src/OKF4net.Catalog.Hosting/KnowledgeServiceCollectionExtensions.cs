@@ -39,7 +39,11 @@ public static class KnowledgeServiceCollectionExtensions
     /// no <see cref="KnowledgeOptions.AddCatalogFile"/> call throws
     /// <see cref="ArgumentException"/>; more than one call throws
     /// <see cref="InvalidOperationException"/> (V1 supports exactly one
-    /// catalog file -- <c>AddBundle</c> is cut as YAGNI).
+    /// catalog file -- <c>AddBundle</c> is cut as YAGNI); a
+    /// <see cref="KnowledgeOptions.DefaultFairnessQuota"/> that is set but not
+    /// greater than zero also throws <see cref="ArgumentException"/> --
+    /// caught here rather than left to the router's own construction on first
+    /// resolve.
     /// </para>
     /// <para>
     /// <b>Fail-fast on an invalid catalog.</b> The registrations use lazy
@@ -58,7 +62,11 @@ public static class KnowledgeServiceCollectionExtensions
     /// <param name="services">The service collection to register into.</param>
     /// <param name="configure">Callback that configures the single catalog file via <see cref="KnowledgeOptions.AddCatalogFile"/>.</param>
     /// <returns><paramref name="services"/>, for chaining.</returns>
-    /// <exception cref="ArgumentException">No <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside <paramref name="configure"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// No <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside
+    /// <paramref name="configure"/>, or <see cref="KnowledgeOptions.DefaultFairnessQuota"/>
+    /// is set but not greater than zero.
+    /// </exception>
     /// <exception cref="InvalidOperationException">More than one <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside <paramref name="configure"/>.</exception>
     public static IServiceCollection AddKnowledge(this IServiceCollection services, Action<KnowledgeOptions> configure)
     {

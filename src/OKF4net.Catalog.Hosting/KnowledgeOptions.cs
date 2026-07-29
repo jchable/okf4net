@@ -83,7 +83,10 @@ public sealed class KnowledgeOptions
     /// misconfiguration fails at registration time rather than on first
     /// resolve.
     /// </summary>
-    /// <exception cref="ArgumentException">No <see cref="AddCatalogFile"/> call was made.</exception>
+    /// <exception cref="ArgumentException">
+    /// No <see cref="AddCatalogFile"/> call was made, or <see cref="DefaultFairnessQuota"/>
+    /// is set but not greater than zero.
+    /// </exception>
     /// <exception cref="InvalidOperationException">More than one <see cref="AddCatalogFile"/> call was made.</exception>
     internal void Validate()
     {
@@ -98,6 +101,17 @@ public sealed class KnowledgeOptions
             throw new InvalidOperationException(
                 "AddKnowledge supports exactly one AddCatalogFile call in V1 (AddBundle/multi-catalog composition is cut as YAGNI); "
                 + "register every source in a single catalog.json instead.");
+        }
+
+        // Caught here, at registration time, rather than left to the router
+        // constructor's own ArgumentOutOfRangeException on first resolve --
+        // which would name "defaultFairnessQuota", a constructor parameter
+        // the host never typed, rather than the KnowledgeOptions property it
+        // actually set.
+        if (DefaultFairnessQuota is <= 0)
+        {
+            throw new ArgumentException(
+                $"KnowledgeOptions.DefaultFairnessQuota must be greater than zero (got {DefaultFairnessQuota}); use null to disable fairness reordering.");
         }
     }
 }

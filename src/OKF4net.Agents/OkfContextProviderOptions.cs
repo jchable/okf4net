@@ -84,7 +84,8 @@ public sealed class OkfContextProviderOptions
     /// The <see cref="OKF4net.Catalog.KnowledgeQuery.FairnessQuota"/> to
     /// attach to the knowledge query this provider issues;
     /// <see langword="null"/> (the default) attaches none, deferring to
-    /// whatever the resolver itself is configured with.
+    /// whatever the resolver itself is configured with. When set, must be
+    /// greater than zero; validated by the V2 provider constructor.
     /// </summary>
     /// <remarks>
     /// Exposed because this provider is the archetypal early-truncating

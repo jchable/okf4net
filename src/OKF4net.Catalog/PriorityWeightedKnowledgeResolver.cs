@@ -10,7 +10,8 @@ namespace OKF4net.Catalog;
 /// with <see cref="KnowledgePassage.Score"/> ordering only WITHIN a single
 /// priority tier. A higher-priority source's passage therefore never falls
 /// behind a lower-priority source's, however much stronger the latter's
-/// match.
+/// match -- except for the reordering a <see cref="KnowledgeQuery.FairnessQuota"/>,
+/// if one applies, can still introduce afterward.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -368,8 +368,8 @@ KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund 
 - One shared catalog (no per-caller or per-tenant filtering of which sources
   are visible).
 - No semantic/fuzzy deduplication across sources (two manifest entries
-  resolving to the *same directory* are collapsed; similar content in
-  genuinely different bundles is not).
+  resolving to the *same directory* are collapsed only under the two merged
+  strategies; similar content in genuinely different bundles is not).
 - No external connectors.
 - No tenant-aware authorization of any kind.
 

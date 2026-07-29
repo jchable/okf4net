@@ -23,8 +23,10 @@ public enum KnowledgeResolverStrategy
     /// <summary>
     /// Merge every source's results into one list ranked by descending
     /// <see cref="KnowledgePassage.Score"/> across all sources, with
-    /// <see cref="KnowledgeCatalogSource.Priority"/> as a tie-break only.
-    /// See <see cref="MergedKnowledgeResolver"/>.
+    /// <see cref="KnowledgeCatalogSource.Priority"/> as a tie-break only --
+    /// subject to reordering afterward if a
+    /// <see cref="KnowledgeQuery.FairnessQuota"/> applies. See
+    /// <see cref="MergedKnowledgeResolver"/>.
     /// </summary>
     Merged,
 
@@ -33,8 +35,9 @@ public enum KnowledgeResolverStrategy
     /// <see cref="KnowledgeCatalogSource.Priority"/> FIRST, with
     /// <see cref="KnowledgePassage.Score"/> ordering only within a single
     /// priority tier -- so a higher-priority source's passage never falls
-    /// behind a lower-priority one regardless of match strength. See
-    /// <see cref="PriorityWeightedKnowledgeResolver"/>.
+    /// behind a lower-priority one regardless of match strength -- subject to
+    /// reordering afterward if a <see cref="KnowledgeQuery.FairnessQuota"/>
+    /// applies. See <see cref="PriorityWeightedKnowledgeResolver"/>.
     /// </summary>
     PriorityWeighted,
 }

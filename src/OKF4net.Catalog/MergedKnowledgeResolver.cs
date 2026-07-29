@@ -8,7 +8,8 @@ namespace OKF4net.Catalog;
 /// <see cref="SourceRole.Knowledge"/> source's matches merged into ONE list
 /// ranked by descending <see cref="KnowledgePassage.Score"/> across all
 /// sources, with <see cref="KnowledgeCatalogSource.Priority"/> as a tie-break
-/// only -- never a score multiplier.
+/// only -- never a score multiplier -- and then, if a
+/// <see cref="KnowledgeQuery.FairnessQuota"/> applies, reordered for fairness.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -201,8 +201,9 @@ budget.
 - One shared catalog per `FileKnowledgeCatalog` instance — no per-caller or
   per-tenant filtering of which sources are visible.
 - No semantic/fuzzy deduplication — two concepts with similar content in
-  genuinely different bundles are both returned. Only two manifest entries
-  resolving to the *same directory* are collapsed.
+  genuinely different bundles are both returned. Only under the two merged
+  strategies are two manifest entries resolving to the *same directory*
+  collapsed; the default `GroupedBySource` strategy does not dedup.
 - No tenant-aware authorization of any kind.
 
 See [the project README](https://github.com/jchable/okf4net) for the full
