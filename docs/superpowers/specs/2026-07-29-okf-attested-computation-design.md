@@ -110,6 +110,8 @@ public AttestedComputationContract ComputationContract { get; }   // projection 
 
 `KnownKeys` étendu de `runtime, parameters, computation, executor, attester` (§10) — ces clés cessent d'être des extensions.
 
+**Parsing YAML — aucune extension nécessaire (vérifié sur `YamlParser`).** Le sous-ensemble YAML (parseur récursif descendant) gère déjà les formes §10 : un **map imbriqué contenant une liste** (`executor: { resource: …, receipt: [ … ] }`, en bloc comme en flow) et une **liste de maps** (`parameters: [ { name: …, type: …, required: … } ]`, items bloc ou flow). Ces cas empruntent exactement les chemins déjà exercés par `sources`/`verified`/`usage_window` (§5, testés au Plan 1) : `ParseMappingCore → ParseNested` pour la valeur imbriquée, `ParseInlineValue → FlowParser` pour la flow-list `receipt`, `ParseSequence` pour la liste de maps. **Aucune modification du parseur/emitter n'est requise** ; le plan n'ajoute que des tests de round-trip sur les formes §10.
+
 **Extraction de la computation (§10.3 + §4.2)** — `OkfDocument.Computation()` → `SanctionedComputation` :
 
 - si `ComputationContract.ComputationPath` est non nul → `Source=File, Path=…` (le contenu est résolu/lu **par l'orchestrateur**, pas ici — voir §9) ;
