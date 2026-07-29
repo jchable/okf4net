@@ -100,12 +100,10 @@ public class KnowledgeQueryTests
     }
 
     [Fact]
-    public void KnowledgeAccessScope_Local_is_all_null_and_equal_by_value()
+    public void KnowledgeAccessScope_Local_is_all_null()
     {
         var a = new KnowledgeQuery("orders");
-        var b = new KnowledgeQuery("orders");
 
         Assert.True(a.Scope.IsLocal);
-        Assert.Equal(a.Scope, b.Scope);
     }
 }

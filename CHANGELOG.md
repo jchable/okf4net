@@ -29,6 +29,13 @@ and this project adheres to
   (`KnowledgeAccessScope`, defaults to `KnowledgeAccessScope.Local`) — the
   "actual multi-tenant consumer" an earlier doc comment said would justify
   adding identity fields has materialized.
+- **Breaking: `KnowledgeResolverRouter`'s constructor gained a new
+  parameter, `defaultSourceVisibilityPolicy`, inserted between the
+  pre-existing `defaultFairnessQuota` and `clock` parameters.** Any external
+  caller invoking the constructor with positional arguments past
+  `defaultFairnessQuota` fails to compile until the call site is updated —
+  never silently, but source- and binary-breaking for that call shape.
+  Callers using named arguments are unaffected.
 
 ## [0.3.0] - 2026-07-29
 

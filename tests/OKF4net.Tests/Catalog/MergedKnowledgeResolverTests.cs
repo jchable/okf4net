@@ -271,6 +271,31 @@ public class MergedKnowledgeResolverTests
     }
 
     [Fact]
+    public async Task PermittedSourceIds_that_excludes_every_enabled_source_still_returns_NoEnabledSources_but_a_visibility_message()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "does-not-exist" },
+        });
+
+        Assert.Empty(context.Passages);
+        var diagnostic = Assert.Single(context.Diagnostics);
+
+        // Same diagnostic code as "genuinely nothing configured" -- the plan
+        // deliberately reuses NoEnabledSources rather than minting a new
+        // code for a visibility-narrowed-to-zero result -- but the message
+        // must point at visibility filtering, not catalog.json, since two
+        // sources genuinely are enabled here.
+        Assert.Equal(KnowledgeDiagnosticCode.NoEnabledSources, diagnostic.Code);
+        Assert.Contains("visib", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("configured", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task No_matches_is_reported_as_data()
     {
         using var root = new TempDir();

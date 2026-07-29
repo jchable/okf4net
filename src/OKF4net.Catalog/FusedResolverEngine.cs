@@ -86,17 +86,30 @@ internal static class FusedResolverEngine
             .ThenBy(s => s.Id, StringComparer.Ordinal)
             .ToList();
 
+        var preFilterCount = enabledSources.Count;
         enabledSources = SourceVisibility.Filter(enabledSources, query, defaultSourceVisibilityPolicy);
 
         if (enabledSources.Count == 0)
         {
+            // Same diagnostic code either way (the plan deliberately reuses
+            // NoEnabledSources rather than minting a new code for a
+            // visibility-narrowed-to-zero result) but a different message:
+            // "genuinely no enabled sources" and "sources are enabled but
+            // none are visible to this caller" are different operator
+            // problems (catalog.json vs. the visibility policy/
+            // PermittedSourceIds), so conflating them under one message
+            // would misdirect debugging.
+            var message = preFilterCount > 0
+                ? $"No knowledge sources are visible to this caller ({preFilterCount} enabled source(s) were excluded by source-visibility filtering)."
+                : "No enabled knowledge sources are configured.";
+
             return new KnowledgeContext(
                 query,
                 snapshot.Generation,
                 Array.Empty<KnowledgePassage>(),
                 Array.AsReadOnly(new[]
                 {
-                    new KnowledgeDiagnostic(KnowledgeDiagnosticCode.NoEnabledSources, null, "No enabled knowledge sources are configured."),
+                    new KnowledgeDiagnostic(KnowledgeDiagnosticCode.NoEnabledSources, null, message),
                 }));
         }
 

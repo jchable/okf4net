@@ -90,7 +90,12 @@ public sealed record KnowledgeQuery(string Text, string? Tag = null)
     /// <see langword="null"/> (the default) applies no restriction from this
     /// field. Mutually exclusive with <see cref="SourceVisibilityPolicy"/> on
     /// the same query -- setting both throws (see
-    /// <c>ResolverGuards.ValidateQuery</c>).
+    /// <c>ResolverGuards.ValidateQuery</c>). Matching (<c>Contains</c>) uses
+    /// whichever equality comparer the host constructed this
+    /// <see cref="IReadOnlySet{T}"/> with (e.g. ordinal vs.
+    /// <see cref="System.StringComparison.OrdinalIgnoreCase"/>) -- it is not
+    /// forced to ordinal, unlike the catalog's own internal source-id
+    /// ordering (<see cref="System.StringComparer.Ordinal"/>) elsewhere.
     /// </summary>
     public IReadOnlySet<string>? PermittedSourceIds { get; init; }
 
@@ -107,6 +112,12 @@ public sealed record KnowledgeQuery(string Text, string? Tag = null)
     /// database call) to determine visibility does it once, before
     /// constructing the query, via <see cref="PermittedSourceIds"/> instead --
     /// not per source inside a resolver's fan-out loop.
+    /// <see cref="KnowledgeAccessScope"/> has no value-equality override
+    /// (reference equality only): a policy function should compare
+    /// <see cref="KnowledgeAccessScope.TenantId"/>/<see cref="KnowledgeAccessScope.UserId"/>/
+    /// <see cref="KnowledgeAccessScope.SessionId"/> individually rather than
+    /// comparing two <see cref="KnowledgeAccessScope"/> instances with
+    /// <c>==</c>/<c>Equals</c>.
     /// </summary>
     public Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? SourceVisibilityPolicy { get; init; }
 }

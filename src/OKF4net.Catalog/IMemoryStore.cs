@@ -12,7 +12,19 @@ namespace OKF4net.Catalog;
 /// </summary>
 public interface IMemoryStore
 {
-    /// <summary>Reads the scope's applicable-tier memory, scored against <paramref name="query"/>, most-specific first.</summary>
+    /// <summary>
+    /// Reads the scope's applicable-tier memory, scored against
+    /// <paramref name="query"/>, most-specific first.
+    /// </summary>
+    /// <remarks>
+    /// The explicit <paramref name="scope"/> parameter is authoritative for
+    /// which tiers are read; <paramref name="query"/>'s own
+    /// <see cref="KnowledgeQuery.Scope"/> value is ignored by every current
+    /// implementation (a caller can pass a <paramref name="query"/> whose
+    /// <see cref="KnowledgeQuery.Scope"/> differs from <paramref name="scope"/>
+    /// without it affecting the read). A future implementation must not
+    /// silently switch to reading <see cref="KnowledgeQuery.Scope"/> instead.
+    /// </remarks>
     ValueTask<MemoryReadResult> ReadAsync(KnowledgeAccessScope scope, KnowledgeQuery query, CancellationToken ct = default);
 
     /// <summary>Writes <paramref name="entry"/> into the scope's <paramref name="tier"/> memory (create-or-append, atomic).</summary>

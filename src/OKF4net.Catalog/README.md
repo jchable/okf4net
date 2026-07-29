@@ -237,6 +237,11 @@ Neither has any effect on a query that sets neither field and a host that
 configures no default: every enabled source stays visible to every caller,
 exactly as before this feature existed.
 
+`KnowledgeAccessScope` has no value-equality override (reference equality
+only) -- a `SourceVisibilityPolicy` function should compare `TenantId`/
+`UserId`/`SessionId` individually, not compare two `KnowledgeAccessScope`
+instances with `==`/`Equals`.
+
 ## V1 limits
 
 - Local filesystem bundles only — no remote/HTTP sources, no external

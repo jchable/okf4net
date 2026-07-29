@@ -27,7 +27,11 @@ This registers, all as singletons:
   `KnowledgeOptions.DefaultResolverStrategy` (default `GroupedBySource`)
   when it names none — see
   [`OKF4net.Catalog`'s README](https://www.nuget.org/packages/OKF4net.Catalog)
-  for the available strategies.
+  for the available strategies. Sources are additionally narrowed by
+  `KnowledgeOptions.DefaultSourceVisibilityPolicy` (default `null` — no
+  restriction) whenever a query sets neither `KnowledgeQuery.PermittedSourceIds`
+  nor `KnowledgeQuery.SourceVisibilityPolicy` — see the same README's
+  "Choosing source visibility" section.
 - `KnowledgeCatalogOptions` — the resolved catalog file path and catalog root
   (derived from the manifest file's own directory), for callers that want to
   inspect them directly.
