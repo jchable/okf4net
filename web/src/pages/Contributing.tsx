@@ -37,6 +37,31 @@ export default function Contributing() {
       />
 
       <div className="docbody">
+        <Chapter id="start" title="Where to start" refText="new here?">
+          <p>
+            Pick an issue labelled{' '}
+            <a href="https://github.com/jchable/okf4net/labels/good%20first%20issue">good first issue</a> —
+            scoped, names the files, states how to verify. Bigger idea? See the roadmap below, or open a{' '}
+            <a href="https://github.com/jchable/okf4net/discussions">Discussion</a> first.
+          </p>
+        </Chapter>
+
+        <Chapter id="roadmap" title="Roadmap" refText="now · next · later">
+          <ul className="plain">
+            <li>
+              <strong>Now:</strong> broader test coverage and tutorials, for library users and agent builders
+              alike.
+            </li>
+            <li>
+              <strong>Next:</strong> more Agent Framework samples, richer CLI diagnostics, performance
+              baselines.
+            </li>
+            <li>
+              <strong>Later:</strong> ecosystem integrations, tracking the spec past v0.2.
+            </li>
+          </ul>
+        </Chapter>
+
         <Chapter id="build" title="Build and test" refText="warnings are errors">
           <pre className="block" dangerouslySetInnerHTML={{ __html: buildTestHtml }} />
           <p>All warnings are treated as errors, so a clean build is required.</p>

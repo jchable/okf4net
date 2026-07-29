@@ -77,19 +77,19 @@ export default function Home() {
         <section className="chapter" id="library">
           <div className="chead">
             <span className="h">##</span>
-            <h2>The library</h2>
+            <h2>The Library</h2>
             <span className="ref">§4, §6 — documents, cross-linking</span>
           </div>
           <p>Load a bundle, check conformance, walk the cross-link graph. <strong><code>Bundle.Load</code> never aborts on a bad file</strong> — parse failures land in <code>ParseErrors</code>, broken links stay in the graph as edges to missing concepts.</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: libraryUsageHtml }} />
           <p><code>Frontmatter</code> keeps the <strong>full ordered mapping</strong> with typed getters on top — producer-defined keys survive round-trips byte for byte. Two validation levels: <code>ValidateConformance()</code> enforces only what §11 requires; <code>Validate()</code> matches the stricter producer-side check.</p>
-          <p className="next">→ <Link to="/library">library.md</Link> — install, examples, design choices, and the full API surface</p>
+          <p className="next">→ <Link to="/library">library.md</Link> — install, examples, design choices · <Link to="/docs/library">docs/library.md</Link> — every member, signature by signature</p>
         </section>
 
         <section className="chapter" id="cli">
           <div className="chead">
             <span className="h">##</span>
-            <h2>The okf CLI</h2>
+            <h2>The CLI</h2>
             <span className="ref">§8–§11 — indexes, logs, conformance</span>
           </div>
           <p>Published as a <strong>self-contained Native AOT single-file binary</strong> — no .NET runtime on the target machine. <code>okf validate</code> exits non-zero on a non-conformant bundle, so it drops straight into CI.</p>
@@ -105,13 +105,13 @@ export default function Home() {
             </tbody>
           </table>
           <pre className="block" dangerouslySetInnerHTML={{ __html: cliSessionHtml }} />
-          <p className="next">→ <Link to="/cli">cli.md</Link> — building the binary, session transcripts, CI recipes</p>
+          <p className="next">→ <Link to="/cli">cli.md</Link> — building the binary, session transcripts, CI recipes · <Link to="/docs/cli">docs/cli.md</Link> — every flag and exit code</p>
         </section>
 
         <section className="chapter" id="agents">
           <div className="chead">
             <span className="h">##</span>
-            <h2>Agent tools</h2>
+            <h2>The Agent tools</h2>
             <span className="ref">Microsoft Agent Framework — nine tools + bounded context</span>
           </div>
           <p><code>OKF4net.Agents</code> turns a bundle into <strong>nine <code>AIFunction</code> tools</strong> (read, search, write, validate, log, …) plus <code>OkfContextProvider</code>, which injects budget-bounded reference data automatically — never as instructions — and, opt-in, captures exchanges as deterministic memory, single-bundle or scoped across tenants, users, and sessions.</p>
@@ -131,7 +131,7 @@ export default function Home() {
         <section className="chapter" id="mcp">
           <div className="chead">
             <span className="h">##</span>
-            <h2>In Claude & your editor</h2>
+            <h2>MCP — In Claude & your editor</h2>
             <span className="ref">MCP — the bundle as tools</span>
           </div>
           <p>Run <code>okf-mcp</code>, point it at a bundle, and its nine operations become tools inside <strong>Claude Desktop, Claude Code, and Cursor</strong> — read, search, and write concepts from a conversation, over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>. Same engine as the library and the CLI, exposed to any MCP client.</p>

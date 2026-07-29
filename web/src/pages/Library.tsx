@@ -135,10 +135,21 @@ export default function Library() {
               [<code key="ig">IndexGenerator</code>, 'Generate index.md directory listings (§8)'],
               [<code key="cl">ChangeLog</code>, 'Parse / build log.md update histories (§9)'],
               [<code key="bv">BundleValidator</code>, '§11 conformance with severity-tagged diagnostics'],
+              [
+                <>Actor · Trust · Provenance · Lifecycle</>,
+                'Provenance, trust, and lifecycle value types (§5)',
+              ],
+              [<code key="sp">StalePolicy</code>, 'Consumer-side policy for stale concepts (§5.5)'],
+              [
+                <code key="bcw">BundleConceptWriter</code>,
+                'Atomic, per-path-locked, reparse-guarded concept writes — shared by Agents & Catalog',
+              ],
+              [<code key="csrch">ConceptSearch</code>, 'The full-text scorer shared by okf_search and the local catalog'],
             ]}
           />
           <Next>
-            → <Link to="/cli">cli.md</Link> — the same engine, as one AOT binary for CI
+            → <Link to="/docs/library">docs/library.md</Link> — every member, signature by signature ·{' '}
+            <Link to="/cli">cli.md</Link> — the same engine, as one AOT binary for CI
           </Next>
         </Chapter>
       </div>
