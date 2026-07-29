@@ -908,7 +908,16 @@ public sealed class OkfBundleTools
     /// outcome whose <c>displayable: no</c>) instead.
     /// </summary>
     /// <param name="conceptId">The Attested Computation concept id to run.</param>
-    /// <param name="parameterValues">The parameter values for this run (§10.3: values only, never computation code).</param>
+    /// <param name="parameterValues">
+    /// The parameter values for this run (§10.3: values only, never
+    /// computation code). A <see langword="null"/> value — reachable despite
+    /// the non-nullable static type when a host/LLM binds the call with the
+    /// property omitted — is treated as an empty dictionary rather than
+    /// dereferenced, so a computation with no required parameters still runs,
+    /// and one that does simply degrades to the orchestrator's normal
+    /// "missing required parameter" non-displayable outcome instead of
+    /// throwing.
+    /// </param>
     [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
     public string RunComputation(
         [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
@@ -928,6 +937,18 @@ public sealed class OkfBundleTools
         {
             return "Error: no attestation runtime configured.";
         }
+
+        // A reflection/AIFunction-bound call can pass null here despite the
+        // non-nullable static type (same convention as the conceptId guards
+        // above) -- e.g. a host/LLM that omits the parameterValues property
+        // entirely. Without this guard, AttestationOrchestrator.RunAsync's
+        // own required-parameter gate (parameterValues.ContainsKey(...))
+        // would throw a NullReferenceException that RunTool's catch filter
+        // does not cover, breaking the "tools never throw toward the LLM"
+        // invariant. Treating null as "no values supplied" lets the
+        // orchestrator's existing missing-required-parameter handling take
+        // over instead.
+        parameterValues ??= new Dictionary<string, object?>();
 
         return RunTool(() =>
         {

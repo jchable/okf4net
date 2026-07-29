@@ -46,4 +46,36 @@ public class OkfComputationToolsTests
         var s = await Task.FromResult(tools.RunComputation("c/rev", new Dictionary<string, object?>()));
         Assert.Contains("displayable", s.ToLowerInvariant());
     }
+
+    /// <summary>
+    /// A reflection/AIFunction-bound call can pass CLR <see langword="null"/>
+    /// for <c>parameterValues</c> despite its non-nullable static type (e.g. a
+    /// host/LLM that omits the property entirely). Without a guard,
+    /// <see cref="AttestationOrchestrator.RunAsync"/>'s own required-parameter
+    /// gate (<c>parameterValues.ContainsKey(...)</c>) would throw a
+    /// <see cref="NullReferenceException"/> that <c>RunTool</c>'s catch filter
+    /// does not cover -- breaking the "tools never throw toward the LLM"
+    /// invariant. This concept declares a required parameter so the gate is
+    /// actually exercised; the run must degrade to a non-displayable outcome
+    /// (missing required parameter), never an unhandled exception.
+    /// </summary>
+    [Fact]
+    public void Run_computation_with_null_parameterValues_does_not_throw()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: threshold\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }))
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        var s = tools.RunComputation("c/rev", null!);
+
+        var lower = s.ToLowerInvariant();
+        Assert.Contains("displayable: no", lower);
+        Assert.Contains("missing required parameter", lower);
+    }
 }
