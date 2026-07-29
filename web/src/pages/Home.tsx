@@ -108,6 +108,16 @@ export default function Home() {
           <p className="next">→ <Link to="/cli">cli.md</Link> — building the binary, session transcripts, CI recipes</p>
         </section>
 
+        <section className="chapter" id="agents">
+          <div className="chead">
+            <span className="h">##</span>
+            <h2>Agent tools</h2>
+            <span className="ref">Microsoft Agent Framework — nine tools + bounded context</span>
+          </div>
+          <p><code>OKF4net.Agents</code> turns a bundle into <strong>nine <code>AIFunction</code> tools</strong> (read, search, write, validate, log, …) plus <code>OkfContextProvider</code>, which injects budget-bounded reference data automatically — never as instructions — and, opt-in, captures exchanges as deterministic memory, single-bundle or scoped across tenants, users, and sessions.</p>
+          <p className="next">→ <Link to="/docs/agents">docs/agents.md</Link> — the nine tools, the context provider, and scoped memory capture</p>
+        </section>
+
         <section className="chapter" id="mcp">
           <div className="chead">
             <span className="h">##</span>

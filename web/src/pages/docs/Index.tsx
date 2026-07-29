@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 import { Link } from 'react-router-dom'
 import DocsLayout from '../../layouts/DocsLayout'
-import { PageDoc, Chapter, IndexTable, ConceptGrid, Cell, Term, Next, Tag } from '../../components/doc'
+import { PageDoc, Chapter, IndexTable, ConceptGrid, Cell, Term, Next } from '../../components/doc'
 
 /**
  * The docs landing page — `docs/index.md`, the generated listing `okf index`
@@ -79,12 +79,7 @@ export default function DocsIndex() {
               },
               {
                 type: 'Reference',
-                concept: (
-                  <>
-                    <span className="soon">agents</span>
-                    <Tag>soon</Tag>
-                  </>
-                ),
+                concept: <Link to="/docs/agents">agents</Link>,
                 desc: 'The Microsoft Agent Framework layer — nine bundle tools and a budget-bounded context provider.',
               },
               {
@@ -131,10 +126,7 @@ export default function DocsIndex() {
             <Cell>
               <Term>build an agent</Term>
               <p>
-                Expose a bundle to an AI agent as tools plus bounded context. →{' '}
-                <span className="muted">
-                  agents.md <Tag>soon</Tag>
-                </span>
+                Expose a bundle to an AI agent as tools plus bounded context. → <Link to="/docs/agents">agents.md</Link>
               </p>
             </Cell>
             <Cell>
