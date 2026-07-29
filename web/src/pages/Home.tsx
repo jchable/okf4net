@@ -77,7 +77,7 @@ export default function Home() {
         <section className="chapter" id="library">
           <div className="chead">
             <span className="h">##</span>
-            <h2>The library</h2>
+            <h2>The Library</h2>
             <span className="ref">§4, §6 — documents, cross-linking</span>
           </div>
           <p>Load a bundle, check conformance, walk the cross-link graph. <strong><code>Bundle.Load</code> never aborts on a bad file</strong> — parse failures land in <code>ParseErrors</code>, broken links stay in the graph as edges to missing concepts.</p>
@@ -111,7 +111,7 @@ export default function Home() {
         <section className="chapter" id="agents">
           <div className="chead">
             <span className="h">##</span>
-            <h2>Agent tools</h2>
+            <h2>The Agent tools</h2>
             <span className="ref">Microsoft Agent Framework — nine tools + bounded context</span>
           </div>
           <p><code>OKF4net.Agents</code> turns a bundle into <strong>nine <code>AIFunction</code> tools</strong> (read, search, write, validate, log, …) plus <code>OkfContextProvider</code>, which injects budget-bounded reference data automatically — never as instructions — and, opt-in, captures exchanges as deterministic memory, single-bundle or scoped across tenants, users, and sessions.</p>
