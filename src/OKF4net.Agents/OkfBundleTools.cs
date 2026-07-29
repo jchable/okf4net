@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using Microsoft.Extensions.AI;
+using OKF4net.Attestation;
 using OKF4net.Internal;
 using OKF4net.Yaml;
 
@@ -71,11 +72,43 @@ public sealed class OkfBundleTools
     private Bundle? _bundle;
 
     /// <summary>
-    /// Creates the tool set rooted at <paramref name="bundleRoot"/>.
+    /// The §10.5 attestation orchestrator, if one has been wired for this tool
+    /// set. <see langword="null"/> unless the <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>
+    /// overload was used with a non-null orchestrator — in that case,
+    /// <see cref="RunComputation"/> is a no-op error and <see cref="GetTools"/>
+    /// omits <c>okf_run_computation</c> entirely (§10.5 requires a host-supplied
+    /// runtime; there is nothing sane to expose without one). <see cref="GetComputation"/>
+    /// never depends on this field: reading a computation's contract and
+    /// source needs no runtime.
+    /// </summary>
+    private readonly AttestationOrchestrator? _orchestrator;
+
+    /// <summary>
+    /// Creates the tool set rooted at <paramref name="bundleRoot"/>, without an
+    /// attestation orchestrator (so <c>okf_run_computation</c> is not exposed;
+    /// see <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>).
     /// </summary>
     /// <param name="bundleRoot">Path to the bundle's root directory.</param>
     /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> does not exist.</exception>
     public OkfBundleTools(string bundleRoot)
+        : this(bundleRoot, orchestrator: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates the tool set rooted at <paramref name="bundleRoot"/>, wiring
+    /// <paramref name="orchestrator"/> for §10.5 attested-computation runs. When
+    /// <paramref name="orchestrator"/> is <see langword="null"/>, this is
+    /// equivalent to <see cref="OkfBundleTools(string)"/>: <c>okf_get_computation</c>
+    /// is still exposed (it is read-only and needs no runtime), but
+    /// <c>okf_run_computation</c> is omitted from <see cref="GetTools"/> and
+    /// <see cref="RunComputation"/> reports a plain-text error instead of
+    /// running anything.
+    /// </summary>
+    /// <param name="bundleRoot">Path to the bundle's root directory.</param>
+    /// <param name="orchestrator">The attestation orchestrator to run §10.5 computations through, or <see langword="null"/> to leave attested-computation execution unwired.</param>
+    /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> does not exist.</exception>
+    public OkfBundleTools(string bundleRoot, AttestationOrchestrator? orchestrator)
     {
         if (!Directory.Exists(bundleRoot))
         {
@@ -83,6 +116,7 @@ public sealed class OkfBundleTools
         }
 
         BundleRoot = bundleRoot;
+        _orchestrator = orchestrator;
 
         _writer = new BundleConceptWriter(bundleRoot, onWriteCommitted: () => _bundle = null);
         _bundleLock = _writer.WriteLock;
@@ -130,7 +164,7 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// All nine OKF tools as Agent Framework <see cref="AIFunction"/>s (via
+    /// All OKF tools as Agent Framework <see cref="AIFunction"/>s (via
     /// <see cref="AITool"/>), ready for <c>AsAIAgent(tools: ...)</c>. Each
     /// call returns a fresh list of freshly-created <see cref="AIFunction"/>
     /// instances bound to this <see cref="OkfBundleTools"/> — invoking one
@@ -143,20 +177,39 @@ public sealed class OkfBundleTools
     /// <see cref="DescriptionAttribute"/> — the single source of truth, so
     /// the two can never drift apart. The order is stable: read → browse →
     /// graph → search → write → append → regenerate → validate →
-    /// changes-since.
+    /// changes-since → get-computation → (conditionally) run-computation.
+    ///
+    /// <c>okf_get_computation</c> is always included — it is read-only and
+    /// needs no attestation runtime. <c>okf_run_computation</c> is included
+    /// only when this instance was constructed with a non-null
+    /// <see cref="AttestationOrchestrator"/> (see
+    /// <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>):
+    /// without one, there is nothing for it to run, so it is omitted from the
+    /// tool set entirely rather than exposed as an always-erroring tool.
     /// </summary>
-    public IList<AITool> GetTools() =>
-    [
-        AIFunctionFactory.Create(ReadConcept, "okf_read_concept"),
-        AIFunctionFactory.Create(Browse, "okf_browse"),
-        AIFunctionFactory.Create(Graph, "okf_graph"),
-        AIFunctionFactory.Create(Search, "okf_search"),
-        AIFunctionFactory.Create(WriteConcept, "okf_write_concept"),
-        AIFunctionFactory.Create(AppendLog, "okf_append_log"),
-        AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes"),
-        AIFunctionFactory.Create(ValidateBundle, "okf_validate_bundle"),
-        AIFunctionFactory.Create(ChangesSince, "okf_changes_since"),
-    ];
+    public IList<AITool> GetTools()
+    {
+        var tools = new List<AITool>
+        {
+            AIFunctionFactory.Create(ReadConcept, "okf_read_concept"),
+            AIFunctionFactory.Create(Browse, "okf_browse"),
+            AIFunctionFactory.Create(Graph, "okf_graph"),
+            AIFunctionFactory.Create(Search, "okf_search"),
+            AIFunctionFactory.Create(WriteConcept, "okf_write_concept"),
+            AIFunctionFactory.Create(AppendLog, "okf_append_log"),
+            AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes"),
+            AIFunctionFactory.Create(ValidateBundle, "okf_validate_bundle"),
+            AIFunctionFactory.Create(ChangesSince, "okf_changes_since"),
+            AIFunctionFactory.Create(GetComputation, "okf_get_computation"),
+        };
+
+        if (_orchestrator is not null)
+        {
+            tools.Add(AIFunctionFactory.Create(RunComputation, "okf_run_computation"));
+        }
+
+        return tools;
+    }
 
     /// <summary>
     /// Reads one concept: its frontmatter, body, outgoing links, and
@@ -207,6 +260,13 @@ public sealed class OkfBundleTools
             AppendSection(sb, "Outgoing links", FormatOutgoingLinks(bundle.LinksFrom(id)));
             sb.Append('\n');
             AppendSection(sb, "Backlinks", FormatBacklinks(bundle.Backlinks(id)));
+
+            if (fm.IsAttestedComputation)
+            {
+                sb.Append('\n');
+                AppendContractSummary(sb, fm.ComputationContract);
+                sb.Append("(Use okf_get_computation for the full computation source; okf_run_computation to run it.)").Append('\n');
+            }
 
             return sb.ToString();
         });
@@ -740,6 +800,146 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
+    /// Reads one §10 Attested Computation's contract and sanctioned
+    /// computation source (§10.3: an inline <c># Computation</c> fence, or the
+    /// text of a file resolved through <see cref="Bundle.TryResolveResource"/>),
+    /// rendered as agent-friendly markdown. Always available — it is
+    /// read-only and needs no attestation runtime (unlike
+    /// <see cref="RunComputation"/>). Never throws for expected errors (a
+    /// null/blank/malformed/unknown concept id, a concept that is not an
+    /// Attested Computation, an unresolved or unreadable computation file, or
+    /// a bundle that fails to (re)load) — those are reported as a plain-text
+    /// message instead.
+    /// </summary>
+    /// <param name="conceptId">The concept id, e.g. <c>computations/monthly-revenue</c>.</param>
+    [Description("Read an Attested Computation's §10 contract (runtime, parameters, executor, attester) and its sanctioned computation source (inline code, or the text of a referenced file).")]
+    public string GetComputation([Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId)
+    {
+        if (string.IsNullOrWhiteSpace(conceptId))
+        {
+            return ConceptNotFoundMessage(conceptId ?? string.Empty);
+        }
+
+        if (conceptId.Contains('\0'))
+        {
+            return "Error: invalid concept id — it must not contain a null character.";
+        }
+
+        return RunTool(() =>
+        {
+            var bundle = GetBundle();
+            if (!ConceptId.TryParse(conceptId, out var id) || bundle.Get(id) is not { } concept)
+            {
+                return ConceptNotFoundMessage(conceptId);
+            }
+
+            var fm = concept.Document.Frontmatter;
+            if (!fm.IsAttestedComputation)
+            {
+                return $"Concept '{conceptId}' is not an Attested Computation (type: {fm.Type ?? "(none)"}).";
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("# Computation: ").Append(id).Append('\n').Append('\n');
+            AppendContractSummary(sb, fm.ComputationContract);
+            sb.Append('\n').Append("## Source").Append('\n');
+
+            var computation = concept.Document.Computation();
+            switch (computation)
+            {
+                case { Source: ComputationSource.File, Path.Length: > 0 } file:
+                    if (!bundle.TryResolveResource(concept, file.Path!, out var absolutePath, out var status)
+                        || status != ResourceResolutionStatus.Resolved)
+                    {
+                        sb.Append("Error: computation file '").Append(file.Path).Append("' could not be resolved (").Append(status).Append(").\n");
+                        break;
+                    }
+
+                    string text;
+                    try
+                    {
+                        // Guarded: TryResolveResource only establishes path
+                        // safety, not readability -- the file may still fail
+                        // to read (I/O error, or non-UTF-8 content), same
+                        // lesson as AttestationOrchestrator.RunAsync's own
+                        // file-computation step.
+                        text = bundle.ReadResourceText(absolutePath!);
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
+                    {
+                        sb.Append("Error: computation file '").Append(file.Path).Append("' could not be read: ").Append(e.Message).Append('\n');
+                        break;
+                    }
+
+                    sb.Append("File: ").Append(file.Path).Append('\n').Append('\n');
+                    sb.Append("```\n").Append(text.TrimEnd('\n')).Append('\n').Append("```\n");
+                    break;
+
+                case { Source: ComputationSource.Inline, InlineCode.Length: > 0 } inline:
+                    sb.Append("```\n").Append(inline.InlineCode!.TrimEnd('\n')).Append('\n').Append("```\n");
+                    break;
+
+                default:
+                    sb.Append(NoneLine).Append('\n');
+                    break;
+            }
+
+            return sb.ToString();
+        });
+    }
+
+    /// <summary>
+    /// Runs the §10.5 attested-computation workflow (load → resolve
+    /// computation → resolve runtime → validate parameters → bind → execute →
+    /// validate receipt shape → attest → gate on staleness) for one concept,
+    /// via the <see cref="AttestationOrchestrator"/> this tool set was
+    /// constructed with (see <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>),
+    /// and renders the resulting <see cref="AttestationOutcome"/> as
+    /// agent-friendly markdown. If no orchestrator was wired, returns a
+    /// plain-text error rather than being omitted silently (mirroring
+    /// <see cref="GetTools"/>, which omits <c>okf_run_computation</c>
+    /// entirely in that case — this direct-call path exists for callers that
+    /// invoke the method itself rather than through the tool list). Synchronous
+    /// like every other tool method here: the orchestrator's async workflow is
+    /// awaited to completion at this boundary. Never throws for expected
+    /// errors (a null/blank/malformed concept id, or any §10.5 failure the
+    /// orchestrator reports as a non-displayable <see cref="AttestationOutcome"/>)
+    /// — those are reported as plain text (an <c>Error: ...</c> message, or an
+    /// outcome whose <c>displayable: no</c>) instead.
+    /// </summary>
+    /// <param name="conceptId">The Attested Computation concept id to run.</param>
+    /// <param name="parameterValues">The parameter values for this run (§10.3: values only, never computation code).</param>
+    [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
+    public string RunComputation(
+        [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
+        [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues)
+    {
+        if (string.IsNullOrWhiteSpace(conceptId))
+        {
+            return ConceptNotFoundMessage(conceptId ?? string.Empty);
+        }
+
+        if (conceptId.Contains('\0'))
+        {
+            return "Error: invalid concept id — it must not contain a null character.";
+        }
+
+        if (_orchestrator is null)
+        {
+            return "Error: no attestation runtime configured.";
+        }
+
+        return RunTool(() =>
+        {
+            var outcome = _orchestrator
+                .RunAsync(GetBundle(), ConceptId.Parse(conceptId), parameterValues)
+                .GetAwaiter()
+                .GetResult();
+            return FormatOutcome(outcome);
+        });
+    }
+
+    /// <summary>
     /// Processes one <c>log.md</c> for <see cref="ChangesSince"/>: on a
     /// strict-UTF-8 read failure, appends a skip note to <paramref name="notes"/>
     /// and returns <c>false</c>; otherwise parses the log, filters to valid-ISO
@@ -1001,6 +1201,131 @@ public sealed class OkfBundleTools
 
         sb.Append('\n');
     }
+
+    /// <summary>
+    /// Appends a compact <c>## Contract</c> markdown block for a §10.2
+    /// <see cref="AttestedComputationContract"/>: <c>runtime</c>, the
+    /// <c>parameters</c> list (name, type, required), the <c>computation</c>
+    /// field (a file path, or <c>(inline)</c> when the sanctioned computation
+    /// is an inline fence), and the <c>executor</c>/<c>attester</c> resources.
+    /// Shared by <see cref="GetComputation"/>'s full rendering and
+    /// <see cref="ReadConcept"/>'s compact enrichment, so the two summaries
+    /// can never drift apart.
+    /// </summary>
+    private static void AppendContractSummary(StringBuilder sb, AttestedComputationContract contract)
+    {
+        sb.Append("## Contract").Append('\n');
+        sb.Append("- runtime: ").Append(contract.Runtime ?? NoneLine).Append('\n');
+
+        if (contract.Parameters.Count == 0)
+        {
+            sb.Append("- parameters: ").Append(NoneLine).Append('\n');
+        }
+        else
+        {
+            sb.Append("- parameters:").Append('\n');
+            foreach (var parameter in contract.Parameters)
+            {
+                sb.Append("  - ").Append(parameter.Name.Length == 0 ? "(unnamed)" : parameter.Name);
+                if (parameter.Type is not null)
+                {
+                    sb.Append(" (").Append(parameter.Type).Append(')');
+                }
+
+                if (parameter.Required)
+                {
+                    sb.Append(" [required]");
+                }
+
+                sb.Append('\n');
+            }
+        }
+
+        sb.Append("- computation: ").Append(string.IsNullOrEmpty(contract.ComputationPath) ? "(inline)" : contract.ComputationPath).Append('\n');
+
+        sb.Append("- executor: ");
+        if (contract.Executor is { } executor)
+        {
+            sb.Append(executor.Resource ?? NoneLine)
+              .Append(" (receipt: ")
+              .Append(executor.Receipt.Count == 0 ? NoneLine : string.Join(", ", executor.Receipt))
+              .Append(')');
+        }
+        else
+        {
+            sb.Append(NoneLine);
+        }
+
+        sb.Append('\n');
+        sb.Append("- attester: ").Append(contract.Attester?.Resource ?? NoneLine).Append('\n');
+    }
+
+    /// <summary>
+    /// Renders an <see cref="AttestationOutcome"/> (§10.5's gated result) as
+    /// agent-friendly markdown for <see cref="RunComputation"/>: whether it is
+    /// <c>displayable</c>, the attester's verdict, staleness, whether the
+    /// receipt shape matched the contract's declared fields, the receipt's own
+    /// fields, and every reason (if any) that kept the run from being
+    /// displayable, plus a captured binder/executor/attester exception's
+    /// message, if any.
+    /// </summary>
+    private static string FormatOutcome(AttestationOutcome outcome)
+    {
+        var sb = new StringBuilder();
+        sb.Append("# Attestation outcome").Append('\n').Append('\n');
+        sb.Append("- displayable: ").Append(outcome.Displayable ? "yes" : "no").Append('\n');
+
+        sb.Append("- verdict: ");
+        if (outcome.Verdict is { } verdict)
+        {
+            sb.Append(verdict.Passed ? "passed" : "failed");
+            if (!string.IsNullOrEmpty(verdict.Detail))
+            {
+                sb.Append(" (").Append(verdict.Detail).Append(')');
+            }
+        }
+        else
+        {
+            sb.Append(NoneLine);
+        }
+
+        sb.Append('\n');
+        sb.Append("- stale: ").Append(StaleLabel(outcome.Stale)).Append('\n');
+        sb.Append("- receipt shape ok: ").Append(outcome.ReceiptShapeOk ? "yes" : "no").Append('\n');
+
+        if (outcome.Receipt is { } receipt && receipt.Fields.Count > 0)
+        {
+            sb.Append("- receipt:").Append('\n');
+            foreach (var (key, value) in receipt.Fields)
+            {
+                sb.Append("  - ").Append(key).Append(": ").Append(value?.ToString() ?? NoneLine).Append('\n');
+            }
+        }
+        else
+        {
+            sb.Append("- receipt: ").Append(NoneLine).Append('\n');
+        }
+
+        if (outcome.Reasons.Count > 0)
+        {
+            sb.Append('\n');
+            AppendSection(sb, "Reasons", outcome.Reasons);
+        }
+
+        if (outcome.Error is not null)
+        {
+            sb.Append('\n').Append("Error: ").Append(outcome.Error.Message).Append('\n');
+        }
+
+        return sb.ToString();
+    }
+
+    private static string StaleLabel(StaleState stale) => stale switch
+    {
+        StaleState.Fresh => "fresh",
+        StaleState.Stale => "stale",
+        _ => "unknown",
+    };
 
     /// <summary>
     /// Runs a tool method body, converting any exception that a well-formed

@@ -76,7 +76,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public async Task Build_exposes_all_nine_tools()
+    public async Task Build_exposes_all_ten_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -92,11 +92,16 @@ public sealed class OkfMcpServerTests
             Assert.Equal(
                 new[]
                 {
-                    "okf_append_log", "okf_browse", "okf_changes_since", "okf_graph",
-                    "okf_read_concept", "okf_regenerate_indexes", "okf_search",
+                    "okf_append_log", "okf_browse", "okf_changes_since", "okf_get_computation",
+                    "okf_graph", "okf_read_concept", "okf_regenerate_indexes", "okf_search",
                     "okf_validate_bundle", "okf_write_concept",
                 },
                 names);
+
+            // okf_run_computation is never wired in MCP: OkfMcpToolset.Build
+            // constructs OkfBundleTools without an attestation orchestrator, so
+            // GetTools() never includes it (see OkfComputationToolsTests).
+            Assert.DoesNotContain("okf_run_computation", names);
         }
         finally
         {
@@ -117,11 +122,14 @@ public sealed class OkfMcpServerTests
 
             var names = (await client.ListToolsAsync()).Select(t => t.Name).ToHashSet();
 
-            Assert.Equal(6, names.Count);
+            Assert.Equal(7, names.Count);
             Assert.DoesNotContain("okf_write_concept", names);
             Assert.DoesNotContain("okf_append_log", names);
             Assert.DoesNotContain("okf_regenerate_indexes", names);
             Assert.Contains("okf_read_concept", names);
+            // okf_get_computation is read-only and needs no attestation runtime,
+            // so it surfaces in read-only mode too -- this is deliberate.
+            Assert.Contains("okf_get_computation", names);
         }
         finally
         {
@@ -130,7 +138,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public void ConfigureServices_registers_all_nine_tools()
+    public void ConfigureServices_registers_all_ten_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -139,7 +147,7 @@ public sealed class OkfMcpServerTests
             OkfMcpHost.ConfigureServices(services, bundle, readOnly: false, version: "0.0.0");
             using var provider = services.BuildServiceProvider();
             var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
-            Assert.Equal(9, options.ToolCollection?.Count);
+            Assert.Equal(10, options.ToolCollection?.Count);
         }
         finally
         {
@@ -148,7 +156,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public void ConfigureServices_readOnly_registers_six_tools()
+    public void ConfigureServices_readOnly_registers_seven_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -157,7 +165,7 @@ public sealed class OkfMcpServerTests
             OkfMcpHost.ConfigureServices(services, bundle, readOnly: true, version: "0.0.0");
             using var provider = services.BuildServiceProvider();
             var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
-            Assert.Equal(6, options.ToolCollection?.Count);
+            Assert.Equal(7, options.ToolCollection?.Count);
         }
         finally
         {
