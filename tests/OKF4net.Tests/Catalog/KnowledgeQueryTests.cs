@@ -51,4 +51,61 @@ public class KnowledgeQueryTests
         Assert.Equal(1, narrowed.FairnessQuota);
         Assert.Equal(3, original.FairnessQuota);
     }
+
+    [Fact]
+    public void Visibility_fields_default_to_unrestricted()
+    {
+        var query = new KnowledgeQuery("orders");
+
+        Assert.Equal(KnowledgeAccessScope.Local, query.Scope);
+        Assert.Null(query.PermittedSourceIds);
+        Assert.Null(query.SourceVisibilityPolicy);
+    }
+
+    [Fact]
+    public void Visibility_fields_round_trip_through_an_initializer()
+    {
+        var scope = new KnowledgeAccessScope(tenantId: "acme");
+        var permitted = new HashSet<string> { "a", "b" };
+        Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool> policy = (_, source) => source.Id == "a";
+
+        var query = new KnowledgeQuery("orders")
+        {
+            Scope = scope,
+            PermittedSourceIds = permitted,
+            SourceVisibilityPolicy = policy,
+        };
+
+        Assert.Equal(scope, query.Scope);
+        Assert.Same(permitted, query.PermittedSourceIds);
+        Assert.Same(policy, query.SourceVisibilityPolicy);
+    }
+
+    [Fact]
+    public void Overriding_PermittedSourceIds_leaves_Scope_and_the_policy_intact()
+    {
+        var scope = new KnowledgeAccessScope(tenantId: "acme");
+        Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool> policy = (_, source) => source.Id == "a";
+        var original = new KnowledgeQuery("orders")
+        {
+            Scope = scope,
+            SourceVisibilityPolicy = policy,
+        };
+
+        var narrowed = original with { PermittedSourceIds = new HashSet<string> { "a" } };
+
+        Assert.Equal(scope, narrowed.Scope);
+        Assert.Same(policy, narrowed.SourceVisibilityPolicy);
+        Assert.Null(original.PermittedSourceIds);
+    }
+
+    [Fact]
+    public void KnowledgeAccessScope_Local_is_all_null_and_equal_by_value()
+    {
+        var a = new KnowledgeQuery("orders");
+        var b = new KnowledgeQuery("orders");
+
+        Assert.True(a.Scope.IsLocal);
+        Assert.Equal(a.Scope, b.Scope);
+    }
 }
