@@ -30,4 +30,37 @@ public sealed record KnowledgeQuery(string Text, string? Tag = null)
 {
     /// <summary>How stale concepts (§5.5) are treated. Default <see cref="StalePolicy.Use"/>: surface everything.</summary>
     public StalePolicy StalePolicy { get; init; }
+
+    /// <summary>
+    /// Which ranking strategy to use for this one search, overriding the
+    /// host's configured default. <see langword="null"/> (the default) defers
+    /// to that host default -- it does NOT mean
+    /// <see cref="KnowledgeResolverStrategy.GroupedBySource"/>. Only
+    /// <c>KnowledgeResolverRouter</c> reads this; a concrete resolver
+    /// used directly implements exactly one strategy and ignores it.
+    /// </summary>
+    public KnowledgeResolverStrategy? ResolverStrategy { get; init; }
+
+    /// <summary>
+    /// The maximum number of CONSECUTIVE passages one source may contribute
+    /// to a fused result before a different source's next-best passage is
+    /// pulled ahead of it. <see langword="null"/> (the default) defers to the
+    /// host's configured default, which is itself <see langword="null"/>
+    /// (disabled -- pure ranked order) unless configured otherwise.
+    /// <para>
+    /// Reordering only: no passage is ever dropped, so a caller that consumes
+    /// the whole result gets the same set either way. It exists for callers
+    /// that truncate early -- an agent context provider spending a token
+    /// budget top-down, for instance, which would otherwise let one prolific
+    /// source crowd out every other source's best material.
+    /// </para>
+    /// <para>
+    /// Meaningful only for <see cref="KnowledgeResolverStrategy.Merged"/> and
+    /// <see cref="KnowledgeResolverStrategy.PriorityWeighted"/>;
+    /// <see cref="KnowledgeResolverStrategy.GroupedBySource"/> ignores it
+    /// entirely (its output is grouped by source by definition). Must be
+    /// greater than zero when set.
+    /// </para>
+    /// </summary>
+    public int? FairnessQuota { get; init; }
 }
