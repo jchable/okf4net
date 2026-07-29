@@ -30,7 +30,7 @@ public static class MemoryServiceCollectionExtensions
     /// <see cref="CatalogPathResolver.TryResolve"/>) exactly once -- the first
     /// time <see cref="IMemoryStore"/> is resolved from the container -- then
     /// freezes the result into the singleton <see cref="FileMemoryStore"/>'s
-    /// read-only tier-root dictionary. Unlike <see cref="DefaultKnowledgeResolver"/>,
+    /// read-only tier-root dictionary. Unlike <see cref="GroupedKnowledgeResolver"/>,
     /// which re-reads <see cref="IKnowledgeCatalog.Current"/> on every search
     /// to honor hot-reload, this factory will NOT reflect a <c>role:memory</c>
     /// source added, removed, or edited (e.g. its <c>path</c>, <c>tier</c>, or
@@ -48,7 +48,7 @@ public static class MemoryServiceCollectionExtensions
     /// <para>
     /// <b>Fail-fast on overlapping roots.</b> A <c>role:memory</c> root that
     /// equals or nests within a <c>role:knowledge</c> root (or vice-versa)
-    /// would be walked and searched by <see cref="DefaultKnowledgeResolver"/>
+    /// would be walked and searched by <see cref="GroupedKnowledgeResolver"/>
     /// as if it were shared knowledge, defeating scoped-memory isolation.
     /// Resolution therefore throws an <see cref="InvalidOperationException"/>
     /// (naming the offending source ids) rather than building a leaky store;
@@ -121,7 +121,7 @@ public static class MemoryServiceCollectionExtensions
     /// <summary>
     /// Fail-fast: a memory root that equals or nests within a knowledge root
     /// (or vice-versa) would be walked and searched by
-    /// <see cref="DefaultKnowledgeResolver"/> as if it were shared knowledge,
+    /// <see cref="GroupedKnowledgeResolver"/> as if it were shared knowledge,
     /// defeating scoped-memory isolation. The operator must reconfigure disjoint
     /// roots, so this throws an <see cref="InvalidOperationException"/> naming
     /// the offending source ids rather than silently building a leaky store.

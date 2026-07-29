@@ -22,7 +22,12 @@ services.AddKnowledge(o => o.AddCatalogFile("./config/catalog.json"));
 This registers, all as singletons:
 
 - `IKnowledgeCatalog` — a `FileKnowledgeCatalog` over the given manifest.
-- `IKnowledgeResolver` — a `DefaultKnowledgeResolver` over that catalog.
+- `IKnowledgeResolver` — a `KnowledgeResolverRouter` over that catalog,
+  dispatching each search to the strategy the query names, or to
+  `KnowledgeOptions.DefaultResolverStrategy` (default `GroupedBySource`)
+  when it names none — see
+  [`OKF4net.Catalog`'s README](https://www.nuget.org/packages/OKF4net.Catalog)
+  for the available strategies.
 - `KnowledgeCatalogOptions` — the resolved catalog file path and catalog root
   (derived from the manifest file's own directory), for callers that want to
   inspect them directly.

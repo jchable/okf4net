@@ -63,6 +63,18 @@ export default function Catalog() {
       />
 
       <div className="docbody">
+        <Chapter id="install" title="Install" refText="two packages, one for hosting">
+          <pre className="block">$ dotnet add package OKF4net.Catalog</pre>
+          <p>
+            The catalog core — manifest, resolver, memory store. References only <code>OKF4net</code>.
+          </p>
+          <pre className="block">$ dotnet add package OKF4net.Catalog.Hosting</pre>
+          <p>
+            Add this too for <code>AddKnowledge</code>/<code>AddMemory</code> — an <code>IServiceCollection</code>{' '}
+            host. The sole project in the repo taking a <code>Microsoft.Extensions.*</code> dependency.
+          </p>
+        </Chapter>
+
         <Chapter id="manifest" title="The catalog.json manifest" refText="strict, never-throw parser">
           <MapTable
             head={['Field', 'Default / rule']}
@@ -99,15 +111,44 @@ export default function Catalog() {
           </p>
         </Chapter>
 
-        <Chapter id="resolver" title="The multi-source resolver" refText="grouped by source, no fusion (V1)">
+        <Chapter id="resolver" title="The multi-source resolver" refText="three selectable ranking strategies">
           <p>
-            <code>DefaultKnowledgeResolver</code> searches every enabled <code>Knowledge</code>-role source
-            (sources with <code>role: "memory"</code> are never searched here — they feed the memory store
-            instead) and returns results <strong>grouped by source</strong> — sorted by source priority, then
-            by score within each source. There is no cross-source fusion, score normalization, or
-            deduplication into one merged ranking in this version; a caller that wants that has to do it
-            itself. A <code>StalePolicy</code> on the query (<code>Use</code> by default — admit everything) is
-            applied once, across the combined result set, after every source has been searched.
+            Every strategy searches all enabled <code>Knowledge</code>-role sources (sources with{' '}
+            <code>role: "memory"</code> are never searched here — they feed the memory store instead), and a{' '}
+            <code>StalePolicy</code> on the query (<code>Use</code> by default — admit everything) is applied
+            across the combined result set. What differs is the <em>order</em> results come back in, which
+            matters most to a caller that stops reading early — an agent spending a token budget top-down, say.
+            Pick one per host, or override it per query:
+          </p>
+          <ul className="plain">
+            <li>
+              <strong>
+                <code>GroupedBySource</code>
+              </strong>{' '}
+              (the default) — each source's own ranked results concatenated, source by source, in priority
+              then id order. No cross-source fusion or deduplication.
+            </li>
+            <li>
+              <strong>
+                <code>Merged</code>
+              </strong>{' '}
+              — one ranking by descending score across every source, with source priority as a tie-break only.
+            </li>
+            <li>
+              <strong>
+                <code>PriorityWeighted</code>
+              </strong>{' '}
+              — source priority first, score ordering only within a priority tier, so a higher-priority source
+              never falls behind a lower-priority one however strong the latter's match.
+            </li>
+          </ul>
+          <p>
+            The two merged strategies also collapse two manifest entries that resolve to the same directory,
+            searching that bundle once rather than twice. Two <em>different</em> directories that happen to
+            share a concept id are never merged — a concept id is relative to its own bundle root and is not a
+            globally stable identity. Both accept an optional fairness quota that caps how many consecutive
+            passages one source may contribute; it reorders and never drops, so it changes what a
+            budget-truncated caller sees without changing what a caller reading the whole list gets.
           </p>
         </Chapter>
 

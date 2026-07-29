@@ -268,4 +268,123 @@ public class KnowledgeServiceCollectionExtensionsTests
         Assert.Equal(1, catalog.Current.Generation);
         Assert.Equal(2, catalog.Current.Sources.Count);
     }
+
+    // ---- Resolver strategy router --------------------------------------------
+
+    [Fact]
+    public void AddKnowledge_registers_a_router_as_the_resolver()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("src", "note.md"), "---\ntype: Note\ntitle: Orders\ndescription: d\n---\nOrders.\n");
+        root.Write("catalog.json", """
+            { "version": 1, "sources": [{ "id": "src", "path": "./src", "priority": 1, "enabled": true }] }
+            """);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o => o.AddCatalogFile(Path.Combine(root.Path, "catalog.json")));
+        using var provider = services.BuildServiceProvider();
+
+        Assert.IsType<KnowledgeResolverRouter>(provider.GetRequiredService<IKnowledgeResolver>());
+    }
+
+    [Fact]
+    public async Task The_configured_default_strategy_reaches_the_registered_resolver()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("weak-hi", "note.md"),
+            "---\ntype: Note\ntitle: Unrelated heading\ndescription: d\n---\nA passing mention of orders.\n");
+        root.Write(Path.Combine("strong-lo", "note.md"),
+            "---\ntype: Note\ntitle: Orders orders orders\ndescription: orders\n---\nOrders everywhere orders.\n");
+        root.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "strong-lo", "path": "./strong-lo", "priority": 1, "enabled": true },
+                { "id": "weak-hi", "path": "./weak-hi", "priority": 10, "enabled": true }
+              ]
+            }
+            """);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(Path.Combine(root.Path, "catalog.json"));
+            o.DefaultResolverStrategy = KnowledgeResolverStrategy.Merged;
+        });
+        using var provider = services.BuildServiceProvider();
+
+        var context = await provider.GetRequiredService<IKnowledgeResolver>().SearchAsync(new KnowledgeQuery("orders"));
+
+        // Merged ranks by raw score, so the strong-but-low-priority source
+        // leads -- the opposite of the GroupedBySource default.
+        Assert.Equal("strong-lo", context.Passages[0].SourceId);
+    }
+
+    [Fact]
+    public async Task The_configured_default_fairness_quota_reaches_the_registered_resolver()
+    {
+        using var root = new TempDir();
+
+        // Two concepts per source, scored (single-term query "orders") via
+        // which of title (x3) / description (x2) / body (x1) contain the
+        // term, chosen so every "hi" passage outscores every "lo" passage:
+        // hi1=6 (all three fields), hi2=5 (title+description), lo1=3
+        // (title only), lo2=2 (description only). Unfairly ranked (no
+        // quota), Merged therefore yields [hi1, hi2, lo1, lo2] -- two "hi"
+        // passages in a row. With DefaultFairnessQuota=1, no source may
+        // contribute more than 1 CONSECUTIVE passage, so hi2 is pushed back
+        // behind lo1: [hi1, lo1, hi2, lo2]. This is the discriminator: if
+        // AddKnowledge silently dropped the configured quota when building
+        // the router, the result would revert to [hi1, hi2, ...] and this
+        // assertion on Passages[1] would fail.
+        root.Write(Path.Combine("hi", "note1.md"),
+            "---\ntype: Note\ntitle: Orders here\ndescription: orders orders\n---\nThe orders were delivered.\n");
+        root.Write(Path.Combine("hi", "note2.md"),
+            "---\ntype: Note\ntitle: Orders here too\ndescription: orders team\n---\nUnrelated content.\n");
+        root.Write(Path.Combine("lo", "note1.md"),
+            "---\ntype: Note\ntitle: Orders summary\ndescription: nothing here\n---\nNo match here.\n");
+        root.Write(Path.Combine("lo", "note2.md"),
+            "---\ntype: Note\ntitle: Nothing special\ndescription: orders mention\n---\nNo match here either.\n");
+        root.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "hi", "path": "./hi", "priority": 1, "enabled": true },
+                { "id": "lo", "path": "./lo", "priority": 1, "enabled": true }
+              ]
+            }
+            """);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(Path.Combine(root.Path, "catalog.json"));
+            o.DefaultResolverStrategy = KnowledgeResolverStrategy.Merged;
+            o.DefaultFairnessQuota = 1;
+        });
+        using var provider = services.BuildServiceProvider();
+
+        var context = await provider.GetRequiredService<IKnowledgeResolver>().SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.Equal(4, context.Passages.Count);
+        Assert.Equal("hi", context.Passages[0].SourceId);
+        Assert.Equal("lo", context.Passages[1].SourceId);
+        Assert.Equal("hi", context.Passages[2].SourceId);
+        Assert.Equal("lo", context.Passages[3].SourceId);
+    }
+
+    [Fact]
+    public void AddKnowledge_with_a_non_positive_DefaultFairnessQuota_throws_immediately()
+    {
+        using var root = new TempDir();
+        var catalogPath = SetUpTwoSourceCatalogFile(root);
+        var services = new ServiceCollection();
+
+        var ex = Assert.Throws<ArgumentException>(() => services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(catalogPath);
+            o.DefaultFairnessQuota = 0;
+        }));
+        Assert.Contains("DefaultFairnessQuota", ex.Message);
+    }
 }

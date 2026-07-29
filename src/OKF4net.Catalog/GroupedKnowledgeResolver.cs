@@ -4,12 +4,12 @@ using OKF4net;
 namespace OKF4net.Catalog;
 
 /// <summary>
-/// The V1 <see cref="IKnowledgeResolver"/>: fans a query out across every
-/// currently enabled <see cref="SourceRole.Knowledge"/> source of an
-/// <see cref="IKnowledgeCatalog"/> and concatenates the results **grouped by
-/// source, in priority order** -- no cross-source fusion, deduplication, or
-/// merged ranking. <see cref="SourceRole.Memory"/> sources are never
-/// searched here; they feed <c>IMemoryStore</c> instead (spec §5.3).
+/// The grouped-by-source <see cref="IKnowledgeResolver"/> strategy: fans a
+/// query out across every currently enabled <see cref="SourceRole.Knowledge"/>
+/// source of an <see cref="IKnowledgeCatalog"/> and concatenates the results
+/// **grouped by source, in priority order** -- no cross-source fusion,
+/// deduplication, or merged ranking. <see cref="SourceRole.Memory"/> sources
+/// are never searched here; they feed <c>IMemoryStore</c> instead (spec §5.3).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -32,13 +32,13 @@ namespace OKF4net.Catalog;
 /// per-call <see cref="Bundle.Load(string)"/> design; see its remarks.
 /// </para>
 /// </remarks>
-public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
+public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
 {
     private readonly IKnowledgeCatalog _catalog;
     private readonly IOkfClock _clock;
 
     /// <summary>Creates a resolver over <paramref name="catalog"/>; <paramref name="clock"/> supplies "today" for stale-policy filtering (defaults to the system clock).</summary>
-    public DefaultKnowledgeResolver(IKnowledgeCatalog catalog, IOkfClock? clock = null)
+    public GroupedKnowledgeResolver(IKnowledgeCatalog catalog, IOkfClock? clock = null)
     {
         _catalog = catalog;
         _clock = clock ?? new SystemClock();
@@ -52,15 +52,14 @@ public sealed class DefaultKnowledgeResolver : IKnowledgeResolver
     /// legitimate zero-result outcome for a well-formed query) or
     /// <see cref="KnowledgeDiagnosticCode.NoEnabledSources"/> (a legitimate
     /// catalog state), a blank query text is a caller/programming error --
-    /// there is no sensible search to even attempt.
+    /// there is no sensible search to even attempt. A non-positive
+    /// <see cref="KnowledgeQuery.FairnessQuota"/> throws the same way even
+    /// though this strategy ignores the quota otherwise, so a malformed query
+    /// fails identically regardless of which strategy runs it.
     /// </remarks>
     public async ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(query);
-        if (string.IsNullOrWhiteSpace(query.Text))
-        {
-            throw new ArgumentException("KnowledgeQuery.Text must be non-blank.", nameof(query));
-        }
+        ResolverGuards.ValidateQuery(query);
 
         var snapshot = _catalog.Current;
         var enabledSources = snapshot.Sources

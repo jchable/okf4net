@@ -56,7 +56,7 @@ public class OkfContextProviderScopedTests
             CatalogRoot = root.Path,
             WatchForChanges = false,
         });
-        var resolver = new DefaultKnowledgeResolver(catalog);
+        var resolver = new GroupedKnowledgeResolver(catalog);
         var store = new FileMemoryStore(new Dictionary<MemoryTier, string>
         {
             [MemoryTier.User] = Path.Combine(root.Path, "mem"),

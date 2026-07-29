@@ -21,7 +21,7 @@ public interface IKnowledgeCatalog
     /// validated against via <see cref="CatalogPathResolver.TryResolve"/>
     /// (see <see cref="KnowledgeCatalogOptions.CatalogRoot"/>). Exposed so a
     /// caller holding only an <see cref="IKnowledgeCatalog"/> -- e.g. a
-    /// <see cref="DefaultKnowledgeResolver"/> -- can re-resolve a source's
+    /// <see cref="GroupedKnowledgeResolver"/> -- can re-resolve a source's
     /// resolved bundle directory from <see cref="KnowledgeCatalogSource.Path"/>
     /// and <see cref="KnowledgeCatalogSnapshot.ManifestDirectory"/> without
     /// the snapshot itself having to carry resolved, absolute paths.

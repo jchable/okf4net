@@ -12,7 +12,7 @@ namespace OKF4net.Catalog;
 /// <param name="SourceId">
 /// The <see cref="KnowledgeCatalogSource.Id"/> of the catalog source this
 /// passage came from -- how passages from a multi-source
-/// <see cref="DefaultKnowledgeResolver"/> search are attributed and grouped.
+/// <see cref="GroupedKnowledgeResolver"/> search are attributed and grouped.
 /// </param>
 /// <param name="ConceptId">The matching concept's id (<c>ConceptId.ToString()</c>).</param>
 /// <param name="Title">The matching concept's frontmatter title, if any.</param>

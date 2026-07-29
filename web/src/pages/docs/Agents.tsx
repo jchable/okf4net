@@ -57,6 +57,14 @@ export default function Agents() {
       />
 
       <div className="docbody">
+        <Chapter id="install" title="Install" refText="nuget.org/packages/OKF4net.Agents">
+          <pre className="block">$ dotnet add package OKF4net.Agents</pre>
+          <p>
+            References only <code>OKF4net</code> and <code>Microsoft.Agents.AI</code> — the only project in the
+            repo that depends on the Agent Framework.
+          </p>
+        </Chapter>
+
         <Chapter id="tools" title="The nine tools" refText="OkfBundleTools.GetTools()">
           <p>
             Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — the tool

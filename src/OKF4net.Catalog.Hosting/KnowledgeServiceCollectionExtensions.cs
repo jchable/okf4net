@@ -14,8 +14,11 @@ public static class KnowledgeServiceCollectionExtensions
     /// <summary>
     /// Configures a <see cref="KnowledgeOptions"/> via <paramref name="configure"/>
     /// and registers a <see cref="FileKnowledgeCatalog"/> (as
-    /// <see cref="IKnowledgeCatalog"/>) and a <see cref="DefaultKnowledgeResolver"/>
-    /// (as <see cref="IKnowledgeResolver"/>) built from it.
+    /// <see cref="IKnowledgeCatalog"/>) and a <see cref="KnowledgeResolverRouter"/>
+    /// (as <see cref="IKnowledgeResolver"/>) built from it. The router
+    /// dispatches each search to the strategy named by the query, or to
+    /// <see cref="KnowledgeOptions.DefaultResolverStrategy"/> when the query
+    /// names none.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -23,8 +26,8 @@ public static class KnowledgeServiceCollectionExtensions
     /// <see cref="IKnowledgeResolver"/> are registered as singletons:
     /// <see cref="FileKnowledgeCatalog"/> owns a <see cref="FileSystemWatcher"/>
     /// and an in-memory snapshot that must be shared, not duplicated, across
-    /// a host's lifetime, and <see cref="DefaultKnowledgeResolver"/> is
-    /// stateless over that same singleton catalog. The
+    /// a host's lifetime, and <see cref="KnowledgeResolverRouter"/>
+    /// (with the three strategy instances it owns) is stateless over that same singleton catalog. The
     /// <see cref="OKF4net.Catalog.KnowledgeCatalogOptions"/> built here is
     /// also registered (as an immutable singleton), for callers that want to
     /// inspect the resolved catalog file path/root directly.
@@ -36,7 +39,11 @@ public static class KnowledgeServiceCollectionExtensions
     /// no <see cref="KnowledgeOptions.AddCatalogFile"/> call throws
     /// <see cref="ArgumentException"/>; more than one call throws
     /// <see cref="InvalidOperationException"/> (V1 supports exactly one
-    /// catalog file -- <c>AddBundle</c> is cut as YAGNI).
+    /// catalog file -- <c>AddBundle</c> is cut as YAGNI); a
+    /// <see cref="KnowledgeOptions.DefaultFairnessQuota"/> that is set but not
+    /// greater than zero also throws <see cref="ArgumentException"/> --
+    /// caught here rather than left to the router's own construction on first
+    /// resolve.
     /// </para>
     /// <para>
     /// <b>Fail-fast on an invalid catalog.</b> The registrations use lazy
@@ -55,7 +62,11 @@ public static class KnowledgeServiceCollectionExtensions
     /// <param name="services">The service collection to register into.</param>
     /// <param name="configure">Callback that configures the single catalog file via <see cref="KnowledgeOptions.AddCatalogFile"/>.</param>
     /// <returns><paramref name="services"/>, for chaining.</returns>
-    /// <exception cref="ArgumentException">No <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside <paramref name="configure"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// No <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside
+    /// <paramref name="configure"/>, or <see cref="KnowledgeOptions.DefaultFairnessQuota"/>
+    /// is set but not greater than zero.
+    /// </exception>
     /// <exception cref="InvalidOperationException">More than one <see cref="KnowledgeOptions.AddCatalogFile"/> call was made inside <paramref name="configure"/>.</exception>
     public static IServiceCollection AddKnowledge(this IServiceCollection services, Action<KnowledgeOptions> configure)
     {
@@ -74,7 +85,10 @@ public static class KnowledgeServiceCollectionExtensions
 
         services.TryAddSingleton(catalogOptions);
         services.TryAddSingleton<IKnowledgeCatalog>(_ => new FileKnowledgeCatalog(catalogOptions));
-        services.TryAddSingleton<IKnowledgeResolver>(sp => new DefaultKnowledgeResolver(sp.GetRequiredService<IKnowledgeCatalog>()));
+        var defaultStrategy = options.DefaultResolverStrategy;
+        var defaultFairnessQuota = options.DefaultFairnessQuota;
+        services.TryAddSingleton<IKnowledgeResolver>(sp => new KnowledgeResolverRouter(
+            sp.GetRequiredService<IKnowledgeCatalog>(), defaultStrategy, defaultFairnessQuota));
 
         return services;
     }
