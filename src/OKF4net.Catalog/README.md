@@ -31,14 +31,21 @@ runtime dependencies.
   errors-as-data: a malformed or invalid replacement manifest leaves the
   current snapshot untouched and records the reject reasons in
   `LastReloadDiagnostics` instead of throwing.
-- **Searches every enabled source, grouped by source.** `IKnowledgeResolver`
-  fans a query out across every enabled `KnowledgeCatalogSource` (using the
-  same `ConceptSearch` scorer the `OKF4net.Agents` tools use) and
-  concatenates the results in source-priority order. **There is no
-  cross-source fusion, deduplication, or merged ranking** — passages are
-  grouped by their originating source, not blended into one ranked list. See
-  [the design notes](https://github.com/jchable/okf4net/blob/main/docs/design/specs/2026-07-24-okf4net-v2-scoped-memory-notes.md)
-  for where that's headed in a future version.
+- **Searches every enabled source, with a selectable ranking strategy.**
+  `IKnowledgeResolver` fans a query out across every enabled
+  `KnowledgeCatalogSource` (using the same `ConceptSearch` scorer the
+  `OKF4net.Agents` tools use). How the results come back is your choice:
+  - `GroupedBySource` (default) — each source's own ranked results
+    concatenated, source by source, in priority order. No fusion or dedup.
+  - `Merged` — one cross-source ranking by descending score, with priority
+    as a tie-break only.
+  - `PriorityWeighted` — one cross-source ranking by source priority first,
+    score only within a priority tier.
+
+  Both merged strategies also collapse two manifest entries that resolve to
+  the same directory (searching that bundle once, not twice) and accept an
+  optional fairness quota that interleaves sources so one prolific source
+  cannot crowd out the rest of a budget-truncated result.
 
 ## Minimal `catalog.json`
 
@@ -76,7 +83,7 @@ var options = new KnowledgeCatalogOptions
 };
 
 using var catalog = new FileKnowledgeCatalog(options);
-IKnowledgeResolver resolver = new DefaultKnowledgeResolver(catalog);
+IKnowledgeResolver resolver = new GroupedKnowledgeResolver(catalog);
 
 KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund policy"));
 
@@ -155,14 +162,47 @@ doc for the full explanation. Per-scope path resolution (the tenant/user/session
 segments) stays fully live on every call; only the fixed set of configured
 tiers is frozen.
 
+## Choosing a ranking strategy
+
+Set a default for the whole host, and override it per query where needed:
+
+```csharp
+using OKF4net.Catalog;
+using OKF4net.Catalog.Hosting;
+
+services.AddKnowledge(o =>
+{
+    o.AddCatalogFile("./config/catalog.json");
+    o.DefaultResolverStrategy = KnowledgeResolverStrategy.Merged;
+    o.DefaultFairnessQuota = 2;   // optional; null (the default) disables it
+});
+
+// Per-query override, through the same injected IKnowledgeResolver:
+var context = await resolver.SearchAsync(new KnowledgeQuery("refund policy")
+{
+    ResolverStrategy = KnowledgeResolverStrategy.PriorityWeighted,
+});
+```
+
+`DefaultResolverStrategy` defaults to `GroupedBySource`, so upgrading changes
+no existing deployment's result ordering until you opt in.
+
+A fairness quota caps how many *consecutive* passages one source may
+contribute before another source's next-best passage is pulled ahead. It
+reorders and never drops, so it matters only to consumers that truncate
+early — an agent context provider spending a token budget top-down, for
+instance, which would otherwise let one source's whole run consume the
+budget.
+
 ## V1 limits
 
 - Local filesystem bundles only — no remote/HTTP sources, no external
   connectors.
 - One shared catalog per `FileKnowledgeCatalog` instance — no per-caller or
   per-tenant filtering of which sources are visible.
-- All enabled sources are searched and results are grouped by source; there is
-  no fusion, deduplication, or merged cross-source ranking.
+- No semantic/fuzzy deduplication — two concepts with similar content in
+  genuinely different bundles are both returned. Only two manifest entries
+  resolving to the *same directory* are collapsed.
 - No tenant-aware authorization of any kind.
 
 See [the project README](https://github.com/jchable/okf4net) for the full

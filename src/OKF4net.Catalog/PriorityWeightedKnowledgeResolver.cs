@@ -87,7 +87,8 @@ public sealed class PriorityWeightedKnowledgeResolver : IKnowledgeResolver
 
     /// <inheritdoc/>
     /// <remarks>
-    /// A blank <see cref="KnowledgeQuery.Text"/> throws
+    /// A blank <see cref="KnowledgeQuery.Text"/>, or a non-positive
+    /// <see cref="KnowledgeQuery.FairnessQuota"/>, throws
     /// <see cref="ArgumentException"/>, exactly as in
     /// <see cref="MergedKnowledgeResolver.SearchAsync"/>.
     /// </remarks>

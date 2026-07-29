@@ -52,7 +52,10 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
     /// legitimate zero-result outcome for a well-formed query) or
     /// <see cref="KnowledgeDiagnosticCode.NoEnabledSources"/> (a legitimate
     /// catalog state), a blank query text is a caller/programming error --
-    /// there is no sensible search to even attempt.
+    /// there is no sensible search to even attempt. A non-positive
+    /// <see cref="KnowledgeQuery.FairnessQuota"/> throws the same way even
+    /// though this strategy ignores the quota otherwise, so a malformed query
+    /// fails identically regardless of which strategy runs it.
     /// </remarks>
     public async ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {

@@ -50,7 +50,11 @@ internal static class FusedResolverEngine
     /// <see cref="ApplyFairness"/>.
     /// </param>
     /// <param name="ct">A cancellation token observed between sources.</param>
-    /// <exception cref="ArgumentException"><paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null, empty, or whitespace.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
+    /// empty, or whitespace, or its <see cref="KnowledgeQuery.FairnessQuota"/>
+    /// is set but not greater than zero.
+    /// </exception>
     internal static async ValueTask<KnowledgeContext> SearchAsync(
         IKnowledgeCatalog catalog,
         IOkfClock clock,

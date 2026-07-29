@@ -367,8 +367,9 @@ KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund 
 - Local filesystem bundles only.
 - One shared catalog (no per-caller or per-tenant filtering of which sources
   are visible).
-- All enabled sources are searched, but results are **grouped by source — no
-  fusion, deduplication, or merged cross-source ranking**.
+- No semantic/fuzzy deduplication across sources (two manifest entries
+  resolving to the *same directory* are collapsed; similar content in
+  genuinely different bundles is not).
 - No external connectors.
 - No tenant-aware authorization of any kind.
 
@@ -381,10 +382,16 @@ for the full reasoning and
 [`OKF4net.Catalog`'s README](src/OKF4net.Catalog/README.md#scoped-memory-role-memory)
 for the deployment example.
 
-**V2 preview (not implemented):** application-filtered bundles (per-caller
-source visibility) and cross-source result fusion (score normalization,
-deduplication, a single merged ranking across sources — today's resolver
-groups results by source instead). See
+**Cross-source ranking (shipped):** three selectable resolver strategies —
+`GroupedBySource` (the default, unchanged behaviour), `Merged` (one ranking
+by descending score across every source), and `PriorityWeighted` (source
+priority first, score within a tier) — chosen per host or per query, with
+optional fairness interleaving for budget-truncated consumers. See
+[the resolver-strategies design](docs/design/specs/2026-07-28-okf4net-v2-resolver-strategies.md)
+and [`OKF4net.Catalog`'s README](src/OKF4net.Catalog/README.md#choosing-a-ranking-strategy).
+
+**V2 preview (not implemented):** application-filtered bundles — per-caller
+or per-tenant visibility of which sources are searched at all. See
 [§9 of the local catalog design](docs/design/specs/2026-07-24-okf4net-local-catalog-design.md#9-v2-design-team-scoped-bundles)
 for the open questions there.
 

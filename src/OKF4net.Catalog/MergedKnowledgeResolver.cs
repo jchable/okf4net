@@ -97,7 +97,9 @@ public sealed class MergedKnowledgeResolver : IKnowledgeResolver
     /// legitimate zero-result outcome) or
     /// <see cref="KnowledgeDiagnosticCode.NoEnabledSources"/> (a legitimate
     /// catalog state), a blank query is a caller error -- there is no
-    /// sensible search to attempt.
+    /// sensible search to attempt. A non-positive
+    /// <see cref="KnowledgeQuery.FairnessQuota"/> throws the same way; see
+    /// <see cref="ResolverGuards.ValidateQuery"/>.
     /// </remarks>
     public ValueTask<KnowledgeContext> SearchAsync(KnowledgeQuery query, CancellationToken ct = default)
     {

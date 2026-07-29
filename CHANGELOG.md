@@ -8,6 +8,51 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Selectable resolver ranking strategies.** `IKnowledgeResolver` searches
+  can now be ranked three ways: `GroupedBySource` (each source's results
+  concatenated in priority order — the previous and still-default
+  behaviour), `Merged` (one cross-source ranking by descending score, with
+  source priority as a tie-break only), and `PriorityWeighted` (source
+  priority first, score only within a priority tier). Choose one per host
+  via `KnowledgeOptions.DefaultResolverStrategy`, or per call via
+  `KnowledgeQuery.ResolverStrategy`. `AddKnowledge` now registers
+  `KnowledgeResolverRouter` as the `IKnowledgeResolver`, so existing
+  consumers gain per-query selection without any code change, and result
+  ordering is unchanged until a host opts in.
+- **Fairness interleaving for fused strategies.** An optional
+  `FairnessQuota` (host-level `KnowledgeOptions.DefaultFairnessQuota` or
+  per-query `KnowledgeQuery.FairnessQuota`) caps how many consecutive
+  passages one source may contribute before another source's next-best
+  passage is pulled ahead. It reorders only — no passage is ever dropped —
+  so it affects consumers that truncate early, such as an agent context
+  provider spending a token budget top-down.
+- **Same-directory source dedup.** The merged strategies collapse two
+  enabled manifest entries that resolve to the same directory, searching
+  that bundle once instead of twice. Two *different* directories that
+  happen to share a concept id are never merged: a concept id is relative
+  to its own bundle root and is not a globally stable identity.
+- **`OkfContextProviderOptions.KnowledgeQueryFairnessQuota`** — attaches a
+  fairness quota to the knowledge query the context provider issues. The
+  provider is the archetypal early-truncating consumer (it renders
+  passages top-down until its token budget is spent), so this is what lets
+  a budget-bounded agent see several sources instead of one prolific
+  source's entire run.
+
+### Changed
+
+- **`DefaultKnowledgeResolver` is renamed `GroupedKnowledgeResolver`**
+  (behaviour identical). Code that resolves `IKnowledgeResolver` from DI is
+  unaffected; only direct references to the concrete type name need
+  updating.
+- **A non-positive `FairnessQuota` is rejected** with an `ArgumentException`
+  by every strategy — including `GroupedBySource`, which ignores the quota
+  otherwise — so the same malformed query fails the same way whichever
+  strategy runs it. A non-positive resolver constructor default throws
+  `ArgumentOutOfRangeException` at construction. `null` remains the way to
+  disable fairness reordering.
+
 ### Fixed
 
 - **`MemoryPath.For`'s session-tier path now nests under tenant and user**
