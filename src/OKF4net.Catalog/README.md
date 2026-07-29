@@ -98,6 +98,13 @@ foreach (var diagnostic in result.Diagnostics)
 }
 ```
 
+`CatalogRoot` is a strict containment boundary. When constructing
+`KnowledgeCatalogOptions` directly, its shared path components with
+`CatalogFilePath` must have identical spelling, including case. A
+case-variant root is rejected as `OutsideRoot` even on a case-insensitive
+filesystem. `AddKnowledge(o => o.AddCatalogFile(...))` derives both values
+from one resolved path and therefore satisfies this requirement automatically.
+
 `KnowledgeContext` is deliberately never a bare string: `Passages` (grouped by
 source, in source-priority then per-source descending-score order) and
 `Diagnostics` (e.g. `NoEnabledSources`, `SourceUnavailable`, `NoMatches`) let a

@@ -14,7 +14,13 @@ public sealed class KnowledgeCatalogOptions
     /// source's <c>path</c> is validated against (see
     /// <see cref="CatalogPathResolver.TryResolve"/>). Expected to already be
     /// canonicalized (<see cref="Path.GetFullPath(string)"/>) once by the
-    /// caller at startup.
+    /// caller at startup. The shared path components with
+    /// <see cref="CatalogFilePath"/> must use the same exact spelling,
+    /// including case: catalog containment is ordinal on every platform so a
+    /// path cannot leave the configured root and re-enter through a
+    /// case-variant spelling. A mismatch is rejected as
+    /// <see cref="CatalogDiagnosticCode.OutsideRoot"/> even on a
+    /// case-insensitive volume.
     /// </summary>
     public required string CatalogRoot { get; init; }
 
