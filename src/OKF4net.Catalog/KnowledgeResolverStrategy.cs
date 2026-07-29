@@ -6,7 +6,7 @@ namespace OKF4net.Catalog;
 /// Selected per host (see <c>KnowledgeOptions.DefaultResolverStrategy</c> in
 /// <c>OKF4net.Catalog.Hosting</c>) or per call
 /// (<see cref="KnowledgeQuery.ResolverStrategy"/>, which overrides the host
-/// default); <c>KnowledgeResolverRouter</c> is what dispatches on it.
+/// default); <see cref="KnowledgeResolverRouter"/> is what dispatches on it.
 /// </summary>
 public enum KnowledgeResolverStrategy
 {
@@ -24,7 +24,7 @@ public enum KnowledgeResolverStrategy
     /// Merge every source's results into one list ranked by descending
     /// <see cref="KnowledgePassage.Score"/> across all sources, with
     /// <see cref="KnowledgeCatalogSource.Priority"/> as a tie-break only.
-    /// See <c>MergedKnowledgeResolver</c>.
+    /// See <see cref="MergedKnowledgeResolver"/>.
     /// </summary>
     Merged,
 
@@ -34,7 +34,7 @@ public enum KnowledgeResolverStrategy
     /// <see cref="KnowledgePassage.Score"/> ordering only within a single
     /// priority tier -- so a higher-priority source's passage never falls
     /// behind a lower-priority one regardless of match strength. See
-    /// <c>PriorityWeightedKnowledgeResolver</c>.
+    /// <see cref="PriorityWeightedKnowledgeResolver"/>.
     /// </summary>
     PriorityWeighted,
 }

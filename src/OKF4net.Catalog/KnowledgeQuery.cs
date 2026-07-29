@@ -36,7 +36,7 @@ public sealed record KnowledgeQuery(string Text, string? Tag = null)
     /// host's configured default. <see langword="null"/> (the default) defers
     /// to that host default -- it does NOT mean
     /// <see cref="KnowledgeResolverStrategy.GroupedBySource"/>. Only
-    /// <c>KnowledgeResolverRouter</c> reads this; a concrete resolver
+    /// <see cref="KnowledgeResolverRouter"/> reads this; a concrete resolver
     /// used directly implements exactly one strategy and ignores it.
     /// </summary>
     public KnowledgeResolverStrategy? ResolverStrategy { get; init; }

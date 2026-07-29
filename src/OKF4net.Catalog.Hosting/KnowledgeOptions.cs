@@ -17,6 +17,27 @@ public sealed class KnowledgeOptions
     private int _catalogFileCallCount;
 
     /// <summary>
+    /// The <see cref="KnowledgeResolverStrategy"/> used for searches whose
+    /// query leaves <see cref="KnowledgeQuery.ResolverStrategy"/> unset.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="KnowledgeResolverStrategy.GroupedBySource"/>:
+    /// the behaviour every existing deployment already has, so upgrading
+    /// never silently reorders anyone's results. A host wanting one merged
+    /// cross-source ranking -- typically to feed a consumer that truncates
+    /// under a token budget -- opts in here.
+    /// </remarks>
+    public KnowledgeResolverStrategy DefaultResolverStrategy { get; set; } = KnowledgeResolverStrategy.GroupedBySource;
+
+    /// <summary>
+    /// The fairness quota the fused strategies apply when a query leaves
+    /// <see cref="KnowledgeQuery.FairnessQuota"/> unset; <see langword="null"/>
+    /// (the default) disables fairness reordering. Ignored by
+    /// <see cref="KnowledgeResolverStrategy.GroupedBySource"/>.
+    /// </summary>
+    public int? DefaultFairnessQuota { get; set; }
+
+    /// <summary>
     /// The resolved, full path to the catalog manifest last passed to
     /// <see cref="AddCatalogFile"/>; <see langword="null"/> until
     /// <see cref="AddCatalogFile"/> has been called at least once.

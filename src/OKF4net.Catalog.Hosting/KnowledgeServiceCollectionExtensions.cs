@@ -14,8 +14,11 @@ public static class KnowledgeServiceCollectionExtensions
     /// <summary>
     /// Configures a <see cref="KnowledgeOptions"/> via <paramref name="configure"/>
     /// and registers a <see cref="FileKnowledgeCatalog"/> (as
-    /// <see cref="IKnowledgeCatalog"/>) and a <see cref="GroupedKnowledgeResolver"/>
-    /// (as <see cref="IKnowledgeResolver"/>) built from it.
+    /// <see cref="IKnowledgeCatalog"/>) and a <see cref="KnowledgeResolverRouter"/>
+    /// (as <see cref="IKnowledgeResolver"/>) built from it. The router
+    /// dispatches each search to the strategy named by the query, or to
+    /// <see cref="KnowledgeOptions.DefaultResolverStrategy"/> when the query
+    /// names none.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -23,8 +26,8 @@ public static class KnowledgeServiceCollectionExtensions
     /// <see cref="IKnowledgeResolver"/> are registered as singletons:
     /// <see cref="FileKnowledgeCatalog"/> owns a <see cref="FileSystemWatcher"/>
     /// and an in-memory snapshot that must be shared, not duplicated, across
-    /// a host's lifetime, and <see cref="GroupedKnowledgeResolver"/> is
-    /// stateless over that same singleton catalog. The
+    /// a host's lifetime, and <see cref="KnowledgeResolverRouter"/>
+    /// (with the three strategy instances it owns) is stateless over that same singleton catalog. The
     /// <see cref="OKF4net.Catalog.KnowledgeCatalogOptions"/> built here is
     /// also registered (as an immutable singleton), for callers that want to
     /// inspect the resolved catalog file path/root directly.
@@ -74,7 +77,10 @@ public static class KnowledgeServiceCollectionExtensions
 
         services.TryAddSingleton(catalogOptions);
         services.TryAddSingleton<IKnowledgeCatalog>(_ => new FileKnowledgeCatalog(catalogOptions));
-        services.TryAddSingleton<IKnowledgeResolver>(sp => new GroupedKnowledgeResolver(sp.GetRequiredService<IKnowledgeCatalog>()));
+        var defaultStrategy = options.DefaultResolverStrategy;
+        var defaultFairnessQuota = options.DefaultFairnessQuota;
+        services.TryAddSingleton<IKnowledgeResolver>(sp => new KnowledgeResolverRouter(
+            sp.GetRequiredService<IKnowledgeCatalog>(), defaultStrategy, defaultFairnessQuota));
 
         return services;
     }

@@ -268,4 +268,55 @@ public class KnowledgeServiceCollectionExtensionsTests
         Assert.Equal(1, catalog.Current.Generation);
         Assert.Equal(2, catalog.Current.Sources.Count);
     }
+
+    // ---- Resolver strategy router --------------------------------------------
+
+    [Fact]
+    public void AddKnowledge_registers_a_router_as_the_resolver()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("src", "note.md"), "---\ntype: Note\ntitle: Orders\ndescription: d\n---\nOrders.\n");
+        root.Write("catalog.json", """
+            { "version": 1, "sources": [{ "id": "src", "path": "./src", "priority": 1, "enabled": true }] }
+            """);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o => o.AddCatalogFile(Path.Combine(root.Path, "catalog.json")));
+        using var provider = services.BuildServiceProvider();
+
+        Assert.IsType<KnowledgeResolverRouter>(provider.GetRequiredService<IKnowledgeResolver>());
+    }
+
+    [Fact]
+    public async Task The_configured_default_strategy_reaches_the_registered_resolver()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("weak-hi", "note.md"),
+            "---\ntype: Note\ntitle: Unrelated heading\ndescription: d\n---\nA passing mention of orders.\n");
+        root.Write(Path.Combine("strong-lo", "note.md"),
+            "---\ntype: Note\ntitle: Orders orders orders\ndescription: orders\n---\nOrders everywhere orders.\n");
+        root.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "strong-lo", "path": "./strong-lo", "priority": 1, "enabled": true },
+                { "id": "weak-hi", "path": "./weak-hi", "priority": 10, "enabled": true }
+              ]
+            }
+            """);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(Path.Combine(root.Path, "catalog.json"));
+            o.DefaultResolverStrategy = KnowledgeResolverStrategy.Merged;
+        });
+        using var provider = services.BuildServiceProvider();
+
+        var context = await provider.GetRequiredService<IKnowledgeResolver>().SearchAsync(new KnowledgeQuery("orders"));
+
+        // Merged ranks by raw score, so the strong-but-low-priority source
+        // leads -- the opposite of the GroupedBySource default.
+        Assert.Equal("strong-lo", context.Passages[0].SourceId);
+    }
 }

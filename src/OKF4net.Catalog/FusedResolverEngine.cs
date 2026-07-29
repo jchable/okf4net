@@ -18,7 +18,7 @@ internal readonly record struct RankedPassage(KnowledgePassage Passage, int Prio
 /// strategy: resolve and dedup the enabled sources, fan out, apply the
 /// query's <see cref="StalePolicy"/>, then rank with a caller-supplied
 /// comparer. <see cref="MergedKnowledgeResolver"/> and
-/// <c>PriorityWeightedKnowledgeResolver</c> differ ONLY in that
+/// <see cref="PriorityWeightedKnowledgeResolver"/> differ ONLY in that
 /// comparer -- keeping the rest here means dedup semantics, diagnostics, and
 /// the never-throw contract cannot drift between the two.
 /// </summary>
