@@ -163,6 +163,14 @@ var text = doc.Serialize();
 
 ### As a CLI
 
+On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
+
+```sh
+winget install Coderise.OKF4net
+```
+
+On any OS, build from source — see [Building & testing](#building--testing).
+
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
 okf info     <bundle>    Summarize a bundle (concepts, types, links, version)
@@ -182,8 +190,7 @@ okf graph ./bundles/ga4 --dot | dot -Tsvg > graph.svg
 
 `okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
 single-file binary — no .NET runtime installation required on the target
-machine (see [Building & testing](#building--testing)). Full command
-reference with real output samples:
+machine. Full command reference with real output samples:
 [CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
 
 ### Using OKF4net with Microsoft Agent Framework
@@ -465,6 +472,9 @@ dotnet build OKF4net.sln           # core library + okf CLI + test project
 dotnet test OKF4net.sln            # unit + integration tests (incl. golden CLI comparisons)
 dotnet publish src/OKF4net.Cli -c Release  # Native AOT, self-contained okf binary
 ```
+
+Just want the `okf` binary on Windows, not a source build? `winget install
+Coderise.OKF4net` (see [As a CLI](#as-a-cli)).
 
 ## License
 

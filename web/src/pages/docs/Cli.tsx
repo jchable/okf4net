@@ -93,6 +93,8 @@ Part of the [sales dataset](/datasets/sales.md). FK to [customers](/tables/custo
 const ciSnippetHtml = `<span class="c"># any pipeline — fail the build on non-conformant knowledge</span>
 okf validate ./bundles/ga4`
 
+const wingetInstallHtml = `$ winget install Coderise.OKF4net`
+
 const buildHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary</span>`
 
@@ -270,7 +272,12 @@ export default function Cli() {
           </Next>
         </Chapter>
 
-        <Chapter id="build" title="Build it" refText="Native AOT publish">
+        <Chapter id="install" title="Install it" refText="winget on Windows, or Native AOT publish">
+          <p>
+            On Windows, install via <a href="https://github.com/microsoft/winget-pkgs">winget</a>:
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: wingetInstallHtml }} />
+          <p>On any OS, build it from source:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: buildHtml }} />
         </Chapter>
       </div>
