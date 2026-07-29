@@ -103,6 +103,78 @@ public class KnowledgeResolverRouterTests
         Assert.Equal("weak-hi", grouped.Passages[0].SourceId); // grouped leads with the highest-priority source
     }
 
+    /// <summary>
+    /// Two sources ("a" and "b") sharing priority 1 alongside a third ("hi")
+    /// at priority 10 -- chosen so <see cref="GroupedKnowledgeResolver"/> and
+    /// <see cref="PriorityWeightedKnowledgeResolver"/> only genuinely diverge
+    /// when two enabled sources share a priority tier: Grouped still emits
+    /// one source's whole block before the other's within that tier, while
+    /// PriorityWeighted interleaves the tier by score. Source "a" carries two
+    /// passages (scores 6 and 1) and source "b" one (score 3), so within the
+    /// priority-1 tier the score order is a(6), b(3), a(1) -- genuinely
+    /// interleaved across sources, not just two single-passage blocks in a
+    /// different order. "hi" (score 4) sits strictly between "a"'s two scores,
+    /// so it also separates <see cref="MergedKnowledgeResolver"/> (pure score
+    /// order, ignores the tier boundary) from the other two (which both place
+    /// the sole priority-10 passage first).
+    /// </summary>
+    private static FileKnowledgeCatalog SetUpEqualPriorityTierCatalog(TempDir root)
+    {
+        // Score 4: title + body match "orders", description does not.
+        root.Write(Path.Combine("hi", "note.md"),
+            "---\ntype: Note\ntitle: Customer orders dashboard\ndescription: Internal dashboard notes\n---\nThis page discusses orders processing.\n");
+
+        // Score 6: title + description + body all match.
+        root.Write(Path.Combine("a", "strong.md"),
+            "---\ntype: Note\ntitle: Orders orders orders\ndescription: orders\n---\nOrders everywhere orders.\n");
+
+        // Score 1: body only.
+        root.Write(Path.Combine("a", "weak.md"),
+            "---\ntype: Note\ntitle: Unrelated heading\ndescription: d\n---\nA passing mention of orders.\n");
+
+        // Score 3: description + body match, title does not.
+        root.Write(Path.Combine("b", "medium.md"),
+            "---\ntype: Note\ntitle: Unrelated title\ndescription: orders backlog\n---\nTrack orders in the backlog.\n");
+
+        return BuildCatalog(root, """
+            { "id": "hi", "path": "./hi", "priority": 10, "enabled": true },
+            { "id": "a", "path": "./a", "priority": 1, "enabled": true },
+            { "id": "b", "path": "./b", "priority": 1, "enabled": true }
+            """);
+    }
+
+    [Fact]
+    public async Task Grouped_and_PriorityWeighted_diverge_within_a_shared_priority_tier()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpEqualPriorityTierCatalog(root);
+        var router = new KnowledgeResolverRouter(catalog);
+
+        var grouped = await router.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = KnowledgeResolverStrategy.GroupedBySource });
+        var weighted = await router.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = KnowledgeResolverStrategy.PriorityWeighted });
+        var merged = await router.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = KnowledgeResolverStrategy.Merged });
+
+        // Grouped: "hi" block (priority 10), then "a"'s whole block (its own
+        // two passages score-ordered: 6, 1), then "b"'s block (score 3) --
+        // the tier is NOT interleaved by score.
+        Assert.Equal(
+            new[] { "hi/note", "a/strong", "a/weak", "b/medium" },
+            grouped.Passages.Select(p => $"{p.SourceId}/{p.ConceptId}"));
+
+        // PriorityWeighted: "hi" still leads (higher priority tier), but
+        // within the priority-1 tier "a" and "b" interleave by score:
+        // a(6), b(3), a(1) -- "b/medium" now falls between "a"'s two passages.
+        Assert.Equal(
+            new[] { "hi/note", "a/strong", "b/medium", "a/weak" },
+            weighted.Passages.Select(p => $"{p.SourceId}/{p.ConceptId}"));
+
+        // Merged: pure score order regardless of priority tier, so "a/strong"
+        // (score 6) leads even over "hi/note" (score 4, but priority 10).
+        Assert.Equal(
+            new[] { "a/strong", "hi/note", "b/medium", "a/weak" },
+            merged.Passages.Select(p => $"{p.SourceId}/{p.ConceptId}"));
+    }
+
     [Fact]
     public async Task The_default_fairness_quota_reaches_the_fused_strategies()
     {
