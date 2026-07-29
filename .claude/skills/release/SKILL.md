@@ -59,12 +59,20 @@ ask the user rather than guessing — the version number is a public contract.
 
 ## 3. Prepare the release commit
 
-On main (worktree), update **both** files — they must agree with the tag:
+On main (worktree), synchronize **every user-visible version with the tag**:
 
-1. `src/OKF4net/OKF4net.csproj` → `<Version>X.Y.Z</Version>`. (CI overrides
-   this from the tag at pack time, but keeping it in sync means local builds
-   and the tag never disagree.)
-2. `CHANGELOG.md` (Keep a Changelog format):
+1. `Directory.Build.props` → `<Version>X.Y.Z</Version>`. This is the local
+  default package/assembly version for every project. CI overrides it from
+  the tag at pack time, but keeping it synchronized makes local builds,
+  metadata, and the tag agree.
+2. `src/OKF4net.Cli/OkfCli.cs` → `CliVersion = "X.Y.Z"`. The CLI has an
+  explicit version string, so changing MSBuild metadata alone does not
+  update `okf --version`.
+3. Any user-facing version sample, currently
+  `web/src/pages/docs/Cli.tsx` (`versionHtml`), must show the same `X.Y.Z`.
+  Search the tracked source tree for the previous version before committing
+  to catch further copies: `git grep -n "<previous-version>" -- ':!bin' ':!obj'`.
+4. `CHANGELOG.md` (Keep a Changelog format):
    - Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`.
    - Re-create an empty `## [Unreleased]` section above it.
    - Update the link definitions at the bottom (`[Unreleased]` compare link,
@@ -72,6 +80,14 @@ On main (worktree), update **both** files — they must agree with the tag:
    - If the section is thin, backfill it from the commit log — the CHANGELOG
      is the source for release notes, so write it for users, not committers:
      group by Added/Changed/Fixed, describe behaviour not commits.
+
+Before committing, prove the externally-visible CLI version matches the
+release version:
+
+```sh
+dotnet run --project src/OKF4net.Cli -- --version
+# Expected: okf X.Y.Z (OKF spec v0.2)
+```
 
 Commit as `chore(release): prepare vX.Y.Z`, push main, and **wait for CI**:
 `gh run watch $(gh run list --workflow=ci.yml --branch main --limit 1 --json databaseId -q '.[0].databaseId') --exit-status`.
