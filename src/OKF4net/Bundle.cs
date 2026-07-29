@@ -47,16 +47,21 @@ public sealed class Bundle
 
     /// <summary>
     /// The comparison used for the §6.2 bundle-root containment check in
-    /// <see cref="TryResolveResource"/>. Windows and macOS filesystems are
-    /// typically case-insensitive, so a case-variant candidate path is the
-    /// same directory entry as <see cref="Root"/> there. On Linux (and other
-    /// case-sensitive filesystems) a case-variant is a genuinely DIFFERENT
-    /// directory -- treating it as contained would let an untrusted relative
-    /// path (e.g. containing <c>..</c>) escape the root by exploiting a case
-    /// difference. See <see cref="ReparsePoints.IsWithin"/>'s remarks.
+    /// <see cref="TryResolveResource"/>. Deliberately
+    /// <see cref="StringComparison.Ordinal"/> on EVERY platform. Case-sensitivity
+    /// is a runtime property of the specific volume, NOT of the OS: APFS/HFS+ can
+    /// be mounted case-sensitive on macOS, and Windows has case-sensitive
+    /// directories (per-directory flag, ReFS, WSL) -- so an OS-based heuristic
+    /// (e.g. "OrdinalIgnoreCase on Windows/macOS") leaves this security boundary
+    /// bypassable on those volumes, exactly as on Linux. Ordinal rejects only a
+    /// candidate whose root-prefix differs from <see cref="Root"/> in CASE; since
+    /// a legitimate candidate is built from <see cref="Root"/> / <c>concept.Path</c>
+    /// (and <see cref="Path.GetFullPath(string)"/> preserves case), that can happen
+    /// only via a <c>..</c> climb re-entering a case-variant sibling of the root --
+    /// precisely the escape §6.2 must block. Legitimate paths keep Root's exact
+    /// case and are unaffected. See <see cref="ReparsePoints.IsWithin"/>'s remarks.
     /// </summary>
-    private static readonly StringComparison PathComparison =
-        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    private static readonly StringComparison PathComparison = StringComparison.Ordinal;
 
     /// <summary>Reserved filenames with defined meaning at any level (§3.1).</summary>
     public static readonly string[] ReservedFilenames = [IndexFilename, LogFilename];

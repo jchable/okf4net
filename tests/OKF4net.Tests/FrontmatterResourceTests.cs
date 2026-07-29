@@ -103,9 +103,14 @@ public class FrontmatterResourceTests
     /// Linux this wrongly accepted "../../bundle/secret.sql" (climbing from a
     /// nested concept back up and into the sibling "bundle" dir) as contained
     /// within the "Bundle" root, reading a file entirely outside the intended
-    /// bundle. Windows/macOS filesystems are typically case-insensitive and
-    /// cannot even hold both "Bundle" and "bundle" as distinct sibling
-    /// directories, so this test only exercises its assertion on Linux.
+    /// bundle. The fix uses <see cref="System.StringComparison.Ordinal"/>
+    /// UNCONDITIONALLY (case-sensitivity is a per-volume runtime property, not an
+    /// OS one -- so an OS-based heuristic would leave the same hole on a
+    /// case-sensitive macOS/Windows volume). This end-to-end test is gated to
+    /// Linux only because a case-insensitive dev filesystem cannot hold both
+    /// "Bundle" and "bundle" as distinct sibling directories; the OS-independent
+    /// containment guarantee itself is locked portably by the
+    /// <c>ReparsePoints.IsWithin</c> (Ordinal) unit test in <c>ReparsePointsTests</c>.
     /// </summary>
     [Fact]
     public void Case_variant_sibling_directory_is_unsafe_on_case_sensitive_filesystem()
