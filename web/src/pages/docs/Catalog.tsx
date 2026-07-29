@@ -63,6 +63,18 @@ export default function Catalog() {
       />
 
       <div className="docbody">
+        <Chapter id="install" title="Install" refText="two packages, one for hosting">
+          <pre className="block">$ dotnet add package OKF4net.Catalog</pre>
+          <p>
+            The catalog core — manifest, resolver, memory store. References only <code>OKF4net</code>.
+          </p>
+          <pre className="block">$ dotnet add package OKF4net.Catalog.Hosting</pre>
+          <p>
+            Add this too for <code>AddKnowledge</code>/<code>AddMemory</code> — an <code>IServiceCollection</code>{' '}
+            host. The sole project in the repo taking a <code>Microsoft.Extensions.*</code> dependency.
+          </p>
+        </Chapter>
+
         <Chapter id="manifest" title="The catalog.json manifest" refText="strict, never-throw parser">
           <MapTable
             head={['Field', 'Default / rule']}

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Head } from 'vite-react-ssg'
 import SiteBar, { type NavKey } from '../components/SiteBar'
 import Colophon, { type ColophonVariant } from '../components/Colophon'
@@ -28,6 +29,15 @@ export interface LayoutProps {
  * lives here rather than being repeated per page.
  */
 export default function Layout({ title, description, current, footerVariant, noindex, children }: LayoutProps) {
+  // SPA navigation replaces the page's content in place, so the browser
+  // never resets scroll position on its own — without this, navigating from
+  // partway down a long page (e.g. docs/library.md) lands the next page at
+  // that same scroll offset instead of its top.
+  const { pathname } = useLocation()
+  useEffect(() => {
+    window.scrollTo(0, 0)
+  }, [pathname])
+
   return (
     <>
       <Head>

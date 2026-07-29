@@ -180,6 +180,122 @@ export default function Library() {
               ['ExtensionKeys → IReadOnlyList<string>', 'Producer-defined keys beyond the reserved set.'],
               ['AsMapping() → YamlMapping', 'The underlying ordered mapping.'],
               ['Set(string, YamlValue) · FromMapping(YamlMapping)', 'Mutate a key / wrap an existing mapping.'],
+              [
+                'Sources → IReadOnlyList<Source> · UsageWindow → UsageWindow?',
+                <>
+                  The §5.1 <code>sources</code> list and its sibling <code>usage_window</code>.
+                </>,
+              ],
+              [
+                'Generated → Stamp? · Verified → IReadOnlyList<Stamp>',
+                <>
+                  The §5.2 <code>generated</code>/<code>verified</code> stamps.
+                </>,
+              ],
+              [
+                'TrustTier → TrustTier',
+                <>
+                  Derived from <code>Verified</code> (§5.3) — see the{' '}
+                  <a href="#provenance">provenance, trust &amp; lifecycle</a> chapter below.
+                </>,
+              ],
+              [
+                'Lifecycle → Lifecycle',
+                <>
+                  The §5.4/§5.5 <code>status</code>/<code>stale_after</code> pair, as one value.
+                </>,
+              ],
+              [
+                'GeneratedAt → string? · LastChangedAt → string?',
+                <>
+                  <code>Generated?.At</code>, and its §13.1 fallback to the legacy <code>Timestamp</code>.
+                </>,
+              ],
+            ]}
+          />
+        </Chapter>
+
+        <Chapter id="provenance" title="Provenance, trust &amp; lifecycle" refText="§5 — new in v0.2">
+          <p>
+            Five small, dependency-free value types, added for v0.2 and shared by the core, <code>Agents</code>,
+            and <code>Catalog</code>. Every accessor is <strong>lenient</strong>: a malformed field yields a
+            default or empty value rather than throwing — judgment is left entirely to{' '}
+            <code>BundleValidator</code> (§11), never made at parse time.
+          </p>
+          <MapTable
+            head={['Type', 'Description']}
+            rows={[
+              [
+                'Actor(Raw, Kind, Id, Producer, Version, IsWellFormed)',
+                <>
+                  The §7 actor convention. <code>Actor.Parse(string)</code> reads{' '}
+                  <code>human:&lt;id&gt;</code>/<code>process:&lt;id&gt;</code>/
+                  <code>&lt;producer&gt;/&lt;version&gt;</code>, never throws; <code>IsHuman</code> drives trust.
+                </>,
+              ],
+              [
+                'Stamp(By, At) · TrustTier',
+                <>
+                  One <code>{'{ by, at }'}</code> stamp (§5.2), and the derived tier (§5.3):{' '}
+                  <code>Unverified</code> / <code>MachineConfirmed</code> / <code>HumanReviewed</code> — human
+                  iff any verifier's <code>By.IsHuman</code>.
+                </>,
+              ],
+              [
+                'Source(Id, Resource, Title, Author, UsageCount, LastModified) · UsageWindow(From, To)',
+                <>
+                  One §5.1 <code>sources[]</code> entry, and the sibling <code>usage_window</code> that frames{' '}
+                  <code>usage_count</code>.
+                </>,
+              ],
+              [
+                'Lifecycle(Status, StatusIsKnown, StaleAfterRaw, StaleAfter) · ConceptStatus',
+                <>
+                  §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>; <code>IsStale(DateOnly)</code> is{' '}
+                  <code>today &gt;= stale_after</code>.
+                </>,
+              ],
+              [
+                'StalePolicy(Mode, GraceDays)',
+                <>
+                  A consumer's policy for stale concepts: <code>Use</code> (admit everything, the default),{' '}
+                  <code>Strict</code> (exclude), <code>Tolerate(graceDays)</code>.{' '}
+                  <code>Admits(Lifecycle, DateOnly)</code> is the one method both <code>Agents</code> and{' '}
+                  <code>Catalog</code> call.
+                </>,
+              ],
+              [
+                'IOkfClock · SystemClock',
+                <>
+                  <code>DateOnly Today</code>, injected wherever "now" matters — real time by default, fixed in
+                  tests.
+                </>,
+              ],
+            ]}
+          />
+        </Chapter>
+
+        <Chapter id="shared" title="Shared with Agents &amp; Catalog" refText="one implementation, three consumers">
+          <MapTable
+            head={['Type', 'Description']}
+            rows={[
+              [
+                'BundleConceptWriter',
+                <>
+                  Atomic, per-path-locked, reparse-guarded concept writes —{' '}
+                  <code>WriteConcept</code>/<code>AppendToConceptAtomic</code>. The primitive behind{' '}
+                  <code>okf_write_concept</code> and the scoped memory store; see{' '}
+                  <Link to="/docs/agents">docs/agents.md</Link>.
+                </>,
+              ],
+              [
+                'ConceptSearch',
+                <>
+                  <code>Search(concepts, query, tag?)</code> — title ×3, tags/description ×2, body ×1. The one
+                  scorer behind <code>okf_search</code> and the local catalog resolver; see{' '}
+                  <Link to="/docs/catalog">docs/catalog.md</Link>.
+                </>,
+              ],
             ]}
           />
         </Chapter>
