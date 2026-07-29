@@ -196,6 +196,39 @@ public class AttestationOrchestratorTests
         Assert.Contains(outcome.Reasons, r => r.Contains("revenue.sql"));
     }
 
+    /// <summary>
+    /// Regression test for the BOM-sniff hole in <see cref="Bundle.ReadResourceText"/>:
+    /// the old implementation was <c>File.ReadAllText(absolutePath, OkfEncodings.Strict)</c>,
+    /// and <see cref="File.ReadAllText(string, System.Text.Encoding)"/> hardcodes
+    /// <c>detectEncodingFromByteOrderMarks: true</c> regardless of the encoding
+    /// passed in -- so a UTF-16-BOM-prefixed file was silently reinterpreted as
+    /// UTF-16 instead of tripping the strict UTF-8 decoder, the exact hole
+    /// <see cref="OkfEncodings.Strict"/> exists to prevent. 0xFF 0xFE is a UTF-16 LE
+    /// BOM; the trailing 0x00 0xD8 is an unpaired low/high surrogate byte pair that
+    /// decodes without throwing under .NET's default (replacement-character) UTF-16
+    /// handling, so under the old code this file was read as a garbage-but-non-throwing
+    /// string and the run proceeded to a normal, displayable outcome. Under strict
+    /// UTF-8 (no BOM sniffing), 0xFF and 0xFE are never valid UTF-8 lead bytes, so the
+    /// fixed <see cref="Bundle.ReadResourceText"/> must trip the decoder, which the
+    /// orchestrator's existing guarded read (<see cref="AttestationOrchestrator.RunAsync"/>'s
+    /// file-computation step) catches as a non-displayable outcome -- never an
+    /// unhandled exception.
+    /// </summary>
+    [Fact]
+    public async Task Utf16_bom_prefixed_computation_file_trips_strict_decoder()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
+        var sqlPath = System.IO.Path.Combine(tmp.Path, "c", "references", "revenue.sql");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sqlPath)!);
+        File.WriteAllBytes(sqlPath, new byte[] { 0xFF, 0xFE, 0x00, 0xD8 });
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
+        Assert.False(outcome.Displayable);
+        Assert.Contains(outcome.Reasons, r => r.Contains("revenue.sql"));
+    }
+
     [Fact]
     public async Task Not_found_concept_is_not_displayable()
     {

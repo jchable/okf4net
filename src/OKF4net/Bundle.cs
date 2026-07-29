@@ -388,13 +388,14 @@ public sealed class Bundle
 
     /// <summary>
     /// Reads a resolved resource's text content as strict UTF-8 (throws on
-    /// invalid byte sequences rather than substituting U+FFFD). Intended to be
+    /// invalid byte sequences rather than substituting U+FFFD, and never
+    /// reinterprets a byte-order mark as a different encoding). Intended to be
     /// called only on an <paramref name="absolutePath"/> produced by
     /// <see cref="TryResolveResource"/> with
     /// <see cref="ResourceResolutionStatus.Resolved"/> -- path safety is
     /// established there, not here.
     /// </summary>
-    public string ReadResourceText(string absolutePath) => File.ReadAllText(absolutePath, OkfEncodings.Strict);
+    public string ReadResourceText(string absolutePath) => OkfEncodings.Strict.GetString(File.ReadAllBytes(absolutePath));
 
     /// <summary>
     /// Recursively collects <c>*.md</c> file paths under <paramref name="dir"/>,

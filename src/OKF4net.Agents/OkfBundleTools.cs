@@ -265,7 +265,9 @@ public sealed class OkfBundleTools
             {
                 sb.Append('\n');
                 AppendContractSummary(sb, fm.ComputationContract);
-                sb.Append("(Use okf_get_computation for the full computation source; okf_run_computation to run it.)").Append('\n');
+                sb.Append(_orchestrator is not null
+                    ? "(Use okf_get_computation for the full computation source; okf_run_computation to run it.)"
+                    : "(Use okf_get_computation for the full computation source.)").Append('\n');
             }
 
             return sb.ToString();

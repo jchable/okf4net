@@ -22,6 +22,45 @@ public class OkfComputationToolsTests
         Assert.Contains("SELECT 1", s);
     }
 
+    /// <summary>
+    /// Regression test: <see cref="OkfBundleTools.ReadConcept"/>'s Attested-Computation
+    /// enrichment must not advertise <c>okf_run_computation</c> when no orchestrator is
+    /// wired -- <see cref="OkfBundleTools.GetTools"/> only exposes that tool when
+    /// <c>_orchestrator</c> is non-null (as the shipped <c>okf-mcp</c> server never wires
+    /// one), so mentioning it unconditionally would tell a consumer to call a tool that
+    /// isn't in their tool list.
+    /// </summary>
+    [Fact]
+    public void Read_concept_mentions_only_get_computation_without_orchestrator()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        var tools = new OkfBundleTools(tmp.Path);
+        var s = tools.ReadConcept("c/rev");
+        Assert.Contains("okf_get_computation", s);
+        Assert.DoesNotContain("okf_run_computation", s);
+    }
+
+    /// <summary>
+    /// Counterpart to <see cref="Read_concept_mentions_only_get_computation_without_orchestrator"/>:
+    /// with an orchestrator wired, <c>okf_run_computation</c> IS in the tool list, so
+    /// <see cref="OkfBundleTools.ReadConcept"/>'s enrichment should mention both tools.
+    /// </summary>
+    [Fact]
+    public void Read_concept_mentions_both_tools_with_orchestrator_wired()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.Passing()
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+        var s = tools.ReadConcept("c/rev");
+        Assert.Contains("okf_get_computation", s);
+        Assert.Contains("okf_run_computation", s);
+    }
+
     [Fact]
     public void Run_computation_tool_absent_without_orchestrator()
     {
