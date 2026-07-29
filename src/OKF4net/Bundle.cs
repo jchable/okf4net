@@ -298,6 +298,90 @@ public sealed class Bundle
     }
 
     /// <summary>
+    /// Resolves a §6.2 path-valued frontmatter raw value (as enumerated by
+    /// <see cref="OkfDocument.FrontmatterResources"/>) to a filesystem path,
+    /// relative to <paramref name="concept"/>.
+    ///
+    /// A <see cref="FrontmatterResourceKind.Url"/> value (<c>scheme://...</c>)
+    /// is never resolved: <paramref name="absolutePath"/> is <c>null</c> and
+    /// <paramref name="status"/> is <see cref="ResourceResolutionStatus.Url"/>.
+    ///
+    /// Otherwise the candidate path is computed and checked for containment
+    /// within the bundle root: a <see cref="FrontmatterResourceKind.BundleRelative"/>
+    /// value (leading <c>/</c> or <c>\</c>) is combined with <see cref="Root"/>
+    /// after stripping the leading separator(s) -- <see cref="Path.Combine(string, string)"/>
+    /// otherwise discards <paramref name="concept"/>'s directory (or, here,
+    /// <see cref="Root"/>) whenever the second argument looks rooted, which on
+    /// Windows an absolute-looking <c>/x</c> does. A
+    /// <see cref="FrontmatterResourceKind.Relative"/> value is combined with
+    /// the concept's own directory instead.
+    ///
+    /// The candidate is <see cref="ResourceResolutionStatus.Unsafe"/> if it
+    /// would escape the bundle root, or if it (or any ancestor directory up to
+    /// the root) is a filesystem reparse point -- see
+    /// <see cref="ReparsePoints.IsWithinBundleRoot"/>,
+    /// <see cref="ReparsePoints.IsReparsePoint"/>, and
+    /// <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>.
+    /// Otherwise it is <see cref="ResourceResolutionStatus.Resolved"/> if the
+    /// file exists, or <see cref="ResourceResolutionStatus.Missing"/> if it
+    /// does not.
+    ///
+    /// Always returns <c>true</c>: resolution never fails outright (§3,
+    /// permissive), it only reports which of the above statuses applies.
+    /// </summary>
+    public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
+    {
+        if (FrontmatterResourceClassifier.KindOf(rawPath) == FrontmatterResourceKind.Url)
+        {
+            absolutePath = null;
+            status = ResourceResolutionStatus.Url;
+            return true;
+        }
+
+        string candidate;
+        if (rawPath.Length > 0 && (rawPath[0] == '/' || rawPath[0] == '\\'))
+        {
+            // BundleRelative: strip the leading separator(s) BEFORE combining
+            // with Root -- Path.Combine(root, "/x") discards `root` entirely
+            // on Windows, since "/x" looks rooted to it.
+            var stripped = rawPath.TrimStart('/', '\\');
+            candidate = Path.GetFullPath(Path.Combine(Root, stripped));
+        }
+        else
+        {
+            var conceptDir = Path.GetDirectoryName(concept.Path) ?? Root;
+            candidate = Path.GetFullPath(Path.Combine(conceptDir, rawPath));
+        }
+
+        var fullRoot = ReparsePoints.CanonicalizeRoot(Root);
+        if (!ReparsePoints.IsWithinBundleRoot(fullRoot, candidate)
+            || ReparsePoints.IsReparsePoint(candidate)
+            || ReparsePoints.HasReparsePointAncestor(fullRoot, candidate))
+        {
+            // Deliberately null, like the Url case: an Unsafe candidate must
+            // never be handed to ReadResourceText, so it is never exposed
+            // even though it was computed above.
+            absolutePath = null;
+            status = ResourceResolutionStatus.Unsafe;
+            return true;
+        }
+
+        absolutePath = candidate;
+        status = File.Exists(candidate) ? ResourceResolutionStatus.Resolved : ResourceResolutionStatus.Missing;
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a resolved resource's text content as strict UTF-8 (throws on
+    /// invalid byte sequences rather than substituting U+FFFD). Intended to be
+    /// called only on an <paramref name="absolutePath"/> produced by
+    /// <see cref="TryResolveResource"/> with
+    /// <see cref="ResourceResolutionStatus.Resolved"/> -- path safety is
+    /// established there, not here.
+    /// </summary>
+    public string ReadResourceText(string absolutePath) => File.ReadAllText(absolutePath, OkfEncodings.Strict);
+
+    /// <summary>
     /// Recursively collects <c>*.md</c> file paths under <paramref name="dir"/>,
     /// in deterministic order (directory entries sorted by name, ordinal).
     /// </summary>

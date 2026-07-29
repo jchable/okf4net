@@ -241,6 +241,42 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     }
 
     /// <summary>
+    /// Enumerates the §6.2 path-valued frontmatter fields present on this
+    /// document, in a fixed order: the top-level <c>resource</c>, each
+    /// <c>sources[i].resource</c> (labelled <c>sources[i].resource</c>), the
+    /// §10.2 <c>computation</c>, <c>executor.resource</c>, and
+    /// <c>attester.resource</c>. Only non-empty string values are included;
+    /// a field absent from the frontmatter is simply omitted.
+    /// </summary>
+    public IReadOnlyList<FrontmatterResource> FrontmatterResources()
+    {
+        var result = new List<FrontmatterResource>();
+
+        void AddIfPresent(string field, string? rawPath)
+        {
+            if (!string.IsNullOrEmpty(rawPath))
+            {
+                result.Add(new FrontmatterResource(field, rawPath, FrontmatterResourceClassifier.KindOf(rawPath)));
+            }
+        }
+
+        AddIfPresent("resource", Frontmatter.Resource);
+
+        var sources = Frontmatter.Sources;
+        for (var i = 0; i < sources.Count; i++)
+        {
+            AddIfPresent($"sources[{i}].resource", sources[i].Resource);
+        }
+
+        var contract = Frontmatter.ComputationContract;
+        AddIfPresent("computation", contract.ComputationPath);
+        AddIfPresent("executor.resource", contract.Executor?.Resource);
+        AddIfPresent("attester.resource", contract.Attester?.Resource);
+
+        return result;
+    }
+
+    /// <summary>
     /// Structural equality: <see cref="Frontmatter"/> equality AND ordinal
     /// <see cref="Body"/> equality — componentwise over the document's two
     /// fields.
