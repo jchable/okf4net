@@ -224,6 +224,23 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     public bool UsesLegacyCitations() => Frontmatter.Sources.Count == 0 && Citations().Count > 0;
 
     /// <summary>
+    /// Resolves the §10.3 sanctioned computation: the frontmatter
+    /// <c>computation</c> path (§10.2) when present, otherwise the first
+    /// fenced code block under a <c># Computation</c> heading in
+    /// <see cref="Body"/> (or <c>null</c> if neither is present).
+    /// </summary>
+    public SanctionedComputation Computation()
+    {
+        var path = Frontmatter.ComputationContract.ComputationPath;
+        if (!string.IsNullOrEmpty(path))
+        {
+            return new SanctionedComputation(ComputationSource.File, null, path);
+        }
+
+        return new SanctionedComputation(ComputationSource.Inline, ComputationExtractor.ExtractInline(Body), null);
+    }
+
+    /// <summary>
     /// Structural equality: <see cref="Frontmatter"/> equality AND ordinal
     /// <see cref="Body"/> equality — componentwise over the document's two
     /// fields.
