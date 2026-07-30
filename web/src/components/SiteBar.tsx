@@ -2,7 +2,7 @@
 import { Link } from 'react-router-dom'
 
 /** Site navigation keys, one per top-level chapter of the OKF4net bundle. */
-export type NavKey = 'home' | 'what-okf-is' | 'library' | 'cli' | 'docs' | 'contributing'
+export type NavKey = 'home' | 'what-okf-is' | 'library' | 'cli' | 'docs' | 'contributing' | 'support'
 
 interface NavItem {
   key: NavKey
@@ -17,6 +17,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { key: 'cli', to: '/cli', label: 'cli.md' },
   { key: 'docs', to: '/docs', label: 'docs.md' },
   { key: 'contributing', to: '/contributing', label: 'contributing.md' },
+  { key: 'support', to: '/support', label: 'support.md' },
 ]
 
 export interface SiteBarProps {
