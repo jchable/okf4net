@@ -9,6 +9,8 @@ public sealed class OkfBundleDiscoveryTests
     private const string Marked = "---\nokf_version: \"0.2\"\n---\n\n# Index\n";
     private const string Unmarked = "# Index\n";
     private const string FrontmatterWithoutVersion = "---\ntitle: Not a bundle\n---\n\n# Index\n";
+    private const string NullOkfVersion = "---\nokf_version:\n---\n\n# Index\n";
+    private const string SequenceOkfVersion = "---\nokf_version: []\n---\n\n# Index\n";
 
     // Rooted, platform-neutral fake tree base. No real filesystem involved:
     // the walk sees only what the injected readRootIndex answers.
@@ -83,6 +85,22 @@ public sealed class OkfBundleDiscoveryTests
             At("proj"),
             Fs((At("proj"), Unmarked), (At("proj", "knowledge"), FrontmatterWithoutVersion)),
             out _);
+
+        Assert.False(ok);
+    }
+
+    [Fact]
+    public void Null_okf_version_is_not_a_bundle()
+    {
+        var ok = OkfBundleDiscovery.TryDiscover(At("proj"), Fs((At("proj"), NullOkfVersion)), out _);
+
+        Assert.False(ok);
+    }
+
+    [Fact]
+    public void Sequence_okf_version_is_not_a_bundle()
+    {
+        var ok = OkfBundleDiscovery.TryDiscover(At("proj"), Fs((At("proj"), SequenceOkfVersion)), out _);
 
         Assert.False(ok);
     }

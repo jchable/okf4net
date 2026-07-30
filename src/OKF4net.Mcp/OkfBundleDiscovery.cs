@@ -9,7 +9,7 @@ namespace OKF4net.Mcp;
 /// is a <em>marked</em> bundle wins. At each level the directory itself is
 /// tested before its <c>knowledge/</c> child. A directory is a marked bundle
 /// when its root <c>index.md</c> frontmatter declares <c>okf_version</c>
-/// (§11) — the only zero-false-positive marker available, so unmarked
+/// (§12) — the only zero-false-positive marker available, so unmarked
 /// bundles are deliberately not discovered: a writable server must never
 /// mistake an arbitrary docs directory for a bundle. The escape hatches are
 /// the positional argument and <c>OKF_BUNDLE_ROOT</c>.
@@ -115,5 +115,5 @@ public static class OkfBundleDiscovery
 
     private static bool DeclaresOkfVersion(string indexText) =>
         OkfDocument.TryParse(indexText, out var doc, out _)
-        && doc.Frontmatter.Get("okf_version") is not null;
+        && doc.Frontmatter.Get("okf_version")?.AsDisplayString() is not null;
 }

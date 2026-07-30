@@ -54,7 +54,7 @@ registered).
    walking up, the first directory that is a *marked* bundle — testing at
    each level the directory itself, then its `knowledge/` child. A marked
    bundle has a root `index.md` whose frontmatter declares `okf_version`
-   (§11).
+   (§12).
 
 Discovery is deliberately strict — an unmarked bundle (no `okf_version` in
 its root `index.md`) is **not** discovered, so a writable server can never
