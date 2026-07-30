@@ -144,11 +144,12 @@ internal static class ReparsePoints
     /// its remarks for why a bare <see cref="Path.GetFullPath(string)"/>
     /// is not enough here), then delegates to
     /// <see cref="HasReparsePointAncestor(string, string, StringComparison)"/>
-    /// case-insensitively. Complements <see cref="IsWithinBundleRoot"/>: that
-    /// check only compares resolved path STRINGS, so a junction that
-    /// lexically resolves under <paramref name="bundleRoot"/> still passes it
-    /// even though the OS follows the junction the moment something actually
-    /// touches disk (<see cref="Directory.Exists(string)"/>,
+    /// with <see cref="StringComparison.Ordinal"/>. Complements
+    /// <see cref="IsWithinBundleRoot"/>: that check only compares resolved
+    /// path STRINGS, so a junction that lexically resolves under
+    /// <paramref name="bundleRoot"/> still passes it even though the OS
+    /// follows the junction the moment something actually touches disk
+    /// (<see cref="Directory.Exists(string)"/>,
     /// <see cref="File.ReadAllText(string)"/>, <see cref="File.WriteAllText(string, string)"/>)
     /// -- silently reading or writing outside the bundle. Walking every
     /// intermediate directory and rejecting on the first reparse point closes
@@ -157,11 +158,23 @@ internal static class ReparsePoints
     /// ancestor directory) must separately check <see cref="IsReparsePoint"/>
     /// on it.
     /// </summary>
+    /// <remarks>
+    /// <see cref="StringComparison.Ordinal"/> on every platform, not an
+    /// OS-conditional choice -- case-sensitivity is a runtime property of the
+    /// specific volume, not of the OS: APFS/HFS+ can be configured
+    /// case-sensitive, and a volume mounted on Linux can be case-insensitive
+    /// (FAT/exFAT, a case-folding network share). Every legitimate caller's
+    /// <paramref name="path"/> is built via <see cref="Path.Combine(string, string)"/>
+    /// from the same <paramref name="bundleRoot"/> passed to this method, so
+    /// its prefix always keeps <paramref name="bundleRoot"/>'s exact casing --
+    /// <c>Ordinal</c> costs nothing for legitimate input, and closes the same
+    /// case-variant escape <see cref="IsWithinBundleRoot"/> closes.
+    /// </remarks>
     internal static bool HasReparsePointAncestor(string bundleRoot, string path)
     {
         var fullRoot = CanonicalizeRoot(bundleRoot);
         var current = Path.GetFullPath(path);
-        return HasReparsePointAncestor(fullRoot, current, StringComparison.OrdinalIgnoreCase);
+        return HasReparsePointAncestor(fullRoot, current, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -204,18 +217,33 @@ internal static class ReparsePoints
     /// to <paramref name="root"/> itself still matches <see cref="IsWithin"/>'s
     /// exact-equality check even when <paramref name="root"/> has a trailing
     /// separator -- see <see cref="CanonicalizeRoot"/>'s remarks) and
-    /// comparing case-insensitively (Windows/macOS filesystems are typically
-    /// case-insensitive; a stricter check would reject legitimate paths
-    /// there). A lexical check alone: a junction/symlink among
+    /// comparing with <see cref="StringComparison.Ordinal"/> on every
+    /// platform. A lexical check alone: a junction/symlink among
     /// <paramref name="candidate"/>'s ancestors can still resolve here even
     /// though the OS would follow it to somewhere else entirely once actual
     /// I/O touches disk -- pair with <see cref="HasReparsePointAncestor(string, string)"/>
     /// for that.
     /// </summary>
+    /// <remarks>
+    /// Case-sensitivity is a runtime property of the specific volume, not of
+    /// the OS: APFS/HFS+ can be configured case-sensitive, and a volume
+    /// mounted on Linux can be case-insensitive (FAT/exFAT, a case-folding
+    /// network share) -- an OS-conditional comparison leaves an escape open
+    /// on exactly the combination it assumes cannot occur.
+    /// <see cref="StringComparison.Ordinal"/> has no cost for legitimate
+    /// input: every legitimate <paramref name="candidate"/> is built via
+    /// <see cref="Path.Combine(string, string)"/> from the same
+    /// <paramref name="root"/> passed to this method (a purely lexical
+    /// operation that never re-cases from disk), so its prefix always keeps
+    /// <paramref name="root"/>'s exact casing. Only a <c>..</c> climb
+    /// re-entering a case-variant sibling of <paramref name="root"/> itself
+    /// produces a mismatched prefix -- precisely the escape this method must
+    /// reject.
+    /// </remarks>
     internal static bool IsWithinBundleRoot(string root, string candidate)
     {
         var fullRoot = CanonicalizeRoot(root);
         var fullCandidate = Path.GetFullPath(candidate);
-        return IsWithin(fullRoot, fullCandidate, StringComparison.OrdinalIgnoreCase);
+        return IsWithin(fullRoot, fullCandidate, StringComparison.Ordinal);
     }
 }
