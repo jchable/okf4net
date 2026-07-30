@@ -112,10 +112,10 @@ export default function Home() {
           <div className="chead">
             <span className="h">##</span>
             <h2>The Agent tools</h2>
-            <span className="ref">Microsoft Agent Framework — nine tools + bounded context</span>
+            <span className="ref">Microsoft Agent Framework — ten tools + bounded context</span>
           </div>
-          <p><code>OKF4net.Agents</code> turns a bundle into <strong>nine <code>AIFunction</code> tools</strong> (read, search, write, validate, log, …) plus <code>OkfContextProvider</code>, which injects budget-bounded reference data automatically — never as instructions — and, opt-in, captures exchanges as deterministic memory, single-bundle or scoped across tenants, users, and sessions.</p>
-          <p className="next">→ <Link to="/docs/agents">docs/agents.md</Link> — the nine tools, the context provider, and scoped memory capture</p>
+          <p><code>OKF4net.Agents</code> turns a bundle into <strong>ten <code>AIFunction</code> tools</strong> (read, search, write, validate, log, §10 attested computation, …) — an eleventh, <code>okf_run_computation</code>, when an attestation orchestrator is wired in — plus <code>OkfContextProvider</code>, which injects budget-bounded reference data automatically — never as instructions — and, opt-in, captures exchanges as deterministic memory, single-bundle or scoped across tenants, users, and sessions.</p>
+          <p className="next">→ <Link to="/docs/agents">docs/agents.md</Link> — the tools, the context provider, and scoped memory capture</p>
         </section>
 
         <section className="chapter" id="catalog">
@@ -124,7 +124,7 @@ export default function Home() {
             <h2>Local catalog</h2>
             <span className="ref">catalog.json — search many bundles, host multi-tenant memory</span>
           </div>
-          <p><code>OKF4net.Catalog</code> names one or more local bundles as <strong>sources</strong> in a hot-reloadable <code>catalog.json</code> manifest and searches every enabled one, ranked by a <strong>selectable resolver strategy</strong> — grouped by source, merged by score, or priority-weighted, with an optional fairness quota — and with trust and staleness carried on every result. A <code>role: "memory"</code> source, backed by <code>FileMemoryStore</code>, gives an agent deployment host-scoped, layered memory — session, user, and tenant — without cross-scope leakage.</p>
+          <p><code>OKF4net.Catalog</code> names one or more local bundles as <strong>sources</strong> in a hot-reloadable <code>catalog.json</code> manifest and searches every enabled one, ranked by a <strong>selectable resolver strategy</strong> — grouped by source, merged by score, or priority-weighted, with an optional fairness quota — and with trust and staleness carried on every result. Per-caller <strong>source visibility</strong> restricts which sources a given caller may search, by a host-precomputed set or a per-source policy function. A <code>role: "memory"</code> source, backed by <code>FileMemoryStore</code>, gives an agent deployment host-scoped, layered memory — session, user, and tenant — without cross-scope leakage.</p>
           <p className="next">→ <Link to="/docs/catalog">docs/catalog.md</Link> — the manifest, the resolver, and scoped memory</p>
         </section>
 
