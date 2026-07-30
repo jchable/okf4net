@@ -4,7 +4,7 @@ using OKF4net.Internal;
 namespace OKF4net;
 
 /// <summary>
-/// Generation of <c>index.md</c> directory listings (§6).
+/// Generation of <c>index.md</c> directory listings (§8).
 ///
 /// Some producers synthesize subdirectory descriptions with an LLM; since
 /// OKF tooling must not require any particular model or network access, the

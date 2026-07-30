@@ -5,14 +5,14 @@ using OKF4net.Internal;
 namespace OKF4net;
 
 /// <summary>
-/// How a link target is interpreted under §5.
+/// How a link target is interpreted under §6.1.
 /// </summary>
 public enum LinkKind
 {
-    /// <summary>Begins with <c>/</c>: resolved relative to the bundle root (§5.1, recommended).</summary>
+    /// <summary>Begins with <c>/</c>: resolved relative to the bundle root (§6.1, recommended).</summary>
     Absolute,
 
-    /// <summary>A relative path such as <c>./other.md</c> (§5.2).</summary>
+    /// <summary>A relative path such as <c>./other.md</c> (§6.1).</summary>
     Relative,
 
     /// <summary>An external URI (<c>https://…</c>, <c>mailto:…</c>, …).</summary>
@@ -31,7 +31,7 @@ public enum LinkKind
 public sealed record ConceptLink(string Text, string Target, LinkKind Kind)
 {
     /// <summary>
-    /// Classifies a raw target string per §5.
+    /// Classifies a raw target string per §6.1.
     /// </summary>
     public static LinkKind Classify(string target)
     {
@@ -66,7 +66,7 @@ public sealed record ConceptLink(string Text, string Target, LinkKind Kind)
     /// Returns <c>null</c> for external links, anchors, links to directories
     /// (targets ending in <c>/</c>), or targets that cannot form a valid
     /// concept id. The result is *not* guaranteed to exist in the bundle —
-    /// broken links are permitted by the spec (§5.3).
+    /// broken links are permitted by the spec (§6.1).
     /// </summary>
     public ConceptId? Resolve(ConceptId source) => Kind switch
     {
@@ -197,7 +197,7 @@ public sealed record ConceptLink(string Text, string Target, LinkKind Kind)
 }
 
 /// <summary>
-/// A numbered entry under the <c># Citations</c> heading (§8).
+/// A numbered entry under the <c># Citations</c> heading (§13.1, legacy).
 /// </summary>
 public sealed record Citation(uint Number, string? Text, string? Target, string Raw);
 
@@ -224,7 +224,7 @@ public static class LinkScanner
 
     /// <summary>
     /// Extracts numbered citation entries from the <c># Citations</c>
-    /// section (§8).
+    /// section (§13.1, legacy).
     /// </summary>
     public static IReadOnlyList<Citation> ExtractCitations(string body)
     {

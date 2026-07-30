@@ -19,7 +19,7 @@ migration plan).
   - `tables/users.md` — a deliberately **non-strict** concept document: it
     has `type` and `title` but is missing `description` and `timestamp`, so
     `validate` emits the two "missing recommended frontmatter field"
-    warnings (§9 soft guidance — the bundle stays conformant, exit code 0).
+    warnings (§11 soft guidance — the bundle stays conformant, exit code 0).
 - `golden/validate.out` — stdout of `okf validate tests/fixtures/appendix_a`.
 - `golden/validate.exitcode` — the process exit code of that same run, as a
   bare ASCII digit with **no trailing newline** (currently `0`).

@@ -513,14 +513,14 @@ public sealed class OkfBundleTools
     /// Appends one entry to the bundle root's <c>log.md</c> under today's
     /// (UTC) ISO date, creating the file if it does not yet exist. If a
     /// heading for today's date already exists, the entry is appended to the
-    /// end of that day's entries (days are newest-first by convention (§7),
+    /// end of that day's entries (days are newest-first by convention (§9),
     /// but entries within a day stay chronological). The read-modify-write is
     /// serialized under <see cref="_bundleLock"/> (shared with
     /// <see cref="WriteConcept"/> and <see cref="RegenerateIndexes"/>) so
     /// concurrent calls can't lose an update to each other. The existing file,
     /// if any, is read with the same strict-UTF-8 decoding <see cref="ChangesSince"/>
     /// uses, then re-rendered through <see cref="ChangeLog.ToMarkdown"/> — the
-    /// strict §7 model — so any non-conforming prose or comments in a
+    /// strict §9 model — so any non-conforming prose or comments in a
     /// hand-authored <c>log.md</c> are not preserved. Never throws for
     /// expected errors (a null/blank/embedded-null <paramref name="kind"/> or
     /// <paramref name="text"/>, or a <c>log.md</c> that fails strict UTF-8
@@ -528,7 +528,7 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
     /// <param name="text">The entry text.</param>
-    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §7 model, so non-conforming prose or comments in a hand-authored log.md are not preserved.")]
+    [Description("Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved.")]
     public string AppendLog(
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text)
@@ -617,7 +617,7 @@ public sealed class OkfBundleTools
                 }
                 else
                 {
-                    // New LogDay at the head: days are newest-first (§7).
+                    // New LogDay at the head: days are newest-first (§9).
                     days.Insert(0, new LogDay(today, [entry]));
                 }
 

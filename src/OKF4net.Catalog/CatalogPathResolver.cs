@@ -7,8 +7,9 @@ namespace OKF4net.Catalog;
 /// Resolves and safety-checks a source's <c>path</c> against the canonical catalog root.
 /// </summary>
 /// <remarks>
-/// A <c>catalog.json</c> manifest's <c>sources[].path</c> is a relative path (OKF spec
-/// §5.1) resolved against the directory the manifest itself lives in. Because a manifest
+/// A <c>catalog.json</c> manifest's <c>sources[].path</c> is a relative path (an
+/// OKF4net-specific manifest field, not part of the OKF spec) resolved against the
+/// directory the manifest itself lives in. Because a manifest
 /// is data -- potentially edited by a less-trusted party than whoever configured the
 /// catalog root -- a source path must never be allowed to expand the catalog's readable
 /// surface beyond that root, whether via an absolute path, <c>..</c> traversal, or a
@@ -69,7 +70,8 @@ public static class CatalogPathResolver
     /// is resolved relative to this directory.
     /// </param>
     /// <param name="sourcePath">
-    /// The source's <c>path</c> value from the manifest, expected to be relative (OKF spec §5.1).
+    /// The source's <c>path</c> value from the manifest, expected to be relative (an
+    /// OKF4net-specific manifest field, not part of the OKF spec).
     /// </param>
     /// <param name="resolvedDirectory">
     /// On success, the resolved absolute directory path; <see langword="null"/> otherwise.
