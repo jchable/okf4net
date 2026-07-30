@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Reflection;
+using Microsoft.Extensions.AI;
 using OKF4net.Agents;
 
 namespace OKF4net.Tests.Agents;
@@ -25,6 +26,39 @@ public class OkfBundleToolsTests
     {
         var tools = new OkfBundleTools(BundlePath);
         Assert.Equal(4, tools.GetBundle().Count);
+    }
+
+    /// <summary>
+    /// <see cref="OkfBundleTools.WriteToolNames"/> is the single source of
+    /// truth two independent consumers filter on for a read-only tool set
+    /// (<c>OkfMcpToolset.Build</c>'s <c>readOnly</c> flag in
+    /// <c>OKF4net.Mcp</c>, and the <c>samples/acme-retail-agent</c> console
+    /// sample) -- this test pins its exact contents and proves filtering
+    /// <see cref="OkfBundleTools.GetTools"/> by it yields exactly the
+    /// read-only subset, so a future write tool silently added to
+    /// <see cref="OkfBundleTools.GetTools"/> without updating this set would
+    /// fail this test rather than leaking into a "read-only" consumer.
+    /// </summary>
+    [Fact]
+    public void WriteToolNames_matches_the_three_mutating_tools_and_filters_them_out()
+    {
+        Assert.Equal(
+            new HashSet<string> { "okf_write_concept", "okf_append_log", "okf_regenerate_indexes" },
+            OkfBundleTools.WriteToolNames);
+
+        var tools = new OkfBundleTools(BundlePath);
+        var readOnlyNames = tools.GetTools()
+            .OfType<AIFunction>()
+            .Select(t => t.Name)
+            .Where(name => !OkfBundleTools.WriteToolNames.Contains(name))
+            .ToHashSet();
+
+        Assert.Equal(7, readOnlyNames.Count);
+        Assert.DoesNotContain("okf_write_concept", readOnlyNames);
+        Assert.DoesNotContain("okf_append_log", readOnlyNames);
+        Assert.DoesNotContain("okf_regenerate_indexes", readOnlyNames);
+        Assert.Contains("okf_read_concept", readOnlyNames);
+        Assert.Contains("okf_get_computation", readOnlyNames);
     }
 
     /// <summary>

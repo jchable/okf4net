@@ -9,13 +9,14 @@ if (bundleRoot is null)
 {
     Console.Error.WriteLine(
         "acme-retail-agent: could not locate bundles/acme_retail (no OKF4net.sln found "
-        + "above " + AppContext.BaseDirectory + "). Set OKF_BUNDLE_ROOT to an absolute path instead.");
+        + "above " + AppContext.BaseDirectory.ReplaceLineEndings(" ") + "). Set OKF_BUNDLE_ROOT "
+        + "to override (see ResolveBundleRoot below for how a relative value resolves).");
     return 2;
 }
 
 if (!Directory.Exists(bundleRoot))
 {
-    Console.Error.WriteLine($"acme-retail-agent: bundle root not found: {bundleRoot}. Set OKF_BUNDLE_ROOT to override.");
+    Console.Error.WriteLine($"acme-retail-agent: bundle root not found: {bundleRoot.ReplaceLineEndings(" ")}. Set OKF_BUNDLE_ROOT to override.");
     return 2;
 }
 
@@ -33,11 +34,6 @@ const string SystemInstructions =
     + "okf_get_computation (their contract and sanctioned SQL) but this "
     + "sample cannot run them.";
 
-// Kept in sync with OkfMcpToolset.WriteToolNames in src/OKF4net.Mcp: this
-// sample is read-only by construction, not just by documentation, so the
-// agent can never mutate the byte-exact, license-attributed upstream copy.
-string[] writeToolNames = ["okf_write_concept", "okf_append_log", "okf_regenerate_indexes"];
-
 var tools = new OkfBundleTools(bundleRoot);
 var contextProvider = new OkfContextProvider(tools);
 var agentOptions = new ChatClientAgentOptions
@@ -45,7 +41,11 @@ var agentOptions = new ChatClientAgentOptions
     ChatOptions = new ChatOptions
     {
         Instructions = SystemInstructions,
-        Tools = [.. tools.GetTools().Where(t => !writeToolNames.Contains(t.Name))],
+        // Read-only by construction, not just by documentation: the same
+        // OkfBundleTools.WriteToolNames set OkfMcpToolset filters on for its
+        // --readonly flag is filtered here too, so the agent can never
+        // mutate the byte-exact, license-attributed upstream copy.
+        Tools = [.. tools.GetTools().Where(t => !OkfBundleTools.WriteToolNames.Contains(t.Name))],
     },
     AIContextProviders = [contextProvider],
 };
@@ -110,6 +110,12 @@ while (true)
 
 return 0;
 
+// OKF_BUNDLE_ROOT, when set, is resolved via Path.GetFullPath: an absolute
+// value is used as-is; a relative value resolves against the process's
+// current directory, which for `dotnet run` is the invoking shell's working
+// directory (verified empirically), not the build output folder -- so a
+// relative override works as long as you run from wherever you meant it to
+// resolve against.
 static string? ResolveBundleRoot(string? overridePath)
 {
     if (!string.IsNullOrWhiteSpace(overridePath))

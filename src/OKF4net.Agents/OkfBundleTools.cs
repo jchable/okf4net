@@ -164,6 +164,24 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
+    /// The tool names among <see cref="GetTools"/>'s output that write to the
+    /// bundle: <c>okf_write_concept</c>, <c>okf_append_log</c>, and
+    /// <c>okf_regenerate_indexes</c>. A host that wants a read-only tool set
+    /// (e.g. a read-only MCP server, or a demo that must never mutate a
+    /// pinned/shared bundle) can filter <see cref="GetTools"/>'s result
+    /// against this set instead of hand-maintaining its own list of tool
+    /// names — the single source of truth for "which tools write," so a
+    /// future write tool added here can't silently slip past a consumer's
+    /// stale private copy of the list.
+    /// </summary>
+    public static IReadOnlySet<string> WriteToolNames { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "okf_write_concept",
+        "okf_append_log",
+        "okf_regenerate_indexes",
+    };
+
+    /// <summary>
     /// All OKF tools as Agent Framework <see cref="AIFunction"/>s (via
     /// <see cref="AITool"/>), ready for <c>AsAIAgent(tools: ...)</c>. Each
     /// call returns a fresh list of freshly-created <see cref="AIFunction"/>

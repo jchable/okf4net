@@ -52,13 +52,16 @@ public static class ChatClientFactory
 
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var endpoint))
         {
-            error = $"{BaseUrlEnv} is not a valid absolute URI: '{baseUrl}'";
+            // ReplaceLineEndings guards the single-line stderr contract: a
+            // (legal, in an env var) newline in OKF_CHAT_BASE_URL must not
+            // break it -- same pattern as OkfMcpConfig.TryResolve.
+            error = $"{BaseUrlEnv} is not a valid absolute URI: '{baseUrl.ReplaceLineEndings(" ")}'";
             return false;
         }
 
         if (endpoint.Scheme is not ("http" or "https"))
         {
-            error = $"{BaseUrlEnv} must be an http or https URI: '{baseUrl}'";
+            error = $"{BaseUrlEnv} must be an http or https URI: '{baseUrl.ReplaceLineEndings(" ")}'";
             return false;
         }
 
@@ -90,7 +93,12 @@ public static class ChatClientFactory
     public static string FormatStartupError(string? error)
     {
         var message = string.IsNullOrWhiteSpace(error) ? "startup configuration error" : error.Trim();
-        return $"acme-retail-agent: {message}. Set {BaseUrlEnv} and {ModelEnv} "
+        if (!message.EndsWith('.'))
+        {
+            message += ".";
+        }
+
+        return $"acme-retail-agent: {message} Set {BaseUrlEnv} and {ModelEnv} "
             + $"(and optionally {ApiKeyEnv}) to an OpenAI-compatible endpoint.";
     }
 }

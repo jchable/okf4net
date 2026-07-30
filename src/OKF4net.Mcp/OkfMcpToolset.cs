@@ -14,21 +14,10 @@ namespace OKF4net.Mcp;
 public static class OkfMcpToolset
 {
     /// <summary>
-    /// The three write tools, dropped when the server is started read-only.
-    /// </summary>
-    internal static readonly IReadOnlySet<string> WriteToolNames =
-        new HashSet<string>(StringComparer.Ordinal)
-        {
-            "okf_write_concept",
-            "okf_append_log",
-            "okf_regenerate_indexes",
-        };
-
-    /// <summary>
     /// Creates the MCP tools rooted at <paramref name="bundleRoot"/>. When
     /// <paramref name="readOnly"/> is <see langword="true"/>, the three write
-    /// tools (<see cref="WriteToolNames"/>) are omitted so the bundle is served
-    /// for consultation only.
+    /// tools (<see cref="OkfBundleTools.WriteToolNames"/>) are omitted so the
+    /// bundle is served for consultation only.
     /// </summary>
     /// <param name="bundleRoot">Path to the OKF bundle's root directory.</param>
     /// <param name="readOnly">When true, omit the write tools.</param>
@@ -41,7 +30,7 @@ public static class OkfMcpToolset
         var result = new List<McpServerTool>();
         foreach (var tool in okf.GetTools())
         {
-            if (readOnly && WriteToolNames.Contains(tool.Name))
+            if (readOnly && OkfBundleTools.WriteToolNames.Contains(tool.Name))
             {
                 continue;
             }
