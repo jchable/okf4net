@@ -229,6 +229,27 @@ public class AttestationOrchestratorTests
         Assert.Contains(outcome.Reasons, r => r.Contains("revenue.sql"));
     }
 
+    /// <summary>
+    /// Step 2's <c>default</c> arm (<see cref="AttestationOrchestrator.RunAsync"/>):
+    /// a concept can decline into neither switch case above -- no
+    /// <c>computation:</c> frontmatter path AND no inline <c># Computation</c>
+    /// fence in the body -- and must fail before the runtime is even
+    /// resolved, with the orchestrator's dedicated "has no computation"
+    /// reason rather than some other generic message.
+    /// </summary>
+    [Fact]
+    public async Task Neither_inline_nor_file_computation_is_not_displayable()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n---\n" +
+            "Just prose -- no `# Computation` fence and no `computation:` path.\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
+        Assert.False(outcome.Displayable);
+        Assert.Contains(outcome.Reasons, r => r.Contains("has no computation"));
+    }
+
     [Fact]
     public async Task Not_found_concept_is_not_displayable()
     {

@@ -186,4 +186,42 @@ public class FrontmatterResourceTests
         Assert.Equal(ResourceResolutionStatus.Resolved, status);
         Assert.Equal("SELECT 1\n", bundle.ReadResourceText(abs!));
     }
+
+    /// <summary>
+    /// §6.2 defense-in-depth, exercised directly through <see cref="Bundle.TryResolveResource"/>
+    /// (the lower-level <see cref="Internal.ReparsePoints"/> helpers already
+    /// have their own unit tests in <c>ReparsePointsTests</c>): a
+    /// legitimate-looking concept-relative path ("../linked/secret.sql")
+    /// that stays lexically WITHIN the bundle root once resolved
+    /// (<c>tmp/linked/secret.sql</c>, so the plain string-prefix
+    /// <see cref="Internal.ReparsePoints.IsWithin"/> check alone would accept
+    /// it) must still be rejected as <see cref="ResourceResolutionStatus.Unsafe"/>
+    /// when "linked" is itself a directory reparse point into a location
+    /// OUTSIDE the bundle -- <see cref="Bundle.TryResolveResource"/> also
+    /// walks every ancestor up to the root via
+    /// <see cref="Internal.ReparsePoints.HasReparsePointAncestor(string, string)"/>,
+    /// catching the escape the OS would otherwise silently follow the moment
+    /// the resolved path is actually read.
+    /// </summary>
+    [Fact]
+    public void TryResolveResource_rejects_a_path_through_a_reparse_point()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
+        external.Write("secret.sql", "SELECT 1\n");
+
+        if (!tmp.TryCreateJunctionToExternalDir("linked", external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        Assert.True(bundle.TryResolveResource(concept, "../linked/secret.sql", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Null(abs);
+    }
 }

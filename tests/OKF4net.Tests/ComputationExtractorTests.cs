@@ -47,4 +47,33 @@ public class ComputationExtractorTests
         Assert.Null(Doc("type: Attested Computation\n", "no heading\n").Computation().InlineCode);
         Assert.Null(Doc("type: Attested Computation\n", "# Computation\n\nprose only\n").Computation().InlineCode);
     }
+
+    [Fact]
+    public void Heading_indented_up_to_three_spaces_is_recognized()
+    {
+        var doc = Doc("type: Attested Computation\n", "  # Computation\n\n```sql\nSELECT 1\n```\n");
+        Assert.Equal("SELECT 1", doc.Computation().InlineCode);
+    }
+
+    [Fact]
+    public void Unclosed_fence_returns_remainder_to_end_of_input()
+    {
+        var doc = Doc("type: Attested Computation\n", "# Computation\n\n```sql\nSELECT 1\nSELECT 2\n");
+        Assert.Equal("SELECT 1\nSELECT 2", doc.Computation().InlineCode);
+    }
+
+    [Fact]
+    public void First_of_two_Computation_headings_governs()
+    {
+        var doc = Doc("type: Attested Computation\n",
+            "# Computation\n\n```sql\nSELECT FIRST\n```\n\nSome prose in between.\n\n# Computation\n\n```sql\nSELECT SECOND\n```\n");
+        Assert.Equal("SELECT FIRST", doc.Computation().InlineCode);
+    }
+
+    [Fact]
+    public void Prose_between_heading_and_fence_yields_no_inline()
+    {
+        var doc = Doc("type: Attested Computation\n", "# Computation\n\nSome prose here.\n\n```sql\nSELECT 1\n```\n");
+        Assert.Null(doc.Computation().InlineCode);
+    }
 }
