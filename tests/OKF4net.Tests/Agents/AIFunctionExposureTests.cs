@@ -211,17 +211,18 @@ public class AIFunctionExposureTests
     /// tool takes a non-scalar parameter, so this is the first proof that
     /// <see cref="AIFunctionFactory.Create(System.Delegate, string)"/> can
     /// bind it from a JSON object at all -- and, more importantly, that the
-    /// *keys* survive the trip: the contract declares one required parameter
-    /// (<c>threshold</c>), so the orchestrator's own required-parameter gate
-    /// (<c>parameterValues.ContainsKey(p.Name)</c>) only passes if the bound
-    /// dictionary actually carries that key. Arguments are parsed generically
-    /// from a JSON string via <see cref="JsonDocument"/> (a
-    /// <see cref="JsonElement"/> value for <c>parameterValues</c>) rather than
-    /// hand-built as the exact CLR dictionary type, mirroring how a real
-    /// MCP/agent host would hand the call over. Confirms the dictionary
-    /// parameter binds successfully with keys intact: the fallback
-    /// string-JSON-parameter design discussed in the task brief was not
-    /// needed.
+    /// *keys and values* survive the trip: the contract declares one required
+    /// parameter (<c>threshold</c>), so the orchestrator's own
+    /// required-parameter gate (<c>parameterValues.ContainsKey(p.Name)</c>)
+    /// only passes if the bound dictionary actually carries that key; each
+    /// value's fidelity is checked directly below rather than assumed.
+    /// Arguments are parsed generically from a JSON string via
+    /// <see cref="JsonDocument"/> (a <see cref="JsonElement"/> value for
+    /// <c>parameterValues</c>) rather than hand-built as the exact CLR
+    /// dictionary type, mirroring how a real MCP/agent host would hand the
+    /// call over. Confirms the dictionary parameter binds successfully with
+    /// keys and values intact: the fallback string-JSON-parameter design
+    /// discussed in the task brief was not needed.
     /// </summary>
     [Fact]
     public async Task okf_run_computation_binds_parameterValues_dictionary_from_a_json_object()
@@ -261,6 +262,14 @@ public class AIFunctionExposureTests
         Assert.Contains("displayable: yes", text);
         Assert.NotNull(captured);
         Assert.True(captured!.ContainsKey("threshold"), "the bound parameter values should carry the 'threshold' key supplied via JSON.");
+
+        // Keys alone aren't proof the values made it through intact -- confirmed
+        // empirically that an `object?`-typed dictionary value round-trips as a
+        // JsonElement (System.Text.Json's default representation), not a native
+        // int/string, so fidelity has to be checked through it rather than via a
+        // direct CLR-type comparison.
+        Assert.Equal(42, ((JsonElement)captured!["threshold"]!).GetInt32());
+        Assert.Equal("q3", ((JsonElement)captured!["label"]!).GetString());
     }
 
     private static AIFunction GetFunction(OkfBundleTools tools, string name) =>
