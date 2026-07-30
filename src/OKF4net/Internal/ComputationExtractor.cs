@@ -36,14 +36,7 @@ internal static class ComputationExtractor
         {
             if (insideForeignFence)
             {
-                var candidate = lines[i].Trim();
-                var closeLen = 0;
-                while (closeLen < candidate.Length && candidate[closeLen] == foreignFenceChar)
-                {
-                    closeLen++;
-                }
-
-                if (closeLen == candidate.Length && closeLen >= foreignFenceOpenLen && closeLen >= 3)
+                if (IsFenceCloseLine(lines[i], foreignFenceChar, foreignFenceOpenLen))
                 {
                     insideForeignFence = false;
                 }
@@ -51,15 +44,11 @@ internal static class ComputationExtractor
                 continue;
             }
 
-            var trimmedStart = lines[i].TrimStart();
-            char openChar;
-            if (trimmedStart.StartsWith("```", StringComparison.Ordinal))
+            if (TryMatchFenceOpen(lines[i], out var openChar, out var runLen))
             {
-                openChar = '`';
-            }
-            else if (trimmedStart.StartsWith("~~~", StringComparison.Ordinal))
-            {
-                openChar = '~';
+                insideForeignFence = true;
+                foreignFenceChar = openChar;
+                foreignFenceOpenLen = runLen;
             }
             else
             {
@@ -70,14 +59,6 @@ internal static class ComputationExtractor
                 }
 
                 continue;
-            }
-
-            insideForeignFence = true;
-            foreignFenceChar = openChar;
-            foreignFenceOpenLen = 0;
-            while (foreignFenceOpenLen < trimmedStart.Length && trimmedStart[foreignFenceOpenLen] == openChar)
-            {
-                foreignFenceOpenLen++;
             }
         }
 
@@ -97,38 +78,15 @@ internal static class ComputationExtractor
             return null;
         }
 
-        var trimmed = lines[i2].TrimStart();
-        char fenceChar;
-        if (trimmed.StartsWith("```", StringComparison.Ordinal))
-        {
-            fenceChar = '`';
-        }
-        else if (trimmed.StartsWith("~~~", StringComparison.Ordinal))
-        {
-            fenceChar = '~';
-        }
-        else
+        if (!TryMatchFenceOpen(lines[i2], out var fenceChar, out var openLen))
         {
             return null;
-        }
-
-        var openLen = 0;
-        while (openLen < trimmed.Length && trimmed[openLen] == fenceChar)
-        {
-            openLen++;
         }
 
         var bodyLines = new List<string>();
         for (var j = i2 + 1; j < lines.Count; j++)
         {
-            var candidate = lines[j].Trim();
-            var closeLen = 0;
-            while (closeLen < candidate.Length && candidate[closeLen] == fenceChar)
-            {
-                closeLen++;
-            }
-
-            if (closeLen >= openLen && closeLen == candidate.Length && closeLen >= 3)
+            if (IsFenceCloseLine(lines[j], fenceChar, openLen))
             {
                 return string.Join("\n", bodyLines);
             }
@@ -137,5 +95,56 @@ internal static class ComputationExtractor
         }
 
         return string.Join("\n", bodyLines);
+    }
+
+    /// <summary>
+    /// If <paramref name="line"/> (after trimming leading whitespace) opens a
+    /// fenced code block (a run of &gt;=3 <c>`</c> or <c>~</c> characters),
+    /// returns <c>true</c> with the fence character and the opening run's
+    /// length; otherwise returns <c>false</c>.
+    /// </summary>
+    private static bool TryMatchFenceOpen(string line, out char fenceChar, out int openLen)
+    {
+        var trimmedStart = line.TrimStart();
+        if (trimmedStart.StartsWith("```", StringComparison.Ordinal))
+        {
+            fenceChar = '`';
+        }
+        else if (trimmedStart.StartsWith("~~~", StringComparison.Ordinal))
+        {
+            fenceChar = '~';
+        }
+        else
+        {
+            fenceChar = default;
+            openLen = 0;
+            return false;
+        }
+
+        openLen = 0;
+        while (openLen < trimmedStart.Length && trimmedStart[openLen] == fenceChar)
+        {
+            openLen++;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// <c>true</c> if <paramref name="line"/>, once trimmed, is ENTIRELY a run
+    /// of <paramref name="fenceChar"/> of length &gt;= <paramref name="minLen"/>
+    /// (and &gt;=3) -- a valid CommonMark closing fence for an opening of that
+    /// character and length.
+    /// </summary>
+    private static bool IsFenceCloseLine(string line, char fenceChar, int minLen)
+    {
+        var candidate = line.Trim();
+        var closeLen = 0;
+        while (closeLen < candidate.Length && candidate[closeLen] == fenceChar)
+        {
+            closeLen++;
+        }
+
+        return closeLen == candidate.Length && closeLen >= minLen && closeLen >= 3;
     }
 }
