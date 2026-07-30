@@ -56,4 +56,19 @@ public class AttestedComputationTests
         Assert.Equal(string.Empty, c.Parameters[0].Name);   // name absent → ""
         Assert.Empty(c.Executor!.Value.Receipt);            // receipt non-liste → []
     }
+
+    [Fact]
+    public void Parameters_entry_that_is_not_a_mapping_is_silently_skipped()
+    {
+        // A `parameters` sequence entry that is not a YAML mapping (here a
+        // bare scalar) is dropped outright rather than throwing or surfacing
+        // as some degraded placeholder entry (§3 permissive loading) -- only
+        // the well-formed entry that follows it survives the projection.
+        var fm = Parse(
+            "type: Attested Computation\n" +
+            "parameters:\n  - 5\n  - { name: year, type: integer, required: true }\n");
+
+        var p = Assert.Single(fm.ComputationContract.Parameters);
+        Assert.Equal("year", p.Name);
+    }
 }

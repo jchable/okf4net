@@ -474,4 +474,37 @@ public class ValidateTests
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("not found"));
     }
+
+    [Fact]
+    public void Parameter_without_name_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - type: integer\n    required: true\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("missing") && d.Message.Contains("name"));
+        Assert.True(report.IsConformant);
+    }
+
+    [Fact]
+    public void Executor_receipt_not_a_list_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { receipt: nope }\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("executor.receipt is not a list"));
+        Assert.True(report.IsConformant);
+    }
+
+    [Fact]
+    public void Unsafe_frontmatter_path_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: ../../../outside.sql\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("escapes the bundle"));
+        Assert.True(report.IsConformant);
+    }
 }

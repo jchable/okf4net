@@ -16,6 +16,11 @@ if (!OkfMcpConfig.TryResolve(args, Environment.GetEnvironmentVariable, out var b
     return 2;
 }
 
+// Discovery can pick a bundle the user never named on the command line or in
+// OKF_BUNDLE_ROOT; announce the resolved root on stderr so every resolution —
+// explicit, env-supplied, or discovered — is visible, not only failures.
+Console.Error.WriteLine($"okf-mcp: serving bundle root {bundleRoot}{(readOnly ? " (read-only)" : string.Empty)}");
+
 var builder = Host.CreateApplicationBuilder();
 
 // stdio invariant: every log line goes to stderr so it can never corrupt the
