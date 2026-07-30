@@ -8,6 +8,26 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Path-containment comparisons no longer guess case-sensitivity from the OS.**
+  `ReparsePoints.IsWithinBundleRoot`, the 2-arg `ReparsePoints.HasReparsePointAncestor`,
+  and `FileMemoryStore`'s reparse-escape check hardcoded `OrdinalIgnoreCase`
+  (or picked it via an `IsWindows()||IsMacOS()` heuristic), leaving the same
+  case-insensitive-volume escape the earlier `Bundle.PathComparison` fix
+  closed for `Bundle.TryResolveResource` open at these sites — including a
+  residual gap where `Bundle.cs` itself called straight into the still-vulnerable
+  2-arg `HasReparsePointAncestor` overload. All three now use
+  `StringComparison.Ordinal` unconditionally, at no cost to legitimate use:
+  every candidate path at these sites is built via `Path.Combine` from the
+  same root it's compared against, so its prefix always keeps that root's
+  exact casing. Separately, `MemoryServiceCollectionExtensions`'s
+  memory/knowledge root overlap check — a misconfiguration-detection check
+  whose safe direction is inverted from the escape-prevention sites above —
+  now uses `StringComparison.OrdinalIgnoreCase` unconditionally instead of
+  the same OS heuristic, catching a case-variant overlap that the heuristic
+  previously missed on Linux.
+
 ## [0.3.1-preview.1] - 2026-07-30
 
 > Preview release: ships the §10 Attested Computation and per-caller source
