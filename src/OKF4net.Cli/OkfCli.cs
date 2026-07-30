@@ -16,7 +16,7 @@ namespace OKF4net.Cli;
 public static class OkfCli
 {
     /// <summary>The CLI version string, echoed by <c>-V</c>/<c>--version</c>.</summary>
-    private const string CliVersion = "0.3.1-preview.1";
+    private const string CliVersion = "0.4.0";
 
     /// <summary>The <c>--help</c> / usage text.</summary>
     private const string Usage =

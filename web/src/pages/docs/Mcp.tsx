@@ -191,6 +191,15 @@ export default function Mcp() {
             The essentials for any client are the same three: run <code>okf-mcp</code>, pass the bundle path as the
             first argument (or set <code>OKF_BUNDLE_ROOT</code>), and let it talk MCP over stdio.
           </p>
+          <p>
+            Neither given? <code>okf-mcp</code> walks up from the current working directory looking for a{' '}
+            <em>marked</em> bundle — a root <code>index.md</code> whose frontmatter declares{' '}
+            <code>okf_version</code> — testing each level's directory, then its <code>knowledge/</code> child.
+            Discovery is deliberately strict: an unmarked directory is never mistaken for a bundle, so a writable
+            server can't start against an arbitrary docs folder by accident. Claude Desktop spawns servers with an
+            unrelated working directory, so discovery doesn't help there — keep the positional argument or{' '}
+            <code>OKF_BUNDLE_ROOT</code> in <code>claude_desktop_config.json</code>.
+          </p>
         </Chapter>
 
         <Chapter id="use" title="Use it" refText="read, search, write — in plain language">
@@ -239,7 +248,7 @@ export default function Mcp() {
 
         <Chapter id="read-only" title="Read-only mode" refText="consultation only">
           <p>
-            Set <code>OKF_MCP_READONLY=1</code> and <code>okf-mcp</code> registers only the six read tools — the
+            Set <code>OKF_MCP_READONLY=1</code> and <code>okf-mcp</code> registers only the seven read tools — the
             three writers (<code>okf_write_concept</code>, <code>okf_append_log</code>,{' '}
             <code>okf_regenerate_indexes</code>) are left out entirely. Use it for a shared reference bundle you want
             the model to consult but never edit.

@@ -8,8 +8,37 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-30
+
+### Added
+
+- **`okf-mcp` bundle auto-discovery.** When neither a positional root nor
+  `OKF_BUNDLE_ROOT` is given, `okf-mcp` now walks up from the current working
+  directory looking for a *marked* bundle (a root `index.md` whose
+  frontmatter declares `okf_version`, testing each level's directory then
+  its `knowledge/` child). Discovery is deliberately strict — an unmarked
+  directory is never mistaken for a bundle, so a writable server can't
+  accidentally start against an arbitrary docs folder. The resolved bundle
+  root is announced on startup. Does not apply to Claude Desktop, which
+  spawns servers with an unrelated working directory — keep the positional
+  argument or `OKF_BUNDLE_ROOT` there.
+- **`OkfBundleTools.WriteToolNames`**, a new public property naming the
+  three tools that mutate a bundle (`okf_write_concept`, `okf_append_log`,
+  `okf_regenerate_indexes`) — the single source of truth for a host building
+  a read-only tool set, instead of hand-maintaining its own copy of the list.
+
 ### Fixed
 
+- **`ComputationExtractor`'s `# Computation` heading match no longer
+  misfires inside an earlier, unrelated fenced code block.** The heading
+  scan was blind to fence state: a heading-like line trimming to
+  `# Computation` inside a prior Markdown fence was treated as the real
+  heading, and that fence's own closing line was then mis-read as the
+  sanctioned computation's opening fence — extracting arbitrary document
+  text as if it were sanctioned §10 computation. The scan is now
+  fence-aware. Separately, an indented `# Computation` heading (1-3 spaces,
+  valid CommonMark ATX heading indentation) is now recognized, matching
+  this method's own documented "trimmed text" contract.
 - **Path-containment comparisons no longer guess case-sensitivity from the OS.**
   `ReparsePoints.IsWithinBundleRoot`, the 2-arg `ReparsePoints.HasReparsePointAncestor`,
   and `FileMemoryStore`'s reparse-escape check hardcoded `OrdinalIgnoreCase`
@@ -328,7 +357,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.3.1-preview.1...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.4.0...main
+[0.4.0]: https://github.com/jchable/okf4net/compare/v0.3.1-preview.1...v0.4.0
 [0.3.1-preview.1]: https://github.com/jchable/okf4net/compare/v0.3.0...v0.3.1-preview.1
 [0.3.0]: https://github.com/jchable/okf4net/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jchable/okf4net/compare/v0.1.1...v0.2.0

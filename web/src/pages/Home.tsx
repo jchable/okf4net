@@ -134,7 +134,7 @@ export default function Home() {
             <h2>MCP — In Claude & your editor</h2>
             <span className="ref">MCP — the bundle as tools</span>
           </div>
-          <p>Run <code>okf-mcp</code>, point it at a bundle, and its nine operations become tools inside <strong>Claude Desktop, Claude Code, and Cursor</strong> — read, search, and write concepts from a conversation, over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>. Same engine as the library and the CLI, exposed to any MCP client.</p>
+          <p>Run <code>okf-mcp</code>, point it at a bundle, and its ten operations become tools inside <strong>Claude Desktop, Claude Code, and Cursor</strong> — read, search, and write concepts from a conversation, over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>. Same engine as the library and the CLI, exposed to any MCP client.</p>
           <p className="next">→ <Link to="/docs/mcp">docs/mcp.md</Link> — install <code>okf-mcp</code> and connect each client, step by step</p>
         </section>
 

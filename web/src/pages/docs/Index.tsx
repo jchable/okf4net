@@ -80,7 +80,7 @@ export default function DocsIndex() {
               {
                 type: 'Reference',
                 concept: <Link to="/docs/agents">agents</Link>,
-                desc: 'The Microsoft Agent Framework layer — nine bundle tools and a budget-bounded context provider.',
+                desc: 'The Microsoft Agent Framework layer — ten bundle tools and a budget-bounded context provider.',
               },
               {
                 type: 'Reference',
