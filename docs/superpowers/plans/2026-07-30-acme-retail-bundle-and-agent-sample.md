@@ -97,7 +97,7 @@ EOF
 
 - [ ] **Step 1: Write `bundles/acme_retail/README.md`**
 
-```markdown
+````markdown
 # Acme Retail (sample bundle)
 
 A fictional retail company's [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
@@ -153,7 +153,7 @@ warnings are expected and harmless:
   concept. The upstream bundle writes these paths bundle-root-relative
   instead. This affects only frontmatter-path *resolution* diagnostics —
   reading, browsing, and searching the bundle are unaffected.
-```
+````
 
 - [ ] **Step 2: Add a NOTICE entry**
 
@@ -450,7 +450,7 @@ static string? ResolveBundleRoot(string? overridePath)
 }
 ```
 
-(`ResolveBundleRoot` walks up from the running assembly's output directory to find `OKF4net.sln` — the same technique `tests/OKF4net.Tests/TestPaths.cs`'s `RepoRoot()` already uses in this repo, robust regardless of Debug/Release output-folder depth. `OKF_BUNDLE_ROOT` overrides it; pass an absolute path when using the override, since a relative one resolves against the process's actual working directory, which for `dotnet run` is the project's build output folder, not your shell's cwd.)
+(`ResolveBundleRoot` walks up from the running assembly's output directory to find `OKF4net.sln` — the same technique `tests/OKF4net.Tests/TestPaths.cs`'s `RepoRoot()` already uses in this repo, robust regardless of Debug/Release output-folder depth. `OKF_BUNDLE_ROOT` overrides it; a relative path resolves against the shell's current working directory at the time `dotnet run` was invoked — verified empirically during plan review — so it's simplest to `cd` into `samples/acme-retail-agent/` first, or just pass an absolute path.)
 
 - [ ] **Step 3: Build**
 
@@ -703,7 +703,7 @@ EOF
 
 - [ ] **Step 1: Write `samples/acme-retail-agent/README.md`**
 
-```markdown
+````markdown
 # Acme Retail agent sample
 
 A standalone console app demonstrating [Microsoft Agent Framework](https://github.com/microsoft/agent-framework)
@@ -731,8 +731,9 @@ variables:
   Ollama.
 - `OKF_BUNDLE_ROOT` (optional) — overrides the bundle path; defaults to
   `bundles/acme_retail` at this repo's root (located by walking up from
-  the running assembly to `OKF4net.sln`). Use an absolute path if you set
-  this — see the note in `Program.cs`.
+  the running assembly to `OKF4net.sln`). A relative override resolves
+  against your shell's working directory when you ran `dotnet run` — see
+  the note in `Program.cs`.
 
 ## Run
 
@@ -772,7 +773,7 @@ sanctioned script, not a reimplementation that could silently diverge from
 it. Real execution is planned as a separate, later container-based
 execution runtime that runs the sanctioned scripts themselves — see the
 design spec's "Future work" section.
-```
+````
 
 - [ ] **Step 2: Commit**
 
