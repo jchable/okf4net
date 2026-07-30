@@ -45,3 +45,18 @@ project is implemented here.
 OKF and Google Cloud are trademarks of Google LLC. OKF4net is an independent
 implementation and is not affiliated with, endorsed by, or sponsored by
 Google.
+
+------------------------------------------------------------------------------
+
+bundles/acme_retail/ is a sample OKF bundle copied verbatim from
+okf/bundles/acme_retail in the OKF reference implementation
+
+    Open Knowledge Format (OKF)
+    Copyright Google LLC
+    https://github.com/GoogleCloudPlatform/knowledge-catalog
+
+commit 3fcbb9f828c2f23d109c855ee403c3a4c81f3a96, licensed under the Apache
+License, Version 2.0 (see LICENSE.Apache-2.0). It is fictional demonstration
+content (a fictional company, "Acme Retail") used here for manual testing
+and samples; see bundles/README.md for details, including which
+upstream files were intentionally not carried over.

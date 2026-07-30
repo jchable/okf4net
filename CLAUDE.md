@@ -48,6 +48,12 @@ Two validation levels exist by design: `OkfDocument.ValidateConformance()` enfor
 
 `docs/design/` holds historical migration specs/plans — context only; the code and README are authoritative.
 
+`bundles/` holds sample OKF bundles for manual testing/demos (e.g.
+`bundles/acme_retail/`) — distinct from `tests/fixtures/`, which stays
+byte-exact golden captures. `samples/` holds standalone example projects
+that consume those bundles (each with its own solution/build, not part of
+`OKF4net.sln` or CI).
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
