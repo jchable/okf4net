@@ -16,7 +16,10 @@ internal static class ComputationExtractor
     /// <c># Computation</c> heading, fences excluded, or <c>null</c> if no
     /// such heading exists or no fence is found before other non-blank
     /// content. Indented code blocks (no fence markers) are never
-    /// extracted.
+    /// extracted. An opening fence that is never closed returns the
+    /// accumulated body text through end-of-input rather than <c>null</c>,
+    /// matching CommonMark's own treatment of an unterminated fenced code
+    /// block.
     /// </summary>
     internal static string? ExtractInline(string body)
     {
@@ -25,7 +28,7 @@ internal static class ComputationExtractor
         var headingIdx = -1;
         for (var i = 0; i < lines.Count; i++)
         {
-            if (lines[i].TrimEnd() == Heading)
+            if (lines[i].Trim() == Heading)
             {
                 headingIdx = i;
                 break;
