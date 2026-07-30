@@ -94,7 +94,9 @@ Documents:
 Kebab-case directory; standard .NET naming inside (project `AcmeRetailAgent`,
 namespace `OKF4net.Samples.AcmeRetailAgent`). Own `AcmeRetailAgent.sln` —
 **not** added to `OKF4net.sln`, **not** wired into `ci.yml`. Project
-references: `OKF4net`, `OKF4net.Agents`, `OKF4net.Attestation`. Inherits the
+references: `OKF4net`, `OKF4net.Agents` (not `OKF4net.Attestation` — this
+sample never constructs an `AttestationOrchestrator`, see "Future work").
+Inherits the
 repo's `Directory.Build.props` (nullable, warnings-as-errors, LangVersion 14)
 automatically since MSBuild walks up the directory tree regardless of
 solution membership. New `.cs` files carry the same
