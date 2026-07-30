@@ -246,13 +246,13 @@ public sealed class Bundle
     public IReadOnlyList<(ConceptId Source, string RawTarget)> BrokenLinks()
     {
         var result = new List<(ConceptId Source, string RawTarget)>();
-        foreach (var c in Concepts)
+        foreach (var id in Concepts.Select(c => c.Id))
         {
-            foreach (var link in LinksFrom(c.Id))
+            foreach (var link in LinksFrom(id))
             {
                 if (!link.Exists)
                 {
-                    result.Add((c.Id, link.Raw));
+                    result.Add((id, link.Raw));
                 }
             }
         }

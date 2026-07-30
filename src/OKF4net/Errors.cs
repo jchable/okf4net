@@ -7,13 +7,9 @@ namespace OKF4net;
 /// YAML. The descriptive text becomes this exception's
 /// <see cref="Exception.Message"/>.
 /// </summary>
-public sealed class DocumentParseException : OkfException
+/// <remarks>Creates the exception with a descriptive message.</remarks>
+public sealed class DocumentParseException(string message) : OkfException(message)
 {
-    /// <summary>Creates the exception with a descriptive message.</summary>
-    public DocumentParseException(string message)
-        : base(message)
-    {
-    }
 }
 
 /// <summary>
