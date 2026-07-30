@@ -20,6 +20,7 @@ public sealed class OkfMcpConfigTests
         Assert.NotNull(error);
         Assert.Contains("OKF_BUNDLE_ROOT", error);
         Assert.Contains("okf-init", error);
+        Assert.Contains("okf_version", error);
         Assert.DoesNotContain('\n', error);
     }
 
@@ -94,6 +95,7 @@ public sealed class OkfMcpConfigTests
         Assert.DoesNotContain('\r', line);
         Assert.StartsWith("okf-mcp: ", line);
         Assert.Contains("OKF_BUNDLE_ROOT", line);
+        Assert.Contains("okf_version", line);
         Assert.Contains("Usage:", line);
     }
 

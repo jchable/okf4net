@@ -110,7 +110,8 @@ public static class OkfMcpConfig
             // ReplaceLineEndings guards the single-line stderr contract: a
             // (legal, on Unix) newline in the CWD path must not break it.
             error = $"no bundle root given and no marked bundle found from {startDirectory.ReplaceLineEndings(" ")} upward. "
-                + $"Pass a root as the first argument, set {BundleRootEnv}, or run /okf-init (OKF Claude Code plugin) to mark or create a bundle.";
+                + $"Pass a root as the first argument, set {BundleRootEnv}, or mark the bundle by adding okf_version to its root index.md frontmatter "
+                + "(the OKF Claude Code plugin's /okf-init does this for you).";
             return false;
         }
 
