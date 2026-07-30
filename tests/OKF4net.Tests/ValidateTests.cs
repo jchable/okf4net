@@ -507,4 +507,20 @@ public class ValidateTests
         Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("escapes the bundle"));
         Assert.True(report.IsConformant);
     }
+
+    [Fact]
+    public void Fake_heading_inside_earlier_fence_still_warns_no_computation()
+    {
+        // A heading-like line inside an earlier, unrelated fenced block must
+        // not be mistaken for the real "# Computation" heading -- if it
+        // were, the unrelated fence's own closing ``` would be misread as
+        // opening "the computation", and trailing prose would be extracted
+        // and validated as if it were the sanctioned computation instead of
+        // correctly triggering the "no computation" warning.
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n---\nSome intro text.\n\n```\n# Computation\n```\n\nSELECT ordinary_body_text\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("no computation"));
+    }
 }
