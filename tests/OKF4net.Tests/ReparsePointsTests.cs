@@ -128,4 +128,46 @@ public class ReparsePointsTests
         Assert.True(ReparsePoints.IsWithinBundleRoot(root, nested));
         Assert.True(ReparsePoints.IsWithinBundleRoot(root + Sep, nested));
     }
+
+    [Fact]
+    public void IsWithinBundleRoot_ordinal_rejects_case_variant_sibling_but_accepts_exact_case_descendant()
+    {
+        var root = $"{Sep}tmp{Sep}Bundle";
+        var caseVariantSibling = $"{Sep}tmp{Sep}bundle{Sep}secret.md";
+        var exactCaseDescendant = $"{Sep}tmp{Sep}Bundle{Sep}secret.md";
+
+        Assert.False(ReparsePoints.IsWithinBundleRoot(root, caseVariantSibling));
+        Assert.True(ReparsePoints.IsWithinBundleRoot(root, exactCaseDescendant));
+    }
+
+    /// <summary>
+    /// Pins <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>'s
+    /// own root-comparison, independent of how today's callers happen to use
+    /// it: a <c>root</c> argument that is a CASE-VARIANT of a real ancestor
+    /// directory must not be treated as "root reached" -- the walk must keep
+    /// going past it, so a genuine reparse point further up is still found.
+    /// Constructed with a junction ABOVE the case-variant point (rather than
+    /// relying on any specific caller's containment check running first) so
+    /// this test exercises the helper's own contract in isolation, not a
+    /// scenario that depends on other code.
+    /// </summary>
+    [Fact]
+    public void HasReparsePointAncestor_two_arg_ordinal_does_not_stop_early_on_a_case_variant_root()
+    {
+        using var outer = new TempDir();
+        using var external = new TempDir();
+
+        if (!outer.TryCreateJunctionToExternalDir("Linked", external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var trueRoot = Path.Combine(outer.Path, "Linked", "Bundle");
+        Directory.CreateDirectory(trueRoot);
+        var nested = Path.Combine(trueRoot, "a");
+        Directory.CreateDirectory(nested);
+        var caseVariantRoot = Path.Combine(outer.Path, "Linked", "bundle");
+
+        Assert.True(ReparsePoints.HasReparsePointAncestor(caseVariantRoot, nested));
+    }
 }

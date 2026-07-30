@@ -34,10 +34,17 @@ public sealed class BundleConceptWriter
     /// same bundle directory free to race each other's
     /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept"/> calls,
     /// even though each instance's OWN calls were already serialized against
-    /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/>, matching
-    /// the ordinal-ignore-case comparisons <see cref="ReparsePoints.IsWithinBundleRoot"/>
-    /// and the reserved-id check already use (Windows/macOS filesystems are
-    /// typically case-insensitive). The registry grows by one small object
+    /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/> is
+    /// deliberate: two case-variant spellings of the same physical bundle
+    /// directory must coalesce onto one lock object, or each spelling gets
+    /// its own lock and two writers pointed at the same physical directory
+    /// could still race each other's writes -- the exact bug this registry
+    /// exists to prevent. The two failure directions are asymmetric:
+    /// over-coalescing (two spellings that happen to be genuinely different
+    /// directories on a case-sensitive volume sharing a lock anyway) only
+    /// costs them a little unnecessary serialization against each other,
+    /// while under-coalescing reopens the race -- <c>OrdinalIgnoreCase</c>
+    /// picks the harmless side. The registry grows by one small object
     /// per distinct bundle path for the process's lifetime -- bounded in
     /// practice by how many distinct bundle directories a process ever
     /// opens, and never removed (there is no matching "last instance for

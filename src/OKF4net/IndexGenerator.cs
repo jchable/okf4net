@@ -421,11 +421,13 @@ public static class IndexGenerator
     /// <c>while (!Equals(current, fullRoot))</c> -- the equality-to-root
     /// check gates entry to the loop body, so the root itself is never
     /// passed to <see cref="ReparsePoints.IsReparsePoint"/>. Kept as its own
-    /// wrapper rather than folded into that overload because this walk needs
-    /// <see cref="StringComparison.Ordinal"/>, not
-    /// <see cref="StringComparison.OrdinalIgnoreCase"/>: path components must
-    /// compare case-sensitively to match filesystem semantics on
-    /// case-sensitive platforms (Linux).
+    /// wrapper rather than folded into that overload: this walk already
+    /// hardcoded <see cref="StringComparison.Ordinal"/> -- path components
+    /// must compare case-sensitively to match filesystem semantics on
+    /// case-sensitive platforms (Linux) -- before the shared 2-arg overload
+    /// was itself hardened to use the same comparison unconditionally; this
+    /// wrapper simply predates that change, with no remaining behavioral
+    /// reason to fold it in.
     ///
     /// Used only by <see cref="RegenerateIndexesWith"/>'s late, best-effort
     /// re-check immediately before each <c>index.md</c> write -- see that
