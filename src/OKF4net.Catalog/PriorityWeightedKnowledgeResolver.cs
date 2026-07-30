@@ -63,6 +63,7 @@ public sealed class PriorityWeightedKnowledgeResolver : IKnowledgeResolver
     private readonly IKnowledgeCatalog _catalog;
     private readonly IOkfClock _clock;
     private readonly int? _defaultFairnessQuota;
+    private readonly Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? _defaultSourceVisibilityPolicy;
 
     /// <summary>
     /// Creates a resolver over <paramref name="catalog"/>.
@@ -74,16 +75,27 @@ public sealed class PriorityWeightedKnowledgeResolver : IKnowledgeResolver
     /// <see cref="KnowledgeQuery.FairnessQuota"/>. <see langword="null"/>
     /// (the default) disables fairness reordering entirely.
     /// </param>
+    /// <param name="defaultSourceVisibilityPolicy">
+    /// The visibility policy applied when a query leaves both
+    /// <see cref="KnowledgeQuery.PermittedSourceIds"/> and
+    /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> unset;
+    /// <see langword="null"/> (the default) applies no restriction.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="defaultFairnessQuota"/> is set but not greater than zero.
     /// </exception>
-    public PriorityWeightedKnowledgeResolver(IKnowledgeCatalog catalog, IOkfClock? clock = null, int? defaultFairnessQuota = null)
+    public PriorityWeightedKnowledgeResolver(
+        IKnowledgeCatalog catalog,
+        IOkfClock? clock = null,
+        int? defaultFairnessQuota = null,
+        Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? defaultSourceVisibilityPolicy = null)
     {
         ResolverGuards.ValidateDefaultFairnessQuota(defaultFairnessQuota, nameof(defaultFairnessQuota));
 
         _catalog = catalog;
         _clock = clock ?? new SystemClock();
         _defaultFairnessQuota = defaultFairnessQuota;
+        _defaultSourceVisibilityPolicy = defaultSourceVisibilityPolicy;
     }
 
     /// <inheritdoc/>
@@ -98,6 +110,7 @@ public sealed class PriorityWeightedKnowledgeResolver : IKnowledgeResolver
     {
         ResolverGuards.ValidateQuery(query);
         return FusedResolverEngine.SearchAsync(
-            _catalog, _clock, query, Comparer, query.FairnessQuota ?? _defaultFairnessQuota, ct);
+            _catalog, _clock, query, Comparer, query.FairnessQuota ?? _defaultFairnessQuota,
+            _defaultSourceVisibilityPolicy, ct);
     }
 }

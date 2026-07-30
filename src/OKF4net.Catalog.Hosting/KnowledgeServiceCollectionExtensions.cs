@@ -87,8 +87,9 @@ public static class KnowledgeServiceCollectionExtensions
         services.TryAddSingleton<IKnowledgeCatalog>(_ => new FileKnowledgeCatalog(catalogOptions));
         var defaultStrategy = options.DefaultResolverStrategy;
         var defaultFairnessQuota = options.DefaultFairnessQuota;
+        var defaultSourceVisibilityPolicy = options.DefaultSourceVisibilityPolicy;
         services.TryAddSingleton<IKnowledgeResolver>(sp => new KnowledgeResolverRouter(
-            sp.GetRequiredService<IKnowledgeCatalog>(), defaultStrategy, defaultFairnessQuota));
+            sp.GetRequiredService<IKnowledgeCatalog>(), defaultStrategy, defaultFairnessQuota, defaultSourceVisibilityPolicy));
 
         return services;
     }

@@ -166,4 +166,43 @@ public class PriorityWeightedKnowledgeResolverTests
 
         Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task SearchAsync_rejects_both_PermittedSourceIds_and_SourceVisibilityPolicy_set_together()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("src", "note.md"), "---\ntype: Note\ntitle: Orders\ndescription: d\n---\nOrders.\n");
+        using var catalog = BuildCatalog(root, """
+            { "id": "src", "path": "./src", "priority": 1, "enabled": true }
+            """);
+        var resolver = new PriorityWeightedKnowledgeResolver(catalog);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "src" },
+            SourceVisibilityPolicy = (_, _) => true,
+        }));
+
+        Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_PermittedSourceIds_only_searches_the_named_source()
+    {
+        using var root = new TempDir();
+        root.Write(Path.Combine("only", "a.md"), "---\ntype: Note\ntitle: Orders a\ndescription: orders\n---\nOrders.\n");
+        using var catalog = BuildCatalog(root, """
+            { "id": "src", "path": "./only", "priority": 1, "enabled": true },
+            { "id": "hidden", "path": "./only", "priority": 2, "enabled": true }
+            """);
+        var resolver = new PriorityWeightedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "src" },
+        });
+
+        var passage = Assert.Single(context.Passages);
+        Assert.Equal("src", passage.SourceId);
+    }
 }

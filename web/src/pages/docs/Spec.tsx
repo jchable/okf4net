@@ -116,7 +116,7 @@ export default function Spec() {
                 <>§10 Attested computations</>,
                 <>
                   <Tag>not yet implemented</Tag> — a new concept type in the spec; OKF4net loads and navigates a
-                  bundle containing one without error, but has no dedicated logic for it yet.
+                  bundle containing one without error, but has no dedicated logic for it yet. Planned for v0.3.1.
                 </>,
               ],
               [<>§11 Conformance</>, <><code>BundleValidator</code>, <code>OkfDocument.ValidateConformance()</code> — the one hard rule above.</>],

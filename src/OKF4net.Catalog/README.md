@@ -201,12 +201,62 @@ early — an agent context provider spending a token budget top-down, for
 instance, which would otherwise let one source's whole run consume the
 budget.
 
+## Choosing source visibility
+
+Restrict which sources a caller may see, per host default or per query:
+
+```csharp
+services.AddKnowledge(o =>
+{
+    o.AddCatalogFile("./config/catalog.json");
+    o.DefaultSourceVisibilityPolicy = (scope, source) =>
+        // Fails CLOSED, not open: a caller with no TenantId (KnowledgeAccessScope.Local,
+        // the default when a host resolves no scope at all) sees NOTHING here -- an empty
+        // "" ?? fallback would make StartsWith("") true for every source, silently exposing
+        // every tenant's catalog to an unauthenticated/unscoped caller. Matches a source
+        // named EXACTLY as the tenant, or "tenantId-" followed by anything -- the "-" is an
+        // explicit segment separator, not just a prefix, so a short tenant id (e.g. "acme")
+        // can never accidentally match an unrelated one (e.g. "acmeland-kb"). Do not drop
+        // the "-" to make a bare-named source match "more easily": that reopens exactly
+        // that collision.
+        scope.TenantId is { Length: > 0 } tenantId
+        && (source.Id == tenantId || source.Id.StartsWith(tenantId + "-", StringComparison.Ordinal));
+});
+
+// Per-query override, through the same injected IKnowledgeResolver:
+var context = await resolver.SearchAsync(new KnowledgeQuery("refund policy")
+{
+    Scope = new KnowledgeAccessScope(tenantId: "acme"),
+    PermittedSourceIds = new HashSet<string> { "acme-support", "acme-billing" },
+});
+```
+
+Two mutually exclusive mechanisms — setting both on the same query throws:
+
+- `PermittedSourceIds` — a host-precomputed set of source IDs, the
+  recommended default. A host does whatever lookup it needs (tenant,
+  application, or both) and hands the resulting set to the query; `OKF4net.Catalog`
+  never needs to know how it was computed. Always wins over any host-level
+  default policy for that one call.
+- `SourceVisibilityPolicy` — a function evaluated per source, for rules a
+  flat ID list can't express conveniently. Configurable once per host
+  (`DefaultSourceVisibilityPolicy`) and overridable per query, mirroring
+  `DefaultResolverStrategy`.
+
+Neither has any effect on a query that sets neither field and a host that
+configures no default: every enabled source stays visible to every caller,
+exactly as before this feature existed.
+
+`KnowledgeAccessScope` has no value-equality override (reference equality
+only) -- a `SourceVisibilityPolicy` function should compare `TenantId`/
+`UserId`/`SessionId` individually, not compare two `KnowledgeAccessScope`
+instances with `==`/`Equals`.
+
 ## V1 limits
 
 - Local filesystem bundles only — no remote/HTTP sources, no external
   connectors.
-- One shared catalog per `FileKnowledgeCatalog` instance — no per-caller or
-  per-tenant filtering of which sources are visible.
+- One shared catalog per `FileKnowledgeCatalog` instance.
 - No semantic/fuzzy deduplication — two concepts with similar content in
   genuinely different bundles are both returned. Only under the two merged
   strategies are two manifest entries resolving to the *same directory*

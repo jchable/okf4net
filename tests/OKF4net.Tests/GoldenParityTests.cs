@@ -13,7 +13,11 @@ namespace OKF4net.Tests;
 /// checked against the <c>tests/fixtures/okf_v02</c> bundle (see
 /// <see cref="Validate_v02_fixture_matches_golden"/>), is a hand-authored
 /// v0.2 fixture verified against the v0.2 spec text, since no reference
-/// binary implements v0.2. Any divergence beyond the one documented
+/// binary implements v0.2. <c>validate-computation.out</c> (see
+/// <see cref="Validate_computation_fixture_matches_golden"/>), checked
+/// against <c>tests/fixtures/okf_v02_computation</c>, is likewise a
+/// hand-verified §10 Attested Computation / §6.2 fixture -- no reference
+/// binary implements §10 either. Any divergence beyond the one documented
 /// platform artifact (see <see cref="Validate_output_and_exitcode_match_golden"/>)
 /// is a bug in the CLI, never a reason to touch a golden fixture.
 /// </summary>
@@ -83,6 +87,14 @@ public class GoldenParityTests
         var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02"));
         Assert.Equal(int.Parse(Golden("validate-v02.exitcode")), r.Code);
         Assert.Equal(Golden("validate-v02.out"), r.Out.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public void Validate_computation_fixture_matches_golden()
+    {
+        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_computation"));
+        Assert.Equal(int.Parse(Golden("validate-computation.exitcode")), r.Code);
+        Assert.Equal(Golden("validate-computation.out"), r.Out.Replace('\\', '/'));
     }
 
     [Fact]

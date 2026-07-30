@@ -124,7 +124,7 @@ export default function Home() {
             <h2>Local catalog</h2>
             <span className="ref">catalog.json — search many bundles, host multi-tenant memory</span>
           </div>
-          <p><code>OKF4net.Catalog</code> names one or more local bundles as <strong>sources</strong> in a hot-reloadable <code>catalog.json</code> manifest and searches every enabled one, with trust and staleness carried on every result. A <code>role: "memory"</code> source, backed by <code>FileMemoryStore</code>, gives an agent deployment host-scoped, layered memory — session, user, and tenant — without cross-scope leakage.</p>
+          <p><code>OKF4net.Catalog</code> names one or more local bundles as <strong>sources</strong> in a hot-reloadable <code>catalog.json</code> manifest and searches every enabled one, ranked by a <strong>selectable resolver strategy</strong> — grouped by source, merged by score, or priority-weighted, with an optional fairness quota — and with trust and staleness carried on every result. A <code>role: "memory"</code> source, backed by <code>FileMemoryStore</code>, gives an agent deployment host-scoped, layered memory — session, user, and tenant — without cross-scope leakage.</p>
           <p className="next">→ <Link to="/docs/catalog">docs/catalog.md</Link> — the manifest, the resolver, and scoped memory</p>
         </section>
 

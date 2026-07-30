@@ -37,6 +37,7 @@
   <ItemGroup>
     <ProjectReference Include="..\OKF4net\OKF4net.csproj" />
     <ProjectReference Include="..\OKF4net.Catalog\OKF4net.Catalog.csproj" />
+    <ProjectReference Include="..\OKF4net.Attestation\OKF4net.Attestation.csproj" />
   </ItemGroup>
 
   <ItemGroup>

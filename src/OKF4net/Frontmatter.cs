@@ -30,6 +30,7 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
         "generated", "verified",  // §5.2
         "sources", "usage_window",// §5.1
         "status", "stale_after",  // §5.4/§5.5
+        "runtime", "parameters", "computation", "executor", "attester", // §10
     ];
 
     private readonly YamlMapping _map;
@@ -96,6 +97,13 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     // keeps the static call unambiguous.
     public Lifecycle Lifecycle => OKF4net.Lifecycle.From(_map.Get("status")?.AsDisplayString(), _map.Get("stale_after")?.AsDisplayString());
 
+    /// <summary><c>true</c> if <see cref="Type"/> is exactly <c>"Attested Computation"</c> (§10, ordinal comparison).</summary>
+    public bool IsAttestedComputation =>
+        string.Equals(Type, "Attested Computation", StringComparison.Ordinal);
+
+    /// <summary>The §10.2 Attested Computation contract (<c>runtime</c>, <c>parameters</c>, <c>computation</c>, <c>executor</c>, <c>attester</c>), projected regardless of <see cref="IsAttestedComputation"/>.</summary>
+    public AttestedComputationContract ComputationContract => AttestedComputation.Project(_map);
+
     /// <summary>The §5.2 <c>generated.at</c> timestamp, if any.</summary>
     public string? GeneratedAt => Generated?.At;
 
@@ -107,10 +115,7 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// non-sequence <c>tags</c> value (including a bare scalar) yields an
     /// empty list.
     /// </summary>
-    public IReadOnlyList<string> Tags =>
-        _map.Get("tags") is YamlSequence seq
-            ? seq.Items.Select(v => v.AsDisplayString()).Where(s => s is not null).Select(s => s!).ToList()
-            : [];
+    public IReadOnlyList<string> Tags => YamlValue.AsStringList(_map.Get("tags"));
 
     /// <summary>
     /// The keys present that are not well-known OKF fields — i.e. the

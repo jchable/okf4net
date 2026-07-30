@@ -406,4 +406,25 @@ public class KnowledgeServiceCollectionExtensionsTests
         }));
         Assert.Contains("DefaultResolverStrategy", ex.Message);
     }
+
+    [Fact]
+    public async Task AddKnowledge_wires_DefaultSourceVisibilityPolicy_end_to_end()
+    {
+        using var root = new TempDir();
+        var catalogPath = SetUpTwoSourceCatalogFile(root);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o =>
+        {
+            o.AddCatalogFile(catalogPath);
+            o.DefaultSourceVisibilityPolicy = (_, source) => source.Id == "hi";
+        });
+        using var provider = services.BuildServiceProvider();
+        var resolver = provider.GetRequiredService<IKnowledgeResolver>();
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
+    }
 }

@@ -77,11 +77,21 @@ them a re-capture from the (removed) Rust binary:
   `appendix_a` fixture itself is unchanged). The new content reflects the
   v0.2 validator's additional legacy-field diagnostics — `appendix_a`'s
   concepts all still use the v0.1 `timestamp` field with no `generated`
-  block, so each now gets an `[info] ... 'timestamp' is a legacy field;
-  prefer 'generated.at'` line (3 of the 4 concepts have `timestamp`) — and
+  block, so each now gets a `... 'timestamp' is a legacy field; prefer
+  'generated.at'` line (3 of the 4 concepts have `timestamp`) — and
   the CLI's version banner now reads `✓ conformant with OKF v0.2`. The exit
   code golden (`validate.exitcode`, `0`) is unchanged: `appendix_a` remains
   conformant.
+  - **2026-07-29 follow-up:** the legacy-`timestamp` diagnostic was
+    `[warning]`-not-`[info]` from the start, matching the legacy `#
+    Citations` diagnostic. Both §13.1 renames (`timestamp`→`generated.at`,
+    `# Citations`→`sources`) are equally-weighted producer nudges — a v0.2
+    consumer falls back to the legacy form for both, so the bundle stays
+    conformant either way, but neither rename is a mere formality the
+    validator should stay quiet about. `golden/validate.out` was
+    regenerated the same way as above; the 3 `timestamp` lines moved from
+    `[info]` to `[warning]` and the summary line's counts shifted
+    accordingly (`5 warning(s), 3 info` → `8 warning(s), 0 info`).
 - `okf_v02/` and `golden/validate-v02.out` / `golden/validate-v02.exitcode`
   are **new** v0.2 fixtures, hand-authored against the v0.2 spec text (not
   byte-exact-vs-Rust — v0.2 postdates the Rust reference implementation).
@@ -93,3 +103,46 @@ them a re-capture from the (removed) Rust binary:
   the legacy `# Citations` heading (superseded by the `sources` frontmatter
   field). Both fixtures were verified by reading each emitted diagnostic
   against the Task 9 validator rules before saving the golden, not assumed.
+
+## §10 Attested Computation bump (2026-07-29)
+
+- `okf_v02_computation/` and `golden/validate-computation.out` /
+  `golden/validate-computation.exitcode` are **new** v0.2 fixtures for §10
+  (Attested Computation) and its §6.2 (path-valued frontmatter fields)
+  dependency — hand-authored and hand-verified against the v0.2 spec text,
+  like `okf_v02/` above: no reference binary implements §10 either.
+  - `computations/revenue.md` — a fully well-formed **inline** Attested
+    Computation (`runtime: bigquery`, a `parameters` entry, `executor`/
+    `attester` resources resolving to real files under
+    `computations/references/`, `generated`/`verified`/`sources`, and a
+    future `stale_after`), plus its `# Computation` fenced SQL block.
+    Contributes zero diagnostics.
+  - `computations/revenue-file.md` — the **file-based** variant
+    (`computation: references/computations/revenue.sql`, no fence).
+    Contributes zero diagnostics.
+  - `computations/references/skills/run-on-bq.md` and
+    `computations/references/attesters/revenue.py` /
+    `computations/references/computations/revenue.sql` are the path-valued
+    targets the two concepts above point at; the `.md` one is itself a
+    plain, conformant `Skill` concept (every `.md` file under a bundle root
+    is loaded as a concept, §3), the other two are non-`.md` plain-text
+    targets.
+  - `metrics/revenue.md` — a `Metric` linking `computations/revenue.md` by
+    a normal markdown body link (§10.4), to show an Attested Computation
+    being referenced like any other concept.
+  - `malformed/both.md`, `malformed/broken-exec.md`, `malformed/no-runtime.md`
+    each isolate exactly one §10/§6.2 warning: a `computation:` path
+    declared *together with* an inline `# Computation` fence, an
+    `executor.resource` pointing at a file that does not exist, and an
+    Attested Computation missing the required `runtime` field,
+    respectively. Every field not under test (recommended fields, the
+    other frontmatter path-valued fields) is kept well-formed so each file
+    contributes exactly the one diagnostic it is named for.
+  - Every diagnostic in `validate-computation.out` was verified by reading
+    it against the exact message text and trigger condition in
+    `BundleValidator.Validate` (§10 §7 of the design) before saving the
+    golden, not assumed — including that `runtime` absence, the
+    inline-vs-path ambiguity, and a broken `executor.resource` are all
+    `[warning]`, never `[error]`: §10 sits outside the §11 conformance
+    floor, so a malformed Attested Computation concept stays conformant
+    (exit code `0`).

@@ -38,6 +38,16 @@ public sealed class KnowledgeOptions
     public int? DefaultFairnessQuota { get; set; }
 
     /// <summary>
+    /// The visibility policy every strategy applies when a query leaves both
+    /// <see cref="KnowledgeQuery.PermittedSourceIds"/> and
+    /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> unset;
+    /// <see langword="null"/> (the default) applies no restriction -- every
+    /// enabled knowledge source stays visible to every caller, the
+    /// behaviour every pre-existing deployment already has.
+    /// </summary>
+    public Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? DefaultSourceVisibilityPolicy { get; set; }
+
+    /// <summary>
     /// The resolved, full path to the catalog manifest last passed to
     /// <see cref="AddCatalogFile"/>; <see langword="null"/> until
     /// <see cref="AddCatalogFile"/> has been called at least once.

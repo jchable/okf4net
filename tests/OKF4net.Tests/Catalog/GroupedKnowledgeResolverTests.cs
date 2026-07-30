@@ -274,6 +274,31 @@ public class GroupedKnowledgeResolverTests
     }
 
     [Fact]
+    public async Task SearchAsync_with_a_PermittedSourceIds_that_excludes_every_enabled_source_still_returns_NoEnabledSources_but_a_visibility_message()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "does-not-exist" },
+        });
+
+        Assert.Empty(context.Passages);
+        var diagnostic = Assert.Single(context.Diagnostics);
+
+        // Same diagnostic code as "genuinely nothing configured" -- the plan
+        // deliberately reuses NoEnabledSources rather than minting a new
+        // code for a visibility-narrowed-to-zero result -- but the message
+        // must point at visibility filtering, not catalog.json, since two
+        // sources genuinely are enabled here.
+        Assert.Equal(KnowledgeDiagnosticCode.NoEnabledSources, diagnostic.Code);
+        Assert.Contains("visib", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("configured", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SearchAsync_with_no_matches_across_all_sources_returns_NoMatches_diagnostic()
     {
         using var root = new TempDir();
@@ -427,5 +452,77 @@ public class GroupedKnowledgeResolverTests
             async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = (KnowledgeResolverStrategy)99 }));
 
         Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SearchAsync_rejects_both_PermittedSourceIds_and_SourceVisibilityPolicy_set_together()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        // Even though this strategy never reads either field -- the same
+        // reasoning already established for FairnessQuota/ResolverStrategy:
+        // a malformed query fails the same way whichever strategy runs it.
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "hi" },
+            SourceVisibilityPolicy = (_, _) => true,
+        }));
+
+        Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_PermittedSourceIds_only_searches_the_named_source()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "hi" },
+        });
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_a_SourceVisibilityPolicy_receives_the_query_Scope()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog);
+        var scope = new KnowledgeAccessScope(tenantId: "acme");
+        var observedScopes = new List<KnowledgeAccessScope>();
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            Scope = scope,
+            SourceVisibilityPolicy = (s, source) =>
+            {
+                observedScopes.Add(s);
+                return source.Id == "lo";
+            },
+        });
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("lo", p.SourceId));
+        Assert.All(observedScopes, s => Assert.Equal(scope, s));
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_a_constructor_default_policy_applies_it_when_the_query_sets_neither_field()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new GroupedKnowledgeResolver(catalog, defaultSourceVisibilityPolicy: (_, source) => source.Id == "hi");
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders"));
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
     }
 }

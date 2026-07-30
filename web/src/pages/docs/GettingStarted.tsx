@@ -11,6 +11,8 @@ import { PageDoc, Chapter, Next } from '../../components/doc'
 const dotnetVersionHtml = `$ dotnet --version
 10.0.100`
 
+const wingetInstallHtml = `$ winget install Coderise.OKF4net`
+
 const cloneAndPublishHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary, no runtime needed</span>`
 
@@ -84,7 +86,7 @@ export default function GettingStarted() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: dotnetVersionHtml }} />
         </Chapter>
 
-        <Chapter id="install" title="Install" refText="library from NuGet · CLI from source">
+        <Chapter id="install" title="Install" refText="library from NuGet · CLI via winget or from source">
           <p>
             Use the <strong>library</strong> to work with bundles from C#. Add the package to any project:
           </p>
@@ -94,8 +96,11 @@ export default function GettingStarted() {
             <strong>
               <code>okf</code> CLI
             </strong>{' '}
-            builds to a self-contained Native AOT binary from source (a packaged distribution is on the way):
+            is a self-contained Native AOT binary — on Windows, install it via{' '}
+            <a href="https://github.com/microsoft/winget-pkgs">winget</a>:
           </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: wingetInstallHtml }} />
+          <p>On any OS, build it from source:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: cloneAndPublishHtml }} />
         </Chapter>
 

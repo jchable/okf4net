@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.ComponentModel;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
+using OKF4net.Attestation;
+using OKF4net.Tests.Attestation;
 
 namespace OKF4net.Tests.Agents;
 
 /// <summary>
-/// Tests <see cref="OkfBundleTools.GetTools"/>: the nine tool methods exposed
-/// as Agent Framework <see cref="AIFunction"/>s (via <see cref="AITool"/>),
-/// with no LLM involved — everything is verified at the
+/// Tests <see cref="OkfBundleTools.GetTools"/>: the ten tool methods exposed
+/// as Agent Framework <see cref="AIFunction"/>s (via <see cref="AITool"/>)
+/// when no attestation orchestrator is wired (so <c>okf_run_computation</c>
+/// is omitted; see <see cref="OkfComputationToolsTests"/> for the wired
+/// case), with no LLM involved — everything is verified at the
 /// <see cref="AIFunction"/> level, including a real end-to-end invocation
 /// that proves argument binding from a plain dictionary works.
 /// </summary>
@@ -27,17 +32,18 @@ public class AIFunctionExposureTests
         "okf_regenerate_indexes",
         "okf_validate_bundle",
         "okf_changes_since",
+        "okf_get_computation",
     ];
 
     [Fact]
-    public void GetTools_returns_exactly_nine_tools()
+    public void GetTools_returns_exactly_ten_tools()
     {
         var tools = new OkfBundleTools(BundlePath);
-        Assert.Equal(9, tools.GetTools().Count);
+        Assert.Equal(10, tools.GetTools().Count);
     }
 
     [Fact]
-    public void GetTools_names_are_the_nine_snake_case_names_in_stable_order()
+    public void GetTools_names_are_the_ten_snake_case_names_in_stable_order()
     {
         var tools = new OkfBundleTools(BundlePath);
         var names = tools.GetTools().Cast<AIFunction>().Select(f => f.Name).ToList();
@@ -197,6 +203,64 @@ public class AIFunctionExposureTests
         var result = await function.InvokeAsync(new AIFunctionArguments());
 
         Assert.Equal(direct, result?.ToString());
+    }
+
+    /// <summary>
+    /// Binding probe for <c>okf_run_computation</c>'s
+    /// <c>IReadOnlyDictionary&lt;string, object?&gt;</c> parameter: no other
+    /// tool takes a non-scalar parameter, so this is the first proof that
+    /// <see cref="AIFunctionFactory.Create(System.Delegate, string)"/> can
+    /// bind it from a JSON object at all -- and, more importantly, that the
+    /// *keys* survive the trip: the contract declares one required parameter
+    /// (<c>threshold</c>), so the orchestrator's own required-parameter gate
+    /// (<c>parameterValues.ContainsKey(p.Name)</c>) only passes if the bound
+    /// dictionary actually carries that key. Arguments are parsed generically
+    /// from a JSON string via <see cref="JsonDocument"/> (a
+    /// <see cref="JsonElement"/> value for <c>parameterValues</c>) rather than
+    /// hand-built as the exact CLR dictionary type, mirroring how a real
+    /// MCP/agent host would hand the call over. Confirms the dictionary
+    /// parameter binds successfully with keys intact: the fallback
+    /// string-JSON-parameter design discussed in the task brief was not
+    /// needed.
+    /// </summary>
+    [Fact]
+    public async Task okf_run_computation_binds_parameterValues_dictionary_from_a_json_object()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: threshold\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+
+        IReadOnlyDictionary<string, object?>? captured = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (contract, computation, values, _) =>
+        {
+            captured = values;
+            return ValueTask.FromResult(new BoundComputation(contract.Runtime ?? "bigquery", computation.InlineCode, null, values));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+        var function = GetFunction(tools, "okf_run_computation");
+
+        var argsJson = """{"conceptId": "c/rev", "parameterValues": {"threshold": 42, "label": "q3"}}""";
+        using var argsDoc = JsonDocument.Parse(argsJson);
+        var arguments = new AIFunctionArguments(
+            new Dictionary<string, object?>
+            {
+                ["conceptId"] = argsDoc.RootElement.GetProperty("conceptId").GetString(),
+                ["parameterValues"] = argsDoc.RootElement.GetProperty("parameterValues").Clone(),
+            });
+
+        var result = await function.InvokeAsync(arguments);
+        var text = result?.ToString()?.ToLowerInvariant() ?? string.Empty;
+
+        // If the dictionary had bound as empty (or with mangled keys), the
+        // orchestrator's required-parameter gate would reject the run and
+        // this would read "displayable: no" instead.
+        Assert.Contains("displayable: yes", text);
+        Assert.NotNull(captured);
+        Assert.True(captured!.ContainsKey("threshold"), "the bound parameter values should carry the 'threshold' key supplied via JSON.");
     }
 
     private static AIFunction GetFunction(OkfBundleTools tools, string name) =>

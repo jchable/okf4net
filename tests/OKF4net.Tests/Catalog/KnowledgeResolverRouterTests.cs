@@ -249,4 +249,39 @@ public class KnowledgeResolverRouterTests
 
         Assert.Throws<ArgumentNullException>(() => router.SearchAsync(null!));
     }
+
+    [Fact]
+    public async Task A_constructor_default_visibility_policy_reaches_every_strategy()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpDistinguishingCatalog(root);
+        var router = new KnowledgeResolverRouter(
+            catalog, defaultSourceVisibilityPolicy: (_, source) => source.Id == "weak-hi");
+
+        var grouped = await router.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = KnowledgeResolverStrategy.GroupedBySource });
+        var merged = await router.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = KnowledgeResolverStrategy.Merged });
+        var weighted = await router.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = KnowledgeResolverStrategy.PriorityWeighted });
+
+        Assert.All(grouped.Passages, p => Assert.Equal("weak-hi", p.SourceId));
+        Assert.All(merged.Passages, p => Assert.Equal("weak-hi", p.SourceId));
+        Assert.All(weighted.Passages, p => Assert.Equal("weak-hi", p.SourceId));
+        Assert.NotEmpty(grouped.Passages);
+    }
+
+    [Fact]
+    public async Task A_query_level_PermittedSourceIds_overrides_the_router_default_policy()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpDistinguishingCatalog(root);
+        var router = new KnowledgeResolverRouter(
+            catalog, defaultSourceVisibilityPolicy: (_, source) => source.Id == "weak-hi");
+
+        var context = await router.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "strong-lo" },
+        });
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("strong-lo", p.SourceId));
+    }
 }

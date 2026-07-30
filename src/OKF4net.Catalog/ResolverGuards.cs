@@ -20,9 +20,11 @@ internal static class ResolverGuards
     /// <exception cref="ArgumentException">
     /// <paramref name="query"/>'s <see cref="KnowledgeQuery.Text"/> is null,
     /// empty, or whitespace; its <see cref="KnowledgeQuery.FairnessQuota"/>
-    /// is set but not greater than zero; or its
+    /// is set but not greater than zero; its
     /// <see cref="KnowledgeQuery.ResolverStrategy"/> is set to a value that
-    /// is not a defined <see cref="KnowledgeResolverStrategy"/> member.
+    /// is not a defined <see cref="KnowledgeResolverStrategy"/> member; or
+    /// both <see cref="KnowledgeQuery.PermittedSourceIds"/> and
+    /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> are set.
     /// </exception>
     internal static void ValidateQuery(KnowledgeQuery query)
     {
@@ -53,6 +55,18 @@ internal static class ResolverGuards
         if (query.ResolverStrategy is { } strategy)
         {
             ValidateStrategy(strategy, nameof(query));
+        }
+
+        // A caller-created contradiction, not something to silently resolve:
+        // which one should win is not this method's call to make. Checked
+        // here (not in SourceVisibility.Filter) so it fails identically
+        // whichever strategy runs the query, same reasoning as every other
+        // check in this method.
+        if (query.PermittedSourceIds is not null && query.SourceVisibilityPolicy is not null)
+        {
+            throw new ArgumentException(
+                "KnowledgeQuery.PermittedSourceIds and SourceVisibilityPolicy cannot both be set on the same query; choose one.",
+                nameof(query));
         }
     }
 

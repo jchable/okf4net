@@ -8,6 +8,45 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Per-caller source visibility.** `IKnowledgeResolver` searches can now be
+  restricted to a subset of enabled `Knowledge`-role sources, based on the
+  caller's `KnowledgeAccessScope`. Two mutually-exclusive mechanisms on
+  `KnowledgeQuery`: `PermittedSourceIds` (a host-precomputed set of source
+  IDs — the recommended default, no host-level default since a static set
+  can't represent "differs by tenant") and `SourceVisibilityPolicy` (a
+  per-source function, with a `KnowledgeOptions.DefaultSourceVisibilityPolicy`
+  host default a function can still vary per call by reading the scope it's
+  given). `PermittedSourceIds` always wins over a configured default when
+  set. `OkfContextProvider`'s scoped (V2) mode now passes the same
+  `KnowledgeAccessScope` it already resolves for memory into the knowledge
+  query too.
+- **Attested Computation (§10).** Full v0.2 §10 support: `Frontmatter.ComputationContract`
+  projects the runtime/parameters/computation/executor/attester contract; `OkfDocument.Computation()`
+  returns the sanctioned computation (fenced `# Computation` or `computation:` file); `okf validate`
+  emits §10 + §6.2 soft-guidance warnings (never Error). New zero-dep **`OKF4net.Attestation`**
+  package: host-plugged `IParameterBinder`/`IComputationExecutor`/`IAttester` and an
+  `AttestationOrchestrator` (load → bind → execute → receipt-shape check → attest → gate on
+  verdict + `stale_after`), errors-as-data. `OKF4net.Agents` gains `okf_get_computation` and, when
+  an orchestrator is wired, `okf_run_computation`.
+- **§6.2 path-valued frontmatter resolution** — `OkfDocument.FrontmatterResources()` +
+  `Bundle.TryResolveResource`/`ReadResourceText`, with broken/unsafe-path validator warnings.
+
+### Changed
+
+- **`KnowledgeQuery` is no longer V1-scoped.** It gains `Scope`
+  (`KnowledgeAccessScope`, defaults to `KnowledgeAccessScope.Local`) — the
+  "actual multi-tenant consumer" an earlier doc comment said would justify
+  adding identity fields has materialized.
+- **Breaking: `KnowledgeResolverRouter`'s constructor gained a new
+  parameter, `defaultSourceVisibilityPolicy`, inserted between the
+  pre-existing `defaultFairnessQuota` and `clock` parameters.** Any external
+  caller invoking the constructor with positional arguments past
+  `defaultFairnessQuota` fails to compile until the call site is updated —
+  never silently, but source- and binary-breaking for that call shape.
+  Callers using named arguments are unaffected.
+
 ## [0.3.0] - 2026-07-29
 
 OKF4net now targets **OKF specification v0.2**. The core library and `okf` CLI

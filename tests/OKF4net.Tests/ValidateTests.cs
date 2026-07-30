@@ -106,8 +106,8 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.DoesNotContain(report.Of(Severity.Warning), d => d.Message.Contains("timestamp"));
-        Assert.Contains(report.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.DoesNotContain(report.Of(Severity.Info), d => d.Message.Contains("timestamp"));
+        Assert.Contains(report.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -128,7 +128,7 @@ public class ValidateTests
     {
         // frontmatter is only permitted in the bundle-root index.md.
         using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\ntimestamp: 2026-05-28\n---\nbody\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
         tmp.Write("sub/index.md", "---\ntitle: nope\n---\n\n# Listing\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
@@ -178,7 +178,7 @@ public class ValidateTests
     public void Invalid_log_date_heading_is_a_warning()
     {
         using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\ntimestamp: 2026-05-28\n---\nbody\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
         tmp.Write("log.md", "# Log\n\n## not-a-date\n* **Update**: did a thing.\n");
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
@@ -405,11 +405,11 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Legacy_timestamp_is_info_not_warning()
+    public void Legacy_timestamp_is_a_warning()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ntimestamp: '2026-05-28'\n");
-        Assert.Contains(r.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
-        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.DoesNotContain(r.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -420,5 +420,58 @@ public class ValidateTests
         File.WriteAllText(Path.Combine(dir, "c.md"), "---\ntype: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n---\nbody\n");
         var r = BundleValidator.Validate(Bundle.Load(dir));
         Assert.True(HasWarning(r, "declared okf_version"));
+    }
+
+    [Fact]
+    public void Attested_computation_missing_runtime_warns_but_stays_conformant()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n# Computation absent + pas de computation:\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.True(report.IsConformant);                                   // Error reste §11-only
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("runtime"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("no computation"));
+    }
+
+    [Fact]
+    public void Both_inline_and_path_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: ./x.sql\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        tmp.Write("c/x.sql", "SELECT 1\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("both inline and"));
+    }
+
+    [Fact]
+    public void Attester_present_with_no_resource_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nattester: {}\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("attester.resource"));
+        Assert.True(report.IsConformant);
+    }
+
+    [Fact]
+    public void Absent_attester_does_not_warn()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.DoesNotContain(report.Diagnostics, d => d.Message.Contains("attester.resource"));
+    }
+
+    [Fact]
+    public void Broken_frontmatter_path_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: ./missing.md, receipt: [job_id] }\n---\n# Computation\n\n```\nSELECT 1\n```\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("not found"));
     }
 }

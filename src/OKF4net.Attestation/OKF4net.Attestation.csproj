@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Packaging">
+    <PackageId>OKF4net.Attestation</PackageId>
+    <Authors>Julien CHABLE</Authors>
+    <Description>Host-plugged orchestration of OKF v0.2 §10 Attested Computations over the OKF4net format core: binder/executor/attester contracts, value types, and a runtime registry.</Description>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>okf;knowledge;attestation;attested-computation</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OKF4net\OKF4net.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets the test project exercise internal members directly, without
+         inflating the public API surface. -->
+    <InternalsVisibleTo Include="OKF4net.Tests" />
+  </ItemGroup>
+
+</Project>

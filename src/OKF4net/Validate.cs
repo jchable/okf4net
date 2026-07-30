@@ -276,7 +276,73 @@ public static class BundleValidator
 
             if (fm.Generated is null && fm.Timestamp is not null)
             {
-                diagnostics.Add(new Diagnostic(Severity.Info, concept.Path, concept.Id, "`timestamp` is a legacy field; prefer `generated.at`"));
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "`timestamp` is a legacy field; prefer `generated.at`"));
+            }
+
+            // §10 Attested Computation: soft guidance only -- §10 is not part
+            // of the §11 conformance floor, so a malformed Attested
+            // Computation concept still stays conformant (Warning, never
+            // Error).
+            if (fm.IsAttestedComputation)
+            {
+                var contract = fm.ComputationContract;
+                if (string.IsNullOrEmpty(contract.Runtime))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "attested computation missing required 'runtime'"));
+                }
+
+                foreach (var parameter in contract.Parameters)
+                {
+                    if (parameter.Name.Length == 0)
+                    {
+                        diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "parameter entry missing 'name'"));
+                    }
+                }
+
+                var inlineCode = ComputationExtractor.ExtractInline(concept.Document.Body);
+                if (string.IsNullOrEmpty(contract.ComputationPath) && inlineCode is null)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "attested computation has no computation (inline '# Computation' or 'computation:' path)"));
+                }
+                else if (!string.IsNullOrEmpty(contract.ComputationPath) && inlineCode is not null)
+                {
+                    // Computation() itself prioritizes the `computation:` path
+                    // over an inline `# Computation` block (§10.3), so the
+                    // inline presence has to be checked independently here to
+                    // flag the ambiguity rather than silently picking one.
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "computation specified both inline and via 'computation:'"));
+                }
+
+                if (fm.Get("executor") is YamlMapping executorMap
+                    && executorMap.Get("receipt") is not null and not YamlNull and not YamlSequence)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "executor.receipt is not a list of receipt field names"));
+                }
+
+                if (contract.Attester is { } attester && string.IsNullOrEmpty(attester.Resource))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "attester.resource is empty"));
+                }
+            }
+
+            // §6.2 path-valued frontmatter fields: a broken or bundle-escaping
+            // path is soft guidance (never a §11 conformance error).
+            foreach (var resource in concept.Document.FrontmatterResources())
+            {
+                if (resource.Kind == FrontmatterResourceKind.Url)
+                {
+                    continue;
+                }
+
+                bundle.TryResolveResource(concept, resource.RawPath, out _, out var resolutionStatus);
+                if (resolutionStatus == ResourceResolutionStatus.Missing)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"frontmatter path '{resource.Field}' → '{resource.RawPath}' not found"));
+                }
+                else if (resolutionStatus == ResourceResolutionStatus.Unsafe)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"frontmatter path '{resource.Field}' → '{resource.RawPath}' escapes the bundle"));
+                }
             }
         }
 

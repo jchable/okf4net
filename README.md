@@ -74,6 +74,7 @@ other project layers a specific integration on top and points back to it.
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
 | `OKF4net.Mcp`            | `OKF4net.Mcp`             | Local MCP server exposing an OKF bundle to Claude Desktop / Claude Code.    | [Use OKF in Claude (MCP)](#use-okf-in-claude-mcp) · [README](src/OKF4net.Mcp/README.md) |
+| `OKF4net.Attestation`    | `OKF4net.Attestation`    | Host-plugged §10 attested-computation orchestration (bind → execute → attest). | [Attested computation](#attested-computation-okf4netattestation) · [README](src/OKF4net.Attestation/README.md) |
 
 ## Library overview
 
@@ -163,6 +164,14 @@ var text = doc.Serialize();
 
 ### As a CLI
 
+On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
+
+```sh
+winget install Coderise.OKF4net
+```
+
+On any OS, build from source — see [Building & testing](#building--testing).
+
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
 okf info     <bundle>    Summarize a bundle (concepts, types, links, version)
@@ -182,8 +191,7 @@ okf graph ./bundles/ga4 --dot | dot -Tsvg > graph.svg
 
 `okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
 single-file binary — no .NET runtime installation required on the target
-machine (see [Building & testing](#building--testing)). Full command
-reference with real output samples:
+machine. Full command reference with real output samples:
 [CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
 
 ### Using OKF4net with Microsoft Agent Framework
@@ -191,7 +199,10 @@ reference with real output samples:
 `src/OKF4net.Agents/` exposes bundle operations as function tools for the
 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework):
 `OkfBundleTools` wraps one bundle root and its `GetTools()` method returns
-nine ready-to-use `AITool`s, which `AsAIAgent` turns into an agent's tool list.
+ten ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
+agent's tool list, plus an eleventh — `okf_run_computation` — only when the
+tool set is constructed with an `OKF4net.Attestation` orchestrator wired in
+(see [Attested computation](#attested-computation-okf4netattestation)).
 
 ```csharp
 using Microsoft.Agents.AI;
@@ -206,8 +217,9 @@ var response = await agent.RunAsync("Search the bundle for concepts about refund
 Console.WriteLine(response.Text);
 ```
 
-The nine tools (read → browse → graph → search → write → append →
-regenerate → validate → changes-since):
+The ten unconditional tools, plus the eleventh conditional on an attestation
+orchestrator being wired (read → browse → graph → search → write → append →
+regenerate → validate → changes-since → get-computation → run-computation):
 
 | Tool                     | Description                                                                                                                                                                                                    |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -220,6 +232,8 @@ regenerate → validate → changes-since):
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
 | `okf_validate_bundle`    | Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.                                                                                                                        |
 | `okf_changes_since`      | Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.                                                                                                                  |
+| `okf_get_computation`    | Read a §10 attested-computation concept's contract and sanctioned computation source. Always available; read-only, needs no attestation runtime.                                                             |
+| `okf_run_computation`    | Run a §10 attested computation end to end (bind → execute → attest → stale-gate) through a host-wired `AttestationOrchestrator`. Only present in `GetTools()` when one was passed to the constructor.         |
 
 **Security note:** bundle content (concept bodies, frontmatter, log entries)
 is untrusted — it comes from files on disk that may have been written by
@@ -343,6 +357,53 @@ A few known v1 caveats:
   an accidental escape more than it defends against a hostile, already
   co-resident writer.
 
+### Attested computation (OKF4net.Attestation)
+
+`src/OKF4net.Attestation/` orchestrates [§10 Attested
+Computations](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md):
+a concept can declare a runtime/parameters/computation/executor/attester
+contract (`Frontmatter.ComputationContract`) and a sanctioned computation —
+an inline fenced `# Computation` block or a `computation:` file resolved via
+§6.2 path-safe resolution (`OkfDocument.Computation()`). The host plugs in
+`IParameterBinder`, `IComputationExecutor` and `IAttester` per runtime name
+through an `IAttestationRuntimeRegistry`; `AttestationOrchestrator.RunAsync`
+drives one run end to end — resolve → bind → execute → receipt-shape check →
+attest → gate on the verdict and `stale_after` — always returning an
+`AttestationOutcome` (errors-as-data, never throwing for an expected
+failure). §10.6: a verdict is never written back to the bundle — attestation
+is per-run, not stored provenance.
+
+```csharp
+using OKF4net;
+using OKF4net.Attestation;
+
+IAttestationRuntimeRegistry runtimes = new AttestationRuntimeRegistry(
+    new Dictionary<string, IAttestationRuntime> { ["bigquery"] = myBigQueryRuntime });
+
+var orchestrator = new AttestationOrchestrator(runtimes);
+
+AttestationOutcome outcome = await orchestrator.RunAsync(
+    bundle, conceptId, new Dictionary<string, object?> { ["region"] = "eu" });
+
+if (outcome.Displayable)
+{
+    Console.WriteLine(outcome.Receipt);
+}
+else
+{
+    Console.WriteLine(string.Join("; ", outcome.Reasons));
+}
+```
+
+`OKF4net.Agents`' `okf_get_computation` tool (read-only, always available)
+surfaces a computation's contract and source without running anything; pass
+an `AttestationOrchestrator` to `new OkfBundleTools(bundleRoot,
+orchestrator)` to also expose `okf_run_computation` — see [the tool
+table](#using-okf4net-with-microsoft-agent-framework) above. `OKF4net.Attestation`
+references only `OKF4net` — zero third-party runtime dependencies. See
+[`OKF4net.Attestation`'s README](src/OKF4net.Attestation/README.md) for the
+full contract/value-type reference.
+
 ### Local catalog (OKF4net.Catalog)
 
 `src/OKF4net.Catalog/` and `src/OKF4net.Catalog.Hosting/` add a catalog of
@@ -365,8 +426,7 @@ KnowledgeContext result = await resolver.SearchAsync(new KnowledgeQuery("refund 
 **V1 limits, stated exactly:**
 
 - Local filesystem bundles only.
-- One shared catalog (no per-caller or per-tenant filtering of which sources
-  are visible).
+- One shared catalog.
 - No semantic/fuzzy deduplication across sources (two manifest entries
   resolving to the *same directory* are collapsed only under the two merged
   strategies; similar content in genuinely different bundles is not).
@@ -390,10 +450,12 @@ optional fairness interleaving for budget-truncated consumers. See
 [the resolver-strategies design](docs/design/specs/2026-07-28-okf4net-v2-resolver-strategies.md)
 and [`OKF4net.Catalog`'s README](src/OKF4net.Catalog/README.md#choosing-a-ranking-strategy).
 
-**V2 preview (not implemented):** application-filtered bundles — per-caller
-or per-tenant visibility of which sources are searched at all. See
-[§9 of the local catalog design](docs/design/specs/2026-07-24-okf4net-local-catalog-design.md#9-v2-design-team-scoped-bundles)
-for the open questions there.
+**Source visibility (shipped):** restrict which sources a caller may see,
+per host default or per query — a host-precomputed `PermittedSourceIds` set
+(the recommended default) or a `SourceVisibilityPolicy` function evaluated
+per source, either overridable per query. See
+[the source-visibility design](docs/design/specs/2026-07-29-okf4net-v2-source-visibility.md)
+and [`OKF4net.Catalog`'s README](src/OKF4net.Catalog/README.md#choosing-source-visibility).
 
 See [OKF4net.Catalog](src/OKF4net.Catalog/README.md) and
 [OKF4net.Catalog.Hosting](src/OKF4net.Catalog.Hosting/README.md) for full
@@ -429,11 +491,14 @@ This table is also published as the
 | §2 Terminology / concept id  | `OKF4net.ConceptId`                                            |
 | §3 Bundle structure          | `OKF4net.Bundle`, `Bundle.ReservedFilenames`                   |
 | §4 Concept documents         | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
+| §4.2 Body headings           | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
 | §5 Cross-linking             | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
 | §6 Index files                | `OKF4net.IndexGenerator`                                       |
+| §6.2 Path-valued frontmatter  | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
 | §7 Log files                  | `OKF4net.ChangeLog`                                            |
 | §8 Citations                  | `LinkScanner`, `OkfDocument.Citations()`                       |
 | §9 Conformance                | `OKF4net.BundleValidator`                                      |
+| §10 Attested Computation      | `Frontmatter.ComputationContract`, `OkfDocument.Computation()`, [`OKF4net.Attestation`](src/OKF4net.Attestation/README.md) (`AttestationOrchestrator`) |
 | §11 Versioning                | `Bundle.OkfVersion`, `OKF4net.OkfSpec.Version`                 |
 
 ### OKF4net version ↔ OKF spec version
@@ -465,6 +530,9 @@ dotnet build OKF4net.sln           # core library + okf CLI + test project
 dotnet test OKF4net.sln            # unit + integration tests (incl. golden CLI comparisons)
 dotnet publish src/OKF4net.Cli -c Release  # Native AOT, self-contained okf binary
 ```
+
+Just want the `okf` binary on Windows, not a source build? `winget install
+Coderise.OKF4net` (see [As a CLI](#as-a-cli)).
 
 ## License
 

@@ -271,6 +271,31 @@ public class MergedKnowledgeResolverTests
     }
 
     [Fact]
+    public async Task PermittedSourceIds_that_excludes_every_enabled_source_still_returns_NoEnabledSources_but_a_visibility_message()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "does-not-exist" },
+        });
+
+        Assert.Empty(context.Passages);
+        var diagnostic = Assert.Single(context.Diagnostics);
+
+        // Same diagnostic code as "genuinely nothing configured" -- the plan
+        // deliberately reuses NoEnabledSources rather than minting a new
+        // code for a visibility-narrowed-to-zero result -- but the message
+        // must point at visibility filtering, not catalog.json, since two
+        // sources genuinely are enabled here.
+        Assert.Equal(KnowledgeDiagnosticCode.NoEnabledSources, diagnostic.Code);
+        Assert.Contains("visib", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("configured", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task No_matches_is_reported_as_data()
     {
         using var root = new TempDir();
@@ -336,5 +361,50 @@ public class MergedKnowledgeResolverTests
             async () => await resolver.SearchAsync(new KnowledgeQuery("orders") { ResolverStrategy = (KnowledgeResolverStrategy)99 }));
 
         Assert.Contains("KnowledgeResolverStrategy", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SearchAsync_rejects_both_PermittedSourceIds_and_SourceVisibilityPolicy_set_together()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () => await resolver.SearchAsync(new KnowledgeQuery("orders")
+        {
+            PermittedSourceIds = new HashSet<string> { "hi" },
+            SourceVisibilityPolicy = (_, _) => true,
+        }));
+
+        Assert.Contains("PermittedSourceIds", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_PermittedSourceIds_only_searches_the_named_source()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales")
+        {
+            PermittedSourceIds = new HashSet<string> { "lo" },
+        });
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("lo", p.SourceId));
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_a_constructor_default_policy_applies_it_when_the_query_sets_neither_field()
+    {
+        using var root = new TempDir();
+        using var catalog = SetUpTwoSourceCatalog(root);
+        var resolver = new MergedKnowledgeResolver(catalog, defaultSourceVisibilityPolicy: (_, source) => source.Id == "hi");
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales"));
+
+        Assert.NotEmpty(context.Passages);
+        Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
     }
 }
