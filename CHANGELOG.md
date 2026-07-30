@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.3.1-preview.1] - 2026-07-30
+
+> Preview release: ships the §10 Attested Computation and per-caller source
+> visibility work ahead of a full minor release.
+
 ### Added
 
 - **Per-caller source visibility.** `IKnowledgeResolver` searches can now be
@@ -291,7 +296,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.3.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.3.1-preview.1...main
+[0.3.1-preview.1]: https://github.com/jchable/okf4net/compare/v0.3.0...v0.3.1-preview.1
 [0.3.0]: https://github.com/jchable/okf4net/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jchable/okf4net/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jchable/okf4net/compare/v0.1.0...v0.1.1
