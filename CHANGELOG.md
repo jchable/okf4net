@@ -37,6 +37,13 @@ and this project adheres to
   an orchestrator is wired, `okf_run_computation`.
 - **§6.2 path-valued frontmatter resolution** — `OkfDocument.FrontmatterResources()` +
   `Bundle.TryResolveResource`/`ReadResourceText`, with broken/unsafe-path validator warnings.
+- **`okf-mcp` bundle auto-discovery** — when neither a positional root nor
+  `OKF_BUNDLE_ROOT` is given, the server walks up from the current working
+  directory looking for a marked bundle (a root `index.md` whose frontmatter
+  declares `okf_version`, §12), testing each directory and then its
+  `knowledge/` child. Unmarked bundles are deliberately not discovered (zero
+  false positives for a writable server); the startup error now names every
+  fix (argument, `OKF_BUNDLE_ROOT`, `/okf-init`).
 
 ### Changed
 

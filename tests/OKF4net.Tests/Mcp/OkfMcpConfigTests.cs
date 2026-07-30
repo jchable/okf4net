@@ -12,12 +12,16 @@ public sealed class OkfMcpConfigTests
     }
 
     [Fact]
-    public void Missing_root_fails_and_names_the_env_var()
+    public void Missing_root_with_no_discoverable_bundle_fails_and_names_every_fix()
     {
-        var ok = OkfMcpConfig.TryResolve([], Env(), out _, out _, out var error);
+        var ok = OkfMcpConfig.TryResolve([], Env(), Path.GetTempPath(), _ => null, out _, out _, out var error);
 
         Assert.False(ok);
+        Assert.NotNull(error);
         Assert.Contains("OKF_BUNDLE_ROOT", error);
+        Assert.Contains("okf-init", error);
+        Assert.Contains("okf_version", error);
+        Assert.DoesNotContain('\n', error);
     }
 
     [Fact]
@@ -83,7 +87,7 @@ public sealed class OkfMcpConfigTests
     [Fact]
     public void Formatted_missing_root_error_is_a_single_line_with_message_and_usage()
     {
-        OkfMcpConfig.TryResolve([], Env(), out _, out _, out var error);
+        OkfMcpConfig.TryResolve([], Env(), Path.GetTempPath(), _ => null, out _, out _, out var error);
 
         var line = OkfMcpConfig.FormatStartupError(error);
 
@@ -91,6 +95,7 @@ public sealed class OkfMcpConfigTests
         Assert.DoesNotContain('\r', line);
         Assert.StartsWith("okf-mcp: ", line);
         Assert.Contains("OKF_BUNDLE_ROOT", line);
+        Assert.Contains("okf_version", line);
         Assert.Contains("Usage:", line);
     }
 
@@ -122,5 +127,93 @@ public sealed class OkfMcpConfigTests
         Assert.DoesNotContain('\r', line);
         Assert.StartsWith("okf-mcp: ", line);
         Assert.Contains("Usage:", line);
+    }
+
+    // ---- Discovery fallback ---------------------------------------------------
+
+    private const string MarkedIndex = "---\nokf_version: \"0.2\"\n---\n\n# Index\n";
+
+    [Fact]
+    public void Discovery_supplies_the_root_when_no_arg_and_no_env()
+    {
+        var top = Directory.CreateTempSubdirectory("okf-cfg-disc-").FullName;
+        try
+        {
+            var knowledge = Directory.CreateDirectory(Path.Combine(top, "knowledge")).FullName;
+            File.WriteAllText(Path.Combine(knowledge, "index.md"), MarkedIndex);
+
+            var ok = OkfMcpConfig.TryResolve([], Env(), top, out var root, out var readOnly, out var error);
+
+            Assert.True(ok);
+            Assert.Null(error);
+            Assert.Equal(knowledge, root);
+            Assert.False(readOnly);
+        }
+        finally
+        {
+            Directory.Delete(top, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Env_root_beats_discovery()
+    {
+        var top = Directory.CreateTempSubdirectory("okf-cfg-disc-").FullName;
+        var explicitRoot = Directory.CreateTempSubdirectory("okf-cfg-env-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(top, "index.md"), MarkedIndex);
+
+            var ok = OkfMcpConfig.TryResolve([], Env(("OKF_BUNDLE_ROOT", explicitRoot)), top, out var root, out _, out _);
+
+            Assert.True(ok);
+            Assert.Equal(explicitRoot, root);
+        }
+        finally
+        {
+            Directory.Delete(top, recursive: true);
+            Directory.Delete(explicitRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Arg_beats_discovery()
+    {
+        var top = Directory.CreateTempSubdirectory("okf-cfg-disc-").FullName;
+        var explicitRoot = Directory.CreateTempSubdirectory("okf-cfg-arg-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(top, "index.md"), MarkedIndex);
+
+            var ok = OkfMcpConfig.TryResolve([explicitRoot], Env(), top, out var root, out _, out _);
+
+            Assert.True(ok);
+            Assert.Equal(explicitRoot, root);
+        }
+        finally
+        {
+            Directory.Delete(top, recursive: true);
+            Directory.Delete(explicitRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Nonexistent_env_root_fails_without_discovery_fallback()
+    {
+        var top = Directory.CreateTempSubdirectory("okf-cfg-disc-").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(top, "index.md"), MarkedIndex);
+            var missing = Path.Combine(Path.GetTempPath(), "okf-does-not-exist-" + Guid.NewGuid().ToString("N"));
+
+            var ok = OkfMcpConfig.TryResolve([], Env(("OKF_BUNDLE_ROOT", missing)), top, out _, out _, out var error);
+
+            Assert.False(ok);
+            Assert.Contains("not found", error);
+        }
+        finally
+        {
+            Directory.Delete(top, recursive: true);
+        }
     }
 }
