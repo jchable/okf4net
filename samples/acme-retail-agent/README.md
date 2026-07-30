@@ -62,6 +62,16 @@ interactive mode keeps one `AgentSession` across turns; one-shot mode runs a
 single turn and exits. Each response prints a `[tools: ...]` line naming any
 `okf_*` tools the agent called, for visibility into what it did.
 
+"Read-only" is enforced by construction, not just by convention:
+`Program.cs` filters `okf_write_concept`, `okf_append_log`, and
+`okf_regenerate_indexes` out of the tool list before it ever reaches the
+agent (mirroring `OkfMcpToolset`'s write-tool filter in `src/OKF4net.Mcp`),
+so the model has no way to mutate the bundle's byte-exact, license-attributed
+upstream copy — even a model that tries to claim it made a change (small
+local models sometimes fabricate a plausible-looking "done" response) cannot
+actually write to disk, because the tool call it would need simply isn't in
+its tool list.
+
 ## Why no attested-computation execution
 
 `bundles/acme_retail/attesters/sql_equality.py` is kept untouched, not
