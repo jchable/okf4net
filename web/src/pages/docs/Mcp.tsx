@@ -69,7 +69,7 @@ export default function Mcp() {
         }
         lede={
           <>
-            <code>okf-mcp</code> is a small <strong>MCP server</strong>. Point it at a bundle and its nine
+            <code>okf-mcp</code> is a small <strong>MCP server</strong>. Point it at a bundle and its ten
             operations become tools inside <strong>Claude</strong> — and any MCP client — so you read, search, and
             write concepts from a conversation. It's the same tools as the Agent Framework layer, spoken over
             the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>.
@@ -82,7 +82,7 @@ export default function Mcp() {
           <p>
             MCP is the open protocol Claude Desktop, Claude Code, and editors like Cursor use to talk to local tools.{' '}
             <code>okf-mcp</code> is a <strong>thin façade</strong> over the same <code>OkfBundleTools</code> the CLI
-            and the Agent Framework layer use — one bundle per server, nine tools, read and write. Everything runs
+            and the Agent Framework layer use — one bundle per server, ten tools, read and write. Everything runs
             through the library, so path-safety, producer validation, and permissive loading come for free.
           </p>
           <MapTable
@@ -107,8 +107,20 @@ export default function Mcp() {
               ],
               ['okf_validate_bundle', 'Conformance report (§11)'],
               ['okf_changes_since', 'What changed since an ISO date, across every log'],
+              [
+                'okf_get_computation',
+                <>
+                  A §10 attested-computation concept's contract and sanctioned source — read-only, no
+                  attestation runtime needed
+                </>,
+              ],
             ]}
           />
+          <p>
+            <code>okf-mcp</code> doesn't wire an attestation runtime, so the eleventh, execution-capable{' '}
+            <code>okf_run_computation</code> tool (see <Link to="/docs/agents">docs/agents.md</Link>) isn't
+            exposed here — only the read-only <code>okf_get_computation</code> above.
+          </p>
         </Chapter>
 
         <Chapter id="install" title="Install" refText="one tool on your PATH">
@@ -244,7 +256,7 @@ export default function Mcp() {
             <code>stderr</code>; <code>stdout</code> carries only the protocol.
           </p>
           <Next>
-            → <Link to="/docs/agents">agents.md</Link> — the same nine tools for the Microsoft Agent Framework ·{' '}
+            → <Link to="/docs/agents">agents.md</Link> — the same tools for the Microsoft Agent Framework ·{' '}
             <Link to="/library">library.md</Link> — the API underneath
           </Next>
         </Chapter>

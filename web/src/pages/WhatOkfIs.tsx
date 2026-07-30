@@ -31,7 +31,7 @@ export default function WhatOkfIs() {
             The <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">Open Knowledge Format v0.2</a>{' '}
             is Google's open, human- and agent-friendly format for representing knowledge as{' '}
             <strong>a directory of markdown files with YAML frontmatter</strong>. It is intentionally minimal — and
-            OKF4net implements all of it bar the new §10 attested-computations concept — see the{' '}
+            OKF4net implements all of it, including the §10 attested-computations concept — see the{' '}
             <Link to="/docs/spec">spec mapping</Link>.
           </>
         }
@@ -158,6 +158,13 @@ export default function WhatOkfIs() {
               ],
               ['§8 Index files', <code key="c8">OKF4net.IndexGenerator</code>],
               ['§9 Log files', <code key="c9">OKF4net.ChangeLog</code>],
+              [
+                '§10 Attested computations',
+                <>
+                  <code key="c10a">Frontmatter.ComputationContract</code>, <code key="c10b">OkfDocument.Computation()</code>,{' '}
+                  <a key="c10c" href="https://www.nuget.org/packages/OKF4net.Attestation">OKF4net.Attestation</a>
+                </>,
+              ],
               ['§11 Conformance', <code key="c11">OKF4net.BundleValidator</code>],
               [
                 '§12 Versioning',

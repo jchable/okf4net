@@ -37,7 +37,7 @@ export default function Catalog() {
   return (
     <DocsLayout
       title="Catalog — OKF4net docs"
-      description="OKF4net.Catalog: a hot-reloadable catalog.json manifest naming one or more local OKF bundles as sources, a multi-source resolver, trust and staleness on every result, and a scoped memory store for host-scoped, multi-tenant agent deployments."
+      description="OKF4net.Catalog: a hot-reloadable catalog.json manifest naming one or more local OKF bundles as sources, a multi-source resolver with per-caller source visibility, trust and staleness on every result, and a scoped memory store for host-scoped, multi-tenant agent deployments."
       current="catalog"
     >
       <PageDoc
@@ -149,6 +149,36 @@ export default function Catalog() {
             globally stable identity. Both accept an optional fairness quota that caps how many consecutive
             passages one source may contribute; it reorders and never drops, so it changes what a
             budget-truncated caller sees without changing what a caller reading the whole list gets.
+          </p>
+        </Chapter>
+
+        <Chapter id="visibility" title="Source visibility" refText="restrict which sources a caller may search">
+          <p>
+            <code>KnowledgeQuery</code> gains a <code>Scope</code> (<code>KnowledgeAccessScope</code>, default{' '}
+            <code>Local</code>) and two mutually-exclusive ways to restrict which enabled{' '}
+            <code>Knowledge</code>-role sources a given caller may see:
+          </p>
+          <ul className="plain">
+            <li>
+              <strong>
+                <code>PermittedSourceIds</code>
+              </strong>{' '}
+              — a host-precomputed set of source ids. The recommended default; there's no host-level default
+              for it, since a static set can't represent "differs by tenant".
+            </li>
+            <li>
+              <strong>
+                <code>SourceVisibilityPolicy</code>
+              </strong>{' '}
+              — a per-source function, with an optional <code>KnowledgeOptions.DefaultSourceVisibilityPolicy</code>{' '}
+              host default; the function can still vary per call by reading the scope it's given.
+            </li>
+          </ul>
+          <p>
+            Setting both on the same query is rejected. A query-level <code>PermittedSourceIds</code> always
+            wins over a configured default when set. <code>OkfContextProvider</code>'s scoped (V2) mode passes
+            the same <code>KnowledgeAccessScope</code> it already resolves for memory into the knowledge query
+            too, so visibility and memory scoping stay consistent for one caller.
           </p>
         </Chapter>
 

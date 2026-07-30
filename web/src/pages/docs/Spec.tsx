@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 import { Link } from 'react-router-dom'
 import DocsLayout from '../../layouts/DocsLayout'
-import { PageDoc, Chapter, MapTable, Tag, Next } from '../../components/doc'
+import { PageDoc, Chapter, MapTable, Next } from '../../components/doc'
 
 /**
  * Port of `website/docs/spec.html` — the OKF v0.2 conformance rule, the
@@ -11,7 +11,7 @@ export default function Spec() {
   return (
     <DocsLayout
       title="Spec mapping — OKF4net docs"
-      description="The Open Knowledge Format v0.2, section by section, mapped to the OKF4net types that implement it: concept ids (§2), bundles (§3), documents (§4), provenance/trust/lifecycle (§5), cross-linking (§6), the actor convention (§7), indexes (§8), logs (§9), attested computations (§10, not yet implemented), conformance (§11), versioning (§12), and the v0.1 legacy fallbacks (§13)."
+      description="The Open Knowledge Format v0.2, section by section, mapped to the OKF4net types that implement it: concept ids (§2), bundles (§3), documents (§4), provenance/trust/lifecycle (§5), cross-linking (§6), the actor convention (§7), indexes (§8), logs (§9), attested computations (§10), conformance (§11), versioning (§12), and the v0.1 legacy fallbacks (§13)."
       current="spec"
     >
       <PageDoc
@@ -75,6 +75,16 @@ export default function Spec() {
               is still read when <code>generated</code> is absent); the body <code>{'# Citations'}</code> list is
               superseded by frontmatter <code>sources</code> (still parsed as a fallback for v0.1 documents).
             </li>
+            <li>
+              <strong>Attested computation (§10), shipped in 0.3.1-preview.1.</strong> A concept can declare a
+              runtime/parameters/computation/executor/attester contract (<code>Frontmatter.ComputationContract</code>)
+              and a sanctioned computation — an inline fenced <code>{'# Computation'}</code> heading or a{' '}
+              <code>computation:</code> file resolved via §6.2 path-safe resolution
+              (<code>OkfDocument.Computation()</code>). The new zero-dependency{' '}
+              <a href="https://www.nuget.org/packages/OKF4net.Attestation">OKF4net.Attestation</a> package hosts the
+              bind → execute → attest orchestration; see{' '}
+              <Link to="/docs/agents">agents.md</Link> for the agent-facing tools.
+            </li>
           </ul>
         </Chapter>
 
@@ -115,8 +125,10 @@ export default function Spec() {
               [
                 <>§10 Attested computations</>,
                 <>
-                  <Tag>not yet implemented</Tag> — a new concept type in the spec; OKF4net loads and navigates a
-                  bundle containing one without error, but has no dedicated logic for it yet. Planned for v0.3.1.
+                  <code>Frontmatter.ComputationContract</code>, <code>OkfDocument.Computation()</code> — shipped in{' '}
+                  <strong>0.3.1-preview.1</strong> alongside the host-plugged{' '}
+                  <a href="https://www.nuget.org/packages/OKF4net.Attestation">OKF4net.Attestation</a> orchestrator
+                  (bind → execute → attest → stale-gate).
                 </>,
               ],
               [<>§11 Conformance</>, <><code>BundleValidator</code>, <code>OkfDocument.ValidateConformance()</code> — the one hard rule above.</>],

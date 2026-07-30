@@ -10,7 +10,7 @@ namespace OKF4net;
 /// parse, serialize, and validation behaviour keeps documents round-tripping
 /// compatibly between OKF implementations.
 ///
-/// Link/citation extraction (§8) is provided by <see cref="Links"/> and
+/// Link/citation extraction (§6.1/§13.1) is provided by <see cref="Links"/> and
 /// <see cref="Citations"/>, which delegate to <see cref="LinkScanner"/>.
 /// </summary>
 public sealed class OkfDocument : IEquatable<OkfDocument>
@@ -174,7 +174,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
 
     /// <summary>
     /// Extracts numbered citation entries from the <c># Citations</c>
-    /// section of <see cref="Body"/> (§8). Delegates to
+    /// section of <see cref="Body"/> (§13.1, legacy). Delegates to
     /// <see cref="LinkScanner.ExtractCitations"/>.
     /// </summary>
     public IReadOnlyList<Citation> Citations() => LinkScanner.ExtractCitations(Body);

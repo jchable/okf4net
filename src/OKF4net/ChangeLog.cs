@@ -11,7 +11,7 @@ public sealed record LogEntry(string? Kind, string Text);
 public sealed record LogDay(string Date, IReadOnlyList<LogEntry> Entries);
 
 /// <summary>
-/// Parsing and building `log.md` update histories (§7).
+/// Parsing and building `log.md` update histories (§9).
 ///
 /// A log is a flat list of date-grouped entries, newest first:
 /// <code>
@@ -138,7 +138,7 @@ public sealed class ChangeLog
 
     /// <summary>
     /// Returns the date headings that are not valid ISO-8601 `YYYY-MM-DD`
-    /// (§7 requires this form).
+    /// (§9 requires this form).
     /// </summary>
     public IReadOnlyList<string> InvalidDates()
         => Days.Select(d => d.Date).Where(d => !IsIsoDate(d)).ToList();

@@ -24,7 +24,7 @@ public sealed class BundleLoadException : OkfException
 public sealed record Concept(ConceptId Id, string Path, OkfDocument Document);
 
 /// <summary>
-/// A cross-link from one concept to another, after resolution (§5.3).
+/// A cross-link from one concept to another, after resolution (§6.1).
 /// </summary>
 public sealed record ResolvedLink(ConceptId Target, bool Exists, string Text, string Raw);
 
@@ -35,7 +35,7 @@ public sealed record ResolvedLink(ConceptId Target, bool Exists, string Text, st
 /// <see cref="Load"/> walks a directory, parses every non-reserved
 /// <c>.md</c> file into a <see cref="Concept"/>, records the reserved
 /// <c>index.md</c> / <c>log.md</c> files, and builds the cross-link graph
-/// (§5). Loading is **permissive** by design (§11): files whose frontmatter
+/// (§6). Loading is **permissive** by design (§11): files whose frontmatter
 /// cannot be parsed are collected into <see cref="ParseErrors"/> rather than
 /// aborting the load, and broken links are retained as edges to
 /// non-existent concepts.
@@ -221,10 +221,10 @@ public sealed class Bundle
     /// <summary><c>true</c> if a concept with this id exists.</summary>
     public bool Contains(ConceptId id) => _index.ContainsKey(id);
 
-    /// <summary>Paths of all <c>index.md</c> files found (§6).</summary>
+    /// <summary>Paths of all <c>index.md</c> files found (§8).</summary>
     public IReadOnlyList<string> IndexFiles { get; }
 
-    /// <summary>Paths of all <c>log.md</c> files found (§7).</summary>
+    /// <summary>Paths of all <c>log.md</c> files found (§9).</summary>
     public IReadOnlyList<string> LogFiles { get; }
 
     /// <summary>Files whose frontmatter could not be parsed during loading, as (path, error message) pairs.</summary>
@@ -240,7 +240,7 @@ public sealed class Bundle
 
     /// <summary>
     /// All broken internal links in the bundle, as (source, raw target)
-    /// pairs. Broken links are permitted by the spec (§5.3) — this is
+    /// pairs. Broken links are permitted by the spec (§6.1) — this is
     /// informational.
     /// </summary>
     public IReadOnlyList<(ConceptId Source, string RawTarget)> BrokenLinks()
@@ -262,7 +262,7 @@ public sealed class Bundle
 
     /// <summary>
     /// The declared OKF version from the bundle-root <c>index.md</c>
-    /// frontmatter, if present (<c>okf_version</c>, §11). This is the only
+    /// frontmatter, if present (<c>okf_version</c>, §12). This is the only
     /// place frontmatter is permitted in an <c>index.md</c>.
     ///
     /// Computed once while <see cref="Load"/> builds the bundle and stored, so
@@ -344,7 +344,7 @@ public sealed class Bundle
     /// file exists, or <see cref="ResourceResolutionStatus.Missing"/> if it
     /// does not.
     ///
-    /// Always returns <c>true</c>: resolution never fails outright (§3,
+    /// Always returns <c>true</c>: resolution never fails outright (§11,
     /// permissive), it only reports which of the above statuses applies.
     /// </summary>
     public bool TryResolveResource(Concept concept, string rawPath, out string? absolutePath, out ResourceResolutionStatus status)
@@ -390,7 +390,7 @@ public sealed class Bundle
             // A malformed raw path -- e.g. one containing an embedded NUL,
             // reachable through the YAML subset's own `\0` escape inside a
             // quoted scalar -- makes Path.Combine/Path.GetFullPath throw.
-            // Resolution must never throw (§3, permissive): treat it the same
+            // Resolution must never throw (§11, permissive): treat it the same
             // as any other candidate that can't be trusted, never exposing a
             // path to the caller.
             absolutePath = null;

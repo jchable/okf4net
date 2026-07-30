@@ -80,6 +80,17 @@ On main (worktree), synchronize **every user-visible version with the tag**:
    - If the section is thin, backfill it from the commit log — the CHANGELOG
      is the source for release notes, so write it for users, not committers:
      group by Added/Changed/Fixed, describe behaviour not commits.
+5. **Minor/major releases only** (new features, new CLI verbs, new public
+   API — the same test used in step 2 to pick minor over patch): invoke the
+   `update-website` skill now, using the CHANGELOG section you just wrote as
+   its primary source of ground truth, and fold any resulting `web/` edits
+   into this same commit. Bundling matters because it's atomic — the site
+   never spends time describing the previous version after the new one is
+   already public — not because it saves a CI run: this commit already
+   touches code, so `ci.yml`'s full matrix runs regardless of whether `web/`
+   also changed. Skip this step for patch releases (fixes/docs/CI only) —
+   `update-website`'s full audit is overkill when nothing user-facing shipped
+   beyond what step 3.3 already syncs (the version sample).
 
 Before committing, prove the externally-visible CLI version matches the
 release version:
@@ -88,6 +99,11 @@ release version:
 dotnet run --project src/OKF4net.Cli -- --version
 # Expected: okf X.Y.Z (OKF spec v0.2)
 ```
+
+If step 5 touched `web/`, also run its own verification
+(`npm run typecheck && npm run test && npm run build` in `web/`, per the
+`update-website` skill) before committing — a broken site build shouldn't
+ride along with an otherwise-good release.
 
 Commit as `chore(release): prepare vX.Y.Z`, push main, and **wait for CI**:
 `gh run watch $(gh run list --workflow=ci.yml --branch main --limit 1 --json databaseId -q '.[0].databaseId') --exit-status`.

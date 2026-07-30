@@ -371,7 +371,7 @@ public static class BundleValidator
         return value is not null && !value.IsEmptyValue;
     }
 
-    /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§6/§7).</summary>
+    /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§8/§9).</summary>
     private static void ValidateReserved(Bundle bundle, List<Diagnostic> diagnostics)
     {
         var rootIndex = System.IO.Path.Combine(bundle.Root, IndexFilename);
@@ -412,7 +412,7 @@ public static class BundleValidator
             }
 
             // Frontmatter is only permitted in the bundle-root index.md, and only
-            // to declare `okf_version` (§11).
+            // to declare `okf_version` (§12).
             var isRoot = string.Equals(path, rootIndex, StringComparison.Ordinal);
             if (!isRoot)
             {
@@ -420,7 +420,7 @@ public static class BundleValidator
                     Severity.Warning,
                     path,
                     null,
-                    "index.md should not contain frontmatter (§6)"));
+                    "index.md should not contain frontmatter (§8)"));
             }
             else
             {
@@ -431,7 +431,7 @@ public static class BundleValidator
                         Severity.Warning,
                         path,
                         null,
-                        "root index.md frontmatter should declare only `okf_version` (§11)"));
+                        "root index.md frontmatter should declare only `okf_version` (§12)"));
                 }
 
                 var declaredVersion = doc.Frontmatter.Get("okf_version")?.AsDisplayString();

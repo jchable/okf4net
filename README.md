@@ -85,11 +85,12 @@ other project layers a specific integration on top and points back to it.
 | `OKF4net.OkfDocument`                      | Frontmatter + body; parse / serialize / validate (§4)                      |
 | `OKF4net.Frontmatter`                      | Typed accessors over an order-preserving mapping (§4.1)                    |
 | `OKF4net.ConceptId`                        | `ConceptId` ↔ path conversion and segment validation (§2)                  |
-| `OKF4net.LinkScanner`                      | Markdown link extraction, classification, citations (§5, §8)               |
-| `OKF4net.Bundle`                           | `Bundle.Load` — walk a tree, build the concept graph + backlinks (§3, §5)  |
-| `OKF4net.IndexGenerator`                   | Generate `index.md` directory listings (§6)                                |
-| `OKF4net.ChangeLog`                        | Parse / build `log.md` update histories (§7)                               |
-| `OKF4net.BundleValidator`                  | §9 conformance checking with severity-tagged diagnostics                   |
+| `OKF4net.Actor` / `Trust` / `Provenance` / `Lifecycle` | Provenance, trust, and lifecycle value types and parsing (§5, §7) |
+| `OKF4net.LinkScanner`                      | Markdown link extraction, classification, legacy citations (§6.1, §13.1)   |
+| `OKF4net.Bundle`                           | `Bundle.Load` — walk a tree, build the concept graph + backlinks (§3, §6)  |
+| `OKF4net.IndexGenerator`                   | Generate `index.md` directory listings (§8)                                |
+| `OKF4net.ChangeLog`                        | Parse / build `log.md` update histories (§9)                               |
+| `OKF4net.BundleValidator`                  | §11 conformance checking with severity-tagged diagnostics                  |
 
 The split follows the OKF reference implementation's `bundle/` package
 (`document.py`, `index.py`, `paths.py`) so behaviour stays spec-compatible:
@@ -107,7 +108,7 @@ extensive test suite, including byte-exact golden CLI comparisons.
   collects parse failures in `ParseErrors` and keeps going. Broken
   cross-links are retained as graph edges to non-existent concepts.
 - **Two levels of validation.** `OkfDocument.ValidateConformance()` enforces
-  only what §9 requires (a non-empty `type`). `OkfDocument.Validate()` matches
+  only what §11 requires (a non-empty `type`). `OkfDocument.Validate()` matches
   the stricter producer-side check from the reference agent (`type`, `title`,
   `description`, `timestamp`).
 - **A documented YAML subset.** Real OKF frontmatter is scalars, lists, and
@@ -130,7 +131,7 @@ using OKF4net;
 var bundle = Bundle.Load("./my_bundle");
 Console.WriteLine($"{bundle.Count} concepts");
 
-// Conformance check (§9).
+// Conformance check (§11).
 var report = BundleValidator.Validate(bundle);
 if (report.IsConformant)
 {
@@ -228,7 +229,7 @@ regenerate → validate → changes-since → get-computation → run-computatio
 | `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                                                                  |
 | `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                                                      |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
-| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §7 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
+| `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
 | `okf_validate_bundle`    | Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.                                                                                                                        |
 | `okf_changes_since`      | Summarize bundle changes since a given ISO date, aggregated from every log.md in the bundle.                                                                                                                  |
@@ -486,20 +487,22 @@ and the full tool list, or the
 This table is also published as the
 [spec-mapping page on the site](https://jchable.github.io/okf4net/docs/spec/).
 
-| Spec section                 | Implemented by                                                 |
-|-------------------------------|-------------------------------------------------------------------|
-| §2 Terminology / concept id  | `OKF4net.ConceptId`                                            |
-| §3 Bundle structure          | `OKF4net.Bundle`, `Bundle.ReservedFilenames`                   |
-| §4 Concept documents         | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
-| §4.2 Body headings           | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
-| §5 Cross-linking             | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
-| §6 Index files                | `OKF4net.IndexGenerator`                                       |
-| §6.2 Path-valued frontmatter  | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
-| §7 Log files                  | `OKF4net.ChangeLog`                                            |
-| §8 Citations                  | `LinkScanner`, `OkfDocument.Citations()`                       |
-| §9 Conformance                | `OKF4net.BundleValidator`                                      |
-| §10 Attested Computation      | `Frontmatter.ComputationContract`, `OkfDocument.Computation()`, [`OKF4net.Attestation`](src/OKF4net.Attestation/README.md) (`AttestationOrchestrator`) |
-| §11 Versioning                | `Bundle.OkfVersion`, `OKF4net.OkfSpec.Version`                 |
+| Spec section                          | Implemented by                                                 |
+|----------------------------------------|-----------------------------------------------------------------|
+| §2 Terminology / concept id           | `OKF4net.ConceptId`                                            |
+| §3 Bundle structure                   | `OKF4net.Bundle`, `Bundle.ReservedFilenames`                   |
+| §4 Concept documents                  | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
+| §4.2 Body headings                    | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
+| §5 Provenance, trust, and lifecycle   | `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/`Status`/`StaleAfter`, `Actor`/`Trust`/`Provenance`/`Lifecycle` |
+| §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
+| §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
+| §7 Actor convention                   | `OKF4net.Actor.Parse` — `human:`/`process:`/`<producer>/<version>` |
+| §8 Index files                        | `OKF4net.IndexGenerator`                                       |
+| §9 Log files                          | `OKF4net.ChangeLog`                                            |
+| §10 Attested Computation              | `Frontmatter.ComputationContract`, `OkfDocument.Computation()`, [`OKF4net.Attestation`](src/OKF4net.Attestation/README.md) (`AttestationOrchestrator`) |
+| §11 Conformance                       | `OKF4net.BundleValidator`                                      |
+| §12 Versioning                        | `Bundle.OkfVersion`, `OKF4net.OkfSpec.Version`                 |
+| §13 Changes from v0.1 (legacy fallbacks) | `Frontmatter.LastChangedAt` (falls back to legacy `timestamp`), `OkfDocument.Sources()` (falls back to a legacy `# Citations` list) |
 
 ### OKF4net version ↔ OKF spec version
 

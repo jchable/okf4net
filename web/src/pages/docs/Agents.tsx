@@ -21,17 +21,18 @@ const wireUpHtml = `<span class="k">using</span> OKF4net.Agents;
 });`
 
 /**
- * `/docs/agents` — reference for `OKF4net.Agents`: the nine `OkfBundleTools`,
- * `OkfContextProvider` (budget-bounded injection, V1 single-bundle and V2
- * scoped-memory modes). Every claim here traces to a direct read of
- * `src/OKF4net.Agents/*.cs`, not to the README (see the audit in
+ * `/docs/agents` — reference for `OKF4net.Agents`: the ten `OkfBundleTools`
+ * (eleven when an attestation orchestrator is wired in), `OkfContextProvider`
+ * (budget-bounded injection, V1 single-bundle and V2 scoped-memory modes).
+ * Every claim here traces to a direct read of `src/OKF4net.Agents/*.cs`, not
+ * to the README (see the audit in
  * `docs/superpowers/specs/2026-07-28-website-v0.2-content-refresh-design.md`).
  */
 export default function Agents() {
   return (
     <DocsLayout
       title="Agents — OKF4net docs"
-      description="Expose an OKF bundle to the Microsoft Agent Framework as nine AIFunction tools, plus OkfContextProvider — budget-bounded context injection and deterministic, opt-in memory capture, single-bundle or scoped across tenants/users/sessions."
+      description="Expose an OKF bundle to the Microsoft Agent Framework as ten AIFunction tools (eleven when wired for §10 attested computation), plus OkfContextProvider — budget-bounded context injection and deterministic, opt-in memory capture, single-bundle or scoped across tenants/users/sessions."
       current="agents"
     >
       <PageDoc
@@ -48,10 +49,11 @@ export default function Agents() {
         }
         lede={
           <>
-            <code>OKF4net.Agents</code> exposes a bundle two ways: <strong>nine tools</strong> an agent calls
-            directly (<code>OkfBundleTools</code>), and a <strong>context provider</strong> that injects
-            bounded reference data automatically (<code>OkfContextProvider</code>). Neither ever throws —
-            every failure comes back as data, not an exception the invocation pipeline has to handle.
+            <code>OKF4net.Agents</code> exposes a bundle two ways: <strong>ten tools</strong> an agent calls
+            directly (<code>OkfBundleTools</code>), an eleventh — <code>okf_run_computation</code> — when an{' '}
+            <code>OKF4net.Attestation</code> orchestrator is wired in, and a <strong>context provider</strong>{' '}
+            that injects bounded reference data automatically (<code>OkfContextProvider</code>). Neither ever
+            throws — every failure comes back as data, not an exception the invocation pipeline has to handle.
           </>
         }
       />
@@ -65,7 +67,7 @@ export default function Agents() {
           </p>
         </Chapter>
 
-        <Chapter id="tools" title="The nine tools" refText="OkfBundleTools.GetTools()">
+        <Chapter id="tools" title="The ten (or eleven) tools" refText="OkfBundleTools.GetTools()">
           <p>
             Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — the tool
             returns a plain-text failure message (<code>Error: ...</code>, <code>Concept '...' not found</code>,
@@ -118,6 +120,21 @@ export default function Agents() {
               [
                 'okf_changes_since',
                 <>List every log entry on or after a given ISO date, across every <code>log.md</code> in the bundle.</>,
+              ],
+              [
+                'okf_get_computation',
+                <>
+                  Read a §10 attested-computation concept's contract and sanctioned computation source.
+                  Always available — read-only, needs no attestation runtime.
+                </>,
+              ],
+              [
+                'okf_run_computation',
+                <>
+                  Run a §10 attested computation end to end — bind → execute → attest → stale-gate — through a
+                  host-wired <code>AttestationOrchestrator</code>. Only present in <code>GetTools()</code> when
+                  one was passed to the <code>OkfBundleTools</code> constructor.
+                </>,
               ],
             ]}
           />
@@ -181,6 +198,19 @@ export default function Agents() {
             <code>okf_read_concept</code> and <code>okf_search</code> surface a concept's status, trust tier, and
             staleness inline rather than requiring a second round trip, and every stale-aware surface defaults to{' '}
             <code>StalePolicy.Use</code> — visible, never silently dropped.
+          </p>
+        </Chapter>
+
+        <Chapter id="attestation" title="Attested computation (§10)" refText="new OkfBundleTools(root, orchestrator)">
+          <p>
+            <code>okf_get_computation</code> is always available and read-only. Passing an{' '}
+            <code>AttestationOrchestrator</code> — from the zero-dependency{' '}
+            <a href="https://www.nuget.org/packages/OKF4net.Attestation">OKF4net.Attestation</a> package — to{' '}
+            <code>new OkfBundleTools(bundleRoot, orchestrator)</code> also exposes{' '}
+            <code>okf_run_computation</code>, which drives one run end to end (resolve → bind → execute →
+            receipt-shape check → attest → gate on the verdict and <code>stale_after</code>), always returning
+            an outcome rather than throwing for an expected failure. See the{' '}
+            <Link to="/docs/spec">spec mapping</Link> for the frontmatter contract.
           </p>
         </Chapter>
 
