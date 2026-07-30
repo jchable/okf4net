@@ -14,8 +14,16 @@ namespace OKF4net.Catalog;
 /// </summary>
 public sealed class FileMemoryStore : IMemoryStore
 {
-    private static readonly StringComparison PathComparison =
-        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    /// <summary>
+    /// The comparison used by <see cref="IsReparseEscaped"/>'s ancestor walk.
+    /// <see cref="StringComparison.Ordinal"/> on every platform: case-sensitivity
+    /// is a runtime property of the specific volume, not of the OS, and every
+    /// scoped subdirectory this class walks is built via
+    /// <see cref="Path.Combine(string[])"/> from the same tier root passed to
+    /// <see cref="IsReparseEscaped"/>, so its prefix always keeps that root's
+    /// exact casing -- <c>Ordinal</c> has no cost for legitimate input.
+    /// </summary>
+    private static readonly StringComparison PathComparison = StringComparison.Ordinal;
 
     // Most-specific first (spec §6.1).
     private static readonly MemoryTier[] ReadOrder = [MemoryTier.Session, MemoryTier.User, MemoryTier.Tenant];
