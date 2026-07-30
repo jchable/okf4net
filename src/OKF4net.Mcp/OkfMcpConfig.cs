@@ -4,7 +4,7 @@ namespace OKF4net.Mcp;
 /// <summary>
 /// Resolves the server's startup configuration (bundle root + read-only flag)
 /// from command-line arguments and environment variables. Pure and injectable
-/// (via the <c>getEnv</c> accessor on <see cref="TryResolve"/>) so both
+/// (via the <c>getEnv</c> accessor on <see cref="TryResolve(IReadOnlyList{string}, Func{string, string?}, out string, out bool, out string?)"/>) so both
 /// success and failure paths are unit-testable.
 /// </summary>
 public static class OkfMcpConfig
@@ -22,7 +22,9 @@ public static class OkfMcpConfig
     /// Resolves configuration. The bundle root is the first positional argument,
     /// else the <c>OKF_BUNDLE_ROOT</c> environment variable. Returns
     /// <see langword="false"/> with a human-readable <paramref name="error"/>
-    /// when no root is given or the root does not exist.
+    /// when no root is given or the root does not exist. Discovery, when it
+    /// applies, starts from the current working directory — see the
+    /// <c>startDirectory</c> overload.
     /// </summary>
     /// <param name="args">Process arguments (positional bundle root at index 0).</param>
     /// <param name="getEnv">Environment-variable accessor (e.g. <see cref="Environment.GetEnvironmentVariable(string)"/>).</param>
@@ -36,6 +38,54 @@ public static class OkfMcpConfig
         out string bundleRoot,
         out bool readOnly,
         out string? error)
+        => TryResolve(args, getEnv, Directory.GetCurrentDirectory(), out bundleRoot, out readOnly, out error);
+
+    /// <summary>
+    /// <see cref="TryResolve(IReadOnlyList{string}, Func{string, string?}, string, Func{string, string?}, out string, out bool, out string?)"/>
+    /// with the production root-index reader
+    /// (<see cref="OkfBundleDiscovery.ReadRootIndexOrNull"/>).
+    /// </summary>
+    /// <param name="args">Process arguments (positional bundle root at index 0).</param>
+    /// <param name="getEnv">Environment-variable accessor.</param>
+    /// <param name="startDirectory">Directory discovery walks up from when no explicit root is given.</param>
+    /// <param name="bundleRoot">The resolved bundle root (empty on failure).</param>
+    /// <param name="readOnly">Whether read-only mode is requested.</param>
+    /// <param name="error">The failure reason, or <see langword="null"/> on success.</param>
+    /// <returns><see langword="true"/> on success.</returns>
+    public static bool TryResolve(
+        IReadOnlyList<string> args,
+        Func<string, string?> getEnv,
+        string startDirectory,
+        out string bundleRoot,
+        out bool readOnly,
+        out string? error)
+        => TryResolve(args, getEnv, startDirectory, OkfBundleDiscovery.ReadRootIndexOrNull, out bundleRoot, out readOnly, out error);
+
+    /// <summary>
+    /// Resolves configuration. The bundle root is the first positional
+    /// argument, else the <c>OKF_BUNDLE_ROOT</c> environment variable, else a
+    /// bundle discovered by <see cref="OkfBundleDiscovery.TryDiscover"/>
+    /// walking up from <paramref name="startDirectory"/>. Discovery never
+    /// overrides an explicit root: a nonexistent argument or environment root
+    /// is still an error. Returns <see langword="false"/> with a
+    /// human-readable <paramref name="error"/> when no root can be resolved.
+    /// </summary>
+    /// <param name="args">Process arguments (positional bundle root at index 0).</param>
+    /// <param name="getEnv">Environment-variable accessor.</param>
+    /// <param name="startDirectory">Directory discovery walks up from when no explicit root is given.</param>
+    /// <param name="readRootIndex">Candidate directory → root index text accessor handed to discovery (injectable for hermetic tests).</param>
+    /// <param name="bundleRoot">The resolved bundle root (empty on failure).</param>
+    /// <param name="readOnly">Whether read-only mode is requested.</param>
+    /// <param name="error">The failure reason, or <see langword="null"/> on success.</param>
+    /// <returns><see langword="true"/> on success.</returns>
+    public static bool TryResolve(
+        IReadOnlyList<string> args,
+        Func<string, string?> getEnv,
+        string startDirectory,
+        Func<string, string?> readRootIndex,
+        out string bundleRoot,
+        out bool readOnly,
+        out string? error)
     {
         bundleRoot = string.Empty;
         readOnly = TruthyValues.Contains(getEnv(ReadOnlyEnv)?.Trim() ?? string.Empty);
@@ -46,7 +96,21 @@ public static class OkfMcpConfig
 
         if (string.IsNullOrWhiteSpace(root))
         {
-            error = $"no bundle root given. Pass it as the first argument or set {BundleRootEnv}.";
+            // Directory.Exists mirrors the explicit-root check below: the root
+            // was just probed by discovery, but a delete in between must yield
+            // the one-line error contract, not an exception at load time.
+            if (OkfBundleDiscovery.TryDiscover(startDirectory, readRootIndex, out var discovered)
+                && Directory.Exists(discovered))
+            {
+                bundleRoot = discovered;
+                error = null;
+                return true;
+            }
+
+            // ReplaceLineEndings guards the single-line stderr contract: a
+            // (legal, on Unix) newline in the CWD path must not break it.
+            error = $"no bundle root given and no marked bundle found from {startDirectory.ReplaceLineEndings(" ")} upward. "
+                + $"Pass a root as the first argument, set {BundleRootEnv}, or run /okf-init (OKF Claude Code plugin) to mark or create a bundle.";
             return false;
         }
 
@@ -69,7 +133,7 @@ public static class OkfMcpConfig
     /// caller writes it with a single <see cref="Console.Error"/> call rather
     /// than an error line plus a separate usage line.
     /// </summary>
-    /// <param name="error">The failure reason from <see cref="TryResolve"/> (may be <see langword="null"/>).</param>
+    /// <param name="error">The failure reason from <see cref="TryResolve(IReadOnlyList{string}, Func{string, string?}, out string, out bool, out string?)"/> (may be <see langword="null"/>).</param>
     /// <returns>A one-line message combining the error and the usage hint.</returns>
     public static string FormatStartupError(string? error)
     {
@@ -79,6 +143,6 @@ public static class OkfMcpConfig
             message += ".";
         }
 
-        return $"okf-mcp: {message} Usage: okf-mcp <bundle-root> (or set {BundleRootEnv}; {ReadOnlyEnv}=1 for read-only).";
+        return $"okf-mcp: {message} Usage: okf-mcp <bundle-root> (or set {BundleRootEnv}, or run inside a bundle whose root index.md declares okf_version; {ReadOnlyEnv}=1 for read-only).";
     }
 }
