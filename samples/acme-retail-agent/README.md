@@ -2,7 +2,7 @@
 
 A standalone console app demonstrating [Microsoft Agent Framework](https://github.com/microsoft/agent-framework)
 driving [OKF4net.Agents](../../src/OKF4net.Agents/README.md)'s tools and
-context provider against the [`bundles/acme_retail`](../../bundles/acme_retail/README.md)
+context provider against the [`bundles/acme_retail`](../../bundles/README.md)
 sample bundle. Read-only: browse/read/search/graph the bundle, and inspect
 (but not run) its Attested Computations. See
 [the design spec](../../docs/superpowers/specs/2026-07-30-acme-retail-bundle-and-agent-sample-design.md)
@@ -30,6 +30,9 @@ variables:
   the note in `Program.cs`.
 
 ## Run
+
+Run from `samples/acme-retail-agent/` (the commands below are relative to
+that directory).
 
 Interactive:
 

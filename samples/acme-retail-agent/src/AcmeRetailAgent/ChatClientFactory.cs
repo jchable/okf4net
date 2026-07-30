@@ -26,8 +26,9 @@ public static class ChatClientFactory
     /// <summary>
     /// Resolves an <see cref="IChatClient"/> from <paramref name="getEnv"/>.
     /// Returns <see langword="false"/> with a human-readable
-    /// <paramref name="error"/> when <see cref="BaseUrlEnv"/> is missing or
-    /// not a valid absolute URI, or <see cref="ModelEnv"/> is missing. Makes
+    /// <paramref name="error"/> when <see cref="BaseUrlEnv"/> is missing, not
+    /// a valid absolute URI, not an <c>http</c>/<c>https</c> URI, or
+    /// <see cref="ModelEnv"/> is missing. Makes
     /// no network calls -- the returned client only talks to the endpoint on
     /// its first real chat request.
     /// </summary>
@@ -52,6 +53,12 @@ public static class ChatClientFactory
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var endpoint))
         {
             error = $"{BaseUrlEnv} is not a valid absolute URI: '{baseUrl}'";
+            return false;
+        }
+
+        if (endpoint.Scheme is not ("http" or "https"))
+        {
+            error = $"{BaseUrlEnv} must be an http or https URI: '{baseUrl}'";
             return false;
         }
 

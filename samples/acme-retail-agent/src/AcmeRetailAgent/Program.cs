@@ -33,6 +33,11 @@ const string SystemInstructions =
     + "okf_get_computation (their contract and sanctioned SQL) but this "
     + "sample cannot run them.";
 
+// Kept in sync with OkfMcpToolset.WriteToolNames in src/OKF4net.Mcp: this
+// sample is read-only by construction, not just by documentation, so the
+// agent can never mutate the byte-exact, license-attributed upstream copy.
+string[] writeToolNames = ["okf_write_concept", "okf_append_log", "okf_regenerate_indexes"];
+
 var tools = new OkfBundleTools(bundleRoot);
 var contextProvider = new OkfContextProvider(tools);
 var agentOptions = new ChatClientAgentOptions
@@ -40,19 +45,32 @@ var agentOptions = new ChatClientAgentOptions
     ChatOptions = new ChatOptions
     {
         Instructions = SystemInstructions,
-        Tools = tools.GetTools(),
+        Tools = [.. tools.GetTools().Where(t => !writeToolNames.Contains(t.Name))],
     },
     AIContextProviders = [contextProvider],
 };
 AIAgent agent = chatClient.AsAIAgent(agentOptions);
 
-var oneShotPrompt = ReadOneShotPrompt(args);
+if (!TryReadOneShotPrompt(args, out var oneShotPrompt, out var promptError))
+{
+    Console.Error.WriteLine($"acme-retail-agent: {promptError}");
+    return 2;
+}
+
 if (oneShotPrompt is not null)
 {
-    var response = await agent.RunAsync(oneShotPrompt);
-    PrintToolCalls(response);
-    Console.WriteLine(response.Text);
-    return 0;
+    try
+    {
+        var response = await agent.RunAsync(oneShotPrompt);
+        PrintToolCalls(response);
+        Console.WriteLine(response.Text);
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"acme-retail-agent: chat request failed: {ex.Message}");
+        return 1;
+    }
 }
 
 Console.WriteLine("Acme Retail agent -- ask a question, or type 'exit'/'quit' to leave.");
@@ -71,9 +89,17 @@ while (true)
         continue;
     }
 
-    var response = await agent.RunAsync(line, session);
-    PrintToolCalls(response);
-    Console.WriteLine(response.Text);
+    try
+    {
+        var response = await agent.RunAsync(line, session);
+        PrintToolCalls(response);
+        Console.WriteLine(response.Text);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"acme-retail-agent: chat request failed: {ex.Message}");
+        continue;
+    }
 }
 
 return 0;
@@ -94,23 +120,38 @@ static string? ResolveBundleRoot(string? overridePath)
     return dir is null ? null : Path.Combine(dir.FullName, "bundles", "acme_retail");
 }
 
-static string? ReadOneShotPrompt(string[] args)
+// Returns false only when `--prompt` was given with no following value (a
+// usage error, formatted into `error`); a `--prompt`-less invocation is not
+// an error -- `prompt` is null and the caller falls through to stdin/REPL.
+static bool TryReadOneShotPrompt(string[] args, out string? prompt, out string? error)
 {
     for (var i = 0; i < args.Length; i++)
     {
-        if (args[i] == "--prompt" && i + 1 < args.Length)
+        if (args[i] == "--prompt")
         {
-            return args[i + 1];
+            if (i + 1 >= args.Length)
+            {
+                prompt = null;
+                error = "--prompt requires a value";
+                return false;
+            }
+
+            prompt = args[i + 1];
+            error = null;
+            return true;
         }
     }
 
+    error = null;
     if (Console.IsInputRedirected)
     {
         var piped = Console.In.ReadToEnd();
-        return string.IsNullOrWhiteSpace(piped) ? null : piped.Trim();
+        prompt = string.IsNullOrWhiteSpace(piped) ? null : piped.Trim();
+        return true;
     }
 
-    return null;
+    prompt = null;
+    return true;
 }
 
 static void PrintToolCalls(AgentResponse response)

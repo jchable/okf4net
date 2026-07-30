@@ -2,7 +2,7 @@
 
 A fictional retail company's [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 v0.2 bundle, used in this repo for manual testing and samples (see
-[`samples/acme-retail-agent/`](../../samples/acme-retail-agent/README.md)).
+[`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md)).
 It exercises parts of the spec a minimal synthetic bundle can't: `Metric`
 and `Policy` concepts, a `Skill`, an `Attested Computation` pair
 (`runtime: bigquery`) with its executor and attester, trust tiers
@@ -27,7 +27,7 @@ the repo root and the attribution entry in `NOTICE`.
   reference resource (the `attester.resource` target for
   `computations/*.md`). OKF4net does not execute Python, and nothing in
   this repo ports or reimplements its logic in C# — see
-  [`samples/acme-retail-agent/README.md`](../../samples/acme-retail-agent/README.md)
+  [`samples/acme-retail-agent/README.md`](../samples/acme-retail-agent/README.md)
   for why, and what actually running an Attested Computation against this
   bundle would require.
 
@@ -40,9 +40,7 @@ dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail
 Exits `0` (conformant): 9 concepts, 0 errors, 18 warnings, 0 info. The
 warnings are expected and harmless:
 
-- Most are "missing recommended frontmatter field `resource`" on concept
-  types where a `resource` URI doesn't apply (`Metric`, `Skill`).
-- The rest are `sources[].resource` / `executor.resource` /
+- 12 of the 18 are `sources[].resource` / `executor.resource` /
   `attester.resource` frontmatter paths reported as "not found". OKF v0.2
   §6.2 resolves a plain relative path (no leading `/`) against the
   **referencing concept's own directory**, not the bundle root — e.g.
@@ -53,3 +51,6 @@ warnings are expected and harmless:
   concept. The upstream bundle writes these paths bundle-root-relative
   instead. This affects only frontmatter-path *resolution* diagnostics —
   reading, browsing, and searching the bundle are unaffected.
+- The remaining 6 are "missing recommended frontmatter field `resource`"
+  on concept types where a `resource` URI doesn't apply (`Metric`, `Skill`,
+  and `Attested Computation`).
