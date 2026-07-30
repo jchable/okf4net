@@ -88,6 +88,48 @@ public class MemoryServiceCollectionExtensionsTests
     }
 
     [Fact]
+    public void AddMemory_throws_when_a_memory_root_overlaps_a_knowledge_root_only_by_case()
+    {
+        // Portable regression: pins that the comparison is OrdinalIgnoreCase
+        // unconditionally, not the OS-conditional heuristic that used to
+        // pick Ordinal on Linux and miss this. Both "kb" and "KB/mem" are
+        // created for real (not just referenced by string) so this passes
+        // identically regardless of the actual host's case-sensitivity: on a
+        // case-insensitive volume the two paths are the same physical
+        // subtree (a genuine overlap); on a case-sensitive one they are two
+        // independent directories that this check deliberately still
+        // rejects, since over-detection here is harmless (see
+        // ThrowIfMemoryOverlapsKnowledge's remarks) while a missed overlap
+        // is not.
+        using var root = new TempDir();
+        Directory.CreateDirectory(Path.Combine(root.Path, "kb"));
+        Directory.CreateDirectory(Path.Combine(root.Path, "KB", "mem"));
+        foreach (var f in Directory.GetFiles(BundlePath))
+        {
+            File.Copy(f, Path.Combine(root.Path, "kb", Path.GetFileName(f)));
+        }
+
+        root.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "kb", "path": "./kb", "role": "knowledge" },
+                { "id": "user-mem", "path": "./KB/mem", "role": "memory", "tier": "user" }
+              ]
+            }
+            """);
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o => o.AddCatalogFile(Path.Combine(root.Path, "catalog.json")));
+        services.AddMemory();
+        using var sp = services.BuildServiceProvider();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => sp.GetRequiredService<IMemoryStore>());
+        Assert.Contains("user-mem", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("kb", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AddMemory_does_not_wire_a_disabled_memory_source()
     {
         using var root = new TempDir();

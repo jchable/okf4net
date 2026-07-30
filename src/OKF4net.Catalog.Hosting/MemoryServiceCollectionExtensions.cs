@@ -108,17 +108,6 @@ public static class MemoryServiceCollectionExtensions
     }
 
     /// <summary>
-    /// The comparison used to test memory/knowledge root containment: an
-    /// OS-appropriate comparison mirroring <c>CatalogPathResolver</c> and
-    /// <c>FileMemoryStore.PathComparison</c> (case-insensitive on
-    /// Windows/macOS, ordinal on a case-sensitive filesystem). Both roots being
-    /// compared are already <see cref="Path.GetFullPath(string)"/>-canonical
-    /// (produced by <see cref="CatalogPathResolver.TryResolve"/>).
-    /// </summary>
-    private static readonly StringComparison PathComparison =
-        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-
-    /// <summary>
     /// Fail-fast: a memory root that equals or nests within a knowledge root
     /// (or vice-versa) would be walked and searched by
     /// <see cref="GroupedKnowledgeResolver"/> as if it were shared knowledge,
@@ -126,6 +115,18 @@ public static class MemoryServiceCollectionExtensions
     /// roots, so this throws an <see cref="InvalidOperationException"/> naming
     /// the offending source ids rather than silently building a leaky store.
     /// </summary>
+    /// <remarks>
+    /// <see cref="IsWithin"/> compares with
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> unconditionally, not
+    /// an OS-conditional heuristic: unlike an escape-prevention check, a
+    /// missed overlap here (false negative) is a silent memory-to-knowledge
+    /// leak, while an over-detected one (false positive) is only a startup
+    /// exception -- the safe direction favors the more permissive comparison.
+    /// Testing <c>Ordinal</c> in addition would add nothing: for any fixed
+    /// pair of strings, an <c>Ordinal</c> match always implies an
+    /// <c>OrdinalIgnoreCase</c> match, so it can never change this method's
+    /// verdict.
+    /// </remarks>
     private static void ThrowIfMemoryOverlapsKnowledge(
         IReadOnlyList<(string Id, string Root)> memoryRoots,
         IReadOnlyList<(string Id, string Root)> knowledgeRoots)
@@ -148,18 +149,20 @@ public static class MemoryServiceCollectionExtensions
     /// <summary>
     /// <c>true</c> if <paramref name="candidate"/> is <paramref name="root"/>
     /// itself or a descendant of it, comparing full paths with
-    /// <see cref="PathComparison"/>. Mirrors
-    /// <c>OKF4net.Internal.ReparsePoints.IsWithin</c> (not visible to this
-    /// assembly) rather than duplicating its containment convention loosely.
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> unconditionally (see
+    /// <see cref="ThrowIfMemoryOverlapsKnowledge"/>'s remarks for why).
+    /// Mirrors <c>OKF4net.Internal.ReparsePoints.IsWithin</c> (not visible to
+    /// this assembly) rather than duplicating its containment convention
+    /// loosely.
     /// </summary>
     private static bool IsWithin(string root, string candidate)
     {
-        if (string.Equals(root, candidate, PathComparison))
+        if (string.Equals(root, candidate, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
         var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
-        return candidate.StartsWith(rootWithSeparator, PathComparison);
+        return candidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
     }
 }
