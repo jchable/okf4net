@@ -13,9 +13,18 @@ retail company with Metrics, Policies, an Attested Computation pair
 (`runtime: bigquery`, a Skill executor, a Python attester), and a BigQuery
 Table concept. This spec brings that bundle into OKF4net for manual
 testing/demos, and builds a standalone sample console app that consumes it
-through Microsoft Agent Framework end to end, including running the attested
-computations for real (mocked backend, real bind→execute→attest→gate
-pipeline).
+through Microsoft Agent Framework — reading, browsing, searching, and
+inspecting the bundle's contract for the Attested Computations (but not
+running them; see "Future work").
+
+**Why not port the attester to C#:** §10's whole trust model rests on
+executing the *actual* sanctioned script referenced by `attester.resource` —
+not a reimplementation of what someone believes it does. A C# port of
+`sql_equality.py` would be exactly the kind of divergence risk attestation
+exists to eliminate: the port could silently drift from the real script over
+time, and the thing actually being trusted would quietly become "our reading
+of the Python," not the Python itself. So `sql_equality.py` stays
+untouched in the bundle, and this sample does not attempt to execute it.
 
 ## Part A — `bundles/acme_retail`
 
@@ -68,9 +77,9 @@ Documents:
   Metric/Policy/Attested Computation/Skill/BigQuery Table types, trust tiers,
   staleness, deprecation).
 - Provenance: source repo, path, commit SHA pinned at copy time, Apache-2.0.
-- That `sql_equality.py` is preserved as-is for reference; OKF4net does not
-  execute Python, so `samples/acme-retail-agent` reimplements its logic in
-  C# (Part B).
+- That `sql_equality.py` is preserved as-is, untouched; OKF4net does not
+  execute Python and `samples/acme-retail-agent` does not port or reimplement
+  it (see that sample's own README and "Future work" below).
 - That `viz.html` was intentionally omitted, and why.
 
 ### Other doc updates
@@ -99,16 +108,6 @@ samples/acme-retail-agent/
     AcmeRetailAgent.csproj
     Program.cs                      # CLI entry: REPL + --prompt one-shot
     ChatClientFactory.cs            # builds IChatClient from env vars
-    Attestation/
-      BigQueryRuntime.cs            # IAttestationRuntime for "bigquery"
-      MockParameterBinder.cs
-      MockBigQueryExecutor.cs
-      FakeData.cs                   # in-memory orders/products/fx/etc.
-      SqlEqualityAttester.cs        # port of sql_equality.py
-  tests/AcmeRetailAgent.Tests/
-    AcmeRetailAgent.Tests.csproj
-    SqlEqualityAttesterTests.cs
-    MockBigQueryExecutorTests.cs
 ```
 
 ### 1. Chat client (multi-provider)
@@ -127,55 +126,25 @@ mirroring `OkfMcpConfig`'s pattern in `OKF4net.Mcp` — no partial startup.
 
 ### 2. Agent wiring
 
-- `OkfBundleTools` rooted at `bundles/acme_retail`, constructed with the
-  `AttestationOrchestrator` from §3 below (so `okf_run_computation` is part
-  of the exposed tool set, not just `okf_get_computation`).
+- `OkfBundleTools` rooted at `bundles/acme_retail`, constructed **without**
+  an `AttestationOrchestrator` — per `OkfBundleTools`'s own documented
+  behavior this exposes `okf_read_concept`, `okf_browse`, `okf_graph`,
+  `okf_search`, `okf_validate_bundle`, `okf_changes_since`, and
+  `okf_get_computation` (read-only: the §10 contract and sanctioned SQL
+  text), while omitting `okf_run_computation` entirely rather than exposing
+  an always-erroring tool. The write tools (`okf_write_concept`,
+  `okf_append_log`, `okf_regenerate_indexes`) are technically present but
+  not the point of this demo against a fixed sample bundle.
 - `OkfContextProvider` registered via `ChatClientAgentOptions.AIContextProviders`
   for automatic budget-bounded context injection — the sample exercises both
   `OKF4net.Agents` integration surfaces (explicit tools + ambient context),
   not just one.
 - System instructions: short, tells the agent it's grounded in the Acme
-  Retail OKF bundle and should use the tools rather than guessing.
+  Retail OKF bundle and should use the tools rather than guessing. Explicitly
+  notes that Attested Computations can be inspected (`okf_get_computation`)
+  but not run through this sample.
 
-### 3. The `bigquery` attestation runtime (mock, real pipeline)
-
-Registered into `AttestationRuntimeRegistry(["bigquery"] = ...)`. This is a
-**mock backend with a real pipeline** — no rigged pass-through:
-
-- **`MockParameterBinder : IParameterBinder`** — binds `{year}` (for
-  `revenue-ytd`) or `{period_start, period_end}` (for `gross-margin-period`)
-  into `BoundComputation`. `BoundText` is the sanctioned SQL **unchanged**
-  (keeps `@name` placeholders — the Skill doc's own "do not
-  string-interpolate" rule); `Values` carries the supplied parameters.
-- **`FakeData.cs`** — small in-memory tables sized just for these two
-  computations: `orders`, `order_lines`, `products`, `fx_daily_rates`,
-  `fulfillment_cost`, `shipment_cost`, `payment_fees`. Order dates are fixed
-  within FY2026 Q2 (matching `tables/orders.md`'s own
-  `usage_window: 2026-04-01..2026-06-30`), `order_status = 'delivered'` —
-  comfortably past the 30-day recognition window both now and indefinitely
-  into the future (2026 dates only get older). At least one non-USD order
-  exercises the `fx_daily_rates` conversion leg.
-- **`MockBigQueryExecutor : IComputationExecutor`** — dispatches on which
-  parameter names were bound (`year` present → revenue-ytd logic;
-  `period_start`/`period_end` present → gross-margin-period logic), computes
-  the real result via LINQ over `FakeData` applying the same business rules
-  as the sanctioned SQL (delivered + 30-day window, USD conversion, full
-  COGS for margin), and returns `Receipt{job_id, executed_sql, result}` with
-  `executed_sql` = the sanctioned SQL text (what a real executor would echo
-  back) and `result` = the computed figure — the executor does not know the
-  "expected" answer in advance, it derives it.
-- **`SqlEqualityAttester : IAttester`** — direct port of
-  `attesters/sql_equality.py`: canonicalize (strip `--`/`/* */` comments,
-  collapse whitespace, uppercase only recognized SQL keywords, leave
-  identifiers alone), compare `receipt.executed_sql`'s canonical form to the
-  sanctioned computation's, then compare `receipt.result[0]` to the caller's
-  claimed value. Both checks must pass for `AttestationVerdict.Passed`.
-
-Because `stale_after: 2026-12-31` on both computations postdates "today"
-(2026-07-30) and the FakeData dates, a demo run through the REPL produces a
-genuine `Displayable: true` outcome without any clock overrides.
-
-### 4. CLI UX
+### 3. CLI UX
 
 - `dotnet run --project src/AcmeRetailAgent` — interactive REPL: reads a
   line, runs one agent turn, prints the response (and, for visibility, a
@@ -184,26 +153,37 @@ genuine `Displayable: true` outcome without any clock overrides.
   stdin) — runs exactly one turn non-interactively and exits 0, for smoke
   testing / demo scripting.
 
-### 5. Testing
+### 4. Testing
 
-`tests/AcmeRetailAgent.Tests` (xunit, matching the main repo's test
-framework), runnable manually (`dotnet test` from
-`samples/acme-retail-agent/`), **not** wired into root CI:
+No dedicated test project for this sample: there is no bespoke logic to
+unit-test (tool wiring and context injection are already covered by
+`OKF4net.Agents`'s own test suite) beyond the chat-client env-var config
+parsing, which is small enough to sanity-check by manual smoke test
+(`dotnet run -- --prompt "..."` with valid/invalid env vars). If that parsing
+grows non-trivial during implementation, add a minimal test project then
+rather than speculatively now.
 
-- `SqlEqualityAttesterTests` — canonicalization behavior (comments,
-  whitespace, keyword casing), a positive match, and a **tampered receipt**
-  case (mismatched `executed_sql` and a mismatched `result[0]`) proving the
-  attester actually rejects — not just that it accepts the happy path.
-- `MockBigQueryExecutorTests` — both computations against hand-computed
-  expected totals from `FakeData`, so the executor's LINQ logic is verified
-  independent of the LLM/agent loop.
-- No test depends on a live chat-provider endpoint; the REPL/agent loop
-  itself is manually smoke-tested, not covered by automated tests (would
-  require a real or fake LLM backend, out of scope here).
+## Future work: a container-based execution runtime
+
+Out of scope for this spec, noted here so it isn't lost: a follow-on
+initiative to actually run §10 Attested Computations end to end — executing
+the *real* referenced scripts (e.g. `attesters/sql_equality.py`,
+`skills/run-on-bq.md`'s executor logic) inside a sandboxed container, rather
+than a native C# reimplementation. This would plug into `OKF4net.Attestation`
+as `IComputationExecutor`/`IAttester` implementations that shell out to a
+container runtime (Docker or similar) per `runtime:`/language, keeping the
+sanctioned script itself as the thing that actually runs — preserving the
+trust property a port would undermine. Needs its own design pass (sandboxing
+model, how the container gets the script + inputs, how a receipt/verdict
+comes back out, resource/time limits) before implementation; will likely use
+`acme_retail`'s `computations/revenue-ytd.md` and `gross-margin-period.md` as
+its worked example once it exists.
 
 ## Out of scope
 
 - Adding `samples/` to `OKF4net.sln` or `ci.yml`.
+- Running Attested Computations for real (`okf_run_computation`) — see
+  "Future work" above.
 - A general-purpose `Source`/BigQuery-ingestion pipeline (the earlier,
   larger "port the reference_agent enrichment tool" idea) — this spec is
   scoped to the bundle + one consuming sample, not a content-generation tool.
@@ -216,7 +196,3 @@ framework), runnable manually (`dotnet test` from
 - If `Microsoft.Extensions.AI.OpenAI`'s API shape has moved since
   `OKF4net.Agents`'s own dependency version, the sample must pin/match a
   compatible version — checked during implementation, not assumed here.
-- FakeData's fixed FY2026 dates are a deliberate simplification; if the
-  sample is revisited far in the future and someone wants to demo other
-  fiscal years, the dataset would need extending (not a correctness bug,
-  just a demo-data limitation, noted in the sample's own README).
