@@ -99,10 +99,14 @@ internal static class ReparsePoints
     /// <param name="path">The starting point of the upward walk.</param>
     /// <param name="rootComparison">
     /// The comparison used to detect that the walk has reached
-    /// <paramref name="root"/>. Callers differ on this (ordinal vs.
-    /// ordinal-ignore-case) depending on their own root-equality convention;
-    /// this parameter preserves each call site's original behavior rather
-    /// than silently unifying it.
+    /// <paramref name="root"/>. Every current caller passes
+    /// <see cref="StringComparison.Ordinal"/> uniformly -- the 2-arg
+    /// <see cref="HasReparsePointAncestor(string, string)"/> overload,
+    /// <c>IndexGenerator</c>'s private wrapper, <c>FileMemoryStore.PathComparison</c>,
+    /// and <c>CatalogPathResolver</c>'s <c>ContainmentComparison</c> path all
+    /// do. The parameter stays explicit rather than hardcoding
+    /// <c>Ordinal</c> internally, keeping this comparison a visible,
+    /// independently testable seam instead of an implicit assumption.
     /// </param>
     /// <returns>
     /// <see langword="true"/> if a reparse point was found; otherwise
@@ -193,11 +197,15 @@ internal static class ReparsePoints
     /// <see cref="StringComparison.Ordinal"/> -- <c>OrdinalIgnoreCase</c>
     /// would treat a case-variant of <paramref name="root"/> (a genuinely
     /// different directory on such a filesystem) as contained within it,
-    /// silently defeating this method's entire purpose. Callers whose input
-    /// is already validated/trusted, or who only ever run where the
-    /// filesystem itself is case-insensitive, may still choose
-    /// <c>OrdinalIgnoreCase</c> to match that filesystem's own equality
-    /// semantics.
+    /// silently defeating this method's entire purpose. Every current caller
+    /// of this method passes <see cref="StringComparison.Ordinal"/> --
+    /// <see cref="IsWithinBundleRoot"/>, <c>Bundle.cs</c>, and
+    /// <c>CatalogPathResolver</c>'s <c>ContainmentComparison</c> path all do.
+    /// A future caller that instead chooses <c>OrdinalIgnoreCase</c> owes a
+    /// documented safe-direction argument for why an over-approximation is
+    /// the safer failure mode at that call site, the way
+    /// <c>MemoryServiceCollectionExtensions.ThrowIfMemoryOverlapsKnowledge</c>
+    /// documents its own deliberate choice of <c>OrdinalIgnoreCase</c>.
     /// </remarks>
     internal static bool IsWithin(string root, string path, StringComparison comparison)
     {
