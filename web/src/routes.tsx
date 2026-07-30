@@ -13,6 +13,7 @@ import WhatOkfIs from './pages/WhatOkfIs'
 import Library from './pages/Library'
 import Cli from './pages/Cli'
 import Contributing from './pages/Contributing'
+import Support from './pages/Support'
 import NotFound from './pages/NotFound'
 
 export const routes: RouteRecord[] = [
@@ -30,6 +31,7 @@ export const routes: RouteRecord[] = [
   { path: '/library', element: <Library />, entry: 'src/pages/Library.tsx' },
   { path: '/cli', element: <Cli />, entry: 'src/pages/Cli.tsx' },
   { path: '/contributing', element: <Contributing />, entry: 'src/pages/Contributing.tsx' },
+  { path: '/support', element: <Support />, entry: 'src/pages/Support.tsx' },
   // Explicit /404 route so the SSG build emits dist/404/index.html (Task 7
   // copies it to dist/404.html for GitHub Pages); '*' is the client-side
   // catch-all for unknown-route navigation within the SPA.
