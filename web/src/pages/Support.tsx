@@ -51,8 +51,8 @@ export default function Support() {
           <Cta title="Priority support, integration help, custom dev, training.">
             <p>Annual SLA plans, per-incident support, and quote-based engagements for everything else.</p>
             <div className="hero-actions">
-              <a className="btn primary" href="https://okf4net.coderise.fr">
-                okf4net.coderise.fr ↗
+              <a className="btn primary" href="https://okf4net.oss.coderise.fr">
+                okf4net.oss.coderise.fr ↗
               </a>
             </div>
           </Cta>
