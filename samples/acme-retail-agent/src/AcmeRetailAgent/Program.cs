@@ -68,7 +68,7 @@ if (oneShotPrompt is not null)
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"acme-retail-agent: chat request failed: {ex.Message}");
+        ReportChatFailure(ex);
         return 1;
     }
 }
@@ -79,12 +79,18 @@ while (true)
 {
     Console.Write("> ");
     var line = Console.ReadLine();
-    if (line is null || line.Trim() is "exit" or "quit")
+    if (line is null)
     {
         break;
     }
 
-    if (line.Trim().Length == 0)
+    var trimmed = line.Trim();
+    if (trimmed is "exit" or "quit")
+    {
+        break;
+    }
+
+    if (trimmed.Length == 0)
     {
         continue;
     }
@@ -97,7 +103,7 @@ while (true)
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"acme-retail-agent: chat request failed: {ex.Message}");
+        ReportChatFailure(ex);
         continue;
     }
 }
@@ -125,21 +131,19 @@ static string? ResolveBundleRoot(string? overridePath)
 // an error -- `prompt` is null and the caller falls through to stdin/REPL.
 static bool TryReadOneShotPrompt(string[] args, out string? prompt, out string? error)
 {
-    for (var i = 0; i < args.Length; i++)
+    var index = Array.IndexOf(args, "--prompt");
+    if (index >= 0)
     {
-        if (args[i] == "--prompt")
+        if (index + 1 >= args.Length)
         {
-            if (i + 1 >= args.Length)
-            {
-                prompt = null;
-                error = "--prompt requires a value";
-                return false;
-            }
-
-            prompt = args[i + 1];
-            error = null;
-            return true;
+            prompt = null;
+            error = "--prompt requires a value";
+            return false;
         }
+
+        prompt = args[index + 1];
+        error = null;
+        return true;
     }
 
     error = null;
@@ -153,6 +157,9 @@ static bool TryReadOneShotPrompt(string[] args, out string? prompt, out string? 
     prompt = null;
     return true;
 }
+
+static void ReportChatFailure(Exception ex) =>
+    Console.Error.WriteLine($"acme-retail-agent: chat request failed: {ex.Message}");
 
 static void PrintToolCalls(AgentResponse response)
 {
