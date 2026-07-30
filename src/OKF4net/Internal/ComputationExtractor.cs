@@ -19,19 +19,65 @@ internal static class ComputationExtractor
     /// extracted. An opening fence that is never closed returns the
     /// accumulated body text through end-of-input rather than <c>null</c>,
     /// matching CommonMark's own treatment of an unterminated fenced code
-    /// block.
+    /// block. The heading search itself is fence-aware: per CommonMark, a
+    /// fenced code block is a container, so a heading-like line inside an
+    /// earlier, unrelated fenced block is inert content, not a real
+    /// heading, and is skipped rather than matched.
     /// </summary>
     internal static string? ExtractInline(string body)
     {
         var lines = LfLines.Split(body);
 
         var headingIdx = -1;
+        var insideForeignFence = false;
+        var foreignFenceChar = '`';
+        var foreignFenceOpenLen = 0;
         for (var i = 0; i < lines.Count; i++)
         {
-            if (lines[i].Trim() == Heading)
+            if (insideForeignFence)
             {
-                headingIdx = i;
-                break;
+                var candidate = lines[i].Trim();
+                var closeLen = 0;
+                while (closeLen < candidate.Length && candidate[closeLen] == foreignFenceChar)
+                {
+                    closeLen++;
+                }
+
+                if (closeLen == candidate.Length && closeLen >= foreignFenceOpenLen && closeLen >= 3)
+                {
+                    insideForeignFence = false;
+                }
+
+                continue;
+            }
+
+            var trimmedStart = lines[i].TrimStart();
+            char openChar;
+            if (trimmedStart.StartsWith("```", StringComparison.Ordinal))
+            {
+                openChar = '`';
+            }
+            else if (trimmedStart.StartsWith("~~~", StringComparison.Ordinal))
+            {
+                openChar = '~';
+            }
+            else
+            {
+                if (lines[i].Trim() == Heading)
+                {
+                    headingIdx = i;
+                    break;
+                }
+
+                continue;
+            }
+
+            insideForeignFence = true;
+            foreignFenceChar = openChar;
+            foreignFenceOpenLen = 0;
+            while (foreignFenceOpenLen < trimmedStart.Length && trimmedStart[foreignFenceOpenLen] == openChar)
+            {
+                foreignFenceOpenLen++;
             }
         }
 
