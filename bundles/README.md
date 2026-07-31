@@ -1,15 +1,22 @@
-# Acme Retail (sample bundle)
+# Sample bundles
 
-A fictional retail company's [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
-v0.2 bundle, used in this repo for manual testing and samples (see
-[`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md)).
-It exercises parts of the spec a minimal synthetic bundle can't: `Metric`
-and `Policy` concepts, a `Skill`, an `Attested Computation` pair
-(`runtime: bigquery`) with its executor and attester, trust tiers
-(`verified`), staleness (`stale_after`), and a deprecated concept kept for
-historical reproducibility.
+Sample [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+v0.2 bundles used in this repo for manual testing and samples — distinct
+from [`tests/fixtures/`](../tests/fixtures/README.md), which stays
+byte-exact golden CLI captures. Consumed together by
+[`samples/catalog-explorer/`](../samples/catalog-explorer/README.md);
+`acme_retail` alone is also consumed by
+[`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md).
 
-## Provenance
+## Acme Retail
+
+A fictional retail company's bundle. It exercises parts of the spec a
+minimal synthetic bundle can't: `Metric` and `Policy` concepts, a `Skill`,
+an `Attested Computation` pair (`runtime: bigquery`) with its executor and
+attester, trust tiers (`verified`), staleness (`stale_after`), and a
+deprecated concept kept for historical reproducibility.
+
+### Provenance
 
 Copied verbatim from `okf/bundles/acme_retail` in
 [`GoogleCloudPlatform/knowledge-catalog`](https://github.com/GoogleCloudPlatform/knowledge-catalog),
@@ -17,7 +24,7 @@ commit [`3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`](https://github.com/GoogleClo
 licensed under the Apache License, Version 2.0 — see `LICENSE.Apache-2.0` at
 the repo root and the attribution entry in `NOTICE`.
 
-## What's different from upstream
+### What's different from upstream
 
 - `viz.html` was **not** carried over: it's a generated artifact of the
   upstream Python `reference_agent` visualizer (Cytoscape JS/CSS tied to
@@ -31,7 +38,7 @@ the repo root and the attribution entry in `NOTICE`.
   for why, and what actually running an Attested Computation against this
   bundle would require.
 
-## Validating
+### Validating
 
 ```bash
 dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail
@@ -54,3 +61,36 @@ warnings are expected and harmless:
 - The remaining 6 are "missing recommended frontmatter field `resource`"
   on concept types where a `resource` URI doesn't apply (`Metric`, `Skill`,
   and `Attested Computation`).
+
+## GA4
+
+Google's public GA4 ecommerce reference docs bundle, used in this repo as
+a second knowledge source alongside `acme_retail` — see
+[`samples/catalog-explorer/`](../samples/catalog-explorer/README.md). It
+exercises concept types `acme_retail` doesn't: a `BigQuery Dataset`, and a
+set of `Reference` concepts documenting ecommerce audience metrics
+(`purchasers`, `n_day_active_users`, and others).
+
+### Provenance
+
+Copied verbatim from `okf/bundles/ga4` in
+[`GoogleCloudPlatform/knowledge-catalog`](https://github.com/GoogleCloudPlatform/knowledge-catalog),
+commit [`3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/3fcbb9f828c2f23d109c855ee403c3a4c81f3a96/okf/bundles/ga4),
+licensed under the Apache License, Version 2.0 — see `LICENSE.Apache-2.0` at
+the repo root and the attribution entry in `NOTICE`.
+
+### What's different from upstream
+
+- `viz.html` was **not** carried over: it's a generated artifact of the
+  upstream Python `reference_agent` visualizer (Cytoscape JS/CSS tied to
+  that toolchain), not OKF bundle content — nothing in this repo generates
+  or keeps it in sync (same as `acme_retail`).
+
+### Validating
+
+```bash
+dotnet run --project src/OKF4net.Cli -- validate bundles/ga4
+```
+
+Exits `0` (conformant): 9 concepts, 0 errors, 0 warnings, 0 info.
+```
