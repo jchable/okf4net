@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `Provenance.ToYaml`, `ConceptId.Slugify`, a `Frontmatter`-typed `BundleConceptWriter.WriteConcept`
+  overload, and `OkfDocumentBuilder`: producer-facing API for constructing and writing an OKF concept
+  entirely in memory, without a serialize/re-parse round trip through YAML text. Motivated by the
+  upcoming native OKF producer (`producers/`), usable independently by any programmatic caller.
+
 ### Fixed
 
 - **The YAML frontmatter parser now supports multi-line (folded) plain
