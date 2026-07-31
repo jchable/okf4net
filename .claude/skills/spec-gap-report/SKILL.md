@@ -159,3 +159,42 @@ The main thread (not a subagent) synthesizes all section agents' outputs
 into the final report. Use the plain `Agent` tool for this fan-out, never
 the `Workflow` orchestration tool — `Workflow` requires explicit per-session
 user opt-in that this skill must not assume.
+
+## 4. Classify each statement
+
+Each atomic statement (after pointer-collapsing per §2 above) gets:
+
+- **Status**: `Implemented` / `Partial` / `Missing` / `Diverges` / `N/A`
+- **If `Diverges`**: sub-classify as **Intentional** (a citation exists in
+  `README.md` / `CHANGELOG.md` / `docs/design/*.md` / a code comment
+  explaining the choice) or **Undocumented** (a real, unaddressed gap).
+  Worked example of **Intentional**: the §13.1 `timestamp`→`generated.at`
+  and `# Citations`→`sources` fallbacks, both flagged as equally-weighted
+  `Warning`s at `src/OKF4net/Validate.cs:274` and `:279`, and both
+  documented in `README.md`'s §13 table row — these are `Diverges` /
+  `Intentional`, not `Missing` or undocumented gaps.
+- **`N/A`**: for a statement with no meaningful implementation surface for
+  a *library* — e.g. §4.2's "Producers SHOULD favor structural markdown
+  over freeform prose" is authoring guidance for humans writing bundles,
+  not something OKF4net's code can implement or fail to implement. Use
+  sparingly — only when there is genuinely no code-level counterpart, not
+  as an escape hatch for statements that are merely hard to verify.
+- **`Partial` vs. `Diverges`/Undocumented** (the two easiest to confuse):
+  `Partial` means the implementation is on a trajectory toward the
+  statement but doesn't fully satisfy it yet (parsed but not validated, or
+  validated with only a `Warning` where the spec's `MUST` implies harder
+  enforcement) — a plausible next PR closes it without changing existing
+  behavior. `Diverges`/Undocumented means the implementation actively
+  conflicts with the statement, not merely does less of it — closing it
+  would require *changing* existing behavior. When in doubt, default to
+  `Partial`: `Diverges` is the stronger claim and needs unambiguous
+  evidence of conflicting (not just incomplete) behavior.
+- **Severity**:
+  - **Critical** — breaks §11 conformance (the three declarative
+    conditions, the §4.1 `REQUIRED` statement, or a §11 consumer
+    `MUST`/`MUST NOT` bullet that is not itself a pointer)
+  - **Major** — a `MUST`/`SHOULD` outside §11 whose violation changes
+    observable behavior
+  - **Minor** — a `MAY`, an edge case, or a cosmetic/informative-only
+    divergence
+  - `N/A`-status statements carry no severity.
