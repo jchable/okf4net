@@ -40,7 +40,7 @@ public sealed record Diagnostic(
 }
 ```
 
-Nouvel enum `DiagnosticCode`, un membre par diagnostic distinct actuellement émis par `BundleValidator.Validate` (dérivé mécaniquement de chaque site d'émission existant — le message texte ne change pas, on ajoute juste le code + le champ en structuré à côté). Table complète (27 valeurs), pour référence et pour que le plan n'ait rien à redécouvrir :
+Nouvel enum `DiagnosticCode`, un membre par diagnostic distinct actuellement émis par `BundleValidator.Validate` (dérivé mécaniquement de chaque site d'émission existant — le message texte ne change pas, on ajoute juste le code + le champ en structuré à côté). Table complète (**36 valeurs** — recompté précisément contre les 36 sites `new Diagnostic(...)` réels dans `src/OKF4net/Validate.cs`, pas la première estimation orale du brainstorming), pour référence et pour que le plan n'ait rien à redécouvrir :
 
 | Code | Message actuel (inchangé) | `Field` |
 |---|---|---|
@@ -130,7 +130,7 @@ DTOs de sortie dédiés (pas les types domaine directement) dans `src/OKF4net.Cl
 ## 5. Plan de test
 
 - Golden fixtures (`tests/fixtures/golden/`) : **intouchées**. Nouveau test explicite pinnant que `validate`/`info` sans `--json` produisent un texte strictement identique à avant (non-régression sur le format actuel).
-- `DiagnosticCode`/`Field` : un test par famille de diagnostic (pas les 27 un par un si un échantillon couvre chaque catégorie de construction — dynamique vs statique, frontmatter vs corps vs fichier réservé) vérifiant le bon couple code/champ.
+- `DiagnosticCode`/`Field` : un test par famille de diagnostic (pas les 36 un par un si un échantillon couvre chaque catégorie de construction — dynamique vs statique, frontmatter vs corps vs fichier réservé) vérifiant le bon couple code/champ.
 - Sortie JSON : désérialiser (`System.Text.Json`, pas le contexte source-gen — la désérialisation de test peut rester en mode réflexion, seule la CLI elle-même doit être AOT-safe) la sortie de `validate --json`/`info --json` sur `tests/fixtures/appendix_a` et vérifier les clés/valeurs attendues.
 - Build : `dotnet publish src/OKF4net.Cli -c Release` (AOT) doit rester propre, zéro warning de trimming/réflexion lié à la sérialisation — vérification manuelle en plus du job CI existant.
 
