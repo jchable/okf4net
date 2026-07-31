@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-31
+
 ### Added
 
 - **`okf validate`/`okf info` gain a `--json` flag** for machine-readable
@@ -73,6 +75,15 @@ and this project adheres to
   only regenerates the body; non-root `index.md` files are unaffected and
   still self-heal any stray frontmatter (§8) on the next regeneration, as
   before.
+- **`OKF4net.Catalog` no longer silently drops a source directory that
+  merely shares a case-insensitive spelling with another.** On a
+  genuinely case-sensitive volume, `CatalogPathResolver`'s
+  `OrdinalIgnoreCase` dedup (chosen by an OS heuristic) wrongly collapsed
+  two distinct source directories differing only in case, and the second
+  was dropped from every search with no diagnostic. Deduping now uses
+  `Ordinal` comparison, and a new `KnowledgeDiagnosticCode.DuplicateDirectory`
+  reports any actual directory collision by source id instead of dropping
+  it without a trace.
 
 ## [0.4.0] - 2026-07-30
 
@@ -416,7 +427,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.4.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.5.0...main
+[0.5.0]: https://github.com/jchable/okf4net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jchable/okf4net/compare/v0.3.1-preview.1...v0.4.0
 [0.3.1-preview.1]: https://github.com/jchable/okf4net/compare/v0.3.0...v0.3.1-preview.1
 [0.3.0]: https://github.com/jchable/okf4net/compare/v0.2.0...v0.3.0

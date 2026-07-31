@@ -150,7 +150,9 @@ export default function Spec() {
             Two filenames are structural, not concepts: <code>index.md</code> (generated listings) and{' '}
             <code>log.md</code> (change history). OKF4net surfaces them separately — <code>Bundle.IndexFiles</code>{' '}
             and <code>Bundle.LogFiles</code> — and neither counts toward <code>Bundle.Count</code>. Regenerate indexes
-            with <code>IndexGenerator.RegenerateIndexes</code>; parse a log with <code>ChangeLog.Parse</code>.
+            with <code>IndexGenerator.RegenerateIndexes</code>; parse a log with <code>ChangeLog.Parse</code>. A
+            malformed reserved file (bad structure, or unreadable/unparseable) is a §11 conformance failure —{' '}
+            <code>okf validate</code> exits <code>1</code>, not a silent warning.
           </p>
         </Chapter>
 

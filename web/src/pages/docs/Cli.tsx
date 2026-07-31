@@ -9,7 +9,7 @@ import { PageDoc, Chapter, MapTable, Next } from '../../components/doc'
 // would collapse the blank lines. Sourced verbatim from
 // website/docs/cli.html.
 const versionHtml = `$ okf --version
-okf 0.4.0 (OKF spec v0.2)`
+okf 0.5.0 (OKF spec v0.2)`
 
 const validateHtml = `$ okf validate tests/fixtures/appendix_a
 <span class="c">[warning] tests/fixtures/appendix_a/tables/users.md: missing recommended frontmatter field \`description\`</span>
@@ -29,6 +29,12 @@ types:
      3  BigQuery Table
 
 links:      5 internal (0 broken)`
+
+const validateJsonHtml = `$ okf validate tests/fixtures/appendix_a --json
+{"bundle":"tests/fixtures/appendix_a","conformant":true,"conceptCount":4,"errorCount":0,"warningCount":2,"infoCount":0,"diagnostics":[{"severity":"warning","code":"MissingRecommendedField","path":"tests/fixtures/appendix_a/tables/users.md","conceptId":"tables/users","field":"description","message":"missing recommended frontmatter field \`description\`"}, …]}`
+
+const infoJsonHtml = `$ okf info tests/fixtures/appendix_a --json
+{"bundle":"tests/fixtures/appendix_a","okfVersion":null,"conceptCount":4,"indexFileCount":0,"logFileCount":1,"types":{"BigQuery Dataset":1,"BigQuery Table":3},"linkCount":5,"brokenLinkCount":0,"parseErrors":[]}`
 
 const indexHtml = `$ okf index ./my_bundle
 wrote my_bundle/index.md
@@ -204,6 +210,13 @@ export default function Cli() {
             — only errors do — so recommended-but-missing fields are surfaced without failing the build.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: validateHtml }} />
+          <p>
+            <code>--json</code> emits the same diagnostics as machine-readable, camelCase JSON — one object per line,
+            no pretty-printing. Each diagnostic carries a stable <code>code</code> (<code>DiagnosticCode</code>) and,
+            where relevant, a <code>field</code> naming the frontmatter key involved, so a caller can branch on the
+            finding without parsing prose.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: validateJsonHtml }} />
         </Chapter>
 
         <Chapter id="info" title="info <bundle>" refText="a summary, no mutation">
@@ -213,6 +226,10 @@ export default function Cli() {
             the end. Always exits <code>0</code>.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: infoHtml }} />
+          <p>
+            <code>--json</code> works here too, for scripting against the same summary.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: infoJsonHtml }} />
         </Chapter>
 
         <Chapter id="index" title="index <bundle>" refText="§8 — progressive disclosure">

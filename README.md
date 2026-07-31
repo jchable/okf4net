@@ -514,6 +514,7 @@ This table is also published as the
 | [0.3.0](CHANGELOG.md#030---2026-07-28) | v0.2     | Provenance/trust/lifecycle frontmatter model, v0.1 legacy-field fallbacks, v0.2 validator diagnostics                                        |
 | [0.3.1-preview.1](CHANGELOG.md#031-preview1---2026-07-30) | v0.2 | Per-caller source visibility, §10 Attested Computation (new `OKF4net.Attestation` package, `okf_get_computation`/`okf_run_computation`), §6.2 path-valued frontmatter resolution |
 | [0.4.0](CHANGELOG.md#040---2026-07-30) | v0.2     | `okf-mcp` bundle auto-discovery, `OkfBundleTools.WriteToolNames`, `ComputationExtractor` fence-safety fix, path-containment comparison hardening |
+| [0.5.0](CHANGELOG.md#050---2026-07-31) | v0.2     | `--json` diagnostics on `validate`/`info`, §11 conformance now enforced for malformed reserved files, YAML multi-line scalar support, producer-facing in-memory concept API |
 
 ## Contributing & roadmap
 

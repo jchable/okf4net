@@ -22,7 +22,6 @@ are the concrete entry points.
   personal-notes sample over `OKF4net.Mcp` in Claude Desktop — the current
   MCP story is read-only-focused; this would exercise write/append and
   `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
-- CLI ergonomics: richer diagnostics and machine-readable (`--json`) output where it aids tooling.
 - Performance baselines for large bundle loads.
 - Bundle viewer: browse a bundle interactively (static HTML render + local live
   server) — implementation approach (zero-dep `HttpListener`, ASP.NET Core, or a

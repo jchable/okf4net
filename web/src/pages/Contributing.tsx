@@ -53,8 +53,8 @@ export default function Contributing() {
               alike.
             </li>
             <li>
-              <strong>Next:</strong> more Agent Framework samples, richer CLI diagnostics, performance
-              baselines.
+              <strong>Next:</strong> more Agent Framework and Catalog samples, performance baselines, a bundle
+              viewer.
             </li>
             <li>
               <strong>Later:</strong> ecosystem integrations, tracking the spec past v0.2.
