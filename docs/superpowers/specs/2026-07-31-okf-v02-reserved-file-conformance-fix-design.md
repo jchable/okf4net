@@ -52,18 +52,26 @@ relevant §8/§9/§12 text, not a blanket promotion.
   (`Bundle.cs:140-145`). `ValidateReserved` remains the sole place that
   reads and judges them — this fix makes it actually report what it finds,
   it does not move where the check happens.
-- Not touching golden fixtures beyond additions. Verified directly against
-  the current fixture tree: no existing fixture bundle contains a
-  non-root `index.md` with frontmatter, a root `index.md` with extra keys,
-  or a non-ISO-8601 `log.md` date heading (`tests/fixtures/okf_v02/index.md`
-  and `tests/fixtures/okf_v02_computation/index.md` both carry only the
-  sanctioned root `okf_version` key; every `log.md` date heading found —
-  `appendix_a`, `golden/index-input`, `bundles/acme_retail` — is valid
-  ISO-8601). No existing fixture's expected output changes. (The user has
-  authorized modifying existing fixtures for this specific fix if one
-  turns out to be affected during implementation — this is the documented
-  reason for that exception, per `CLAUDE.md`'s fixture rule — but it is not
-  expected to be exercised.)
+- Not touching golden fixtures beyond additions. Verified against the
+  **full** fixture/bundle tree, not just a spot-check: all 17 `index.md`
+  files across `tests/fixtures/` and `bundles/` (`okf_v02/index.md`,
+  `okf_v02_computation/index.md`, `golden/index-input/{index,datasets,
+  tables}/index.md`, `bundles/acme_retail/{index,attesters,computations,
+  metrics,policies,skills,tables}/index.md`, `bundles/ga4/{index,datasets,
+  references,references/metrics,tables}/index.md`) open directly with a
+  `#` heading or, for the two root ones, only the sanctioned `okf_version`
+  key — none carries disqualifying frontmatter. Every `log.md` date
+  heading found (`appendix_a`, `golden/index-input`, `bundles/acme_retail`)
+  is valid ISO-8601. **One file worth flagging explicitly rather than
+  leaving implicit: `bundles/acme_retail/log.md` does carry frontmatter**
+  (`type: Log`, `title: ...`) — it is unaffected only because §9 (unlike
+  §8) doesn't restrict `log.md` frontmatter, and `ValidateReserved`'s
+  `log.md` loop never calls `OkfDocument.Parse` on it at all, only
+  `ChangeLog.Parse` on the raw text. No existing fixture's expected output
+  changes. (The user has authorized modifying existing fixtures for this
+  specific fix if one turns out to be affected during implementation —
+  this is the documented reason for that exception, per `CLAUDE.md`'s
+  fixture rule — but it is not expected to be exercised.)
 - Not revisiting `okf_version` handling beyond confirming it stays
   `Warning` — see the severity table below; §12 explicitly forbids treating
   an unrecognized declared version as grounds for refusal.
@@ -78,11 +86,16 @@ Re-read directly from the live spec (`GoogleCloudPlatform/knowledge-catalog`,
 
 | Case | Current | New | Spec basis |
 |---|---|---|---|
-| Reserved file unreadable (I/O/encoding) or fails to parse as a document | *(nothing — silently skipped)* | **Error** | No literal §8/§9 text, but analogous to §11 condition 1's treatment of non-reserved unparseable documents: a file that cannot even be parsed cannot be said to "follow its structure." |
+| Reserved file unreadable (I/O/encoding) or fails to parse as a document | *(nothing — silently skipped)* | **Error** | No literal §8/§9 text; a file that cannot even be parsed cannot be said to "follow its structure," so it fails §11 condition 3 by definition. **Not** a true analogue of condition 1's existing treatment — see the note below the table. |
 | `index.md` (non-root) declares frontmatter | Warning | **Error** | §8: *"Index files contain no frontmatter, with one exception..."* — declarative, same normative weight as §11's own three conditions (neither uses a modal keyword either). |
 | `index.md` (root) declares keys beyond `okf_version` | Warning | **Error** | Same §8 sentence — root frontmatter's *only* sanctioned content is `okf_version`. |
 | `log.md` date heading not `YYYY-MM-DD` | Warning | **Error** | §9: *"Date headings **MUST** use ISO 8601 `YYYY-MM-DD` form."* — explicit MUST. |
-| `index.md` (root) declares an unrecognized `okf_version` | Warning | **Warning (unchanged)** | §12: *"Consumers that do not understand the declared version **SHOULD attempt best-effort consumption rather than refusing the bundle**."* Promoting this to Error would directly contradict that SHOULD. |
+| `index.md` (root) declares an unrecognized `okf_version` | Warning | **Warning (unchanged)** | §8 sanctions only the `okf_version` *key's* presence/placement — an unrecognized *value* is a version-recognition question, which §12 explicitly quarantines from conformance judgment (*"Consumers that do not understand the declared version SHOULD attempt best-effort consumption rather than refusing the bundle"*). It isn't a structural (condition-3) matter at all, so it stays outside this fix's Error promotions. |
+
+**Two corrections to the reasoning above, found during adversarial review** (the conclusions above are unaffected, but an implementer should carry the *correct* justification forward, not the original overstated one):
+
+- **The §12 argument isn't really about "refusal."** I grepped every use of `IsConformant`/`Severity.Error` in the codebase (`Validate.cs`, `OkfBundleTools.cs`, `JsonOutput.cs`, `OkfCli.cs`): none of them gate whether a bundle gets *processed* — `Severity.Error` only ever changes a printed verdict and an exit code, for every §11 violation, existing or new. So promoting `UnsupportedOkfVersion` to Error would not cause "refusal" in the operational sense §12 warns about; the table's actual reasoning (§12 quarantines version-recognition from structural judgment) is the right one to rely on, not "would contradict SHOULD-not-refuse" read literally.
+- **The I/O-failure branch is not truly "analogous to condition 1."** For *non-reserved* concept files, an I/O/encoding failure does not become a `Severity.Error` diagnostic — it makes `Bundle.Load` throw `BundleLoadException` and abort the *entire* load (`Bundle.cs:118-127`, `153-167`), surfaced by the CLI as a generic `error:` on stderr, not a `ValidationReport` entry at all. Only `DocumentParseException` failures populate `ParseErrors` → `UnparseableDocument`. This fix's chosen behavior for reserved files — catch the I/O failure, degrade gracefully to a per-file `Error` diagnostic, keep validating everything else — is a **new, more permissive pattern**, not parity with existing non-reserved-file handling. It's the better choice here (consistent with permissive-loading, errors-as-data philosophy), but implementers should know it introduces a real asymmetry: a corrupted regular concept file aborts the whole `okf validate` run; a corrupted `index.md`/`log.md` degrades gracefully into the diagnostics list instead.
 
 ## New `DiagnosticCode` members
 
@@ -156,10 +169,12 @@ where none existed.
     (`tests/OKF4net.Tests/ValidateTests.cs:191-203`) — rename to
     `Invalid_log_date_heading_is_an_error`; same Error/`IsConformant`
     updates.
-  - Any test covering root `index.md` with extra keys beyond
-    `okf_version` (grep `RootIndexExtraFrontmatter` in
-    `ValidateTests.cs` for the exact test name at implementation time) —
-    same Error/`IsConformant` updates.
+  - `Root_index_frontmatter_with_extra_keys_is_a_warning`
+    (`ValidateTests.cs:166-176`, found via grepping `RootIndexExtraFrontmatter`)
+    — rename to `..._is_an_error`, add `Severity.Error`/`IsConformant ==
+    false` assertions; note this test currently has **no `IsConformant`
+    assertion at all** (unlike the other two named above), so this isn't a
+    changed assertion, it's a new one.
   - `Root_index_frontmatter_with_only_okf_version_is_clean`
     (`ValidateTests.cs:155+`) and `Valid_log_date_heading_produces_no_warning`
     (`ValidateTests.cs:206+`) — these are the "nothing wrong" control
@@ -172,15 +187,32 @@ where none existed.
     frontmatter fence: `"---\ntype: [unterminated\n---\n"`) →
     `Severity.Error`, `DiagnosticCode.UnparseableIndex`,
     `IsConformant == false`.
-  - A `log.md` that cannot be read (simulate via a genuinely unreadable
-    file — e.g. a directory named `log.md`, or an access-denied path if the
-    test platform allows constructing one reliably; if no reliable
-    cross-platform way exists, that's fine to note as a documented gap
-    rather than force a flaky test) → `Severity.Error`,
-    `DiagnosticCode.UnparseableLog`.
+  - A `log.md` that cannot be read → `Severity.Error`,
+    `DiagnosticCode.UnparseableLog`. **Do not use a directory named
+    `log.md` to simulate this** — traced during review: `CollectMarkdown`
+    (`Bundle.cs:434-467`) checks `Directory.Exists` before the
+    file/extension check, so a directory named `log.md` is recursed into
+    as a directory and never reaches `bundle.LogFiles` at all; the
+    intended `IOException`/`UnauthorizedAccessException` catch path would
+    go completely untested by that technique, silently. If the plan can't
+    find a reliable cross-platform way to construct a genuinely unreadable
+    file (revoked permissions, an exclusive lock), it's fine to note the
+    read-failure branch as a documented coverage gap rather than force a
+    flaky or vacuous test — just don't paper over it with a directory
+    trick that looks like coverage but isn't.
 - **CLI-level**: confirm `okf validate` on a bundle with any of these
   violations now exits `1` (was `0`), via `OkfCliTests` or equivalent
   existing CLI test harness.
+- **Agents/MCP surface**: `OkfBundleTools.ValidateBundle`
+  (`src/OKF4net.Agents/OkfBundleTools.cs:720-748`, exposed to LLM agents as
+  the `okf_validate_bundle` tool via `okf-mcp`) renders the same
+  `report.IsConformant`/`ErrorCount`/`WarningCount`/diagnostics text as the
+  CLI — no code change needed (it's already generic over `ValidationReport`,
+  same reason as `--json`), but this is the surface that reaches
+  autonomous agents, which may act differently on a "not conformant"
+  verdict than a human running the CLI. Add one assertion in
+  `tests/OKF4net.Tests/Agents/OkfValidateChangesTests.cs` covering one of
+  the newly-Error cases, for parity with the CLI-level check above.
 
 ## Fixtures
 
@@ -195,16 +227,27 @@ hand-verified against this design — not against a reference binary, per
 
 ## CHANGELOG
 
-A `Fixed` entry (Keep a Changelog format) in `[Unreleased]`: something like
-*"`okf validate` now correctly reports non-conformance (§11) for malformed
-reserved files — previously a malformed `index.md`/`log.md` (bad structure,
-or unreadable/unparseable) was under-reported as `Warning` or produced no
-diagnostic at all, so `okf validate` incorrectly exited `0`."* This is
-framed as a bug fix (the tool was wrong), not a breaking behavior change,
-even though it does change the exit code for any bundle that happens to
-have a malformed reserved file — pre-1.0, this doesn't require a major
-version bump, and no shipped `bundles/`/`samples/` bundle is affected
-(verified above).
+`CHANGELOG.md`'s current `[Unreleased]` section already has precedent for
+exactly this situation: `### Changed` carries a bold `**Breaking: ...**`
+lead-in for the `Diagnostic` constructor change (`CHANGELOG.md:25`). This
+fix should follow the same pattern rather than a plain `Fixed` bullet — it
+does correctly *fix* the tool's behavior, but per this repo's own semver
+policy (`.claude/skills/release/SKILL.md`: *"Breaking change to the public
+library API or CLI behaviour → major (while pre-1.0: bump minor instead)"*)
+a CLI exit-code flip for previously-passing bundles is exactly a breaking
+CLI-behavior change, and the next release that ships this must be versioned
+**minor, not patch** — a plain `Fixed` entry risks the release process
+defaulting to patch. Proposed entry, under `### Changed`:
+
+*"**Breaking: `okf validate` now correctly reports non-conformance (§11)
+for malformed reserved files.** Previously a malformed `index.md`/`log.md`
+(bad structure, or unreadable/unparseable) was under-reported as `Warning`
+or produced no diagnostic at all, so `okf validate` incorrectly exited `0`;
+it now exits `1` for these cases, as §11 conformance already requires."*
+
+No shipped `bundles/`/`samples/` bundle is affected (verified above), so
+this doesn't change any of this repo's own demo output — only real users'
+bundles that happen to have a malformed reserved file.
 
 ## Provenance
 
@@ -219,8 +262,10 @@ version bump, and no shipped `bundles/`/`samples/` bundle is affected
 
 - **CLI exit-code change for real users**: any bundle anyone has that
   currently has a malformed reserved file will start failing `okf
-  validate`. This is intentional (the point of the fix) and framed as a
-  bugfix in the CHANGELOG, not silently.
+  validate`. This is intentional (the point of the fix), called out with a
+  `**Breaking:**` CHANGELOG entry (not a plain `Fixed` bullet — see CHANGELOG
+  section above), and means the release that ships this must be a minor
+  version bump, not a patch.
 - **No fixture/sample-bundle regression**: verified directly against the
   current tree (see Non-goals) — nothing in this repo's own fixtures or
   shipped sample bundles is affected.
