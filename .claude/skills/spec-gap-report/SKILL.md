@@ -198,3 +198,39 @@ Each atomic statement (after pointer-collapsing per §2 above) gets:
   - **Minor** — a `MAY`, an edge case, or a cosmetic/informative-only
     divergence
   - `N/A`-status statements carry no severity.
+
+## 5. Write the report
+
+Write a Markdown file at
+`docs/spec-conformance/YYYY-MM-DD-okf-spec-gap-report.md` (date = the day
+the report is generated), containing, in order:
+
+1. A summary block: the upstream spec version compared against, the
+   OKF4net version/commit compared, and counts by status × severity.
+2. The version-drift finding from §1 above, if any — first, before any
+   section-level detail.
+3. Per-section detail: each atomic statement, its status, severity, and
+   citation (spec §, `file:line` with the quoted snippet from §3 above,
+   and — for `Diverges`/Intentional findings — the doc/comment citing the
+   reason).
+
+Do **not** commit the report. Write the file, then tell the user it's
+ready and let them decide whether to commit it — consistent with this
+project's rule that commits only happen on explicit request.
+
+Never suggest editing `tests/fixtures/` to resolve a finding, even for a
+`Diverges` finding that involves v0.1-covered behavior — `CLAUDE.md`
+forbids touching those byte-exact golden captures to make a test pass.
+Describing a gap is this skill's job; how (or whether) to close one is a
+separate human decision.
+
+## Edge cases
+
+- **Spec fetch failure** (both the raw fetch and the `gh api` fallback
+  fail): abort with a clear error, no partial report.
+- **Spec structure changes** (more/fewer top-level sections than today's
+  13, renumbering): §2 above already parses section boundaries dynamically
+  (`^## [0-9]+\.`, excluding fenced ranges) rather than assuming exactly
+  13 sections, so this stays correct as the spec evolves.
+- **A statement with no obvious code location**: report it as `Missing`
+  rather than silently skipping it — no silent gaps in the report.
