@@ -562,7 +562,7 @@ public static class BundleValidator
                     Severity.Error,
                     path,
                     null,
-                    "index.md should not contain frontmatter (§8)",
+                    "index.md must not contain frontmatter (§8)",
                     DiagnosticCode.IndexHasFrontmatter));
             }
             else
@@ -574,7 +574,7 @@ public static class BundleValidator
                         Severity.Error,
                         path,
                         null,
-                        "root index.md frontmatter should declare only `okf_version` (§12)",
+                        "root index.md frontmatter must declare only `okf_version` (§12)",
                         DiagnosticCode.RootIndexExtraFrontmatter,
                         "okf_version"));
                 }

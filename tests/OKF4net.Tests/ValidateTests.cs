@@ -200,7 +200,7 @@ public class ValidateTests
         var report = BundleValidator.Validate(bundle);
 
         var diag = Assert.Single(report.Of(Severity.Error));
-        Assert.Equal("index.md should not contain frontmatter (§8)", diag.Message);
+        Assert.Equal("index.md must not contain frontmatter (§8)", diag.Message);
         Assert.Equal(DiagnosticCode.IndexHasFrontmatter, diag.Code);
         Assert.False(report.IsConformant);
     }
@@ -226,7 +226,7 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.Contains(report.Of(Severity.Error), d => d.Message == "root index.md frontmatter should declare only `okf_version` (§12)" && d.Code == DiagnosticCode.RootIndexExtraFrontmatter && d.Field == "okf_version");
+        Assert.Contains(report.Of(Severity.Error), d => d.Message == "root index.md frontmatter must declare only `okf_version` (§12)" && d.Code == DiagnosticCode.RootIndexExtraFrontmatter && d.Field == "okf_version");
         Assert.False(report.IsConformant);
     }
 
