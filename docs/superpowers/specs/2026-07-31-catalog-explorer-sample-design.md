@@ -116,25 +116,32 @@ samples/catalog-explorer/
 
 ### `config/catalog.json`
 
+`CatalogPathResolver.TryResolve` resolves every source's `path` relative to
+the **manifest file's own directory** (`samples/catalog-explorer/config/`),
+never relative to `CatalogRoot` — `CatalogRoot` is only the containment
+boundary the resolved path is checked against, not a resolution base (see
+`FileKnowledgeCatalog`'s `_manifestDirectory`, always derived from
+`CatalogFilePath`). So paths climb out of `config/` with `..`:
+
 ```json
 {
   "version": 1,
   "sources": [
-    { "id": "acme", "path": "bundles/acme_retail", "role": "knowledge", "priority": 10 },
-    { "id": "ga4-reference", "path": "bundles/ga4", "role": "knowledge", "priority": 0 },
-    { "id": "mem-session", "path": "samples/catalog-explorer/memory/session", "role": "memory", "tier": "session" },
-    { "id": "mem-user", "path": "samples/catalog-explorer/memory/user", "role": "memory", "tier": "user" },
-    { "id": "mem-tenant", "path": "samples/catalog-explorer/memory/tenant", "role": "memory", "tier": "tenant" }
+    { "id": "acme", "path": "../../../bundles/acme_retail", "role": "knowledge", "priority": 10 },
+    { "id": "ga4-reference", "path": "../../../bundles/ga4", "role": "knowledge", "priority": 0 },
+    { "id": "mem-session", "path": "../memory/session", "role": "memory", "tier": "session" },
+    { "id": "mem-user", "path": "../memory/user", "role": "memory", "tier": "user" },
+    { "id": "mem-tenant", "path": "../memory/tenant", "role": "memory", "tier": "tenant" }
   ]
 }
 ```
 
-Paths are written repo-root-relative here for readability; `Program.cs`
-resolves the actual repo root at runtime (see below) and every path in the
-manifest is relative to that root — deliberately, not to `config/`'s own
-directory, since the sources it needs to reach (`bundles/`) and the sources
-it needs to write to (`samples/catalog-explorer/memory/`) don't share an
-ancestor any closer than the repo root.
+`../../../bundles/...` climbs `config/` → `catalog-explorer/` → `samples/`
+→ repo root, then into `bundles/`; `../memory/...` climbs one level to
+`catalog-explorer/`, then into a sibling `memory/` directory. Both stay
+inside `CatalogRoot` (see below), which is why `..` is accepted here at all
+— `CatalogPathResolver` explicitly allows it, rejecting only a path whose
+*resolved* result lands outside the root.
 
 ### `Program.cs`
 
@@ -149,29 +156,49 @@ Five scenarios, run in sequence, each printed under its own console header —
 no CLI args, no interactivity, `dotnet run` alone produces the full
 walkthrough top to bottom:
 
-1. **Load & inspect.** `FileKnowledgeCatalog.LoadAsync`/snapshot; print the
-   enabled sources and any load diagnostics.
-2. **Multi-source search.** One query (e.g. `"purchase revenue"`) via the
-   default `GroupedBySource` resolver; print `KnowledgeContext.Passages`
-   (grouped, source by source) and `.Diagnostics`, showing real
-   contributions from both `acme` and `ga4-reference`.
-3. **Ranking strategies compared.** The same query run three times —
+1. **Load & inspect.** Construct `new FileKnowledgeCatalog(options)` — it
+   loads and validates synchronously in the constructor (fail-fast: an
+   invalid initial manifest throws `CatalogException`, there is no separate
+   `LoadAsync`); print `catalog.Current`'s enabled sources and any load
+   diagnostics.
+2. **Multi-source search.** Build one `IKnowledgeResolver` for the whole
+   walkthrough — `new KnowledgeResolverRouter(catalog)` — and run one query
+   (e.g. `"purchase revenue"`) with `ResolverStrategy` left unset (default
+   `GroupedBySource`); print `KnowledgeContext.Passages` (grouped, source by
+   source) and `.Diagnostics`, showing real contributions from both `acme`
+   and `ga4-reference`.
+3. **Ranking strategies compared.** The same query run three times through
+   the same router, only `KnowledgeQuery.ResolverStrategy` changing —
    `GroupedBySource`, `Merged`, `PriorityWeighted` — passage order printed
-   side by side so the strategy's effect on ordering is visible.
-4. **Visibility.** The same query run as three callers: an unscoped caller
-   (sees everything — today's default with no policy set); a caller scoped
+   side by side so the strategy's effect on ordering is visible. (No need
+   for three separate resolver instances: the router dispatches per query.)
+4. **Visibility.** The same query, still through the router, run as three
+   callers by varying only the `KnowledgeQuery`: an unscoped caller (neither
+   field set — sees everything, today's default); a caller with
    `PermittedSourceIds = { "ga4-reference" }` (public/external-partner —
-   sees only the public reference); and a caller under a
+   sees only the public reference); and a caller with a
    `SourceVisibilityPolicy` closure that grants the `acme` source only when
    `scope.UserId` starts with `"acme-employee-"`, and fails closed (grants
    nothing) for any other `UserId`, including `null` — mirroring the
    fail-closed pattern already documented in `OKF4net.Catalog`'s README.
-5. **Memory tier.** `FileMemoryStore` constructed directly from a
-   `tierRoots` dictionary (no DI) pointing at
-   `samples/catalog-explorer/memory/{session,user,tenant}` under the repo
-   root; write one `MemoryEntry` into the `user` tier for a demo scope,
-   read it back via `ReadAsync`, then `DeleteScopeAsync` at the end of the
-   run so `dotnet run` leaves no residue and stays repeatable.
+   (`PermittedSourceIds`/`SourceVisibilityPolicy` are plain `KnowledgeQuery`
+   fields in `OKF4net.Catalog` itself — nothing here needs
+   `OKF4net.Catalog.Hosting`'s host-wide default.)
+5. **Memory tier.** Read `catalog.Current.Sources`, filter to
+   `Role == SourceRole.Memory`, and resolve each via
+   `CatalogPathResolver.TryResolve(catalog.CatalogRoot, catalog.Current.ManifestDirectory, source.Path, ...)`
+   into a `Dictionary<MemoryTier, string>` — by hand, the same handful of
+   steps `OKF4net.Catalog.Hosting.AddMemory()` performs, so the manifest's
+   `mem-session`/`mem-user`/`mem-tenant` sources are what actually back the
+   store rather than a hardcoded path dictionary. Construct
+   `new FileMemoryStore(tierRoots)`, write one `MemoryEntry` into the `user`
+   tier for a demo scope, read it back via `ReadAsync`, then
+   `DeleteScopeAsync` at the end of the run so `dotnet run` leaves no
+   residue and stays repeatable. (The memory roots under
+   `samples/catalog-explorer/memory/` are disjoint from both knowledge
+   roots, `bundles/acme_retail` and `bundles/ga4` — `AddMemory()`'s own
+   disjointness check, mirrored or not, would pass either way; noted so a
+   future path edit doesn't accidentally nest one inside the other.)
 
 ### Error handling
 
