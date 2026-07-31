@@ -79,6 +79,21 @@ public class OkfValidateChangesTests
     }
 
     [Fact]
+    public void ValidateBundle_reports_error_and_nonconformant_for_malformed_reserved_file()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tmp.Write("tables/index.md", "---\ntitle: nope\n---\n\n# Listing\n");
+        tools.InvalidateBundle();
+
+        var result = tools.ValidateBundle();
+
+        Assert.Contains("[error]", result);
+        Assert.Contains("not conformant", result);
+        Assert.DoesNotContain("0 error(s)", result);
+    }
+
+    [Fact]
     public void ValidateBundle_never_throws_when_bundle_root_disappears()
     {
         using var tmp = new TempDir();
