@@ -68,6 +68,26 @@ are the concrete entry points.
   broaden `ValidateSegment` needs its own design pass (cross-platform Unicode
   normalization, golden-fixture impact).
 
+- **`producers/OkfProducer` walking skeleton shipped** (repo scanner → OKF v0.2 bundle generator,
+  `generate`/`validate` commands, npm/NuGet/README detection only — see
+  [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md) and
+  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)). Two follow-ups noted at
+  merge time, not yet acted on:
+  - **No CI coverage.** `producers/` is deliberately outside `OKF4net.sln`/`ci.yml`, so nothing
+    verifies it still builds after an `src/OKF4net` API change — it can rot silently. Either add a
+    lightweight build+test job for `producers/OkfProducer.sln`, or treat "does `producers/` still
+    build" as an explicit step whenever a public `OKF4net` API changes.
+  - **Undocumented.** Not mentioned in `README.md`/`CLAUDE.md`/`CONTRIBUTING.md`. Add pointers once
+    the producer grows past this first walking-skeleton slice (more ecosystems, LLM enrichment).
+- **Known limitation: generated `sources[].resource` paths don't resolve against the bundle.**
+  `producers/OkfProducer`'s `ConceptGenerator` records `sources[].resource` relative to the
+  *scanned repository* (e.g. `package.json`), which is the semantically correct provenance
+  reference — but `BundleValidator` resolves `sources[].resource` relative to the *bundle root*,
+  so every generated package/doc concept gets a "path not found" warning by construction. Decided
+  at merge time: accept the warning rather than embed copies of referenced files in the bundle
+  (which would be a larger, unplanned scope change). Revisit only if this becomes a real friction
+  point once the producer has actual users.
+
 ## Out of scope
 
 - Third-party runtime dependencies in the library or CLI (BCL-only is a hard rule).
