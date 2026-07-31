@@ -98,6 +98,14 @@ public class GoldenParityTests
     }
 
     [Fact]
+    public void Validate_reserved_fixture_matches_golden()
+    {
+        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_reserved"));
+        Assert.Equal(int.Parse(Golden("validate-reserved.exitcode")), r.Code);
+        Assert.Equal(Golden("validate-reserved.out"), r.Out.Replace('\\', '/'));
+    }
+
+    [Fact]
     public void Info_output_matches_golden()
     {
         var r = WithRepoRootAsCwd(() => Run("info", "tests/fixtures/appendix_a"));
