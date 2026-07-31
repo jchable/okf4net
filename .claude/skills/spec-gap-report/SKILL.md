@@ -111,3 +111,51 @@ Worked example: §11 yields roughly eight atomic statements this way —
 three declarative conformance conditions, the `REQUIRED`-marker statement
 pulled in from §4.1, and the handful of consumer `MUST`/`SHOULD` bullets
 that are not pointers to §5 — not one "§11: done" line.
+
+## 3. Verify against the implementation
+
+For each atomic statement, start from `README.md`'s existing §→type
+mapping table (the `## Mapping to the spec` section, headed "Spec section |
+Implemented by") as an index into the codebase — e.g. §5 points at
+`Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/etc. Then actually
+read the source (`src/OKF4net/*.cs` and sibling projects as relevant) and
+the tests under `tests/OKF4net.Tests/` to see what the code really does —
+not just that a plausibly-named type exists.
+
+Given the volume (13 sections, 15+ source files and their tests), fan out
+with the `Agent` tool: one agent per spec section (or small group of
+adjacent subsections), each given that section's atomic statements plus
+the relevant README table row(s), with a prompt shaped like:
+
+> "For each of these OKF spec §N statements: [list], read
+> src/OKF4net/<relevant files> and tests/OKF4net.Tests/<relevant files>
+> and report, per statement: (1) a status — Implemented / Partial /
+> Missing / Diverges / N/A, (2) a file:line citation **with a short
+> verbatim quote of the cited code** — do not report a citation you have
+> not actually read and quoted, (3) if the statement is a pointer to
+> another section per the extraction rules, say so instead of
+> re-classifying it."
+
+The quoted-snippet requirement is not optional: a bare `file:line`
+reference is cheap for an agent to fabricate without reading the code,
+while a quoted snippet gives the synthesizing pass (and the human reading
+the final report) a trivial way to sanity-check it's real. Worked example:
+for §5.2's "MUST treat a bare mapping as a one-element list," the citation
+is `src/OKF4net/Trust.cs:30-34`, quoting:
+
+```csharp
+public static IReadOnlyList<Stamp> ParseVerified(YamlValue? value) => value switch
+{
+    YamlMapping m => [StampFrom(m)],
+    YamlSequence seq => seq.Items.OfType<YamlMapping>().Select(StampFrom).ToList(),
+    _ => [],
+};
+```
+
+— which is `Implemented`: a bare mapping (`YamlMapping m`) is normalized
+to a one-element list (`[StampFrom(m)]`), matching the MUST.
+
+The main thread (not a subagent) synthesizes all section agents' outputs
+into the final report. Use the plain `Agent` tool for this fan-out, never
+the `Workflow` orchestration tool — `Workflow` requires explicit per-session
+user opt-in that this skill must not assume.
