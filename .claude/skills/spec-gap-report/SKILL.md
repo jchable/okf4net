@@ -141,7 +141,7 @@ reference is cheap for an agent to fabricate without reading the code,
 while a quoted snippet gives the synthesizing pass (and the human reading
 the final report) a trivial way to sanity-check it's real. Worked example:
 for §5.2's "MUST treat a bare mapping as a one-element list," the citation
-is `src/OKF4net/Trust.cs:30-34`, quoting:
+is `src/OKF4net/Trust.cs:30-35`, quoting:
 
 ```csharp
 public static IReadOnlyList<Stamp> ParseVerified(YamlValue? value) => value switch
