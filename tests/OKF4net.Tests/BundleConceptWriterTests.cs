@@ -193,4 +193,28 @@ public class BundleConceptWriterTests
         var written = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "tables", "refunds.md")));
         Assert.NotNull(written.Frontmatter.Generated);
     }
+
+    [Fact]
+    public void WriteConcept_accepts_a_document_built_by_OkfDocumentBuilder()
+    {
+        using var tmp = new TempDir();
+        var writer = new BundleConceptWriter(tmp.Path);
+        var doc = OkfDocumentBuilder
+            .ForType("BigQuery Table")
+            .Title("Refunds")
+            .Description("One row per refund.")
+            .AddSource(resource: "README.md", title: "README")
+            .AddSource(resource: "schema.json")
+            .Body("# Refunds\n\nBody.\n")
+            .Build();
+
+        var result = writer.WriteConcept("tables/refunds", doc.Frontmatter, doc.Body);
+
+        Assert.Contains("Written", result);
+        var written = OkfDocument.Parse(File.ReadAllText(Path.Combine(tmp.Path, "tables", "refunds.md")));
+        written.Validate();
+        Assert.Equal(2, written.Frontmatter.Sources.Count);
+        Assert.Equal("README.md", written.Frontmatter.Sources[0].Resource);
+        Assert.Equal("schema.json", written.Frontmatter.Sources[1].Resource);
+    }
 }

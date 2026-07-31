@@ -65,7 +65,7 @@ public static class Provenance
                 map.Insert("id", new YamlString(source.Id));
             }
 
-            map.Insert("resource", new YamlString(source.Resource));
+            map.Insert("resource", new YamlString(source.Resource ?? ""));
 
             if (source.Title is not null)
             {

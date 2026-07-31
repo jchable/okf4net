@@ -139,6 +139,22 @@ public class OkfDocumentBuilderTests
     }
 
     [Fact]
+    public void Tags_with_a_null_element_throws_ArgumentException_at_Build_instead_of_the_emitter()
+    {
+        var builder = OkfDocumentBuilder.ForType("t").Tags("a", null!).Body("");
+
+        Assert.Throws<ArgumentException>(() => builder.Build());
+    }
+
+    [Fact]
+    public void AddTags_with_a_null_element_throws_ArgumentException_at_Build_instead_of_the_emitter()
+    {
+        var builder = OkfDocumentBuilder.ForType("t").AddTags("a", null!).Body("");
+
+        Assert.Throws<ArgumentException>(() => builder.Build());
+    }
+
+    [Fact]
     public void Build_is_idempotent_and_non_destructive()
     {
         var builder = OkfDocumentBuilder.ForType("t").Title("x").Body("body");

@@ -119,6 +119,15 @@ public class ProvenanceTests
         Assert.Equal(1, counting.EnumerationCount);
     }
 
+    [Fact]
+    public void ToYaml_treats_a_null_resource_as_empty_string_instead_of_throwing()
+    {
+        var yaml = Provenance.ToYaml([default(Source)]);
+
+        var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+        Assert.Equal("", entry.Get("resource")!.AsString());
+    }
+
     private sealed class CountingSources(IReadOnlyList<Source> items) : IEnumerable<Source>
     {
         public int EnumerationCount { get; private set; }

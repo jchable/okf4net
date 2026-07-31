@@ -159,6 +159,11 @@ public sealed class OkfDocumentBuilder
 
         if (_tags.Count > 0)
         {
+            if (_tags.Any(t => t is null))
+            {
+                throw new ArgumentException("OkfDocumentBuilder: tags must not contain a null element (set via Tags(...) or AddTags(...)).");
+            }
+
             map.Insert("tags", new YamlSequence(_tags.Select(t => (YamlValue)new YamlString(t)).ToList()));
         }
 
