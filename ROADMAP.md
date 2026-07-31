@@ -18,6 +18,10 @@ are the concrete entry points.
   `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
 - CLI ergonomics: richer diagnostics and machine-readable (`--json`) output where it aids tooling.
 - Performance baselines for large bundle loads.
+- Bundle viewer: browse a bundle interactively (static HTML render + local live
+  server) — implementation approach (zero-dep `HttpListener`, ASP.NET Core, or a
+  standalone web tool) still open, see
+  [#40](https://github.com/jchable/okf4net/issues/40).
 
 ## Later
 
