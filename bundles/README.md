@@ -93,4 +93,3 @@ dotnet run --project src/OKF4net.Cli -- validate bundles/ga4
 ```
 
 Exits `0` (conformant): 9 concepts, 0 errors, 0 warnings, 0 info.
-```
