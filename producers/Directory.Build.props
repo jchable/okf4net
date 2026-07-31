@@ -1,0 +1,7 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <PropertyGroup>
+    <!-- Independent versioning from the OKF4net package itself: this is a separate, unpublished tool. -->
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+</Project>
