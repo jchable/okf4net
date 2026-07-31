@@ -454,7 +454,7 @@ public sealed class OkfBundleTools
     /// untouched. Never throws for expected errors (a null/blank/malformed
     /// concept id, a reserved id, invalid frontmatter YAML, or a failed
     /// validation) — those are reported as a plain-text message instead. A
-    /// thin delegate onto <see cref="BundleConceptWriter.WriteConcept"/>.
+    /// thin delegate onto <see cref="BundleConceptWriter.WriteConcept(string, string, string)"/>.
     /// </summary>
     /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
     /// <param name="frontmatterYaml">Frontmatter as <c>key: value</c> lines (the same YAML subset used inside a document's frontmatter block, without the <c>---</c> delimiters).</param>
