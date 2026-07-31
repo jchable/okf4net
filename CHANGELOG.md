@@ -13,8 +13,15 @@ and this project adheres to
 - **`okf validate`/`okf info` gain a `--json` flag** for machine-readable
   output (camelCase, source-generated for Native AOT). `Diagnostic` gains
   a stable `Code` (`DiagnosticCode`, one per distinct validator finding)
-  and a `Field` naming the frontmatter key involved, additive only --
-  `Diagnostic.ToString()`'s text output is unchanged.
+  and a `Field` naming the frontmatter key involved -- `ToString()`'s text
+  output is unchanged (every golden CLI fixture stays byte-exact).
+
+### Changed
+
+- **Breaking: `Diagnostic`'s constructor gains a required `Code` parameter**
+  (`DiagnosticCode`, before the existing optional `Field`). Source- and
+  binary-breaking for any code that constructs or deconstructs `Diagnostic`
+  directly; nothing in this repository does.
 
 ### Fixed
 

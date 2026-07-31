@@ -99,14 +99,14 @@ Nouveau flag `--json` sur `validate`/`info` (même mécanisme que le `HasFlag` e
       "severity": "warning",
       "code": "LegacyTimestamp",
       "path": "tables/users.md",
-      "conceptId": null,
+      "conceptId": "tables/users",
       "field": "timestamp",
       "message": "`timestamp` is a legacy field; prefer `generated.at`"
     }
   ]
 }
 ```
-`path`/`conceptId` restent mutuellement exclusifs par diagnostic, comme le modèle `Diagnostic` actuel. Le tableau `diagnostics` conserve l'ordre de `ValidationReport.Diagnostics` (identique à l'ordre d'émission texte actuel) — déterministe, pas retrié par sévérité ou code.
+`path` et `conceptId` ne sont pas mutuellement exclusifs : pour un diagnostic de niveau concept, les deux sont généralement renseignés (le chemin propre du concept, en plus de son id) ; seul un diagnostic de niveau fichier/corps n'a que `path`. Le tableau `diagnostics` conserve l'ordre de `ValidationReport.Diagnostics` (identique à l'ordre d'émission texte actuel) — déterministe, pas retrié par sévérité ou code.
 
 `okf info --json <bundle>` :
 ```json

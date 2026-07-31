@@ -152,14 +152,15 @@ public enum DiagnosticCode
 }
 
 /// <summary>
-/// A single finding about a bundle: <see cref="Path"/> and
-/// <see cref="Concept"/> are each populated only when the finding relates to a
-/// file or a concept respectively (never both, per
-/// <see cref="BundleValidator.Validate"/>). <see cref="Code"/> is a stable
-/// identifier independent of <see cref="Message"/>'s exact wording;
-/// <see cref="Field"/> names the specific frontmatter key involved, when the
-/// diagnostic is about one (<see langword="null"/> for body-level or
-/// file-level findings).
+/// A single finding about a bundle. <see cref="Path"/> and
+/// <see cref="Concept"/> are not mutually exclusive: for a concept-level
+/// finding, <see cref="BundleValidator.Validate"/> typically sets both (the
+/// concept's own file path alongside its id); a file-level or body-level
+/// finding may set only <see cref="Path"/>, with <see cref="Concept"/> left
+/// <see langword="null"/>. <see cref="Code"/> is a stable identifier
+/// independent of <see cref="Message"/>'s exact wording; <see cref="Field"/>
+/// names the specific frontmatter key involved, when the diagnostic is about
+/// one (<see langword="null"/> for body-level or file-level findings).
 /// </summary>
 public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Concept, string Message, DiagnosticCode Code, string? Field = null)
 {
@@ -186,8 +187,8 @@ public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Conc
         return sb.ToString();
     }
 
-    /// <summary>Lower-case severity label.</summary>
-    private static string SeverityText(Severity severity) => severity switch
+    /// <summary>Lower-case severity label (<c>error</c>/<c>warning</c>/<c>info</c>).</summary>
+    internal static string SeverityText(Severity severity) => severity switch
     {
         Severity.Error => "error",
         Severity.Warning => "warning",

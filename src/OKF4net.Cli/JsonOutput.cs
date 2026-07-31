@@ -61,7 +61,7 @@ internal static class JsonOutput
     {
         var diagnostics = report.Diagnostics
             .Select(d => new DiagnosticJson(
-                SeverityText(d.Severity),
+                Diagnostic.SeverityText(d.Severity),
                 d.Code.ToString(),
                 d.Path,
                 d.Concept?.ToString(),
@@ -85,12 +85,7 @@ internal static class JsonOutput
     /// <summary>Writes <c>okf info --json</c>'s result to <paramref name="stdout"/> as a single line-terminated JSON document.</summary>
     internal static void WriteInfo(TextWriter stdout, string bundlePath, Bundle bundle)
     {
-        var byType = new Dictionary<string, int>();
-        foreach (var c in bundle.Concepts)
-        {
-            var t = c.Document.Frontmatter.Type ?? "(none)";
-            byType[t] = byType.GetValueOrDefault(t) + 1;
-        }
+        var byType = BuildTypeHistogram(bundle);
 
         var totalLinks = 0;
         foreach (var c in bundle.Concepts)
@@ -117,11 +112,16 @@ internal static class JsonOutput
         stdout.Write("\n");
     }
 
-    private static string SeverityText(Severity severity) => severity switch
+    /// <summary>Counts concepts by frontmatter <c>type</c> (a missing type counts as <c>"(none)"</c>), sorted ordinally by type name.</summary>
+    internal static SortedDictionary<string, int> BuildTypeHistogram(Bundle bundle)
     {
-        Severity.Error => "error",
-        Severity.Warning => "warning",
-        Severity.Info => "info",
-        _ => severity.ToString(),
-    };
+        var byType = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        foreach (var c in bundle.Concepts)
+        {
+            var t = c.Document.Frontmatter.Type ?? "(none)";
+            byType[t] = byType.GetValueOrDefault(t) + 1;
+        }
+
+        return byType;
+    }
 }

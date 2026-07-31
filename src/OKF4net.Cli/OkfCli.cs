@@ -269,12 +269,7 @@ public static class OkfCli
         stdout.Write($"index.md:   {bundle.IndexFiles.Count}\n");
         stdout.Write($"log.md:     {bundle.LogFiles.Count}\n");
 
-        var byType = new SortedDictionary<string, int>(StringComparer.Ordinal);
-        foreach (var c in bundle.Concepts)
-        {
-            var t = c.Document.Frontmatter.Type ?? "(none)";
-            byType[t] = byType.GetValueOrDefault(t) + 1;
-        }
+        var byType = JsonOutput.BuildTypeHistogram(bundle);
 
         if (byType.Count > 0)
         {
