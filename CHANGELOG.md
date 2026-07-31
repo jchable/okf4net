@@ -26,6 +26,13 @@ and this project adheres to
   (`DiagnosticCode`, before the existing optional `Field`). Source- and
   binary-breaking for any code that constructs or deconstructs `Diagnostic`
   directly; nothing in this repository does.
+- **Breaking: `okf validate` now correctly reports non-conformance (§11)
+  for malformed reserved files.** Previously a malformed `index.md`/`log.md`
+  (bad structure, or unreadable/unparseable) was under-reported as
+  `Warning` or produced no diagnostic at all, so `okf validate` incorrectly
+  exited `0`; it now exits `1` for these cases, as §11 conformance already
+  requires. Two new `DiagnosticCode` values, `UnparseableIndex` and
+  `UnparseableLog`, cover the previously-silent case.
 
 ### Fixed
 
