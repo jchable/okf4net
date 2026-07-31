@@ -14,7 +14,8 @@ are the concrete entry points.
 
 ## Next
 
-- More `OKF4net.Agents` samples with Microsoft Agent Framework.
+- More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
+  `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
 - CLI ergonomics: richer diagnostics and machine-readable (`--json`) output where it aids tooling.
 - Performance baselines for large bundle loads.
 

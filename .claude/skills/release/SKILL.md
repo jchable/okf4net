@@ -80,7 +80,26 @@ On main (worktree), synchronize **every user-visible version with the tag**:
    - If the section is thin, backfill it from the commit log — the CHANGELOG
      is the source for release notes, so write it for users, not committers:
      group by Added/Changed/Fixed, describe behaviour not commits.
-5. **Minor/major releases only** (new features, new CLI verbs, new public
+   - Never add a bullet to an ALREADY-TAGGED version's section, even on
+     discovering work that "really" belongs there chronologically — check
+     `git show vX.Y.Z:path/to/file` for the feature in question before
+     attributing it to a past release. A retroactive edit misattributes a
+     feature to a package that was never actually published with it inside
+     (caught once on this repo: a bundle-discovery feature got added to an
+     already-published preview's section, though that tag's tree never
+     contained the file). New work always goes in `[Unreleased]`, to be
+     captured whenever this release process next runs.
+5. `README.md`'s **"OKF4net version ↔ OKF spec version" table** (near the
+   bottom) gets a new row: `| [X.Y.Z](CHANGELOG.md#anchor) | vN.N | <highlights> |`.
+   GitHub's heading-anchor slugifier strips periods and brackets, lowercases,
+   and turns each space into a hyphen, so `## [X.Y.Z] - YYYY-MM-DD` becomes
+   `#xyz---yyyy-mm-dd` (e.g. `[0.4.0] - 2026-07-30` → `#040---2026-07-30`).
+   This table is easy to miss because, unlike the version-sample search in
+   step 3 above, there is no previous-version STRING to grep for that would
+   reveal the gap — it just silently stops growing release after release.
+   Check it every time, not only when something reminds you (missed for two
+   releases running on this repo before it was caught).
+6. **Minor/major releases only** (new features, new CLI verbs, new public
    API — the same test used in step 2 to pick minor over patch): invoke the
    `update-website` skill now, using the CHANGELOG section you just wrote as
    its primary source of ground truth, and fold any resulting `web/` edits
@@ -100,7 +119,7 @@ dotnet run --project src/OKF4net.Cli -- --version
 # Expected: okf X.Y.Z (OKF spec v0.2)
 ```
 
-If step 5 touched `web/`, also run its own verification
+If step 6 touched `web/`, also run its own verification
 (`npm run typecheck && npm run test && npm run build` in `web/`, per the
 `update-website` skill) before committing — a broken site build shouldn't
 ride along with an otherwise-good release.

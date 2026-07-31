@@ -512,6 +512,8 @@ This table is also published as the
 | [0.1.1](CHANGELOG.md#011---2026-07-24) | v0.1     | winget distribution; project website and developer docs                                                                                      |
 | [0.2.0](CHANGELOG.md#020---2026-07-27) | v0.1     | `OKF4net.Agents` (Agent Framework tools + context provider), `OKF4net.Catalog(.Hosting)`, `OKF4net.Mcp` server, scoped long-term memory (V2) |
 | [0.3.0](CHANGELOG.md#030---2026-07-28) | v0.2     | Provenance/trust/lifecycle frontmatter model, v0.1 legacy-field fallbacks, v0.2 validator diagnostics                                        |
+| [0.3.1-preview.1](CHANGELOG.md#031-preview1---2026-07-30) | v0.2 | Per-caller source visibility, §10 Attested Computation (new `OKF4net.Attestation` package, `okf_get_computation`/`okf_run_computation`), §6.2 path-valued frontmatter resolution |
+| [0.4.0](CHANGELOG.md#040---2026-07-30) | v0.2     | `okf-mcp` bundle auto-discovery, `OkfBundleTools.WriteToolNames`, `ComputationExtractor` fence-safety fix, path-containment comparison hardening |
 
 ## Contributing & roadmap
 
