@@ -8,6 +8,24 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **The YAML frontmatter parser now supports multi-line (folded) plain
+  scalars.** A `key: value` entry whose value continues onto one or more
+  subsequent, more-indented lines (valid YAML, and how the upstream OKF
+  `reference_agent` generator writes long `description:` fields) previously
+  threw `unexpected indentation in mapping`/`...in sequence` — the parser
+  only ever read a value from its own line. Continuation lines now fold in
+  per YAML's plain-scalar rule (non-blank runs join with a single space, a
+  blank or comment-only line becomes a paragraph break), for both mapping
+  values and sequence items. This was found to break most of the OKF
+  reference implementation's own sample bundles: of the four upstream
+  bundles at `GoogleCloudPlatform/knowledge-catalog` commit `3fcbb9f8`,
+  only `acme_retail` (already vendored in this repo) validated cleanly —
+  `ga4`, `crypto_bitcoin`, and `stackoverflow` failed to parse 7/9, 7/9, and
+  15/26 of their concepts respectively before this fix; all three now
+  validate with 0 errors.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added
