@@ -1,2 +1,3 @@
 tests/fixtures/** -text
 bundles/acme_retail/** -text
+bundles/ga4/** -text

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "sources": [
+    { "id": "acme", "path": "../../../bundles/acme_retail", "role": "knowledge", "priority": 10 },
+    { "id": "ga4-reference", "path": "../../../bundles/ga4", "role": "knowledge", "priority": 0 },
+    { "id": "mem-session", "path": "../memory/session", "role": "memory", "tier": "session" },
+    { "id": "mem-user", "path": "../memory/user", "role": "memory", "tier": "user" },
+    { "id": "mem-tenant", "path": "../memory/tenant", "role": "memory", "tier": "tenant" }
+  ]
+}

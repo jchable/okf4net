@@ -60,3 +60,18 @@ License, Version 2.0 (see LICENSE.Apache-2.0). It is fictional demonstration
 content (a fictional company, "Acme Retail") used here for manual testing
 and samples; see bundles/README.md for details, including which
 upstream files were intentionally not carried over.
+
+------------------------------------------------------------------------------
+
+bundles/ga4/ is a sample OKF bundle copied verbatim from
+okf/bundles/ga4 in the OKF reference implementation
+
+    Open Knowledge Format (OKF)
+    Copyright Google LLC
+    https://github.com/GoogleCloudPlatform/knowledge-catalog
+
+commit 3fcbb9f828c2f23d109c855ee403c3a4c81f3a96, licensed under the Apache
+License, Version 2.0 (see LICENSE.Apache-2.0). It documents Google's public
+Google Analytics 4 obfuscated sample ecommerce BigQuery dataset; see
+bundles/README.md for details, including which upstream files were
+intentionally not carried over.
