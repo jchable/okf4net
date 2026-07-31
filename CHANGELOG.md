@@ -37,7 +37,11 @@ and this project adheres to
   codes move from `Warning` to `Error`: `IndexHasFrontmatter`,
   `RootIndexExtraFrontmatter`, `LogDateInvalid` -- changing
   `ValidationReport.IsConformant`/`ErrorCount`/`WarningCount`) and to the
-  `okf_validate_bundle` MCP tool's verdict.
+  `okf_validate_bundle` MCP tool's verdict. Widest practical impact:
+  `ChangeLog.Parse` treats every `##` line in a `log.md` as a date
+  heading (it does not distinguish a date from a section heading), so a
+  `log.md` containing any non-date `##` line (e.g. `## Notes`, a manually
+  added subsection) now fails conformance -- previously this was silent.
 
 ### Fixed
 

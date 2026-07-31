@@ -483,13 +483,20 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Root_okf_version_other_than_current_warns()
+    public void Root_okf_version_other_than_current_warns_but_stays_conformant()
     {
+        // §12 deliberately keeps this Warning (not Error, unlike the other
+        // reserved-file structural violations): "Consumers that do not
+        // understand the declared version SHOULD attempt best-effort
+        // consumption rather than refusing the bundle." Pinned as its own
+        // assertion so a future accidental promotion of this one path is
+        // caught here, not just left to whoever notices.
         var dir = Directory.CreateTempSubdirectory("okfv02root").FullName;
         File.WriteAllText(Path.Combine(dir, "index.md"), "---\nokf_version: \"0.9\"\n---\n\n# Index\n");
         File.WriteAllText(Path.Combine(dir, "c.md"), "---\ntype: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n---\nbody\n");
         var r = BundleValidator.Validate(Bundle.Load(dir));
         Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("declared okf_version") && d.Code == DiagnosticCode.UnsupportedOkfVersion && d.Field == "okf_version");
+        Assert.True(r.IsConformant);
     }
 
     [Fact]
