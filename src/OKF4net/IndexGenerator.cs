@@ -289,7 +289,7 @@ public static class IndexGenerator
             // spec-sanctioned at all (§12: the okf_version marker, see
             // Bundle.OkfVersion) -- every other index.md must have none
             // (§8, BundleValidator's "index.md should not contain
-            // frontmatter" warning). So only the root's existing frontmatter
+            // frontmatter" error). So only the root's existing frontmatter
             // is carried forward here; a non-root index.md keeps the old
             // body-only overwrite, which self-heals any stray frontmatter
             // there instead of making it permanently sticky. Without the

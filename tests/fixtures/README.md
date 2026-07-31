@@ -172,13 +172,23 @@ them a re-capture from the (removed) Rust binary:
   - The bundle is **not conformant** (exit code `1`) — this is the point
     of the fix: all four cases were previously `[warning]` or silent, and
     the bundle incorrectly validated as conformant (exit code `0`).
-  - Not covered by this fixture (documented gap, not an oversight): a
-    reserved file that fails to *read* (I/O/permission error, as opposed
-    to failing to *parse*) — `DiagnosticCode.UnparseableIndex`/
-    `UnparseableLog`'s read-failure branches. No reliable, non-flaky,
-    cross-platform way to construct a genuinely unreadable file was found
-    for this repo's Linux/Windows/macOS CI matrix; the code path is
-    identical in shape to the parse-failure branch this fixture does
-    cover (same diagnostic construction, different caught exception
-    type), so the risk of it being wrong is low, but it remains
-    unexercised by an automated test.
+  - `DiagnosticCode.UnparseableIndex`/`UnparseableLog`'s decoder-failure
+    branch (invalid UTF-8 bytes in a reserved file) is exercised by unit
+    tests instead of this fixture — `ValidateTests.Unreadable_index_bytes_are_an_error`
+    and `ValidateTests.Unreadable_log_bytes_are_an_error` write raw invalid
+    UTF-8 bytes directly to `index.md`/`log.md`, the same technique already
+    used elsewhere in this repo for a non-UTF-8 `log.md`
+    (`OkfValidateChangesTests.ChangesSince_skips_a_non_utf8_log_file_with_a_note_instead_of_throwing`).
+    Since `ChangeLog.Parse` never throws, that decoder-failure branch is in
+    fact the *only* way `UnparseableLog` can fire in practice.
+  - Not covered by any test (documented gap, not an oversight): a reserved
+    file that fails to *read* for I/O/permission reasons specifically (as
+    opposed to failing to *decode* or *parse*) — the `IOException`/
+    `UnauthorizedAccessException` catch clauses in `ValidateReserved`. No
+    reliable, non-flaky, cross-platform way to construct a genuinely
+    unreadable-for-permission-reasons file was found for this repo's
+    Linux/Windows/macOS CI matrix; the code path is identical in shape to
+    the decoder-failure and parse-failure branches that *are* covered
+    (same diagnostic construction, different caught exception type), so
+    the risk of it being wrong is low, but it remains unexercised by an
+    automated test.

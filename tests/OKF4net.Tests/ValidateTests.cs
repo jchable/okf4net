@@ -5,9 +5,10 @@ namespace OKF4net.Tests;
 /// Conformance-checking tests, exercised rule-by-rule against
 /// <c>BundleValidator.Validate</c>. Each test targets exactly one
 /// diagnostic-producing rule and asserts its exact severity and message
-/// shape: only true §11 violations (unparseable frontmatter, missing/empty
-/// `type`) are <see cref="Severity.Error"/>; everything else is
-/// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
+/// shape: only true §11 violations -- unparseable frontmatter, missing/empty
+/// `type`, and reserved files that fail to follow their §8/§9 structure
+/// (malformed/unreadable `index.md`/`log.md`) -- are <see cref="Severity.Error"/>;
+/// everything else is <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>
 public class ValidateTests
 {
@@ -47,6 +48,45 @@ public class ValidateTests
 
         var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableIndex);
         Assert.StartsWith("unparseable index.md: ", diag.Message);
+        Assert.False(report.IsConformant);
+    }
+
+    [Fact]
+    public void Unreadable_index_bytes_are_an_error()
+    {
+        // A distinct code path from Unparseable_index_is_an_error above: this
+        // exercises the DecoderFallbackException branch (invalid UTF-8 bytes
+        // that never reach OkfDocument.Parse), not the YAML-parse-failure
+        // branch. Same raw-bytes technique as
+        // OkfValidateChangesTests.ChangesSince_skips_a_non_utf8_log_file_with_a_note_instead_of_throwing.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "broken"));
+        File.WriteAllBytes(Path.Combine(tmp.Path, "broken", "index.md"), [0x23, 0x20, 0xFF, 0xFE, 0x0A]);
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableIndex);
+        Assert.StartsWith("unparseable index.md: ", diag.Message);
+        Assert.False(report.IsConformant);
+    }
+
+    [Fact]
+    public void Unreadable_log_bytes_are_an_error()
+    {
+        // ChangeLog.Parse never throws, so this DecoderFallbackException
+        // branch (invalid UTF-8 bytes) is the only way DiagnosticCode
+        // .UnparseableLog can fire in practice -- there is no analogous
+        // "malformed but decodable" parse-failure branch for log.md the way
+        // there is for index.md's YAML frontmatter.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        File.WriteAllBytes(Path.Combine(tmp.Path, "log.md"), [0x23, 0x20, 0xFF, 0xFE, 0x0A]);
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableLog);
+        Assert.StartsWith("unparseable log.md: ", diag.Message);
         Assert.False(report.IsConformant);
     }
 

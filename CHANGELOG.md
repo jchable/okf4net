@@ -32,7 +32,12 @@ and this project adheres to
   `Warning` or produced no diagnostic at all, so `okf validate` incorrectly
   exited `0`; it now exits `1` for these cases, as §11 conformance already
   requires. Two new `DiagnosticCode` values, `UnparseableIndex` and
-  `UnparseableLog`, cover the previously-silent case.
+  `UnparseableLog`, cover the previously-silent case. The same applies to
+  library callers of `BundleValidator.Validate` (these three diagnostic
+  codes move from `Warning` to `Error`: `IndexHasFrontmatter`,
+  `RootIndexExtraFrontmatter`, `LogDateInvalid` -- changing
+  `ValidationReport.IsConformant`/`ErrorCount`/`WarningCount`) and to the
+  `okf_validate_bundle` MCP tool's verdict.
 
 ### Fixed
 
