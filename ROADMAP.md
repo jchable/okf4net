@@ -27,6 +27,16 @@ are the concrete entry points.
 
 - Ecosystem integrations driven by user demand.
 - Tracking upstream OKF spec evolution beyond v0.2.
+- **Open question upstream: concept id character set.** The spec (§2) does not
+  restrict which characters a concept id may contain; `ConceptId.ValidateSegment`
+  currently restricts to ASCII regardless. Whether to allow full Unicode (any
+  alphabet, no transliteration) is an open, deliberately deferred decision —
+  raised upstream, see
+  [docs/outreach/upstream-issues/2026-07-31-concept-id-character-set-clarification.md](docs/outreach/upstream-issues/2026-07-31-concept-id-character-set-clarification.md).
+  Blocks nothing today (the new `ConceptId.Slugify` helper folds non-ASCII to
+  `'-'` in the meantime), but revisit once upstream responds — a decision to
+  broaden `ValidateSegment` needs its own design pass (cross-platform Unicode
+  normalization, golden-fixture impact).
 
 ## Out of scope
 
