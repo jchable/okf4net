@@ -56,4 +56,88 @@ public class ProvenanceTests
         Assert.Null(Provenance.ParseUsageWindow(null));
         Assert.Null(Provenance.ParseUsageWindow(Yaml("scalar")));
     }
+
+    [Fact]
+    public void ToYaml_round_trips_through_ParseSources_in_order()
+    {
+        var sources = new List<Source>
+        {
+            new(Id: "ga4-schema", Resource: "https://example.com/schema", Title: "GA4 schema",
+                Author: Actor.Parse("team:ga4"), UsageCount: 5000, LastModified: "2026-05-30"),
+            new(Id: null, Resource: "README.md", Title: null, Author: null, UsageCount: null, LastModified: null),
+        };
+
+        var yaml = Provenance.ToYaml(sources);
+        var roundTripped = Provenance.ParseSources(yaml);
+
+        Assert.Equal(2, roundTripped.Count);
+        Assert.Equal(sources[0], roundTripped[0]);
+        Assert.Equal(sources[1], roundTripped[1]);
+    }
+
+    [Fact]
+    public void ToYaml_omits_absent_optional_fields_from_the_mapping()
+    {
+        var yaml = Provenance.ToYaml([new Source(Id: null, Resource: "README.md", Title: null, Author: null, UsageCount: null, LastModified: null)]);
+
+        var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+        Assert.False(entry.ContainsKey("id"));
+        Assert.True(entry.ContainsKey("resource"));
+        Assert.False(entry.ContainsKey("title"));
+        Assert.False(entry.ContainsKey("author"));
+        Assert.False(entry.ContainsKey("usage_count"));
+        Assert.False(entry.ContainsKey("last_modified"));
+    }
+
+    [Fact]
+    public void ToYaml_uses_canonical_per_entry_key_order()
+    {
+        var yaml = Provenance.ToYaml([new Source(Id: "x", Resource: "y", Title: "z", Author: Actor.Parse("process:p"), UsageCount: 1, LastModified: "2026-01-01")]);
+
+        var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+        Assert.Equal(["id", "resource", "title", "author", "usage_count", "last_modified"], entry.Keys.ToList());
+    }
+
+    [Fact]
+    public void ToYaml_serializes_author_via_actor_raw_for_every_actor_kind()
+    {
+        foreach (var raw in new[] { "human:alice", "process:etl-job", "team:ga4" })
+        {
+            var yaml = Provenance.ToYaml([new Source(Id: null, Resource: "r", Title: null, Author: Actor.Parse(raw), UsageCount: null, LastModified: null)]);
+            var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+            Assert.Equal(raw, entry.Get("author")!.AsString());
+        }
+    }
+
+    [Fact]
+    public void ToYaml_enumerates_the_source_sequence_exactly_once()
+    {
+        var counting = new CountingSources([new Source(Id: null, Resource: "r", Title: null, Author: null, UsageCount: null, LastModified: null)]);
+
+        Provenance.ToYaml(counting);
+
+        Assert.Equal(1, counting.EnumerationCount);
+    }
+
+    [Fact]
+    public void ToYaml_treats_a_null_resource_as_empty_string_instead_of_throwing()
+    {
+        var yaml = Provenance.ToYaml([default(Source)]);
+
+        var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+        Assert.Equal("", entry.Get("resource")!.AsString());
+    }
+
+    private sealed class CountingSources(IReadOnlyList<Source> items) : IEnumerable<Source>
+    {
+        public int EnumerationCount { get; private set; }
+
+        public IEnumerator<Source> GetEnumerator()
+        {
+            EnumerationCount++;
+            return items.GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 }

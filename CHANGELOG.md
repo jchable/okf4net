@@ -15,6 +15,10 @@ and this project adheres to
   a stable `Code` (`DiagnosticCode`, one per distinct validator finding)
   and a `Field` naming the frontmatter key involved -- `ToString()`'s text
   output is unchanged (every golden CLI fixture stays byte-exact).
+- `Provenance.ToYaml`, `ConceptId.Slugify`, a `Frontmatter`-typed `BundleConceptWriter.WriteConcept`
+  overload, and `OkfDocumentBuilder`: producer-facing API for constructing and writing an OKF concept
+  entirely in memory, without a serialize/re-parse round trip through YAML text. Motivated by the
+  upcoming native OKF producer (`producers/`), usable independently by any programmatic caller.
 
 ### Changed
 
