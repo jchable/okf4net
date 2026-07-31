@@ -144,7 +144,7 @@ export default function Home() {
             <h2>Contributing</h2>
             <span className="ref">PR — the suite is the contract</span>
           </div>
-          <p>One prerequisite: the .NET SDK. <strong>Zero third-party runtime dependencies</strong> is a design rule — contributions keep it that way. Behavioural changes cite their spec section (§) in the PR; the test suite — including byte-exact golden comparisons — is the contract.</p>
+          <p>One prerequisite: the .NET SDK. <strong>Zero third-party runtime dependencies</strong> is a design rule — contributions keep it that way. Behavioural changes cite their spec section (§) in the PR; the test suite is the contract.</p>
           <p className="next">→ <Link to="/contributing">contributing.md</Link> — setup, golden fixtures, code style, and how to submit</p>
           <div className="cta">
             <h2>Ship knowledge as files.</h2>

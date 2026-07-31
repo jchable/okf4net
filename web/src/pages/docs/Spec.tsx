@@ -154,12 +154,16 @@ export default function Spec() {
           </p>
         </Chapter>
 
-        <Chapter id="fidelity" title="Fidelity" refText="a faithful port">
+        <Chapter id="fidelity" title="Fidelity" refText="independent, spec-conformant">
           <p>
-            Behaviour conforms to OKF v0.2. The document parser, validator, and index generator are faithful ports
-            of the reference implementation — verified by tests adapted from the reference suite and, for the CLI,
-            by <strong>byte-exact comparison</strong> against captured reference output. Any intentional divergence
-            is documented with its reason; there are none that affect conformance.
+            Behaviour conforms to the OKF v0.2 spec. The document parser, validator, and index generator are an
+            independent implementation of it — not a port of Google's own reference implementation, whose CLI
+            covers a different surface entirely (BigQuery/Gemini bundle enrichment and Cytoscape.js visualization,
+            not <code>validate</code>/<code>info</code>/<code>graph</code>/<code>fmt</code>/<code>index</code>).
+            The suite's byte-exact golden CLI comparisons mostly trace to this project's own former Rust
+            implementation, before its removal; the newer v0.2 and §10 behaviour predates any reference
+            implementation and is hand-verified against the spec text instead. Any intentional divergence from the
+            spec is documented with its reason; there are none that affect conformance.
           </p>
           <ul className="plain">
             <li>

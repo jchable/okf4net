@@ -90,8 +90,7 @@ export default function WhatOkfIs() {
           </ul>
           <p>
             OKF4net generates both: <code>IndexGenerator</code> (re)builds every <code>index.md</code>,{' '}
-            <code>ChangeLog</code> parses and builds <code>log.md</code> histories — verified byte-exact against the
-            reference implementation's output.
+            <code>ChangeLog</code> parses and builds <code>log.md</code> histories.
           </p>
         </Chapter>
 
