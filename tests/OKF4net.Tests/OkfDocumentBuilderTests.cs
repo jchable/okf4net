@@ -111,6 +111,34 @@ public class OkfDocumentBuilderTests
     }
 
     [Fact]
+    public void Extension_targeting_a_well_known_key_wins_even_when_called_before_the_typed_setter()
+    {
+        var doc = OkfDocumentBuilder.ForType("t")
+            .Extension("tags", new YamlSequence([new YamlString("override")]))
+            .Tags("a", "b")
+            .Body("")
+            .Build();
+
+        Assert.Equal(new[] { "override" }, doc.Frontmatter.Tags);
+    }
+
+    [Fact]
+    public void Build_key_order_is_fixed_regardless_of_setter_call_order()
+    {
+        var doc = OkfDocumentBuilder
+            .ForType("t")
+            .Resource("r")
+            .Description("d")
+            .Title("ti")
+            .Body("")
+            .Build();
+
+        Assert.Equal(
+            new[] { "type", "title", "description", "resource" },
+            doc.Frontmatter.AsMapping().Keys.ToList());
+    }
+
+    [Fact]
     public void Build_is_idempotent_and_non_destructive()
     {
         var builder = OkfDocumentBuilder.ForType("t").Title("x").Body("body");
