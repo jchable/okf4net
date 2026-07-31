@@ -40,10 +40,13 @@ Five scenarios, printed in sequence:
    output as `GroupedBySource` here (the two strategies only diverge when
    two or more sources *share* a priority); still worth seeing side by
    side to understand why.
-4. **Visibility** — the same query as an unscoped caller, an
-   external-partner caller restricted to the public `ga4-reference`
-   source via `PermittedSourceIds`, and an Acme-employee caller granted
-   both sources via a fail-closed `SourceVisibilityPolicy`.
+4. **Visibility** — the same query run as four callers: an unscoped
+   caller; an external-partner caller restricted to the public
+   `ga4-reference` source via `PermittedSourceIds`; an Acme-employee
+   caller granted both sources via a fail-closed `SourceVisibilityPolicy`;
+   and a non-employee caller with an unrecognized `UserId`, denied the
+   `acme` source by that same policy — demonstrating it fails closed
+   rather than defaulting to allow.
 5. **Memory tier** — resolves the manifest's `role: memory` sources into
    a `FileMemoryStore` by hand (the same steps
    `OKF4net.Catalog.Hosting.AddMemory()` performs), writes one memory
