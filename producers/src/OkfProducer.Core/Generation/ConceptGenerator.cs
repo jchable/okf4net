@@ -41,7 +41,24 @@ public sealed class ConceptGenerator : IConceptGenerator
 
     private static ConceptId UniqueConceptId(string prefix, string name, HashSet<string> usedIds)
     {
-        var baseSlug = ConceptId.Slugify(name);
+        string baseSlug;
+        try
+        {
+            baseSlug = ConceptId.Slugify(name);
+        }
+        catch (ConceptIdException)
+        {
+            // `name` normalized to nothing (e.g. entirely non-ASCII, or empty) -- fall back to a
+            // generic slug derived from the prefix; the collision loop below still disambiguates
+            // multiple equally-unnameable entries under the same prefix with a numeric suffix.
+            baseSlug = prefix switch
+            {
+                "packages" => "package",
+                "docs" => "doc",
+                _ => prefix,
+            };
+        }
+
         var candidate = $"{prefix}/{baseSlug}";
         var suffix = 2;
         while (!usedIds.Add(candidate))
@@ -66,6 +83,7 @@ public sealed class ConceptGenerator : IConceptGenerator
             .ForType("Repository")
             .Title(snapshot.RepoName)
             .Description(description)
+            .Tags("repository")
             .Body($"# {snapshot.RepoName}\n\n{description}\n")
             .Build();
     }
@@ -79,6 +97,7 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Title(package.Name)
             .Description(description)
             .Tags(package.Ecosystem)
+            .Resource(package.RelativePath)
             .AddSource(resource: package.RelativePath)
             .Body($"# {package.Name}\n\n{description}\n")
             .Build();
@@ -90,6 +109,8 @@ public sealed class ConceptGenerator : IConceptGenerator
             .ForType("Documentation")
             .Title(doc.Title)
             .Description($"Repository documentation file {doc.RelativePath}.")
+            .Tags("documentation")
+            .Resource(doc.RelativePath)
             .AddSource(resource: doc.RelativePath)
             .Body($"# {doc.Title}\n\nSee `{doc.RelativePath}` in the repository.\n")
             .Build();

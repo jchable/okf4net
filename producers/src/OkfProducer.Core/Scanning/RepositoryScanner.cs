@@ -84,14 +84,14 @@ public sealed class RepositoryScanner : IRepositoryScanner
         try
         {
             var xml = XDocument.Load(csprojPath);
-            var propertyGroup = xml.Root?.Elements("PropertyGroup").FirstOrDefault();
-            var name = propertyGroup?.Element("PackageId")?.Value;
+            var propertyGroups = xml.Root?.Elements("PropertyGroup");
+            var name = propertyGroups?.Elements("PackageId").FirstOrDefault()?.Value;
             if (string.IsNullOrWhiteSpace(name))
             {
                 name = Path.GetFileNameWithoutExtension(csprojPath);
             }
 
-            var description = propertyGroup?.Element("Description")?.Value;
+            var description = propertyGroups?.Elements("Description").FirstOrDefault()?.Value;
             var relativePath = Path.GetRelativePath(repoPath, csprojPath).Replace('\\', '/');
 
             return new PackageManifest("nuget", relativePath, name, string.IsNullOrWhiteSpace(description) ? null : description);
@@ -109,7 +109,8 @@ public sealed class RepositoryScanner : IRepositoryScanner
             var trimmed = line.TrimStart();
             if (trimmed.StartsWith("# ", StringComparison.Ordinal))
             {
-                return trimmed[2..].Trim();
+                var heading = trimmed[2..].Trim();
+                return heading.Length == 0 ? null : heading;
             }
         }
 

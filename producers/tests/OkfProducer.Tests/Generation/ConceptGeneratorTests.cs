@@ -18,6 +18,7 @@ public class ConceptGeneratorTests
         Assert.Equal("overview", overview.Id.ToString());
         Assert.Equal("Repository", overview.Document.Frontmatter.Type);
         Assert.Equal("my-repo", overview.Document.Frontmatter.Title);
+        Assert.Contains("repository", overview.Document.Frontmatter.Tags);
     }
 
     [Fact]
@@ -34,6 +35,7 @@ public class ConceptGeneratorTests
         Assert.Equal("my-lib", packageConcept.Document.Frontmatter.Title);
         Assert.Equal("A little library.", packageConcept.Document.Frontmatter.Description);
         Assert.Contains("npm", packageConcept.Document.Frontmatter.Tags);
+        Assert.Equal("package.json", packageConcept.Document.Frontmatter.Resource);
         Assert.Single(packageConcept.Document.Frontmatter.Sources);
         Assert.Equal("package.json", packageConcept.Document.Frontmatter.Sources[0].Resource);
     }
@@ -90,8 +92,53 @@ public class ConceptGeneratorTests
         var docConcept = concepts.Single(c => c.Id.ToString() == "docs/my-great-tool");
         Assert.Equal("Documentation", docConcept.Document.Frontmatter.Type);
         Assert.Equal("My Great Tool", docConcept.Document.Frontmatter.Title);
+        Assert.Contains("documentation", docConcept.Document.Frontmatter.Tags);
+        Assert.Equal("README.md", docConcept.Document.Frontmatter.Resource);
         Assert.Single(docConcept.Document.Frontmatter.Sources);
         Assert.Equal("README.md", docConcept.Document.Frontmatter.Sources[0].Resource);
+    }
+
+    [Fact]
+    public void Generate_falls_back_to_a_generic_slug_when_a_package_name_is_entirely_non_ascii()
+    {
+        // "概要" normalizes to nothing under ConceptId.Slugify (every character maps to '-', which then
+        // collapses and strips away) -- Generate must not throw (Finding 2), and must still produce a
+        // valid, unique concept id.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("npm", "package.json", "概要", null)],
+            []);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var packageConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "packages");
+        Assert.Equal("packages/package", packageConcept.Id.ToString());
+    }
+
+    [Fact]
+    public void Generate_falls_back_to_a_generic_slug_when_a_doc_title_is_entirely_non_ascii()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("README.md", "概要")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var docConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "docs");
+        Assert.Equal("docs/doc", docConcept.Id.ToString());
+    }
+
+    [Fact]
+    public void Generate_disambiguates_two_packages_that_are_both_entirely_non_ascii()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [
+                new PackageManifest("npm", "a/package.json", "概要", null),
+                new PackageManifest("nuget", "b/Pkg.csproj", "Привет", null),
+            ],
+            []);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var packageIds = concepts.Where(c => c.Id.Segments[0] == "packages").Select(c => c.Id.ToString()).ToList();
+        Assert.Equal(["packages/package", "packages/package-2"], packageIds);
     }
 
     [Fact]

@@ -21,7 +21,7 @@ public class EndToEndTests
 
             var snapshot = new RepositoryScanner().Scan(repoPath);
             var concepts = new ConceptGenerator().Generate(snapshot);
-            var writeResult = new BundleWriter().Write(outPath, concepts, WritePolicy.RequireEmpty);
+            var writeResult = new BundleWriter().Write(outPath, concepts, WritePolicy.RequireEmpty, repoPath);
 
             Assert.Equal(3, writeResult.Written); // overview + 1 package + 1 doc
             Assert.Empty(writeResult.Failures);

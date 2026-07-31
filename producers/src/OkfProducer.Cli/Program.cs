@@ -33,6 +33,12 @@ generateCommand.SetAction(parseResult =>
     var update = parseResult.GetValue(updateOption);
     var policy = reset ? WritePolicy.Reset : update ? WritePolicy.Update : WritePolicy.RequireEmpty;
 
+    if (!Directory.Exists(repo))
+    {
+        Console.Error.WriteLine($"error: repository path '{repo}' does not exist or is not a directory.");
+        return 1;
+    }
+
     var scanner = host.Services.GetRequiredService<IRepositoryScanner>();
     var generator = host.Services.GetRequiredService<IConceptGenerator>();
     var writer = host.Services.GetRequiredService<IBundleWriter>();
@@ -41,7 +47,7 @@ generateCommand.SetAction(parseResult =>
     {
         var snapshot = scanner.Scan(repo);
         var concepts = generator.Generate(snapshot);
-        var result = writer.Write(outPath, concepts, policy);
+        var result = writer.Write(outPath, concepts, policy, repo);
 
         Console.WriteLine($"Wrote {result.Written} concept(s) to {outPath}.");
         foreach (var (id, error) in result.Failures)
@@ -51,7 +57,7 @@ generateCommand.SetAction(parseResult =>
 
         return result.Failures.Count > 0 ? 1 : 0;
     }
-    catch (InvalidOperationException ex)
+    catch (Exception ex) when (ex is InvalidOperationException or OkfException or IOException or UnauthorizedAccessException)
     {
         Console.Error.WriteLine($"error: {ex.Message}");
         return 1;

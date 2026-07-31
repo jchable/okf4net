@@ -101,6 +101,41 @@ public class RepositoryScannerTests
     }
 
     [Fact]
+    public void Scan_csproj_finds_PackageId_and_Description_split_across_multiple_PropertyGroups()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            // Mirrors this very repo's own src/OKF4net/OKF4net.csproj shape: TargetFramework/Nullable in
+            // one PropertyGroup, PackageId/Description in a separate one (Finding 5).
+            File.WriteAllText(Path.Combine(repo, "MyTool.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <PropertyGroup>
+                    <PackageId>MyTool</PackageId>
+                    <Description>Does the thing.</Description>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("nuget", pkg.Ecosystem);
+            Assert.Equal("MyTool.csproj", pkg.RelativePath);
+            Assert.Equal("MyTool", pkg.Name);
+            Assert.Equal("Does the thing.", pkg.Description);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Scan_csproj_without_PackageId_falls_back_to_filename()
     {
         var repo = CreateTempRepo();
@@ -153,6 +188,27 @@ public class RepositoryScannerTests
         try
         {
             File.WriteAllText(Path.Combine(repo, "README.md"), "Just prose, no heading.\n");
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var doc = Assert.Single(snapshot.Docs);
+            Assert.Equal(new DirectoryInfo(repo).Name, doc.Title);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Scan_readme_with_heading_that_trims_to_empty_falls_back_to_repo_name()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            // A literal "# " heading line: trims to an empty string, not null -- must still trigger
+            // the repo-name fallback rather than leaving DocFile.Title empty (Finding 2).
+            File.WriteAllText(Path.Combine(repo, "README.md"), "# \n\nSome text.\n");
 
             var snapshot = new RepositoryScanner().Scan(repo);
 

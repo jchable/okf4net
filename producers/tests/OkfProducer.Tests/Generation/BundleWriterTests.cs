@@ -12,6 +12,13 @@ public class BundleWriterTests
         return path;
     }
 
+    /// <summary>
+    /// A repo path unrelated to any <c>outPath</c> under test -- used for calls that don't care about
+    /// the Finding 3 self/ancestor guard, so it never accidentally trips it.
+    /// </summary>
+    private static string UnrelatedRepoPath() =>
+        Path.Combine(Path.GetTempPath(), "okfproducer-write-repo-" + Guid.NewGuid());
+
     private static GeneratedConcept SampleConcept(string id = "overview") =>
         new(ConceptId.Parse(id),
             OkfDocumentBuilder.ForType("Repository").Title("t").Description("d").Body("# t\n").Build());
@@ -22,7 +29,7 @@ public class BundleWriterTests
         var outPath = CreateTempDir();
         try
         {
-            var result = new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.RequireEmpty);
+            var result = new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.RequireEmpty, UnrelatedRepoPath());
 
             Assert.Equal(1, result.Written);
             Assert.Empty(result.Failures);
@@ -44,7 +51,7 @@ public class BundleWriterTests
         try
         {
             Assert.Throws<InvalidOperationException>(() =>
-                new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.RequireEmpty));
+                new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.RequireEmpty, UnrelatedRepoPath()));
 
             Assert.False(File.Exists(Path.Combine(outPath, "overview.md")));
             Assert.True(File.Exists(Path.Combine(outPath, "existing.txt")));
@@ -63,7 +70,7 @@ public class BundleWriterTests
         File.WriteAllText(Path.Combine(outPath, "hand-written.md"), "---\ntype: Note\n---\n\nkept\n");
         try
         {
-            var result = new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.Update);
+            var result = new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.Update, UnrelatedRepoPath());
 
             Assert.Equal(1, result.Written);
             Assert.True(File.Exists(Path.Combine(outPath, "overview.md")));
@@ -83,7 +90,7 @@ public class BundleWriterTests
         File.WriteAllText(Path.Combine(outPath, "stale.md"), "---\ntype: Note\n---\n\nstale\n");
         try
         {
-            var result = new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.Reset);
+            var result = new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.Reset, UnrelatedRepoPath());
 
             Assert.Equal(1, result.Written);
             Assert.False(File.Exists(Path.Combine(outPath, "stale.md")));
@@ -101,13 +108,55 @@ public class BundleWriterTests
         var outPath = CreateTempDir();
         try
         {
-            new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.RequireEmpty);
+            new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.RequireEmpty, UnrelatedRepoPath());
 
             // "t" alone would match almost any generated text (e.g. inside "Contents"); assert on the
             // actual link target IndexGenerator emits for the one concept we wrote, so this only
             // passes if the index genuinely reflects that concept.
             var indexText = File.ReadAllText(Path.Combine(outPath, "index.md"));
             Assert.Contains("overview.md", indexText);
+        }
+        finally
+        {
+            Directory.Delete(outPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Write_Reset_refuses_to_delete_the_repository_it_scanned_when_out_equals_repo()
+    {
+        var outPath = CreateTempDir();
+        Directory.CreateDirectory(outPath);
+        File.WriteAllText(Path.Combine(outPath, "stale.md"), "---\ntype: Note\n---\n\nstale\n");
+        try
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.Reset, outPath));
+
+            Assert.Contains("Refusing to reset", ex.Message);
+            Assert.True(File.Exists(Path.Combine(outPath, "stale.md")));
+        }
+        finally
+        {
+            Directory.Delete(outPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Write_Reset_refuses_to_delete_an_ancestor_of_the_repository_it_scanned()
+    {
+        var outPath = CreateTempDir();
+        var repoPath = Path.Combine(outPath, "nested", "repo");
+        Directory.CreateDirectory(repoPath);
+        File.WriteAllText(Path.Combine(outPath, "stale.md"), "---\ntype: Note\n---\n\nstale\n");
+        try
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.Reset, repoPath));
+
+            Assert.Contains("Refusing to reset", ex.Message);
+            Assert.True(File.Exists(Path.Combine(outPath, "stale.md")));
+            Assert.True(Directory.Exists(repoPath));
         }
         finally
         {
