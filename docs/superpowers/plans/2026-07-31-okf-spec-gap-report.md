@@ -57,19 +57,18 @@ description: >
   Generate a detailed Markdown report of gaps between the current upstream
   OKF spec (GoogleCloudPlatform/knowledge-catalog, okf/SPEC.md) and the
   OKF4net implementation, with a severity per gap and documented/intentional
-  divergences called out separately from real gaps. Use when the user asks
-  for a spec-gap report, a conformance audit, "écarts avec la spec", "ce qui
-  manque par rapport à la spec officielle", or wants to know how OKF4net
-  compares to the current OKF spec version. This is a deliberately
-  heavyweight, on-demand audit — only run it when explicitly asked via
-  `/spec-gap-report`, never opportunistically.
+  divergences called out separately from real gaps. Triggers ONLY on the
+  literal `/spec-gap-report` slash command — never on natural-language
+  requests for a conformance audit or spec comparison, even a close match;
+  this is a deliberately heavyweight, on-demand audit, not something that
+  should fire opportunistically from a description match.
 ---
 
 # OKF spec gap report
 
 Produces a dated report at `docs/spec-conformance/YYYY-MM-DD-okf-spec-gap-report.md`
-enumerating every **atomic normative statement** in the current upstream OKF
-spec, OKF4net's implementation status for each, and a severity — with
+enumerating every **atomic statement** in the current upstream OKF spec,
+OKF4net's implementation status for each, and a severity — with
 documented/intentional divergences called out separately from real,
 undocumented gaps.
 
@@ -90,8 +89,13 @@ curl -fsSL https://raw.githubusercontent.com/GoogleCloudPlatform/knowledge-catal
 If this fails (network policy, rename, rate limit), fall back to:
 
 ```sh
-gh api repos/GoogleCloudPlatform/knowledge-catalog/contents/okf/SPEC.md --jq '.content' | base64 -d > <scratchpad>/SPEC.md
+CONTENT=$(gh api repos/GoogleCloudPlatform/knowledge-catalog/contents/okf/SPEC.md --jq '.content')
+echo "$CONTENT" | base64 -d > <scratchpad>/SPEC.md 2>/dev/null || echo "$CONTENT" | base64 -D > <scratchpad>/SPEC.md
 ```
+
+(GNU `base64` wants `-d`, BSD/macOS `base64` wants `-D` — try both rather
+than hardcoding one, since this fallback is most likely to be needed on
+whichever platform it wasn't tested on.)
 
 If *both* fail: stop and tell the user the fetch failed — do not produce a
 report against an empty or partial spec.
@@ -219,6 +223,17 @@ section's atomic statement, not a second one — only the pointed-to section
 owns the classification, annotated as also gating §11 conformance (so its
 severity reflects that gate, instead of creating a duplicate report row at
 a different severity than its source).
+
+This only applies when the cited section actually yields an atomic
+statement to inherit into. Some §11 bullets cite a section that is
+explicitly informative rather than normative — e.g. §11's "SHOULD surface,
+not silently drop, a failing attestation (§10.5)" cites §10.5, which the
+spec itself labels "This subsection is informative, not normative." A
+citation to an informative-only (sub)section is **never** a pointer: it
+stays as its own §11 atomic statement, because collapsing it into a
+section with nothing extracted from it would silently delete the
+statement rather than merely re-file it — exactly the "no silent gaps"
+rule this document states under Edge cases.
 
 Worked example: §11 yields roughly eight atomic statements this way —
 three declarative conformance conditions, the `REQUIRED`-marker statement
@@ -500,7 +515,12 @@ git commit -m "feat(skills): add report-output and edge-case handling, complete 
 ### Task 6: End-to-end dry run against the real repo
 
 **Files:**
-- Create: `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md` (the skill's actual output — kept as evidence the skill works, not deleted after the dry run)
+- Create: `docs/spec-conformance/YYYY-MM-DD-okf-spec-gap-report.md`, dated
+  the day this task actually runs (the skill's actual output — kept as
+  evidence the skill works, not deleted after the dry run). Written here
+  as `2026-07-31-...` because that's today; if this task executes on a
+  different day (e.g. resumed in a later session), use that day's date
+  instead — both in the generated filename and in Step 8's `git add`.
 - Modify: `.claude/skills/spec-gap-report/SKILL.md` (only if the dry run surfaces a real problem with the instructions)
 
 **Interfaces:**
@@ -549,17 +569,44 @@ it appears **once**, under §5 (its canonical section), annotated as also
 gating §11 conformance — not twice, once under §5 at one severity and
 again under §11 at a different severity.
 
-- [ ] **Step 7: Fix and re-run if any criterion fails**
+- [ ] **Step 7: Check acceptance criterion (f) — citations are genuine, not fabricated**
 
-If any of (a)–(e) fails, the failure is in the skill's instructions (not
+Pick 5 report rows spread across different sections and statuses. For
+each, run the cited `file:line` (e.g. `sed -n '<line>,<line>p' <cited
+file>`) and confirm the quoted snippet in the report matches the real
+file content. Expected: all 5 match — this is the check that makes Task
+3's quoted-snippet requirement worth anything; a report full of plausible
+but unverified citations would pass every other criterion here while
+still being untrustworthy.
+
+- [ ] **Step 8: Check acceptance criterion (g) — no fenced example content leaked in as a spec section**
+
+Search the report for any row attributed to `## 2026-05-22` or `##
+2026-05-15` (the dates from §9's fenced `log.md` worked example) or any
+other row whose "spec section" doesn't correspond to a real `## N.` spec
+heading. Expected: none — confirms the fenced-range exclusion from Task 2
+actually held when applied to the real spec text, not just in the Task 2
+dry run against a hand-picked line range.
+
+- [ ] **Step 9: Fix and re-run if any criterion fails**
+
+If any of (a)–(g) fails, the failure is in the skill's instructions (not
 in the report), since the report is only as good as the instructions it
-followed. Fix the relevant `##` section of
-`.claude/skills/spec-gap-report/SKILL.md`, delete the bad report, and
-re-run from Step 1. Do not hand-edit the generated report to make it match
+followed. Do not hand-edit the generated report to make it match
 expectations — that would validate the skill against a report it didn't
 actually produce.
 
-- [ ] **Step 8: Commit**
+Scope the fix to what actually broke before deciding whether a full
+re-run is warranted: a full re-run (repeating Step 1, which fans out
+~13 `Agent` calls) is only needed when the fix touches `## 1. Fetch the
+current spec` or `## 2. Extract normative statements` — those change
+every section's input, so every section could be affected. A fix
+localized to `## 3`, `## 4`, or `## 5` (verification, classification, or
+report formatting) only needs the affected section(s) re-verified by
+hand against the fix, not a full 13-agent re-run. Delete the bad report
+only once a fix is in place and (re-)verified.
+
+- [ ] **Step 10: Commit**
 
 ```sh
 git add docs/spec-conformance/2026-07-31-okf-spec-gap-report.md
