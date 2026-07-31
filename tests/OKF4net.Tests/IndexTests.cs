@@ -78,6 +78,57 @@ public class IndexTests
     }
 
     [Fact]
+    public void Regenerate_strips_extra_keys_from_root_index_keeping_only_okf_version()
+    {
+        // §8 sanctions ONLY the okf_version key on the bundle-root
+        // index.md; regeneration must self-heal a RootIndexExtraFrontmatter
+        // violation (now Severity.Error, see BundleValidator) instead of
+        // carrying an extra key forward indefinitely, the same way it
+        // already self-heals a non-root index.md's frontmatter (see
+        // Regenerate_still_strips_stray_frontmatter_from_non_root_index).
+        using var tmp = new TempDir();
+        tmp.Write(
+            "index.md",
+            "---\n" +
+            "okf_version: \"0.2\"\n" +
+            "title: extra\n" +
+            "---\n\n" +
+            "# Knowledge\n");
+        WriteDoc(tmp, "projects/project-x.md", "Project", "Project X", "Uses PostgreSQL.");
+
+        var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+        Assert.Contains(Path.Combine(tmp.Path, "index.md"), written);
+
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        var doc = OkfDocument.Parse(rootIndex);
+        Assert.Equal("0.2", doc.Frontmatter.Get("okf_version")?.AsDisplayString());
+        Assert.Null(doc.Frontmatter.Get("title"));
+    }
+
+    [Fact]
+    public void Regenerate_drops_all_root_index_frontmatter_when_okf_version_absent()
+    {
+        // A root index.md with stray frontmatter but no okf_version key at
+        // all has nothing §8 sanctions preserving -- regeneration drops it
+        // entirely, same as a non-root index.md.
+        using var tmp = new TempDir();
+        tmp.Write(
+            "index.md",
+            "---\n" +
+            "title: stray\n" +
+            "---\n\n" +
+            "# Knowledge\n");
+        WriteDoc(tmp, "projects/project-x.md", "Project", "Project X", "Uses PostgreSQL.");
+
+        var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+        Assert.Contains(Path.Combine(tmp.Path, "index.md"), written);
+
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        Assert.DoesNotContain("stray", rootIndex);
+        Assert.False(rootIndex.StartsWith("---\n", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Regenerate_root_index_marker_survives_repeated_regenerations()
     {
         // The preserved frontmatter is written via OkfDocument.Serialize()
@@ -132,7 +183,7 @@ public class IndexTests
     {
         // Frontmatter is only spec-sanctioned on the bundle-root index.md
         // (§12); everywhere else it's a §8 violation that BundleValidator
-        // flags as a warning. The root-preservation fix above must not make
+        // flags as an error. The root-preservation fix above must not make
         // a stray frontmatter block on a NON-root index.md sticky -- it
         // should keep self-healing on every regeneration, exactly as before
         // that fix.

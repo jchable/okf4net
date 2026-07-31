@@ -74,6 +74,17 @@ public class CliTests
     }
 
     [Fact]
+    public void Validate_bundle_with_malformed_reserved_file_exits_nonzero()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        tmp.Write("sub/index.md", "---\ntitle: nope\n---\n\n# Listing\n");
+        var r = Run("validate", tmp.Path);
+        Assert.NotEqual(0, r.Code);
+        Assert.Contains("not conformant", r.Out);
+    }
+
+    [Fact]
     public void Info_prints_summary()
     {
         var r = Run("info", BundlePath);

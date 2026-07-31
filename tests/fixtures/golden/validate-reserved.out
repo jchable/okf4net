@@ -1,0 +1,7 @@
+[error] tests/fixtures/okf_v02_reserved/broken/index.md: unparseable index.md: Invalid YAML in frontmatter: YAML error at line 1: expected ',' or ']' in flow sequence
+[error] tests/fixtures/okf_v02_reserved/index.md: root index.md frontmatter must declare only `okf_version` (§12)
+[error] tests/fixtures/okf_v02_reserved/sub/index.md: index.md must not contain frontmatter (§8)
+[error] tests/fixtures/okf_v02_reserved/log.md: log date heading is not ISO-8601 `YYYY-MM-DD`: "not-a-date"
+
+1 concept(s); 4 error(s), 0 warning(s), 0 info.
+✗ not conformant with OKF v0.2

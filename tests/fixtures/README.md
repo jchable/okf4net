@@ -146,3 +146,49 @@ them a re-capture from the (removed) Rust binary:
     `[warning]`, never `[error]`: §10 sits outside the §11 conformance
     floor, so a malformed Attested Computation concept stays conformant
     (exit code `0`).
+
+## §11 conformance fix for malformed reserved files (2026-07-31)
+
+- `okf_v02_reserved/` and `golden/validate-reserved.out` /
+  `golden/validate-reserved.exitcode` are **new** v0.2 fixtures for the
+  fix that makes `BundleValidator.ValidateReserved` correctly enforce §11
+  condition 3 (reserved files must follow their §8/§9 structure) —
+  hand-authored and hand-verified against the actual `BundleValidator`
+  behavior after the fix, like the fixtures above: no reference binary
+  implements this either, and every prior golden fixture predates the
+  fix (all were re-verified during design and confirmed unaffected).
+  - `index.md` (root) declares an extra key beside `okf_version` →
+    `RootIndexExtraFrontmatter`, now `[error]`.
+  - `log.md` (root) has a non-ISO-8601 date heading → `LogDateInvalid`,
+    now `[error]`.
+  - `sub/index.md` (non-root) declares frontmatter → `IndexHasFrontmatter`,
+    now `[error]`.
+  - `broken/index.md` has unparseable YAML frontmatter →
+    `UnparseableIndex`, a brand-new diagnostic for a case that previously
+    produced no diagnostic at all.
+  - `concepts/note.md` is a fully clean concept, contributing zero
+    diagnostics, so every diagnostic in the golden output is attributable
+    to exactly one of the four cases above.
+  - The bundle is **not conformant** (exit code `1`) — this is the point
+    of the fix: all four cases were previously `[warning]` or silent, and
+    the bundle incorrectly validated as conformant (exit code `0`).
+  - `DiagnosticCode.UnparseableIndex`/`UnparseableLog`'s decoder-failure
+    branch (invalid UTF-8 bytes in a reserved file) is exercised by unit
+    tests instead of this fixture — `ValidateTests.Unreadable_index_bytes_are_an_error`
+    and `ValidateTests.Unreadable_log_bytes_are_an_error` write raw invalid
+    UTF-8 bytes directly to `index.md`/`log.md`, the same technique already
+    used elsewhere in this repo for a non-UTF-8 `log.md`
+    (`OkfValidateChangesTests.ChangesSince_skips_a_non_utf8_log_file_with_a_note_instead_of_throwing`).
+    Since `ChangeLog.Parse` never throws, that decoder-failure branch is in
+    fact the *only* way `UnparseableLog` can fire in practice.
+  - Not covered by any test (documented gap, not an oversight): a reserved
+    file that fails to *read* for I/O/permission reasons specifically (as
+    opposed to failing to *decode* or *parse*) — the `IOException`/
+    `UnauthorizedAccessException` catch clauses in `ValidateReserved`. No
+    reliable, non-flaky, cross-platform way to construct a genuinely
+    unreadable-for-permission-reasons file was found for this repo's
+    Linux/Windows/macOS CI matrix; the code path is identical in shape to
+    the decoder-failure and parse-failure branches that *are* covered
+    (same diagnostic construction, different caught exception type), so
+    the risk of it being wrong is low, but it remains unexercised by an
+    automated test.

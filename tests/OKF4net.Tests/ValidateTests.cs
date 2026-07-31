@@ -5,9 +5,10 @@ namespace OKF4net.Tests;
 /// Conformance-checking tests, exercised rule-by-rule against
 /// <c>BundleValidator.Validate</c>. Each test targets exactly one
 /// diagnostic-producing rule and asserts its exact severity and message
-/// shape: only true §11 violations (unparseable frontmatter, missing/empty
-/// `type`) are <see cref="Severity.Error"/>; everything else is
-/// <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
+/// shape: only true §11 violations -- unparseable frontmatter, missing/empty
+/// `type`, and reserved files that fail to follow their §8/§9 structure
+/// (malformed/unreadable `index.md`/`log.md`) -- are <see cref="Severity.Error"/>;
+/// everything else is <see cref="Severity.Warning"/> or <see cref="Severity.Info"/>.
 /// </summary>
 public class ValidateTests
 {
@@ -34,6 +35,59 @@ public class ValidateTests
         Assert.Equal(DiagnosticCode.UnparseableDocument, diag.Code);
         Assert.False(report.IsConformant);
         Assert.Equal(1, report.ErrorCount);
+    }
+
+    [Fact]
+    public void Unparseable_index_is_an_error()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        tmp.Write("broken/index.md", "---\ntitle: [unterminated\n---\n\n# Listing\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableIndex);
+        Assert.StartsWith("unparseable index.md: ", diag.Message);
+        Assert.False(report.IsConformant);
+    }
+
+    [Fact]
+    public void Unreadable_index_bytes_are_an_error()
+    {
+        // A distinct code path from Unparseable_index_is_an_error above: this
+        // exercises the DecoderFallbackException branch (invalid UTF-8 bytes
+        // that never reach OkfDocument.Parse), not the YAML-parse-failure
+        // branch. Same raw-bytes technique as
+        // OkfValidateChangesTests.ChangesSince_skips_a_non_utf8_log_file_with_a_note_instead_of_throwing.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "broken"));
+        File.WriteAllBytes(Path.Combine(tmp.Path, "broken", "index.md"), [0x23, 0x20, 0xFF, 0xFE, 0x0A]);
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableIndex);
+        Assert.StartsWith("unparseable index.md: ", diag.Message);
+        Assert.False(report.IsConformant);
+    }
+
+    [Fact]
+    public void Unreadable_log_bytes_are_an_error()
+    {
+        // ChangeLog.Parse never throws, so this DecoderFallbackException
+        // branch (invalid UTF-8 bytes) is the only way DiagnosticCode
+        // .UnparseableLog can fire in practice -- there is no analogous
+        // "malformed but decodable" parse-failure branch for log.md the way
+        // there is for index.md's YAML frontmatter.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        File.WriteAllBytes(Path.Combine(tmp.Path, "log.md"), [0x23, 0x20, 0xFF, 0xFE, 0x0A]);
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableLog);
+        Assert.StartsWith("unparseable log.md: ", diag.Message);
+        Assert.False(report.IsConformant);
     }
 
     [Fact]
@@ -136,7 +190,7 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Nonroot_index_with_frontmatter_is_a_warning()
+    public void Nonroot_index_with_frontmatter_is_an_error()
     {
         // frontmatter is only permitted in the bundle-root index.md.
         using var tmp = new TempDir();
@@ -145,10 +199,10 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        var diag = Assert.Single(report.Of(Severity.Warning));
-        Assert.Equal("index.md should not contain frontmatter (§8)", diag.Message);
+        var diag = Assert.Single(report.Of(Severity.Error));
+        Assert.Equal("index.md must not contain frontmatter (§8)", diag.Message);
         Assert.Equal(DiagnosticCode.IndexHasFrontmatter, diag.Code);
-        Assert.True(report.IsConformant);
+        Assert.False(report.IsConformant);
     }
 
     [Fact]
@@ -164,7 +218,7 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Root_index_frontmatter_with_extra_keys_is_a_warning()
+    public void Root_index_frontmatter_with_extra_keys_is_an_error()
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
@@ -172,7 +226,8 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.Contains(report.Of(Severity.Warning), d => d.Message == "root index.md frontmatter should declare only `okf_version` (§12)" && d.Code == DiagnosticCode.RootIndexExtraFrontmatter && d.Field == "okf_version");
+        Assert.Contains(report.Of(Severity.Error), d => d.Message == "root index.md frontmatter must declare only `okf_version` (§12)" && d.Code == DiagnosticCode.RootIndexExtraFrontmatter && d.Field == "okf_version");
+        Assert.False(report.IsConformant);
     }
 
     [Fact]
@@ -188,7 +243,7 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Invalid_log_date_heading_is_a_warning()
+    public void Invalid_log_date_heading_is_an_error()
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
@@ -196,10 +251,10 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        var diag = Assert.Single(report.Of(Severity.Warning));
+        var diag = Assert.Single(report.Of(Severity.Error));
         Assert.Equal("log date heading is not ISO-8601 `YYYY-MM-DD`: \"not-a-date\"", diag.Message);
         Assert.Equal(DiagnosticCode.LogDateInvalid, diag.Code);
-        Assert.True(report.IsConformant);
+        Assert.False(report.IsConformant);
     }
 
     [Fact]
@@ -235,12 +290,12 @@ public class ValidateTests
     {
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntitle: No Type\n---\nbody\n"); // 1 error (missing type), 3 recommended-field warnings (description, resource, tags)
-        tmp.Write("log.md", "# Log\n\n## nope\n* x\n"); // 1 more warning
+        tmp.Write("log.md", "# Log\n\n## nope\n* x\n"); // 1 more error (invalid log date, now Error instead of Warning)
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.Equal(1, report.ErrorCount);
-        Assert.Equal(4, report.WarningCount);
+        Assert.Equal(2, report.ErrorCount);
+        Assert.Equal(3, report.WarningCount);
         Assert.False(report.IsConformant);
     }
 
@@ -428,13 +483,20 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Root_okf_version_other_than_current_warns()
+    public void Root_okf_version_other_than_current_warns_but_stays_conformant()
     {
+        // §12 deliberately keeps this Warning (not Error, unlike the other
+        // reserved-file structural violations): "Consumers that do not
+        // understand the declared version SHOULD attempt best-effort
+        // consumption rather than refusing the bundle." Pinned as its own
+        // assertion so a future accidental promotion of this one path is
+        // caught here, not just left to whoever notices.
         var dir = Directory.CreateTempSubdirectory("okfv02root").FullName;
         File.WriteAllText(Path.Combine(dir, "index.md"), "---\nokf_version: \"0.9\"\n---\n\n# Index\n");
         File.WriteAllText(Path.Combine(dir, "c.md"), "---\ntype: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n---\nbody\n");
         var r = BundleValidator.Validate(Bundle.Load(dir));
         Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("declared okf_version") && d.Code == DiagnosticCode.UnsupportedOkfVersion && d.Field == "okf_version");
+        Assert.True(r.IsConformant);
     }
 
     [Fact]

@@ -26,6 +26,22 @@ and this project adheres to
   (`DiagnosticCode`, before the existing optional `Field`). Source- and
   binary-breaking for any code that constructs or deconstructs `Diagnostic`
   directly; nothing in this repository does.
+- **Breaking: `okf validate` now correctly reports non-conformance (§11)
+  for malformed reserved files.** Previously a malformed `index.md`/`log.md`
+  (bad structure, or unreadable/unparseable) was under-reported as
+  `Warning` or produced no diagnostic at all, so `okf validate` incorrectly
+  exited `0`; it now exits `1` for these cases, as §11 conformance already
+  requires. Two new `DiagnosticCode` values, `UnparseableIndex` and
+  `UnparseableLog`, cover the previously-silent case. The same applies to
+  library callers of `BundleValidator.Validate` (these three diagnostic
+  codes move from `Warning` to `Error`: `IndexHasFrontmatter`,
+  `RootIndexExtraFrontmatter`, `LogDateInvalid` -- changing
+  `ValidationReport.IsConformant`/`ErrorCount`/`WarningCount`) and to the
+  `okf_validate_bundle` MCP tool's verdict. Widest practical impact:
+  `ChangeLog.Parse` treats every `##` line in a `log.md` as a date
+  heading (it does not distinguish a date from a section heading), so a
+  `log.md` containing any non-date `##` line (e.g. `## Notes`, a manually
+  added subsection) now fails conformance -- previously this was silent.
 
 ### Fixed
 

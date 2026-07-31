@@ -287,14 +287,19 @@ public static class IndexGenerator
 
             // The bundle-root index.md is the only place frontmatter is
             // spec-sanctioned at all (§12: the okf_version marker, see
-            // Bundle.OkfVersion) -- every other index.md must have none
+            // Bundle.OkfVersion), and even there ONLY the okf_version key
+            // is sanctioned (§8) -- every other index.md must have none
             // (§8, BundleValidator's "index.md should not contain
-            // frontmatter" warning). So only the root's existing frontmatter
-            // is carried forward here; a non-root index.md keeps the old
-            // body-only overwrite, which self-heals any stray frontmatter
-            // there instead of making it permanently sticky. Without the
-            // root case, regeneration used to overwrite index.md with ONLY
-            // the freshly built body, silently dropping okf_version and
+            // frontmatter" error). So only the root's existing okf_version
+            // value (never the rest of its frontmatter) is carried forward
+            // here; a non-root index.md keeps the old body-only overwrite.
+            // Both paths self-heal every §8 violation regeneration can
+            // reach: a non-root index.md drops all frontmatter, and the
+            // root drops everything except okf_version, closing
+            // RootIndexExtraFrontmatter instead of making stray keys
+            // permanently sticky. Without carrying okf_version forward at
+            // all, regeneration used to overwrite index.md with ONLY the
+            // freshly built body, silently dropping the marker and
             // breaking okf-mcp's bundle auto-discovery (OkfBundleDiscovery)
             // on the next server start.
             if (string.Equals(directory, bundleRoot, StringComparison.Ordinal) && File.Exists(indexPath))
@@ -312,9 +317,12 @@ public static class IndexGenerator
                     continue;
                 }
 
-                if (!existing.Frontmatter.IsEmpty)
+                var okfVersion = existing.Frontmatter.Get("okf_version");
+                if (okfVersion is not null)
                 {
-                    content = new OkfDocument(existing.Frontmatter, body).Serialize();
+                    var rootFrontmatter = new Frontmatter();
+                    rootFrontmatter.Set("okf_version", okfVersion);
+                    content = new OkfDocument(rootFrontmatter, body).Serialize();
                 }
             }
 

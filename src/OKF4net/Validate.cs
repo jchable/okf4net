@@ -135,6 +135,9 @@ public enum DiagnosticCode
     /// <summary>A §6.2 path-valued frontmatter field resolves outside the bundle root.</summary>
     FrontmatterPathUnsafe,
 
+    /// <summary>A reserved <c>index.md</c> could not be read or parsed (§8, §11).</summary>
+    UnparseableIndex,
+
     /// <summary>A non-root <c>index.md</c> declares frontmatter, which §8 reserves for the bundle-root index only.</summary>
     IndexHasFrontmatter,
 
@@ -143,6 +146,9 @@ public enum DiagnosticCode
 
     /// <summary>The bundle-root <c>index.md</c> declares an <c>okf_version</c> this build does not recognize.</summary>
     UnsupportedOkfVersion,
+
+    /// <summary>A reserved <c>log.md</c> could not be read (§9, §11).</summary>
+    UnparseableLog,
 
     /// <summary>A <c>log.md</c> date heading is not ISO-8601 <c>YYYY-MM-DD</c> (§9).</summary>
     LogDateInvalid,
@@ -515,16 +521,19 @@ public static class BundleValidator
             {
                 text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
             }
-            catch (IOException)
+            catch (IOException e)
             {
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
                 continue;
             }
-            catch (UnauthorizedAccessException)
+            catch (UnauthorizedAccessException e)
             {
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
                 continue;
             }
-            catch (System.Text.DecoderFallbackException)
+            catch (System.Text.DecoderFallbackException e)
             {
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
                 continue;
             }
 
@@ -533,8 +542,9 @@ public static class BundleValidator
             {
                 doc = OkfDocument.Parse(text);
             }
-            catch (DocumentParseException)
+            catch (DocumentParseException e)
             {
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
                 continue;
             }
 
@@ -549,10 +559,10 @@ public static class BundleValidator
             if (!isRoot)
             {
                 diagnostics.Add(new Diagnostic(
-                    Severity.Warning,
+                    Severity.Error,
                     path,
                     null,
-                    "index.md should not contain frontmatter (§8)",
+                    "index.md must not contain frontmatter (§8)",
                     DiagnosticCode.IndexHasFrontmatter));
             }
             else
@@ -561,10 +571,10 @@ public static class BundleValidator
                 if (!onlyVersion)
                 {
                     diagnostics.Add(new Diagnostic(
-                        Severity.Warning,
+                        Severity.Error,
                         path,
                         null,
-                        "root index.md frontmatter should declare only `okf_version` (§12)",
+                        "root index.md frontmatter must declare only `okf_version` (§12)",
                         DiagnosticCode.RootIndexExtraFrontmatter,
                         "okf_version"));
                 }
@@ -590,16 +600,19 @@ public static class BundleValidator
             {
                 text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
             }
-            catch (IOException)
+            catch (IOException e)
             {
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable log.md: {e.Message}", DiagnosticCode.UnparseableLog));
                 continue;
             }
-            catch (UnauthorizedAccessException)
+            catch (UnauthorizedAccessException e)
             {
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable log.md: {e.Message}", DiagnosticCode.UnparseableLog));
                 continue;
             }
-            catch (System.Text.DecoderFallbackException)
+            catch (System.Text.DecoderFallbackException e)
             {
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable log.md: {e.Message}", DiagnosticCode.UnparseableLog));
                 continue;
             }
 
@@ -607,7 +620,7 @@ public static class BundleValidator
             foreach (var bad in log.InvalidDates())
             {
                 diagnostics.Add(new Diagnostic(
-                    Severity.Warning,
+                    Severity.Error,
                     path,
                     null,
                     $"log date heading is not ISO-8601 `YYYY-MM-DD`: {DebugQuote.Quote(bad)}",
