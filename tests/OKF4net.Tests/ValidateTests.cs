@@ -37,6 +37,20 @@ public class ValidateTests
     }
 
     [Fact]
+    public void Unparseable_index_is_an_error()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        tmp.Write("broken/index.md", "---\ntitle: [unterminated\n---\n\n# Listing\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableIndex);
+        Assert.StartsWith("unparseable index.md: ", diag.Message);
+        Assert.False(report.IsConformant);
+    }
+
+    [Fact]
     public void Missing_type_is_an_error()
     {
         using var tmp = new TempDir();
@@ -136,7 +150,7 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Nonroot_index_with_frontmatter_is_a_warning()
+    public void Nonroot_index_with_frontmatter_is_an_error()
     {
         // frontmatter is only permitted in the bundle-root index.md.
         using var tmp = new TempDir();
@@ -145,10 +159,10 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        var diag = Assert.Single(report.Of(Severity.Warning));
+        var diag = Assert.Single(report.Of(Severity.Error));
         Assert.Equal("index.md should not contain frontmatter (§8)", diag.Message);
         Assert.Equal(DiagnosticCode.IndexHasFrontmatter, diag.Code);
-        Assert.True(report.IsConformant);
+        Assert.False(report.IsConformant);
     }
 
     [Fact]
@@ -164,7 +178,7 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Root_index_frontmatter_with_extra_keys_is_a_warning()
+    public void Root_index_frontmatter_with_extra_keys_is_an_error()
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
@@ -172,7 +186,8 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.Contains(report.Of(Severity.Warning), d => d.Message == "root index.md frontmatter should declare only `okf_version` (§12)" && d.Code == DiagnosticCode.RootIndexExtraFrontmatter && d.Field == "okf_version");
+        Assert.Contains(report.Of(Severity.Error), d => d.Message == "root index.md frontmatter should declare only `okf_version` (§12)" && d.Code == DiagnosticCode.RootIndexExtraFrontmatter && d.Field == "okf_version");
+        Assert.False(report.IsConformant);
     }
 
     [Fact]
@@ -188,7 +203,7 @@ public class ValidateTests
     }
 
     [Fact]
-    public void Invalid_log_date_heading_is_a_warning()
+    public void Invalid_log_date_heading_is_an_error()
     {
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
@@ -196,10 +211,10 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        var diag = Assert.Single(report.Of(Severity.Warning));
+        var diag = Assert.Single(report.Of(Severity.Error));
         Assert.Equal("log date heading is not ISO-8601 `YYYY-MM-DD`: \"not-a-date\"", diag.Message);
         Assert.Equal(DiagnosticCode.LogDateInvalid, diag.Code);
-        Assert.True(report.IsConformant);
+        Assert.False(report.IsConformant);
     }
 
     [Fact]
@@ -235,12 +250,12 @@ public class ValidateTests
     {
         using var tmp = new TempDir();
         tmp.Write("bad.md", "---\ntitle: No Type\n---\nbody\n"); // 1 error (missing type), 3 recommended-field warnings (description, resource, tags)
-        tmp.Write("log.md", "# Log\n\n## nope\n* x\n"); // 1 more warning
+        tmp.Write("log.md", "# Log\n\n## nope\n* x\n"); // 1 more error (invalid log date, now Error instead of Warning)
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.Equal(1, report.ErrorCount);
-        Assert.Equal(4, report.WarningCount);
+        Assert.Equal(2, report.ErrorCount);
+        Assert.Equal(3, report.WarningCount);
         Assert.False(report.IsConformant);
     }
 
