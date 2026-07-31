@@ -16,6 +16,12 @@ are the concrete entry points.
 
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
+- `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source
+  search, ranking strategies, per-caller visibility, the `role: memory`
+  tier) shipped. A natural next one: a read-write "second brain"
+  personal-notes sample over `OKF4net.Mcp` in Claude Desktop — the current
+  MCP story is read-only-focused; this would exercise write/append and
+  `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
 - CLI ergonomics: richer diagnostics and machine-readable (`--json`) output where it aids tooling.
 - Performance baselines for large bundle loads.
 - Bundle viewer: browse a bundle interactively (static HTML render + local live
@@ -27,6 +33,30 @@ are the concrete entry points.
 
 - Ecosystem integrations driven by user demand.
 - Tracking upstream OKF spec evolution beyond v0.2.
+- **Zero-dependency bundle linter for CI.** A small AOT tool built on just
+  `BundleValidator`/`LinkScanner` (no `OKF4net.Cli` dependencies beyond
+  what's already zero-dep), packaged for GitHub Actions/pre-commit — a
+  docs/DevOps-facing entry point distinct from the agent-builder-facing
+  samples, showcasing the zero-dependency story to a different audience.
+- **Interactive cross-link graph explorer.** A small web front-end over
+  `okf graph`/`IndexGenerator` output, visualizing a bundle's concept
+  cross-links — outreach-oriented (contributor/adoption funnel), likely
+  outside pure C#/.NET so scoped as its own project rather than a
+  `samples/` entry.
+- **Dogfooding on a real third-party OSS project's docs.** Convert an
+  existing open-source project's markdown docs into an OKF bundle via
+  `okf fmt`/`index`/`validate`, as a concrete "here's how you'd actually
+  adopt this" walkthrough rather than a synthetic sample bundle.
+- **Attested Computation (§10), executed for real.** `samples/acme-retail-agent`
+  is deliberately read-only for `Attested Computation` concepts — it
+  inspects (`okf_get_computation`) but never runs
+  (`okf_run_computation`) `bundles/acme_retail`'s sanctioned SQL, because
+  trusting a C# reimplementation of `attesters/sql_equality.py` would
+  undermine the whole point of attestation. Actually running one end to
+  end needs a sandboxed container-based `IComputationExecutor`/`IAttester`
+  runtime, scoped in
+  [that sample's design spec](docs/superpowers/specs/2026-07-30-acme-retail-bundle-and-agent-sample-design.md#future-work-a-container-based-execution-runtime)
+  — its own design pass before implementation.
 - **Open question upstream: concept id character set.** The spec (§2) does not
   restrict which characters a concept id may contain; `ConceptId.ValidateSegment`
   currently restricts to ASCII regardless. Whether to allow full Unicode (any
