@@ -180,6 +180,22 @@ export default function Mcp() {
           </p>
         </Chapter>
 
+        <Chapter id="plugin" title="Or: the Claude Code plugin" refText="jchable/okf4net-claude-plugin — one install">
+          <p>
+            On Claude Code, the <a href="https://github.com/jchable/okf4net-claude-plugin">OKF plugin</a> wraps the
+            steps above into one install: it starts <code>okf-mcp</code> for you (no hand-edited config), teaches
+            Claude OKF conventions through a bundled <code>okf</code> skill, and adds two slash commands —{' '}
+            <code>/okf-init</code> (checks the <code>okf-mcp</code> install, then finds or scaffolds your bundle) and{' '}
+            <code>/okf-validate</code> (conformance check, anytime).
+          </p>
+          <pre className="block">{'$ /plugin marketplace add jchable/okf4net-claude-plugin\n$ /plugin install okf@okf4net'}</pre>
+          <p>
+            Requires <code>okf-mcp</code> <strong>0.5.0 or later</strong> — <code>/okf-init</code> checks this and
+            offers the install if it's missing. Restart Claude Code once after installing so the plugin's skill and
+            MCP config load.
+          </p>
+        </Chapter>
+
         <Chapter id="other-clients" title="Connect Cursor & other clients" refText="any stdio MCP client">
           <p>
             Any client that speaks MCP over stdio can run <code>okf-mcp</code>, and the config shape is the same

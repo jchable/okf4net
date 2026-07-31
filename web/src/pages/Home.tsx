@@ -135,6 +135,7 @@ export default function Home() {
             <span className="ref">MCP — the bundle as tools</span>
           </div>
           <p>Run <code>okf-mcp</code>, point it at a bundle, and its ten operations become tools inside <strong>Claude Desktop, Claude Code, and Cursor</strong> — read, search, and write concepts from a conversation, over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>. Same engine as the library and the CLI, exposed to any MCP client.</p>
+          <p>On <strong>Claude Code</strong>, skip the manual config: the <a href="https://github.com/jchable/okf4net-claude-plugin">OKF plugin</a> installs <code>okf-mcp</code>, an <code>okf</code> skill, and guided <code>/okf-init</code> / <code>/okf-validate</code> slash commands in one step — <code>/plugin marketplace add jchable/okf4net-claude-plugin</code>, then <code>/plugin install okf@okf4net</code>.</p>
           <p className="next">→ <Link to="/docs/mcp">docs/mcp.md</Link> — install <code>okf-mcp</code> and connect each client, step by step</p>
         </section>
 
