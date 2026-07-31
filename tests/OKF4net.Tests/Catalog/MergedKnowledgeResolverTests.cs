@@ -204,6 +204,17 @@ public class MergedKnowledgeResolverTests
         using var root = new TempDir();
         CopyDirectory(BundlePath, Path.Combine(root.Path, "Shared"));
 
+        // On a case-sensitive filesystem, "Shared" and "shared" are two
+        // distinct directories that must both physically exist for the
+        // catalog to resolve either source path at all -- on a
+        // case-insensitive host, Directory.Exists already reports the
+        // lowercase spelling as present (it's the same physical directory),
+        // so this is skipped there rather than double-copying into it.
+        if (!Directory.Exists(Path.Combine(root.Path, "shared")))
+        {
+            CopyDirectory(BundlePath, Path.Combine(root.Path, "shared"));
+        }
+
         using var catalog = BuildCatalog(root, """
             { "id": "upper", "path": "./Shared", "priority": 10, "enabled": true },
             { "id": "lower", "path": "./shared", "priority": 1, "enabled": true }
