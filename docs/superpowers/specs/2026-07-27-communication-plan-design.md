@@ -56,8 +56,11 @@ angles, un par public, même projet :
 
 - **Angle dev .NET :** « Zero-dependency, Native-AOT knowledge bundles for .NET.
   If you can `cat` a file, you can read it; if you can `git clone`, you can ship it. »
-  Crochets : zéro dépendance, AOT natif, BCL-only, histoire du port Rust→C# prouvé
-  byte-exact.
+  Crochets : zéro dépendance, AOT natif, BCL-only, implémentation indépendante et
+  conforme au spec OKF (parseur YAML maison, suite de tests étendue) — **pas** un
+  narratif « port Rust prouvé byte-exact » : cet angle a été abandonné (voir la
+  note en tête de `docs/outreach/README.md` — les deux brouillons construits
+  autour ont été supprimés).
 - **Angle IA/agents :** « Give your AI agents a git-native, human-readable memory. »
   Crochets : `OKF4net.Agents` + Microsoft Agent Framework, mémoire d'agent en
   markdown versionnable vs base vectorielle opaque. Différenciant, surfe sur la
@@ -92,7 +95,7 @@ sur ~5 jours pour étaler et pouvoir répondre :
 
 | Jour | Canal | Contenu |
 |---|---|---|
-| J1 | dev.to (pièce maîtresse) | « I ported a Rust knowledge-format library to zero-dependency .NET — here's what I learned » : histoire (port byte-exact, AOT, zéro-dep) + démo + call-to-contribute |
+| J1 | dev.to (pièce maîtresse) | Titre à définir sans narratif « port Rust » (angle abandonné, voir `docs/outreach/README.md`) — mener par zéro-dépendance/AOT/rigueur d'implémentation + démo + call-to-contribute |
 | J1 | Site/blog perso | Republication **canonical** (SEO long terme) |
 | J2 | Show HN | « Show HN: OKF4net – zero-dependency .NET impl of Google's Open Knowledge Format », lien repo ; rester dispo 2–3 h pour répondre |
 | J3 | r/dotnet + r/csharp | Post orienté technique .NET (zéro-dep/AOT), participation honnête |

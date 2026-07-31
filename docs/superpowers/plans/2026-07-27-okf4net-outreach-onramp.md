@@ -14,7 +14,7 @@ Copied verbatim from the spec (`docs/superpowers/specs/2026-07-27-communication-
 
 - **Language:** English-first for all public-facing content; French secondary/optional.
 - **Editorial rule:** every content piece (1) leads with a concrete benefit, (2) shows 5–10 lines of code or `okf` in action, (3) ends with "open standard from Google + how to contribute." The format is context, never the hook.
-- **Two audience angles:** .NET devs (zero-dependency, Native-AOT, BCL-only, Rust→C# byte-exact port) and AI-agent builders (`OKF4net.Agents` + Microsoft Agent Framework, git-native agent memory).
+- **Two audience angles:** .NET devs (zero-dependency, Native-AOT, BCL-only, independent spec-conformant implementation — NOT a "ported from Rust" hook, see `docs/outreach/README.md`'s note on why that framing was retired) and AI-agent builders (`OKF4net.Agents` + Microsoft Agent Framework, git-native agent memory).
 - **No spam:** each post adapted per community; no copy-paste across Reddit/HN.
 - **Honesty about AI assistance:** if AI-assisted, state it plainly; do not hide it.
 - **License:** LGPL-3.0-or-later; new source files (none expected here) start with the SPDX header.
@@ -358,10 +358,10 @@ git commit -m "docs: add ecosystem submission blurbs (awesome-dotnet, newsletter
 Write a complete ~1,200–1,800-word article in `docs/outreach/devto-launch-article.md`. It is a real draft, not an outline — write the prose. Required structure and content:
 
 - **Front matter** (dev.to format): `title`, `published: false`, `tags: dotnet, csharp, opensource, ai`, `canonical_url` placeholder pointing to the personal site.
-- **Title:** benefit-led, e.g. *"I ported a Rust knowledge-format library to zero-dependency .NET — here's what I learned."*
+- **Title:** benefit-led, e.g. *"OKF4net: a zero-dependency .NET toolkit for knowledge bundles you can `cat` and `git clone`."* **Not** a "ported from Rust" hook — `docs/outreach/README.md` already retired that framing (the two drafts built around it were deleted); OKF4net is presented as an independent implementation of the OKF spec.
 - **Hook (1–2 paragraphs):** the concrete benefit — knowledge bundles you can `cat` and `git clone`, zero dependencies — before naming OKF.
-- **What OKF is (short):** 3–4 sentences, link the spec. Format is context, not the pitch.
-- **The port story:** Rust → C#, proven byte-exact (182/182 tests, 5 golden CLI comparisons). This is the credibility/competence signal that attracts contributors. If AI-assisted, say so plainly here.
+- **What OKF is (short):** 3–4 sentences, link the spec (Google's `GoogleCloudPlatform/knowledge-catalog`). Format is context, not the pitch.
+- **Engineering rigor as the credibility signal:** zero third-party runtime dependencies (a hand-rolled YAML-subset parser and CLI arg parsing, not a shortcut), Native AOT, an extensive test suite with byte-exact golden CLI fixtures locking in behavior. Pull the current test count from the repo when drafting — do not reuse an old number. If AI-assisted, say so plainly here.
 - **Show, don't tell:** one 5–10 line library snippet (load a bundle, validate) and one `okf` CLI example, taken from the real README `## Usage` section so they compile/run.
 - **The agents angle (short section):** `OKF4net.Agents` — git-native, human-readable agent memory vs opaque vector store; one small snippet.
 - **Design choices worth a paragraph:** zero-dependency, Native AOT, BCL-only YAML subset.
