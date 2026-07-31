@@ -4,11 +4,9 @@ description: >
   Generate a detailed Markdown report of gaps between the current upstream
   OKF spec (GoogleCloudPlatform/knowledge-catalog, okf/SPEC.md) and the
   OKF4net implementation, with a severity per gap and documented/intentional
-  divergences called out separately from real gaps. Triggers ONLY on the
-  literal `/spec-gap-report` slash command — never on natural-language
-  requests for a conformance audit or spec comparison, even a close match;
-  this is a deliberately heavyweight, on-demand audit, not something that
-  should fire opportunistically from a description match.
+  divergences called out separately from real gaps. Explicit-invocation-only
+  skill (`/spec-gap-report`); a deliberately heavyweight, on-demand audit.
+disable-model-invocation: true
 ---
 
 # OKF spec gap report
@@ -108,9 +106,12 @@ statement rather than merely re-file it — exactly the "no silent gaps"
 rule this document states under Edge cases.
 
 Worked example: §11 yields roughly eight atomic statements this way —
-three declarative conformance conditions, the `REQUIRED`-marker statement
-pulled in from §4.1, and the handful of consumer `MUST`/`SHOULD` bullets
-that are not pointers to §5 — not one "§11: done" line.
+three declarative conformance conditions plus five consumer `MUST`/`SHOULD`
+bullets that are not pointers to another section — not one "§11: done"
+line. (§4.1's `REQUIRED`-marker statement is a separate atomic statement
+filed under §4, its own section — see §4's Critical severity rule below for
+why it still gates §11 conformance; §11 does not duplicate it into its own
+count.)
 
 ## 3. Verify against the implementation
 
@@ -192,7 +193,11 @@ Each atomic statement (after pointer-collapsing per §2 above) gets:
 - **Severity**:
   - **Critical** — breaks §11 conformance (the three declarative
     conditions, the §4.1 `REQUIRED` statement, or a §11 consumer
-    `MUST`/`MUST NOT` bullet that is not itself a pointer)
+    `MUST`/`MUST NOT` bullet that is not itself a pointer). This also
+    covers a statement in its own (non-§11) section that is the target of
+    a §11 pointer per §2 above — it takes Critical severity because it
+    gates §11 conformance, even though the section it's filed under is
+    outside §11.
   - **Major** — a `MUST`/`SHOULD` outside §11 whose violation changes
     observable behavior
   - **Minor** — a `MAY`, an edge case, or a cosmetic/informative-only
@@ -201,12 +206,23 @@ Each atomic statement (after pointer-collapsing per §2 above) gets:
 
 ## 5. Write the report
 
+Before writing the report, spot-check the citations: re-read 3-5 cited
+`file:line` ranges spread across different sections and confirm the quoted
+snippet in each matches the real file at that location. This is what makes
+the §3 quoted-snippet requirement actually load-bearing — a snippet that's
+never checked back against the source is no better than a bare citation.
+Correct or drop any citation that doesn't check out before finalizing the
+report.
+
 Write a Markdown file at
 `docs/spec-conformance/YYYY-MM-DD-okf-spec-gap-report.md` (date = the day
 the report is generated), containing, in order:
 
 1. A summary block: the upstream spec version compared against, the
-   OKF4net version/commit compared, and counts by status × severity.
+   OKF4net version/commit compared, counts by status × severity, and every
+   (sub)section that yielded zero atomic statements under §2's two-pattern
+   rule — so a reader can tell "nothing normative here by design" apart
+   from "not examined."
 2. The version-drift finding from §1 above, if any — first, before any
    section-level detail.
 3. Per-section detail: each atomic statement, its status, severity, and
