@@ -17,7 +17,11 @@ namespace OKF4net.Tests;
 /// <see cref="Validate_computation_fixture_matches_golden"/>), checked
 /// against <c>tests/fixtures/okf_v02_computation</c>, is likewise a
 /// hand-verified §10 Attested Computation / §6.2 fixture -- no reference
-/// binary implements §10 either. Any divergence beyond the one documented
+/// binary implements §10 either. <c>validate-reserved.out</c>, checked
+/// against <c>tests/fixtures/okf_v02_reserved</c>, is likewise hand-authored
+/// and hand-verified against the actual (now-fixed) <c>BundleValidator</c>
+/// behavior for malformed reserved files (§11 condition 3) -- no reference
+/// binary implements this either. Any divergence beyond the one documented
 /// platform artifact (see <see cref="Validate_output_and_exitcode_match_golden"/>)
 /// is a bug in the CLI, never a reason to touch a golden fixture.
 /// </summary>
@@ -95,6 +99,14 @@ public class GoldenParityTests
         var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_computation"));
         Assert.Equal(int.Parse(Golden("validate-computation.exitcode")), r.Code);
         Assert.Equal(Golden("validate-computation.out"), r.Out.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public void Validate_reserved_fixture_matches_golden()
+    {
+        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_reserved"));
+        Assert.Equal(int.Parse(Golden("validate-reserved.exitcode")), r.Code);
+        Assert.Equal(Golden("validate-reserved.out"), r.Out.Replace('\\', '/'));
     }
 
     [Fact]

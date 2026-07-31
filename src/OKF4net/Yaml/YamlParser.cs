@@ -191,7 +191,7 @@ internal static class YamlParser
                 var value = split.Rest switch
                 {
                     { } r when r.StartsWith('|') || r.StartsWith('>') => ParseBlockScalar(indent, r),
-                    { } r => ParseInlineValue(r, entryLine),
+                    { } r => ParsePlainScalarOrContinuation(r, indent, entryLine),
                     // Nested block on the following more-indented lines, else null.
                     null => ParseNested(indent),
                 };
@@ -284,8 +284,8 @@ internal static class YamlParser
                 }
                 else
                 {
-                    seq.Add(ParseInlineValue(itemText, entryLine));
                     Pos++;
+                    seq.Add(ParsePlainScalarOrContinuation(itemText, indent, entryLine));
                 }
             }
 
@@ -412,6 +412,74 @@ internal static class YamlParser
             }
 
             return new YamlString(text);
+        }
+
+        /// <summary>
+        /// Parses a mapping/sequence-item value that starts as a plain
+        /// (unquoted, non-flow) scalar on <paramref name="entryLine"/>,
+        /// folding any subsequent lines indented deeper than
+        /// <paramref name="parentIndent"/> into it per YAML's plain-scalar
+        /// continuation rule -- the same folding <see cref="ParseBlockScalar"/>
+        /// applies to an explicit <c>&gt;</c> block scalar: non-blank runs join
+        /// with a single space, a blank line becomes a newline, and any
+        /// trailing blank run before the next same-or-lesser-indented line is
+        /// dropped (a plain scalar never ends in a trailing newline, unlike a
+        /// chomped block scalar). A continuation line beginning with the
+        /// block-sequence indicator (<c>-</c> alone, or <c>- </c>) is never
+        /// folded in -- that indicator is reserved at the start of a line in
+        /// block context, so the caller's own "unexpected indentation" check
+        /// fires instead, exactly as it did before this method existed. A
+        /// quoted (<c>"</c>/<c>'</c>) or flow (<c>[</c>/<c>{</c>) value is not
+        /// a plain scalar; it is delegated to <see cref="ParseInlineValue"/>
+        /// unchanged -- multi-line quoted/flow values are a distinct,
+        /// unimplemented feature, not this one. A comment-only continuation
+        /// line (<see cref="IsBlankOrComment"/>) is treated the same as a
+        /// blank one -- indentation-blind, matching every other comment check
+        /// in this parser -- which is a safe over-approximation of full YAML
+        /// (it folds in a paragraph break rather than vanishing invisibly),
+        /// not a precise implementation of comments-inside-plain-scalars.
+        /// </summary>
+        public YamlValue ParsePlainScalarOrContinuation(string firstLineRest, int parentIndent, int entryLine)
+        {
+            var t = firstLineRest.Trim();
+            if (t.StartsWith('[') || t.StartsWith('{') || t.StartsWith('"') || t.StartsWith('\''))
+            {
+                return ParseInlineValue(firstLineRest, entryLine);
+            }
+
+            var body = new List<string> { StripTrailingComment(t) };
+            while (Pos < Lines.Count)
+            {
+                var line = Lines[Pos];
+                if (IsBlankOrComment(line))
+                {
+                    body.Add(string.Empty);
+                    Pos++;
+                    continue;
+                }
+
+                var ind = IndentOf(line) ?? throw Err("tab character in indentation");
+                if (ind <= parentIndent)
+                {
+                    break;
+                }
+
+                var content = line[ind..];
+                if (content == "-" || content.StartsWith("- ", StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                body.Add(StripTrailingComment(content.TrimEnd()));
+                Pos++;
+            }
+
+            while (body.Count > 0 && body[^1].Length == 0)
+            {
+                body.RemoveAt(body.Count - 1);
+            }
+
+            return InterpretPlain(FoldLines(body));
         }
     }
 

@@ -357,4 +357,38 @@ public class ConceptIdTests
         var id = ConceptId.Parse("a/b");
         Assert.IsNotType<List<string>>(id.Segments, exactMatch: false);
     }
+
+    // --- Slugify: normalize free-form text into a valid segment ---
+
+    [Theory]
+    [InlineData("My Package Name", "my-package-name")]
+    [InlineData("  leading spaces", "leading-spaces")]
+    [InlineData("3D Print", "3d-print")]
+    [InlineData("café", "caf-")]
+    [InlineData("my.package", "my.package")]
+    [InlineData(".hidden", "hidden")]
+    [InlineData("--double--dash--", "double-dash-")]
+    [InlineData("already-valid_segment.ext", "already-valid_segment.ext")]
+    [InlineData("🎉 emoji", "emoji")]
+    public void Slugify_produces_expected_output_and_the_result_always_validates(string input, string expected)
+    {
+        var result = ConceptId.Slugify(input);
+
+        Assert.Equal(expected, result);
+        ConceptId.ValidateSegment(result); // must never throw for a Slugify() output
+    }
+
+    [Fact]
+    public void Slugify_throws_when_nothing_survives_normalization()
+    {
+        var ex = Assert.Throws<ConceptIdException>(() => ConceptId.Slugify("!!!"));
+        Assert.Contains("!!!", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Slugify_is_idempotent_on_an_already_valid_segment()
+    {
+        const string valid = "already-valid_segment.ext";
+        Assert.Equal(valid, ConceptId.Slugify(valid));
+    }
 }

@@ -70,28 +70,54 @@ bundles/ga4/
   tables/
     index.md
     events_.md
-  README.md              # new — provenance & license, mirrors acme_retail/README.md
 ```
 
 `viz.html` is **not** carried over, same rationale as `acme_retail`: a
 generated artifact of the upstream Python visualizer, not OKF bundle
 content.
 
-### `bundles/ga4/README.md`
+### `bundles/README.md` gains a `## GA4` section (correcting a rejected layout from an earlier draft of this spec)
 
-Mirrors `bundles/acme_retail/README.md`'s shape: what the bundle is
-(Google's public GA4 ecommerce reference docs — `Reference` concepts only,
-no Attested Computations/Metrics/Policies, a deliberately different concept
-mix from `acme_retail`), provenance (source repo, path, commit SHA,
-Apache-2.0), the `viz.html` omission, and a "Validating" section with the
-expected `okf validate` result.
+An earlier draft of this spec called for a `README.md` *inside* each
+bundle's own root directory (`bundles/acme_retail/README.md`,
+`bundles/ga4/README.md`), with `bundles/README.md` demoted to a short
+index linking out to both. **That layout was rejected during
+implementation**: `Bundle.Load`/`okf validate` treats every `.md` file
+under a bundle root as an OKF concept — there's no exemption for
+`README.md` the way there is for the spec-reserved `index.md`/`log.md`. A
+plain-markdown README dropped inside a bundle root becomes an
+unparseable/non-conformant concept (missing `type`), breaking
+conformance for the very bundle it documents.
+
+The actual, shipped layout keeps bundle documentation entirely in
+`bundles/README.md`, which lives *outside* both bundle root directories (a
+sibling of `acme_retail/` and `ga4/`, never walked by `Bundle.Load`) — the
+same place it already lived, safely, before this task. Concretely:
+
+1. `bundles/README.md` keeps its existing `## Acme Retail` section,
+   unchanged, and gains a new `## GA4` section alongside it, in the same
+   file — not split into per-bundle READMEs.
+2. `samples/acme-retail-agent/README.md` needs **no change**: its existing
+   link to `bundles/README.md` was never wrong.
+3. `NOTICE`'s existing `bundles/acme_retail/` attribution paragraph (which
+   already says "see bundles/README.md for details") needs **no change**
+   either — only a new paragraph for `bundles/ga4/` is appended, in the
+   same format, also referencing `bundles/README.md`.
+
+### `## GA4` section content
+
+New section in `bundles/README.md`, alongside `## Acme Retail`, covering:
+what the bundle is (Google's public GA4 ecommerce reference docs —
+`Reference` concepts and a `BigQuery Dataset`, no Attested
+Computations/Metrics/Policies, a deliberately different concept mix from
+`acme_retail`), provenance (source repo, path, commit SHA, Apache-2.0), the
+`viz.html` omission, and a "Validating" subsection with the `okf validate`
+result.
 
 ### Other doc updates
 
-- One `NOTICE` entry for `bundles/ga4/`, alongside the existing
-  `acme_retail` entry, same format.
-- `bundles/README.md` gets a `## GA4` section (mirroring its existing
-  `## Acme Retail` section) pointing at `samples/catalog-explorer/`.
+- One new `NOTICE` entry for `bundles/ga4/`, alongside the existing
+  `acme_retail` entry, same format, referencing `bundles/README.md`.
 
 ## Part B — `samples/catalog-explorer`
 
@@ -172,15 +198,19 @@ walkthrough top to bottom:
    `GroupedBySource`, `Merged`, `PriorityWeighted` — passage order printed
    side by side so the strategy's effect on ordering is visible. (No need
    for three separate resolver instances: the router dispatches per query.)
-4. **Visibility.** The same query, still through the router, run as three
+4. **Visibility.** The same query, still through the router, run as four
    callers by varying only the `KnowledgeQuery`: an unscoped caller (neither
    field set — sees everything, today's default); a caller with
    `PermittedSourceIds = { "ga4-reference" }` (public/external-partner —
-   sees only the public reference); and a caller with a
+   sees only the public reference); a caller with a
    `SourceVisibilityPolicy` closure that grants the `acme` source only when
    `scope.UserId` starts with `"acme-employee-"`, and fails closed (grants
    nothing) for any other `UserId`, including `null` — mirroring the
-   fail-closed pattern already documented in `OKF4net.Catalog`'s README.
+   fail-closed pattern already documented in `OKF4net.Catalog`'s README;
+   and a fourth caller through that same policy with an unrecognized
+   `UserId` (not matching the `acme-employee-` prefix), denied the `acme`
+   source just like the external-partner caller — demonstrating the policy
+   actually fails closed rather than defaulting to allow.
    (`PermittedSourceIds`/`SourceVisibilityPolicy` are plain `KnowledgeQuery`
    fields in `OKF4net.Catalog` itself — nothing here needs
    `OKF4net.Catalog.Hosting`'s host-wide default.)

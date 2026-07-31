@@ -32,7 +32,7 @@ public sealed class BundleConceptWriter
     /// in the constructor: a per-INSTANCE lock (the previous design) left
     /// two separate instances pointed at the
     /// same bundle directory free to race each other's
-    /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept"/> calls,
+    /// <see cref="AppendToConceptAtomic"/>/<see cref="WriteConcept(string, string, string)"/> calls,
     /// even though each instance's OWN calls were already serialized against
     /// themselves. <see cref="StringComparer.OrdinalIgnoreCase"/> is
     /// deliberate: two case-variant spellings of the same physical bundle
@@ -74,7 +74,7 @@ public sealed class BundleConceptWriter
 
     private readonly Action? _onWriteCommitted;
 
-    /// <summary>When true, <see cref="WriteConcept"/> stamps a <c>generated</c> block (§5.2) if the caller omitted one. Off by default so only opt-in producer paths (the Agents write tool) auto-stamp.</summary>
+    /// <summary>When true, <see cref="WriteConcept(string, string, string)"/> stamps a <c>generated</c> block (§5.2) if the caller omitted one. Off by default so only opt-in producer paths (the Agents write tool) auto-stamp.</summary>
     internal bool AutoStampGenerated { get; set; }
 
     /// <summary>Clock seam for the auto-stamp; overridable in tests. Only consulted when <see cref="AutoStampGenerated"/> is true.</summary>
@@ -208,13 +208,96 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
+    /// Like <see cref="WriteConcept(string, string, string)"/>, but takes an already-built
+    /// <see cref="Frontmatter"/> instead of pre-serialized YAML text — skips the serialize/re-parse
+    /// round trip for a programmatic caller (e.g. the forthcoming <c>OkfDocumentBuilder</c>). Same
+    /// producer-grade validation, per-bundle lock, and reparse-point guards as the string overload
+    /// (both share <see cref="ValidateConceptTarget"/>, <see cref="BuildValidatedContent(YamlValue, string)"/>,
+    /// and <see cref="WriteValidatedContentLocked"/>).
+    ///
+    /// Operates on a shallow copy of <paramref name="frontmatter"/>'s underlying mapping, never the
+    /// caller's own <see cref="YamlMapping"/> instance — <see cref="Frontmatter.AsMapping"/> returns
+    /// that instance directly (no defensive copy of its own), and mutating it in place (e.g. via
+    /// auto-stamping, see <see cref="MaybeStampGenerated"/>) would otherwise silently modify an object
+    /// the caller may still hold and inspect afterward.
+    /// </summary>
+    /// <param name="conceptId">The concept id (path without <c>.md</c>), e.g. <c>tables/refunds</c>.</param>
+    /// <param name="frontmatter">The frontmatter to write. Not mutated by this call.</param>
+    /// <param name="body">The markdown body.</param>
+    public string WriteConcept(string conceptId, Frontmatter frontmatter, string body)
+    {
+        if (string.IsNullOrWhiteSpace(conceptId))
+        {
+            return "Error: invalid concept id — it must not be empty.";
+        }
+
+        if (conceptId.Contains('\0'))
+        {
+            return "Error: invalid concept id — it must not contain a null character.";
+        }
+
+        ArgumentNullException.ThrowIfNull(frontmatter);
+
+        if (body is null)
+        {
+            return "Error: body must not be null.";
+        }
+
+        if (body.Contains('\0'))
+        {
+            return "Error: invalid body — it must not contain a null character.";
+        }
+
+        return RunTool(() =>
+        {
+            var targetError = ValidateConceptTarget(conceptId, out var target);
+            if (targetError is not null)
+            {
+                return targetError;
+            }
+
+            var mapping = ShallowCopy(frontmatter.AsMapping());
+            MaybeStampGenerated(mapping);
+
+            var (content, buildError) = BuildValidatedContent(mapping, body);
+            if (buildError is not null)
+            {
+                return buildError;
+            }
+
+            lock (_bundleLock)
+            {
+                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Copies <paramref name="map"/>'s entries into a fresh <see cref="YamlMapping"/>, preserving
+    /// order and every entry verbatim (including a duplicate or non-string key, via
+    /// <see cref="YamlMapping.PushRaw"/>) — a shallow copy, sufficient because
+    /// <see cref="WriteConcept(string, Frontmatter, string)"/> only ever inserts a new top-level key
+    /// into the copy, never mutates a nested value.
+    /// </summary>
+    private static YamlMapping ShallowCopy(YamlMapping map)
+    {
+        var copy = new YamlMapping();
+        foreach (var (key, value) in map.Entries)
+        {
+            copy.PushRaw(key, value);
+        }
+
+        return copy;
+    }
+
+    /// <summary>
     /// Atomically reads, transforms, and rewrites one concept's body under
     /// the shared bundle lock — the seam a same-day memory-capture caller
     /// (e.g. <c>OKF4net.Agents.OkfContextProvider.CaptureMemory</c>) uses to
     /// close a lost-update race (E2): before this
     /// existed, a caller that read a concept's body via a cached bundle,
     /// built a new body from it OUTSIDE any lock, then called the plain
-    /// <see cref="WriteConcept"/>, could have that read/build/write sequence
+    /// <see cref="WriteConcept(string, string, string)"/>, could have that read/build/write sequence
     /// interleave with a concurrent caller doing the same for the same
     /// concept — both read the same "before" body, and the second write
     /// silently clobbers the first's change (a lost update), even if some
@@ -238,7 +321,7 @@ public sealed class BundleConceptWriter
     /// not close). Reuses the exact same target validation (<see cref="ValidateConceptTarget"/>),
     /// producer-grade validation and serialization (<see cref="BuildValidatedContent(string, string)"/>),
     /// and write/callback (<see cref="WriteValidatedContentLocked"/>)
-    /// steps <see cref="WriteConcept"/> itself uses — this is a locked
+    /// steps <see cref="WriteConcept(string, string, string)"/> itself uses — this is a locked
     /// read-modify-write wrapped AROUND that same core, not a divergent
     /// second write path.
     /// </summary>
@@ -247,7 +330,7 @@ public sealed class BundleConceptWriter
     /// Frontmatter used only when the concept does not yet exist. When it
     /// already exists, its own current frontmatter is re-read and
     /// re-serialized unchanged (mirroring how a caller that read-then-called
-    /// <see cref="WriteConcept"/> would carry it forward) and this parameter
+    /// <see cref="WriteConcept(string, string, string)"/> would carry it forward) and this parameter
     /// is ignored.
     /// </param>
     /// <param name="buildBody">
@@ -257,7 +340,7 @@ public sealed class BundleConceptWriter
     /// never a caller's own stale, pre-lock snapshot.
     /// </param>
     /// <returns>
-    /// The same style of result text as <see cref="WriteConcept"/> (a
+    /// The same style of result text as <see cref="WriteConcept(string, string, string)"/> (a
     /// <c>Written ...</c> confirmation) or an <c>Error: ...</c> message;
     /// never throws.
     /// </returns>
@@ -357,7 +440,7 @@ public sealed class BundleConceptWriter
     /// Validates <paramref name="conceptId"/> (parseable, not the reserved
     /// <c>index</c>/<c>log</c> name) and the filesystem path it resolves to
     /// (within the bundle root; no reparse point among its parent
-    /// directories or at the target itself) — shared by <see cref="WriteConcept"/>
+    /// directories or at the target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
     /// and <see cref="AppendToConceptAtomic"/> so the two can never diverge
     /// on what counts as a valid write target. Pure: performs no I/O beyond
     /// the reparse-point/existence checks themselves, and does not touch
@@ -451,41 +534,50 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
-    /// Parses <paramref name="frontmatterYaml"/> once and, when
-    /// <see cref="AutoStampGenerated"/> is on and the parsed frontmatter is a
-    /// mapping with no <c>generated</c> key of its own, stamps a
-    /// <c>generated: { by, at }</c> block (§5.2) into it in place. Returns the
-    /// parsed (and possibly stamped) <see cref="YamlValue"/> for
-    /// <see cref="BuildValidatedContent(YamlValue, string)"/> to validate and
-    /// serialize directly — so the write path parses exactly once, never
-    /// re-serializing and re-parsing a stamped mapping. Stamping is a no-op when
-    /// the flag is off, when the frontmatter isn't a mapping, or when a
-    /// <c>generated</c> key is already present. Throws
-    /// <see cref="Yaml.YamlParseException"/> on malformed frontmatter, caught by
-    /// the caller's <see cref="RunTool"/> wrapper before anything is written —
-    /// exactly as re-parsing in <see cref="BuildValidatedContent(string, string)"/>
-    /// did previously.
+    /// Parses <paramref name="frontmatterYaml"/> once and delegates the auto-stamp decision to
+    /// <see cref="MaybeStampGenerated"/>. Returns the parsed (and possibly stamped) <see cref="YamlValue"/>
+    /// for <see cref="BuildValidatedContent(YamlValue, string)"/> to validate and serialize directly —
+    /// so the write path parses exactly once, never re-serializing and re-parsing a stamped mapping.
+    /// Throws <see cref="Yaml.YamlParseException"/> on malformed frontmatter, caught by the caller's
+    /// <see cref="RunTool"/> wrapper before anything is written.
     /// </summary>
     private YamlValue ParseFrontmatterAndMaybeStamp(string frontmatterYaml)
     {
         var parsed = YamlValue.Parse(frontmatterYaml);
-
-        if (AutoStampGenerated && parsed is YamlMapping map && !map.ContainsKey("generated"))
+        if (parsed is YamlMapping map)
         {
-            var generated = new YamlMapping();
-            generated.Insert("by", new YamlString(ProducerActor));
-            generated.Insert("at", new YamlString(OkfTimestamp.FormatUtc(UtcNow())));
-            map.Insert("generated", generated);
+            MaybeStampGenerated(map);
         }
 
         return parsed;
     }
 
     /// <summary>
+    /// When <see cref="AutoStampGenerated"/> is on and <paramref name="map"/> has no <c>generated</c>
+    /// key of its own, stamps a <c>generated: { by, at }</c> block (§5.2) into it **in place** — the
+    /// single stamping decision shared by the string-based <see cref="WriteConcept(string, string, string)"/>
+    /// path (via <see cref="ParseFrontmatterAndMaybeStamp"/>, on a freshly parsed, caller-invisible
+    /// mapping) and the <see cref="Frontmatter"/>-based <see cref="WriteConcept(string, Frontmatter, string)"/>
+    /// overload (which passes a defensive copy — see that overload's remarks — precisely so this
+    /// in-place mutation never reaches the caller's own <see cref="Frontmatter"/> object). No-op when
+    /// the flag is off or a <c>generated</c> key is already present.
+    /// </summary>
+    private void MaybeStampGenerated(YamlMapping map)
+    {
+        if (AutoStampGenerated && !map.ContainsKey("generated"))
+        {
+            var generated = new YamlMapping();
+            generated.Insert("by", new YamlString(ProducerActor));
+            generated.Insert("at", new YamlString(OkfTimestamp.FormatUtc(UtcNow())));
+            map.Insert("generated", generated);
+        }
+    }
+
+    /// <summary>
     /// Parses <paramref name="frontmatterYaml"/> and delegates to the
     /// <see cref="BuildValidatedContent(YamlValue, string)"/> overload. The
     /// <see cref="AppendToConceptAtomic"/> path enters here (it parses only
-    /// once); <see cref="WriteConcept"/> parses up front in
+    /// once); <see cref="WriteConcept(string, string, string)"/> parses up front in
     /// <see cref="ParseFrontmatterAndMaybeStamp"/> and enters the overload
     /// directly. Throws <see cref="Yaml.YamlParseException"/> (line-tagged
     /// message) on malformed input, caught by the caller's
@@ -498,7 +590,7 @@ public sealed class BundleConceptWriter
     /// Builds and validates the <see cref="OkfDocument"/> for the already-parsed
     /// <paramref name="frontmatter"/> against <paramref name="body"/>, then
     /// serializes it — the exact producer-grade validation
-    /// <see cref="WriteConcept"/> performs, shared verbatim with
+    /// <see cref="WriteConcept(string, string, string)"/> performs, shared verbatim with
     /// <see cref="AppendToConceptAtomic"/> so the two can never validate
     /// divergently. Throws <see cref="DocumentValidationException"/> (failed
     /// producer validation), caught by the caller's <see cref="RunTool"/>
@@ -572,7 +664,7 @@ public sealed class BundleConceptWriter
     /// write (a nested/second acquisition here would either reintroduce the
     /// exact gap this seam exists to close, or -- if <see cref="_bundleLock"/>
     /// were ever changed to a non-reentrant primitive -- deadlock). Shared
-    /// verbatim by <see cref="WriteConcept"/> (which wraps a single call to
+    /// verbatim by <see cref="WriteConcept(string, string, string)"/> (which wraps a single call to
     /// this in its own <c>lock (_bundleLock)</c>) and
     /// <see cref="AppendToConceptAtomic"/>.
     /// </summary>
@@ -603,7 +695,7 @@ public sealed class BundleConceptWriter
     /// <see cref="_bundleLock"/> hold (<see cref="AppendToConceptAtomic"/>
     /// passes its own earlier <see cref="File.Exists(string)"/> result here
     /// to avoid a redundant second stat of the same path). <see langword="null"/>
-    /// (the default, used by <see cref="WriteConcept"/>'s single-call site)
+    /// (the default, used by <see cref="WriteConcept(string, string, string)"/>'s single-call site)
     /// means "no such check has happened yet" -- this method then performs
     /// it itself, exactly as before.
     /// </param>

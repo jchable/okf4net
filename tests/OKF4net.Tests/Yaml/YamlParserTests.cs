@@ -257,4 +257,82 @@ public class YamlParserTests
         Assert.Single(m.Keys);
         Assert.Equal("doc\rtitle: foo", m.Get("type")!.AsString());
     }
+
+    [Fact]
+    public void Multiline_plain_scalar_in_mapping_folds_with_a_space()
+    {
+        // Real-world case: upstream OKF bundles (the reference_agent
+        // generator) write long `description:` values as a folded plain
+        // scalar spanning two lines -- valid YAML, but the parser previously
+        // only read a mapping entry's value from its own line, then threw
+        // "unexpected indentation in mapping" on the deeper-indented
+        // continuation line.
+        var v = YamlValue.Parse(
+            "description: Computes the count or list of users who have completed a purchase or\n  in-app purchase.\n");
+        var m = v.AsMapping()!;
+        Assert.Equal(
+            "Computes the count or list of users who have completed a purchase or in-app purchase.",
+            m.Get("description")!.AsString());
+    }
+
+    [Fact]
+    public void Multiline_plain_scalar_blank_line_folds_to_a_newline_and_mapping_continues()
+    {
+        var v = YamlValue.Parse(
+            "description: First line\n  continues here.\n\n  New paragraph starts.\nstatus: stable\n");
+        var m = v.AsMapping()!;
+        Assert.Equal(
+            "First line continues here.\nNew paragraph starts.",
+            m.Get("description")!.AsString());
+        Assert.Equal("stable", m.Get("status")!.AsString());
+    }
+
+    [Fact]
+    public void Multiline_plain_scalar_in_sequence_item_folds_and_sequence_continues()
+    {
+        var v = YamlValue.Parse("notes:\n- Some item text continues\n  onto a second line.\n- next item\n");
+        var notes = v.AsMapping()!.Get("notes")!.AsSequence()!;
+        Assert.Equal(2, notes.Count);
+        Assert.Equal("Some item text continues onto a second line.", notes[0].AsString());
+        Assert.Equal("next item", notes[1].AsString());
+    }
+
+    [Fact]
+    public void Deeper_indented_sequence_item_after_a_plain_scalar_value_still_throws()
+    {
+        // A block-sequence indicator ("- ") is reserved at the start of a
+        // line in block context -- it can never be folded into a plain
+        // scalar as literal text, even at a deeper indent. This must keep
+        // throwing (its pre-existing behavior) rather than silently
+        // corrupting the nested sequence into scalar text.
+        Assert.Throws<YamlParseException>(() =>
+            YamlValue.Parse("notes: Some notes here\n  - looks like a sequence item\n"));
+    }
+
+    [Fact]
+    public void Multiline_plain_scalar_comment_only_continuation_line_is_dropped()
+    {
+        // A comment-only continuation line is indentation-blind, matching
+        // every other comment check in this parser -- it does not become
+        // literal scalar text, and (here, as the value's last line before
+        // dedent) leaves no trailing artifact once trailing blanks are
+        // stripped.
+        var v = YamlValue.Parse("description: some text\n  # a comment\nnext: value\n");
+        var m = v.AsMapping()!;
+        Assert.Equal("some text", m.Get("description")!.AsString());
+        Assert.Equal("value", m.Get("next")!.AsString());
+    }
+
+    [Fact]
+    public void Quoted_and_flow_values_are_unaffected_by_continuation_folding()
+    {
+        // Continuation folding is scoped to plain (unquoted, non-flow)
+        // scalars only -- a deeper-indented line after a quoted or flow
+        // value keeps throwing exactly as before: multi-line quoted/flow
+        // values are a distinct, unimplemented feature, not this bug.
+        Assert.Throws<YamlParseException>(() =>
+            YamlValue.Parse("title: \"Some title\"\n  extra\n"));
+        Assert.Throws<YamlParseException>(() =>
+            YamlValue.Parse("tags: [a, b]\n  extra\n"));
+    }
 }

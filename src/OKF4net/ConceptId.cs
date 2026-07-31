@@ -182,6 +182,68 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
         }
     }
 
+    /// <summary>
+    /// Normalizes a free-form string into a segment that always passes <see cref="ValidateSegment"/>.
+    ///
+    /// Algorithm, in order: (1) full-Unicode case-fold via
+    /// <see cref="OKF4net.Internal.UnicodeCaseFold.ToLowercase"/> (not <c>string.ToLowerInvariant</c>,
+    /// which misses Final_Sigma and İ); (2) map each character to itself if it satisfies
+    /// <see cref="IsValidLaterChar"/>, otherwise to <c>'-'</c>; (3) collapse every run of 2+ <c>'-'</c>
+    /// (whether original or substituted) into one; (4) strip characters from the front while the
+    /// first character fails <see cref="IsValidFirstChar"/> (a leading <c>'-'</c> or <c>'.'</c>) —
+    /// nothing is trimmed from the end, since a trailing <c>'-'</c>/<c>'.'</c> is a valid
+    /// <see cref="IsValidLaterChar"/>. Operates on <see cref="char"/> (UTF-16 code units, not code
+    /// points): a surrogate pair (e.g. an emoji) simply becomes two adjacent substitutions, merged by
+    /// step 3 like any other run.
+    ///
+    /// Does not attempt transliteration: a non-ASCII letter (e.g. an accented or non-Latin character)
+    /// is replaced by <c>'-'</c>, not folded to an ASCII approximation — seeded from the ASCII-only
+    /// rule <see cref="ValidateSegment"/> already enforces (see the design spec and the upstream
+    /// issue tracking whether that restriction should ever be relaxed).
+    /// </summary>
+    /// <exception cref="ConceptIdException">The result, after normalization, is an empty string.</exception>
+    public static string Slugify(string input)
+    {
+        // UnicodeCaseFold resolves via this file's existing `using OKF4net.Internal;` (same
+        // using DebugQuote below already relies on) -- no extra qualification needed.
+        var folded = UnicodeCaseFold.ToLowercase(input);
+
+        var mapped = new System.Text.StringBuilder(folded.Length);
+        foreach (var c in folded)
+        {
+            mapped.Append(IsValidLaterChar(c) ? c : '-');
+        }
+
+        var collapsed = new System.Text.StringBuilder(mapped.Length);
+        var previousWasDash = false;
+        foreach (var c in mapped.ToString())
+        {
+            var isDash = c == '-';
+            if (isDash && previousWasDash)
+            {
+                continue;
+            }
+
+            collapsed.Append(c);
+            previousWasDash = isDash;
+        }
+
+        var candidate = collapsed.ToString();
+        var start = 0;
+        while (start < candidate.Length && !IsValidFirstChar(candidate[start]))
+        {
+            start++;
+        }
+
+        var result = candidate[start..];
+        if (result.Length == 0)
+        {
+            throw new ConceptIdException($"Cannot derive a non-empty concept id segment from {DebugQuote.Quote(input)}.");
+        }
+
+        return result;
+    }
+
     private static bool IsValidFirstChar(char c) => char.IsAsciiLetterOrDigit(c) || c == '_';
 
     private static bool IsValidLaterChar(char c) =>

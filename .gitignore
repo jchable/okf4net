@@ -18,3 +18,7 @@ packaging/winget/out/
 # web/ (Vite + React + vite-react-ssg app)
 web/node_modules/
 web/dist/
+
+# samples/catalog-explorer writes here at runtime and cleans up after
+# itself, but an interrupted run could leave residue.
+samples/catalog-explorer/memory/

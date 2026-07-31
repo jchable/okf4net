@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Linq;
 using OKF4net.Cli;
 
 namespace OKF4net.Tests;
@@ -73,11 +74,100 @@ public class CliTests
     }
 
     [Fact]
+    public void Validate_bundle_with_malformed_reserved_file_exits_nonzero()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\nbody\n");
+        tmp.Write("sub/index.md", "---\ntitle: nope\n---\n\n# Listing\n");
+        var r = Run("validate", tmp.Path);
+        Assert.NotEqual(0, r.Code);
+        Assert.Contains("not conformant", r.Out);
+    }
+
+    [Fact]
     public void Info_prints_summary()
     {
         var r = Run("info", BundlePath);
         Assert.Equal(0, r.Code);
         Assert.Contains("concepts:   4", r.Out);
+    }
+
+    [Fact]
+    public void Validate_json_reports_bundle_conformance_and_diagnostics()
+    {
+        var r = Run("validate", "--json", BundlePath);
+        Assert.Equal(0, r.Code);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
+        var root = doc.RootElement;
+        Assert.Equal(BundlePath, root.GetProperty("bundle").GetString());
+        Assert.True(root.GetProperty("conformant").GetBoolean());
+        Assert.Equal(4, root.GetProperty("conceptCount").GetInt32());
+        Assert.Equal(0, root.GetProperty("errorCount").GetInt32());
+        var diagnostics = root.GetProperty("diagnostics");
+        Assert.True(diagnostics.GetArrayLength() > 0);
+        var first = diagnostics[0];
+        Assert.True(first.TryGetProperty("severity", out _));
+        Assert.True(first.TryGetProperty("code", out _));
+        Assert.True(first.TryGetProperty("message", out _));
+    }
+
+    [Fact]
+    public void Validate_json_diagnostic_field_is_populated_when_applicable()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: T\ndescription: D\ntimestamp: 2026-05-28\n---\nbody\n");
+        var r = Run("validate", "--json", tmp.Path);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
+        var diagnostics = doc.RootElement.GetProperty("diagnostics");
+        var timestampDiag = diagnostics.EnumerateArray().Single(d => d.GetProperty("code").GetString() == "LegacyTimestamp");
+        Assert.Equal("timestamp", timestampDiag.GetProperty("field").GetString());
+    }
+
+    [Fact]
+    public void Info_json_reports_bundle_summary()
+    {
+        var r = Run("info", "--json", BundlePath);
+        Assert.Equal(0, r.Code);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
+        var root = doc.RootElement;
+        Assert.Equal(4, root.GetProperty("conceptCount").GetInt32());
+        Assert.True(root.TryGetProperty("types", out var types));
+        Assert.True(types.EnumerateObject().Any());
+        Assert.True(root.TryGetProperty("linkCount", out _));
+        Assert.True(root.TryGetProperty("brokenLinkCount", out _));
+    }
+
+    [Fact]
+    public void Info_json_types_is_present_and_empty_for_a_bundle_with_no_concepts()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\nokf_version: \"0.2\"\n---\n");
+        var r = Run("info", "--json", tmp.Path);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
+        Assert.True(doc.RootElement.TryGetProperty("types", out var types));
+        Assert.Empty(types.EnumerateObject());
+    }
+
+    [Fact]
+    public void Validate_text_output_is_unchanged_by_the_json_feature()
+    {
+        var r = Run("validate", BundlePath);
+        Assert.Equal(0, r.Code);
+        Assert.Contains("conformant with OKF v0.2", r.Out);
+        Assert.DoesNotContain("{", r.Out);
+    }
+
+    [Fact]
+    public void Info_text_output_is_unchanged_by_the_json_feature()
+    {
+        var r = Run("info", BundlePath);
+        Assert.Equal(0, r.Code);
+        Assert.Contains("concepts:   4", r.Out);
+        Assert.DoesNotContain("{", r.Out);
     }
 
     [Fact]

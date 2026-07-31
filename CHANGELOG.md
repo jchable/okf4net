@@ -8,6 +8,72 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`okf validate`/`okf info` gain a `--json` flag** for machine-readable
+  output (camelCase, source-generated for Native AOT). `Diagnostic` gains
+  a stable `Code` (`DiagnosticCode`, one per distinct validator finding)
+  and a `Field` naming the frontmatter key involved -- `ToString()`'s text
+  output is unchanged (every golden CLI fixture stays byte-exact).
+- `Provenance.ToYaml`, `ConceptId.Slugify`, a `Frontmatter`-typed `BundleConceptWriter.WriteConcept`
+  overload, and `OkfDocumentBuilder`: producer-facing API for constructing and writing an OKF concept
+  entirely in memory, without a serialize/re-parse round trip through YAML text. Motivated by the
+  upcoming native OKF producer (`producers/`), usable independently by any programmatic caller.
+
+### Changed
+
+- **Breaking: `Diagnostic`'s constructor gains a required `Code` parameter**
+  (`DiagnosticCode`, before the existing optional `Field`). Source- and
+  binary-breaking for any code that constructs or deconstructs `Diagnostic`
+  directly; nothing in this repository does.
+- **Breaking: `okf validate` now correctly reports non-conformance (§11)
+  for malformed reserved files.** Previously a malformed `index.md`/`log.md`
+  (bad structure, or unreadable/unparseable) was under-reported as
+  `Warning` or produced no diagnostic at all, so `okf validate` incorrectly
+  exited `0`; it now exits `1` for these cases, as §11 conformance already
+  requires. Two new `DiagnosticCode` values, `UnparseableIndex` and
+  `UnparseableLog`, cover the previously-silent case. The same applies to
+  library callers of `BundleValidator.Validate` (these three diagnostic
+  codes move from `Warning` to `Error`: `IndexHasFrontmatter`,
+  `RootIndexExtraFrontmatter`, `LogDateInvalid` -- changing
+  `ValidationReport.IsConformant`/`ErrorCount`/`WarningCount`) and to the
+  `okf_validate_bundle` MCP tool's verdict. Widest practical impact:
+  `ChangeLog.Parse` treats every `##` line in a `log.md` as a date
+  heading (it does not distinguish a date from a section heading), so a
+  `log.md` containing any non-date `##` line (e.g. `## Notes`, a manually
+  added subsection) now fails conformance -- previously this was silent.
+
+### Fixed
+
+- **The YAML frontmatter parser now supports multi-line (folded) plain
+  scalars.** A `key: value` entry whose value continues onto one or more
+  subsequent, more-indented lines (valid YAML, and how the upstream OKF
+  `reference_agent` generator writes long `description:` fields) previously
+  threw `unexpected indentation in mapping`/`...in sequence` — the parser
+  only ever read a value from its own line. Continuation lines now fold in
+  per YAML's plain-scalar rule (non-blank runs join with a single space, a
+  blank or comment-only line becomes a paragraph break), for both mapping
+  values and sequence items. This was found to break most of the OKF
+  reference implementation's own sample bundles: of the four upstream
+  bundles at `GoogleCloudPlatform/knowledge-catalog` commit `3fcbb9f8`,
+  only `acme_retail` (already vendored in this repo) validated cleanly —
+  `ga4`, `crypto_bitcoin`, and `stackoverflow` failed to parse 7/9, 7/9, and
+  15/26 of their concepts respectively before this fix; all three now
+  validate with 0 errors.
+- **`IndexGenerator.RegenerateIndexesWith` no longer erases the bundle-root
+  `index.md`'s `okf_version` marker.** Regeneration rebuilt every `index.md`
+  from scratch — entries only, no frontmatter block at all — so a bundle
+  marked with `okf_version` (§12) lost that marker the moment any concept
+  write triggered `okf_regenerate_indexes`. That silently broke `okf-mcp`'s
+  bundle auto-discovery on the next server start (`no bundle root given and
+  no marked bundle found`), even though the bundle had been correctly marked
+  and previously discovered fine. The write path now preserves the root
+  `index.md`'s existing frontmatter (read permissively — a file that fails
+  to read or parse is left untouched rather than silently rewritten) and
+  only regenerates the body; non-root `index.md` files are unaffected and
+  still self-heal any stray frontmatter (§8) on the next regeneration, as
+  before.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added

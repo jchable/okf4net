@@ -35,7 +35,8 @@ public static class OkfCli
         "\n" +
         "OPTIONS:\n" +
         "    -h, --help           Show this help\n" +
-        "    -V, --version        Show version";
+        "    -V, --version        Show version\n" +
+        "        --json           Machine-readable output for validate/info";
 
     /// <summary>
     /// Internal control-flow signal for a command failure: caught once at the
@@ -218,6 +219,12 @@ public static class OkfCli
         var bundle = Load(path);
         var report = BundleValidator.Validate(bundle);
 
+        if (HasFlag(args, "--json"))
+        {
+            JsonOutput.WriteValidate(stdout, path, bundle, report);
+            return report.IsConformant ? 0 : 1;
+        }
+
         foreach (var d in report.Diagnostics)
         {
             stdout.Write(d.ToString());
@@ -245,6 +252,12 @@ public static class OkfCli
         var path = Positional(args, "<bundle>");
         var bundle = Load(path);
 
+        if (HasFlag(args, "--json"))
+        {
+            JsonOutput.WriteInfo(stdout, path, bundle);
+            return 0;
+        }
+
         stdout.Write($"bundle:     {bundle.Root}\n");
         var okfVersion = bundle.OkfVersion;
         if (okfVersion is not null)
@@ -256,12 +269,7 @@ public static class OkfCli
         stdout.Write($"index.md:   {bundle.IndexFiles.Count}\n");
         stdout.Write($"log.md:     {bundle.LogFiles.Count}\n");
 
-        var byType = new SortedDictionary<string, int>(StringComparer.Ordinal);
-        foreach (var c in bundle.Concepts)
-        {
-            var t = c.Document.Frontmatter.Type ?? "(none)";
-            byType[t] = byType.GetValueOrDefault(t) + 1;
-        }
+        var byType = JsonOutput.BuildTypeHistogram(bundle);
 
         if (byType.Count > 0)
         {

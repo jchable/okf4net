@@ -167,7 +167,11 @@ public static class IndexGenerator
     /// This still does not fully close the gap: a substitution landing in
     /// the instant between the late check and the write itself would still
     /// slip through. No portable, race-free "check and write without
-    /// following a symlink" primitive exists in .NET for this case.
+    /// following a symlink" primitive exists in .NET for this case. For the
+    /// bundle root specifically, that same narrow window also covers a read
+    /// of the existing <c>index.md</c> (to preserve its frontmatter, see
+    /// below) immediately before the write; a substitution landing there is
+    /// the identical residual risk, not a separate one.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> RegenerateIndexesWith(string bundleRoot, Synthesize synthesize)
@@ -177,7 +181,7 @@ public static class IndexGenerator
         {
             return written;
         }
-
+        bundleRoot = Path.GetFullPath(bundleRoot);
         var directories = DirectoriesToIndex(bundleRoot);
         // Deepest-first; ties broken by path for determinism.
         directories.Sort((a, b) =>
@@ -278,7 +282,51 @@ public static class IndexGenerator
                 continue;
             }
 
-            File.WriteAllText(indexPath, BuildIndexText(entries), OkfEncodings.NoBom);
+            var body = BuildIndexText(entries);
+            var content = body;
+
+            // The bundle-root index.md is the only place frontmatter is
+            // spec-sanctioned at all (§12: the okf_version marker, see
+            // Bundle.OkfVersion), and even there ONLY the okf_version key
+            // is sanctioned (§8) -- every other index.md must have none
+            // (§8, BundleValidator's "index.md should not contain
+            // frontmatter" error). So only the root's existing okf_version
+            // value (never the rest of its frontmatter) is carried forward
+            // here; a non-root index.md keeps the old body-only overwrite.
+            // Both paths self-heal every §8 violation regeneration can
+            // reach: a non-root index.md drops all frontmatter, and the
+            // root drops everything except okf_version, closing
+            // RootIndexExtraFrontmatter instead of making stray keys
+            // permanently sticky. Without carrying okf_version forward at
+            // all, regeneration used to overwrite index.md with ONLY the
+            // freshly built body, silently dropping the marker and
+            // breaking okf-mcp's bundle auto-discovery (OkfBundleDiscovery)
+            // on the next server start.
+            if (string.Equals(directory, bundleRoot, StringComparison.Ordinal) && File.Exists(indexPath))
+            {
+                // A pre-existing root index.md that fails to read or parse
+                // (locked by another process, malformed YAML, bad encoding)
+                // is left untouched rather than silently overwritten
+                // frontmatter-free -- same skip-not-abort handling this
+                // method already applies to its reparse-point checks above
+                // -- so a transient read failure can never reproduce the
+                // marker-loss bug this preserves against.
+                var existing = LoadDoc(indexPath);
+                if (existing is null)
+                {
+                    continue;
+                }
+
+                var okfVersion = existing.Frontmatter.Get("okf_version");
+                if (okfVersion is not null)
+                {
+                    var rootFrontmatter = new Frontmatter();
+                    rootFrontmatter.Set("okf_version", okfVersion);
+                    content = new OkfDocument(rootFrontmatter, body).Serialize();
+                }
+            }
+
+            File.WriteAllText(indexPath, content, OkfEncodings.NoBom);
             written.Add(indexPath);
 
             if (string.Equals(directory, bundleRoot, StringComparison.Ordinal))
