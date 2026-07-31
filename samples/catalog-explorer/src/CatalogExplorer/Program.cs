@@ -35,6 +35,13 @@ const string queryText = "revenue purchase";
 PrintHeader("2. Multi-source search (default: GroupedBySource)");
 PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText)));
 
+PrintHeader("3. Ranking strategies compared");
+foreach (var strategy in new[] { KnowledgeResolverStrategy.GroupedBySource, KnowledgeResolverStrategy.Merged, KnowledgeResolverStrategy.PriorityWeighted })
+{
+    Console.WriteLine($"-- {strategy} --");
+    PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText) { ResolverStrategy = strategy }));
+}
+
 return 0;
 
 static string? FindRepoRoot()
