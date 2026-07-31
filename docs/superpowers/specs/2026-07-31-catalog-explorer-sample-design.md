@@ -77,21 +77,42 @@ bundles/ga4/
 generated artifact of the upstream Python visualizer, not OKF bundle
 content.
 
+### Restructuring `bundles/README.md` (correcting an assumption in an earlier draft of this spec)
+
+`bundles/acme_retail/` currently has **no README of its own** — its
+provenance/content documentation lives directly in `bundles/README.md`
+(titled "# Acme Retail (sample bundle)"), because it was the only bundle.
+Adding `bundles/ga4/` means that file can no longer be one bundle's docs;
+it needs to become a short index:
+
+1. Move `bundles/README.md`'s current content, unchanged, to a new
+   `bundles/acme_retail/README.md`.
+2. Rewrite `bundles/README.md` as a short index: one or two sentences on
+   what `bundles/` is for (sample OKF bundles for manual testing/demos,
+   distinct from `tests/fixtures/`), then a list linking each bundle's own
+   README (`acme_retail` → `acme_retail/README.md`, `ga4` →
+   `ga4/README.md`).
+3. Update the one existing inbound link,
+   `samples/acme-retail-agent/README.md`'s
+   `[`bundles/acme_retail`](../../bundles/README.md)`, to point at
+   `../../bundles/acme_retail/README.md` directly instead of the new index.
+4. Update `NOTICE`'s existing `bundles/acme_retail/` attribution paragraph,
+   which currently says "see bundles/README.md for details" — repoint that
+   phrase at `bundles/acme_retail/README.md`.
+
 ### `bundles/ga4/README.md`
 
-Mirrors `bundles/acme_retail/README.md`'s shape: what the bundle is
-(Google's public GA4 ecommerce reference docs — `Reference` concepts only,
-no Attested Computations/Metrics/Policies, a deliberately different concept
-mix from `acme_retail`), provenance (source repo, path, commit SHA,
-Apache-2.0), the `viz.html` omission, and a "Validating" section with the
-expected `okf validate` result.
+New file, mirroring `bundles/acme_retail/README.md`'s (relocated, per
+above) shape: what the bundle is (Google's public GA4 ecommerce reference
+docs — `Reference` concepts only, no Attested Computations/Metrics/
+Policies, a deliberately different concept mix from `acme_retail`),
+provenance (source repo, path, commit SHA, Apache-2.0), the `viz.html`
+omission, and a "Validating" section with the `okf validate` result.
 
 ### Other doc updates
 
-- One `NOTICE` entry for `bundles/ga4/`, alongside the existing
+- One new `NOTICE` entry for `bundles/ga4/`, alongside the existing
   `acme_retail` entry, same format.
-- `bundles/README.md` gets a `## GA4` section (mirroring its existing
-  `## Acme Retail` section) pointing at `samples/catalog-explorer/`.
 
 ## Part B — `samples/catalog-explorer`
 
