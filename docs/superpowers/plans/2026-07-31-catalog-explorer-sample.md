@@ -492,7 +492,9 @@ foreach (var strategy in new[] { KnowledgeResolverStrategy.GroupedBySource, Know
 dotnet run --project samples/catalog-explorer/src/CatalogExplorer
 ```
 
-Expected: a new `=== 3. Ranking strategies compared ===` section with three `-- Strategy --` subsections (`GroupedBySource`, `Merged`, `PriorityWeighted`), each listing passages from both `acme` and `ga4-reference`. The `GroupedBySource` subsection's passage order matches scenario 2's exactly (same strategy, same query). The `Merged` subsection interleaves passages from both sources by descending score rather than grouping by source. Confirm the three subsections are not byte-identical to each other (if they are, the strategies aren't actually differing — stop and investigate rather than proceeding).
+Expected: a new `=== 3. Ranking strategies compared ===` section with three `-- Strategy --` subsections (`GroupedBySource`, `Merged`, `PriorityWeighted`), each listing passages from both `acme` and `ga4-reference`. The `GroupedBySource` subsection's passage order matches scenario 2's exactly (same strategy, same query). The `Merged` subsection interleaves passages from both sources by descending score rather than grouping by source — confirm it is NOT byte-identical to `GroupedBySource`'s subsection; if it is, something is wrong (stop and investigate rather than proceeding).
+
+**`PriorityWeighted` is expected to be byte-identical to `GroupedBySource` here — that is not a bug.** `catalog.json` gives `acme` and `ga4-reference` two distinct priorities (10 and 0). `PriorityWeighted` sorts by source priority first, score only within a tier; with exactly two knowledge sources and no priority tie between them, "priority tier" and "source" coincide, so its output collapses to exactly what `GroupedBySource` already produces (source-by-source, in descending-priority order, each internally by descending score). The two strategies provably diverge only when two or more contributing sources *share* a priority (then `PriorityWeighted` interleaves them by score across that shared tier, while `GroupedBySource` keeps them separated by source, tie-broken by id) — a configuration this two-source, distinct-priority catalog never produces, for any query. So: verify `Merged` differs from the other two; `GroupedBySource` and `PriorityWeighted` matching each other, line for line, is the catalog's priorities working exactly as designed, not a defect to chase.
 
 - [ ] **Step 3: Commit**
 
@@ -733,8 +735,13 @@ Five scenarios, printed in sequence:
    real contributions from both `acme` (Acme's own proprietary metrics)
    and `ga4-reference` (Google's public GA4 reference docs).
 3. **Ranking strategies compared** — the same query re-run under
-   `Merged` and `PriorityWeighted`, to show each strategy's effect on
-   passage order.
+   `Merged` and `PriorityWeighted`. `Merged` visibly interleaves passages
+   from both sources by descending score. `PriorityWeighted` sorts by
+   source priority first, score only within a tie — with `acme` and
+   `ga4-reference` at two distinct priorities, that collapses to the same
+   output as `GroupedBySource` here (the two strategies only diverge when
+   two or more sources *share* a priority); still worth seeing side by
+   side to understand why.
 4. **Visibility** — the same query as an unscoped caller, an
    external-partner caller restricted to the public `ga4-reference`
    source via `PermittedSourceIds`, and an Acme-employee caller granted
