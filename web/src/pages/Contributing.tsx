@@ -68,9 +68,14 @@ export default function Contributing() {
           <Warn title="GOLDEN FIXTURES — DO NOT REFORMAT">
             <p>
               <code>tests/fixtures/</code> contains <strong>byte-exact golden files</strong>: several tests compare
-              generated output byte-for-byte against them. They are protected by <code>.gitattributes</code> and
-              excluded from <code>.editorconfig</code> normalization. Never let an editor or formatter touch them —
-              trailing whitespace, final newlines, and line endings are all significant.
+              generated output byte-for-byte against them. Most were captured from this project's own former Rust
+              implementation before its removal (see <code>NOTICE</code>); a couple of newer ones (v0.2, §10
+              Attested Computation) postdate that implementation and are hand-verified against the spec text
+              instead — none of them currently re-check against Google's own OKF reference implementation, whose
+              CLI has no equivalent commands to compare output against. They are protected by{' '}
+              <code>.gitattributes</code> and excluded from <code>.editorconfig</code> normalization. Never let an
+              editor or formatter touch them — trailing whitespace, final newlines, and line endings are all
+              significant.
             </p>
           </Warn>
         </Chapter>
