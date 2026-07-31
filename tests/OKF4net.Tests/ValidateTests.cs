@@ -12,6 +12,15 @@ namespace OKF4net.Tests;
 public class ValidateTests
 {
     [Fact]
+    public void ToString_ignores_Code_and_Field()
+    {
+        var withField = new Diagnostic(Severity.Warning, "a.md", null, "msg", DiagnosticCode.LegacyTimestamp, "timestamp");
+        var withoutField = new Diagnostic(Severity.Warning, "a.md", null, "msg", DiagnosticCode.LegacyTimestamp);
+        Assert.Equal("[warning] a.md: msg", withField.ToString());
+        Assert.Equal(withField.ToString(), withoutField.ToString());
+    }
+
+    [Fact]
     public void Unparseable_frontmatter_is_an_error()
     {
         using var tmp = new TempDir();
@@ -22,6 +31,7 @@ public class ValidateTests
         var report = BundleValidator.Validate(bundle);
         var diag = Assert.Single(report.Of(Severity.Error));
         Assert.StartsWith("unparseable concept document: ", diag.Message);
+        Assert.Equal(DiagnosticCode.UnparseableDocument, diag.Code);
         Assert.False(report.IsConformant);
         Assert.Equal(1, report.ErrorCount);
     }
@@ -36,6 +46,8 @@ public class ValidateTests
 
         var diag = Assert.Single(report.Of(Severity.Error));
         Assert.Equal("missing required frontmatter field `type`", diag.Message);
+        Assert.Equal(DiagnosticCode.MissingType, diag.Code);
+        Assert.Equal("type", diag.Field);
         Assert.False(report.IsConformant);
     }
 
@@ -63,10 +75,10 @@ public class ValidateTests
 
         Assert.True(report.IsConformant);
         var warnings = report.Of(Severity.Warning).ToList();
-        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `title`");
-        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `description`");
-        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `resource`");
-        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `tags`");
+        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `title`" && d.Code == DiagnosticCode.MissingRecommendedField && d.Field == "title");
+        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `description`" && d.Code == DiagnosticCode.MissingRecommendedField && d.Field == "description");
+        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `resource`" && d.Code == DiagnosticCode.MissingRecommendedField && d.Field == "resource");
+        Assert.Contains(warnings, d => d.Message == "missing recommended frontmatter field `tags`" && d.Code == DiagnosticCode.MissingRecommendedField && d.Field == "tags");
         Assert.DoesNotContain(warnings, d => d.Message.Contains("`timestamp`"));
     }
 
@@ -135,6 +147,7 @@ public class ValidateTests
 
         var diag = Assert.Single(report.Of(Severity.Warning));
         Assert.Equal("index.md should not contain frontmatter (§8)", diag.Message);
+        Assert.Equal(DiagnosticCode.IndexHasFrontmatter, diag.Code);
         Assert.True(report.IsConformant);
     }
 
@@ -159,7 +172,7 @@ public class ValidateTests
         var bundle = Bundle.Load(tmp.Path);
         var report = BundleValidator.Validate(bundle);
 
-        Assert.Contains(report.Of(Severity.Warning), d => d.Message == "root index.md frontmatter should declare only `okf_version` (§12)");
+        Assert.Contains(report.Of(Severity.Warning), d => d.Message == "root index.md frontmatter should declare only `okf_version` (§12)" && d.Code == DiagnosticCode.RootIndexExtraFrontmatter && d.Field == "okf_version");
     }
 
     [Fact]
@@ -185,6 +198,7 @@ public class ValidateTests
 
         var diag = Assert.Single(report.Of(Severity.Warning));
         Assert.Equal("log date heading is not ISO-8601 `YYYY-MM-DD`: \"not-a-date\"", diag.Message);
+        Assert.Equal(DiagnosticCode.LogDateInvalid, diag.Code);
         Assert.True(report.IsConformant);
     }
 
@@ -213,6 +227,7 @@ public class ValidateTests
         Assert.Equal(
             "link target does not resolve to a concept in the bundle: /does/not/exist.md",
             diag.Message);
+        Assert.Equal(DiagnosticCode.BrokenLink, diag.Code);
     }
 
     [Fact]
@@ -312,7 +327,7 @@ public class ValidateTests
     public void Generated_without_by_warns_but_stays_conformant()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {at: '2026-07-27'}\n");
-        Assert.True(HasWarning(r, "generated is missing required `by`"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated is missing required `by`") && d.Code == DiagnosticCode.GeneratedMissingBy && d.Field == "generated.by");
         Assert.True(r.IsConformant);
     }
 
@@ -320,14 +335,14 @@ public class ValidateTests
     public void Malformed_actor_warns_strictly()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {by: bob, at: '2026-07-27'}\n");
-        Assert.True(HasWarning(r, "generated.by is not a valid §7 actor"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated.by is not a valid §7 actor") && d.Code == DiagnosticCode.GeneratedInvalidActor && d.Field == "generated.by");
     }
 
     [Fact]
     public void Verified_list_entry_not_a_mapping_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified: [human:ada]\n");
-        Assert.True(HasWarning(r, "verified entry is not a `{by, at}` mapping"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified entry is not a `{by, at}` mapping") && d.Code == DiagnosticCode.VerifiedEntryNotMapping && d.Field == "verified");
         Assert.True(r.IsConformant);
     }
 
@@ -335,7 +350,7 @@ public class ValidateTests
     public void Verified_bare_scalar_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified: notamapping\n");
-        Assert.True(HasWarning(r, "verified must be a"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified must be") && d.Code == DiagnosticCode.VerifiedMalformed && d.Field == "verified");
         Assert.True(r.IsConformant);
     }
 
@@ -343,14 +358,14 @@ public class ValidateTests
     public void Unknown_status_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstatus: archived\n");
-        Assert.True(HasWarning(r, "unknown status"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("unknown status") && d.Code == DiagnosticCode.StatusUnknown && d.Field == "status");
     }
 
     [Fact]
     public void Non_scalar_status_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstatus: [draft]\n");
-        Assert.True(HasWarning(r, "status is not a scalar"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("status is not a scalar") && d.Code == DiagnosticCode.StatusNotScalar && d.Field == "status");
         Assert.True(r.IsConformant);
     }
 
@@ -360,21 +375,21 @@ public class ValidateTests
         var r = ValidateConcept(
             "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '2026-01-01'\n",
             new FixedClock(new DateOnly(2026, 7, 27)));
-        Assert.True(HasWarning(r, "concept is stale (stale_after 2026-01-01)"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("concept is stale") && d.Code == DiagnosticCode.ConceptStale && d.Field == "stale_after");
     }
 
     [Fact]
     public void Source_without_resource_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - title: no resource\n");
-        Assert.True(HasWarning(r, "source entry is missing required `resource`"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("source entry is missing required `resource`") && d.Code == DiagnosticCode.SourceMissingResource && d.Field == "sources.resource");
     }
 
     [Fact]
     public void Sources_list_entry_not_a_mapping_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources: [just-a-string]\n");
-        Assert.True(HasWarning(r, "source entry is not a mapping"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("source entry is not a mapping") && d.Code == DiagnosticCode.SourceEntryNotMapping && d.Field == "sources");
         Assert.True(r.IsConformant);
     }
 
@@ -383,7 +398,7 @@ public class ValidateTests
     {
         var r = ValidateConcept(
             "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: not-a-date\n");
-        Assert.True(HasWarning(r, "source last_modified is not `YYYY-MM-DD`"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("source last_modified is not") && d.Code == DiagnosticCode.SourceInvalidLastModified && d.Field == "sources.last_modified");
         Assert.True(r.IsConformant);
     }
 
@@ -408,7 +423,7 @@ public class ValidateTests
     public void Legacy_timestamp_is_a_warning()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ntimestamp: '2026-05-28'\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("timestamp", StringComparison.Ordinal) && d.Code == DiagnosticCode.LegacyTimestamp && d.Field == "timestamp");
         Assert.DoesNotContain(r.Of(Severity.Info), d => d.Message.Contains("timestamp", StringComparison.Ordinal));
     }
 
@@ -419,7 +434,7 @@ public class ValidateTests
         File.WriteAllText(Path.Combine(dir, "index.md"), "---\nokf_version: \"0.9\"\n---\n\n# Index\n");
         File.WriteAllText(Path.Combine(dir, "c.md"), "---\ntype: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n---\nbody\n");
         var r = BundleValidator.Validate(Bundle.Load(dir));
-        Assert.True(HasWarning(r, "declared okf_version"));
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("declared okf_version") && d.Code == DiagnosticCode.UnsupportedOkfVersion && d.Field == "okf_version");
     }
 
     [Fact]
@@ -429,8 +444,8 @@ public class ValidateTests
         tmp.Write("c/comp.md", "---\ntype: Attested Computation\n# Computation absent + pas de computation:\n---\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         Assert.True(report.IsConformant);                                   // Error reste §11-only
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("runtime"));
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("no computation"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("runtime") && d.Code == DiagnosticCode.ComputationMissingRuntime && d.Field == "runtime");
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("no computation") && d.Code == DiagnosticCode.ComputationMissingBody);
     }
 
     [Fact]
@@ -441,7 +456,7 @@ public class ValidateTests
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: ./x.sql\n---\n# Computation\n\n```\nSELECT 1\n```\n");
         tmp.Write("c/x.sql", "SELECT 1\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("both inline and"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("both inline and") && d.Code == DiagnosticCode.ComputationAmbiguous && d.Field == "computation");
     }
 
     [Fact]
@@ -451,7 +466,7 @@ public class ValidateTests
         tmp.Write("c/comp.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nattester: {}\n---\n# Computation\n\n```\nSELECT 1\n```\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("attester.resource"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("attester.resource") && d.Code == DiagnosticCode.AttesterResourceEmpty && d.Field == "attester.resource");
         Assert.True(report.IsConformant);
     }
 
@@ -472,7 +487,7 @@ public class ValidateTests
         tmp.Write("c/comp.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: ./missing.md, receipt: [job_id] }\n---\n# Computation\n\n```\nSELECT 1\n```\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("not found"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("not found") && d.Code == DiagnosticCode.FrontmatterPathMissing && d.Field == "executor.resource");
     }
 
     [Fact]
@@ -482,7 +497,7 @@ public class ValidateTests
         tmp.Write("c/comp.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - type: integer\n    required: true\n---\n# Computation\n\n```\nSELECT 1\n```\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("missing") && d.Message.Contains("name"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("missing") && d.Message.Contains("name") && d.Code == DiagnosticCode.ComputationParameterMissingName && d.Field == "parameters");
         Assert.True(report.IsConformant);
     }
 
@@ -493,7 +508,7 @@ public class ValidateTests
         tmp.Write("c/comp.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { receipt: nope }\n---\n# Computation\n\n```\nSELECT 1\n```\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("executor.receipt is not a list"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("executor.receipt is not a list") && d.Code == DiagnosticCode.ExecutorReceiptInvalid && d.Field == "executor.receipt");
         Assert.True(report.IsConformant);
     }
 
@@ -504,7 +519,7 @@ public class ValidateTests
         tmp.Write("c/comp.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: ../../../outside.sql\n---\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
-        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("escapes the bundle"));
+        Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("escapes the bundle") && d.Code == DiagnosticCode.FrontmatterPathUnsafe && d.Field == "computation");
         Assert.True(report.IsConformant);
     }
 
@@ -522,5 +537,70 @@ public class ValidateTests
             "---\ntype: Attested Computation\nruntime: bigquery\n---\nSome intro text.\n\n```\n# Computation\n```\n\nSELECT ordinary_body_text\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("no computation"));
+    }
+
+    [Fact]
+    public void Generated_invalid_date_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {by: 'human:bob', at: 'not-a-date'}\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated.at is not ISO-8601") && d.Code == DiagnosticCode.GeneratedInvalidDate && d.Field == "generated.at");
+    }
+
+    [Fact]
+    public void Verified_invalid_actor_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified:\n  - by: notanactor\n    at: '2026-07-27'\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified.by is not a valid §7 actor") && d.Code == DiagnosticCode.VerifiedInvalidActor && d.Field == "verified.by");
+    }
+
+    [Fact]
+    public void Verified_invalid_date_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified:\n  - by: 'human:bob'\n    at: 'not-a-date'\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified.at is not ISO-8601") && d.Code == DiagnosticCode.VerifiedInvalidDate && d.Field == "verified.at");
+    }
+
+    [Fact]
+    public void Sources_malformed_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources: not-a-list\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("sources must be a list of entries") && d.Code == DiagnosticCode.SourcesMalformed && d.Field == "sources");
+    }
+
+    [Fact]
+    public void Usage_window_invalid_from_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nusage_window: {from: 'not-a-date', to: '2026-07-27'}\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("usage_window from is not") && d.Code == DiagnosticCode.UsageWindowInvalidFrom && d.Field == "usage_window.from");
+    }
+
+    [Fact]
+    public void Usage_window_invalid_to_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nusage_window: {from: '2026-07-27', to: 'not-a-date'}\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("usage_window to is not") && d.Code == DiagnosticCode.UsageWindowInvalidTo && d.Field == "usage_window.to");
+    }
+
+    [Fact]
+    public void Legacy_citations_warns()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c.md", "---\ntype: T\ntitle: X\ndescription: D\nresource: https://x\ntags: [a]\n---\n\nbody text\n\n# Citations\n\n[1] Some citation\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        Assert.Contains(report.Diagnostics, d => d.Message.Contains("# Citations") && d.Code == DiagnosticCode.LegacyCitations);
+    }
+
+    [Fact]
+    public void Stale_after_invalid_date_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: 'not-a-date'\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("stale_after is not") && d.Code == DiagnosticCode.StaleAfterInvalid && d.Field == "stale_after");
+    }
+
+    [Fact]
+    public void Verified_missing_by_warns()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified:\n  - at: '2026-07-27'\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified entry is missing `by`") && d.Code == DiagnosticCode.VerifiedMissingBy && d.Field == "verified.by");
     }
 }
