@@ -24,12 +24,11 @@
 
 **Files:**
 - Create: `bundles/ga4/index.md`, `bundles/ga4/datasets/index.md`, `bundles/ga4/datasets/ga4_obfuscated_sample_ecommerce.md`, `bundles/ga4/references/index.md`, `bundles/ga4/references/metrics/index.md`, `bundles/ga4/references/metrics/acquired_users.md`, `bundles/ga4/references/metrics/frequently_active_users.md`, `bundles/ga4/references/metrics/google_acquired_cohorts.md`, `bundles/ga4/references/metrics/highly_active_users.md`, `bundles/ga4/references/metrics/n_day_active_users.md`, `bundles/ga4/references/metrics/n_day_inactive_users.md`, `bundles/ga4/references/metrics/purchasers.md`, `bundles/ga4/tables/index.md`, `bundles/ga4/tables/events_.md` (14 files, vendored verbatim — do not hand-edit their content)
-- Create: `bundles/ga4/README.md`
-- Create: `bundles/acme_retail/README.md` (content moved from the current `bundles/README.md`, unchanged)
-- Modify: `bundles/README.md` (rewritten as a short index)
+- Modify: `bundles/README.md` (gains a `## GA4` section alongside its existing `## Acme Retail` content — **not** split into per-bundle README files; see Step 4 for why)
 - Modify: `.gitattributes`
 - Modify: `NOTICE`
-- Modify: `samples/acme-retail-agent/README.md:5`
+
+**Important correction (fix round 1):** an earlier version of this task instructed creating `bundles/acme_retail/README.md` and `bundles/ga4/README.md` *inside* each bundle's own root directory. That's wrong: `Bundle.Load`/`okf validate` treats every `.md` file under a bundle root as an OKF concept — there's no exemption for `README.md` the way there is for the spec-reserved `index.md`/`log.md`. A plain-markdown README dropped inside a bundle root becomes an unparseable/non-conformant concept (missing `type`), which is exactly the "1 extra error" a real implementer hit trying this. The fix: keep bundle documentation entirely in `bundles/README.md`, which lives *outside* both bundle root directories (a sibling of `acme_retail/` and `ga4/`, never walked by `Bundle.Load`) — the same place it already lived, safely, before this task. No `samples/acme-retail-agent/README.md` change is needed either: its existing link to `bundles/README.md` was never wrong.
 
 **Interfaces:** None (docs/content only, no code).
 
@@ -84,25 +83,85 @@ dotnet run --project src/OKF4net.Cli -- validate bundles/ga4
 
 Expected: exit code `0`, output ending in `9 concept(s); 0 error(s), 0 warning(s), 0 info.` and `✓ conformant with OKF v0.2`. (If this doesn't match — e.g. any error or warning appears — stop and investigate before continuing; do not hand-edit the vendored files to force a clean result, per the project's "never touch vendored/fixture content to make a check pass" convention. The commit-pinned upstream content is expected to be genuinely clean now that the YAML multi-line-scalar parser fix has shipped.)
 
-- [ ] **Step 4: Move `bundles/README.md`'s current content to `bundles/acme_retail/README.md`**
+- [ ] **Step 4: Add a `## GA4` section to `bundles/README.md`**
 
-`bundles/acme_retail/` has no README of its own today — `bundles/README.md` currently *is* its documentation (there being only one bundle so far). Read the current `bundles/README.md`, then write its exact content, unchanged, to a new `bundles/acme_retail/README.md`.
-
-- [ ] **Step 5: Write `bundles/ga4/README.md`**
+Read the current `bundles/README.md` first — its content becomes the `## Acme Retail` section below, **unchanged** except demoted one heading level (its `#`/`##` headings become `##`/`###`). Replace the whole file with:
 
 ```markdown
-# GA4 (sample bundle)
+# Sample bundles
 
-Google's public [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
-v0.2 bundle documenting the Google Analytics 4 obfuscated sample ecommerce
-BigQuery dataset, used in this repo as a second knowledge source alongside
-[`bundles/acme_retail`](../acme_retail/README.md) — see
-[`samples/catalog-explorer/`](../../samples/catalog-explorer/README.md).
-It exercises concept types `acme_retail` doesn't: a `BigQuery Dataset`, and
-a set of `Reference` concepts documenting ecommerce audience metrics
+Sample [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+v0.2 bundles used in this repo for manual testing and samples — distinct
+from [`tests/fixtures/`](../tests/fixtures/README.md), which stays
+byte-exact golden CLI captures. Consumed together by
+[`samples/catalog-explorer/`](../samples/catalog-explorer/README.md);
+`acme_retail` alone is also consumed by
+[`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md).
+
+## Acme Retail
+
+A fictional retail company's bundle. It exercises parts of the spec a
+minimal synthetic bundle can't: `Metric` and `Policy` concepts, a `Skill`,
+an `Attested Computation` pair (`runtime: bigquery`) with its executor and
+attester, trust tiers (`verified`), staleness (`stale_after`), and a
+deprecated concept kept for historical reproducibility.
+
+### Provenance
+
+Copied verbatim from `okf/bundles/acme_retail` in
+[`GoogleCloudPlatform/knowledge-catalog`](https://github.com/GoogleCloudPlatform/knowledge-catalog),
+commit [`3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/3fcbb9f828c2f23d109c855ee403c3a4c81f3a96/okf/bundles/acme_retail),
+licensed under the Apache License, Version 2.0 — see `LICENSE.Apache-2.0` at
+the repo root and the attribution entry in `NOTICE`.
+
+### What's different from upstream
+
+- `viz.html` was **not** carried over: it's a generated artifact of the
+  upstream Python `reference_agent` visualizer (Cytoscape JS/CSS tied to
+  that toolchain), not OKF bundle content — nothing in this repo generates
+  or keeps it in sync.
+- `attesters/sql_equality.py` **is** carried over, untouched, as a plain
+  reference resource (the `attester.resource` target for
+  `computations/*.md`). OKF4net does not execute Python, and nothing in
+  this repo ports or reimplements its logic in C# — see
+  [`samples/acme-retail-agent/README.md`](../samples/acme-retail-agent/README.md)
+  for why, and what actually running an Attested Computation against this
+  bundle would require.
+
+### Validating
+
+```bash
+dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail
+```
+
+Exits `0` (conformant): 9 concepts, 0 errors, 18 warnings, 0 info. The
+warnings are expected and harmless:
+
+- 12 of the 18 are `sources[].resource` / `executor.resource` /
+  `attester.resource` frontmatter paths reported as "not found". OKF v0.2
+  §6.2 resolves a plain relative path (no leading `/`) against the
+  **referencing concept's own directory**, not the bundle root — e.g.
+  `computations/gross-margin-period.md`'s `sources[0].resource:
+  policies/margin-standard.md` resolves to
+  `computations/policies/margin-standard.md` (which doesn't exist); the
+  real file is one level up, at `../policies/margin-standard.md` from that
+  concept. The upstream bundle writes these paths bundle-root-relative
+  instead. This affects only frontmatter-path *resolution* diagnostics —
+  reading, browsing, and searching the bundle are unaffected.
+- The remaining 6 are "missing recommended frontmatter field `resource`"
+  on concept types where a `resource` URI doesn't apply (`Metric`, `Skill`,
+  and `Attested Computation`).
+
+## GA4
+
+Google's public GA4 ecommerce reference docs bundle, used in this repo as
+a second knowledge source alongside `acme_retail` — see
+[`samples/catalog-explorer/`](../samples/catalog-explorer/README.md). It
+exercises concept types `acme_retail` doesn't: a `BigQuery Dataset`, and a
+set of `Reference` concepts documenting ecommerce audience metrics
 (`purchasers`, `n_day_active_users`, and others).
 
-## Provenance
+### Provenance
 
 Copied verbatim from `okf/bundles/ga4` in
 [`GoogleCloudPlatform/knowledge-catalog`](https://github.com/GoogleCloudPlatform/knowledge-catalog),
@@ -110,14 +169,14 @@ commit [`3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`](https://github.com/GoogleClo
 licensed under the Apache License, Version 2.0 — see `LICENSE.Apache-2.0` at
 the repo root and the attribution entry in `NOTICE`.
 
-## What's different from upstream
+### What's different from upstream
 
 - `viz.html` was **not** carried over: it's a generated artifact of the
   upstream Python `reference_agent` visualizer (Cytoscape JS/CSS tied to
   that toolchain), not OKF bundle content — nothing in this repo generates
-  or keeps it in sync (same as `bundles/acme_retail`).
+  or keeps it in sync (same as `acme_retail`).
 
-## Validating
+### Validating
 
 ```bash
 dotnet run --project src/OKF4net.Cli -- validate bundles/ga4
@@ -126,60 +185,9 @@ dotnet run --project src/OKF4net.Cli -- validate bundles/ga4
 Exits `0` (conformant): 9 concepts, 0 errors, 0 warnings, 0 info.
 ```
 
-- [ ] **Step 6: Rewrite `bundles/README.md` as a short index**
+- [ ] **Step 5: Add the `ga4` attribution entry to `NOTICE`**
 
-```markdown
-# Sample bundles
-
-Sample [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
-v0.2 bundles used in this repo for manual testing and samples — distinct
-from [`tests/fixtures/`](../tests/fixtures/README.md), which stays
-byte-exact golden CLI captures.
-
-- [`acme_retail/`](acme_retail/README.md) — a fictional retail company;
-  `Metric`/`Policy`/`Skill`/`Attested Computation` concepts, trust tiers,
-  staleness.
-- [`ga4/`](ga4/README.md) — Google's public GA4 ecommerce reference docs;
-  `BigQuery Dataset`/`BigQuery Table`/`Reference` concepts.
-
-Both are consumed together by [`samples/catalog-explorer/`](../samples/catalog-explorer/README.md);
-`acme_retail` alone is also consumed by [`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md).
-```
-
-- [ ] **Step 7: Fix the one existing inbound link**
-
-In `samples/acme-retail-agent/README.md`, line 5 currently reads (in context):
-
-```
-context provider against the [`bundles/acme_retail`](../../bundles/README.md)
-```
-
-Change the link target so it points at the relocated file directly:
-
-```
-context provider against the [`bundles/acme_retail`](../../bundles/acme_retail/README.md)
-```
-
-- [ ] **Step 8: Fix `NOTICE`'s cross-reference and add the `ga4` attribution entry**
-
-`NOTICE` currently ends with this paragraph (attributing `bundles/acme_retail/`):
-
-```
-bundles/acme_retail/ is a sample OKF bundle copied verbatim from
-okf/bundles/acme_retail in the OKF reference implementation
-
-    Open Knowledge Format (OKF)
-    Copyright Google LLC
-    https://github.com/GoogleCloudPlatform/knowledge-catalog
-
-commit 3fcbb9f828c2f23d109c855ee403c3a4c81f3a96, licensed under the Apache
-License, Version 2.0 (see LICENSE.Apache-2.0). It is fictional demonstration
-content (a fictional company, "Acme Retail") used here for manual testing
-and samples; see bundles/README.md for details, including which
-upstream files were intentionally not carried over.
-```
-
-Change its last sentence's `bundles/README.md` reference to `bundles/acme_retail/README.md`, then append a new paragraph for `ga4`, separated by the same `---...---` rule used elsewhere in this file:
+`NOTICE` currently ends with a paragraph attributing `bundles/acme_retail/` (its "see bundles/README.md for details" reference is already correct — do **not** change it, per Step 4's correction). Append a new paragraph for `ga4`, separated by the same `---...---` rule used elsewhere in this file:
 
 ```
 ------------------------------------------------------------------------------
@@ -194,16 +202,16 @@ okf/bundles/ga4 in the OKF reference implementation
 commit 3fcbb9f828c2f23d109c855ee403c3a4c81f3a96, licensed under the Apache
 License, Version 2.0 (see LICENSE.Apache-2.0). It documents Google's public
 Google Analytics 4 obfuscated sample ecommerce BigQuery dataset; see
-bundles/ga4/README.md for details, including which upstream files were
+bundles/README.md for details, including which upstream files were
 intentionally not carried over.
 ```
 
-- [ ] **Step 9: Verify and commit**
+- [ ] **Step 6: Verify and commit**
 
 ```bash
 dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail
 dotnet run --project src/OKF4net.Cli -- validate bundles/ga4
-git add bundles/ .gitattributes NOTICE samples/acme-retail-agent/README.md
+git add bundles/ .gitattributes NOTICE
 git status
 ```
 
@@ -216,8 +224,10 @@ feat(bundles): vendor bundles/ga4 as a second sample bundle
 Copied verbatim from okf/bundles/ga4 at GoogleCloudPlatform/knowledge-catalog
 commit 3fcbb9f828c2f23d109c855ee403c3a4c81f3a96 (Apache-2.0), minus viz.html
 (same exclusion as bundles/acme_retail). bundles/README.md, which doubled as
-acme_retail's own docs, is now a short index; that content moved to
-bundles/acme_retail/README.md.
+acme_retail's own docs, gains a ## GA4 section alongside its existing
+content -- both stay outside either bundle's own root directory, since
+Bundle.Load/okf validate would otherwise treat a README.md dropped inside
+a bundle root as an unparseable concept.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -693,8 +703,8 @@ EOF
 A standalone console app walking through [`OKF4net.Catalog`](../../src/OKF4net.Catalog/README.md)
 end to end: multi-source search, ranking-strategy comparison, per-caller
 source visibility, and the `role: memory` tier — against
-[`bundles/acme_retail`](../../bundles/acme_retail/README.md) and
-[`bundles/ga4`](../../bundles/ga4/README.md). Uses `OKF4net.Catalog`
+[`bundles/acme_retail`](../../bundles/README.md#acme-retail) and
+[`bundles/ga4`](../../bundles/README.md#ga4). Uses `OKF4net.Catalog`
 directly, with no dependency injection and no `OKF4net.Catalog.Hosting` —
 see [the design spec](../../docs/superpowers/specs/2026-07-31-catalog-explorer-sample-design.md)
 for the full rationale, including why these two bundles (not two unrelated
