@@ -167,7 +167,11 @@ public static class IndexGenerator
     /// This still does not fully close the gap: a substitution landing in
     /// the instant between the late check and the write itself would still
     /// slip through. No portable, race-free "check and write without
-    /// following a symlink" primitive exists in .NET for this case.
+    /// following a symlink" primitive exists in .NET for this case. For the
+    /// bundle root specifically, that same narrow window also covers a read
+    /// of the existing <c>index.md</c> (to preserve its frontmatter, see
+    /// below) immediately before the write; a substitution landing there is
+    /// the identical residual risk, not a separate one.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> RegenerateIndexesWith(string bundleRoot, Synthesize synthesize)
@@ -278,7 +282,43 @@ public static class IndexGenerator
                 continue;
             }
 
-            File.WriteAllText(indexPath, BuildIndexText(entries), OkfEncodings.NoBom);
+            var body = BuildIndexText(entries);
+            var content = body;
+
+            // The bundle-root index.md is the only place frontmatter is
+            // spec-sanctioned at all (§12: the okf_version marker, see
+            // Bundle.OkfVersion) -- every other index.md must have none
+            // (§8, BundleValidator's "index.md should not contain
+            // frontmatter" warning). So only the root's existing frontmatter
+            // is carried forward here; a non-root index.md keeps the old
+            // body-only overwrite, which self-heals any stray frontmatter
+            // there instead of making it permanently sticky. Without the
+            // root case, regeneration used to overwrite index.md with ONLY
+            // the freshly built body, silently dropping okf_version and
+            // breaking okf-mcp's bundle auto-discovery (OkfBundleDiscovery)
+            // on the next server start.
+            if (string.Equals(directory, bundleRoot, StringComparison.Ordinal) && File.Exists(indexPath))
+            {
+                // A pre-existing root index.md that fails to read or parse
+                // (locked by another process, malformed YAML, bad encoding)
+                // is left untouched rather than silently overwritten
+                // frontmatter-free -- same skip-not-abort handling this
+                // method already applies to its reparse-point checks above
+                // -- so a transient read failure can never reproduce the
+                // marker-loss bug this preserves against.
+                var existing = LoadDoc(indexPath);
+                if (existing is null)
+                {
+                    continue;
+                }
+
+                if (!existing.Frontmatter.IsEmpty)
+                {
+                    content = new OkfDocument(existing.Frontmatter, body).Serialize();
+                }
+            }
+
+            File.WriteAllText(indexPath, content, OkfEncodings.NoBom);
             written.Add(indexPath);
 
             if (string.Equals(directory, bundleRoot, StringComparison.Ordinal))

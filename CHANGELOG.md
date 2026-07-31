@@ -8,6 +8,22 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **`IndexGenerator.RegenerateIndexesWith` no longer erases the bundle-root
+  `index.md`'s `okf_version` marker.** Regeneration rebuilt every `index.md`
+  from scratch — entries only, no frontmatter block at all — so a bundle
+  marked with `okf_version` (§12) lost that marker the moment any concept
+  write triggered `okf_regenerate_indexes`. That silently broke `okf-mcp`'s
+  bundle auto-discovery on the next server start (`no bundle root given and
+  no marked bundle found`), even though the bundle had been correctly marked
+  and previously discovered fine. The write path now preserves the root
+  `index.md`'s existing frontmatter (read permissively — a file that fails
+  to read or parse is left untouched rather than silently rewritten) and
+  only regenerates the body; non-root `index.md` files are unaffected and
+  still self-heal any stray frontmatter (§8) on the next regeneration, as
+  before.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added
