@@ -68,6 +68,27 @@ PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText)
     SourceVisibilityPolicy = AcmeIfEmployee,
 }));
 
+PrintHeader("5. Memory tier");
+var tierRoots = ResolveMemoryTierRoots(catalog);
+var memoryStore = new FileMemoryStore(tierRoots);
+
+var memoryEntry = new MemoryEntry(
+    ConceptName: "onboarding-note",
+    FrontmatterYamlIfCreating: "type: Note\ntitle: Onboarding notes\ndescription: A demo memory entry written by the catalog-explorer sample.\n",
+    SectionMarkdown: "- Reminded Alice about the GA4 purchasers reference during onboarding.");
+
+var writeResult = await memoryStore.WriteAsync(employeeScope, memoryEntry, MemoryTier.User);
+Console.WriteLine($"  write: written={writeResult.Written} error={writeResult.Error}");
+
+var readResult = await memoryStore.ReadAsync(employeeScope, new KnowledgeQuery("onboarding"));
+foreach (var passage in readResult.Passages)
+{
+    Console.WriteLine($"  read: [{passage.SourceId}] {passage.ConceptId} ({passage.Score}): {passage.Excerpt}");
+}
+
+var deleteResult = await memoryStore.DeleteScopeAsync(employeeScope);
+Console.WriteLine($"  cleanup: tiersDeleted={deleteResult.TiersDeleted} error={deleteResult.Error}");
+
 return 0;
 
 static string? FindRepoRoot()
@@ -108,3 +129,22 @@ static void PrintContext(KnowledgeContext context)
 static bool AcmeIfEmployee(KnowledgeAccessScope scope, KnowledgeCatalogSource source) =>
     source.Id == "ga4-reference"
     || (scope.UserId is { } userId && userId.StartsWith("acme-employee-", StringComparison.Ordinal) && source.Id == "acme");
+
+static Dictionary<MemoryTier, string> ResolveMemoryTierRoots(IKnowledgeCatalog catalog)
+{
+    var snapshot = catalog.Current;
+    var tierRoots = new Dictionary<MemoryTier, string>();
+
+    foreach (var source in snapshot.Sources)
+    {
+        if (source.Enabled
+            && source.Role == SourceRole.Memory
+            && source.Tier is { } tier
+            && CatalogPathResolver.TryResolve(catalog.CatalogRoot, snapshot.ManifestDirectory, source.Path, out var resolved, out _))
+        {
+            tierRoots[tier] = resolved!;
+        }
+    }
+
+    return tierRoots;
+}
