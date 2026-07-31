@@ -119,8 +119,9 @@ internal static class FusedResolverEngine
         // the same directory are the same bundle: searching both would load
         // and score it twice only to discard half the results. enabledSources
         // is already in priority-then-id order, so the first entry reaching a
-        // given directory is the survivor by construction.
-        var seenDirectories = new HashSet<string>(StringComparer.FromComparison(CatalogPathResolver.PathComparison));
+        // given directory is the survivor by construction; a later duplicate
+        // is skipped and reported (see below), not just silently dropped.
+        var seenDirectories = new Dictionary<string, string>(StringComparer.FromComparison(CatalogPathResolver.PathComparison));
         var resolved = new List<(KnowledgeCatalogSource Source, string Directory)>();
 
         foreach (var source in enabledSources)
@@ -136,10 +137,17 @@ internal static class FusedResolverEngine
                 continue;
             }
 
-            if (seenDirectories.Add(directory!))
+            if (seenDirectories.TryGetValue(directory!, out var survivingSourceId))
             {
-                resolved.Add((source, directory!));
+                diagnostics.Add(new KnowledgeDiagnostic(
+                    KnowledgeDiagnosticCode.DuplicateDirectory,
+                    source.Id,
+                    $"Source '{source.Id}' resolves to the same directory ('{directory}') as source '{survivingSourceId}', which was already resolved; skipped to avoid searching the same bundle twice."));
+                continue;
             }
+
+            seenDirectories.Add(directory!, source.Id);
+            resolved.Add((source, directory!));
         }
 
         var ranked = new List<RankedPassage>();

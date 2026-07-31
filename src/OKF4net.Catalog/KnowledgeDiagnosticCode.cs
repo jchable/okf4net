@@ -21,4 +21,13 @@ public enum KnowledgeDiagnosticCode
 
     /// <summary>Every source that was actually searched returned zero passages for the query.</summary>
     NoMatches,
+
+    /// <summary>
+    /// A source's resolved directory is the same as another, already-resolved
+    /// source's (a fusing resolver's dedup-before-fan-out step, keyed on the
+    /// resolved directory string): this source was skipped so the shared
+    /// bundle is not searched and scored twice. The surviving source is named
+    /// in the message.
+    /// </summary>
+    DuplicateDirectory,
 }

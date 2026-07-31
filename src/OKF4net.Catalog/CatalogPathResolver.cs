@@ -51,12 +51,32 @@ public static class CatalogPathResolver
     private const StringComparison ContainmentComparison = StringComparison.Ordinal;
 
     /// <summary>
-    /// The existing comparison used by <see cref="FusedResolverEngine"/> to
+    /// The comparison used by <see cref="FusedResolverEngine"/> to
     /// deduplicate resolved source-directory strings. It is intentionally not
-    /// used for containment or reparse-point checks.
+    /// used for containment or reparse-point checks (see
+    /// <see cref="ContainmentComparison"/>).
     /// </summary>
-    internal static readonly StringComparison PathComparison =
-        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    /// <remarks>
+    /// <see cref="StringComparison.Ordinal"/> on every platform, not an
+    /// OS-conditional heuristic -- case-sensitivity is a runtime property of
+    /// the volume, not the OS (the same reasoning as
+    /// <see cref="ContainmentComparison"/>). Unlike a containment check,
+    /// though, neither comparison is free here: on a genuinely
+    /// case-insensitive volume, two source paths differing only in case that
+    /// resolve to the SAME physical directory are no longer deduped, and the
+    /// bundle is searched twice (duplicate passages, each tagged with its own
+    /// source's id). That is the accepted trade-off -- a visible, self-evident
+    /// nuisance in search results -- against the alternative: keeping the OS
+    /// heuristic (or switching to <see cref="StringComparison.OrdinalIgnoreCase"/>
+    /// unconditionally) risks the opposite and strictly worse failure, where
+    /// two DIFFERENT source directories on a genuinely case-sensitive volume
+    /// that merely share a case-insensitive spelling are wrongly treated as
+    /// the same one, and the second silently never searched again. Either
+    /// way, <see cref="FusedResolverEngine"/> reports every actual collision
+    /// via <see cref="KnowledgeDiagnosticCode.DuplicateDirectory"/> rather
+    /// than dropping it without a trace.
+    /// </remarks>
+    internal static readonly StringComparison PathComparison = StringComparison.Ordinal;
 
     /// <summary>
     /// Resolves <paramref name="sourcePath"/> relative to <paramref name="manifestDirectory"/>,

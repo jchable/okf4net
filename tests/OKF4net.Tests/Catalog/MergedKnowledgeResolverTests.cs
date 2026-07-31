@@ -176,9 +176,43 @@ public class MergedKnowledgeResolverTests
         Assert.Equal(ids.Count, ids.Distinct(StringComparer.Ordinal).Count());
 
         // ...attributed to the surviving (higher-priority) source, and the
-        // eliminated entry contributes nothing at all.
+        // eliminated entry contributes nothing at all -- but is reported,
+        // not silently dropped.
         Assert.All(context.Passages, p => Assert.Equal("primary", p.SourceId));
-        Assert.DoesNotContain(context.Diagnostics, d => d.SourceId == "alias");
+        var duplicate = Assert.Single(context.Diagnostics, d => d.SourceId == "alias");
+        Assert.Equal(KnowledgeDiagnosticCode.DuplicateDirectory, duplicate.Code);
+        Assert.Contains("primary", duplicate.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Pins the deliberate trade-off documented on
+    /// <see cref="CatalogPathResolver.PathComparison"/>: an unconditional
+    /// <c>Ordinal</c> comparison means two source paths that differ only in
+    /// case are never treated as a false duplicate, even on a
+    /// case-insensitive host where they resolve to the very same physical
+    /// directory (the opposite failure from the OS-heuristic this replaced,
+    /// which could wrongly collapse two genuinely different directories on a
+    /// case-sensitive volume). This test passes identically regardless of
+    /// the actual host's case-sensitivity -- it asserts the DuplicateDirectory
+    /// diagnostic is never falsely raised for a case-variant pair, not
+    /// anything about how many passages come back (that part is host- and
+    /// case-sensitivity-dependent, and not the property under test here).
+    /// </summary>
+    [Fact]
+    public async Task Case_variant_source_paths_are_never_reported_as_a_false_duplicate()
+    {
+        using var root = new TempDir();
+        CopyDirectory(BundlePath, Path.Combine(root.Path, "Shared"));
+
+        using var catalog = BuildCatalog(root, """
+            { "id": "upper", "path": "./Shared", "priority": 10, "enabled": true },
+            { "id": "lower", "path": "./shared", "priority": 1, "enabled": true }
+            """);
+        var resolver = new MergedKnowledgeResolver(catalog);
+
+        var context = await resolver.SearchAsync(new KnowledgeQuery("orders sales"));
+
+        Assert.DoesNotContain(context.Diagnostics, d => d.Code == KnowledgeDiagnosticCode.DuplicateDirectory);
     }
 
     [Fact]
