@@ -23,9 +23,9 @@ La CLI est publiée en Native AOT (`PublishAot`, `TreatWarningsAsErrors`, testé
 
 `System.Text.Json` fait partie du BCL/SDK .NET — aucune dépendance tierce nouvelle, conforme à la règle zéro-dépendance du projet.
 
-## 3. Modèle de diagnostic étendu (additif, pas de rupture)
+## 3. Modèle de diagnostic étendu (additif pour le texte, rupture pour le constructeur)
 
-`src/OKF4net/Validate.cs` — `Diagnostic` gagne deux membres, `ToString()` ne change pas (les golden fixtures `tests/fixtures/golden/validate*.out` restent identiques au byte près) :
+`src/OKF4net/Validate.cs` — `Diagnostic` gagne deux membres. `ToString()` ne change pas (les golden fixtures `tests/fixtures/golden/validate*.out` restent identiques au byte près) — c'est le seul sens dans lequel ce changement est additif. Le constructeur, lui, gagne un paramètre positionnel obligatoire (`Code`) : rupture source/binaire pour tout appelant qui construit ou déconstruit `Diagnostic` directement (aucun dans ce dépôt aujourd'hui, mais `OKF4net` est publié sur NuGet). Le CHANGELOG documente cette rupture explicitement.
 
 ```csharp
 public sealed record Diagnostic(
