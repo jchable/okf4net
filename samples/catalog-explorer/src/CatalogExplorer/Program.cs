@@ -29,6 +29,12 @@ if (catalog.LastReloadDiagnostics.Count > 0)
     }
 }
 
+var resolver = new KnowledgeResolverRouter(catalog);
+const string queryText = "revenue purchase";
+
+PrintHeader("2. Multi-source search (default: GroupedBySource)");
+PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText)));
+
 return 0;
 
 static string? FindRepoRoot()
@@ -46,4 +52,22 @@ static void PrintHeader(string title)
 {
     Console.WriteLine();
     Console.WriteLine($"=== {title} ===");
+}
+
+static void PrintContext(KnowledgeContext context)
+{
+    foreach (var passage in context.Passages)
+    {
+        Console.WriteLine($"  [{passage.SourceId}] {passage.ConceptId} ({passage.Score}): {passage.Title}");
+    }
+
+    foreach (var diagnostic in context.Diagnostics)
+    {
+        Console.WriteLine($"  diagnostic: [{diagnostic.Code}] source={diagnostic.SourceId} {diagnostic.Message}");
+    }
+
+    if (context.Passages.Count == 0 && context.Diagnostics.Count == 0)
+    {
+        Console.WriteLine("  (no passages, no diagnostics)");
+    }
 }
