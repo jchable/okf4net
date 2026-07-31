@@ -42,6 +42,32 @@ foreach (var strategy in new[] { KnowledgeResolverStrategy.GroupedBySource, Know
     PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText) { ResolverStrategy = strategy }));
 }
 
+PrintHeader("4. Visibility");
+var employeeScope = new KnowledgeAccessScope(userId: "acme-employee-jsmith");
+
+Console.WriteLine("-- unscoped caller (no restriction) --");
+PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText)));
+
+Console.WriteLine("-- external-partner caller (PermittedSourceIds = { \"ga4-reference\" }) --");
+PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText)
+{
+    PermittedSourceIds = new HashSet<string> { "ga4-reference" },
+}));
+
+Console.WriteLine("-- acme-employee caller (SourceVisibilityPolicy) --");
+PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText)
+{
+    Scope = employeeScope,
+    SourceVisibilityPolicy = AcmeIfEmployee,
+}));
+
+Console.WriteLine("-- non-employee caller (SourceVisibilityPolicy, fails closed) --");
+PrintContext(await resolver.SearchAsync(new KnowledgeQuery(queryText)
+{
+    Scope = new KnowledgeAccessScope(userId: "external-bob"),
+    SourceVisibilityPolicy = AcmeIfEmployee,
+}));
+
 return 0;
 
 static string? FindRepoRoot()
@@ -78,3 +104,7 @@ static void PrintContext(KnowledgeContext context)
         Console.WriteLine("  (no passages, no diagnostics)");
     }
 }
+
+static bool AcmeIfEmployee(KnowledgeAccessScope scope, KnowledgeCatalogSource source) =>
+    source.Id == "ga4-reference"
+    || (scope.UserId is { } userId && userId.StartsWith("acme-employee-", StringComparison.Ordinal) && source.Id == "acme");
