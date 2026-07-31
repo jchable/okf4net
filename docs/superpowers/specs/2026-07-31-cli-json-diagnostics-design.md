@@ -23,9 +23,9 @@ La CLI est publiée en Native AOT (`PublishAot`, `TreatWarningsAsErrors`, testé
 
 `System.Text.Json` fait partie du BCL/SDK .NET — aucune dépendance tierce nouvelle, conforme à la règle zéro-dépendance du projet.
 
-## 3. Modèle de diagnostic étendu (additif, pas de rupture)
+## 3. Modèle de diagnostic étendu (additif pour le texte, rupture pour le constructeur)
 
-`src/OKF4net/Validate.cs` — `Diagnostic` gagne deux membres, `ToString()` ne change pas (les golden fixtures `tests/fixtures/golden/validate*.out` restent identiques au byte près) :
+`src/OKF4net/Validate.cs` — `Diagnostic` gagne deux membres. `ToString()` ne change pas (les golden fixtures `tests/fixtures/golden/validate*.out` restent identiques au byte près) — c'est le seul sens dans lequel ce changement est additif. Le constructeur, lui, gagne un paramètre positionnel obligatoire (`Code`) : rupture source/binaire pour tout appelant qui construit ou déconstruit `Diagnostic` directement (aucun dans ce dépôt aujourd'hui, mais `OKF4net` est publié sur NuGet). Le CHANGELOG documente cette rupture explicitement.
 
 ```csharp
 public sealed record Diagnostic(
@@ -99,14 +99,14 @@ Nouveau flag `--json` sur `validate`/`info` (même mécanisme que le `HasFlag` e
       "severity": "warning",
       "code": "LegacyTimestamp",
       "path": "tables/users.md",
-      "conceptId": null,
+      "conceptId": "tables/users",
       "field": "timestamp",
       "message": "`timestamp` is a legacy field; prefer `generated.at`"
     }
   ]
 }
 ```
-`path`/`conceptId` restent mutuellement exclusifs par diagnostic, comme le modèle `Diagnostic` actuel. Le tableau `diagnostics` conserve l'ordre de `ValidationReport.Diagnostics` (identique à l'ordre d'émission texte actuel) — déterministe, pas retrié par sévérité ou code.
+`path` et `conceptId` ne sont pas mutuellement exclusifs : pour un diagnostic de niveau concept, les deux sont généralement renseignés (le chemin propre du concept, en plus de son id) ; seul un diagnostic de niveau fichier/corps n'a que `path`. Le tableau `diagnostics` conserve l'ordre de `ValidationReport.Diagnostics` (identique à l'ordre d'émission texte actuel) — déterministe, pas retrié par sévérité ou code.
 
 `okf info --json <bundle>` :
 ```json
