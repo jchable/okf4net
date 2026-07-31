@@ -181,7 +181,7 @@ public static class IndexGenerator
         {
             return written;
         }
-
+        bundleRoot = Path.GetFullPath(bundleRoot);
         var directories = DirectoriesToIndex(bundleRoot);
         // Deepest-first; ties broken by path for determinism.
         directories.Sort((a, b) =>

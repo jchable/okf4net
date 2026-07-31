@@ -56,6 +56,9 @@ just incompleteness.
    2026-07-27-okf-v0.2-core-and-cli.md:18` planning doc says malformed
    reserved files were meant to be `Error`-level. This is the report's one
    undocumented, Critical-severity gap. See §11 detail below.
+  **Resolved 2026-07-31** by `feat/reserved-file-conformance-fix` (merged
+  to `dev` at `8f394ab`); see
+  `docs/superpowers/specs/2026-07-31-okf-v02-reserved-file-conformance-fix-design.md`.
 2. **§5.1-1 / §5.2-1 (Major, Partial):** `sources[].resource` and
    `generated.by` are both spec-`REQUIRED` sub-fields, but OKF4net only
    ever flags their absence as `Warning`, never blocks — detected and
@@ -418,6 +421,11 @@ README mapping: `OKF4net.BundleValidator`.
   `Warning` or silently ignores them. No README/CHANGELOG/design-doc
   citation justifies the downgrade — this is a genuine, undocumented gap
   in one of §11's own three declarative conditions.
+
+  > **Resolved 2026-07-31** by `feat/reserved-file-conformance-fix`
+  > (merged to `dev` at `8f394ab`): `ValidateReserved` now emits
+  > `Severity.Error` for all four cases described above. See
+  > `docs/superpowers/specs/2026-07-31-okf-v02-reserved-file-conformance-fix-design.md`.
 - **S11-4** (SHOULD, producers follow §5-§10 when families present) —
   **Implemented** (Major). Throughout `Validate.cs:158-326` the validator
   actively checks every §5-§10 family when present, e.g.

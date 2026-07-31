@@ -521,19 +521,9 @@ public static class BundleValidator
             {
                 text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
             }
-            catch (IOException e)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
             {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
-                continue;
-            }
-            catch (UnauthorizedAccessException e)
-            {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
-                continue;
-            }
-            catch (System.Text.DecoderFallbackException e)
-            {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"index.md could not be read: {e.Message}", DiagnosticCode.UnparseableIndex));
                 continue;
             }
 
@@ -600,19 +590,9 @@ public static class BundleValidator
             {
                 text = OkfEncodings.Strict.GetString(File.ReadAllBytes(path));
             }
-            catch (IOException e)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
             {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable log.md: {e.Message}", DiagnosticCode.UnparseableLog));
-                continue;
-            }
-            catch (UnauthorizedAccessException e)
-            {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable log.md: {e.Message}", DiagnosticCode.UnparseableLog));
-                continue;
-            }
-            catch (System.Text.DecoderFallbackException e)
-            {
-                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable log.md: {e.Message}", DiagnosticCode.UnparseableLog));
+                diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"log.md could not be read: {e.Message}", DiagnosticCode.UnparseableLog));
                 continue;
             }
 

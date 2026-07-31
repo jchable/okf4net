@@ -78,6 +78,31 @@ public class IndexTests
     }
 
     [Fact]
+    public void Regenerate_preserves_root_index_okf_version_marker_with_forward_slash_root()
+    {
+        if (Path.DirectorySeparatorChar == Path.AltDirectorySeparatorChar)
+        {
+            return; // The spelling differs only on platforms such as Windows.
+        }
+
+        using var tmp = new TempDir();
+        tmp.Write(
+            "index.md",
+            "---\n" +
+            "okf_version: \"0.2\"\n" +
+            "---\n\n" +
+            "# Knowledge\n");
+        WriteDoc(tmp, "projects/project-x.md", "Project", "Project X", "Uses PostgreSQL.");
+
+        var forwardSlashRoot = tmp.Path.Replace(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        IndexGenerator.RegenerateIndexes(forwardSlashRoot);
+
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        var doc = OkfDocument.Parse(rootIndex);
+        Assert.Equal("0.2", doc.Frontmatter.Get("okf_version")?.AsDisplayString());
+    }
+
+    [Fact]
     public void Regenerate_strips_extra_keys_from_root_index_keeping_only_okf_version()
     {
         // §8 sanctions ONLY the okf_version key on the bundle-root

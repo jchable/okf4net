@@ -67,7 +67,7 @@ public class ValidateTests
         var report = BundleValidator.Validate(bundle);
 
         var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableIndex);
-        Assert.StartsWith("unparseable index.md: ", diag.Message);
+        Assert.StartsWith("index.md could not be read: ", diag.Message);
         Assert.False(report.IsConformant);
     }
 
@@ -86,7 +86,7 @@ public class ValidateTests
         var report = BundleValidator.Validate(bundle);
 
         var diag = Assert.Single(report.Of(Severity.Error), d => d.Code == DiagnosticCode.UnparseableLog);
-        Assert.StartsWith("unparseable log.md: ", diag.Message);
+        Assert.StartsWith("log.md could not be read: ", diag.Message);
         Assert.False(report.IsConformant);
     }
 
