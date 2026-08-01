@@ -63,7 +63,7 @@ public class ConceptGeneratorTests
         var concepts = new ConceptGenerator().Generate(snapshot);
 
         var packageConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "packages");
-        Assert.Equal(ConceptId.Slugify("@scope/My Package!"), packageConcept.Id.Segments[1]);
+        Assert.Equal("scope-my-package-", packageConcept.Id.Segments[1]);
     }
 
     [Fact]
