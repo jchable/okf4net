@@ -83,6 +83,19 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void Generate_does_not_collide_a_package_and_a_doc_that_slugify_to_the_same_bare_name()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("npm", "package.json", "Foo", null)],
+            [new DocFile("Foo.md", "Foo")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        Assert.Contains(concepts, c => c.Id.ToString() == "packages/foo");
+        Assert.Contains(concepts, c => c.Id.ToString() == "docs/foo");
+    }
+
+    [Fact]
     public void Generate_creates_one_concept_per_doc_under_docs_prefix()
     {
         var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("README.md", "My Great Tool")]);
