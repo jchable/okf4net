@@ -83,9 +83,50 @@ public sealed class RepositoryScanner : IRepositoryScanner
 
     private static IReadOnlyList<string> ResolveCsprojPaths(string repoPath)
     {
-        return EnumerateCsprojFilesRecursively(repoPath)
+        var slnPaths = Directory.EnumerateFiles(repoPath, "*.sln", SearchOption.TopDirectoryOnly).ToList();
+        if (slnPaths.Count == 0)
+        {
+            return EnumerateCsprojFilesRecursively(repoPath)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        return slnPaths
+            .SelectMany(ParseSolutionProjectPaths)
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static IEnumerable<string> ParseSolutionProjectPaths(string slnPath)
+    {
+        var slnDirectory = Path.GetDirectoryName(slnPath)!;
+        foreach (var line in File.ReadLines(slnPath))
+        {
+            var trimmed = line.TrimStart();
+            if (!trimmed.StartsWith("Project(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Project("{TypeGuid}") = "Name", "RelativePath", "{ProjectGuid}" -- splitting on '"'
+            // puts the relative path at index 5 (index 3 is the display name, a solution-folder
+            // pseudo-project or non-.csproj-extension entry is filtered out below).
+            var parts = trimmed.Split('"');
+            if (parts.Length < 6)
+            {
+                continue;
+            }
+
+            var relativePath = parts[5];
+            if (!relativePath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            yield return Path.GetFullPath(Path.Combine(slnDirectory, relativePath.Replace('\\', '/')));
+        }
     }
 
     private static IEnumerable<string> EnumerateCsprojFilesRecursively(string directory)

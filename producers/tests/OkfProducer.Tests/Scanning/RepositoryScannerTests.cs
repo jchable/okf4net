@@ -344,4 +344,47 @@ public class RepositoryScannerTests
             Directory.Delete(repo, recursive: true);
         }
     }
+
+    [Fact]
+    public void Scan_prefers_sln_project_references_over_a_full_recursive_search()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            var includedDir = Path.Combine(repo, "src", "Included");
+            Directory.CreateDirectory(includedDir);
+            File.WriteAllText(Path.Combine(includedDir, "Included.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>Included</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var excludedDir = Path.Combine(repo, "samples", "Excluded");
+            Directory.CreateDirectory(excludedDir);
+            File.WriteAllText(Path.Combine(excludedDir, "Excluded.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>Excluded</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            File.WriteAllText(Path.Combine(repo, "MySolution.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Included", "src\Included\Included.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("Included", pkg.Name);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
 }
