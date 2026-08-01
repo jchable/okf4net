@@ -21,6 +21,18 @@ and this project adheres to
   overload, and `OkfDocumentBuilder`: producer-facing API for constructing and writing an OKF concept
   entirely in memory, without a serialize/re-parse round trip through YAML text. Motivated by the
   upcoming native OKF producer (`producers/`), usable independently by any programmatic caller.
+- **`producers/OkfProducer` walking skeleton**: a native OKF producer CLI (`generate`/`validate`,
+  System.CommandLine + Generic Host) that scans a repository (`RepositoryScanner`: npm/NuGet
+  manifests, README) and generates an OKF v0.2 bundle from it (`ConceptGenerator` +
+  `BundleWriter`, built on `OkfDocumentBuilder`). Standalone solution (`producers/OkfProducer.sln`),
+  not part of `OKF4net.sln`/CI and not published to NuGet — same status as `samples/`. First
+  ecosystem slice only (npm/NuGet/README detection); more ecosystems and CI coverage are open
+  follow-ups, see `ROADMAP.md`.
+- **`samples/catalog-explorer`**, a new `OKF4net.Catalog` sample covering five scenarios: load &
+  inspect, multi-source search, ranking strategies (`Grouped`/`Merged`/`PriorityWeighted`),
+  per-caller source visibility, and the `role: memory` tier. Exercised against a second vendored
+  sample bundle, `bundles/ga4` (from the upstream OKF reference bundles), alongside the existing
+  `bundles/acme_retail`.
 
 ### Changed
 

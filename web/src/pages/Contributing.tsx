@@ -53,11 +53,15 @@ export default function Contributing() {
               alike.
             </li>
             <li>
-              <strong>Next:</strong> more Agent Framework and Catalog samples, performance baselines, a bundle
-              viewer.
+              <strong>Next:</strong> more Agent Framework samples, performance baselines, a bundle viewer. The
+              first{' '}
+              <a href="https://github.com/jchable/okf4net/tree/main/samples/catalog-explorer">Catalog sample</a>{' '}
+              has shipped.
             </li>
             <li>
-              <strong>Later:</strong> ecosystem integrations, tracking the spec past v0.2.
+              <strong>Later:</strong> ecosystem integrations, tracking the spec past v0.2, and growing{' '}
+              <a href="https://github.com/jchable/okf4net/tree/main/producers/OkfProducer">producers/OkfProducer</a>
+              {' '}— an early, repo-scanning bundle generator — past its first walking-skeleton slice.
             </li>
           </ul>
         </Chapter>
