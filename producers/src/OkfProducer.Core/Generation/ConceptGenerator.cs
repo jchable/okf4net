@@ -61,8 +61,17 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         // A concept id segment ending in ".md" would double up when BundleConceptWriter appends its
         // own ".md" extension to serialize the file (e.g. a doc literally titled "README.md" would
-        // otherwise become "docs/readme.md.md").
-        if (baseSlug.Length > ".md".Length && baseSlug.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+        // otherwise become "docs/readme.md.md"). Scoped to docs only: for a doc, the id is derived
+        // straight from a human-facing title, so trimming a redundant ".md" is a harmless, expected
+        // normalization. For a package, the id is derived from an ecosystem identifier (e.g. a NuGet
+        // PackageId such as "Foo.Md") where ".md" can be a meaningful, distinguishing part of the
+        // name -- silently stripping it would make the strip invisible in the id and could collide an
+        // unrelated sibling package named "Foo" into "packages/foo-2". A package whose id ends in
+        // ".md" still risks the same double-extension filename on write, but that's the lesser, more
+        // honest failure mode: the id itself stays a faithful, non-colliding representation of the
+        // package name.
+        if (prefix == "docs" && baseSlug.Length > ".md".Length
+            && baseSlug.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
         {
             baseSlug = baseSlug[..^".md".Length];
         }

@@ -177,6 +177,29 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void Generate_does_not_strip_a_trailing_dot_md_from_a_package_slug()
+    {
+        // Finding 2 (final review): the ".md"-strip only makes sense for docs, whose id is derived
+        // from a human-facing title. A package literally named "Foo.Md" (e.g. a dotted assembly-style
+        // NuGet PackageId) must keep the ".md" in its slug -- stripping it would silently collide it
+        // with an unrelated sibling package named "Foo" (invisible in the resulting id).
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [
+                new PackageManifest("nuget", "a/Foo.Md.csproj", "Foo.Md", null),
+                new PackageManifest("nuget", "b/Foo.csproj", "Foo", null),
+            ],
+            [new DocFile("Foo.md", "Foo.md")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var packageIds = concepts.Where(c => c.Id.Segments[0] == "packages").Select(c => c.Id.ToString()).ToList();
+        Assert.Equal(["packages/foo.md", "packages/foo"], packageIds);
+
+        var docConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "docs");
+        Assert.Equal("docs/foo", docConcept.Id.ToString());
+    }
+
+    [Fact]
     public void Generate_every_concept_passes_strict_Validate()
     {
         var snapshot = new RepositorySnapshot("/repo", "my-repo",

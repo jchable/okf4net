@@ -5,9 +5,11 @@ using System.Xml.Linq;
 namespace OkfProducer.Core.Scanning;
 
 /// <summary>
-/// Detects npm (<c>package.json</c>) and NuGet (root <c>*.csproj</c>) package manifests, and a root
-/// <c>README.md</c>. Malformed manifests are skipped, not fatal -- permissive, matching the rest of
-/// this codebase's scan philosophy.
+/// Detects npm (<c>package.json</c>, root only) and NuGet package manifests, and a root
+/// <c>README.md</c>. NuGet projects are resolved from a root <c>*.sln</c>'s project references when
+/// one exists, otherwise by recursively walking the tree (skipping <c>bin</c>/<c>obj</c>/<c>.git</c>/
+/// <c>node_modules</c>). Malformed manifests are skipped, not fatal -- permissive, matching the rest
+/// of this codebase's scan philosophy.
 /// </summary>
 public sealed class RepositoryScanner : IRepositoryScanner
 {
