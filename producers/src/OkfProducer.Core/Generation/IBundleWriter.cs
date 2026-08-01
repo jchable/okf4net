@@ -20,5 +20,5 @@ public interface IBundleWriter
     /// <paramref name="repoPath"/>'s resolved absolute path -- refusing to delete the very repository
     /// being scanned. Nothing is written in either case.
     /// </exception>
-    WriteResult Write(string outPath, IReadOnlyList<Generation.GeneratedConcept> concepts, WritePolicy policy, string repoPath);
+    WriteResult Write(string outPath, IReadOnlyList<GeneratedConcept> concepts, WritePolicy policy, string repoPath);
 }
