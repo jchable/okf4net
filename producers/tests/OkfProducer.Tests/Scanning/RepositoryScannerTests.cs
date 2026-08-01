@@ -182,6 +182,26 @@ public class RepositoryScannerTests
     }
 
     [Fact]
+    public void Scan_readme_ignores_a_heading_line_inside_a_fenced_code_block()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            File.WriteAllText(Path.Combine(repo, "README.md"),
+                "```\n# Not a heading\n```\n\n# Real Heading\n\nSome text.\n");
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var doc = Assert.Single(snapshot.Docs);
+            Assert.Equal("Real Heading", doc.Title);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Scan_readme_without_heading_falls_back_to_repo_name()
     {
         var repo = CreateTempRepo();

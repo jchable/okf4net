@@ -104,9 +104,21 @@ public sealed class RepositoryScanner : IRepositoryScanner
 
     private static string? ExtractTitle(string readmePath)
     {
+        var inFencedCodeBlock = false;
         foreach (var line in File.ReadLines(readmePath))
         {
             var trimmed = line.TrimStart();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            {
+                inFencedCodeBlock = !inFencedCodeBlock;
+                continue;
+            }
+
+            if (inFencedCodeBlock)
+            {
+                continue;
+            }
+
             if (trimmed.StartsWith("# ", StringComparison.Ordinal))
             {
                 var heading = trimmed[2..].Trim();
