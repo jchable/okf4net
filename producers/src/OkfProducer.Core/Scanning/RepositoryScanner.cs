@@ -23,7 +23,7 @@ public sealed class RepositoryScanner : IRepositoryScanner
             packages.Add(npmPackage);
         }
 
-        foreach (var csprojPath in Directory.EnumerateFiles(repoPath, "*.csproj", SearchOption.TopDirectoryOnly))
+        foreach (var csprojPath in ResolveCsprojPaths(repoPath))
         {
             var nugetPackage = ScanNuGetManifest(repoPath, csprojPath);
             if (nugetPackage is not null)
@@ -79,19 +79,52 @@ public sealed class RepositoryScanner : IRepositoryScanner
         }
     }
 
+    private static readonly string[] ExcludedDirectoryNames = ["bin", "obj", ".git", "node_modules"];
+
+    private static IReadOnlyList<string> ResolveCsprojPaths(string repoPath)
+    {
+        return EnumerateCsprojFilesRecursively(repoPath)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static IEnumerable<string> EnumerateCsprojFilesRecursively(string directory)
+    {
+        foreach (var file in Directory.EnumerateFiles(directory, "*.csproj", SearchOption.TopDirectoryOnly))
+        {
+            yield return file;
+        }
+
+        foreach (var subDirectory in Directory.EnumerateDirectories(directory))
+        {
+            if (!ExcludedDirectoryNames.Contains(Path.GetFileName(subDirectory), StringComparer.OrdinalIgnoreCase))
+            {
+                foreach (var file in EnumerateCsprojFilesRecursively(subDirectory))
+                {
+                    yield return file;
+                }
+            }
+        }
+    }
+
     private static PackageManifest? ScanNuGetManifest(string repoPath, string csprojPath)
     {
         try
         {
             var xml = XDocument.Load(csprojPath);
-            var propertyGroups = xml.Root?.Elements("PropertyGroup");
-            var name = propertyGroups?.Elements("PackageId").FirstOrDefault()?.Value;
+            var propertyGroups = (xml.Root?.Elements().Where(e => e.Name.LocalName == "PropertyGroup") ?? [])
+                .ToList();
+            var name = propertyGroups
+                .SelectMany(group => group.Elements())
+                .FirstOrDefault(e => e.Name.LocalName == "PackageId")?.Value;
             if (string.IsNullOrWhiteSpace(name))
             {
                 name = Path.GetFileNameWithoutExtension(csprojPath);
             }
 
-            var description = propertyGroups?.Elements("Description").FirstOrDefault()?.Value;
+            var description = propertyGroups
+                .SelectMany(group => group.Elements())
+                .FirstOrDefault(e => e.Name.LocalName == "Description")?.Value;
             var relativePath = Path.GetRelativePath(repoPath, csprojPath).Replace('\\', '/');
 
             return new PackageManifest("nuget", relativePath, name, string.IsNullOrWhiteSpace(description) ? null : description);
