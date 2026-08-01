@@ -49,10 +49,21 @@ Two validation levels exist by design: `OkfDocument.ValidateConformance()` enfor
 `docs/design/` holds historical migration specs/plans — context only; the code and README are authoritative.
 
 `bundles/` holds sample OKF bundles for manual testing/demos (e.g.
-`bundles/acme_retail/`) — distinct from `tests/fixtures/`, which stays
-byte-exact golden captures. `samples/` holds standalone example projects
-that consume those bundles (each with its own solution/build, not part of
-`OKF4net.sln` or CI).
+`bundles/acme_retail/`, `bundles/ga4/`) — distinct from `tests/fixtures/`,
+which stays byte-exact golden captures. `samples/` holds standalone example
+projects that consume those bundles (each with its own solution/build, not
+part of `OKF4net.sln` or CI).
+
+`producers/OkfProducer` is a standalone native OKF producer CLI
+(`OkfProducer.sln`: `OkfProducer.Core` + `OkfProducer.Cli`, `generate`/
+`validate` commands via System.CommandLine + Generic Host) that scans a
+repository (`RepositoryScanner`) and generates an OKF v0.2 bundle from it
+(`ConceptGenerator`, `BundleWriter`, built on `OkfDocumentBuilder`) — same
+status as `samples/`: its own solution, references `src/OKF4net`, not part
+of `OKF4net.sln`/CI, not published to NuGet, and exempt from the zero-dependency
+rule above (`Microsoft.Extensions.Hosting`, `System.CommandLine`). First
+ecosystem slice only (npm/NuGet manifests + README); see `ROADMAP.md` for
+open follow-ups (CI coverage, more ecosystems).
 
 ## graphify
 

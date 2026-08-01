@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-31
+
 ### Added
 
 - **`okf validate`/`okf info` gain a `--json` flag** for machine-readable
@@ -19,6 +21,18 @@ and this project adheres to
   overload, and `OkfDocumentBuilder`: producer-facing API for constructing and writing an OKF concept
   entirely in memory, without a serialize/re-parse round trip through YAML text. Motivated by the
   upcoming native OKF producer (`producers/`), usable independently by any programmatic caller.
+- **`producers/OkfProducer` walking skeleton**: a native OKF producer CLI (`generate`/`validate`,
+  System.CommandLine + Generic Host) that scans a repository (`RepositoryScanner`: npm/NuGet
+  manifests, README) and generates an OKF v0.2 bundle from it (`ConceptGenerator` +
+  `BundleWriter`, built on `OkfDocumentBuilder`). Standalone solution (`producers/OkfProducer.sln`),
+  not part of `OKF4net.sln`/CI and not published to NuGet — same status as `samples/`. First
+  ecosystem slice only (npm/NuGet/README detection); more ecosystems and CI coverage are open
+  follow-ups, see `ROADMAP.md`.
+- **`samples/catalog-explorer`**, a new `OKF4net.Catalog` sample covering five scenarios: load &
+  inspect, multi-source search, ranking strategies (`Grouped`/`Merged`/`PriorityWeighted`),
+  per-caller source visibility, and the `role: memory` tier. Exercised against a second vendored
+  sample bundle, `bundles/ga4` (from the upstream OKF reference bundles), alongside the existing
+  `bundles/acme_retail`.
 
 ### Changed
 
@@ -73,6 +87,15 @@ and this project adheres to
   only regenerates the body; non-root `index.md` files are unaffected and
   still self-heal any stray frontmatter (§8) on the next regeneration, as
   before.
+- **`OKF4net.Catalog` no longer silently drops a source directory that
+  merely shares a case-insensitive spelling with another.** On a
+  genuinely case-sensitive volume, `CatalogPathResolver`'s
+  `OrdinalIgnoreCase` dedup (chosen by an OS heuristic) wrongly collapsed
+  two distinct source directories differing only in case, and the second
+  was dropped from every search with no diagnostic. Deduping now uses
+  `Ordinal` comparison, and a new `KnowledgeDiagnosticCode.DuplicateDirectory`
+  reports any actual directory collision by source id instead of dropping
+  it without a trace.
 
 ## [0.4.0] - 2026-07-30
 
@@ -416,7 +439,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.4.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.5.0...main
+[0.5.0]: https://github.com/jchable/okf4net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jchable/okf4net/compare/v0.3.1-preview.1...v0.4.0
 [0.3.1-preview.1]: https://github.com/jchable/okf4net/compare/v0.3.0...v0.3.1-preview.1
 [0.3.0]: https://github.com/jchable/okf4net/compare/v0.2.0...v0.3.0

@@ -133,6 +133,10 @@ export default function Library() {
               ['Segments → IReadOnlyList<string>', 'The path components.'],
               ['Name → string · Parent → ConceptId?', "Last segment; id of the containing directory."],
               ['ValidateSegment(string)', 'Throw if a single segment is not spec-legal.'],
+              [
+                'Slugify(string) → string',
+                'Derive a spec-legal segment from a free-form title, for a producer minting new concept ids.',
+              ],
             ]}
           />
         </Chapter>
@@ -165,6 +169,13 @@ export default function Library() {
               ['Links() → IReadOnlyList<ConceptLink>', 'Markdown links in the body.'],
               ['Citations() → IReadOnlyList<Citation>', 'Numbered citations in the body.'],
               ['Frontmatter → Frontmatter · Body → string', 'The two halves of the document.'],
+              [
+                'OkfDocumentBuilder.ForType(string) → …→ Build() → OkfDocument',
+                <>
+                  A fluent, in-memory builder (<code>Title</code>/<code>Description</code>/<code>Resource</code>/<code>Tags</code>/<code>AddSource</code>/<code>Extension</code>/<code>Body</code>) for a producer
+                  constructing a concept from scratch, without a serialize/re-parse round trip through YAML text.
+                </>,
+              ],
             ]}
           />
           <MapTable
@@ -249,6 +260,13 @@ export default function Library() {
                 </>,
               ],
               [
+                'Provenance.ToYaml(IEnumerable&lt;Source&gt;) → YamlSequence',
+                <>
+                  The serialize direction of <code>Frontmatter.Sources</code>' parse — for a producer building{' '}
+                  <code>sources</code> from scratch rather than editing an existing document.
+                </>,
+              ],
+              [
                 'Lifecycle(Status, StatusIsKnown, StaleAfterRaw, StaleAfter) · ConceptStatus',
                 <>
                   §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>; <code>IsStale(DateOnly)</code> is{' '}
@@ -283,7 +301,9 @@ export default function Library() {
                 'BundleConceptWriter',
                 <>
                   Atomic, per-path-locked, reparse-guarded concept writes —{' '}
-                  <code>WriteConcept</code>/<code>AppendToConceptAtomic</code>. The primitive behind{' '}
+                  <code>WriteConcept</code>/<code>AppendToConceptAtomic</code>, plus a <code>Frontmatter</code>-typed{' '}
+                  <code>WriteConcept</code> overload for a caller building a document programmatically (e.g. with{' '}
+                  <code>OkfDocumentBuilder</code>), no YAML text round trip. The primitive behind{' '}
                   <code>okf_write_concept</code> and the scoped memory store; see{' '}
                   <Link to="/docs/agents">docs/agents.md</Link>.
                 </>,

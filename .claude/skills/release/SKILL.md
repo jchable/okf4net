@@ -99,7 +99,19 @@ On main (worktree), synchronize **every user-visible version with the tag**:
    reveal the gap — it just silently stops growing release after release.
    Check it every time, not only when something reminds you (missed for two
    releases running on this repo before it was caught).
-6. **Minor/major releases only** (new features, new CLI verbs, new public
+6. **Check for new top-level directories since the last tag** — a whole new
+   project or sample has no previous-version STRING to grep for (same blind
+   spot as step 5's README table) and is easy to lose inside a large commit
+   log dominated by `docs(plans)`/`docs(specs)` noise: `git diff --stat
+   <last-tag>..HEAD -- ':!tests' ':!docs'`, or `git log --oneline
+   <last-tag>..HEAD --diff-filter=A -- '*/*.csproj' '*.sln'`, then confirm
+   every new top-level directory it surfaces (a new `src/*`, `producers/*`,
+   `samples/*` entry, a new `bundles/*` vendored bundle) has a CHANGELOG
+   bullet **and** a mention in `CLAUDE.md`'s Architecture section if it's a
+   new standalone project (missed once on this repo for a whole new
+   producer CLI and a new sample — both existed in the tagged tree but
+   were undocumented everywhere until the next release caught it).
+7. **Minor/major releases only** (new features, new CLI verbs, new public
    API — the same test used in step 2 to pick minor over patch): invoke the
    `update-website` skill now, using the CHANGELOG section you just wrote as
    its primary source of ground truth, and fold any resulting `web/` edits
@@ -119,7 +131,7 @@ dotnet run --project src/OKF4net.Cli -- --version
 # Expected: okf X.Y.Z (OKF spec v0.2)
 ```
 
-If step 6 touched `web/`, also run its own verification
+If step 7 touched `web/`, also run its own verification
 (`npm run typecheck && npm run test && npm run build` in `web/`, per the
 `update-website` skill) before committing — a broken site build shouldn't
 ride along with an otherwise-good release.
