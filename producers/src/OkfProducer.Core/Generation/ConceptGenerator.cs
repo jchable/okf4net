@@ -59,16 +59,32 @@ public sealed class ConceptGenerator : IConceptGenerator
             };
         }
 
-        var candidate = $"{prefix}/{baseSlug}";
-        var suffix = 2;
-        while (!usedIds.Add(candidate))
+        // A concept id segment ending in ".md" would double up when BundleConceptWriter appends its
+        // own ".md" extension to serialize the file (e.g. a doc literally titled "README.md" would
+        // otherwise become "docs/readme.md.md").
+        if (baseSlug.Length > ".md".Length && baseSlug.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
         {
-            candidate = $"{prefix}/{baseSlug}-{suffix}";
+            baseSlug = baseSlug[..^".md".Length];
+        }
+
+        // "index"/"log" are reserved concept ids (BundleConceptWriter.WriteConcept rejects them --
+        // they'd collide with the bundle's own index.md/log.md). Treat a name that slugifies to one of
+        // these the same as an ordinary collision: fall through to the numeric-suffix loop below
+        // instead of producing an id that write time would reject.
+        var segment = baseSlug;
+        var suffix = 2;
+        while (IsReservedSegment(segment) || !usedIds.Add($"{prefix}/{segment}"))
+        {
+            segment = $"{baseSlug}-{suffix}";
             suffix++;
         }
 
-        return ConceptId.Parse(candidate);
+        return ConceptId.Parse($"{prefix}/{segment}");
     }
+
+    private static bool IsReservedSegment(string segment) =>
+        string.Equals(segment, "index", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(segment, "log", StringComparison.OrdinalIgnoreCase);
 
     private static OkfDocument BuildOverview(RepositorySnapshot snapshot)
     {

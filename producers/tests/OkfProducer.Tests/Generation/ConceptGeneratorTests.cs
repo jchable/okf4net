@@ -155,6 +155,28 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void Generate_disambiguates_a_doc_titled_Index_instead_of_producing_a_reserved_id()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("INDEX.md", "Index")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var docConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "docs");
+        Assert.Equal("docs/index-2", docConcept.Id.ToString());
+    }
+
+    [Fact]
+    public void Generate_strips_a_trailing_dot_md_from_a_doc_slug_to_avoid_a_double_extension()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("README.md", "README.md")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var docConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "docs");
+        Assert.Equal("docs/readme", docConcept.Id.ToString());
+    }
+
+    [Fact]
     public void Generate_every_concept_passes_strict_Validate()
     {
         var snapshot = new RepositorySnapshot("/repo", "my-repo",
