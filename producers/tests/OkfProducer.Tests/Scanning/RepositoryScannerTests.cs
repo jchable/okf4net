@@ -162,6 +162,91 @@ public class RepositoryScannerTests
     }
 
     [Fact]
+    public void Scan_finds_a_csproj_nested_in_a_subdirectory_when_no_sln_is_present()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            var srcDir = Path.Combine(repo, "src", "MyTool");
+            Directory.CreateDirectory(srcDir);
+            File.WriteAllText(Path.Combine(srcDir, "MyTool.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>MyTool</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("nuget", pkg.Ecosystem);
+            Assert.Equal("src/MyTool/MyTool.csproj", pkg.RelativePath);
+            Assert.Equal("MyTool", pkg.Name);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Scan_ignores_csproj_files_under_bin_obj_dot_git_and_node_modules()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            foreach (var excluded in new[] { "bin", "obj", ".git", "node_modules" })
+            {
+                var dir = Path.Combine(repo, excluded);
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, "Stale.csproj"), """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <PackageId>Stale</PackageId>
+                      </PropertyGroup>
+                    </Project>
+                    """);
+            }
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            Assert.Empty(snapshot.Packages);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Scan_detects_PackageId_and_Description_in_an_old_style_xmlns_csproj()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            File.WriteAllText(Path.Combine(repo, "MyTool.csproj"), """
+                <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+                  <PropertyGroup>
+                    <PackageId>MyTool</PackageId>
+                    <Description>Does the thing, the old way.</Description>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("MyTool", pkg.Name);
+            Assert.Equal("Does the thing, the old way.", pkg.Description);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Scan_detects_readme_and_extracts_first_heading_as_title()
     {
         var repo = CreateTempRepo();
@@ -174,6 +259,26 @@ public class RepositoryScannerTests
             var doc = Assert.Single(snapshot.Docs);
             Assert.Equal("README.md", doc.RelativePath);
             Assert.Equal("My Great Tool", doc.Title);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Scan_readme_ignores_a_heading_line_inside_a_fenced_code_block()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            File.WriteAllText(Path.Combine(repo, "README.md"),
+                "```\n# Not a heading\n```\n\n# Real Heading\n\nSome text.\n");
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var doc = Assert.Single(snapshot.Docs);
+            Assert.Equal("Real Heading", doc.Title);
         }
         finally
         {
@@ -233,6 +338,49 @@ public class RepositoryScannerTests
             Assert.Empty(snapshot.Docs);
             Assert.Equal(new DirectoryInfo(repo).Name, snapshot.RepoName);
             Assert.Equal(repo, snapshot.RepoPath);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Scan_prefers_sln_project_references_over_a_full_recursive_search()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            var includedDir = Path.Combine(repo, "src", "Included");
+            Directory.CreateDirectory(includedDir);
+            File.WriteAllText(Path.Combine(includedDir, "Included.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>Included</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var excludedDir = Path.Combine(repo, "samples", "Excluded");
+            Directory.CreateDirectory(excludedDir);
+            File.WriteAllText(Path.Combine(excludedDir, "Excluded.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>Excluded</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            File.WriteAllText(Path.Combine(repo, "MySolution.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Included", "src\Included\Included.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("Included", pkg.Name);
         }
         finally
         {

@@ -47,7 +47,7 @@ generateCommand.SetAction(parseResult =>
     {
         var snapshot = scanner.Scan(repo);
         var concepts = generator.Generate(snapshot);
-        var result = writer.Write(outPath, concepts, policy, repo);
+        var result = writer.Write(outPath, concepts, policy, snapshot.RepoPath);
 
         Console.WriteLine($"Wrote {result.Written} concept(s) to {outPath}.");
         foreach (var (id, error) in result.Failures)
