@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Yaml;
+
 namespace OKF4net.Viewer;
 
 /// <summary>
@@ -35,4 +37,57 @@ public static class SiteModel
         var down = toPath.Skip(common);
         return string.Join('/', up.Concat(down)) + ".html";
     }
+
+    /// <summary>
+    /// Projects <paramref name="bundle"/> into the viewer's display model.
+    /// Loading is permissive upstream, so a bundle carrying parse errors
+    /// still yields a site -- the errors travel in
+    /// <see cref="ViewerSite.ParseErrors"/> rather than aborting.
+    /// </summary>
+    /// <param name="bundle">The loaded bundle to project.</param>
+    public static ViewerSite Build(Bundle bundle)
+    {
+        var pages = bundle.Concepts.Select(BuildPage).ToList();
+
+        return new ViewerSite(
+            bundle.Root,
+            pages,
+            IndexMarkdown: string.Empty,
+            ParseErrors: []);
+    }
+
+    private static ViewerPage BuildPage(Concept concept)
+    {
+        var frontmatter = concept.Document.Frontmatter;
+
+        var title = string.IsNullOrWhiteSpace(frontmatter.Title)
+            ? concept.Id.ToString()
+            : frontmatter.Title;
+
+        var entries = frontmatter.AsMapping().Entries
+            .Select(e => new ViewerFrontmatterEntry(
+                e.Key.AsDisplayString() ?? e.Key.ToYamlString().TrimEnd('\n'),
+                DisplayValue(e.Value)))
+            .ToList();
+
+        return new ViewerPage(
+            concept.Id,
+            title,
+            concept.Id.ToString() + ".html",
+            entries,
+            concept.Document.Body,
+            Links: [],
+            Backlinks: []);
+    }
+
+    /// <summary>
+    /// A frontmatter value as a single display string.
+    /// <see cref="YamlValue.AsDisplayString"/> returns <c>null</c> for
+    /// sequences and mappings, so those fall back to a compact YAML emit --
+    /// dropping them would silently hide `tags`, `sources`, and every
+    /// structured producer key.
+    /// </summary>
+    private static string DisplayValue(YamlValue value)
+        => value.AsDisplayString()
+           ?? value.ToYamlString().TrimEnd('\n').Replace("\n", " ");
 }
