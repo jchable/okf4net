@@ -47,7 +47,7 @@ public static class SiteModel
     /// <param name="bundle">The loaded bundle to project.</param>
     public static ViewerSite Build(Bundle bundle)
     {
-        var pages = bundle.Concepts.Select(BuildPage).ToList();
+        var pages = bundle.Concepts.Select(c => BuildPage(bundle, c)).ToList();
 
         return new ViewerSite(
             bundle.Root,
@@ -56,7 +56,7 @@ public static class SiteModel
             ParseErrors: []);
     }
 
-    private static ViewerPage BuildPage(Concept concept)
+    private static ViewerPage BuildPage(Bundle bundle, Concept concept)
     {
         var frontmatter = concept.Document.Frontmatter;
 
@@ -70,14 +70,25 @@ public static class SiteModel
                 DisplayValue(e.Value)))
             .ToList();
 
+        var links = bundle.LinksFrom(concept.Id)
+            .Select(l => new ViewerLink(l.Raw, RelativeHref(concept.Id, l.Target), l.Exists))
+            .ToList();
+
+        var backlinks = bundle.Backlinks(concept.Id)
+            .Select(source => new ViewerLink(
+                source.ToString(),
+                RelativeHref(concept.Id, source),
+                Exists: true))
+            .ToList();
+
         return new ViewerPage(
             concept.Id,
             title,
             concept.Id.ToString() + ".html",
             entries,
             concept.Document.Body,
-            Links: [],
-            Backlinks: []);
+            links,
+            backlinks);
     }
 
     /// <summary>

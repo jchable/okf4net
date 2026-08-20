@@ -131,4 +131,61 @@ public class SiteModelTests
 
         Assert.Equal(tmp.Path, site.BundleRoot);
     }
+
+    private static Bundle LoadLinkedBundle(TempDir tmp)
+    {
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        tmp.Write("tables/users.md",
+            "---\ntype: table\ntitle: Users\ndescription: d\n---\n"
+            + "See [term](../glossary/term.md) and [gone](../glossary/missing.md).\n"
+            + "External [site](https://example.com) and [anchor](#section).\n");
+        tmp.Write("glossary/term.md", "---\ntype: term\ntitle: Term\ndescription: d\n---\nA term.\n");
+        return Bundle.Load(tmp.Path);
+    }
+
+    [Fact]
+    public void Build_resolves_an_internal_link_to_the_target_pages_relative_href()
+    {
+        using var tmp = new TempDir();
+        var site = SiteModel.Build(LoadLinkedBundle(tmp));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        var link = users.Links.Single(l => l.RawTarget == "../glossary/term.md");
+        Assert.Equal("../glossary/term.html", link.Href);
+        Assert.True(link.Exists);
+    }
+
+    [Fact]
+    public void Build_marks_a_link_to_a_missing_concept_as_broken()
+    {
+        using var tmp = new TempDir();
+        var site = SiteModel.Build(LoadLinkedBundle(tmp));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        var link = users.Links.Single(l => l.RawTarget == "../glossary/missing.md");
+        Assert.False(link.Exists);
+    }
+
+    [Fact]
+    public void Build_leaves_external_and_anchor_links_out_of_the_rewiring_table()
+    {
+        using var tmp = new TempDir();
+        var site = SiteModel.Build(LoadLinkedBundle(tmp));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        Assert.DoesNotContain(users.Links, l => l.RawTarget.StartsWith("https://", StringComparison.Ordinal));
+        Assert.DoesNotContain(users.Links, l => l.RawTarget.StartsWith("#", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_records_backlinks_pointing_at_a_concept()
+    {
+        using var tmp = new TempDir();
+        var site = SiteModel.Build(LoadLinkedBundle(tmp));
+
+        var term = site.Pages.Single(p => p.Id.ToString() == "glossary/term");
+        var backlink = Assert.Single(term.Backlinks);
+        Assert.Equal("../tables/users.html", backlink.Href);
+        Assert.True(backlink.Exists);
+    }
 }
