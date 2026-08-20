@@ -1,0 +1,14 @@
+{
+  "name": "viewer-security-check",
+  "version": "1.0.0",
+  "private": true,
+  "description": "jsdom harness exercising OKF4net.Viewer's real vendored marked.min.js + viewer.js against hostile markdown payloads. Not wired into CI -- see README.md.",
+  "main": "run.js",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "license": "LGPL-3.0-or-later",
+  "dependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

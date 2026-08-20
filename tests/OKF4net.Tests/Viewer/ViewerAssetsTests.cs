@@ -20,18 +20,19 @@ namespace OKF4net.Tests.Viewer;
 /// </para>
 /// <para>
 /// The binding verification for the sanitizer is external to this suite:
-/// the real vendored <c>marked.min.js</c> plus the shipped <c>viewer.js</c>
-/// were exercised together in Node (via jsdom) against a battery of hostile
-/// payloads — including the attribute-breakout payload
+/// <c>tools/viewer-security-check/</c> is a committed Node/jsdom harness
+/// that loads the real vendored <c>marked.min.js</c> plus the shipped
+/// <c>viewer.js</c> and exercises them together against a battery of
+/// hostile payloads — including the attribute-breakout payload
 /// <c>![foo" onerror="alert(1)](x.png)</c>, <c>javascript:</c>/<c>data:</c>
-/// links (plain, mixed-case, and with a tab/newline hidden in the scheme,
-/// both raw and percent-encoded), and raw block/inline HTML — confirming no
-/// executable output and no attribute breakout in any case, and that normal
+/// links (plain and mixed-case), raw <c>&lt;script&gt;</c>/<c>&lt;svg
+/// onload&gt;</c>, and nested HTML in alt text — confirming no executable
+/// output and no attribute breakout in any case, plus a battery of ordinary
 /// markdown (headings, lists, bold, fenced code, relative links, plain
-/// image alt-text) still renders correctly. See
-/// <c>.superpowers/sdd/2026-08-20-okf-bundle-viewer-static-render/task-7-report.md</c>
-/// for the full transcript. The browser check in Task 11 is the other half
-/// of that verification, exercising the real generated page end to end.
+/// image alt-text) confirming the sanitizer isn't over-aggressive either.
+/// Run it with <c>npm install &amp;&amp; npm test</c> from that directory;
+/// see its README for why it is deliberately not wired into CI and when to
+/// run it (whenever <c>marked.min.js</c> is bumped).
 /// </para>
 /// </remarks>
 public class ViewerAssetsTests
