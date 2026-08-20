@@ -46,14 +46,37 @@ public static class HtmlWriter
     /// Rejects an output directory inside the bundle being rendered: writing
     /// there would add generated files to the very bundle the site describes.
     /// </summary>
+    /// <remarks>
+    /// Always compares <see cref="StringComparison.OrdinalIgnoreCase"/>, on
+    /// every platform, with no <see cref="OperatingSystem"/> branch --
+    /// deliberately the opposite choice from <c>Bundle.PathComparison</c>
+    /// (Ordinal on every platform). Both are correct because they guard
+    /// opposite polarities. Case-sensitivity is a property of the volume, not
+    /// the OS (APFS/HFS+ can be case-insensitive on macOS, which is in this
+    /// repo's CI matrix; Windows can have case-sensitive directories too), so
+    /// an OS-based heuristic is bypassable either way -- what differs is
+    /// which direction is safe to fail in. <c>Bundle.PathComparison</c>
+    /// guards §6.2 containment: it decides whether to INCLUDE a resolved path
+    /// as part of the bundle, so its safe failure mode is Ordinal's stricter
+    /// "reject as a match" (excluding a legitimate case-variant path is merely
+    /// inconvenient). This guard's polarity is the reverse -- it decides
+    /// whether to REFUSE to write, so its safe failure mode is
+    /// OrdinalIgnoreCase's broader "treat as a match": on a case-insensitive
+    /// volume, an out-dir spelled with different case from the bundle root
+    /// (e.g. bundle root <c>/Users/x/Bundle</c>, out dir <c>/Users/x/bundle/site</c>)
+    /// is the SAME physical directory, and Ordinal would miss that, silently
+    /// writing the generated site into the very bundle it renders. The cost of
+    /// over-refusing under OrdinalIgnoreCase is bounded and cheap: on a
+    /// genuinely case-sensitive volume, a case-variant out-dir is rejected
+    /// with a clear error and the user picks another directory -- strictly
+    /// better than the alternative of silently polluting the bundle.
+    /// </remarks>
     private static void GuardOutputDirectory(string bundleRoot, string outDir)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleRoot));
         var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
 
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
+        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
 
         if (string.Equals(root, target, comparison)
             || target.StartsWith(root + Path.DirectorySeparatorChar, comparison))

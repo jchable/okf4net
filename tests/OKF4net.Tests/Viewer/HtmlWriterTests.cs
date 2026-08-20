@@ -125,6 +125,59 @@ public class HtmlWriterTests
     }
 
     [Fact]
+    public void Write_refuses_the_bundle_root_itself_as_the_output_directory()
+    {
+        using var src = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, src.Path));
+        Assert.Contains("bundle", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Write_refuses_an_output_directory_that_differs_from_the_bundle_root_only_by_case()
+    {
+        // Regression guard: GuardOutputDirectory must compare OrdinalIgnoreCase
+        // unconditionally, on every platform -- an OS-conditional comparison
+        // (OrdinalIgnoreCase on Windows only) would miss this on a
+        // case-insensitive volume such as default macOS APFS, letting the
+        // generated site land inside the very bundle it renders.
+        using var src = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+
+        var caseVariantOfBundleRoot = ToggleCase(src.Path);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, caseVariantOfBundleRoot));
+        Assert.Contains("bundle", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Write_allows_a_sibling_directory_that_merely_shares_a_name_prefix()
+    {
+        // A naive prefix check (target.StartsWith(root)) would wrongly reject
+        // this: "bundle-site" starts with "bundle" as a raw string, but it is
+        // a sibling directory, not something nested inside the bundle. The
+        // guard must only reject when root is followed by a directory
+        // separator (or is an exact match), which this pins.
+        using var tmp = new TempDir();
+        var bundleDir = Path.Combine(tmp.Path, "bundle");
+        tmp.Write("bundle/index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        var site = SiteModel.Build(Bundle.Load(bundleDir));
+
+        var outDir = Path.Combine(tmp.Path, "bundle-site");
+        var written = HtmlWriter.Write(site, outDir);
+
+        Assert.Contains("index.html", written);
+        Assert.True(File.Exists(Path.Combine(outDir, "index.html")));
+    }
+
+    private static string ToggleCase(string value)
+        => new(value.Select(c =>
+            char.IsUpper(c) ? char.ToLowerInvariant(c)
+            : char.IsLower(c) ? char.ToUpperInvariant(c)
+            : c).ToArray());
+
+    [Fact]
     public void Write_surfaces_parse_errors_on_the_index_page()
     {
         using var src = new TempDir();
