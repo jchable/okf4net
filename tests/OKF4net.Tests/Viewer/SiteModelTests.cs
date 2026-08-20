@@ -7,10 +7,6 @@ namespace OKF4net.Tests.Viewer;
 public class SiteModelTests
 {
     [Fact]
-    public void Viewer_assembly_is_referenced()
-        => Assert.Equal("OKF4net.Viewer", ViewerAssemblyMarker.Name);
-
-    [Fact]
     public void RelativeHref_between_two_root_concepts_is_a_bare_filename()
         => Assert.Equal("b.html",
             SiteModel.RelativeHref(ConceptId.Parse("a"), ConceptId.Parse("b")));

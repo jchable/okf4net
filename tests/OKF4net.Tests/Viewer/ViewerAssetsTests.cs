@@ -47,7 +47,13 @@ public class ViewerAssetsTests
 
     [Fact]
     public void MarkedJs_retains_its_MIT_copyright_banner()
-        => Assert.Contains("marked", ViewerAssets.MarkedJs, StringComparison.OrdinalIgnoreCase);
+    {
+        // "marked" alone matches the minified body itself roughly a dozen
+        // times, so it survives even if the actual licence banner comment is
+        // stripped entirely. Assert on the copyright line the MIT licence
+        // requires retention of.
+        Assert.Contains("Copyright (c) 2011-2025, Christopher Jeffrey", ViewerAssets.MarkedJs, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void ViewerJs_is_embedded_and_non_empty()
@@ -60,8 +66,13 @@ public class ViewerAssetsTests
         // marked renders raw HTML by default and has no `sanitize` option any
         // more, so this neuters it at the renderer level. Smoke check only —
         // see the class remarks.
-        Assert.Contains("html:", ViewerAssets.ViewerJs);
-        Assert.Contains("renderer", ViewerAssets.ViewerJs);
+        //
+        // Matched as the actual `marked.use({ renderer: { html: function` call
+        // construct, not the bare words "html:" / "renderer" -- both of those
+        // also appear in this very file's prose comments (see above), so a
+        // plain Contains check would still pass after the code itself was
+        // deleted.
+        Assert.Matches(@"marked\.use\(\{\s*renderer:\s*\{\s*html:\s*function", ViewerAssets.ViewerJs);
     }
 
     [Fact]
@@ -72,7 +83,12 @@ public class ViewerAssetsTests
         // renderer: ... }) does not touch. Smoke check only — see the class
         // remarks; this alone does not close the attribute-breakout gap
         // below, which needed a DOM-level sanitizer instead.
-        Assert.Contains("TextRenderer", ViewerAssets.ViewerJs);
+        //
+        // Matched as the actual assignment to `TextRenderer.prototype.html`,
+        // not the bare word "TextRenderer" -- it also appears in this file's
+        // prose comments, so a plain Contains check would still pass after
+        // the code itself was deleted.
+        Assert.Matches(@"marked\.TextRenderer\.prototype\.html\s*=\s*function", ViewerAssets.ViewerJs);
     }
 
     [Fact]
@@ -87,8 +103,8 @@ public class ViewerAssetsTests
         // string, not in a specific renderer call site. The only control
         // that holds is sanitizing the parsed DOM itself before it reaches
         // the live page. Smoke check only — see the class remarks for where
-        // this was actually proven (Node/jsdom transcript in the Task 7
-        // report; the browser check in Task 11).
+        // this was actually proven (tools/viewer-security-check/; the
+        // browser check in Task 11).
         Assert.Contains("ALLOWED_TAGS", ViewerAssets.ViewerJs);
         Assert.Contains("ALLOWED_ATTRS", ViewerAssets.ViewerJs);
         Assert.Contains("DOMParser", ViewerAssets.ViewerJs);
