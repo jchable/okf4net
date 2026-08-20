@@ -12,9 +12,11 @@ On every `v*` tag, `.github/workflows/release.yml`:
    `Publish-Cli.ps1`, producing `okf-<version>-<rid>.zip` (each containing a
    single `okf.exe`).
 2. Creates the GitHub Release and attaches the two zips + `checksums.txt`.
-3. Generates the winget v1.6.0 manifests via `Generate-Manifests.ps1` (SHA256
+3. Generates the winget v1.12.0 manifests via `Generate-Manifests.ps1` (SHA256
    read from the built artifacts) and attaches `Coderise.OKF4net*.yaml` to the
    Release.
+4. Opens the update PR at `microsoft/winget-pkgs` (`winget-submit` job) —
+   inert until the prerequisites below are met, see *Automated submission*.
 
 No SHA-pinned YAML is committed; only the templates in `templates/` and the
 generator script are source-controlled.
@@ -54,8 +56,31 @@ SHA256 values come from the Release's `checksums.txt`, or from the local
 `okf-<v>-<rid>.zip.sha256` files produced when you run `Publish-Cli.ps1`
 yourself (these `.sha256` sidecars are not attached to the Release itself).
 
-## Future: automated submission
+## Automated submission
 
-Once the package is accepted, wire the `winget-releaser` GitHub Action into
-`release.yml` to open the update PR automatically on each release. The existing
-generator/templates remain the source of truth for metadata.
+`release.yml`'s `winget-submit` job runs
+[`winget-releaser`](https://github.com/vedantmgoyal9/winget-releaser) on every
+tag to open the update PR at `microsoft/winget-pkgs` by itself. It is wired but
+**inert** until both prerequisites are met, and it skips with a notice (green,
+not a failed release) when they are not:
+
+1. **`Coderise.OKF4net` published in winget-pkgs.** The action errors out on a
+   package with no existing version — the *first* submission is the manual
+   `wingetcreate submit` flow above.
+2. **A `WINGET_TOKEN` repo secret and a winget-pkgs fork** under the repo
+   owner. The token is a classic PAT with the `public_repo` scope (winget-pkgs
+   is public); `winget-releaser` pushes the branch to the fork and opens the PR
+   from it.
+
+The action derives each new version from the manifests *already published* in
+winget-pkgs (via `komac`), not from `templates/` — so the templates here stay
+the source of truth for the initial submission and for metadata edits
+(description, tags, URLs), which still go through a manual PR.
+
+## Schema version
+
+Templates target manifest schema **1.12.0**. winget-pkgs' PR template calls out
+the current schema, and its Copilot reviewer flags anything older as deprecated
+— an unresolved flag of that kind blocked the 0.2.0 PR from merging. When the
+repo moves to a newer schema, bump the three `ManifestVersion` fields and the
+three `$schema` URLs together, then re-run `winget validate`.

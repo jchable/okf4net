@@ -158,3 +158,41 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: manifests/*.yaml
+
+  # Opens the update PR at microsoft/winget-pkgs automatically. Inert until
+  # two prerequisites are met, and it skips (green) rather than failing the
+  # release when they are not:
+  #   1. `Coderise.OKF4net` exists in winget-pkgs (the action errors out on a
+  #      package with no published version -- the first submission is manual,
+  #      see packaging/winget/README.md);
+  #   2. a `WINGET_TOKEN` secret (classic PAT, `public_repo` scope) and a fork
+  #      of microsoft/winget-pkgs under the repo owner.
+  # winget-releaser (komac) derives the new manifests from the ones already
+  # published in winget-pkgs, so the manifests attached above stay the
+  # metadata source of truth for the initial submission and metadata edits.
+  winget-submit:
+    name: submit winget update PR
+    needs: winget-manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for a winget token
+        id: gate
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "$WINGET_TOKEN" ]; then
+            echo "::notice::No WINGET_TOKEN secret; skipping the winget-pkgs PR. The manifests are attached to the Release -- submit them with \`wingetcreate submit\`."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Submit to microsoft/winget-pkgs
+        if: steps.gate.outputs.go == 'true'
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Coderise.OKF4net
+          # `version` is left to the action's default: the release tag with
+          # its leading `v` stripped.
+          installers-regex: 'okf-.*-win-(x64|arm64)\.zip$'
+          release-tag: ${{ github.ref_name }}
+          token: ${{ secrets.WINGET_TOKEN }}

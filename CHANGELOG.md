@@ -8,6 +8,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **winget manifests move to schema 1.12.0** (from the now-deprecated 1.6.0).
+  winget-pkgs' automated reviewer flags older schemas, and an unresolved flag
+  of that kind blocked the first submission
+  ([winget-pkgs#409311](https://github.com/microsoft/winget-pkgs/pull/409311))
+  from merging. The generated manifests pass `winget validate` unchanged
+  otherwise. The package description also stops advertising OKF v0.1.
+- `release.yml` gains a `winget-submit` job that opens the winget-pkgs update
+  PR automatically on each tag (`winget-releaser`). It skips with a notice
+  unless a `WINGET_TOKEN` secret is configured, so releases stay green until
+  the package is published and the token/fork exist — see
+  `packaging/winget/README.md`.
+
+### Fixed
+
+- The CLI's `--version` is now checked against `<Version>` in
+  `Directory.Build.props` by a test. The two are maintained separately and had
+  drifted: the 0.2.0 winget package shipped a binary printing
+  `okf 0.1.0-alpha.1`, which the previous test did not catch (it only asserted
+  the `okf ` prefix).
+
 ## [0.5.0] - 2026-07-31
 
 ### Added

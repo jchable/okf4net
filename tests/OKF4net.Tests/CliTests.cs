@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Linq;
+using System.Text.RegularExpressions;
 using OKF4net.Cli;
 
 namespace OKF4net.Tests;
@@ -53,6 +54,23 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Contains("okf ", r.Out);
         Assert.Contains("OKF spec v0.2", r.Out);
+    }
+
+    [Fact]
+    public void Version_matches_the_build_version()
+    {
+        // OkfCli.CliVersion is hand-maintained, separate from <Version> in
+        // Directory.Build.props. The two drifted once and the winget package
+        // for 0.2.0 shipped a binary whose `--version` printed 0.1.0-alpha.1
+        // (caught by a Microsoft moderator, not by us). Fail the build here
+        // instead: Version_prints_and_succeeds only checks the "okf " prefix.
+        var props = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "Directory.Build.props"));
+        var declared = Regex.Match(props, @"<Version>\s*([^<\s]+)\s*</Version>");
+        Assert.True(declared.Success, "no <Version> element in Directory.Build.props");
+
+        var r = Run("--version");
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"okf {declared.Groups[1].Value} ", r.Out);
     }
 
     [Fact]
