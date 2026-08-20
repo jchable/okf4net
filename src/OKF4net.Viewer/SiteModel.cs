@@ -49,12 +49,26 @@ public static class SiteModel
     {
         var pages = bundle.Concepts.Select(c => BuildPage(bundle, c)).ToList();
 
+        var entries = pages
+            .Select(p => new IndexEntry(
+                Type: TypeOf(bundle, p.Id),
+                Title: p.Title,
+                Link: p.RelativeHtmlPath,
+                Description: DescriptionOf(bundle, p.Id)))
+            .ToList();
+
         return new ViewerSite(
             bundle.Root,
             pages,
-            IndexMarkdown: string.Empty,
-            ParseErrors: []);
+            IndexGenerator.BuildIndexText(entries),
+            bundle.ParseErrors.Select(e => new ViewerParseError(e.Path, e.Error)).ToList());
     }
+
+    private static string TypeOf(Bundle bundle, ConceptId id)
+        => bundle.Get(id)?.Document.Frontmatter.Type ?? string.Empty;
+
+    private static string DescriptionOf(Bundle bundle, ConceptId id)
+        => bundle.Get(id)?.Document.Frontmatter.Description ?? string.Empty;
 
     private static ViewerPage BuildPage(Bundle bundle, Concept concept)
     {

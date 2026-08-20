@@ -188,4 +188,57 @@ public class SiteModelTests
         Assert.Equal("../tables/users.html", backlink.Href);
         Assert.True(backlink.Exists);
     }
+
+    [Fact]
+    public void Build_generates_index_markdown_linking_to_generated_pages()
+    {
+        using var tmp = new TempDir();
+        var site = SiteModel.Build(LoadBundle(tmp));
+
+        Assert.Contains("[Users](tables/users.html)", site.IndexMarkdown);
+    }
+
+    [Fact]
+    public void Build_groups_index_entries_by_concept_type()
+    {
+        using var tmp = new TempDir();
+        var site = SiteModel.Build(LoadBundle(tmp));
+
+        Assert.Contains("# table", site.IndexMarkdown);
+    }
+
+    [Fact]
+    public void Build_surfaces_parse_errors_rather_than_dropping_them()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        tmp.Write("good.md", "---\ntype: note\ntitle: Good\ndescription: d\n---\nBody\n");
+        // Missing `type` alone would NOT reach Bundle.ParseErrors: neither
+        // OkfDocument.Parse nor ConceptId.FromPath require it (§11 `type`
+        // conformance is a *validation* concern, checked by
+        // OkfDocument.ValidateConformance, not a *parse* one) -- such a file
+        // loads as an ordinary concept. An unterminated frontmatter block is
+        // a genuine parse failure (OkfDocument.Parse throws
+        // DocumentParseException("Unterminated YAML frontmatter block")),
+        // which Bundle.Load does collect into ParseErrors.
+        tmp.Write("broken.md", "---\ntitle: No closing delimiter\nBody\n");
+
+        var site = SiteModel.Build(Bundle.Load(tmp.Path));
+
+        var error = Assert.Single(site.ParseErrors);
+        Assert.Contains("broken.md", error.Path);
+        Assert.False(string.IsNullOrWhiteSpace(error.Error));
+    }
+
+    [Fact]
+    public void Build_on_an_empty_bundle_yields_an_empty_site_not_an_error()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+
+        var site = SiteModel.Build(Bundle.Load(tmp.Path));
+
+        Assert.Empty(site.Pages);
+        Assert.Empty(site.ParseErrors);
+    }
 }
