@@ -70,7 +70,7 @@ other project layers a specific integration on top and points back to it.
 |--------------------------|---------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------|
 | `OKF4net`                | `OKF4net`                 | Zero-dependency core library: parse, validate, index, graph OKF bundles.   | [Library overview](#library-overview)                        |
 | `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`info`/`index`/`graph`/`parse`/`fmt`/`render`). | [As a CLI](#as-a-cli)                                    |
-| `OKF4net.Viewer`         | `OKF4net.Viewer`          | Static HTML site generation for a bundle; backs the `okf render` verb.     | [As a CLI](#as-a-cli)                                        |
+| `OKF4net.Viewer`         | — (ships inside the `okf` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs the `okf render` verb. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |

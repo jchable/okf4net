@@ -7,6 +7,13 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
+  <!-- Not currently packed by .github/workflows/release.yml: this project
+       ships to users only as code baked into the `okf` Native AOT binary.
+       The metadata below is kept ready (inert until then) so publishing it
+       as a standalone NuGet package later is a one-line change to that
+       workflow, not a design decision, but that is a deliberate call the
+       README currently reflects as unpublished; do not add it to
+       release.yml without that decision being made explicitly. -->
   <PropertyGroup Label="Packaging">
     <PackageId>OKF4net.Viewer</PackageId>
     <Authors>Julien CHABLE</Authors>
