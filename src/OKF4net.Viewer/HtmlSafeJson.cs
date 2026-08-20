@@ -20,7 +20,7 @@ namespace OKF4net.Viewer;
 /// representable by any encoder a later stage applies; a valid surrogate
 /// pair (e.g. an emoji) is left untouched.
 /// </remarks>
-public static class HtmlSafeJson
+internal static class HtmlSafeJson
 {
     /// <summary>
     /// <paramref name="value"/> as a complete JSON string literal, including

@@ -46,7 +46,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Lets the test project exercise internal members directly, without
+    <!-- Lets the test project exercise internal members directly: e.g.
+         HtmlSafeJson, a page-shell implementation detail not listed among
+         the spec's §5 units (SiteModel, HtmlWriter, ViewerAssets), without
          inflating the public API surface. -->
     <InternalsVisibleTo Include="OKF4net.Tests" />
   </ItemGroup>
