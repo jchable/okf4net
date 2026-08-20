@@ -48,6 +48,36 @@ public class HtmlSafeJsonTests
         Assert.Equal("\"a\\u2028b\\u2029c\"", quoted);
     }
 
+    // --- robustness: lone UTF-16 surrogates cannot be emitted raw ---
+
+    [Fact]
+    public void Quote_escapes_a_lone_high_surrogate()
+    {
+        var quoted = HtmlSafeJson.Quote("a\ud800b");
+        Assert.Equal("\"a\\ud800b\"", quoted);
+    }
+
+    [Fact]
+    public void Quote_escapes_a_lone_low_surrogate()
+    {
+        var quoted = HtmlSafeJson.Quote("a\udc00b");
+        Assert.Equal("\"a\\udc00b\"", quoted);
+    }
+
+    [Fact]
+    public void Quote_escapes_a_high_surrogate_at_end_of_string()
+    {
+        var quoted = HtmlSafeJson.Quote("a\ud800");
+        Assert.Equal("\"a\\ud800\"", quoted);
+    }
+
+    [Fact]
+    public void Quote_leaves_a_valid_surrogate_pair_untouched()
+    {
+        var quoted = HtmlSafeJson.Quote("\ud83d\ude00");
+        Assert.Equal("\"\ud83d\ude00\"", quoted);
+    }
+
     [Fact]
     public void Quote_leaves_ordinary_markdown_untouched()
         => Assert.Equal("\"# Title\\n\\n- item\"", HtmlSafeJson.Quote("# Title\n\n- item"));

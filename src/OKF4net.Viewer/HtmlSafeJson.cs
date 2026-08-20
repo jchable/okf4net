@@ -15,7 +15,10 @@ namespace OKF4net.Viewer;
 /// <c>&amp;</c> as <c>\uXXXX</c>. That is what makes a <c>&lt;/script&gt;</c>
 /// sequence in untrusted bundle content unable to terminate the container
 /// element early. U+2028/U+2029 are escaped too: they are valid JSON but
-/// terminate a JavaScript string literal.
+/// terminate a JavaScript string literal. Lone (unpaired) UTF-16 surrogates
+/// are escaped as well, so the result is always well-formed UTF-16 and thus
+/// representable by any encoder a later stage applies; a valid surrogate
+/// pair (e.g. an emoji) is left untouched.
 /// </remarks>
 public static class HtmlSafeJson
 {
@@ -29,8 +32,9 @@ public static class HtmlSafeJson
         var sb = new StringBuilder(value.Length + 2);
         sb.Append('"');
 
-        foreach (var c in value)
+        for (var i = 0; i < value.Length; i++)
         {
+            var c = value[i];
             switch (c)
             {
                 case '"': sb.Append("\\\""); break;
@@ -52,6 +56,31 @@ public static class HtmlSafeJson
                 default:
                     if (c < ' ')
                     {
+                        AppendUnicodeEscape(sb, c);
+                    }
+                    else if (char.IsHighSurrogate(c))
+                    {
+                        // A high surrogate followed by a low surrogate is a
+                        // valid pair (e.g. an emoji) and must survive
+                        // verbatim; anything else is a lone surrogate, which
+                        // is not valid UTF-16 on its own and must be escaped
+                        // so the returned string stays representable in any
+                        // encoding a later stage might apply.
+                        if (i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+                        {
+                            sb.Append(c).Append(value[i + 1]);
+                            i++;
+                        }
+                        else
+                        {
+                            AppendUnicodeEscape(sb, c);
+                        }
+                    }
+                    else if (char.IsLowSurrogate(c))
+                    {
+                        // A low surrogate not preceded by a high surrogate
+                        // (the high-surrogate branch above already consumed
+                        // valid pairs) is lone and must be escaped.
                         AppendUnicodeEscape(sb, c);
                     }
                     else
