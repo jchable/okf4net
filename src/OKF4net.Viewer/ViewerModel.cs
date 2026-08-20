@@ -9,7 +9,17 @@ public sealed record ViewerFrontmatterEntry(string Key, string Value);
 /// <summary>
 /// A link from one generated page to another, resolved at generation time.
 /// </summary>
-/// <param name="RawTarget">The link target exactly as written in the markdown source.</param>
+/// <param name="RawTarget">
+/// The link destination as <c>Bundle.LinksFrom</c> reports it in
+/// <c>ResolvedLink.Raw</c> -- title-stripped and trimmed by
+/// <c>Links.cs</c>'s <c>StripTitle</c>, not the literal markdown source
+/// text. For <c>[x](../a/b.md "Title")</c> this is <c>../a/b.md</c>, never
+/// <c>../a/b.md "Title"</c>. That is the right key to rewire on: a
+/// CommonMark-compliant renderer (including marked, client-side) puts the
+/// title-stripped destination in the rendered anchor's <c>href</c>
+/// attribute, which is exactly the string <c>viewer.js</c> looks up in this
+/// table at render time.
+/// </param>
 /// <param name="Href">The generated page's path, relative to the linking page.</param>
 /// <param name="Exists">Whether the target concept exists in the bundle.</param>
 public sealed record ViewerLink(string RawTarget, string Href, bool Exists);

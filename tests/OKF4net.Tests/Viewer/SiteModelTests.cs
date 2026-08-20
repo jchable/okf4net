@@ -152,6 +152,29 @@ public class SiteModelTests
     }
 
     [Fact]
+    public void Build_uses_the_title_stripped_link_destination_as_the_table_key()
+    {
+        // RawTarget is ResolvedLink.Raw, which Links.cs's StripTitle has
+        // already trimmed and stripped of an optional "title" suffix -- not
+        // the literal markdown source text. That is the right key: a
+        // CommonMark renderer (including marked, client-side) puts exactly
+        // this title-stripped string in the rendered anchor's href, so it is
+        // what viewer.js looks the link up by at render time.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        tmp.Write("a/b.md", "---\ntype: note\ntitle: B\ndescription: d\n---\nB.\n");
+        tmp.Write("tables/users.md",
+            "---\ntype: table\ntitle: Users\ndescription: d\n---\n"
+            + "See [x](../a/b.md \"Title\").\n");
+
+        var site = SiteModel.Build(Bundle.Load(tmp.Path));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        var link = Assert.Single(users.Links);
+        Assert.Equal("../a/b.md", link.RawTarget);
+    }
+
+    [Fact]
     public void Build_marks_a_link_to_a_missing_concept_as_broken()
     {
         using var tmp = new TempDir();
