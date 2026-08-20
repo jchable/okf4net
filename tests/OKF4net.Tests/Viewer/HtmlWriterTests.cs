@@ -125,6 +125,31 @@ public class HtmlWriterTests
     }
 
     [Fact]
+    public void Write_refuses_a_hand_constructed_page_whose_path_escapes_the_output_directory()
+    {
+        // ViewerPage is a public record with a public constructor: nothing
+        // stops a third-party host from constructing one directly with a
+        // traversal path, bypassing the ConceptId validation that protects
+        // the CLI's own call path. WriteFile must catch this on its own.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var goodSite = SiteModel.Build(SampleBundle(src));
+
+        var evilPage = new ViewerPage(
+            goodSite.Pages[0].Id,
+            "Evil",
+            "../../../evil.html",
+            [],
+            "body",
+            [],
+            []);
+        var site = new ViewerSite(src.Path, [evilPage], string.Empty, []);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, dest.Path));
+        Assert.Contains("outside", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Write_refuses_the_bundle_root_itself_as_the_output_directory()
     {
         using var src = new TempDir();

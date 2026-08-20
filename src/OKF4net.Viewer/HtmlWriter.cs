@@ -19,7 +19,10 @@ public static class HtmlWriter
     /// <param name="outDir">The output directory.</param>
     /// <exception cref="ArgumentException">
     /// <paramref name="outDir"/> resolves inside the rendered bundle, which
-    /// would pollute the bundle being viewed.
+    /// would pollute the bundle being viewed; or a page in
+    /// <paramref name="site"/> carries a <see cref="ViewerPage.RelativeHtmlPath"/>
+    /// that resolves outside <paramref name="outDir"/> (e.g. a
+    /// <c>../</c>-escaping path on a hand-constructed <see cref="ViewerPage"/>).
     /// </exception>
     public static IReadOnlyList<string> Write(ViewerSite site, string outDir)
     {
@@ -93,9 +96,51 @@ public static class HtmlWriter
     private static void WriteFile(string outDir, string relativePath, string content, List<string> written)
     {
         var full = Path.Combine(outDir, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        GuardWithinOutputDirectory(outDir, full, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
         File.WriteAllText(full, content, new UTF8Encoding(false));
         written.Add(relativePath);
+    }
+
+    /// <summary>
+    /// Rejects a computed file path that would land outside
+    /// <paramref name="outDir"/> once resolved.
+    /// </summary>
+    /// <remarks>
+    /// From the CLI, <c>relativePath</c> always derives from a
+    /// <see cref="ConceptId"/> (which rejects <c>..</c>), so this can never
+    /// trip there. But <see cref="ViewerPage"/> is a public record with a
+    /// public constructor in a reusable library, so a third-party host can
+    /// construct one with <c>RelativeHtmlPath</c> set to something like
+    /// <c>../../../evil.html</c> and reach this method with no
+    /// <see cref="ConceptId"/> validation in between. Uses the same
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> comparison as
+    /// <see cref="GuardOutputDirectory"/>, for the same polarity reason
+    /// documented on its remarks: this check also decides whether to ALLOW a
+    /// write (into <paramref name="outDir"/>), so its safe failure mode is
+    /// the broader "treat as a case-insensitive match" -- on a
+    /// case-insensitive volume, failing to recognize a legitimate
+    /// case-variant path as being inside <paramref name="outDir"/> would
+    /// wrongly refuse a write that was actually safe, whereas the reverse
+    /// mistake (a genuinely different, case-sensitive path being let through)
+    /// cannot happen: an OrdinalIgnoreCase-only match against the resolved
+    /// root still requires the resolved path to be a text prefix of the
+    /// resolved root, which a traversal outside it is not.
+    /// </remarks>
+    private static void GuardWithinOutputDirectory(string outDir, string fullPath, string relativePath)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
+        var resolved = Path.GetFullPath(fullPath);
+
+        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
+
+        if (!string.Equals(resolved, root, comparison)
+            && !resolved.StartsWith(root + Path.DirectorySeparatorChar, comparison))
+        {
+            throw new ArgumentException(
+                $"refusing to write '{relativePath}': it resolves outside the output directory ('{outDir}')",
+                paramName: "site");
+        }
     }
 
     /// <summary>The <c>../</c> prefix taking a page at <paramref name="relativePath"/> back to the site root.</summary>
