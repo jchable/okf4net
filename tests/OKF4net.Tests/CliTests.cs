@@ -311,4 +311,68 @@ public class CliTests
         Assert.Contains("no index files written", r.Out);
         Assert.Equal("", r.Err);
     }
+
+    [Fact]
+    public void Render_writes_a_site_and_reports_success()
+    {
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "site");
+
+        var r = Run("render", BundlePath, "--out", outDir);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+        Assert.True(File.Exists(Path.Combine(outDir, "index.html")));
+    }
+
+    [Fact]
+    public void Render_without_out_fails()
+    {
+        var r = Run("render", BundlePath);
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out", r.Err);
+    }
+
+    [Fact]
+    public void Render_without_a_bundle_fails()
+    {
+        var r = Run("render");
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+    }
+
+    [Fact]
+    public void Render_into_the_bundle_itself_fails()
+    {
+        var r = Run("render", BundlePath, "--out", Path.Combine(BundlePath, "site"));
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+    }
+
+    [Fact]
+    public void Usage_mentions_the_render_verb()
+    {
+        var r = Run("--help");
+        Assert.Equal(0, r.Code);
+        Assert.Contains("render", r.Out);
+    }
+
+    [Fact]
+    public void Render_with_only_out_and_no_bundle_fails_rather_than_treating_the_out_dir_as_the_bundle()
+    {
+        // --out is the CLI's first VALUED option -- every other verb's flags
+        // are valueless (--dot, --json, -w) -- so the naive Positional()
+        // scan (first arg not starting with '-') would previously return the
+        // *value* of --out as the bundle path when the bundle itself is
+        // omitted. Guard against silently rendering the output directory as
+        // if it were the bundle.
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "site");
+
+        var r = Run("render", "--out", outDir);
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+        Assert.False(Directory.Exists(outDir));
+    }
 }
