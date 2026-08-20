@@ -23,10 +23,21 @@ are the concrete entry points.
   MCP story is read-only-focused; this would exercise write/append and
   `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
 - Performance baselines for large bundle loads.
-- Bundle viewer: browse a bundle interactively (static HTML render + local live
-  server) — implementation approach (zero-dep `HttpListener`, ASP.NET Core, or a
-  standalone web tool) still open, see
-  [#40](https://github.com/jchable/okf4net/issues/40).
+- Bundle viewer: **static render shipped** as `okf render` (`OKF4net.Viewer`).
+  The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
+  remains open — it is what unlocks full-text search in the viewer, since a
+  server can run `ConceptSearch` directly instead of mirroring its weights in
+  JavaScript. Its implementation approach (zero-dep `HttpListener`, ASP.NET
+  Core, or a standalone web tool) is still open.
+  - **No CI regression guard for the client-side XSS defenses.** `viewer.js`'s
+    two-layer defense (marked renderer-hook overrides, then a DOM sanitizer)
+    was verified by hand — a Node/jsdom harness run against the real vendored
+    marked, plus a manual browser check — not by anything that runs in CI:
+    xunit runs on .NET and cannot execute JavaScript, so
+    `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
+    source-text markers, not actual sanitizer behavior. A future marked
+    version bump could regress the defense silently; no automated guard would
+    catch it today.
 
 ## Later
 

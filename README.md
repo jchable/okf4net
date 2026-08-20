@@ -69,7 +69,8 @@ other project layers a specific integration on top and points back to it.
 | Project                  | NuGet package             | Responsibility                                                              | Deep dive                                                     |
 |--------------------------|---------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------|
 | `OKF4net`                | `OKF4net`                 | Zero-dependency core library: parse, validate, index, graph OKF bundles.   | [Library overview](#library-overview)                        |
-| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`info`/`index`/`graph`/`parse`/`fmt`). | [As a CLI](#as-a-cli)                                    |
+| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`info`/`index`/`graph`/`parse`/`fmt`/`render`). | [As a CLI](#as-a-cli)                                    |
+| `OKF4net.Viewer`         | `OKF4net.Viewer`          | Static HTML site generation for a bundle; backs the `okf render` verb.     | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
@@ -180,6 +181,7 @@ okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
 okf parse    <file>      Parse one concept document and print its structure
 okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes)
+okf render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle
 ```
 
 `okf validate` exits non-zero when a bundle is not conformant, so it drops
@@ -189,6 +191,17 @@ straight into CI:
 okf validate ./bundles/ga4
 okf graph ./bundles/ga4 --dot | dot -Tsvg > graph.svg
 ```
+
+Generate a browsable HTML site from a bundle:
+
+```sh
+okf render bundles/ga4 --out /tmp/ga4-site
+# then open /tmp/ga4-site/index.html
+```
+
+The generated site is self-contained and opens straight off the filesystem —
+no server needed. It is read-only; full-text search arrives with the planned
+`okf serve` companion.
 
 `okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
 single-file binary — no .NET runtime installation required on the target

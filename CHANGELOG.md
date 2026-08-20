@@ -8,6 +8,18 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
+  HTML site from a bundle: one page per concept (frontmatter table + rendered
+  body), a generated index, navigable cross-links with broken links flagged,
+  and backlinks. Backed by the new zero-dependency `OKF4net.Viewer` project.
+  Markdown renders client-side via a vendored copy of marked (MIT); raw HTML
+  passthrough is disabled and a DOM sanitizer in `viewer.js` closes an
+  attribute-injection gap the renderer-hook override alone does not (see
+  `CLAUDE.md`). No full-text search yet — that lands with the planned `okf
+  serve` companion.
+
 ## [0.5.0] - 2026-07-31
 
 ### Added
