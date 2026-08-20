@@ -7,8 +7,14 @@ namespace OKF4net.Viewer;
 /// <summary>
 /// Hand-rolled JSON string escaping, safe to embed inside an HTML
 /// <c>&lt;script&gt;</c> element. Hand-rolled rather than
-/// <c>System.Text.Json</c> because the CLI consuming this is published
-/// Native AOT and must stay free of reflection-based serialization.
+/// <c>System.Text.Json</c> not for AOT reasons -- <c>System.Text.Json</c>
+/// with a source-generated context is AOT-safe, and
+/// <c>src/OKF4net.Cli/JsonOutput.cs</c> uses exactly that in this same
+/// solution -- but because the extra escaping this type does beyond plain
+/// JSON (<c>&lt;</c>, <c>&gt;</c>, <c>&amp;</c>, U+2028, U+2029) is a
+/// security requirement, not a formatting choice, and hand-rolling keeps
+/// that rule in one small, auditable place rather than layered on top of a
+/// general-purpose serializer.
 /// </summary>
 /// <remarks>
 /// Beyond the JSON minimum this escapes <c>&lt;</c>, <c>&gt;</c> and
