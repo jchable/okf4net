@@ -44,6 +44,10 @@
     <!-- Lets OKF4net.Catalog reuse the internal ReparsePoints helper instead
          of duplicating a platform-specific implementation. -->
     <InternalsVisibleTo Include="OKF4net.Catalog" />
+    <!-- Lets OKF4net.Viewer reuse the internal ReparsePoints helper (its
+         HtmlWriter output-directory containment guards) instead of
+         duplicating a platform-specific implementation. -->
+    <InternalsVisibleTo Include="OKF4net.Viewer" />
   </ItemGroup>
 
 </Project>

@@ -40,7 +40,7 @@ export default function Cli() {
   return (
     <Layout
       title="The okf CLI — OKF4net"
-      description="The okf command-line tool: validate, info, index, graph, parse and fmt — a self-contained Native AOT binary that drops straight into CI."
+      description="The okf command-line tool: validate, info, index, graph, parse, fmt and render — a self-contained Native AOT binary that drops straight into CI."
       current="cli"
     >
       <PageDoc
@@ -52,7 +52,7 @@ export default function Cli() {
         type="Reference"
         title={
           <>
-            Six commands, <em>one binary.</em>
+            Seven commands, <em>one binary.</em>
           </>
         }
         lede={
@@ -83,6 +83,10 @@ export default function Cli() {
                 <>
                   Normalize a document by parse + re-serialize (<code>-w</code> writes in place)
                 </>,
+              ],
+              [
+                'okf render <bundle> --out <dir>',
+                'Generate a self-contained, browsable static HTML site from the bundle',
               ],
             ]}
           />

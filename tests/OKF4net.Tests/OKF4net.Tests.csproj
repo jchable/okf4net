@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\OKF4net.Catalog\OKF4net.Catalog.csproj" />
     <ProjectReference Include="..\..\src\OKF4net.Catalog.Hosting\OKF4net.Catalog.Hosting.csproj" />
     <ProjectReference Include="..\..\src\OKF4net.Attestation\OKF4net.Attestation.csproj" />
+    <ProjectReference Include="..\..\src\OKF4net.Viewer\OKF4net.Viewer.csproj" />
   </ItemGroup>
 
 </Project>

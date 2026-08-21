@@ -1,0 +1,53 @@
+/* OKF4net bundle viewer — visual language copied from the project website
+   ("The §Document" theme). Maintained independently of web/: the two are
+   deliberately not coupled. */
+:root {
+  --white: #ffffff;
+  --ink: #101014;
+  --blue: #1a3fd6;
+  --blue-soft: #eef1fd;
+  --gray: #6a6a72;
+  --hair: #e3e3e8;
+  --red: #c0392b;
+  --display: "Inter Tight", "Arial Narrow", sans-serif;
+  --body: "Inter", "Helvetica Neue", sans-serif;
+  --mono: "Space Mono", Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--white); color: var(--ink);
+  font-family: var(--body); font-size: 16px; line-height: 1.6;
+}
+.topline { height: 6px; background: var(--blue); }
+header.bar { border-bottom: 1px solid var(--hair); }
+.bar-in {
+  max-width: 900px; margin: 0 auto; padding: 16px clamp(16px, 3.5vw, 48px);
+  display: flex; align-items: center; gap: 24px;
+}
+.wordmark {
+  font-family: var(--display); font-weight: 900; font-size: 20px;
+  letter-spacing: -.02em; color: var(--ink); text-decoration: none;
+}
+.wordmark sup { color: var(--blue); font-family: var(--mono); font-weight: 700; }
+main { max-width: 900px; margin: 0 auto; padding: 32px clamp(16px, 3.5vw, 48px) 96px; }
+h1, h2, h3 { font-family: var(--display); letter-spacing: -.02em; margin: 1.4em 0 .5em; }
+h1 { font-size: 32px; margin-top: 0; }
+p, ul, ol, table, pre { margin: 0 0 1em; }
+ul, ol { padding-left: 1.4em; }
+a { color: var(--blue); }
+a.broken { color: var(--red); text-decoration: line-through; cursor: not-allowed; }
+code { font-family: var(--mono); font-size: .92em; background: var(--blue-soft); padding: .1em .35em; }
+pre { background: var(--blue-soft); padding: 16px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table.frontmatter { border-collapse: collapse; width: 100%; font-size: 14px; }
+table.frontmatter th, table.frontmatter td {
+  text-align: left; vertical-align: top; padding: 6px 12px 6px 0;
+  border-bottom: 1px solid var(--hair);
+}
+table.frontmatter th { font-family: var(--mono); font-weight: 400; color: var(--gray); width: 200px; }
+.meta { font-family: var(--mono); font-size: 13px; color: var(--gray); }
+.errors { border-left: 3px solid var(--red); padding-left: 16px; margin-bottom: 32px; }
+.errors h2 { color: var(--red); font-size: 18px; }
+@media (prefers-color-scheme: dark) {
+  :root { --white: #101014; --ink: #f2f2f5; --blue: #8fa5f5; --blue-soft: #1a1a22; --hair: #2a2a33; --gray: #9a9aa2; }
+}
