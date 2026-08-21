@@ -446,13 +446,28 @@ public static class OkfCli
     /// <summary>Implements the <c>render</c> subcommand.</summary>
     private static int CmdRender(string[] args, TextWriter stdout)
     {
+        // Validate "--out"'s value shape before resolving the bundle, so the
+        // reported error is deterministic regardless of argument order:
+        //   1. "--out" present but unvalued          -> "--out requires a value"
+        //   2. bundle positional missing              -> "missing <bundle>"
+        //   3. "--out" absent entirely                -> "render requires --out <dir>"
+        // FlagValue itself throws (1) when the flag is present with nothing
+        // after it, whether or not the bundle was given -- e.g. bare
+        // "okf render --out" used to report "missing <bundle>" (Positional
+        // ran first and hit the empty slot before FlagValue ever saw it);
+        // calling FlagValue first makes both value-missing spellings agree.
+        var outDir = FlagValue(args, "--out");
+
         // "--out" is the CLI's first valued option -- every other verb's
         // flags are valueless (--dot, --json, -w) -- so Positional must be
         // told to skip both the flag and its value, or that value would be
         // mistaken for the bundle path whenever the bundle is omitted.
         var path = Positional(args, "<bundle>", "--out");
-        var outDir = FlagValue(args, "--out")
-            ?? throw new CliOperationException("render requires --out <dir>");
+
+        if (outDir is null)
+        {
+            throw new CliOperationException("render requires --out <dir>");
+        }
 
         var bundle = Load(path);
         var site = SiteModel.Build(bundle);

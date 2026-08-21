@@ -367,6 +367,30 @@ public class CliTests
     }
 
     [Fact]
+    public void Render_with_out_flag_missing_its_value_after_the_bundle_fails_with_out_message()
+    {
+        var r = Run("render", BundlePath, "--out");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out requires a value", r.Err);
+    }
+
+    [Fact]
+    public void Render_with_bare_out_flag_and_no_bundle_fails_with_out_message_not_missing_bundle()
+    {
+        // Same "--out present but unvalued" failure as the test above, just
+        // with the bundle positional also absent. Before the fix this order
+        // dependency made the message flip to "missing <bundle>" (Positional
+        // ran first and hit the empty slot before FlagValue's bounds check
+        // ever fired) -- deterministic now: FlagValue's check always wins.
+        var r = Run("render", "--out");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out requires a value", r.Err);
+        Assert.DoesNotContain("missing <bundle>", r.Err);
+    }
+
+    [Fact]
     public void Usage_mentions_the_render_verb()
     {
         var r = Run("--help");
