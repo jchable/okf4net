@@ -151,6 +151,13 @@ public static class ConceptAudit
   indépendant de l'ordre de parcours du système de fichiers.
 - **Robustesse.** Aucune exception : errors-as-data comme le reste du cœur. Un
   bundle vide donne des compteurs à zéro et `Findings` vide.
+- **Pourquoi pas `StalePolicy`.** Le cœur a déjà `StalePolicy`
+  (`Use`/`Tolerate(grace)`/`Strict`), que les Agents et le Catalog appliquent à
+  la *restitution*. Elle répond à « dois-je exposer ce concept à un
+  consommateur ? ». `AuditQuery.StaleOnly` répond à « ce concept est-il sur ma
+  liste de travail ? » — la question inverse, où un concept périmé est
+  précisément ce qu'on veut voir, pas ce qu'on veut filtrer. Les deux mécanismes
+  coexistent donc volontairement ; ne pas les fusionner.
 
 ## 4. Unité 2 — verbe CLI `okf audit`
 
@@ -200,6 +207,18 @@ Règles de parsing des valeurs, pour lever toute ambiguïté :
   casse, puisque le spec ne contraint pas le vocabulaire de `type`.
 - Flag répété : la **première occurrence gagne**, comportement hérité de
   `FlagValue` (`Array.IndexOf`) et commun à tous les verbes existants.
+- **Le parsing de l'entrée est strict, celui du frontmatter reste permissif.**
+  `Lifecycle.From` résout un `status` inconnu en `stable` (§5.4 : le chargement
+  ne rejette rien, §11), alors que `--status retired` doit échouer. Ce n'est pas
+  une incohérence : un producteur ne contrôle pas ce qu'il lit, un utilisateur
+  contrôle ce qu'il tape, et une faute de frappe silencieusement absorbée en
+  `stable` rendrait une worklist fausse. Les deux parsers restent donc distincts
+  — ne pas « harmoniser » le strict vers le permissif.
+- **Ordre de validation.** Les valeurs des flags sont validées **avant** la
+  résolution du positionnel. Sinon `okf audit --as-of` (le flag comme unique
+  argument) rendrait `missing <bundle>` : `Positional` saute le créneau d'un flag
+  valué sans vérifier qu'il a une valeur, et le vrai défaut serait masqué par un
+  diagnostic moins précis.
 
 **Piège de parsing à ne pas rater.** `--trust`, `--status`, `--type` et `--as-of`
 consomment le token suivant : ils doivent être déclarés dans les `valuedFlags` de
@@ -395,7 +414,16 @@ Différences assumées avec le CLI :
   que l'article défend ;
 - omet la ligne `bundle:` (le tool est lié à un seul bundle) ;
 - valeurs invalides de `trust`/`status` ⇒ message d'usage rendu comme chaîne (pas
-  d'exception), sur le modèle de `SearchUsageMessage`.
+  d'exception), sur le modèle de `SearchUsageMessage` ;
+- **tout ce qui peut toucher le disque passe par `RunTool`**, la garde partagée
+  par tous les tools qui chargent le bundle : elle convertit `OkfException`
+  (donc `BundleLoadException`), `ArgumentException`, `IOException`,
+  `UnauthorizedAccessException` et `DecoderFallbackException` en une chaîne
+  `Error: …`. Un tool de fonction **rend** une erreur, il n'en lève pas : un
+  répertoire supprimé après la construction du tool remonterait sinon en
+  exception jusqu'au runtime de l'agent. Le rendu du vocabulaire suit la même
+  règle que le CLI — les libellés viennent d'`AuditVocabulary`, jamais de
+  littéraux recopiés.
 
 **Le rendu texte n'est pas partagé entre CLI et Agents** : seul le calcul
 (`ConceptAudit`) l'est. Raison : les octets du CLI sont verrouillés par des
