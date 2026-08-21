@@ -2,7 +2,7 @@
   "name": "viewer-security-check",
   "version": "1.0.0",
   "private": true,
-  "description": "jsdom harness exercising OKF4net.Viewer's real vendored marked.min.js + viewer.js against hostile markdown payloads. Not wired into CI -- see README.md.",
+  "description": "jsdom harness exercising OKF4net.Viewer's real vendored marked.min.js + viewer.js against hostile markdown payloads. Run in CI as the 'viewer sanitizer (JS)' job -- see README.md.",
   "main": "run.js",
   "scripts": {
     "test": "node run.js"

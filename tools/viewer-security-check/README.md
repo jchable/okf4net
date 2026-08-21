@@ -48,17 +48,22 @@ npm test          # or: node run.js
 
 Exits non-zero (and prints which check failed) if anything regresses.
 
-## Deliberately NOT wired into CI
+## Run in CI
 
-This is a Node project sitting outside `OKF4net.sln`, mirroring the
-`producers/` convention elsewhere in this repo: real and useful, but not part
-of the C#/.NET build or `ci.yml`. Nothing here is published or required for
-`OKF4net.sln` to build or test.
+`ci.yml` runs this as the **`viewer sanitizer (JS)`** job (`npm ci && npm
+test` on Node 22). It is a Node project sitting outside `OKF4net.sln` — it is
+not published, and `OKF4net.sln` neither builds nor tests it — but unlike
+`producers/`, it is *not* left out of CI: it is the only automated guard on a
+security control, and the xunit tests beside it cannot execute JavaScript, so
+they stay green even when the sanitizer is gutted.
 
-## When to run this
+## When to run this locally
 
 Whoever bumps `src/OKF4net.Viewer/Assets/marked.min.js` to a newer marked
-release **should run this harness** before shipping the bump. marked's HTML
-generation is exactly what layer 2 defends against, and a new marked version
-could change escaping behavior in ways layer 1 was never going to catch
-regardless.
+release should run this harness before pushing, rather than waiting on CI.
+marked's HTML generation is exactly what layer 2 defends against, and a new
+marked version could change escaping behavior in ways layer 1 was never going
+to catch regardless.
+
+When you discover a new payload class, add a case here — this file is where
+that knowledge has to live to survive.

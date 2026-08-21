@@ -31,9 +31,10 @@ namespace OKF4net.Tests.Viewer;
 /// markdown (headings, lists, bold, fenced code, relative links, plain
 /// image alt-text, GFM task-list checked/unchecked markers) confirming the
 /// sanitizer isn't over-aggressive either.
-/// Run it with <c>npm install &amp;&amp; npm test</c> from that directory;
-/// see its README for why it is deliberately not wired into CI and when to
-/// run it (whenever <c>marked.min.js</c> is bumped).
+/// Run it with <c>npm ci &amp;&amp; npm test</c> from that directory. CI runs
+/// it too, as the <c>viewer sanitizer (JS)</c> job — that job, not the
+/// smoke checks below, is what actually guards the sanitizer, and it is the
+/// one to watch whenever <c>marked.min.js</c> is bumped.
 /// </para>
 /// </remarks>
 public class ViewerAssetsTests
