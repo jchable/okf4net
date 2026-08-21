@@ -9,13 +9,14 @@ using OKF4net.Tests.Attestation;
 namespace OKF4net.Tests.Agents;
 
 /// <summary>
-/// Tests <see cref="OkfBundleTools.GetTools"/>: the ten tool methods exposed
-/// as Agent Framework <see cref="AIFunction"/>s (via <see cref="AITool"/>)
-/// when no attestation orchestrator is wired (so <c>okf_run_computation</c>
-/// is omitted; see <see cref="OkfComputationToolsTests"/> for the wired
-/// case), with no LLM involved — everything is verified at the
-/// <see cref="AIFunction"/> level, including a real end-to-end invocation
-/// that proves argument binding from a plain dictionary works.
+/// Tests <see cref="OkfBundleTools.GetTools"/>: the eleven tool methods
+/// exposed as Agent Framework <see cref="AIFunction"/>s (via
+/// <see cref="AITool"/>) when no attestation orchestrator is wired (so
+/// <c>okf_run_computation</c> is omitted; see
+/// <see cref="OkfComputationToolsTests"/> for the wired case), with no LLM
+/// involved — everything is verified at the <see cref="AIFunction"/> level,
+/// including a real end-to-end invocation that proves argument binding from
+/// a plain dictionary works.
 /// </summary>
 public class AIFunctionExposureTests
 {
@@ -27,6 +28,7 @@ public class AIFunctionExposureTests
         "okf_browse",
         "okf_graph",
         "okf_search",
+        "okf_audit",
         "okf_write_concept",
         "okf_append_log",
         "okf_regenerate_indexes",
@@ -36,14 +38,14 @@ public class AIFunctionExposureTests
     ];
 
     [Fact]
-    public void GetTools_returns_exactly_ten_tools()
+    public void GetTools_returns_exactly_eleven_tools()
     {
         var tools = new OkfBundleTools(BundlePath);
-        Assert.Equal(10, tools.GetTools().Count);
+        Assert.Equal(11, tools.GetTools().Count);
     }
 
     [Fact]
-    public void GetTools_names_are_the_ten_snake_case_names_in_stable_order()
+    public void GetTools_names_are_the_eleven_snake_case_names_in_stable_order()
     {
         var tools = new OkfBundleTools(BundlePath);
         var names = tools.GetTools().Cast<AIFunction>().Select(f => f.Name).ToList();

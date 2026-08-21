@@ -76,7 +76,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public async Task Build_exposes_all_ten_tools()
+    public async Task Build_exposes_all_eleven_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -92,7 +92,7 @@ public sealed class OkfMcpServerTests
             Assert.Equal(
                 new[]
                 {
-                    "okf_append_log", "okf_browse", "okf_changes_since", "okf_get_computation",
+                    "okf_append_log", "okf_audit", "okf_browse", "okf_changes_since", "okf_get_computation",
                     "okf_graph", "okf_read_concept", "okf_regenerate_indexes", "okf_search",
                     "okf_validate_bundle", "okf_write_concept",
                 },
@@ -122,7 +122,7 @@ public sealed class OkfMcpServerTests
 
             var names = (await client.ListToolsAsync()).Select(t => t.Name).ToHashSet();
 
-            Assert.Equal(7, names.Count);
+            Assert.Equal(8, names.Count);
             Assert.DoesNotContain("okf_write_concept", names);
             Assert.DoesNotContain("okf_append_log", names);
             Assert.DoesNotContain("okf_regenerate_indexes", names);
@@ -130,6 +130,8 @@ public sealed class OkfMcpServerTests
             // okf_get_computation is read-only and needs no attestation runtime,
             // so it surfaces in read-only mode too -- this is deliberate.
             Assert.Contains("okf_get_computation", names);
+            // okf_audit is read-only too, so it surfaces in read-only mode.
+            Assert.Contains("okf_audit", names);
         }
         finally
         {
@@ -138,7 +140,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public void ConfigureServices_registers_all_ten_tools()
+    public void ConfigureServices_registers_all_eleven_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -147,7 +149,7 @@ public sealed class OkfMcpServerTests
             OkfMcpHost.ConfigureServices(services, bundle, readOnly: false, version: "0.0.0");
             using var provider = services.BuildServiceProvider();
             var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
-            Assert.Equal(10, options.ToolCollection?.Count);
+            Assert.Equal(11, options.ToolCollection?.Count);
         }
         finally
         {
@@ -156,7 +158,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public void ConfigureServices_readOnly_registers_seven_tools()
+    public void ConfigureServices_readOnly_registers_eight_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -165,7 +167,7 @@ public sealed class OkfMcpServerTests
             OkfMcpHost.ConfigureServices(services, bundle, readOnly: true, version: "0.0.0");
             using var provider = services.BuildServiceProvider();
             var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
-            Assert.Equal(7, options.ToolCollection?.Count);
+            Assert.Equal(8, options.ToolCollection?.Count);
         }
         finally
         {
