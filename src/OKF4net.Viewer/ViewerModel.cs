@@ -14,11 +14,20 @@ public sealed record ViewerFrontmatterEntry(string Key, string Value);
 /// <c>ResolvedLink.Raw</c> -- title-stripped and trimmed by
 /// <c>Links.cs</c>'s <c>StripTitle</c>, not the literal markdown source
 /// text. For <c>[x](../a/b.md "Title")</c> this is <c>../a/b.md</c>, never
-/// <c>../a/b.md "Title"</c>. That is the right key to rewire on: a
-/// CommonMark-compliant renderer (including marked, client-side) puts the
-/// title-stripped destination in the rendered anchor's <c>href</c>
-/// attribute, which is exactly the string <c>viewer.js</c> looks up in this
-/// table at render time.
+/// <c>../a/b.md "Title"</c>.
+///
+/// This is the right key to rewire on <em>whenever the target contains
+/// nothing marked's client-side <c>cleanUrl</c> step would rewrite</em> --
+/// which is the common case, since <see cref="ConceptId"/>'s restricted
+/// segment charset keeps the path portion free of anything marked would
+/// touch. That step runs <c>encodeURI()</c> (then undoes its own escaping
+/// of literal <c>%</c>) over the whole destination before it reaches the
+/// DOM, so a target whose <c>#fragment</c> carries a non-ASCII or otherwise
+/// URI-unsafe character -- the only place one can appear in an internal
+/// link target -- shows up in the rendered anchor's <c>href</c>
+/// percent-encoded, even though this field never is. <c>viewer.js</c>
+/// handles that: it looks the raw <c>href</c> up in the table first and,
+/// on a miss, retries with <c>decodeURI(href)</c> before giving up.
 /// </param>
 /// <param name="Href">The generated page's path, relative to the linking page.</param>
 /// <param name="Exists">Whether the target concept exists in the bundle.</param>

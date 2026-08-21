@@ -182,10 +182,16 @@ public class SiteModelTests
     {
         // RawTarget is ResolvedLink.Raw, which Links.cs's StripTitle has
         // already trimmed and stripped of an optional "title" suffix -- not
-        // the literal markdown source text. That is the right key: a
-        // CommonMark renderer (including marked, client-side) puts exactly
-        // this title-stripped string in the rendered anchor's href, so it is
-        // what viewer.js looks the link up by at render time.
+        // the literal markdown source text. That is the right key for a
+        // target like this one, whose path contains nothing marked's
+        // client-side cleanUrl step (encodeURI) would rewrite: a
+        // CommonMark renderer (including marked) then puts exactly this
+        // title-stripped string in the rendered anchor's href, so it is
+        // what viewer.js looks the link up by at render time. That
+        // byte-for-byte match is NOT a universal guarantee, though -- see
+        // Build_does_not_encode_a_non_ascii_fragment_in_the_table_key below
+        // for the case where a fragment defeats it, and viewer.js's
+        // decodeURI fallback that recovers from it.
         using var tmp = new TempDir();
         tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
         tmp.Write("a/b.md", "---\ntype: note\ntitle: B\ndescription: d\n---\nB.\n");
@@ -253,6 +259,30 @@ public class SiteModelTests
         var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
         var link = users.Links.Single(l => l.RawTarget == "../glossary/missing.md#usage");
         Assert.False(link.Exists);
+    }
+
+    [Fact]
+    public void Build_does_not_encode_a_non_ascii_fragment_in_the_table_key()
+    {
+        // I2: the table key is `ResolvedLink.Raw`, verbatim -- it is never
+        // run through anything resembling marked's client-side `encodeURI`
+        // step. Given ConceptId's restricted segment charset, a fragment is
+        // the only place a raw target can carry a character `encodeURI`
+        // would rewrite, so this locks in that the C# side does not attempt
+        // to pre-encode it: viewer.js is responsible for reconciling the
+        // (possibly percent-encoded) DOM href against this raw key.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        tmp.Write("a/b.md", "---\ntype: note\ntitle: B\ndescription: d\n---\nB.\n");
+        tmp.Write("tables/users.md",
+            "---\ntype: table\ntitle: Users\ndescription: d\n---\n"
+            + "See [x](../a/b.md#café).\n");
+
+        var site = SiteModel.Build(Bundle.Load(tmp.Path));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        var link = Assert.Single(users.Links);
+        Assert.Equal("../a/b.md#café", link.RawTarget);
     }
 
     [Fact]

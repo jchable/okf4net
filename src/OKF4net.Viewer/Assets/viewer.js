@@ -269,8 +269,28 @@
   var anchors = target.getElementsByTagName("a");
   for (var i = 0; i < anchors.length; i++) {
     var raw = anchors[i].getAttribute("href");
-    if (!raw || !Object.prototype.hasOwnProperty.call(map, raw)) { continue; }
-    var entry = map[raw];
+    if (!raw) { continue; }
+    var key = raw;
+    if (!Object.prototype.hasOwnProperty.call(map, key)) {
+      // marked's cleanUrl() step (see the big sanitizer comment above) runs
+      // encodeURI() over every link destination before it reaches the DOM,
+      // while the generation-time table below is keyed by the raw,
+      // un-encoded destination. Given ConceptId's restricted segment
+      // charset, the only place a target can carry a character encodeURI
+      // would rewrite is its #fragment -- e.g. `a/b.md#café` reaches here
+      // as `a/b.md#caf%C3%A9`, missing the raw key by construction even
+      // though the target is perfectly valid. Retry once with the encoding
+      // undone before giving up on the lookup.
+      try {
+        var decoded = decodeURI(key);
+        if (Object.prototype.hasOwnProperty.call(map, decoded)) { key = decoded; }
+      } catch (e) {
+        // Malformed percent-encoding: nothing left to recover, fall through
+        // to the miss below.
+      }
+    }
+    if (!Object.prototype.hasOwnProperty.call(map, key)) { continue; }
+    var entry = map[key];
     if (entry.exists) {
       anchors[i].setAttribute("href", entry.href);
     } else {

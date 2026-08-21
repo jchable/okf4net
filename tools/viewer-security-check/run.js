@@ -291,6 +291,24 @@ check("a broken link with a fragment is flagged broken and not given a live href
   assert(a.classList.contains("broken"), "broken link missing the 'broken' class");
 });
 
+check("a link whose fragment has non-ASCII chars is still rewired via a decodeURI fallback (I2)", () => {
+  // marked's cleanUrl() step runs encodeURI() on every link destination, so
+  // the DOM ends up with href="a/b.md#caf%C3%A9" even though the
+  // generation-time table is keyed by the raw, un-encoded string. A direct
+  // lookup on the DOM href therefore misses; viewer.js must retry with
+  // decodeURI(href) before giving up, or this link silently dies (and the
+  // C# side would have already counted it live and emitted a backlink).
+  const body = renderBody("[x](a/b.md#café)", {
+    "a/b.md#café": { href: "a/b.html#café", exists: true },
+  });
+  const a = body.querySelector("a");
+  assert(a, "expected an <a> to survive sanitization");
+  assert(
+    a.getAttribute("href") === "a/b.html#café",
+    `expected the encoded fragment to be rewired via the decodeURI fallback, got: ${a.getAttribute("href")}`
+  );
+});
+
 check("a plain image with alt text renders", () => {
   const body = renderBody("![A nice diagram](diagram.png)");
   const img = body.querySelector("img");
