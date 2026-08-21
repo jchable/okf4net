@@ -204,8 +204,15 @@ Règles de parsing des valeurs, pour lever toute ambiguïté :
 **Piège de parsing à ne pas rater.** `--trust`, `--status`, `--type` et `--as-of`
 consomment le token suivant : ils doivent être déclarés dans les `valuedFlags` de
 `Positional(args, "<bundle>", ...)`, sinon `okf audit --as-of 2099-06-01 mon/bundle`
-prendrait `2099-06-01` pour le chemin du bundle. C'est exactement ce que `--out`
-a résolu pour `render` ([OkfCli.cs:130](../../../src/OKF4net.Cli/OkfCli.cs#L130)).
+prendrait `2099-06-01` pour le chemin du bundle.
+
+**Dépendance de base à vérifier avant de commencer.** Ce mécanisme
+(`Positional(…, valuedFlags)`) et le helper `FlagValue` n'existent **pas** sur
+`origin/main` : ils ont été introduits par la branche
+`okf-bundle-viewer-static-render` pour `render --out`, non mergée. Sur une base
+qui ne les contient pas, `audit` doit les ajouter lui-même, en recopiant
+verbatim l'implémentation de cette branche pour que le conflit au merge se
+résolve à l'identique. Le plan d'implémentation en fait sa Task 0.
 
 ### 4.2 Deux modes de présentation, une seule sélection
 
@@ -335,7 +342,9 @@ alignée sur les autres — le verbe occupe 8 colonnes, d'où quatre espaces apr
 
 et étendre la ligne d'option existante en
 `--json           Machine-readable output for validate/info/audit`. Le commentaire
-de classe de `OkfCli` (« Seven subcommands ») passe à huit et cite `audit`.
+de classe de `OkfCli` énumère les sous-commandes et annonce leur nombre :
+l'incrémenter en comptant les verbes réellement présents sur la base (six sur
+`origin/main`, sept une fois le viewer mergé) et citer `audit`.
 
 ## 5. Unité 3 — tool agent `okf_audit`
 
