@@ -47,15 +47,26 @@ public static class SiteModel
     /// <param name="bundle">The loaded bundle to project.</param>
     public static ViewerSite Build(Bundle bundle)
     {
-        var pages = bundle.Concepts.Select(c => BuildPage(bundle, c)).ToList();
+        var concepts = bundle.Concepts;
+        var pages = new List<ViewerPage>(concepts.Count);
+        var entries = new List<IndexEntry>(concepts.Count);
 
-        var entries = pages
-            .Select(p => new IndexEntry(
-                Type: TypeOf(bundle, p.Id),
-                Title: p.Title,
-                Link: p.RelativeHtmlPath,
-                Description: DescriptionOf(bundle, p.Id)))
-            .ToList();
+        foreach (var concept in concepts)
+        {
+            // BuildPage already read this concept's frontmatter; reuse it
+            // here instead of a second bundle.Get(id) lookup for the index
+            // entry's Type/Description. The `?? string.Empty` fallbacks are
+            // load-bearing: IndexGenerator groups an empty `type` under
+            // "Other", so they must match the old TypeOf/DescriptionOf
+            // behaviour exactly.
+            var page = BuildPage(bundle, concept);
+            pages.Add(page);
+            entries.Add(new IndexEntry(
+                Type: concept.Document.Frontmatter.Type ?? string.Empty,
+                Title: page.Title,
+                Link: page.RelativeHtmlPath,
+                Description: concept.Document.Frontmatter.Description ?? string.Empty));
+        }
 
         return new ViewerSite(
             bundle.Root,
@@ -63,12 +74,6 @@ public static class SiteModel
             IndexGenerator.BuildIndexText(entries),
             bundle.ParseErrors.Select(e => new ViewerParseError(e.Path, e.Error)).ToList());
     }
-
-    private static string TypeOf(Bundle bundle, ConceptId id)
-        => bundle.Get(id)?.Document.Frontmatter.Type ?? string.Empty;
-
-    private static string DescriptionOf(Bundle bundle, ConceptId id)
-        => bundle.Get(id)?.Document.Frontmatter.Description ?? string.Empty;
 
     private static ViewerPage BuildPage(Bundle bundle, Concept concept)
     {
