@@ -90,7 +90,7 @@ public static class SiteModel
             .ToList();
 
         var links = bundle.LinksFrom(concept.Id)
-            .Select(l => new ViewerLink(l.Raw, RelativeHref(concept.Id, l.Target), l.Exists))
+            .Select(l => new ViewerLink(l.Raw, RelativeHref(concept.Id, l.Target) + FragmentOf(l.Raw), l.Exists))
             .ToList();
 
         var backlinks = bundle.Backlinks(concept.Id)
@@ -108,6 +108,28 @@ public static class SiteModel
             concept.Document.Body,
             links,
             backlinks);
+    }
+
+    /// <summary>
+    /// The <c>#fragment</c> suffix of a raw link target, including the
+    /// <c>#</c>, or the empty string when the target carries none.
+    ///
+    /// <see cref="ConceptLink.Resolve"/> strips the fragment before turning
+    /// the target into a <see cref="ConceptId"/> (concept ids cannot contain
+    /// <c>#</c>), so <see cref="RelativeHref"/> -- which operates on that
+    /// resolved id -- never sees it. Re-attaching it here, onto the
+    /// generated href, is what keeps a deep link such as
+    /// <c>[usage](a/b.md#usage)</c> landing on <c>a/b.html#usage</c> instead
+    /// of the top of the target page. Applied unconditionally, including for
+    /// links to a missing concept: <c>viewer.js</c> only ever reads that
+    /// entry's <c>href</c> when its <c>exists</c> flag is true, so a
+    /// fragment tagging along on a broken link's (unused) href is inert, not
+    /// "bogus" in any observable sense.
+    /// </summary>
+    private static string FragmentOf(string raw)
+    {
+        var idx = raw.IndexOf('#');
+        return idx >= 0 ? raw[idx..] : string.Empty;
     }
 
     /// <summary>

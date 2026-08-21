@@ -212,6 +212,50 @@ public class SiteModelTests
     }
 
     [Fact]
+    public void Build_preserves_a_fragment_onto_the_rewired_href_for_an_existing_target()
+    {
+        // I1: `RelativeHref` operates on the resolved `ConceptId`, which
+        // never carries a fragment (concept ids cannot contain `#`), so a
+        // deep link's `#usage` must be re-attached from the raw target
+        // string onto the generated href -- otherwise every deep link lands
+        // on the top of the target page instead of the section it named.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        tmp.Write("a/b.md", "---\ntype: note\ntitle: B\ndescription: d\n---\n## Usage\nBody.\n");
+        tmp.Write("tables/users.md",
+            "---\ntype: table\ntitle: Users\ndescription: d\n---\n"
+            + "See [the usage section](../a/b.md#usage).\n");
+
+        var site = SiteModel.Build(Bundle.Load(tmp.Path));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        var link = users.Links.Single(l => l.RawTarget == "../a/b.md#usage");
+        Assert.True(link.Exists);
+        Assert.Equal("../a/b.html#usage", link.Href);
+    }
+
+    [Fact]
+    public void Build_still_flags_a_fragment_link_to_a_missing_concept_as_broken()
+    {
+        // I1, the broken-link half: splitting off the fragment must not
+        // change the existence check (ConceptLink.Resolve already strips it
+        // before resolving), and a fragment tagging along on a broken
+        // link's href is harmless -- viewer.js never reads href when
+        // exists is false.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        tmp.Write("tables/users.md",
+            "---\ntype: table\ntitle: Users\ndescription: d\n---\n"
+            + "See [gone](../glossary/missing.md#usage).\n");
+
+        var site = SiteModel.Build(Bundle.Load(tmp.Path));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        var link = users.Links.Single(l => l.RawTarget == "../glossary/missing.md#usage");
+        Assert.False(link.Exists);
+    }
+
+    [Fact]
     public void Build_leaves_external_and_anchor_links_out_of_the_rewiring_table()
     {
         using var tmp = new TempDir();

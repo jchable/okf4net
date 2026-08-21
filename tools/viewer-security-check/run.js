@@ -27,8 +27,13 @@ const viewerSource = fs.readFileSync(path.join(ASSETS, "viewer.js"), "utf8");
  * is covered separately by `HtmlSafeJsonTests.cs`; this harness starts one
  * step downstream of that, exactly where marked.parse() and viewer.js's
  * sanitizer take over.
+ *
+ * @param {string} markdown
+ * @param {object} [links] The generation-time link-rewiring table
+ *   (`payload.links`), keyed exactly as `SiteModel`/`HtmlWriter` would emit
+ *   it. Defaults to `{}` for tests that don't exercise rewiring.
  */
-function renderBody(markdown) {
+function renderBody(markdown, links) {
   const dom = new JSDOM(
     `<!doctype html><html><body>
       <div id="okf-body"></div>
@@ -40,7 +45,7 @@ function renderBody(markdown) {
   const { window } = dom;
   window.document.getElementById("okf-payload").textContent = JSON.stringify({
     body: markdown,
-    links: {},
+    links: links || {},
   });
 
   // Evaluated in write order, exactly as the generated page's
@@ -262,6 +267,28 @@ check("a relative link is left intact", () => {
   const body = renderBody("[term](../glossary/term.md)");
   const a = body.querySelector("a");
   assert(a && a.getAttribute("href") === "../glossary/term.md", "relative link href was altered or stripped");
+});
+
+check("a link with a fragment is rewired to the target page keeping the fragment (I1)", () => {
+  const body = renderBody("[the usage section](a/b.md#usage)", {
+    "a/b.md#usage": { href: "a/b.html#usage", exists: true },
+  });
+  const a = body.querySelector("a");
+  assert(a, "expected an <a> to survive sanitization");
+  assert(
+    a.getAttribute("href") === "a/b.html#usage",
+    `expected the fragment to survive rewiring, got: ${a.getAttribute("href")}`
+  );
+});
+
+check("a broken link with a fragment is flagged broken and not given a live href (I1)", () => {
+  const body = renderBody("[gone](a/missing.md#usage)", {
+    "a/missing.md#usage": { href: "a/missing.html#usage", exists: false },
+  });
+  const a = body.querySelector("a");
+  assert(a, "expected an <a> to survive sanitization");
+  assert(!a.hasAttribute("href"), "broken link retained an href");
+  assert(a.classList.contains("broken"), "broken link missing the 'broken' class");
 });
 
 check("a plain image with alt text renders", () => {
