@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
 using System.Text;
 using OKF4net.Internal;
 using OKF4net.Viewer;
@@ -6,10 +7,10 @@ using OKF4net.Viewer;
 namespace OKF4net.Cli;
 
 /// <summary>
-/// The <c>okf</c> command-line tool. Seven subcommands (<c>validate</c>,
-/// <c>info</c>, <c>index</c>, <c>graph</c>, <c>parse</c>, <c>fmt</c>,
-/// <c>render</c>) over hand-rolled argument parsing -- no third-party
-/// dependencies.
+/// The <c>okf</c> command-line tool. Eight subcommands (<c>validate</c>,
+/// <c>audit</c>, <c>info</c>, <c>index</c>, <c>graph</c>, <c>parse</c>,
+/// <c>fmt</c>, <c>render</c>) over hand-rolled argument parsing -- no
+/// third-party dependencies.
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// CLI in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -29,6 +30,7 @@ public static class OkfCli
         "\n" +
         "COMMANDS:\n" +
         "    validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)\n" +
+        "    audit    <bundle>    Report trust, freshness and lifecycle across the bundle\n" +
         "    info     <bundle>    Summarize a bundle (concepts, types, links, version)\n" +
         "    index    <bundle>    (Re)generate every index.md in the bundle\n" +
         "    graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)\n" +
@@ -39,7 +41,7 @@ public static class OkfCli
         "OPTIONS:\n" +
         "    -h, --help           Show this help\n" +
         "    -V, --version        Show version\n" +
-        "        --json           Machine-readable output for validate/info\n" +
+        "        --json           Machine-readable output for validate/info/audit\n" +
         "        --out <dir>      Output directory for `render`";
 
     /// <summary>
@@ -86,6 +88,7 @@ public static class OkfCli
             return cmd switch
             {
                 "validate" => CmdValidate(rest, stdout),
+                "audit" => CmdAudit(rest, stdout),
                 "info" => CmdInfo(rest, stdout),
                 "index" => CmdIndex(rest, stdout),
                 "graph" => CmdGraph(rest, stdout),
@@ -311,6 +314,169 @@ public static class OkfCli
 
         stdout.Write($"✗ not conformant with OKF v{OkfSpec.Version}\n");
         return 1;
+    }
+
+    /// <summary>The flags that make <c>audit</c> a filtered query rather than a report.</summary>
+    private static readonly string[] AuditFilterFlags = ["--stale", "--trust", "--status", "--type"];
+
+    /// <summary>Every <c>audit</c> flag that consumes the following token as its value.</summary>
+    private static readonly string[] AuditValuedFlags = ["--trust", "--status", "--type", "--as-of"];
+
+    /// <summary>An <see cref="IOkfClock"/> pinned to one date, backing <c>--as-of</c>.</summary>
+    private sealed class PinnedClock(DateOnly today) : IOkfClock
+    {
+        public DateOnly Today { get; } = today;
+    }
+
+    /// <summary>Implements the <c>audit</c> subcommand.</summary>
+    private static int CmdAudit(string[] args, TextWriter stdout)
+    {
+        // Flag values are validated BEFORE the positional is resolved. An
+        // unvalued flag is the more specific diagnosis, and `okf audit --as-of`
+        // -- the flag as the only argument -- would otherwise report
+        // "missing <bundle>" and hide the actual mistake, because Positional
+        // skips a valued flag's slot without checking that it has a value.
+        var clock = ParseAsOf(args);
+
+        // Report mode selects exactly what --stale selects; only the
+        // presentation differs. --as-of and --json never switch modes.
+        var filtered = AuditFilterFlags.Any(f => HasFlag(args, f));
+        var query = filtered ? ParseAuditQuery(args) : new AuditQuery(StaleOnly: true);
+
+        var path = Positional(args, "<bundle>", AuditValuedFlags);
+        var bundle = Load(path);
+        var report = ConceptAudit.Run(bundle, query, clock);
+
+        if (HasFlag(args, "--json"))
+        {
+            JsonOutput.WriteAudit(stdout, path, query, report);
+            return 0;
+        }
+
+        if (filtered)
+        {
+            foreach (var finding in report.Findings)
+            {
+                stdout.Write(FormatAuditFinding(finding));
+                stdout.Write("\n");
+            }
+
+            return 0;
+        }
+
+        WriteAuditReport(stdout, path, report);
+        return 0;
+    }
+
+    /// <summary>Parses <c>--as-of</c>; null when absent (the audit then uses the system clock).</summary>
+    private static IOkfClock? ParseAsOf(string[] args)
+    {
+        var raw = FlagValue(args, "--as-of");
+        if (raw is null)
+        {
+            return null;
+        }
+
+        // DateOnly has no (s, format, provider, out) overload -- the five-argument
+        // form is the only one that takes a culture, and it is the same contract
+        // Lifecycle.From uses for stale_after.
+        if (!DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var asOf))
+        {
+            throw new CliOperationException($"--as-of is not a valid YYYY-MM-DD date: \"{raw}\"");
+        }
+
+        return new PinnedClock(asOf);
+    }
+
+    /// <summary>Builds the query from the filter flags. Throws <see cref="CliOperationException"/> on an unknown vocabulary value.</summary>
+    private static AuditQuery ParseAuditQuery(string[] args)
+    {
+        HashSet<TrustTier>? tiers = null;
+        var trustRaw = FlagValue(args, "--trust");
+        if (trustRaw is not null)
+        {
+            tiers = [];
+            foreach (var entry in trustRaw.Split(','))
+            {
+                if (!AuditVocabulary.TryParseTrustTier(entry.Trim(), out var tier))
+                {
+                    throw new CliOperationException(
+                        $"unknown trust tier \"{entry.Trim()}\"; expected unverified, machine-confirmed or human-reviewed");
+                }
+
+                tiers.Add(tier);
+            }
+        }
+
+        ConceptStatus? status = null;
+        var statusRaw = FlagValue(args, "--status");
+        if (statusRaw is not null)
+        {
+            if (!AuditVocabulary.TryParseStatus(statusRaw.Trim(), out var parsed))
+            {
+                throw new CliOperationException(
+                    $"unknown status \"{statusRaw.Trim()}\"; expected draft, stable or deprecated");
+            }
+
+            status = parsed;
+        }
+
+        return new AuditQuery(
+            HasFlag(args, "--stale"),
+            tiers,
+            status,
+            FlagValue(args, "--type"));
+    }
+
+    /// <summary>Renders one concept line: id, freshness, trust tier, status -- two spaces between fields.</summary>
+    private static string FormatAuditFinding(AuditFinding finding)
+    {
+        var freshness = finding.Lifecycle.StaleAfter is { } date
+            ? (finding.IsStale ? "stale " : "fresh ") + date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            : "no-stale-after";
+
+        return $"{finding.Id}  {freshness}  {AuditVocabulary.Name(finding.Trust)}  {AuditVocabulary.Name(finding.Lifecycle.Status)}";
+    }
+
+    /// <summary>Renders the report form: summary counters over the whole bundle, then the worklist.</summary>
+    private static void WriteAuditReport(TextWriter stdout, string bundlePath, AuditReport report)
+    {
+        stdout.Write($"bundle:     {bundlePath}\n");
+        stdout.Write($"as of:      {report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}\n");
+        stdout.Write($"concepts:   {report.ConceptCount}\n");
+
+        // Labels always come from AuditVocabulary -- never as literals here.
+        // Duplicating them in each renderer is exactly the drift the shared
+        // vocabulary exists to prevent. Only the ORDER is decided locally: the
+        // report shows the strongest tier first, so it walks the canonical
+        // (weakest-first) list in reverse.
+        stdout.Write("\ntrust:\n");
+        foreach (var tier in AuditVocabulary.TrustTiersInOrder.Reverse())
+        {
+            stdout.Write($"  {report.TrustCounts[tier],4}  {AuditVocabulary.Name(tier)}\n");
+        }
+
+        stdout.Write("\nstatus:\n");
+        foreach (var status in AuditVocabulary.StatusesInOrder)
+        {
+            stdout.Write($"  {report.StatusCounts[status],4}  {AuditVocabulary.Name(status)}\n");
+        }
+
+        stdout.Write($"\nstale:      {report.StaleCount} of {report.ConceptCount} past stale_after\n");
+
+        if (report.Findings.Count == 0)
+        {
+            stdout.Write("\nneeds attention: none\n");
+            return;
+        }
+
+        stdout.Write($"\nneeds attention ({report.Findings.Count}):\n");
+        foreach (var finding in report.Findings)
+        {
+            stdout.Write("  ");
+            stdout.Write(FormatAuditFinding(finding));
+            stdout.Write("\n");
+        }
     }
 
     /// <summary>Implements the <c>info</c> subcommand.</summary>
