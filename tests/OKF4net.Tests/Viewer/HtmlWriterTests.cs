@@ -150,6 +150,42 @@ public class HtmlWriterTests
     }
 
     [Fact]
+    public void Write_refuses_a_page_escaping_into_a_sibling_differing_only_by_case()
+    {
+        // On a case-SENSITIVE volume, `<out>/../viewerout/x.html` and an
+        // output directory named `ViewerOut` are two genuinely different
+        // directories -- so this page escapes. Comparing the containment
+        // check OrdinalIgnoreCase would call the escaping path a text prefix
+        // of the root and let the write through, which is why this guard
+        // must compare Ordinal: it decides whether to ALLOW a write, so its
+        // safe failure mode is refusing a legitimate case-variant, never
+        // admitting a genuinely different directory. (The opposite-polarity
+        // guard on `--out` itself deliberately keeps OrdinalIgnoreCase --
+        // see GuardOutputDirectory's remarks.)
+        //
+        // The decision under test is pure string arithmetic, so this pins
+        // the guard on every platform, including a case-insensitive one
+        // where the escape itself would not be observable.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "ViewerOut");
+        var goodSite = SiteModel.Build(SampleBundle(src));
+
+        var escapingPage = new ViewerPage(
+            goodSite.Pages[0].Id,
+            "Escaping",
+            "../viewerout/pwned.html",
+            [],
+            "body",
+            [],
+            []);
+        var site = new ViewerSite(src.Path, [escapingPage], string.Empty, []);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, outDir));
+        Assert.Contains("outside", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Write_refuses_the_bundle_root_itself_as_the_output_directory()
     {
         using var src = new TempDir();

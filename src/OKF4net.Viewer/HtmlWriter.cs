@@ -191,19 +191,22 @@ public static class HtmlWriter
     /// public constructor in a reusable library, so a third-party host can
     /// construct one with <c>RelativeHtmlPath</c> set to something like
     /// <c>../../../evil.html</c> and reach this method with no
-    /// <see cref="ConceptId"/> validation in between. Uses the same
-    /// <see cref="StringComparison.OrdinalIgnoreCase"/> comparison as
-    /// <see cref="GuardOutputDirectory"/>, for the same polarity reason
-    /// documented on its remarks: this check also decides whether to ALLOW a
-    /// write (into <paramref name="outDir"/>), so its safe failure mode is
-    /// the broader "treat as a case-insensitive match" -- on a
-    /// case-insensitive volume, failing to recognize a legitimate
-    /// case-variant path as being inside <paramref name="outDir"/> would
-    /// wrongly refuse a write that was actually safe, whereas the reverse
-    /// mistake (a genuinely different, case-sensitive path being let through)
-    /// cannot happen: an OrdinalIgnoreCase-only match against the resolved
-    /// root still requires the resolved path to be a text prefix of the
-    /// resolved root, which a traversal outside it is not.
+    /// <see cref="ConceptId"/> validation in between. Compares
+    /// <see cref="StringComparison.Ordinal"/> -- deliberately the OPPOSITE
+    /// choice from <see cref="GuardOutputDirectory"/> just above, because the
+    /// two guards have opposite polarities and the safe failure direction
+    /// flips with the polarity. <see cref="GuardOutputDirectory"/> decides
+    /// whether to REFUSE, so over-matching is safe there. This one decides
+    /// whether to ALLOW a write, so over-matching means over-ALLOWING: on a
+    /// case-SENSITIVE volume, <c>outDir</c> <c>/tmp/ViewerOut</c> and a page
+    /// path resolving to <c>/tmp/viewerout/pwned.html</c> are two genuinely
+    /// different directories, yet <c>OrdinalIgnoreCase</c> would call the
+    /// second a prefix-match of the first and let the escaping write
+    /// through. <c>Ordinal</c>'s failure mode is the harmless one: on a
+    /// case-insensitive volume a legitimate case-variant path is refused and
+    /// the caller passes a consistently-cased path instead. This is the
+    /// direction <see cref="ReparsePoints.IsWithin"/>'s own remarks require
+    /// of a containment check that gates permission rather than refusal.
     ///
     /// <c>relativePath</c> passing the lexical check above is not the whole
     /// story: mirrors <c>Bundle.TryResolveResource</c>'s §6.2 model (its
@@ -222,7 +225,7 @@ public static class HtmlWriter
         var root = ReparsePoints.CanonicalizeRoot(outDir);
         var resolved = Path.GetFullPath(fullPath);
 
-        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
+        const StringComparison comparison = StringComparison.Ordinal;
 
         if (!ReparsePoints.IsWithin(root, resolved, comparison)
             || ReparsePoints.IsReparsePoint(resolved)
