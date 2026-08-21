@@ -265,6 +265,24 @@
   // file that does not exist in the generated site: it fails open (a dead
   // link, not a broken page), and the syntax is rare enough that this has
   // been left as a documented gap rather than fixed.
+  //
+  // Known limitation, same shape: a reference-style link -- `[x][ref]`
+  // with a separate `[ref]: ../glossary/term.md` definition elsewhere in
+  // the body -- is never rewired either. `LinkScanner` (src/OKF4net/Links.cs)
+  // only extracts inline `[text](dest)` links, so a reference-style target
+  // never reaches `payload.links` at all, while marked still resolves the
+  // reference and emits `href="../glossary/term.md"` verbatim. Same failure
+  // mode as the angle-bracket case: a dead link to a `.md` file that does
+  // not exist in the generated site, and no backlink recorded on the
+  // target. Latent rather than fixed here -- a full rendering of both
+  // bundles/ga4 and bundles/acme_retail produced zero surviving `.md`
+  // anchors, so this has not been observed to matter on a real bundle, but
+  // the gap is real. A possible cheap general safety net for both of these
+  // gaps, not implemented here: after this rewiring loop runs, any
+  // remaining anchor whose href still ends in `.md` is by construction a
+  // link the table missed (every href this loop actually rewires becomes
+  // `.html`), so a follow-up pass could flag or neutralize those on sight
+  // without needing to know *why* each one was missed.
   var map = payload.links || {};
   var anchors = target.getElementsByTagName("a");
   for (var i = 0; i < anchors.length; i++) {
