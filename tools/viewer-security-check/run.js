@@ -177,5 +177,33 @@ check("a plain image with alt text renders", () => {
   assert(img.getAttribute("alt") === "A nice diagram", "image alt text was altered or stripped");
 });
 
+check("an unchecked GFM task-list item renders a hollow-box text marker, not a live checkbox", () => {
+  const body = renderBody("- [ ] todo");
+  const li = body.querySelector("li");
+  assert(li, "expected a <li> to survive");
+  assert(body.querySelectorAll("input").length === 0, "a raw <input> element survived sanitization");
+  const text = li.textContent.replace(/\s+/g, " ").trim();
+  assert(text === "☐ todo", `expected hollow-box marker text "☐ todo", got: ${JSON.stringify(li.textContent)}`);
+});
+
+check("a checked GFM task-list item renders a checked-box text marker, not a live checkbox", () => {
+  const body = renderBody("- [x] done");
+  const li = body.querySelector("li");
+  assert(li, "expected a <li> to survive");
+  assert(body.querySelectorAll("input").length === 0, "a raw <input> element survived sanitization");
+  const text = li.textContent.replace(/\s+/g, " ").trim();
+  assert(text === "☑ done", `expected checked-box marker text "☑ done", got: ${JSON.stringify(li.textContent)}`);
+});
+
+check("a mixed task list keeps checked and unchecked items visually distinct", () => {
+  const body = renderBody("- [ ] a faire\n- [x] fait\n");
+  const items = body.querySelectorAll("li");
+  assert(items.length === 2, `expected 2 <li>, found ${items.length}`);
+  const first = items[0].textContent.replace(/\s+/g, " ").trim();
+  const second = items[1].textContent.replace(/\s+/g, " ").trim();
+  assert(first === "☐ a faire", `expected unchecked item text, got: ${JSON.stringify(items[0].textContent)}`);
+  assert(second === "☑ fait", `expected checked item text, got: ${JSON.stringify(items[1].textContent)}`);
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);

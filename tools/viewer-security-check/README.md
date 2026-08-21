@@ -9,7 +9,8 @@ and
 asserting the resulting DOM is inert (no live event handlers, no dangerous
 URL schemes, no raw `<script>`/`<svg onload>` survives). A second battery of
 ordinary markdown (heading, list, bold, fenced code, relative link, plain
-image) asserts the sanitizer isn't so aggressive it breaks normal rendering.
+image, GFM task-list checked/unchecked markers) asserts the sanitizer isn't
+so aggressive it breaks normal rendering.
 
 ## Why this exists
 

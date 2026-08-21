@@ -134,7 +134,9 @@
   }
 
   function sanitizeAttributes(el) {
-    var allowed = ALLOWED_ATTRS[el.tagName] || {};
+    var allowed = Object.prototype.hasOwnProperty.call(ALLOWED_ATTRS, el.tagName)
+      ? ALLOWED_ATTRS[el.tagName]
+      : {};
     // Snapshot names first: removing attributes while iterating the live
     // attributes NamedNodeMap skips entries.
     var names = [];
@@ -155,12 +157,30 @@
     for (var i = 0; i < all.length; i++) {
       var node = all[i];
       if (!node.parentNode) { continue; } // already detached by an ancestor's removal
-      if (!ALLOWED_TAGS[node.tagName]) {
-        // Drop the element but keep its text so a disallowed wrapper does
-        // not silently delete surrounding prose; nothing about its markup
-        // (attributes, nested elements) survives the swap.
-        var text = node.ownerDocument.createTextNode(node.textContent || "");
-        node.parentNode.replaceChild(text, node);
+      if (!Object.prototype.hasOwnProperty.call(ALLOWED_TAGS, node.tagName)) {
+        var replacement;
+        if (node.tagName === "INPUT" && (node.getAttribute("type") || "").toLowerCase() === "checkbox") {
+          // GFM task-list checkbox (`- [ ] foo` / `- [x] foo`): marked emits
+          // `<input type="checkbox" disabled>`, with a `checked` attribute
+          // added when ticked. INPUT is not on ALLOWED_TAGS -- a live form
+          // control has no business in rendered prose -- but falling through
+          // to the generic branch below would silently erase real
+          // information: a reader could no longer tell a done item from a
+          // pending one. Read the checked state (a boolean presence check,
+          // never a value we emit) before the element and every attribute on
+          // it is discarded, and substitute a plain text marker instead. A
+          // text node cannot execute, so this keeps the exact same security
+          // property as the generic branch (no element, no attributes,
+          // nothing left to sanitize) while keeping the state visible.
+          var marker = node.hasAttribute("checked") ? "☑" : "☐"; // checked box / empty box
+          replacement = node.ownerDocument.createTextNode(marker + " ");
+        } else {
+          // Drop the element but keep its text so a disallowed wrapper does
+          // not silently delete surrounding prose; nothing about its markup
+          // (attributes, nested elements) survives the swap.
+          replacement = node.ownerDocument.createTextNode(node.textContent || "");
+        }
+        node.parentNode.replaceChild(replacement, node);
         continue;
       }
       sanitizeAttributes(node);
@@ -186,6 +206,15 @@
 
   // Rewire internal links from the generation-time table. Anything absent
   // from the table (external URLs, anchors) is left exactly as authored.
+  //
+  // Known limitation: a link written with angle-bracket syntax --
+  // `[x](<../glossary/term.md>)` -- is never rewired. The C# side that
+  // builds `payload.links` rejects the `<`-prefixed segment, so it never
+  // enters this table, while marked still emits `href="../glossary/term.md"`
+  // verbatim (without the angle brackets). The result is a link to a `.md`
+  // file that does not exist in the generated site: it fails open (a dead
+  // link, not a broken page), and the syntax is rare enough that this has
+  // been left as a documented gap rather than fixed.
   var map = payload.links || {};
   var anchors = target.getElementsByTagName("a");
   for (var i = 0; i < anchors.length; i++) {

@@ -29,7 +29,8 @@ namespace OKF4net.Tests.Viewer;
 /// onload&gt;</c>, and nested HTML in alt text — confirming no executable
 /// output and no attribute breakout in any case, plus a battery of ordinary
 /// markdown (headings, lists, bold, fenced code, relative links, plain
-/// image alt-text) confirming the sanitizer isn't over-aggressive either.
+/// image alt-text, GFM task-list checked/unchecked markers) confirming the
+/// sanitizer isn't over-aggressive either.
 /// Run it with <c>npm install &amp;&amp; npm test</c> from that directory;
 /// see its README for why it is deliberately not wired into CI and when to
 /// run it (whenever <c>marked.min.js</c> is bumped).
@@ -124,5 +125,27 @@ public class ViewerAssetsTests
         Assert.Contains("\"mailto:\"", ViewerAssets.ViewerJs);
         Assert.DoesNotContain("\"javascript:\": 1", ViewerAssets.ViewerJs);
         Assert.DoesNotContain("\"data:\": 1", ViewerAssets.ViewerJs);
+    }
+
+    [Fact]
+    public void ViewerJs_sanitizer_replaces_task_list_checkboxes_with_text_markers()
+    {
+        // GFM task lists (`- [ ] foo` / `- [x] foo`) render as
+        // `<input type="checkbox" disabled>` (plus `checked` when ticked) in
+        // marked's output. INPUT is rightly not allowlisted -- it is a live
+        // form control -- but silently dropping it via the generic "keep
+        // only the text" branch used for every other disallowed element
+        // would erase real information: a reader could no longer tell a done
+        // item from a pending one. The sanitizer special-cases it instead,
+        // substituting a plain Unicode text marker (checked box / empty box)
+        // that carries no attributes and cannot execute, rather than
+        // allowlisting the element. Smoke check only — see the class
+        // remarks; the real DOM assertions (no <input> survives, checked vs.
+        // unchecked items render visually distinct text) live in
+        // tools/viewer-security-check/run.js.
+        Assert.Contains("\"checkbox\"", ViewerAssets.ViewerJs);
+        Assert.Contains('☑', ViewerAssets.ViewerJs);
+        Assert.Contains('☐', ViewerAssets.ViewerJs);
+        Assert.DoesNotContain("INPUT: 1", ViewerAssets.ViewerJs);
     }
 }
