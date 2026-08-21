@@ -93,16 +93,22 @@ public class AuditTests
     }
 
     [Fact]
-    public void Findings_are_sorted_by_concept_id_ordinal()
+    public void Findings_are_sorted_by_concept_id_component_wise()
     {
         using var tmp = new TempDir();
         tmp.Write("zeta.md", "---\ntype: Metric\n---\n");
         tmp.Write("alpha.md", "---\ntype: Metric\n---\n");
         tmp.Write("mid/beta.md", "---\ntype: Metric\n---\n");
+        // Discriminating pair: component-wise ordering differs from flat ordinal.
+        // ConceptId.CompareTo compares segments; "orders/extra" has segments ["orders", "extra"],
+        // and "orders-extra" is a single segment. The first segment "orders" < "orders-extra",
+        // so "orders/extra" comes before "orders-extra" under component-wise ordering.
+        tmp.Write("orders-extra.md", "---\ntype: Metric\n---\n");
+        tmp.Write("orders/extra.md", "---\ntype: Metric\n---\n");
 
         var findings = Audit(tmp).Findings.Select(f => f.Id.ToString()).ToList();
 
-        Assert.Equal(["alpha", "mid/beta", "zeta"], findings);
+        Assert.Equal(["alpha", "mid/beta", "orders/extra", "orders-extra", "zeta"], findings);
     }
 
     [Fact]

@@ -224,7 +224,7 @@ public static class ConceptAudit
                 isStale));
         }
 
-        findings.Sort(static (a, b) => string.CompareOrdinal(a.Id.ToString(), b.Id.ToString()));
+        findings.Sort(static (a, b) => a.Id.CompareTo(b.Id));
 
         return new AuditReport(asOf, bundle.Count, trustCounts, statusCounts, staleCount, findings);
     }
