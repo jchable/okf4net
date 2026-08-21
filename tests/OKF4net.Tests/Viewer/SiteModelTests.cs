@@ -36,6 +36,32 @@ public class SiteModelTests
         => Assert.Equal("../../b.html",
             SiteModel.RelativeHref(ConceptId.Parse("a/b/c"), ConceptId.Parse("b")));
 
+    [Fact]
+    public void RelativeHref_when_an_ancestor_segment_collides_with_a_shallower_concept_name()
+    {
+        // from = a/b/c lives in directory a/b. to = a/b is itself a concept,
+        // but "a/b" is also a *directory prefix* of `from` -- the common-prefix
+        // walk only compares fromDir against to's directory segments (all but
+        // to's last), so common stops at 1 ("a") rather than matching "b" too:
+        // toPath.Count - 1 = 1, so the loop bound never lets common reach 2.
+        // That leaves one level to walk up (fromDir.Count - common = 2 - 1 = 1)
+        // and "b" (to's own last segment) to walk back down to.
+        Assert.Equal("../b.html",
+            SiteModel.RelativeHref(ConceptId.Parse("a/b/c"), ConceptId.Parse("a/b")));
+    }
+
+    [Fact]
+    public void RelativeHref_reverse_when_the_target_nests_under_a_same_named_concept()
+    {
+        // from = a/b sits in directory a (fromDir = ["a"]). to = a/b/c's
+        // directory prefix is ["a","b"]; the common-prefix walk matches only
+        // "a" (common = 1) since fromDir has just one segment to offer, so no
+        // "../" is needed (fromDir.Count - common = 0) and the remaining
+        // "b/c" of to's path is walked straight down to.
+        Assert.Equal("b/c.html",
+            SiteModel.RelativeHref(ConceptId.Parse("a/b"), ConceptId.Parse("a/b/c")));
+    }
+
     private static Bundle LoadBundle(TempDir tmp)
     {
         tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root index\nokf_version: \"0.2\"\n---\n");
