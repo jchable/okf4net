@@ -192,3 +192,12 @@ them a re-capture from the (removed) Rust binary:
     (same diagnostic construction, different caught exception type), so
     the risk of it being wrong is low, but it remains unexercised by an
     automated test.
+
+## `okf audit` goldens (2026-08-21)
+
+- `golden/audit-v02.out`, `golden/audit-v02.json` — output of
+  `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01` (and its `--json`
+  form). **Hand-authored**, verified against the spec text (§5.3 trust tiers,
+  §5.4 statuses, §5.5 staleness) rather than captured from the reference CLI:
+  `audit` is an OKF4net verb with no upstream counterpart. The `--as-of` date
+  is pinned so the output cannot drift with the calendar.
