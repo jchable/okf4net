@@ -10,6 +10,12 @@ and this project adheres to
 
 ### Added
 
+- `okf audit` — a corpus-level query over a bundle's trust (§5.3), lifecycle
+  (§5.4) and staleness (§5.5) signals: counts plus a filterable worklist, with
+  `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by
+  the new `ConceptAudit` in the core library and exposed to agents as the
+  read-only `okf_audit` tool.
+
 - **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
   HTML site from a bundle: one page per concept (frontmatter table + rendered
   body), a generated index, navigable cross-links with broken links flagged,

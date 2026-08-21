@@ -176,6 +176,7 @@ On any OS, build from source — see [Building & testing](#building--testing).
 
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
+okf audit    <bundle>    Query trust, freshness and lifecycle signals (§5.3–§5.5)
 okf info     <bundle>    Summarize a bundle (concepts, types, links, version)
 okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
@@ -191,6 +192,21 @@ straight into CI:
 okf validate ./bundles/ga4
 okf graph ./bundles/ga4 --dot | dot -Tsvg > graph.svg
 ```
+
+`okf audit <bundle>` reports trust, freshness and lifecycle across a whole
+bundle: counts per trust tier (§5.3) and status (§5.4), plus the worklist of
+stale concepts (§5.5). Filter it to ask corpus-level questions —
+
+```sh
+# Which concepts are past stale_after and were never verified by a human?
+okf audit bundles/acme_retail --stale --trust unverified,machine-confirmed
+```
+
+Without filter flags it selects exactly what `--stale` selects and prints the
+summary form; with any filter flag it prints one line per matching concept, so
+the output pipes. `--json` always emits the full document. Note the counts
+always cover the whole bundle while `findings` covers the selection: `audit` is
+a worklist, not an inventory (use `okf info --json` for that).
 
 Generate a browsable HTML site from a bundle:
 
@@ -508,6 +524,7 @@ This table is also published as the
 | §4 Concept documents                  | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
 | §4.2 Body headings                    | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
 | §5 Provenance, trust, and lifecycle   | `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/`Status`/`StaleAfter`, `Actor`/`Trust`/`Provenance`/`Lifecycle` |
+| §5.3–§5.5 | `ConceptAudit`, `AuditQuery`, `AuditReport` — corpus-level trust/freshness query behind `okf audit` and `okf_audit` |
 | §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
 | §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
 | §7 Actor convention                   | `OKF4net.Actor.Parse` — `human:`/`process:`/`<producer>/<version>` |
