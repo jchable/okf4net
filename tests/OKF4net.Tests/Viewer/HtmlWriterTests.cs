@@ -203,6 +203,56 @@ public class HtmlWriterTests
             : c).ToArray());
 
     [Fact]
+    public void Write_refuses_an_out_dir_that_is_a_junction_resolving_inside_the_bundle()
+    {
+        // Reproduces the demonstrated bypass: `--out` is not lexically inside
+        // the bundle (Path.GetFullPath never dereferences a reparse point),
+        // but the junction/symlink resolves to a real directory INSIDE the
+        // bundle -- exactly what GuardOutputDirectory exists to refuse.
+        //   mklink /J <linkHost>\vlink <bundle>\generated-site
+        //   okf render <bundle> --out <linkHost>\vlink
+        using var src = new TempDir();
+        using var linkHost = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+
+        var insideBundle = Path.Combine(src.Path, "generated-site");
+        Directory.CreateDirectory(insideBundle);
+
+        if (!linkHost.TryCreateJunctionToExternalDir("vlink", insideBundle))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var outDir = Path.Combine(linkHost.Path, "vlink");
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, outDir));
+        Assert.Contains("bundle", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Write_refuses_when_a_planted_reparse_point_inside_the_output_directory_escapes_it()
+    {
+        // Mirrors the same underlying flaw (Path.GetFullPath doesn't
+        // dereference reparse points) on GuardWithinOutputDirectory's side:
+        // "dest/tables" is planted as a junction pointing OUTSIDE dest before
+        // Write ever touches it, so writing "tables/users.html" would
+        // otherwise silently land inside `external`, not `dest`.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        using var external = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+
+        if (!dest.TryCreateJunctionToExternalDir("tables", external.Path))
+        {
+            return; // no junction/symlink privilege on this machine -- skip.
+        }
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, dest.Path));
+        Assert.Contains("outside", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(Path.Combine(external.Path, "users.html")));
+    }
+
+    [Fact]
     public void Write_surfaces_parse_errors_on_the_index_page()
     {
         using var src = new TempDir();

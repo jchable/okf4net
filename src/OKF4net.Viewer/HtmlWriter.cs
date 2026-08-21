@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
+using OKF4net.Internal;
 
 namespace OKF4net.Viewer;
 
@@ -73,20 +74,97 @@ public static class HtmlWriter
     /// genuinely case-sensitive volume, a case-variant out-dir is rejected
     /// with a clear error and the user picks another directory -- strictly
     /// better than the alternative of silently polluting the bundle.
+    ///
+    /// The same "prefer to over-refuse" reasoning extends to reparse points:
+    /// <see cref="Path.GetFullPath(string)"/> never dereferences a symlink or
+    /// Windows junction, so an <c>outDir</c> that IS one (or sits behind one)
+    /// can lexically look nowhere near <paramref name="bundleRoot"/> while the
+    /// OS silently redirects every write into it -- e.g. <c>mklink /J
+    /// out-dir bundle\generated-site</c> followed by <c>okf render bundle
+    /// --out out-dir</c>. <see cref="ResolveThroughReparsePoints"/> follows
+    /// that redirect and this method also checks the resolved location, so
+    /// this only ever ADDS a refusal on top of the lexical check above --
+    /// never removes one -- keeping the guard at least as strict as before.
     /// </remarks>
     private static void GuardOutputDirectory(string bundleRoot, string outDir)
     {
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleRoot));
-        var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
+        var root = ReparsePoints.CanonicalizeRoot(bundleRoot);
+        var target = ReparsePoints.CanonicalizeRoot(outDir);
 
         const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
 
-        if (string.Equals(root, target, comparison)
-            || target.StartsWith(root + Path.DirectorySeparatorChar, comparison))
+        if (ReparsePoints.IsWithin(root, target, comparison)
+            || ReparsePoints.IsWithin(root, ResolveThroughReparsePoints(target), comparison))
         {
             throw new ArgumentException(
                 $"refusing to render into '{outDir}': it is inside the bundle being rendered ('{bundleRoot}')",
                 nameof(outDir));
+        }
+    }
+
+    /// <summary>
+    /// Resolves <paramref name="path"/> to the real location the OS would
+    /// land on once it actually touches disk, by walking upward from
+    /// <paramref name="path"/> (inclusive) for the nearest ancestor that is
+    /// itself a filesystem reparse point (symlink, junction, mount point),
+    /// resolving that ancestor to its final target via
+    /// <see cref="Directory.ResolveLinkTarget(string, bool)"/>, and
+    /// re-attaching whatever trailing path segments do not exist yet.
+    /// Returns <paramref name="path"/> unchanged if no ancestor up to the
+    /// filesystem root is a reparse point -- the common case, and the only
+    /// one <see cref="Path.GetFullPath(string)"/> alone can see.
+    /// </summary>
+    /// <remarks>
+    /// Bounded by <paramref name="path"/>'s own ancestor depth, not by
+    /// <c>bundleRoot</c>: unlike <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
+    /// (which walks a candidate KNOWN to be lexically nested under a root,
+    /// and can safely stop there), an <c>outDir</c> under attack here is NOT
+    /// lexically nested under the bundle root at all -- that is the whole
+    /// point of the bypass -- so there is no shorter bound to walk to than
+    /// "however deep outDir's own path is". Deliberately does not chase a
+    /// SECOND reparse point that might appear further up past the first one
+    /// resolved: any escape reachable only through a reparse point nested
+    /// INSIDE the resolved location is <see cref="GuardWithinOutputDirectory"/>'s
+    /// concern (it walks every intermediate directory between outDir and each
+    /// file actually written), not this one-shot outDir resolution's.
+    /// </remarks>
+    private static string ResolveThroughReparsePoints(string path)
+    {
+        var current = path;
+        var tail = new List<string>();
+
+        while (true)
+        {
+            if (ReparsePoints.IsReparsePoint(current))
+            {
+                var resolvedTarget = Directory.ResolveLinkTarget(current, returnFinalTarget: true);
+                if (resolvedTarget is null)
+                {
+                    // IsReparsePoint(current) just returned true, so this
+                    // should not happen -- but resolution is not this
+                    // method's only line of defense (see remarks above), so
+                    // fail safe by falling back to the lexical path rather
+                    // than throwing.
+                    return path;
+                }
+
+                var resolved = resolvedTarget.FullName;
+                for (var i = tail.Count - 1; i >= 0; i--)
+                {
+                    resolved = Path.Combine(resolved, tail[i]);
+                }
+
+                return resolved;
+            }
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                return path; // Reached the filesystem root without finding a reparse point.
+            }
+
+            tail.Add(Path.GetFileName(current));
+            current = parent;
         }
     }
 
@@ -126,16 +204,29 @@ public static class HtmlWriter
     /// cannot happen: an OrdinalIgnoreCase-only match against the resolved
     /// root still requires the resolved path to be a text prefix of the
     /// resolved root, which a traversal outside it is not.
+    ///
+    /// <c>relativePath</c> passing the lexical check above is not the whole
+    /// story: mirrors <c>Bundle.TryResolveResource</c>'s §6.2 model (its
+    /// <c>OrdinalIgnoreCase</c>-vs-<c>Ordinal</c> polarity aside) by also
+    /// rejecting when <paramref name="fullPath"/> itself, or any directory
+    /// strictly between it and <paramref name="outDir"/>, is a reparse point
+    /// -- e.g. a "tables" subdirectory of <paramref name="outDir"/> planted
+    /// as a junction to somewhere else before this write. A lexical match
+    /// alone cannot see that: the OS follows the junction the moment
+    /// <see cref="File.WriteAllText(string, string)"/> actually touches it,
+    /// landing outside <paramref name="outDir"/> even though the computed
+    /// string looked contained.
     /// </remarks>
     private static void GuardWithinOutputDirectory(string outDir, string fullPath, string relativePath)
     {
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outDir));
+        var root = ReparsePoints.CanonicalizeRoot(outDir);
         var resolved = Path.GetFullPath(fullPath);
 
         const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
 
-        if (!string.Equals(resolved, root, comparison)
-            && !resolved.StartsWith(root + Path.DirectorySeparatorChar, comparison))
+        if (!ReparsePoints.IsWithin(root, resolved, comparison)
+            || ReparsePoints.IsReparsePoint(resolved)
+            || ReparsePoints.HasReparsePointAncestor(root, resolved, comparison))
         {
             throw new ArgumentException(
                 $"refusing to write '{relativePath}': it resolves outside the output directory ('{outDir}')",
