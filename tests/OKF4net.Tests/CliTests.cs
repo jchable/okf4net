@@ -591,6 +591,39 @@ public class CliTests
         Assert.Contains("needs attention", r.Out);
     }
 
+    /// <summary>
+    /// Report mode's empty-worklist branch: <c>--as-of</c> pinned before
+    /// <c>metrics/dau</c>'s <c>stale_after</c> (2099-01-01) leaves nothing
+    /// stale, so <c>WriteAuditReport</c> takes its early-return branch and
+    /// prints the "none" line instead of a "needs attention (N):" worklist.
+    /// </summary>
+    [Fact]
+    public void Audit_report_mode_prints_none_when_nothing_is_stale()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2026-01-01");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("stale:      0 of 2 past stale_after\n", r.Out);
+        Assert.Contains("needs attention: none\n", r.Out);
+        Assert.DoesNotContain("needs attention (", r.Out);
+    }
+
+    /// <summary>
+    /// <c>metrics/legacy</c> has no <c>stale_after</c> at all, so
+    /// <c>FormatAuditFinding</c> takes its "no-stale-after" branch rather than
+    /// "stale "/"fresh " + a date. <c>--trust unverified</c> selects exactly
+    /// this concept (it has no <c>verified</c> entries), independent of
+    /// <c>--as-of</c>/the system clock.
+    /// </summary>
+    [Fact]
+    public void Audit_finding_line_reports_no_stale_after_when_the_field_is_absent()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "unverified");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("metrics/legacy  no-stale-after  unverified  stable\n", r.Out);
+    }
+
     [Fact]
     public void Help_lists_audit_right_after_validate()
     {

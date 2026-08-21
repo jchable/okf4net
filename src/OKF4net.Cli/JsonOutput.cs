@@ -86,7 +86,7 @@ internal partial class CliJsonContext : JsonSerializerContext
 {
 }
 
-/// <summary>Builds and writes the <c>--json</c> output for <c>validate</c> and <c>info</c>.</summary>
+/// <summary>Builds and writes the <c>--json</c> output for <c>validate</c>, <c>info</c> and <c>audit</c>.</summary>
 internal static class JsonOutput
 {
     /// <summary>Writes <c>okf validate --json</c>'s result to <paramref name="stdout"/> as a single line-terminated JSON document.</summary>
