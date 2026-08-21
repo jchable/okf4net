@@ -96,6 +96,12 @@ timestamp: 2026-05-28T00:00:00Z
 
 Part of the [sales dataset](/datasets/sales.md). FK to [customers](/tables/customers.md).`
 
+const renderHtml = `$ okf render tests/fixtures/appendix_a --out ./site
+wrote 8 files to ./site
+
+$ ls ./site
+assets/  datasets/  index.html  tables/`
+
 const ciSnippetHtml = `<span class="c"># any pipeline — fail the build on non-conformant knowledge</span>
 okf validate ./bundles/ga4`
 
@@ -105,14 +111,14 @@ const buildHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary</span>`
 
 /**
- * Port of `website/docs/cli.html` — the six `okf` subcommands: synopsis,
+ * Port of `website/docs/cli.html` — the seven `okf` subcommands: synopsis,
  * per-command reference with real captured output, exit codes, build.
  */
 export default function Cli() {
   return (
     <DocsLayout
       title="CLI reference — OKF4net docs"
-      description="Reference for the okf command-line tool: validate, info, index, graph, parse and fmt — arguments, flags, real output, and exit codes. A self-contained Native AOT binary."
+      description="Reference for the okf command-line tool: validate, info, index, graph, parse, fmt and render — arguments, flags, real output, and exit codes. A self-contained Native AOT binary."
       current="cli"
     >
       <PageDoc
@@ -129,7 +135,7 @@ export default function Cli() {
         }
         lede={
           <>
-            Six subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
+            Seven subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
             runtime to install. <code>validate</code> exits non-zero on a non-conformant bundle, so the whole tool
             drops into CI as one line.
           </>
@@ -192,6 +198,15 @@ export default function Cli() {
                 <td>
                   Normalize by parse + re-serialize (<code>-w</code> writes)
                 </td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="#render">render</a>
+                </td>
+                <td>
+                  &lt;bundle&gt; <code>--out</code> &lt;dir&gt;
+                </td>
+                <td>Generate a browsable static HTML site from the bundle</td>
               </tr>
             </tbody>
           </table>
@@ -267,6 +282,34 @@ export default function Cli() {
             <code>--write</code>) writes back in place. Exits <code>0</code>.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: fmtHtml }} />
+        </Chapter>
+
+        <Chapter id="render" title="render <bundle> --out <dir>" refText="a self-contained static site">
+          <p>
+            Generates a browsable HTML site from the bundle: one page per concept (a frontmatter table, in document
+            order, with unknown producer keys preserved, followed by the rendered body) plus a generated index page
+            built from the same logic as <code>okf index</code>. Inter-concept links are rewired to the generated
+            pages, with backlinks (&ldquo;Referenced by&rdquo;) added on each target page; a link to a concept that
+            doesn't exist is flagged and left non-clickable rather than silently dropped or pointed at a 404.
+            External links and in-page anchors are left untouched.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: renderHtml }} />
+          <p>
+            The output is <strong>self-contained</strong> — it opens straight from the filesystem
+            (<code>file://</code>) with no server required. Markdown renders <strong>client-side</strong>, via a
+            vendored copy of <a href="https://github.com/markedjs/marked">marked</a> v15.0.12 (MIT, credited in{' '}
+            <code>NOTICE</code>); a DOM sanitizer strips anything the fixed template doesn't expect. GFM task list
+            items render as <code>☐</code>/<code>☑</code> text markers rather than checkboxes, since the sanitizer
+            doesn't allow <code>&lt;input&gt;</code> elements through.
+          </p>
+          <p>
+            There's no full-text search in this slice — a static site has no server to run the shared{' '}
+            <code>ConceptSearch</code> scorer against, and duplicating its ranking logic in JavaScript would fork the
+            one place that scorer is meant to live. Search arrives with the planned <code>okf serve</code> companion
+            (the live-server half of this work). Backed by the new, zero-dependency <code>OKF4net.Viewer</code>{' '}
+            project, which ships inside the <code>okf</code> binary — it isn't published as a separate NuGet
+            package.
+          </p>
         </Chapter>
 
         <Chapter id="ci" title="Exit codes & CI" refText="copy the file, run it">
