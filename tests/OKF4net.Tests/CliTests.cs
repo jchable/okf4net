@@ -357,6 +357,13 @@ public class CliTests
 
         Assert.Equal(1, r.Code);
         Assert.Contains("error:", r.Err);
+
+        // Regression guard for the .NET ArgumentException(paramName) leaking
+        // its " (Parameter 'outDir')" framework-noise suffix into CLI output
+        // meant for humans -- HtmlWriter.Write is a library API and correctly
+        // keeps throwing with paramName set; the CLI must strip it before
+        // printing.
+        Assert.DoesNotContain("Parameter", r.Err);
     }
 
     [Fact]

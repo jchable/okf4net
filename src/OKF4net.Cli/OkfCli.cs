@@ -176,6 +176,32 @@ public static class OkfCli
         return args[index + 1];
     }
 
+    /// <summary>
+    /// Renders an exception's message for a human reading <c>error: ...</c>
+    /// on a terminal, stripping .NET's <c>" (Parameter 'x')"</c> suffix that
+    /// <see cref="ArgumentException"/> appends whenever
+    /// <see cref="ArgumentException.ParamName"/> is set. That suffix is
+    /// framework noise -- correct and useful for a library caller catching
+    /// the exception (so <see cref="OKF4net.Viewer.HtmlWriter.Write"/> keeps
+    /// throwing it unchanged), but out of place in CLI output meant for
+    /// humans. Every catch site that would otherwise surface an
+    /// <see cref="ArgumentException"/>'s <c>Message</c> to the CLI funnels
+    /// through here instead, so no verb can leak it.
+    /// </summary>
+    private static string UserMessage(Exception e)
+    {
+        if (e is ArgumentException { ParamName: not null } argEx)
+        {
+            var suffix = $" (Parameter '{argEx.ParamName}')";
+            if (argEx.Message.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                return argEx.Message[..^suffix.Length];
+            }
+        }
+
+        return e.Message;
+    }
+
     /// <summary>Loads a bundle, converting a failure into the CLI's error arm.</summary>
     private static Bundle Load(string path)
     {
@@ -208,7 +234,7 @@ public static class OkfCli
             // or NotSupportedException rather than an I/O exception, so both
             // must be caught here too or they escape as unhandled exceptions
             // instead of a clean CLI error.
-            throw new CliOperationException(e.Message);
+            throw new CliOperationException(UserMessage(e));
         }
 
         try
@@ -231,7 +257,7 @@ public static class OkfCli
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             // See ReadFileStrict above: same funnel, same rationale.
-            throw new CliOperationException(e.Message);
+            throw new CliOperationException(UserMessage(e));
         }
     }
 
@@ -438,7 +464,7 @@ public static class OkfCli
         }
         catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            throw new CliOperationException(e.Message);
+            throw new CliOperationException(UserMessage(e));
         }
 
         stdout.Write($"wrote {written.Count} files to {outDir}\n");
