@@ -26,7 +26,7 @@ question corpus-level. `okf audit` est cette surface.
 ### 1.1 Pourquoi pas `okf validate`
 
 `BundleValidator` émet déjà un `ConceptStale` (warning) par concept périmé
-([Validate.cs:404](../../../src/OKF4net/Validate.cs)). La séparation est
+([Validate.cs:404](../../../src/OKF4net/Validate.cs#L404)). La séparation est
 délibérée et doit le rester :
 
 | | `validate` | `audit` |
@@ -63,6 +63,13 @@ existant `BundleValidator.Validate(bundle, clock) → ValidationReport`.
 
 ```csharp
 /// <summary>Les prédicats de sélection d'un audit (§5.3–§5.5). Combinés en ET ; `default` ne filtre rien.</summary>
+/// <remarks>
+/// L'égalité générée compare <c>Trust</c> par référence (c'est le comportement de
+/// <c>EqualityComparer&lt;IReadOnlySet&lt;T&gt;&gt;.Default</c>) : deux requêtes logiquement
+/// identiques peuvent être inégales. Ne pas s'appuyer dessus, ni utiliser une
+/// <c>AuditQuery</c> comme clé de dictionnaire. Le type reste un record struct pour
+/// `with` et `ToString`, pas pour son égalité.
+/// </remarks>
 public readonly record struct AuditQuery(
     bool StaleOnly = false,
     IReadOnlySet<TrustTier>? Trust = null,
@@ -201,6 +208,21 @@ Concrètement, le CLI passe `new AuditQuery(StaleOnly: true)` dans les deux cas 
 qu'aux appelants qui veulent la totalité du corpus, dont le tool agent invoqué
 avec `stale: false` et aucun autre filtre.
 
+**Les flags de filtre sont exactement `--stale`, `--trust`, `--status` et
+`--type`.** `--as-of` et `--json` n'en font pas partie et ne changent jamais de
+mode : `okf audit <bundle> --as-of 2099-06-01` reste en mode rapport — c'est
+précisément l'invocation du golden (§7.3).
+
+**Conséquence à assumer : `audit` ne sait pas sélectionner tout le corpus en une
+option.** Sans filtre il rend la worklist des périmés, et `--json` porte alors
+des `findings` limités à ceux-ci — les compteurs, eux, restent corpus-larges. Qui
+veut l'inventaire concept par concept énumère les trois tiers
+(`--trust unverified,machine-confirmed,human-reviewed`). Aucun `--all` n'est
+ajouté : `audit` est une worklist, l'inventaire est déjà le métier de
+`okf info --json` et de `okf_browse`. Ce point doit apparaître tel quel dans la
+documentation du verbe, faute de quoi un consommateur du JSON prendra `findings`
+pour le corpus.
+
 **Mode rapport** (aucun flag de filtre) — synthèse + worklist :
 
 ```
@@ -284,7 +306,10 @@ Réutilisés tels quels : `error: missing <bundle>` (`Positional`) et
 
 ### 4.4 Texte d'aide
 
-Ajouter à `Usage` la ligne du verbe, alignée sur les autres :
+Ajouter à `Usage` la ligne du verbe **juste après `validate`** (l'ordre de la
+liste est vérifié par le test 24 : conformité d'abord, santé du corpus ensuite),
+alignée sur les autres — le verbe occupe 8 colonnes, d'où quatre espaces après
+`audit` :
 
 ```
     audit    <bundle>    Report trust, freshness and lifecycle across the bundle
@@ -381,6 +406,11 @@ Décisions de schéma :
 - `query` **rejoue la requête appliquée**, ce qui rend le document
   auto-descriptif et lève l'ambiguïté du mode par défaut (`stale: true` sans
   qu'aucun flag n'ait été passé).
+- `query.trust` est sérialisé dans **l'ordre du ladder** (`unverified`,
+  `machine-confirmed`, `human-reviewed`), jamais dans l'ordre de saisie :
+  `IReadOnlySet` n'a pas d'ordre garanti, et sans cette règle le JSON ne serait
+  pas reproductible dès qu'on passe plusieurs tiers. `null` quand `--trust` est
+  absent.
 - `staleAfter` porte la valeur **brute** du frontmatter ; elle vaut `null` si le
   champ est absent, et la valeur brute non parsable s'il est malformé (auquel cas
   `stale` est `false`).
@@ -413,8 +443,11 @@ Bundles synthétiques + `FixedClock` (déjà présent).
 
 ### 7.2 CLI — `tests/OKF4net.Tests/CliTests.cs` (existant)
 
-13. Mode rapport : sections et alignements attendus.
-14. Mode requête : uniquement des lignes de concepts, pas de synthèse.
+13. Mode rapport : sections et alignements attendus — **y compris avec `--as-of`
+    seul**, qui ne doit pas basculer en mode requête (§4.2).
+14. Mode requête : uniquement des lignes de concepts, pas de synthèse ; et
+    l'idiome des trois tiers (`--trust unverified,machine-confirmed,human-reviewed`)
+    retourne bien la totalité des concepts du bundle.
 15. **Équivalence** : `audit <b>` et `audit <b> --stale` sélectionnent le même
     ensemble (comparaison sur les ids).
 16. `--json` : document parsable, champs et valeurs attendus, `query` rejoué.
@@ -437,8 +470,13 @@ v0.2), avec `--as-of 2099-06-01` **figé** — cette date rend `metrics/dau`
 (`stale_after: 2099-01-01`) périmé sans qu'aucune fixture ne soit créée ni
 modifiée. Aucun nouveau bundle de fixtures.
 
-Nouveaux fichiers dans `tests/fixtures/golden/` : `audit-v02.out`,
-`audit-v02.exitcode`, `audit-v02.json`.
+Nouveaux fichiers dans `tests/fixtures/golden/` : `audit-v02.out` et
+`audit-v02.json`. **Pas de `audit-v02.exitcode`** : le code de retour d'`audit`
+est constamment 0 (§4.3), un golden pour une constante n'apporte rien et grossit
+la surface de fixtures. Le test l'assère en ligne (`Assert.Equal(0, r.Code)`),
+exactement comme `Info_output_matches_golden`, qui n'a pas non plus de golden de
+code retour ; les `*.exitcode` de `validate` n'existent que parce que son code
+varie.
 
 - `audit-v02.out` : comparé **byte-for-byte sans normalisation** (la sortie ne
   contient que des ids de concepts, toujours en `/`) — sauf la ligne `bundle:`,
@@ -476,6 +514,12 @@ qu'un seul fichier de `tests/fixtures/` préexistant soit touché.
   bibliothèque fédérée) et marquer ce premier barreau.
 - `CLAUDE.md` : une ligne sur `ConceptAudit` comme surface de requête unique
   partagée CLI/Agents — même statut que la note « ne pas forker `ConceptSearch` ».
+
+**Coordination.** Au moment d'écrire cette spec, `CLAUDE.md` et `ROADMAP.md`
+étaient déjà modifiés, non commités, dans le worktree principal par une autre
+session (travail viewer/CI). Les toucher ici provoquera un conflit au rebase :
+ces deux fichiers sont à traiter en fin de branche, une fois l'autre session
+mergée, et non au fil de l'implémentation.
 
 ## 9. Contraintes respectées
 
