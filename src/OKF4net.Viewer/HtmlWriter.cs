@@ -189,7 +189,7 @@ public static class HtmlWriter
 
         // The index's links already point at generated .html paths, so its
         // rewiring table is deliberately empty.
-        var payload = $"{{\"body\":{HtmlSafeJson.Quote(site.IndexMarkdown)},\"links\":{{}}}}";
+        var payload = BuildPayload(site.IndexMarkdown, "{}");
         return RenderShell("Bundle index", string.Empty, body.ToString(), payload);
     }
 
@@ -245,8 +245,19 @@ public static class HtmlWriter
         }
 
         links.Append('}');
-        return $"{{\"body\":{HtmlSafeJson.Quote(page.Body)},\"links\":{links}}}";
+        return BuildPayload(page.Body, links.ToString());
     }
+
+    /// <summary>
+    /// The page payload <c>viewer.js</c> reads: the raw markdown body plus the
+    /// link-rewiring table. Both the concept pages and the index go through
+    /// here, so the two cannot drift into different shapes -- <c>viewer.js</c>
+    /// parses them with one code path.
+    /// </summary>
+    /// <param name="body">The raw markdown, quoted here (callers pass it unescaped).</param>
+    /// <param name="linksJson">The already-built links object, including its braces.</param>
+    private static string BuildPayload(string body, string linksJson)
+        => $"{{\"body\":{HtmlSafeJson.Quote(body)},\"links\":{linksJson}}}";
 
     private static string RenderShell(string title, string rootPrefix, string body, string payload)
         => $"""
