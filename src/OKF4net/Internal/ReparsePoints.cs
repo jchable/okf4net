@@ -189,23 +189,40 @@ internal static class ReparsePoints
     /// the caller; this method performs no canonicalization of its own.
     /// </summary>
     /// <remarks>
-    /// <paramref name="comparison"/> is entirely the caller's choice, and that
-    /// choice matters: callers whose <paramref name="path"/> can come from
-    /// UNTRUSTED input (e.g. a manifest's relative source path, which may
-    /// legitimately contain <c>..</c>) and who run on a case-SENSITIVE
-    /// filesystem (Linux, the CI/container target) must pass
-    /// <see cref="StringComparison.Ordinal"/> -- <c>OrdinalIgnoreCase</c>
-    /// would treat a case-variant of <paramref name="root"/> (a genuinely
-    /// different directory on such a filesystem) as contained within it,
-    /// silently defeating this method's entire purpose. Every current caller
-    /// of this method passes <see cref="StringComparison.Ordinal"/> --
-    /// <see cref="IsWithinBundleRoot"/>, <c>Bundle.cs</c>, and
-    /// <c>CatalogPathResolver</c>'s <c>ContainmentComparison</c> path all do.
-    /// A future caller that instead chooses <c>OrdinalIgnoreCase</c> owes a
-    /// documented safe-direction argument for why an over-approximation is
-    /// the safer failure mode at that call site, the way
-    /// <c>MemoryServiceCollectionExtensions.ThrowIfMemoryOverlapsKnowledge</c>
-    /// documents its own deliberate choice of <c>OrdinalIgnoreCase</c>.
+    /// <paramref name="comparison"/> is entirely the caller's choice, and the
+    /// right choice depends on the call site's POLARITY -- what a "true"
+    /// answer authorizes. Derive it per call site; do not copy a sibling
+    /// guard's value, because two guards a few lines apart can legitimately
+    /// need opposite answers.
+    /// <list type="bullet">
+    /// <item><description>
+    /// A guard that REFUSES when the answer is <c>true</c> (an "is this
+    /// forbidden territory?" check) fails safe by over-matching, so
+    /// <c>OrdinalIgnoreCase</c> is its safe direction: on a case-INSENSITIVE
+    /// volume a case-variant spelling is the same physical directory, and
+    /// <c>Ordinal</c> would miss it and permit what should be refused. Cost of
+    /// over-refusing is a clear error the caller can work around.
+    /// </description></item>
+    /// <item><description>
+    /// A guard that ALLOWS when the answer is <c>true</c> (an "is this inside
+    /// my sandbox?" check) fails safe by under-matching, so
+    /// <see cref="StringComparison.Ordinal"/> is its safe direction: on a
+    /// case-SENSITIVE volume <c>/tmp/Out</c> and <c>/tmp/out</c> are genuinely
+    /// different directories, and <c>OrdinalIgnoreCase</c> would call an
+    /// escaping path a prefix-match and authorize a write outside the sandbox.
+    /// </description></item>
+    /// </list>
+    /// Both polarities exist in this repo, deliberately:
+    /// <see cref="IsWithinBundleRoot"/>, <c>Bundle.cs</c> and
+    /// <c>CatalogPathResolver</c> gate inclusion and pass <c>Ordinal</c>;
+    /// <c>HtmlWriter.GuardOutputDirectory</c> gates refusal and passes
+    /// <c>OrdinalIgnoreCase</c>, while <c>HtmlWriter</c>'s sibling
+    /// <c>GuardWithinOutputDirectory</c> gates permission a dozen lines later
+    /// and passes <c>Ordinal</c>. That second guard originally inherited
+    /// <c>OrdinalIgnoreCase</c> from the first without re-deriving the
+    /// polarity, and shipped an escape past a review that had explicitly
+    /// blessed the first guard's choice -- which is why this is stated as a
+    /// rule about polarity rather than a per-caller convention.
     /// </remarks>
     internal static bool IsWithin(string root, string path, StringComparison comparison)
     {
