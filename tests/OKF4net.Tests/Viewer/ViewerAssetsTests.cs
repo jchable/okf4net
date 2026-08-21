@@ -26,15 +26,18 @@ namespace OKF4net.Tests.Viewer;
 /// hostile payloads — including the attribute-breakout payload
 /// <c>![foo" onerror="alert(1)](x.png)</c>, <c>javascript:</c>/<c>data:</c>
 /// links (plain and mixed-case), raw <c>&lt;script&gt;</c>/<c>&lt;svg
-/// onload&gt;</c>, and nested HTML in alt text — confirming no executable
+/// onload&gt;</c>/<c>&lt;iframe&gt;</c>/<c>&lt;object&gt;</c>, a raw
+/// <c>&lt;input&gt;</c> surviving only as an inert disabled checkbox when
+/// (and only when) its type is checkbox — confirming no executable
 /// output and no attribute breakout in any case, plus a battery of ordinary
 /// markdown (headings, lists, bold, fenced code, relative links, plain
-/// image alt-text, GFM task-list checked/unchecked markers) confirming the
+/// image alt-text, GFM task-list checked/unchecked state) confirming the
 /// sanitizer isn't over-aggressive either.
 /// Run it with <c>npm ci &amp;&amp; npm test</c> from that directory. CI runs
 /// it too, as the <c>viewer sanitizer (JS)</c> job — that job, not the
 /// smoke checks below, is what actually guards the sanitizer, and it is the
-/// one to watch whenever <c>marked.min.js</c> is bumped.
+/// one to watch whenever <c>marked.min.js</c> is bumped or <c>viewer.js</c>
+/// is edited.
 /// </para>
 /// </remarks>
 public class ViewerAssetsTests
@@ -62,35 +65,20 @@ public class ViewerAssetsTests
         => Assert.False(string.IsNullOrWhiteSpace(ViewerAssets.ViewerJs));
 
     [Fact]
-    public void ViewerJs_disables_marked_raw_html_passthrough()
+    public void ViewerJs_does_not_patch_marked_renderer_hooks()
     {
-        // Layer 1 (defence in depth, not the control that holds on its own):
-        // marked renders raw HTML by default and has no `sanitize` option any
-        // more, so this neuters it at the renderer level. Smoke check only —
-        // see the class remarks.
-        //
-        // Matched as the actual `marked.use({ renderer: { html: function` call
-        // construct, not the bare words "html:" / "renderer" -- both of those
-        // also appear in this very file's prose comments (see above), so a
-        // plain Contains check would still pass after the code itself was
-        // deleted.
-        Assert.Matches(@"marked\.use\(\{\s*renderer:\s*\{\s*html:\s*function", ViewerAssets.ViewerJs);
-    }
-
-    [Fact]
-    public void ViewerJs_also_patches_the_text_renderer()
-    {
-        // The vendored build (marked v15.0.12) routes image/title alt-text
-        // through a *separate* TextRenderer instance that marked.use({
-        // renderer: ... }) does not touch. Smoke check only — see the class
-        // remarks; this alone does not close the attribute-breakout gap
-        // below, which needed a DOM-level sanitizer instead.
-        //
-        // Matched as the actual assignment to `TextRenderer.prototype.html`,
-        // not the bare word "TextRenderer" -- it also appears in this file's
-        // prose comments, so a plain Contains check would still pass after
-        // the code itself was deleted.
-        Assert.Matches(@"marked\.TextRenderer\.prototype\.html\s*=\s*function", ViewerAssets.ViewerJs);
+        // An earlier version of viewer.js patched marked's `renderer.html`
+        // hook (both the main Renderer and its separate TextRenderer) as a
+        // "defence in depth" layer in front of the DOM sanitizer. It was
+        // removed: measured against the vendored build plus the hostile
+        // payload battery in tools/viewer-security-check/, that layer
+        // stopped nothing the DOM sanitizer alone did not already stop, and
+        // it silently deleted benign wrapped content the sanitizer
+        // preserves (e.g. `<details><summary>...</summary>body</details>`
+        // rendered as `""` instead of keeping "body"). Guard against it
+        // being reintroduced.
+        Assert.DoesNotContain("marked.use(", ViewerAssets.ViewerJs);
+        Assert.DoesNotContain("TextRenderer.prototype.html", ViewerAssets.ViewerJs);
     }
 
     [Fact]
@@ -104,14 +92,18 @@ public class ViewerAssetsTests
         // general, because the defect is in how marked builds the attribute
         // string, not in a specific renderer call site. The only control
         // that holds is sanitizing the parsed DOM itself before it reaches
-        // the live page. Smoke check only — see the class remarks for where
-        // this was actually proven (tools/viewer-security-check/; the
-        // browser check in Task 11).
+        // the live page — the sanitizer below is the whole defense, not one
+        // layer of it. Smoke check only — see the class remarks for where
+        // this was actually proven (tools/viewer-security-check/).
         Assert.Contains("ALLOWED_TAGS", ViewerAssets.ViewerJs);
         Assert.Contains("ALLOWED_ATTRS", ViewerAssets.ViewerJs);
         Assert.Contains("DOMParser", ViewerAssets.ViewerJs);
-        Assert.DoesNotContain("SCRIPT:", ViewerAssets.ViewerJs);
         Assert.DoesNotContain("IFRAME:", ViewerAssets.ViewerJs);
+        // SCRIPT and STYLE are deliberately named elsewhere (OPAQUE_TAGS,
+        // see the next assertion) as elements to drop entirely rather than
+        // fall into the generic "keep the text" branch -- that reference is
+        // legitimate and is not the same thing as allowlisting them.
+        Assert.Contains("OPAQUE_TAGS", ViewerAssets.ViewerJs);
     }
 
     [Fact]
@@ -129,24 +121,29 @@ public class ViewerAssetsTests
     }
 
     [Fact]
-    public void ViewerJs_sanitizer_replaces_task_list_checkboxes_with_text_markers()
+    public void ViewerJs_sanitizer_lets_task_list_checkboxes_survive_as_real_inputs()
     {
         // GFM task lists (`- [ ] foo` / `- [x] foo`) render as
         // `<input type="checkbox" disabled>` (plus `checked` when ticked) in
-        // marked's output. INPUT is rightly not allowlisted -- it is a live
-        // form control -- but silently dropping it via the generic "keep
-        // only the text" branch used for every other disallowed element
-        // would erase real information: a reader could no longer tell a done
-        // item from a pending one. The sanitizer special-cases it instead,
-        // substituting a plain Unicode text marker (checked box / empty box)
-        // that carries no attributes and cannot execute, rather than
-        // allowlisting the element. Smoke check only — see the class
-        // remarks; the real DOM assertions (no <input> survives, checked vs.
-        // unchecked items render visually distinct text) live in
+        // marked's output. A screen reader announces a real, disabled
+        // `<input type="checkbox">` as a checkbox with its state; a plain
+        // Unicode glyph substituted for it is decorative text with no
+        // announced state, so the sanitizer lets the checkbox survive as a
+        // real element instead: INPUT is on ALLOWED_TAGS but gated by a
+        // value constraint (only `type="checkbox"` qualifies -- any other
+        // input type still falls through to the generic drop-and-keep-text
+        // branch used for every other disallowed element), its attribute
+        // allowlist is limited to `type`/`disabled`/`checked`, and
+        // `disabled` is forced on every surviving instance so a bundle
+        // cannot ship a live, focusable form control. Smoke check only —
+        // see the class remarks; the real DOM assertions (no non-checkbox
+        // <input> survives, a hostile `onfocus`/`autofocus` checkbox
+        // survives only inert and disabled, checked vs. unchecked items
+        // render with the correct `checked` state) live in
         // tools/viewer-security-check/run.js.
         Assert.Contains("\"checkbox\"", ViewerAssets.ViewerJs);
-        Assert.Contains('☑', ViewerAssets.ViewerJs);
-        Assert.Contains('☐', ViewerAssets.ViewerJs);
-        Assert.DoesNotContain("INPUT: 1", ViewerAssets.ViewerJs);
+        Assert.Contains("TAG_VALUE_CONSTRAINTS", ViewerAssets.ViewerJs);
+        Assert.Contains("INPUT: 1", ViewerAssets.ViewerJs);
+        Assert.Contains("setAttribute(\"disabled\"", ViewerAssets.ViewerJs);
     }
 }

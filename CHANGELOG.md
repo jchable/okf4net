@@ -15,11 +15,13 @@ and this project adheres to
   body), a generated index, navigable cross-links with broken links flagged,
   and backlinks. Backed by the new zero-dependency `OKF4net.Viewer` project.
   Markdown renders client-side via a vendored copy of marked (MIT); raw HTML
-  passthrough is disabled and a DOM sanitizer in `viewer.js` closes an
-  attribute-injection gap the renderer-hook override alone does not (see
-  `CLAUDE.md`). GFM task list items render as `☐`/`☑` text markers rather
-  than `<input type="checkbox">`, since the sanitizer does not allow `<input>`
-  elements through. No full-text search yet — that lands with the planned
+  is neutralized by sanitizing the parsed DOM in `viewer.js` (element
+  allowlist, per-tag attribute allowlist, URL-scheme validation) rather than
+  by patching marked's renderer hooks, which cannot bound the attack surface
+  in general (see `CLAUDE.md`). GFM task list items survive sanitization as
+  real `<input type="checkbox" disabled>` elements with correct checked
+  state, so a screen reader announces them as checkboxes rather than as
+  decorative text. No full-text search yet — that lands with the planned
   `okf serve` companion.
 
 ## [0.5.0] - 2026-07-31

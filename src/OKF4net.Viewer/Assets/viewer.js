@@ -5,61 +5,69 @@
 (function () {
   "use strict";
 
-  // --- Layer 1 (defence in depth, NOT the control that holds): neuter
-  // marked's own raw-HTML passthrough. marked renders raw HTML by default
-  // and no longer exposes a `sanitize` option, so this suppresses it at the
-  // renderer level. Verified against the vendored build (marked v15.0.12):
-  // both block-level raw HTML (`<script>...</script>` as its own block) and
-  // inline raw HTML (`<img onerror=...>` inside a paragraph) are dispatched
-  // through this same `renderer.html` hook, so one override covers both.
-  //
-  // This layer is NOT sufficient by itself: marked also builds some
-  // attributes (image alt/title) with no escaping call at all, so a
-  // markdown-native construct containing no raw HTML token at all can
-  // still break out of an attribute. See the sanitizer below, which is
-  // the control that actually closes that gap.
-  marked.use({
-    renderer: {
-      html: function () { return ""; },
-    },
-  });
-
-  // marked v15 renders image/title alt-text through a second, separate
-  // TextRenderer instance (marked.TextRenderer) that the override above
-  // does not touch: it is constructed fresh internally and never reads
-  // back from options. This closes the html-token half of that path
-  // (for example: an image alt-text containing an anchor tag with an
-  // onclick attribute). It does NOT close plain-text alt-text attribute
-  // breakout; see the sanitizer below.
-  if (marked.TextRenderer) {
-    marked.TextRenderer.prototype.html = function () { return ""; };
-  }
-
-  // --- Layer 2, the control that actually holds: sanitize the parsed DOM
-  // before it goes anywhere near the live page.
-  //
-  // marked's Renderer.image() interpolates the alt attribute with NO
-  // escaping call at all, and TextRenderer.text() returns raw, unescaped
-  // text. So a plain markdown image with no HTML in it at all can break
-  // out of the alt attribute and add a live onerror handler that fires on
-  // page load (the image fails to resolve), with no click and nothing an
-  // html-token renderer override could ever see. No amount of patching
-  // marked's renderer hooks closes this class of bug in general, because
-  // the underlying defect is marked emitting an attribute value with
-  // missing or incomplete escaping; there is no way to enumerate every
+  // Raw HTML in bundle markdown is neutralized by sanitizing the *parsed
+  // DOM*, not by trying to suppress raw-HTML tokens at the markdown-renderer
+  // level. That is a deliberate choice, not an oversight: marked (the
+  // vendored renderer, v15.0.12) has no `sanitize` option any more, and an
+  // earlier version of this file patched its renderer hooks instead
+  // (`Renderer.html`, `TextRenderer.html`, both set to return `""`). That
+  // approach was tried and dropped, because it cannot bound the actual
+  // attack surface: marked's `Renderer.image()` interpolates the `alt`
+  // attribute with NO escaping call at all, and `TextRenderer.text()`
+  // returns raw, unescaped text. So a plain markdown image with no HTML in
+  // it at all -- `![foo" onerror="alert(1)](x.png)` -- breaks out of the
+  // alt attribute and adds a live `onerror` handler that fires on page load,
+  // with no raw-HTML token anywhere a renderer-hook override could ever see.
+  // No enumeration of renderer hooks closes this class of bug in general,
+  // because the underlying defect is marked emitting an attribute value
+  // with missing or incomplete escaping; there is no way to list every
   // place that might happen, now or in a future marked version.
   //
-  // The fix that generalizes is sanitizing the parsed markup itself:
+  // Measured against the vendored build plus the hostile-payload battery in
+  // tools/viewer-security-check/: the renderer-hook approach neutralized
+  // every one of those payloads, exactly as well as sanitizing the DOM
+  // directly does, but it also silently destroyed benign content the
+  // sanitizer below leaves intact -- e.g. `<details><summary>Resume</summary
+  // >corps important</details>` rendered as `""` (all of it gone) instead of
+  // `"Resumecorps important"`. A hook that returns `""` for any raw-HTML
+  // token cannot distinguish "this token is dangerous" from "this token
+  // merely wraps ordinary prose", so patching marked bought no security
+  // property the sanitizer below lacks, while adding a real content-loss
+  // bug. Sanitizing the parsed DOM does not have that failure mode: it drops
+  // only the disallowed element itself and keeps its text, see the "keep
+  // its text" comment in sanitize() below.
+  //
+  // So the DOM sanitizer below is the whole defense, not one layer of it:
   // allowlist which tags may exist, allowlist which attributes each
   // surviving tag may carry (an allowlist, not an on*/javascript:-style
   // blocklist, so a novel attribute or a differently-cased scheme is
-  // dropped by default instead of trusted by default), and validate the
-  // URL scheme of anything that can navigate or fetch (href/src).
+  // dropped by default instead of trusted by default), constrain a handful
+  // of attribute values where the name alone is not a strong enough gate
+  // (e.g. `<input type=checkbox>` vs. any other input type), and validate
+  // the URL scheme of anything that can navigate or fetch (href/src).
   var ALLOWED_TAGS = {
     P: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1,
     UL: 1, OL: 1, LI: 1, A: 1, IMG: 1, CODE: 1, PRE: 1, BLOCKQUOTE: 1,
     TABLE: 1, THEAD: 1, TBODY: 1, TFOOT: 1, TR: 1, TH: 1, TD: 1,
     STRONG: 1, EM: 1, DEL: 1, HR: 1, BR: 1,
+    // INPUT is gated further by TAG_VALUE_CONSTRAINTS below: being on this
+    // list is necessary but not sufficient for an <input> to survive.
+    INPUT: 1,
+  };
+
+  // Some tags on ALLOWED_TAGS above are not safe to admit unconditionally --
+  // INPUT is a live form control in general, and only a checkbox (rendered
+  // read-only, see the forced `disabled` below) is inert enough for this
+  // read-only viewer. Declared here as data (the attribute to read plus the
+  // set of values that qualify), not as a predicate function or an
+  // `if (tagName === "INPUT")` branch in sanitize(), so a future tag that
+  // needs the same kind of constraint is a table entry, not new code. An
+  // element whose tag is on ALLOWED_TAGS but fails the constraint here falls
+  // through to the same generic "drop element, keep text" branch as any
+  // other disallowed element -- it gets no special treatment for having
+  // almost qualified.
+  var TAG_VALUE_CONSTRAINTS = {
+    INPUT: { attr: "type", values: { checkbox: 1 } },
   };
 
   // Per-tag attribute allowlist. Anything not listed here for a given tag
@@ -72,6 +80,11 @@
     CODE: { class: 1 },
     TH: { align: 1 },
     TD: { align: 1 },
+    // `type` survives here unconstrained -- TAG_VALUE_CONSTRAINTS above has
+    // already thrown away the whole element unless its value is "checkbox"
+    // before this list is ever consulted, so by the time an INPUT reaches
+    // sanitizeAttributes() the only value `type` can carry is the safe one.
+    INPUT: { type: 1, disabled: 1, checked: 1 },
   };
 
   // Attributes in this set additionally have their value validated as a
@@ -79,6 +92,19 @@
   // through.
   var URL_ATTRS = { href: 1, src: 1 };
   var SAFE_SCHEMES = { "http:": 1, "https:": 1, "mailto:": 1 };
+
+  // Tags whose element content is source, not prose: SCRIPT and STYLE are
+  // "raw text" elements per the HTML parsing spec, so `.textContent` on one
+  // returns its literal script/CSS source verbatim, unparsed. The generic
+  // disallowed-element branch below keeps `.textContent` specifically so a
+  // wrapper like `<div>` or `<details>` does not silently delete the prose
+  // it wraps -- but there is no prose inside a SCRIPT or STYLE element to
+  // preserve, only code, and dumping that code as visible page text (e.g. a
+  // raw `<script>alert(1)</script>` turning into the literal words
+  // "alert(1)" on the page) is never the right outcome. These tags are
+  // dropped with no replacement at all instead of falling into the
+  // keep-the-text branch.
+  var OPAQUE_TAGS = { SCRIPT: 1, STYLE: 1 };
 
   // Strips every ASCII control character and space (code points 0 to 32
   // inclusive, plus DEL, 127) wherever it appears. Built with charCodeAt
@@ -150,40 +176,64 @@
     }
   }
 
+  // Applies TAG_VALUE_CONSTRAINTS to a tag that is otherwise on ALLOWED_TAGS.
+  // Returns true when the element qualifies as its tag unconditionally (no
+  // entry in the table) or its gating attribute's value is in the allowed
+  // set for that tag; false means it must be treated exactly like a tag
+  // that was never on ALLOWED_TAGS at all.
+  function passesTagValueConstraint(node) {
+    var constraint = TAG_VALUE_CONSTRAINTS[node.tagName];
+    if (!constraint) { return true; }
+    var actual = (node.getAttribute(constraint.attr) || "").toLowerCase();
+    return !!constraint.values[actual];
+  }
+
   function sanitize(root) {
     // Snapshot every descendant element up front: replacing a disallowed
     // element below mutates the tree, which would desync a live traversal.
+    // Walk the snapshot back to front rather than in document order: for any
+    // element, all of its descendants precede it in document order, so
+    // processing the array in reverse guarantees every descendant has
+    // already been resolved (dropped opaque, flattened to text, or
+    // sanitized in place) by the time an ancestor reads `.textContent` for
+    // itself below. That matters concretely for something like
+    // `<math><mtext><script>alert(1)</script></mtext></math>`: without this
+    // ordering, MATH's own `.textContent` read (while deciding what text to
+    // keep) would still see SCRIPT's raw, un-dropped source, because
+    // `.textContent` walks the live DOM directly and does not know this
+    // function has plans to remove SCRIPT later in the same pass.
     var all = root.querySelectorAll("*");
-    for (var i = 0; i < all.length; i++) {
+    for (var i = all.length - 1; i >= 0; i--) {
       var node = all[i];
-      if (!node.parentNode) { continue; } // already detached by an ancestor's removal
-      if (!Object.prototype.hasOwnProperty.call(ALLOWED_TAGS, node.tagName)) {
-        var replacement;
-        if (node.tagName === "INPUT" && (node.getAttribute("type") || "").toLowerCase() === "checkbox") {
-          // GFM task-list checkbox (`- [ ] foo` / `- [x] foo`): marked emits
-          // `<input type="checkbox" disabled>`, with a `checked` attribute
-          // added when ticked. INPUT is not on ALLOWED_TAGS -- a live form
-          // control has no business in rendered prose -- but falling through
-          // to the generic branch below would silently erase real
-          // information: a reader could no longer tell a done item from a
-          // pending one. Read the checked state (a boolean presence check,
-          // never a value we emit) before the element and every attribute on
-          // it is discarded, and substitute a plain text marker instead. A
-          // text node cannot execute, so this keeps the exact same security
-          // property as the generic branch (no element, no attributes,
-          // nothing left to sanitize) while keeping the state visible.
-          var marker = node.hasAttribute("checked") ? "☑" : "☐"; // checked box / empty box
-          replacement = node.ownerDocument.createTextNode(marker + " ");
-        } else {
-          // Drop the element but keep its text so a disallowed wrapper does
-          // not silently delete surrounding prose; nothing about its markup
-          // (attributes, nested elements) survives the swap.
-          replacement = node.ownerDocument.createTextNode(node.textContent || "");
-        }
+      if (!node.parentNode) { continue; } // already detached by a descendant/ancestor's removal
+      if (Object.prototype.hasOwnProperty.call(OPAQUE_TAGS, node.tagName)) {
+        node.parentNode.removeChild(node);
+        continue;
+      }
+      var admitted = Object.prototype.hasOwnProperty.call(ALLOWED_TAGS, node.tagName)
+        && passesTagValueConstraint(node);
+      if (!admitted) {
+        // Drop the element but keep its text so a disallowed wrapper does
+        // not silently delete surrounding prose; nothing about its markup
+        // (attributes, nested elements) survives the swap. This also covers
+        // an INPUT that failed TAG_VALUE_CONSTRAINTS (any type other than
+        // checkbox): it gets no special treatment for having almost
+        // qualified as an allowed tag.
+        var replacement = node.ownerDocument.createTextNode(node.textContent || "");
         node.parentNode.replaceChild(replacement, node);
         continue;
       }
       sanitizeAttributes(node);
+      if (node.tagName === "INPUT") {
+        // The only INPUT shape that reaches here is a checkbox (see
+        // TAG_VALUE_CONSTRAINTS above). GFM task-list checkboxes
+        // (`- [ ] foo` / `- [x] foo`) already render disabled from marked,
+        // but a bundle can also emit raw `<input type="checkbox">` HTML
+        // directly with no `disabled` attribute at all -- force it here
+        // rather than trusting the source, since this is a read-only viewer
+        // and a live, focusable checkbox has no legitimate use in it.
+        node.setAttribute("disabled", "disabled");
+      }
     }
     return root;
   }

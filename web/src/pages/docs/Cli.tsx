@@ -299,8 +299,9 @@ export default function Cli() {
             (<code>file://</code>) with no server required. Markdown renders <strong>client-side</strong>, via a
             vendored copy of <a href="https://github.com/markedjs/marked">marked</a> v15.0.12 (MIT, credited in{' '}
             <code>NOTICE</code>); a DOM sanitizer strips anything the fixed template doesn't expect. GFM task list
-            items render as <code>☐</code>/<code>☑</code> text markers rather than checkboxes, since the sanitizer
-            doesn't allow <code>&lt;input&gt;</code> elements through.
+            items survive sanitization as real, disabled <code>&lt;input type=&quot;checkbox&quot;&gt;</code> elements
+            with the correct checked state, so a screen reader announces them as checkboxes rather than as
+            decorative text.
           </p>
           <p>
             There's no full-text search in this slice — a static site has no server to run the shared{' '}

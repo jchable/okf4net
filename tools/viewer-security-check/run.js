@@ -119,17 +119,112 @@ check("a raw inline <img onerror=...> is not rendered live", () => {
 });
 
 check("nested HTML in alt text is not reparsed as markup", () => {
+  // marked places this alt text into the `alt` attribute unescaped, but the
+  // literal string has no `"` in it, so HTML attribute-value parsing never
+  // terminates early: the whole `<img src=x onerror=alert(1)>` string stays
+  // inside the outer <img>'s alt *attribute value*, never becoming a second,
+  // live element with a real onerror attribute. Assert on that structurally
+  // (one <img>, no element anywhere carries a live onerror attribute) rather
+  // than a naive substring search over serialized innerHTML, which would
+  // also flag this harmless case: the word "onerror" legitimately appears
+  // as inert alt text, not as a live handler, and serialization is not
+  // required to escape `<`/`>` inside an attribute value.
   const body = renderBody("![<img src=x onerror=alert(1)>](y.png)");
   const imgs = body.querySelectorAll("img");
   assert(imgs.length === 1, `expected exactly one <img>, found ${imgs.length}`);
   assert(!imgs[0].hasAttribute("onerror"), "onerror attribute survived sanitization");
-  assert(!body.innerHTML.toLowerCase().includes("onerror"), "onerror text leaked into output");
+  assert(body.querySelectorAll("[onerror]").length === 0, "some element carries a live onerror attribute");
 });
 
 check("a raw <svg onload=...> is not rendered", () => {
   const body = renderBody('<svg onload="alert(1)"></svg>');
   assert(body.querySelectorAll("svg").length === 0, "an <svg> element reached the page");
   assert(!body.innerHTML.toLowerCase().includes("onload"), "onload text leaked into output");
+});
+
+check("a raw <iframe> is not rendered", () => {
+  const body = renderBody('<iframe src="javascript:alert(1)"></iframe>');
+  assert(body.querySelectorAll("iframe").length === 0, "an <iframe> element reached the page");
+});
+
+check("a raw <form>/formaction is not rendered", () => {
+  const body = renderBody('<form action="x"><button formaction="javascript:alert(1)">go</button></form>');
+  assert(body.querySelectorAll("form").length === 0, "a <form> element reached the page");
+  assert(!body.innerHTML.toLowerCase().includes("formaction"), "formaction text leaked into output");
+});
+
+check("a raw <object data=javascript:...> is not rendered", () => {
+  const body = renderBody('<object data="javascript:alert(1)"></object>');
+  assert(body.querySelectorAll("object").length === 0, "an <object> element reached the page");
+});
+
+check("a raw <math><mtext><script> is not rendered", () => {
+  const body = renderBody("<math><mtext><script>alert(1)</script></mtext></math>");
+  assert(body.querySelectorAll("script").length === 0, "a <script> element reached the page (via <math><mtext>)");
+  assert(!body.innerHTML.includes("alert(1)"), "script payload text leaked into output");
+});
+
+check("a raw <div style=background:url(javascript:...)> is not rendered live", () => {
+  const body = renderBody('<div style="background:url(javascript:alert(1))">hi</div>');
+  assert(!body.innerHTML.toLowerCase().includes("style="), "style attribute survived sanitization");
+  assert(body.textContent.includes("hi"), "wrapper text was lost even though the element was dropped");
+});
+
+check("a raw <a xlink:href=javascript:...> is not rendered live", () => {
+  const body = renderBody('<a xlink:href="javascript:alert(1)">click</a>');
+  const a = body.querySelector("a");
+  assert(a, "expected an <a> to survive sanitization");
+  assert(!a.hasAttribute("xlink:href"), "xlink:href attribute survived sanitization");
+  assert(!body.innerHTML.toLowerCase().includes("javascript:"), "javascript: scheme text leaked into output");
+});
+
+check("a raw <img srcdoc=...> does not carry the srcdoc attribute", () => {
+  const body = renderBody('<img src="x.png" srcdoc="<script>alert(1)</script>">');
+  const img = body.querySelector("img");
+  assert(img, "expected an <img> to survive sanitization");
+  assert(!img.hasAttribute("srcdoc"), "srcdoc attribute survived sanitization");
+});
+
+check("a raw <input type=checkbox onfocus=... autofocus> survives only as an inert disabled checkbox", () => {
+  const body = renderBody('<input type="checkbox" onfocus="alert(1)" autofocus>');
+  const input = body.querySelector("input");
+  assert(input, "expected the checkbox to survive as a real <input> element");
+  assert(input.getAttribute("type") === "checkbox", "type attribute was altered");
+  assert(input.hasAttribute("disabled"), "surviving checkbox was not forced disabled");
+  assert(!input.hasAttribute("onfocus"), "onfocus attribute survived sanitization");
+  assert(!input.hasAttribute("autofocus"), "autofocus attribute survived sanitization");
+});
+
+check("a raw <input type=text> does not survive as an element", () => {
+  const body = renderBody('<input type="text" value="hi">');
+  assert(body.querySelectorAll("input").length === 0, "a non-checkbox <input> survived sanitization");
+});
+
+check("a raw <input type=image src=...> does not survive as an element", () => {
+  const body = renderBody('<input type="image" src="javascript:alert(1)">');
+  assert(body.querySelectorAll("input").length === 0, "an <input type=image> survived sanitization");
+});
+
+check("a raw <input type=submit formaction=...> does not survive as an element", () => {
+  const body = renderBody('<input type="submit" formaction="javascript:alert(1)">');
+  assert(body.querySelectorAll("input").length === 0, "an <input type=submit> survived sanitization");
+  assert(!body.innerHTML.toLowerCase().includes("formaction"), "formaction text leaked into output");
+});
+
+// --- behaviour change from removing the renderer-hook layer ---------------
+
+console.log("\nWrapper text preserved (renderer-hook layer removed):");
+
+check("a <details>/<summary> wrapper's text is preserved, not deleted", () => {
+  const body = renderBody("<details><summary>Resume</summary>corps important</details>");
+  const text = body.textContent.replace(/\s+/g, "").trim();
+  assert(text === "Resumecorpsimportant", `expected wrapper text preserved, got: ${JSON.stringify(body.textContent)}`);
+});
+
+check("a nested <div><span><b> wrapper's text is preserved, not deleted", () => {
+  const body = renderBody("<div><span>texte <b>gras</b></span></div>");
+  const text = body.textContent.replace(/\s+/g, " ").trim();
+  assert(text === "texte gras", `expected wrapper text preserved, got: ${JSON.stringify(body.textContent)}`);
 });
 
 // --- legitimate payloads: sanitization must not be over-aggressive --------
@@ -177,32 +272,36 @@ check("a plain image with alt text renders", () => {
   assert(img.getAttribute("alt") === "A nice diagram", "image alt text was altered or stripped");
 });
 
-check("an unchecked GFM task-list item renders a hollow-box text marker, not a live checkbox", () => {
+check("an unchecked GFM task-list item renders a real disabled checkbox, unchecked", () => {
   const body = renderBody("- [ ] todo");
   const li = body.querySelector("li");
   assert(li, "expected a <li> to survive");
-  assert(body.querySelectorAll("input").length === 0, "a raw <input> element survived sanitization");
-  const text = li.textContent.replace(/\s+/g, " ").trim();
-  assert(text === "☐ todo", `expected hollow-box marker text "☐ todo", got: ${JSON.stringify(li.textContent)}`);
+  const input = li.querySelector("input");
+  assert(input, "expected a real <input> checkbox to survive sanitization");
+  assert(input.getAttribute("type") === "checkbox", "surviving input was not type=checkbox");
+  assert(input.hasAttribute("disabled"), "surviving checkbox was not disabled");
+  assert(!input.hasAttribute("checked"), "unchecked item was rendered as checked");
 });
 
-check("a checked GFM task-list item renders a checked-box text marker, not a live checkbox", () => {
+check("a checked GFM task-list item renders a real disabled checkbox, checked", () => {
   const body = renderBody("- [x] done");
   const li = body.querySelector("li");
   assert(li, "expected a <li> to survive");
-  assert(body.querySelectorAll("input").length === 0, "a raw <input> element survived sanitization");
-  const text = li.textContent.replace(/\s+/g, " ").trim();
-  assert(text === "☑ done", `expected checked-box marker text "☑ done", got: ${JSON.stringify(li.textContent)}`);
+  const input = li.querySelector("input");
+  assert(input, "expected a real <input> checkbox to survive sanitization");
+  assert(input.getAttribute("type") === "checkbox", "surviving input was not type=checkbox");
+  assert(input.hasAttribute("disabled"), "surviving checkbox was not disabled");
+  assert(input.hasAttribute("checked"), "checked item was not rendered as checked");
 });
 
-check("a mixed task list keeps checked and unchecked items visually distinct", () => {
+check("a mixed task list keeps checked and unchecked items distinct via checkbox state", () => {
   const body = renderBody("- [ ] a faire\n- [x] fait\n");
   const items = body.querySelectorAll("li");
   assert(items.length === 2, `expected 2 <li>, found ${items.length}`);
-  const first = items[0].textContent.replace(/\s+/g, " ").trim();
-  const second = items[1].textContent.replace(/\s+/g, " ").trim();
-  assert(first === "☐ a faire", `expected unchecked item text, got: ${JSON.stringify(items[0].textContent)}`);
-  assert(second === "☑ fait", `expected checked item text, got: ${JSON.stringify(items[1].textContent)}`);
+  const firstInput = items[0].querySelector("input");
+  const secondInput = items[1].querySelector("input");
+  assert(firstInput && !firstInput.hasAttribute("checked"), "expected the first item's checkbox unchecked");
+  assert(secondInput && secondInput.hasAttribute("checked"), "expected the second item's checkbox checked");
 });
 
 console.log(`\n${passed} passed, ${failures} failed`);
