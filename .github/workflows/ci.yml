@@ -56,6 +56,30 @@ jobs:
       - name: Verify formatting
         run: dotnet format OKF4net.sln --verify-no-changes
 
+  viewer-security:
+    # The viewer's XSS defence lives in JavaScript (src/OKF4net.Viewer/Assets/viewer.js),
+    # which the xunit suite cannot execute -- its tests there are source-text smoke checks
+    # that stay green even if the sanitizer is gutted. This job is the only automated
+    # guard on that control, and it matters most when marked.min.js is re-vendored.
+    name: viewer sanitizer (JS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/viewer-security-check/package-lock.json
+
+      - name: Install harness dependencies
+        working-directory: tools/viewer-security-check
+        run: npm ci
+
+      - name: Run hostile-payload harness
+        working-directory: tools/viewer-security-check
+        run: npm test
+
   aot-publish:
     name: Native AOT publish smoke test
     runs-on: ubuntu-latest

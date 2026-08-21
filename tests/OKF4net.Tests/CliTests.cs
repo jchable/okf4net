@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Linq;
+using System.Text.RegularExpressions;
 using OKF4net.Cli;
 
 namespace OKF4net.Tests;
@@ -53,6 +54,23 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Contains("okf ", r.Out);
         Assert.Contains("OKF spec v0.2", r.Out);
+    }
+
+    [Fact]
+    public void Version_matches_the_build_version()
+    {
+        // OkfCli.CliVersion is hand-maintained, separate from <Version> in
+        // Directory.Build.props. The two drifted once and the winget package
+        // for 0.2.0 shipped a binary whose `--version` printed 0.1.0-alpha.1
+        // (caught by a Microsoft moderator, not by us). Fail the build here
+        // instead: Version_prints_and_succeeds only checks the "okf " prefix.
+        var props = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "Directory.Build.props"));
+        var declared = Regex.Match(props, @"<Version>\s*([^<\s]+)\s*</Version>");
+        Assert.True(declared.Success, "no <Version> element in Directory.Build.props");
+
+        var r = Run("--version");
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"okf {declared.Groups[1].Value} ", r.Out);
     }
 
     [Fact]
@@ -310,5 +328,110 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Contains("no index files written", r.Out);
         Assert.Equal("", r.Err);
+    }
+
+    [Fact]
+    public void Render_writes_a_site_and_reports_success()
+    {
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "site");
+
+        var r = Run("render", BundlePath, "--out", outDir);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+        Assert.True(File.Exists(Path.Combine(outDir, "index.html")));
+    }
+
+    [Fact]
+    public void Render_without_out_fails()
+    {
+        var r = Run("render", BundlePath);
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out", r.Err);
+    }
+
+    [Fact]
+    public void Render_without_a_bundle_fails()
+    {
+        var r = Run("render");
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+    }
+
+    [Fact]
+    public void Render_into_the_bundle_itself_fails()
+    {
+        // Regression guard: if this check ever weakens, `dotnet test` would
+        // write generated HTML straight into whatever bundle path is passed
+        // here. Use a throwaway bundle in a TempDir -- never BundlePath,
+        // which is the byte-exact golden fixture tests/fixtures/appendix_a --
+        // so a regression can never corrupt the real goldens the
+        // golden-parity tests depend on.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+
+        var r = Run("render", tmp.Path, "--out", Path.Combine(tmp.Path, "site"));
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+
+        // Regression guard for the .NET ArgumentException(paramName) leaking
+        // its " (Parameter 'outDir')" framework-noise suffix into CLI output
+        // meant for humans -- HtmlWriter.Write is a library API and correctly
+        // keeps throwing with paramName set; the CLI must strip it before
+        // printing.
+        Assert.DoesNotContain("Parameter", r.Err);
+    }
+
+    [Fact]
+    public void Render_with_out_flag_missing_its_value_after_the_bundle_fails_with_out_message()
+    {
+        var r = Run("render", BundlePath, "--out");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out requires a value", r.Err);
+    }
+
+    [Fact]
+    public void Render_with_bare_out_flag_and_no_bundle_fails_with_out_message_not_missing_bundle()
+    {
+        // Same "--out present but unvalued" failure as the test above, just
+        // with the bundle positional also absent. Before the fix this order
+        // dependency made the message flip to "missing <bundle>" (Positional
+        // ran first and hit the empty slot before FlagValue's bounds check
+        // ever fired) -- deterministic now: FlagValue's check always wins.
+        var r = Run("render", "--out");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out requires a value", r.Err);
+        Assert.DoesNotContain("missing <bundle>", r.Err);
+    }
+
+    [Fact]
+    public void Usage_mentions_the_render_verb()
+    {
+        var r = Run("--help");
+        Assert.Equal(0, r.Code);
+        Assert.Contains("render", r.Out);
+    }
+
+    [Fact]
+    public void Render_with_only_out_and_no_bundle_fails_rather_than_treating_the_out_dir_as_the_bundle()
+    {
+        // --out is the CLI's first VALUED option -- every other verb's flags
+        // are valueless (--dot, --json, -w) -- so the naive Positional()
+        // scan (first arg not starting with '-') would previously return the
+        // *value* of --out as the bundle path when the bundle itself is
+        // omitted. Guard against silently rendering the output directory as
+        // if it were the bundle.
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "site");
+
+        var r = Run("render", "--out", outDir);
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+        Assert.False(Directory.Exists(outDir));
     }
 }

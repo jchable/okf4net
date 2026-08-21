@@ -102,6 +102,7 @@ export default function Home() {
               <tr><td>okf graph &lt;bundle&gt;</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
               <tr><td>okf parse &lt;file&gt;</td><td>One document's structure</td></tr>
               <tr><td>okf fmt &lt;file&gt;</td><td>Normalize by parse + re-serialize (-w writes)</td></tr>
+              <tr><td>okf render &lt;bundle&gt; --out &lt;dir&gt;</td><td>Self-contained, browsable static HTML site</td></tr>
             </tbody>
           </table>
           <pre className="block" dangerouslySetInnerHTML={{ __html: cliSessionHtml }} />

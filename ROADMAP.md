@@ -23,10 +23,20 @@ are the concrete entry points.
   MCP story is read-only-focused; this would exercise write/append and
   `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
 - Performance baselines for large bundle loads.
-- Bundle viewer: browse a bundle interactively (static HTML render + local live
-  server) — implementation approach (zero-dep `HttpListener`, ASP.NET Core, or a
-  standalone web tool) still open, see
-  [#40](https://github.com/jchable/okf4net/issues/40).
+- Bundle viewer: **static render shipped** as `okf render` (`OKF4net.Viewer`).
+  The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
+  remains open — it is what unlocks full-text search in the viewer, since a
+  server can run `ConceptSearch` directly instead of mirroring its weights in
+  JavaScript. Its implementation approach (zero-dep `HttpListener`, ASP.NET
+  Core, or a standalone web tool) is still open.
+  - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
+    xunit runs on .NET and cannot execute JavaScript, so
+    `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
+    source-text markers — it stays green even if the sanitizer is gutted.
+    `tools/viewer-security-check/` (Node/jsdom, run against the real vendored
+    marked) is the actual guard, and CI runs it as the `viewer sanitizer (JS)`
+    job. Re-vendoring `marked.min.js` is the change most likely to regress the
+    defense, and that job is what catches it.
 
 ## Later
 

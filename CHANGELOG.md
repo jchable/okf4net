@@ -8,6 +8,44 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
+  HTML site from a bundle: one page per concept (frontmatter table + rendered
+  body), a generated index, navigable cross-links with broken links flagged,
+  and backlinks. Backed by the new zero-dependency `OKF4net.Viewer` project.
+  Markdown renders client-side via a vendored copy of marked (MIT); raw HTML
+  is neutralized by sanitizing the parsed DOM in `viewer.js` (element
+  allowlist, per-tag attribute allowlist, URL-scheme validation) rather than
+  by patching marked's renderer hooks, which cannot bound the attack surface
+  in general (see `CLAUDE.md`). GFM task list items survive sanitization as
+  real `<input type="checkbox" disabled>` elements with correct checked
+  state, so a screen reader announces them as checkboxes rather than as
+  decorative text. No full-text search yet — that lands with the planned
+  `okf serve` companion.
+
+### Changed
+
+- **winget manifests move to schema 1.12.0** (from the now-deprecated 1.6.0).
+  winget-pkgs' automated reviewer flags older schemas, and an unresolved flag
+  of that kind blocked the first submission
+  ([winget-pkgs#409311](https://github.com/microsoft/winget-pkgs/pull/409311))
+  from merging. The generated manifests pass `winget validate` unchanged
+  otherwise. The package description also stops advertising OKF v0.1.
+- `release.yml` gains a `winget-submit` job that opens the winget-pkgs update
+  PR automatically on each tag (`winget-releaser`). It skips with a notice
+  unless a `WINGET_TOKEN` secret is configured, so releases stay green until
+  the package is published and the token/fork exist — see
+  `packaging/winget/README.md`.
+
+### Fixed
+
+- The CLI's `--version` is now checked against `<Version>` in
+  `Directory.Build.props` by a test. The two are maintained separately and had
+  drifted: the 0.2.0 winget package shipped a binary printing
+  `okf 0.1.0-alpha.1`, which the previous test did not catch (it only asserted
+  the `okf ` prefix).
+
 ## [0.5.0] - 2026-07-31
 
 ### Added

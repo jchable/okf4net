@@ -63,7 +63,7 @@ public class ConceptGeneratorTests
         var concepts = new ConceptGenerator().Generate(snapshot);
 
         var packageConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "packages");
-        Assert.Equal(ConceptId.Slugify("@scope/My Package!"), packageConcept.Id.Segments[1]);
+        Assert.Equal("scope-my-package-", packageConcept.Id.Segments[1]);
     }
 
     [Fact]
@@ -80,6 +80,19 @@ public class ConceptGeneratorTests
 
         var packageIds = concepts.Where(c => c.Id.Segments[0] == "packages").Select(c => c.Id.ToString()).ToList();
         Assert.Equal(["packages/my-package", "packages/my-package-2"], packageIds);
+    }
+
+    [Fact]
+    public void Generate_does_not_collide_a_package_and_a_doc_that_slugify_to_the_same_bare_name()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("npm", "package.json", "Foo", null)],
+            [new DocFile("Foo.md", "Foo")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        Assert.Contains(concepts, c => c.Id.ToString() == "packages/foo");
+        Assert.Contains(concepts, c => c.Id.ToString() == "docs/foo");
     }
 
     [Fact]
@@ -139,6 +152,51 @@ public class ConceptGeneratorTests
 
         var packageIds = concepts.Where(c => c.Id.Segments[0] == "packages").Select(c => c.Id.ToString()).ToList();
         Assert.Equal(["packages/package", "packages/package-2"], packageIds);
+    }
+
+    [Fact]
+    public void Generate_disambiguates_a_doc_titled_Index_instead_of_producing_a_reserved_id()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("INDEX.md", "Index")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var docConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "docs");
+        Assert.Equal("docs/index-2", docConcept.Id.ToString());
+    }
+
+    [Fact]
+    public void Generate_strips_a_trailing_dot_md_from_a_doc_slug_to_avoid_a_double_extension()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("README.md", "README.md")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var docConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "docs");
+        Assert.Equal("docs/readme", docConcept.Id.ToString());
+    }
+
+    [Fact]
+    public void Generate_does_not_strip_a_trailing_dot_md_from_a_package_slug()
+    {
+        // Finding 2 (final review): the ".md"-strip only makes sense for docs, whose id is derived
+        // from a human-facing title. A package literally named "Foo.Md" (e.g. a dotted assembly-style
+        // NuGet PackageId) must keep the ".md" in its slug -- stripping it would silently collide it
+        // with an unrelated sibling package named "Foo" (invisible in the resulting id).
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [
+                new PackageManifest("nuget", "a/Foo.Md.csproj", "Foo.Md", null),
+                new PackageManifest("nuget", "b/Foo.csproj", "Foo", null),
+            ],
+            [new DocFile("Foo.md", "Foo.md")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var packageIds = concepts.Where(c => c.Id.Segments[0] == "packages").Select(c => c.Id.ToString()).ToList();
+        Assert.Equal(["packages/foo.md", "packages/foo"], packageIds);
+
+        var docConcept = Assert.Single(concepts, c => c.Id.Segments[0] == "docs");
+        Assert.Equal("docs/foo", docConcept.Id.ToString());
     }
 
     [Fact]

@@ -158,6 +158,14 @@ public class ConceptIdTests
             () => ConceptId.FromPath(@"C:\bundle", @"C:\other\tables\users.md"));
 
     [Fact]
+    public void FromPath_outside_bundle_root_error_includes_the_bundle_root()
+    {
+        var ex = Assert.Throws<ConceptIdException>(
+            () => ConceptId.FromPath(@"C:\bundle", @"C:\other\tables\users.md"));
+        Assert.Contains(@"C:\bundle", ex.Message);
+    }
+
+    [Fact]
     public void FromPath_throws_when_path_equals_root_exactly()
         // relative part is empty -> zero segments -> New()'s "at least one segment" rule
         => Assert.Throws<ConceptIdException>(

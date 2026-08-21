@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-import { Link } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 
 /** Site navigation keys, one per top-level chapter of the OKF4net bundle. */
 export type NavKey = 'home' | 'what-okf-is' | 'library' | 'cli' | 'docs' | 'contributing' | 'support'
@@ -40,6 +41,23 @@ export interface SiteBarProps {
  * comparison is simpler and more robust than re-deriving it from the URL.
  */
 export default function SiteBar({ current }: SiteBarProps) {
+  const [open, setOpen] = useState(false)
+  const { pathname } = useLocation()
+
+  // A route change already closes the menu implicitly (the panel isn't an
+  // overlay, so a same-page anchor click wouldn't), but this covers the
+  // browser back/forward case, where no link's onClick fires.
+  useEffect(() => setOpen(false), [pathname])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
   return (
     <header className="bar">
       <div className="bar-in">
@@ -53,10 +71,32 @@ export default function SiteBar({ current }: SiteBarProps) {
             </Link>
           ))}
         </nav>
+        <button
+          type="button"
+          className="nav-toggle"
+          aria-expanded={open}
+          aria-controls="site-nav-mobile"
+          aria-label={open ? 'Close menu' : 'Open menu'}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span className="nav-toggle-bars" aria-hidden="true" />
+        </button>
         <a className="gh" href="https://github.com/jchable/okf4net">
           github ↗
         </a>
       </div>
+      <nav id="site-nav-mobile" aria-label="Site (mobile)" className={`nav-mobile${open ? ' open' : ''}`}>
+        {NAV_ITEMS.map((item) => (
+          <Link
+            key={item.key}
+            to={item.to}
+            aria-current={item.key === current ? 'page' : undefined}
+            onClick={() => setOpen(false)}
+          >
+            {item.label}
+          </Link>
+        ))}
+      </nav>
     </header>
   )
 }
