@@ -124,8 +124,13 @@ public static class ConceptAudit
   incluse) pour que la sortie ait une forme fixe.
 - **Périmètre des concepts.** `bundle.Concepts` uniquement. Les `index.md` et
   `log.md` (§8/§9) sont exposés séparément par `Bundle` et ne sont pas des
-  concepts ; les fichiers illisibles restent dans `bundle.ParseErrors` (chargement
-  permissif §3) et n'entrent dans aucun compteur.
+  concepts. Les documents **non parsables** — frontmatter invalide
+  (`DocumentParseException`) ou clés requises manquantes (`ConceptIdException`) —
+  sont collectés dans `bundle.ParseErrors` par le chargement permissif (§11) et
+  n'entrent dans aucun compteur. À ne pas confondre avec un fichier réellement
+  **illisible** (I/O, droits, contenu non-UTF-8) : `Bundle.Load` lève alors
+  `BundleLoadException` et abandonne le chargement entier ; le CLI rend cela en
+  `error:` + code 1 (§4.3), et l'audit ne voit jamais ce cas.
 - **Tier de confiance.** `concept.Document.Frontmatter.TrustTier`, donc
   `Trust.DeriveTier` (§5.3) : un `human:` ⇒ `HumanReviewed`, sinon tout
   vérificateur ⇒ `MachineConfirmed`, liste vide ⇒ `Unverified`.
@@ -182,10 +187,15 @@ relu par un humain ».
 
 Règles de parsing des valeurs, pour lever toute ambiguïté :
 
-- `--trust` et `--status` sont des **vocabulaires** : chaque entrée est trimée
-  puis validée, les doublons sont absorbés (`IReadOnlySet`), une entrée vide
-  (`--trust "a,,b"` ou `--trust ""`) est rejetée avec le message « unknown trust
-  tier » et la valeur fautive citée.
+- `--trust` est le **seul flag à valeurs multiples** : liste séparée par `,`,
+  chaque entrée trimée puis validée contre le vocabulaire, doublons absorbés
+  (`IReadOnlySet`), entrée vide (`--trust "a,,b"` ou `--trust ""`) rejetée avec
+  le message « unknown trust tier » et la valeur fautive citée.
+- `--status` prend **une seule valeur**, trimée puis validée contre le
+  vocabulaire §5.4. Pas de liste : `AuditQuery.Status`, le champ JSON `status` et
+  le paramètre du tool agent sont tous des scalaires (`ConceptStatus?` /
+  `string?`). Un besoin multi-statuts se traiterait par un changement de type
+  cohérent sur les trois surfaces, pas par une tolérance du parseur.
 - `--type` est une **valeur libre** : prise verbatim, sans trim ni repli de
   casse, puisque le spec ne contraint pas le vocabulaire de `type`.
 - Flag répété : la **première occurrence gagne**, comportement hérité de
@@ -301,8 +311,16 @@ Messages exacts (nouveaux) :
 Réutilisés tels quels : `error: missing <bundle>` (`Positional`) et
 `error: --as-of requires a value` (`FlagValue`).
 
-`--as-of` est parsé avec `DateOnly.TryParseExact("yyyy-MM-dd", CultureInfo.InvariantCulture)`
-— même contrat que `Lifecycle.From`, et compatible `InvariantGlobalization` (AOT).
+`--as-of` est parsé exactement comme `Lifecycle.From` le fait pour `stale_after`
+— même contrat, et compatible `InvariantGlobalization` (AOT) :
+
+```csharp
+DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var asOf)
+```
+
+Les cinq arguments sont obligatoires : `DateOnly` n'offre **pas** de surcharge
+`(s, format, provider, out)` — seulement `(s, format, out)` et la forme complète
+ci-dessus. Omettre `DateTimeStyles.None` ne compile pas.
 
 ### 4.4 Texte d'aide
 
@@ -335,6 +353,29 @@ public string Audit(
 Enregistré dans `GetTools()` via `AIFunctionFactory.Create(Audit, "okf_audit")`.
 **Lecture seule**, donc absent de `WriteToolNames` : il reste disponible quand
 `okf-mcp` tourne en mode read-only.
+
+**La date d'observation vient de la couture existante, pas d'une horloge neuve.**
+Le tool n'expose délibérément pas de paramètre `asOf` (un agent n'a pas à choisir
+sa notion d'aujourd'hui), mais il ne doit pas non plus laisser `ConceptAudit`
+retomber sur `SystemClock` : `OkfBundleTools` possède déjà le seam interne
+`Func<DateTime> UtcNow` et la propriété `Today` qui en dérive — « the shared seam
+behind `ReadConcept`'s and `Search`'s staleness checks »
+([OkfBundleTools.cs:136](../../../src/OKF4net.Agents/OkfBundleTools.cs#L136)).
+`Audit` passe donc `Today` à `ConceptAudit`, via un adaptateur privé de quatre
+lignes :
+
+```csharp
+private sealed class PinnedClock(DateOnly today) : IOkfClock
+{
+    public DateOnly Today { get; } = today;
+}
+```
+
+Sans cela, la sortie du tool dépendrait du jour d'exécution et le cas limite
+`today == stale_after` serait intestable. L'alternative — une surcharge publique
+`ConceptAudit.Run(bundle, query, DateOnly asOf)` — est écartée pour garder une
+seule forme canonique dans le cœur ; l'adaptateur reste local aux Agents et
+n'ajoute aucune surface publique.
 
 Différences assumées avec le CLI :
 
@@ -436,7 +477,10 @@ Bundles synthétiques + `FixedClock` (déjà présent).
 7. `Findings` trié par id ordinal, indépendamment de l'ordre de chargement.
 8. Les compteurs portent sur tout le bundle même quand la requête filtre.
 9. Bundle vide ⇒ compteurs à zéro, `Findings` vide, aucune exception.
-10. Fichiers illisibles (`ParseErrors`) exclus des compteurs, sans exception.
+10. Documents non parsables exclus des compteurs, sans exception : un fichier au
+    frontmatter invalide atterrit dans `ParseErrors`, et `ConceptCount` ne le
+    compte pas. (Pas de test « fichier illisible » : ce cas lève
+    `BundleLoadException` au chargement et n'atteint jamais `ConceptAudit`.)
 11. `clock: null` ⇒ `AsOf` = date UTC du jour.
 12. `--type` : match ordinal exact ; casse différente ⇒ pas de match ; concept
     sans `type` ⇒ jamais retenu.
@@ -467,8 +511,10 @@ Bundles synthétiques + `FixedClock` (déjà présent).
 
 Bundle réutilisé : `tests/fixtures/okf_v02` (2 concepts, déjà porteur des champs
 v0.2), avec `--as-of 2099-06-01` **figé** — cette date rend `metrics/dau`
-(`stale_after: 2099-01-01`) périmé sans qu'aucune fixture ne soit créée ni
-modifiée. Aucun nouveau bundle de fixtures.
+(`stale_after: 2099-01-01`) périmé sans toucher au bundle. Formulation exacte de
+l'engagement : **aucun bundle de fixtures n'est créé ni modifié**, et **aucun
+golden existant n'est modifié** ; les seuls ajouts sont des goldens neufs,
+vérifiés à la main (voir plus bas).
 
 Nouveaux fichiers dans `tests/fixtures/golden/` : `audit-v02.out` et
 `audit-v02.json`. **Pas de `audit-v02.exitcode`** : le code de retour d'`audit`
@@ -504,6 +550,9 @@ qu'un seul fichier de `tests/fixtures/` préexistant soit touché.
 26. Il est **absent** de `WriteToolNames` (donc exposé en mode read-only).
 27. Plafond à 20 findings + ligne `… and N more`.
 28. `trust`/`status` invalides ⇒ message d'usage rendu, pas d'exception.
+29. **Date pinnée par le seam `UtcNow`** : avec `UtcNow` figé, la sortie est
+    déterministe, et la borne `today == stale_after` classe bien le concept comme
+    périmé. Sans ce test, le comportement clé dépendrait du jour d'exécution.
 
 ## 8. Documentation à mettre à jour
 
