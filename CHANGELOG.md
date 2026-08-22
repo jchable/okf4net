@@ -31,6 +31,18 @@ and this project adheres to
 
 ### Changed
 
+- **The `--` separator now applies to every verb, not just to the positional
+  lookup.** Argument presence, flag values and the positional were three
+  independent scans of the raw argument array, and only the last honoured `--`;
+  a flag written after the separator was still obeyed. They are now one scan, so
+  everything after `--` is positional on every verb — which is what the
+  separator has always been documented to mean. Concretely: `okf fmt -- file -w`
+  no longer rewrites the file in place (`-w` is a filename there, not a flag),
+  and the same applies to `--json`, `--dot` and `--out` written after a
+  separator. The well-formed spellings (`okf fmt file -w`, `okf fmt -w file`)
+  are unaffected. The same rewrite also fixes a token consumed as a flag's value
+  still counting as a flag: `okf audit b --type --stale` no longer sets the
+  stale filter.
 - **`okf validate` gains `--as-of <YYYY-MM-DD>`**, pinning the date its §5.5
   staleness warning is evaluated against. `BundleValidator.Validate` already
   accepted a clock, but the verb exposed no way to set one, so its

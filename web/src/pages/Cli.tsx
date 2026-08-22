@@ -52,7 +52,7 @@ export default function Cli() {
         type="Reference"
         title={
           <>
-            Seven commands, <em>one binary.</em>
+            Eight commands, <em>one binary.</em>
           </>
         }
         lede={

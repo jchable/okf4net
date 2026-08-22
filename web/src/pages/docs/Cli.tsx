@@ -141,7 +141,7 @@ const buildHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary</span>`
 
 /**
- * Port of `website/docs/cli.html` — the seven `okf` subcommands: synopsis,
+ * Port of `website/docs/cli.html` — the eight `okf` subcommands: synopsis,
  * per-command reference with real captured output, exit codes, build.
  */
 export default function Cli() {
@@ -165,7 +165,7 @@ export default function Cli() {
         }
         lede={
           <>
-            Seven subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
+            Eight subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
             runtime to install. <code>validate</code> exits non-zero on a non-conformant bundle, so the whole tool
             drops into CI as one line.
           </>

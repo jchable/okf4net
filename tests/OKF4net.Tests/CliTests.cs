@@ -703,6 +703,27 @@ public class CliTests
     }
 
     /// <summary>
+    /// The `--` rule is the CLI's, not audit's: on every verb, a token after the
+    /// separator is positional and never a flag. This pins it on `fmt`, whose
+    /// `-w` is the one flag with a side effect on disk — before the arguments
+    /// were scanned once, only the positional lookup honoured the separator, so
+    /// `-w` sitting after it still rewrote the file.
+    /// </summary>
+    [Fact]
+    public void Fmt_a_write_flag_after_the_separator_is_not_a_flag()
+    {
+        using var tmp = new TempDir();
+        const string unformatted = "---\ntype: Note\ntitle:   Spaced\n---\n\nbody\n";
+        var file = tmp.Write("note.md", unformatted);
+
+        var r = Run("fmt", "--", file, "-w");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(unformatted, File.ReadAllText(file));
+        Assert.Contains("title: Spaced", r.Out);
+    }
+
+    /// <summary>
     /// A `--` with nothing after it still ends the option scan, but it does not
     /// discard a positional that came before: `okf audit b --` resolves `b`.
     /// This is the case that distinguishes "clear the positionals at the

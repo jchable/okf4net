@@ -92,7 +92,13 @@ public sealed class AuditReport
     /// <summary>The number of stale concepts in the whole bundle.</summary>
     public int StaleCount { get; }
 
-    /// <summary>The selected concepts, sorted by concept id (ordinal).</summary>
+    /// <summary>
+    /// The selected concepts, sorted by concept id — component-wise, via
+    /// <see cref="ConceptId.CompareTo"/>, the same ordering <c>Bundle.Load</c>
+    /// and <c>IndexGenerator</c> use. Not a flat ordinal compare of the joined
+    /// id: the two disagree wherever a separator meets a segment character
+    /// (<c>orders/extra</c> sorts before <c>orders-extra</c>).
+    /// </summary>
     public IReadOnlyList<AuditFinding> Findings { get; }
 }
 
@@ -219,19 +225,13 @@ public static class ConceptAudit
     {
         var asOf = (clock ?? new SystemClock()).Today;
 
-        var trustCounts = new Dictionary<TrustTier, int>
-        {
-            [TrustTier.Unverified] = 0,
-            [TrustTier.MachineConfirmed] = 0,
-            [TrustTier.HumanReviewed] = 0,
-        };
-
-        var statusCounts = new Dictionary<ConceptStatus, int>
-        {
-            [ConceptStatus.Draft] = 0,
-            [ConceptStatus.Stable] = 0,
-            [ConceptStatus.Deprecated] = 0,
-        };
+        // Seeded from the vocabulary rather than from a hand-written list of
+        // members: a tier or status added to the enum without a matching line
+        // here would make the increments below throw KeyNotFoundException on the
+        // first concept carrying it, breaking this type's "never throws on data"
+        // contract exactly where the vocabulary exists to prevent drift.
+        var trustCounts = AuditVocabulary.TrustTiersInOrder.ToDictionary(tier => tier, _ => 0);
+        var statusCounts = AuditVocabulary.StatusesInOrder.ToDictionary(status => status, _ => 0);
 
         var staleCount = 0;
         var findings = new List<AuditFinding>();

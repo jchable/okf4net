@@ -150,6 +150,9 @@ public static class OkfCli
         /// <summary>The first positional token — or the one after <c>--</c>, which takes the slot.</summary>
         private string? _positional;
 
+        /// <summary>The flags this scan was told consume a value, kept so <see cref="Value"/> can tell a user's mistake from the caller's.</summary>
+        private string[] _valuedFlags = [];
+
         private CliArgs()
         {
         }
@@ -157,7 +160,7 @@ public static class OkfCli
         /// <summary>Scans <paramref name="args"/>, treating <paramref name="valuedFlags"/> as flags that consume the next token.</summary>
         internal static CliArgs Scan(string[] args, params string[] valuedFlags)
         {
-            var scanned = new CliArgs();
+            var scanned = new CliArgs { _valuedFlags = valuedFlags };
 
             for (var i = 0; i < args.Length; i++)
             {
@@ -217,10 +220,30 @@ public static class OkfCli
         /// The value <paramref name="flag"/> consumed, or <c>null</c> when the
         /// flag is absent. Throws when the flag is present but unvalued.
         /// </summary>
-        internal string? Value(string flag) =>
-            _flags.TryGetValue(flag, out var value)
-                ? value ?? throw new CliOperationException($"{flag} requires a value")
-                : null;
+        internal string? Value(string flag)
+        {
+            if (!_flags.TryGetValue(flag, out var value))
+            {
+                return null;
+            }
+
+            if (value is not null)
+            {
+                return value;
+            }
+
+            // Present with nothing attached. That is a user mistake only if the
+            // flag was declared as taking a value; otherwise the caller asked a
+            // question about a flag the scan was never told to value, and
+            // reporting "requires a value" would blame the user for a bug here.
+            if (Array.IndexOf(_valuedFlags, flag) < 0)
+            {
+                throw new InvalidOperationException(
+                    $"{flag} was not declared as a valued flag in this command's CliArgs.Scan call");
+            }
+
+            throw new CliOperationException($"{flag} requires a value");
+        }
 
         /// <summary>The first positional argument, or throws naming <paramref name="what"/>.</summary>
         internal string Positional(string what) =>
@@ -372,10 +395,10 @@ public static class OkfCli
     /// <summary>The flags that make <c>audit</c> a filtered query rather than a report.</summary>
     private static readonly string[] AuditFilterFlags = ["--stale", "--trust", "--status", "--type"];
 
-    /// <summary>Every <c>audit</c> flag that consumes the following token as its value.</summary>
-    /// <summary>The flag that pins "today", shared by `validate` and `audit`.</summary>
+    /// <summary>The flag that pins "today", shared by <c>validate</c> and <c>audit</c>.</summary>
     private const string AsOfFlag = "--as-of";
 
+    /// <summary>Every <c>audit</c> flag that consumes the following token as its value.</summary>
     private static readonly string[] AuditValuedFlags = ["--trust", "--status", "--type", AsOfFlag];
 
     /// <summary>An <see cref="IOkfClock"/> pinned to one date, backing <c>--as-of</c>.</summary>
@@ -387,11 +410,11 @@ public static class OkfCli
     /// <summary>Implements the <c>audit</c> subcommand.</summary>
     private static int CmdAudit(string[] args, TextWriter stdout)
     {
-        // Flag values are validated BEFORE the positional is resolved. An
-        // unvalued flag is the more specific diagnosis, and `okf audit --as-of`
-        // -- the flag as the only argument -- would otherwise report
-        // "missing <bundle>" and hide the actual mistake, because Positional
-        // skips a valued flag's slot without checking that it has a value.
+        // Flag values are read BEFORE the positional is asked for. An unvalued
+        // flag is the more specific diagnosis, so `okf audit --as-of` -- the
+        // flag as the only argument -- must name that flag rather than report
+        // "missing <bundle>", which is what the scan would otherwise leave as
+        // the only visible symptom.
         var parsed = CliArgs.Scan(args, AuditValuedFlags);
         var clock = ParseAsOf(parsed);
 
