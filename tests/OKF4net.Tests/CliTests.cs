@@ -496,6 +496,41 @@ public class CliTests
         Assert.Equal("", r.Out);
     }
 
+    /// <summary>
+    /// Positive-selection coverage for <c>--type</c>: both fixture concepts
+    /// are <c>type: Metric</c>, so the exact-case value must select both, and
+    /// the lowercase variant must select none -- pinning the documented
+    /// ordinal, case-sensitive rule (§ Audit.cs <c>AuditQuery.Type</c>) at the
+    /// CLI boundary. Without this, transposing <c>Type</c>/<c>Status</c> in
+    /// <c>ParseAuditQuery</c> would leave the suite green.
+    /// </summary>
+    [Fact]
+    public void Audit_type_filter_selects_matching_concepts_case_sensitively()
+    {
+        var match = Run("audit", V02BundlePath, "--type", "Metric");
+        Assert.Equal(0, match.Code);
+        Assert.Equal(2, match.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+
+        var noMatch = Run("audit", V02BundlePath, "--type", "metric");
+        Assert.Equal(0, noMatch.Code);
+        Assert.Equal("", noMatch.Out);
+    }
+
+    /// <summary>
+    /// Positive-selection coverage for <c>--status</c>: both fixture concepts
+    /// resolve to <c>status: stable</c> (one explicitly, one via
+    /// <c>Lifecycle.From</c>'s fallback for the unknown "retired" value), so
+    /// this must select both.
+    /// </summary>
+    [Fact]
+    public void Audit_status_filter_selects_matching_concepts()
+    {
+        var r = Run("audit", V02BundlePath, "--status", "stable");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
     [Fact]
     public void Audit_three_tier_idiom_returns_every_concept()
     {
