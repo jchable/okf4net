@@ -138,12 +138,17 @@ public static class OkfCli
     /// </summary>
     private sealed class CliArgs
     {
-        private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
-        private readonly List<string> _positionals = [];
+        /// <summary>
+        /// Every flag given, mapped to the value it consumed: <c>null</c> both
+        /// for a valueless flag and for a valued one left without a value. Key
+        /// absent means the flag was not given — one dictionary rather than a
+        /// presence set beside a value map, so presence and value cannot drift
+        /// apart.
+        /// </summary>
+        private readonly Dictionary<string, string?> _flags = new(StringComparer.Ordinal);
 
-        /// <summary>The token immediately after a <c>--</c> separator, if any; it wins the positional slot.</summary>
-        private string? _afterSeparator;
+        /// <summary>The first positional token — or the one after <c>--</c>, which takes the slot.</summary>
+        private string? _positional;
 
         private CliArgs()
         {
@@ -160,13 +165,12 @@ public static class OkfCli
 
                 if (token == "--")
                 {
+                    // Everything past the separator is positional, and the first
+                    // of those takes the slot even if an earlier token was also
+                    // positional. Nothing after it can be a flag.
                     if (i + 1 < args.Length)
                     {
-                        scanned._afterSeparator = args[i + 1];
-                        for (var j = i + 1; j < args.Length; j++)
-                        {
-                            scanned._positionals.Add(args[j]);
-                        }
+                        scanned._positional = args[i + 1];
                     }
 
                     break;
@@ -174,11 +178,21 @@ public static class OkfCli
 
                 if (Array.IndexOf(valuedFlags, token) >= 0)
                 {
-                    scanned._flags.Add(token);
-                    if (i + 1 < args.Length && args[i + 1] != "--")
+                    // The separator is not a value: swallowing it would hide
+                    // "requires a value" and cancel the separator's contract for
+                    // everything that follows.
+                    var hasValue = i + 1 < args.Length && args[i + 1] != "--";
+
+                    // First occurrence wins. A later one still consumes its own
+                    // value, so that value can never be read as the positional.
+                    if (!scanned._flags.ContainsKey(token))
                     {
-                        scanned._values[token] = args[i + 1];
-                        i++; // The value belongs to this flag: never a flag or a positional itself.
+                        scanned._flags[token] = hasValue ? args[i + 1] : null;
+                    }
+
+                    if (hasValue)
+                    {
+                        i++;
                     }
 
                     continue;
@@ -186,53 +200,31 @@ public static class OkfCli
 
                 if (token.StartsWith('-'))
                 {
-                    scanned._flags.Add(token);
+                    scanned._flags[token] = null;
                     continue;
                 }
 
-                scanned._positionals.Add(token);
+                scanned._positional ??= token;
             }
 
             return scanned;
         }
 
         /// <summary>True if <paramref name="flag"/> was given as a flag — not as another flag's value, and not after <c>--</c>.</summary>
-        internal bool Has(string flag) => _flags.Contains(flag);
+        internal bool Has(string flag) => _flags.ContainsKey(flag);
 
         /// <summary>
         /// The value <paramref name="flag"/> consumed, or <c>null</c> when the
         /// flag is absent. Throws when the flag is present but unvalued.
         /// </summary>
-        internal string? Value(string flag)
-        {
-            if (!_flags.Contains(flag))
-            {
-                return null;
-            }
-
-            if (!_values.TryGetValue(flag, out var value))
-            {
-                throw new CliOperationException($"{flag} requires a value");
-            }
-
-            return value;
-        }
+        internal string? Value(string flag) =>
+            _flags.TryGetValue(flag, out var value)
+                ? value ?? throw new CliOperationException($"{flag} requires a value")
+                : null;
 
         /// <summary>The first positional argument, or throws naming <paramref name="what"/>.</summary>
-        internal string Positional(string what)
-        {
-            if (_afterSeparator is { } separated)
-            {
-                return separated;
-            }
-
-            if (_positionals.Count > 0)
-            {
-                return _positionals[0];
-            }
-
-            throw new CliOperationException($"missing {what}");
-        }
+        internal string Positional(string what) =>
+            _positional ?? throw new CliOperationException($"missing {what}");
     }
 
     /// <summary>
@@ -341,7 +333,7 @@ public static class OkfCli
     /// <summary>Implements the <c>validate</c> subcommand.</summary>
     private static int CmdValidate(string[] args, TextWriter stdout)
     {
-        var parsed = CliArgs.Scan(args, "--as-of");
+        var parsed = CliArgs.Scan(args, AsOfFlag);
 
         // --as-of is parsed before the positional, so an unvalued flag names
         // itself rather than surfacing as "missing <bundle>".
@@ -381,7 +373,10 @@ public static class OkfCli
     private static readonly string[] AuditFilterFlags = ["--stale", "--trust", "--status", "--type"];
 
     /// <summary>Every <c>audit</c> flag that consumes the following token as its value.</summary>
-    private static readonly string[] AuditValuedFlags = ["--trust", "--status", "--type", "--as-of"];
+    /// <summary>The flag that pins "today", shared by `validate` and `audit`.</summary>
+    private const string AsOfFlag = "--as-of";
+
+    private static readonly string[] AuditValuedFlags = ["--trust", "--status", "--type", AsOfFlag];
 
     /// <summary>An <see cref="IOkfClock"/> pinned to one date, backing <c>--as-of</c>.</summary>
     private sealed class PinnedClock(DateOnly today) : IOkfClock
@@ -433,7 +428,7 @@ public static class OkfCli
     /// <summary>Parses <c>--as-of</c>; null when absent (the audit then uses the system clock).</summary>
     private static IOkfClock? ParseAsOf(CliArgs args)
     {
-        var raw = args.Value("--as-of");
+        var raw = args.Value(AsOfFlag);
         if (raw is null)
         {
             return null;

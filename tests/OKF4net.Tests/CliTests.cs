@@ -702,6 +702,41 @@ public class CliTests
         Assert.DoesNotContain("\"conceptCount\"", r.Out);
     }
 
+    /// <summary>
+    /// A `--` with nothing after it still ends the option scan, but it does not
+    /// discard a positional that came before: `okf audit b --` resolves `b`.
+    /// This is the case that distinguishes "clear the positionals at the
+    /// separator" from "only override when the separator has a token after it".
+    /// </summary>
+    [Fact]
+    public void Audit_a_trailing_separator_keeps_the_earlier_positional()
+    {
+        var r = Run("audit", V02BundlePath, "--");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"bundle:     {V02BundlePath}", r.Out);
+    }
+
+    /// <summary>
+    /// A repeated flag resolves to its FIRST occurrence, the rule every verb
+    /// inherited from the original `Array.IndexOf` lookup and which the design
+    /// spec (§4.1) documents. The later occurrence still consumes its own
+    /// value, so that value never lands in the positional slot.
+    /// </summary>
+    [Fact]
+    public void Audit_a_repeated_flag_resolves_to_its_first_occurrence()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "human-reviewed", "--trust", "unverified", "--json");
+
+        Assert.Equal(0, r.Code);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var trust = doc.RootElement.GetProperty("query").GetProperty("trust")
+            .EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Equal(["human-reviewed"], trust);
+    }
+
     [Fact]
     public void Audit_as_of_alone_stays_in_report_mode()
     {
