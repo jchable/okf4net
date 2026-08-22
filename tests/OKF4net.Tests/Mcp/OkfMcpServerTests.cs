@@ -174,4 +174,58 @@ public sealed class OkfMcpServerTests
             Directory.Delete(bundle, recursive: true);
         }
     }
+
+    /// <summary>
+    /// The other MCP tests only prove <c>okf_audit</c> appears in the tool
+    /// list. This one calls it, because the MCP adapter does its own
+    /// schema-driven argument conversion: <c>okf_audit</c> takes four optional
+    /// parameters — a bool and three strings — so a conversion or binding
+    /// regression could ship while the Agent-level test stayed green.
+    ///
+    /// The filter is what makes the assertion meaningful: <c>orphan</c> is
+    /// unverified, <c>reviewed</c> is human-reviewed, and only the former may
+    /// come back. `stale` is passed as false because neither concept carries a
+    /// `stale_after`, so the tool's default (the stale worklist) would select
+    /// nothing and the test would pass without proving the trust filter bound.
+    /// </summary>
+    [Fact]
+    public async Task Audit_tool_invoked_over_mcp_applies_its_filters()
+    {
+        var bundle = NewBundleDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(bundle, "metrics"));
+            await File.WriteAllTextAsync(
+                Path.Combine(bundle, "metrics", "orphan.md"),
+                "---\ntype: Metric\ntitle: Orphaned Metric\n---\n");
+            await File.WriteAllTextAsync(
+                Path.Combine(bundle, "metrics", "reviewed.md"),
+                "---\ntype: Metric\ntitle: Reviewed Metric\n"
+                + "verified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n---\n");
+
+            var tools = OkfMcpToolset.Build(bundle, readOnly: true);
+            var (server, client) = await ConnectAsync(tools);
+            await using var _ = server;
+            await using var __ = client;
+
+            var audit = await client.CallToolAsync(
+                "okf_audit",
+                new Dictionary<string, object?>
+                {
+                    ["stale"] = false,
+                    ["trust"] = "unverified",
+                });
+
+            var text = ResultText(audit);
+            Assert.Contains("metrics/orphan", text);
+            Assert.DoesNotContain("metrics/reviewed", text);
+
+            // The counters still describe the whole bundle, not the selection.
+            Assert.Contains("concepts:   2", text);
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
 }

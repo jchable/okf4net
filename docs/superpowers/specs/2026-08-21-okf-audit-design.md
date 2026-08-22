@@ -308,7 +308,7 @@ Asymétrie assumée entre texte et JSON sur le cas malformé : le texte affiche
 `no-stale-after` (un `stale_after` illisible ne dit rien de la fraîcheur, et
 c'est `validate` qui signale la valeur fautive), tandis que le JSON conserve la
 valeur brute dans `staleAfter` avec `stale: false` — un outil qui consomme le
-JSON doit pouvoir distinguer « champ absent » de « champ present mais illisible »
+JSON doit pouvoir distinguer « champ absent » de « champ présent mais illisible »
 sans relire les fichiers.
 
 Imprimer l'id plutôt que le chemin n'est pas cosmétique : `ConceptId.FromPath`
@@ -553,7 +553,7 @@ vérifiés à la main (voir plus bas).
 Nouveaux fichiers dans `tests/fixtures/golden/` : `audit-v02.out` et
 `audit-v02.json`. **Pas de `audit-v02.exitcode`** : le code de retour d'`audit`
 est constamment 0 (§4.3), un golden pour une constante n'apporte rien et grossit
-la surface de fixtures. Le test l'assère en ligne (`Assert.Equal(0, r.Code)`),
+la surface de fixtures. Le test l'assure en ligne (`Assert.Equal(0, r.Code)`),
 exactement comme `Info_output_matches_golden`, qui n'a pas non plus de golden de
 code retour ; les `*.exitcode` de `validate` n'existent que parce que son code
 varie.

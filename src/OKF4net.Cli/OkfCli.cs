@@ -120,66 +120,119 @@ public static class OkfCli
     // ----------------------------------------------------------------
 
     /// <summary>
-    /// Returns the first positional argument, or throws. Everything after a
-    /// <c>--</c> separator is treated as positional (so paths beginning with
-    /// <c>-</c> work).
+    /// One command's arguments, scanned once so every later question agrees on
+    /// what each token is.
+    ///
+    /// Scanning left to right, a flag listed in <c>valuedFlags</c> consumes the
+    /// following token as its value; every other <c>-</c>-prefixed token is a
+    /// valueless flag; anything else is positional. A <c>--</c> separator ends
+    /// the scan: everything after it is positional, never a flag (so a path
+    /// beginning with <c>-</c> works).
+    ///
+    /// Scanning once is the point. When presence, value and positional were
+    /// three independent scans of the raw array, they disagreed: a token
+    /// consumed as a value was still seen as a flag by the presence check, so
+    /// <c>okf audit b --type --stale</c> set the stale filter even though
+    /// <c>--stale</c> was <c>--type</c>'s value, and only the positional scan
+    /// honoured <c>--</c>.
     /// </summary>
-    /// <param name="args">The command's argument list.</param>
-    /// <param name="what">Description of the missing positional, used in the error message.</param>
-    /// <param name="valuedFlags">
-    /// Flags that consume the following token as their value (e.g. <c>--out</c>)
-    /// rather than as a candidate positional. Every existing verb's flags are
-    /// valueless (<c>--dot</c>, <c>--json</c>, <c>-w</c>), so this is empty for
-    /// them and the scan behaves exactly as before; <c>render</c> passes
-    /// <c>--out</c> so its value is never mistaken for the bundle path.
-    /// </param>
-    private static string Positional(string[] args, string what, params string[] valuedFlags)
+    private sealed class CliArgs
     {
-        var sepIdx = Array.IndexOf(args, "--");
-        if (sepIdx >= 0 && sepIdx + 1 < args.Length)
+        private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
+        private readonly List<string> _positionals = [];
+
+        /// <summary>The token immediately after a <c>--</c> separator, if any; it wins the positional slot.</summary>
+        private string? _afterSeparator;
+
+        private CliArgs()
         {
-            return args[sepIdx + 1];
         }
 
-        for (var i = 0; i < args.Length; i++)
+        /// <summary>Scans <paramref name="args"/>, treating <paramref name="valuedFlags"/> as flags that consume the next token.</summary>
+        internal static CliArgs Scan(string[] args, params string[] valuedFlags)
         {
-            var a = args[i];
-            if (Array.IndexOf(valuedFlags, a) >= 0)
+            var scanned = new CliArgs();
+
+            for (var i = 0; i < args.Length; i++)
             {
-                i++; // Skip the value that belongs to this flag.
-                continue;
+                var token = args[i];
+
+                if (token == "--")
+                {
+                    if (i + 1 < args.Length)
+                    {
+                        scanned._afterSeparator = args[i + 1];
+                        for (var j = i + 1; j < args.Length; j++)
+                        {
+                            scanned._positionals.Add(args[j]);
+                        }
+                    }
+
+                    break;
+                }
+
+                if (Array.IndexOf(valuedFlags, token) >= 0)
+                {
+                    scanned._flags.Add(token);
+                    if (i + 1 < args.Length && args[i + 1] != "--")
+                    {
+                        scanned._values[token] = args[i + 1];
+                        i++; // The value belongs to this flag: never a flag or a positional itself.
+                    }
+
+                    continue;
+                }
+
+                if (token.StartsWith('-'))
+                {
+                    scanned._flags.Add(token);
+                    continue;
+                }
+
+                scanned._positionals.Add(token);
             }
 
-            if (!a.StartsWith('-'))
+            return scanned;
+        }
+
+        /// <summary>True if <paramref name="flag"/> was given as a flag — not as another flag's value, and not after <c>--</c>.</summary>
+        internal bool Has(string flag) => _flags.Contains(flag);
+
+        /// <summary>
+        /// The value <paramref name="flag"/> consumed, or <c>null</c> when the
+        /// flag is absent. Throws when the flag is present but unvalued.
+        /// </summary>
+        internal string? Value(string flag)
+        {
+            if (!_flags.Contains(flag))
             {
-                return a;
+                return null;
             }
+
+            if (!_values.TryGetValue(flag, out var value))
+            {
+                throw new CliOperationException($"{flag} requires a value");
+            }
+
+            return value;
         }
 
-        throw new CliOperationException($"missing {what}");
-    }
-
-    /// <summary>True if <paramref name="flag"/> is present in <paramref name="args"/>.</summary>
-    private static bool HasFlag(string[] args, string flag) => Array.IndexOf(args, flag) >= 0;
-
-    /// <summary>
-    /// The value following <paramref name="flag"/>, or <c>null</c> when the
-    /// flag is absent. Throws when the flag is present but unvalued.
-    /// </summary>
-    private static string? FlagValue(string[] args, string flag)
-    {
-        var index = Array.IndexOf(args, flag);
-        if (index < 0)
+        /// <summary>The first positional argument, or throws naming <paramref name="what"/>.</summary>
+        internal string Positional(string what)
         {
-            return null;
-        }
+            if (_afterSeparator is { } separated)
+            {
+                return separated;
+            }
 
-        if (index + 1 >= args.Length)
-        {
-            throw new CliOperationException($"{flag} requires a value");
-        }
+            if (_positionals.Count > 0)
+            {
+                return _positionals[0];
+            }
 
-        return args[index + 1];
+            throw new CliOperationException($"missing {what}");
+        }
     }
 
     /// <summary>
@@ -288,14 +341,16 @@ public static class OkfCli
     /// <summary>Implements the <c>validate</c> subcommand.</summary>
     private static int CmdValidate(string[] args, TextWriter stdout)
     {
+        var parsed = CliArgs.Scan(args, "--as-of");
+
         // --as-of is parsed before the positional, so an unvalued flag names
         // itself rather than surfacing as "missing <bundle>".
-        var clock = ParseAsOf(args);
-        var path = Positional(args, "<bundle>", "--as-of");
+        var clock = ParseAsOf(parsed);
+        var path = parsed.Positional("<bundle>");
         var bundle = Load(path);
         var report = BundleValidator.Validate(bundle, clock);
 
-        if (HasFlag(args, "--json"))
+        if (parsed.Has("--json"))
         {
             JsonOutput.WriteValidate(stdout, path, bundle, report);
             return report.IsConformant ? 0 : 1;
@@ -342,18 +397,19 @@ public static class OkfCli
         // -- the flag as the only argument -- would otherwise report
         // "missing <bundle>" and hide the actual mistake, because Positional
         // skips a valued flag's slot without checking that it has a value.
-        var clock = ParseAsOf(args);
+        var parsed = CliArgs.Scan(args, AuditValuedFlags);
+        var clock = ParseAsOf(parsed);
 
         // Report mode selects exactly what --stale selects; only the
         // presentation differs. --as-of and --json never switch modes.
-        var filtered = AuditFilterFlags.Any(f => HasFlag(args, f));
-        var query = filtered ? ParseAuditQuery(args) : new AuditQuery(StaleOnly: true);
+        var filtered = AuditFilterFlags.Any(parsed.Has);
+        var query = filtered ? ParseAuditQuery(parsed) : new AuditQuery(StaleOnly: true);
 
-        var path = Positional(args, "<bundle>", AuditValuedFlags);
+        var path = parsed.Positional("<bundle>");
         var bundle = Load(path);
         var report = ConceptAudit.Run(bundle, query, clock);
 
-        if (HasFlag(args, "--json"))
+        if (parsed.Has("--json"))
         {
             JsonOutput.WriteAudit(stdout, path, query, report);
             return 0;
@@ -375,9 +431,9 @@ public static class OkfCli
     }
 
     /// <summary>Parses <c>--as-of</c>; null when absent (the audit then uses the system clock).</summary>
-    private static IOkfClock? ParseAsOf(string[] args)
+    private static IOkfClock? ParseAsOf(CliArgs args)
     {
-        var raw = FlagValue(args, "--as-of");
+        var raw = args.Value("--as-of");
         if (raw is null)
         {
             return null;
@@ -395,10 +451,10 @@ public static class OkfCli
     }
 
     /// <summary>Builds the query from the filter flags. Throws <see cref="CliOperationException"/> on an unknown vocabulary value.</summary>
-    private static AuditQuery ParseAuditQuery(string[] args)
+    private static AuditQuery ParseAuditQuery(CliArgs args)
     {
         HashSet<TrustTier>? tiers = null;
-        var trustRaw = FlagValue(args, "--trust");
+        var trustRaw = args.Value("--trust");
         if (trustRaw is not null)
         {
             if (!AuditVocabulary.TryParseTrustTiers(trustRaw, out var parsed, out var badEntry))
@@ -411,7 +467,7 @@ public static class OkfCli
         }
 
         ConceptStatus? status = null;
-        var statusRaw = FlagValue(args, "--status");
+        var statusRaw = args.Value("--status");
         if (statusRaw is not null)
         {
             if (!AuditVocabulary.TryParseStatus(statusRaw.Trim(), out var parsed))
@@ -424,10 +480,10 @@ public static class OkfCli
         }
 
         return new AuditQuery(
-            HasFlag(args, "--stale"),
+            args.Has("--stale"),
             tiers,
             status,
-            FlagValue(args, "--type"));
+            args.Value("--type"));
     }
 
     /// <summary>Renders one concept line: id, freshness, trust tier, status -- two spaces between fields.</summary>
@@ -482,10 +538,11 @@ public static class OkfCli
     /// <summary>Implements the <c>info</c> subcommand.</summary>
     private static int CmdInfo(string[] args, TextWriter stdout)
     {
-        var path = Positional(args, "<bundle>");
+        var parsed = CliArgs.Scan(args);
+        var path = parsed.Positional("<bundle>");
         var bundle = Load(path);
 
-        if (HasFlag(args, "--json"))
+        if (parsed.Has("--json"))
         {
             JsonOutput.WriteInfo(stdout, path, bundle);
             return 0;
@@ -537,7 +594,8 @@ public static class OkfCli
     /// <summary>Implements the <c>index</c> subcommand.</summary>
     private static int CmdIndex(string[] args, TextWriter stdout)
     {
-        var path = Positional(args, "<bundle>");
+        var parsed = CliArgs.Scan(args);
+        var path = parsed.Positional("<bundle>");
         IReadOnlyList<string> written;
         try
         {
@@ -568,8 +626,9 @@ public static class OkfCli
     /// <summary>Implements the <c>graph</c> subcommand.</summary>
     private static int CmdGraph(string[] args, TextWriter stdout)
     {
-        var path = Positional(args, "<bundle>");
-        var dot = HasFlag(args, "--dot");
+        var parsed = CliArgs.Scan(args);
+        var path = parsed.Positional("<bundle>");
+        var dot = parsed.Has("--dot");
         var bundle = Load(path);
 
         if (dot)
@@ -617,18 +676,17 @@ public static class OkfCli
         //   1. "--out" present but unvalued          -> "--out requires a value"
         //   2. bundle positional missing              -> "missing <bundle>"
         //   3. "--out" absent entirely                -> "render requires --out <dir>"
-        // FlagValue itself throws (1) when the flag is present with nothing
+        // Value() itself throws (1) when the flag is present with nothing
         // after it, whether or not the bundle was given -- e.g. bare
-        // "okf render --out" used to report "missing <bundle>" (Positional
-        // ran first and hit the empty slot before FlagValue ever saw it);
-        // calling FlagValue first makes both value-missing spellings agree.
-        var outDir = FlagValue(args, "--out");
-
-        // "--out" is the CLI's first valued option -- every other verb's
-        // flags are valueless (--dot, --json, -w) -- so Positional must be
-        // told to skip both the flag and its value, or that value would be
+        // "okf render --out" used to report "missing <bundle>" (the positional
+        // was resolved first and hit the empty slot); asking for the value
+        // first makes both value-missing spellings agree.
+        //
+        // Declaring "--out" to the scan is what keeps its value from being
         // mistaken for the bundle path whenever the bundle is omitted.
-        var path = Positional(args, "<bundle>", "--out");
+        var parsed = CliArgs.Scan(args, "--out");
+        var outDir = parsed.Value("--out");
+        var path = parsed.Positional("<bundle>");
 
         if (outDir is null)
         {
@@ -655,7 +713,8 @@ public static class OkfCli
     /// <summary>Implements the <c>parse</c> subcommand.</summary>
     private static int CmdParse(string[] args, TextWriter stdout)
     {
-        var path = Positional(args, "<file>");
+        var parsed = CliArgs.Scan(args);
+        var path = parsed.Positional("<file>");
         var text = ReadFileStrict(path);
         OkfDocument doc;
         try
@@ -709,8 +768,9 @@ public static class OkfCli
     /// <summary>Implements the <c>fmt</c> subcommand.</summary>
     private static int CmdFmt(string[] args, TextWriter stdout)
     {
-        var path = Positional(args, "<file>");
-        var write = HasFlag(args, "-w") || HasFlag(args, "--write");
+        var parsed = CliArgs.Scan(args);
+        var path = parsed.Positional("<file>");
+        var write = parsed.Has("-w") || parsed.Has("--write");
         var text = ReadFileStrict(path);
         OkfDocument doc;
         try

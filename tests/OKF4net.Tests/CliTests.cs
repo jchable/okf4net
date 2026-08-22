@@ -667,6 +667,41 @@ public class CliTests
         Assert.Equal($"error: {flag} requires a value\n", r.Err);
     }
 
+    /// <summary>
+    /// A token consumed as a valued flag's value is that value and nothing
+    /// else — it must not also register as a flag. Before the arguments were
+    /// scanned once, presence and value were independent scans of the raw
+    /// array, so `--type --stale` set the stale filter as well as the type.
+    /// </summary>
+    [Fact]
+    public void Audit_a_flag_name_used_as_a_value_is_not_also_a_flag()
+    {
+        var r = Run("audit", V02BundlePath, "--type", "--stale", "--json");
+
+        Assert.Equal(0, r.Code);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var query = doc.RootElement.GetProperty("query");
+
+        Assert.Equal("--stale", query.GetProperty("type").GetString());
+        Assert.False(query.GetProperty("stale").GetBoolean());
+    }
+
+    /// <summary>
+    /// Everything after `--` is positional, never a flag — that is what the
+    /// separator is for. Only the positional scan used to honour it, so a
+    /// `--json` sitting after the separator still switched the output format.
+    /// </summary>
+    [Fact]
+    public void Audit_tokens_after_the_separator_are_never_flags()
+    {
+        var r = Run("audit", "--", V02BundlePath, "--json");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith("bundle:     ", r.Out);
+        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+    }
+
     [Fact]
     public void Audit_as_of_alone_stays_in_report_mode()
     {

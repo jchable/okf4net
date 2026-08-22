@@ -475,7 +475,7 @@ public sealed class OkfBundleTools
     /// <param name="trust">Comma-separated trust tiers to keep.</param>
     /// <param name="status">Keep only concepts with this lifecycle status.</param>
     /// <param name="type">Keep only concepts with this frontmatter type (exact match).</param>
-    [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status, plus the concepts needing attention. Filter with stale/trust/status/type.")]
+    [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Defaults to the stale worklist; pass stale=false to select regardless of staleness. Filter with stale/trust/status/type.")]
     public string Audit(
         [Description("Only concepts past their stale_after date. Defaults to true.")] bool stale = true,
         [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
