@@ -31,6 +31,25 @@ and this project adheres to
 
 ### Changed
 
+- **`okf audit --json` spells trust tiers one way.** The counts object used
+  camelCase property names (`humanReviewed`) while `findings[].trust` and
+  `query.trust[]` used the vocabulary's own hyphenated names, so
+  `counts[finding.trust]` did not resolve. The counts object now uses
+  `unverified` / `machine-confirmed` / `human-reviewed`, in that ladder order.
+  Done before `okf audit` appears in any release, while the schema is still
+  free to move.
+- **`okf validate --json` now reports `asOf`**, the date its §5.5 staleness
+  warning was evaluated against — without it, an archived CI report could not
+  be told apart from an unpinned run, which is what `--as-of` exists to fix.
+- **`okf_audit`'s `stale` parameter is now unset by default** rather than
+  `true`, and follows the CLI's rule: the stale worklist when no other filter
+  is given, no staleness constraint once one is. Asking an agent "which
+  concepts were never verified by a human?" previously meant "…and are also
+  stale", and answered "none" whenever the unverified concept simply had no
+  `stale_after`. An explicit `stale` still wins.
+- **A blank `--type` (or `type:` on the tool) is now "no type filter"** rather
+  than a filter for the empty string, which §11 forbids a concept from carrying
+  and which could therefore only ever select nothing.
 - **The `--` separator now applies to every verb, not just to the positional
   lookup.** Argument presence, flag values and the positional were three
   independent scans of the raw argument array, and only the last honoured `--`;

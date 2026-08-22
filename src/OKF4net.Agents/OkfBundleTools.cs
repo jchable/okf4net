@@ -471,13 +471,20 @@ public sealed class OkfBundleTools
     /// perfectly fresh concepts, so the heading reads the neutral "selected"
     /// instead.
     /// </summary>
-    /// <param name="stale">Keep only concepts past their <c>stale_after</c> date.</param>
+    /// <param name="stale">
+    /// Keep only concepts past their <c>stale_after</c> date. Left unset it
+    /// follows the CLI's rule: the stale worklist when nothing else is
+    /// filtered, no staleness constraint as soon as another filter is given.
+    /// Without that, "which concepts were never verified by a human?" would
+    /// silently mean "…and are also stale", and answer "none" on a bundle whose
+    /// unverified concept simply has no <c>stale_after</c>.
+    /// </param>
     /// <param name="trust">Comma-separated trust tiers to keep.</param>
     /// <param name="status">Keep only concepts with this lifecycle status.</param>
     /// <param name="type">Keep only concepts with this frontmatter type (exact match).</param>
-    [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Defaults to the stale worklist; pass stale=false to select regardless of staleness. Filter with stale/trust/status/type.")]
+    [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Called bare it returns the stale worklist; combined with trust/status/type it stops constraining staleness unless you pass stale explicitly.")]
     public string Audit(
-        [Description("Only concepts past their stale_after date. Defaults to true.")] bool stale = true,
+        [Description("Only concepts past their stale_after date. Leave unset for the default: the stale worklist when no other filter is given, no staleness constraint when one is.")] bool? stale = null,
         [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
         [Description("Only concepts with this lifecycle status: draft, stable or deprecated.")] string? status = null,
         [Description("Only concepts with this frontmatter type (exact match).")] string? type = null)
@@ -504,6 +511,12 @@ public sealed class OkfBundleTools
             parsedStatus = value;
         }
 
+        // The CLI's rule, restated: with no filter flag it reports the stale
+        // worklist; the moment one is given, staleness stops being implied.
+        // An explicit `stale` always wins over that default.
+        var otherFilterGiven = tiers is not null || parsedStatus is not null || !string.IsNullOrWhiteSpace(type);
+        var staleOnly = stale ?? !otherFilterGiven;
+
         // Everything that can touch the filesystem goes through RunTool, the
         // guard every bundle-loading tool uses: it turns OkfException (hence
         // BundleLoadException), ArgumentException, IOException,
@@ -515,10 +528,10 @@ public sealed class OkfBundleTools
         {
             var report = ConceptAudit.Run(
                 GetBundle(),
-                new AuditQuery(stale, tiers, parsedStatus, type),
+                new AuditQuery(staleOnly, tiers, parsedStatus, type),
                 new PinnedClock(Today));
 
-            return RenderAudit(report, staleOnly: stale);
+            return RenderAudit(report, staleOnly);
         });
     }
 

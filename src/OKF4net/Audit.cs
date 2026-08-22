@@ -17,7 +17,11 @@ namespace OKF4net;
 /// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> date.</param>
 /// <param name="Trust">Keep only concepts whose derived tier is in this set; null keeps every tier.</param>
 /// <param name="Status">Keep only concepts with this lifecycle status; null keeps every status.</param>
-/// <param name="Type">Keep only concepts whose frontmatter <c>type</c> matches exactly (ordinal); null keeps every type.</param>
+/// <param name="Type">
+/// Keep only concepts whose frontmatter <c>type</c> matches exactly (ordinal).
+/// Null — or blank, which §11 forbids as a concept's type and which callers
+/// emit for "unset" — keeps every type.
+/// </param>
 public readonly record struct AuditQuery(
     bool StaleOnly = false,
     IReadOnlySet<TrustTier>? Trust = null,
@@ -265,7 +269,13 @@ public static class ConceptAudit
                 continue;
             }
 
-            if (query.Type is { } type && !string.Equals(frontmatter.Type, type, StringComparison.Ordinal))
+            // Blank is treated as "no type filter", not as a filter for the
+            // empty string: §11 requires a non-empty `type`, so no conformant
+            // concept can carry one, and a blank filter could only ever select
+            // nothing. Callers whose filters come from a model or a form pass
+            // "" for "unset" far more often than they mean it literally.
+            if (!string.IsNullOrWhiteSpace(query.Type)
+                && !string.Equals(frontmatter.Type, query.Type, StringComparison.Ordinal))
             {
                 continue;
             }

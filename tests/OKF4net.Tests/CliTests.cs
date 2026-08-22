@@ -112,6 +112,55 @@ public class CliTests
         Assert.Equal(0, onTheDay.Code);
     }
 
+    /// <summary>
+    /// `--as-of` exists so a CI job's verdict is reproducible; an archived
+    /// report that does not say which date it was evaluated against cannot be
+    /// told apart from an unpinned run, so the date belongs in the document.
+    /// </summary>
+    [Fact]
+    public void Validate_json_records_the_date_it_was_evaluated_against()
+    {
+        var pinned = Run("validate", BundlePath, "--as-of", "2026-06-01", "--json");
+        using var pinnedDoc = JsonDocument.Parse(pinned.Out);
+        Assert.Equal("2026-06-01", pinnedDoc.RootElement.GetProperty("asOf").GetString());
+
+        // Unpinned runs report the date they actually used, rather than omitting it.
+        var unpinned = Run("validate", BundlePath, "--json");
+        using var unpinnedDoc = JsonDocument.Parse(unpinned.Out);
+        Assert.False(string.IsNullOrEmpty(unpinnedDoc.RootElement.GetProperty("asOf").GetString()));
+    }
+
+    /// <summary>
+    /// One document, one spelling: a consumer grouping findings by trust tier
+    /// must be able to look that tier straight up in the counts object.
+    /// </summary>
+    [Fact]
+    public void Audit_json_spells_trust_tiers_the_same_way_in_counts_and_findings()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01", "--json");
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var counts = doc.RootElement.GetProperty("trust");
+        var finding = doc.RootElement.GetProperty("findings").EnumerateArray().Single();
+
+        Assert.Equal(["unverified", "machine-confirmed", "human-reviewed"], counts.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(1, counts.GetProperty(finding.GetProperty("trust").GetString()!).GetInt32());
+    }
+
+    /// <summary>
+    /// A blank `--type` is "no type filter", not a filter for the empty string:
+    /// §11 forbids an empty frontmatter type, so filtering for one could only
+    /// ever select nothing.
+    /// </summary>
+    [Fact]
+    public void Audit_a_blank_type_filter_selects_every_concept()
+    {
+        var r = Run("audit", V02BundlePath, "--type", "");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
     [Fact]
     public void Validate_rejects_an_invalid_as_of_date()
     {
@@ -831,7 +880,7 @@ public class CliTests
         Assert.True(root.GetProperty("query").GetProperty("stale").GetBoolean());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("query").GetProperty("trust").ValueKind);
 
-        Assert.Equal(1, root.GetProperty("trust").GetProperty("humanReviewed").GetInt32());
+        Assert.Equal(1, root.GetProperty("trust").GetProperty("human-reviewed").GetInt32());
         Assert.Equal(1, root.GetProperty("trust").GetProperty("unverified").GetInt32());
         Assert.Equal(2, root.GetProperty("status").GetProperty("stable").GetInt32());
 

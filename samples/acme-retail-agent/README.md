@@ -64,14 +64,11 @@ one call rather than by opening concepts one at a time:
 
 - *Which concepts have never been verified by a human?* — the interesting
   one today: eight of the nine concepts carry a `human:` verifier, so the
-  answer is `skills/run-on-bq`. **Watch what the model passes**: `okf_audit`
-  defaults `stale` to `true`, so a call that leaves it at the default asks
-  "stale AND unverified" and correctly returns nothing, since that concept
-  has no `stale_after` at all. The question as posed is
-  `okf_audit(stale: false, trust: "unverified")` — the equivalent CLI call
-  being `okf audit bundles/acme_retail --trust unverified`, with no
-  `--stale`. If the agent answers "none", check the `[tools: ...]` line and
-  ask it again without the staleness constraint.
+  answer is `skills/run-on-bq`. Note that asking about trust alone does not
+  quietly also demand staleness: `okf_audit` only defaults to the stale
+  worklist when it is called with no other filter, mirroring the CLI, where
+  `okf audit <bundle>` reports the worklist but `--trust unverified` filters
+  on trust alone.
 - *How healthy is this knowledge base — how much of it is human-reviewed,
   and how much is stale?*
 - *Is anything deprecated?*

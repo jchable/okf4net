@@ -97,7 +97,7 @@ public class AIFunctionExposureTests
     /// would change what a bare call means without any C# signature changing.
     /// </summary>
     [Fact]
-    public void okf_audit_schema_is_all_optional_and_defaults_stale_to_true()
+    public void okf_audit_schema_is_all_optional_and_leaves_stale_unset()
     {
         var function = GetFunction(new OkfBundleTools(BundlePath), "okf_audit");
         var properties = function.JsonSchema.GetProperty("properties");
@@ -109,9 +109,16 @@ public class AIFunctionExposureTests
 
         Assert.Empty(RequiredProperties(function));
 
+        // `stale` is nullable and defaults to null, not to true: unset means
+        // "follow the CLI's rule" — the stale worklist when nothing else is
+        // filtered, no staleness constraint once another filter is given. A
+        // schema that pinned it to `true` would resurrect the trap where
+        // asking for unverified concepts silently also demanded staleness.
         var stale = properties.GetProperty("stale");
-        Assert.Equal("boolean", stale.GetProperty("type").GetString());
-        Assert.True(stale.GetProperty("default").GetBoolean());
+        Assert.Equal(
+            ["boolean", "null"],
+            stale.GetProperty("type").EnumerateArray().Select(t => t.GetString()));
+        Assert.Equal(JsonValueKind.Null, stale.GetProperty("default").ValueKind);
     }
 
     [Fact]
