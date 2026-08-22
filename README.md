@@ -176,7 +176,7 @@ On any OS, build from source — see [Building & testing](#building--testing).
 
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
-okf audit    <bundle>    Query trust, freshness and lifecycle signals (§5.3–§5.5)
+okf audit    <bundle>    Report trust, freshness and lifecycle across the bundle
 okf info     <bundle>    Summarize a bundle (concepts, types, links, version)
 okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
@@ -229,8 +229,8 @@ machine. Full command reference with real output samples:
 `src/OKF4net.Agents/` exposes bundle operations as function tools for the
 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework):
 `OkfBundleTools` wraps one bundle root and its `GetTools()` method returns
-ten ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
-agent's tool list, plus an eleventh — `okf_run_computation` — only when the
+eleven ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
+agent's tool list, plus a twelfth — `okf_run_computation` — only when the
 tool set is constructed with an `OKF4net.Attestation` orchestrator wired in
 (see [Attested computation](#attested-computation-okf4netattestation)).
 
