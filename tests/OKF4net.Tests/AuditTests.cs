@@ -227,4 +227,17 @@ public class AuditTests
         Assert.False(AuditVocabulary.TryParseTrustTiers("bogus", out _, out var unknownEntry));
         Assert.Equal("bogus", unknownEntry);
     }
+
+    /// <summary>
+    /// <see cref="AuditQuery.IsFiltered"/> answers "does this query constrain
+    /// the selection?", not "did the caller type a flag?" -- the CLI's report
+    /// mode builds <c>new AuditQuery(StaleOnly: true)</c> itself, with no flag
+    /// typed, and must still see <see langword="true"/> here.
+    /// </summary>
+    [Fact]
+    public void IsFiltered_reflects_whether_the_query_constrains_the_selection()
+    {
+        Assert.False(AuditQuery.All.IsFiltered);
+        Assert.True(new AuditQuery(StaleOnly: true).IsFiltered);
+    }
 }

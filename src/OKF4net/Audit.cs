@@ -27,7 +27,13 @@ public readonly record struct AuditQuery(
     /// <summary>The query that keeps every concept.</summary>
     public static AuditQuery All => default;
 
-    /// <summary>True as soon as one predicate is set.</summary>
+    /// <summary>
+    /// Whether this query constrains the selection below "every concept" --
+    /// true whenever any predicate is non-default. This is not "did the
+    /// caller type a filter flag": the CLI's report mode builds
+    /// <c>new AuditQuery(StaleOnly: true)</c> itself, with no flag typed, and
+    /// this is still <see langword="true"/> for it.
+    /// </summary>
     public bool IsFiltered => StaleOnly || Trust is not null || Status is not null || Type is not null;
 }
 
