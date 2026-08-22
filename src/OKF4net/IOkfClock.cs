@@ -14,3 +14,16 @@ public sealed class SystemClock : IOkfClock
     /// <inheritdoc/>
     public DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow.Date);
 }
+
+/// <summary>
+/// An <see cref="IOkfClock"/> pinned to one date. Every API that takes a
+/// clock — <see cref="BundleValidator.Validate"/>, <see cref="ConceptAudit.Run"/> —
+/// exists to make staleness (§5.5) reproducible; without a shipped pinned
+/// clock every caller wanting that has to write this same four-line type.
+/// </summary>
+/// <param name="today">The date <see cref="Today"/> returns.</param>
+public sealed class FixedClock(DateOnly today) : IOkfClock
+{
+    /// <inheritdoc/>
+    public DateOnly Today { get; } = today;
+}
