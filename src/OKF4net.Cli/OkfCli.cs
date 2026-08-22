@@ -403,12 +403,6 @@ public static class OkfCli
     /// <summary>Every <c>audit</c> flag that consumes the following token as its value.</summary>
     private static readonly string[] AuditValuedFlags = ["--trust", "--status", "--type", AsOfFlag];
 
-    /// <summary>An <see cref="IOkfClock"/> pinned to one date, backing <c>--as-of</c>.</summary>
-    private sealed class PinnedClock(DateOnly today) : IOkfClock
-    {
-        public DateOnly Today { get; } = today;
-    }
-
     /// <summary>Implements the <c>audit</c> subcommand.</summary>
     private static int CmdAudit(string[] args, TextWriter stdout)
     {
@@ -467,7 +461,7 @@ public static class OkfCli
             throw new CliOperationException($"--as-of is not a valid YYYY-MM-DD date: \"{raw}\"");
         }
 
-        return new PinnedClock(asOf);
+        return new FixedClock(asOf);
     }
 
     /// <summary>Builds the query from the filter flags. Throws <see cref="CliOperationException"/> on an unknown vocabulary value.</summary>

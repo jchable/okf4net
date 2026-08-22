@@ -283,10 +283,12 @@ export default function Library() {
                 </>,
               ],
               [
-                'IOkfClock · SystemClock',
+                'IOkfClock · SystemClock · FixedClock',
                 <>
-                  <code>DateOnly Today</code>, injected wherever "now" matters — real time by default, fixed in
-                  tests.
+                  <code>DateOnly Today</code>, injected wherever "now" matters — <code>SystemClock</code> for real
+                  time, <code>FixedClock(DateOnly)</code> to pin it. Every API taking a clock (
+                  <code>BundleValidator.Validate</code>, <code>ConceptAudit.Run</code>) exists so staleness (§5.5)
+                  can be made reproducible, in your own code as much as in ours.
                 </>,
               ],
             ]}
