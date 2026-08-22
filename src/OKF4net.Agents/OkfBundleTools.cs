@@ -465,7 +465,11 @@ public sealed class OkfBundleTools
     /// <summary>
     /// Audits the bundle's trust, freshness and lifecycle signals (§5.3–§5.5):
     /// counts over the whole bundle, then the concepts the filters select,
-    /// bounded to 20 entries.
+    /// bounded to 20 entries. The worklist heading tracks <paramref name="stale"/>:
+    /// with it true (the default) the selection is the stale worklist, so the
+    /// heading reads "needs attention"; with it false the selection can include
+    /// perfectly fresh concepts, so the heading reads the neutral "selected"
+    /// instead.
     /// </summary>
     /// <param name="stale">Keep only concepts past their <c>stale_after</c> date.</param>
     /// <param name="trust">Comma-separated trust tiers to keep.</param>
@@ -481,16 +485,12 @@ public sealed class OkfBundleTools
         HashSet<TrustTier>? tiers = null;
         if (trust is not null)
         {
-            tiers = [];
-            foreach (var entry in trust.Split(','))
+            if (!AuditVocabulary.TryParseTrustTiers(trust, out var parsed, out _))
             {
-                if (!AuditVocabulary.TryParseTrustTier(entry.Trim(), out var tier))
-                {
-                    return AuditUsageMessage;
-                }
-
-                tiers.Add(tier);
+                return AuditUsageMessage;
             }
+
+            tiers = parsed;
         }
 
         ConceptStatus? parsedStatus = null;
@@ -518,7 +518,7 @@ public sealed class OkfBundleTools
                 new AuditQuery(stale, tiers, parsedStatus, type),
                 new PinnedClock(Today));
 
-            return RenderAudit(report);
+            return RenderAudit(report, staleOnly: stale);
         });
     }
 
@@ -1165,7 +1165,17 @@ public sealed class OkfBundleTools
     /// 20 findings. Deliberately not shared with the CLI renderer, whose bytes
     /// are golden-locked and must not move when this string is tuned.
     /// </summary>
-    private static string RenderAudit(AuditReport report)
+    /// <param name="report">The audit report to render.</param>
+    /// <param name="staleOnly">
+    /// Whether the selection IS the stale worklist (the tool's <c>stale</c>
+    /// parameter). When true, the worklist heading reads <c>needs attention</c>
+    /// -- otherwise, the selection was narrowed or widened by other filters, so
+    /// the neutral <c>selected</c> heading is used instead: calling every
+    /// selected concept a concept that "needs attention" would misstate a
+    /// selection like <c>stale: false</c>, which can include perfectly fresh
+    /// concepts.
+    /// </param>
+    private static string RenderAudit(AuditReport report, bool staleOnly)
     {
         const int MaxResults = 20;
         var sb = new StringBuilder();
@@ -1190,18 +1200,18 @@ public sealed class OkfBundleTools
 
         sb.Append($"\nstale:      {report.StaleCount} of {report.ConceptCount} past stale_after\n");
 
+        var heading = staleOnly ? "needs attention" : "selected";
+
         if (report.Findings.Count == 0)
         {
-            sb.Append("\nneeds attention: none\n");
+            sb.Append($"\n{heading}: none\n");
             return sb.ToString();
         }
 
-        sb.Append($"\nneeds attention ({report.Findings.Count}):\n");
+        sb.Append($"\n{heading} ({report.Findings.Count}):\n");
         foreach (var finding in report.Findings.Take(MaxResults))
         {
-            var freshness = finding.Lifecycle.StaleAfter is { } date
-                ? (finding.IsStale ? "stale " : "fresh ") + date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
-                : "no-stale-after";
+            var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
 
             sb.Append("  ")
               .Append(finding.Id)

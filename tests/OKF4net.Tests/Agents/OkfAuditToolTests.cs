@@ -116,6 +116,56 @@ public class OkfAuditToolTests
 
         var text = ToolsOver(tmp, new DateOnly(2026, 8, 21)).Audit(stale: false);
 
-        Assert.Contains("needs attention (2):", text);
+        Assert.Contains("selected (2):", text);
+    }
+
+    /// <summary>
+    /// Regression guard for the bug fixed here: with <c>stale: false</c>, the
+    /// selection can include perfectly fresh concepts, so calling every one of
+    /// them "needs attention" would be a factual misstatement the agent could
+    /// relay verbatim.
+    /// </summary>
+    [Fact]
+    public void Audit_with_stale_false_never_says_needs_attention()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n");
+        tmp.Write("b.md", "---\ntype: Metric\n---\n");
+
+        var text = ToolsOver(tmp, new DateOnly(2026, 8, 21)).Audit(stale: false);
+
+        Assert.DoesNotContain("needs attention", text);
+    }
+
+    /// <summary>
+    /// The stale-only path (the tool's default) is the one place "needs
+    /// attention" is an accurate label -- every selected concept really is
+    /// past its <c>stale_after</c> date.
+    /// </summary>
+    [Fact]
+    public void Audit_stale_only_path_still_says_needs_attention()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\nstale_after: 2026-01-01\n---\n");
+
+        var text = ToolsOver(tmp, new DateOnly(2026, 8, 21)).Audit(stale: true);
+
+        Assert.Contains("needs attention (1):", text);
+    }
+
+    /// <summary>
+    /// The freshness token for a concept with no <c>stale_after</c> at all
+    /// must come from <see cref="AuditVocabulary.Freshness"/>, same as the CLI
+    /// -- this line is the tool-side coverage the shared vocabulary lacked.
+    /// </summary>
+    [Fact]
+    public void Audit_finding_line_reports_no_stale_after_when_the_field_is_absent()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n");
+
+        var text = ToolsOver(tmp, new DateOnly(2026, 8, 21)).Audit(stale: false);
+
+        Assert.Contains("a  no-stale-after  unverified  stable", text);
     }
 }

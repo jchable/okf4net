@@ -202,4 +202,29 @@ public class AuditTests
         Assert.Equal(ConceptStatus.Deprecated, status);
         Assert.False(AuditVocabulary.TryParseStatus("retired", out _));
     }
+
+    /// <summary>
+    /// The single grammar shared by the CLI's <c>--trust</c> flag and the
+    /// <c>okf_audit</c> tool's <c>trust</c> parameter: comma-split, trim each
+    /// entry, absorb duplicates (the result is a set), fail on the first
+    /// unparseable entry and report it (trimmed) via <paramref name="badEntry"/>.
+    /// </summary>
+    [Fact]
+    public void TryParseTrustTiers_trims_absorbs_duplicates_and_reports_the_bad_entry()
+    {
+        Assert.True(AuditVocabulary.TryParseTrustTiers(
+            "unverified, unverified,human-reviewed", out var tiers, out var badEntry));
+        Assert.Equal(
+            new HashSet<TrustTier> { TrustTier.Unverified, TrustTier.HumanReviewed },
+            tiers);
+        Assert.Null(badEntry);
+
+        Assert.False(AuditVocabulary.TryParseTrustTiers(
+            "unverified,,human-reviewed", out var afterFailure, out var emptyEntry));
+        Assert.Empty(afterFailure);
+        Assert.Equal("", emptyEntry);
+
+        Assert.False(AuditVocabulary.TryParseTrustTiers("bogus", out _, out var unknownEntry));
+        Assert.Equal("bogus", unknownEntry);
+    }
 }

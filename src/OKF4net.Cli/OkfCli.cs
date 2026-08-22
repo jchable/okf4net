@@ -395,17 +395,13 @@ public static class OkfCli
         var trustRaw = FlagValue(args, "--trust");
         if (trustRaw is not null)
         {
-            tiers = [];
-            foreach (var entry in trustRaw.Split(','))
+            if (!AuditVocabulary.TryParseTrustTiers(trustRaw, out var parsed, out var badEntry))
             {
-                if (!AuditVocabulary.TryParseTrustTier(entry.Trim(), out var tier))
-                {
-                    throw new CliOperationException(
-                        $"unknown trust tier \"{entry.Trim()}\"; expected unverified, machine-confirmed or human-reviewed");
-                }
-
-                tiers.Add(tier);
+                throw new CliOperationException(
+                    $"unknown trust tier \"{badEntry}\"; expected unverified, machine-confirmed or human-reviewed");
             }
+
+            tiers = parsed;
         }
 
         ConceptStatus? status = null;
@@ -431,9 +427,7 @@ public static class OkfCli
     /// <summary>Renders one concept line: id, freshness, trust tier, status -- two spaces between fields.</summary>
     private static string FormatAuditFinding(AuditFinding finding)
     {
-        var freshness = finding.Lifecycle.StaleAfter is { } date
-            ? (finding.IsStale ? "stale " : "fresh ") + date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
-            : "no-stale-after";
+        var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
 
         return $"{finding.Id}  {freshness}  {AuditVocabulary.Name(finding.Trust)}  {AuditVocabulary.Name(finding.Lifecycle.Status)}";
     }

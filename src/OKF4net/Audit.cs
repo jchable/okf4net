@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
+
 namespace OKF4net;
 
 /// <summary>
@@ -145,6 +147,54 @@ public static class AuditVocabulary
             default: status = ConceptStatus.Stable; return false;
         }
     }
+
+    /// <summary>
+    /// Parses a comma-separated list of trust tier names (e.g.
+    /// <c>"unverified,human-reviewed"</c>). Each entry is trimmed and parsed
+    /// with <see cref="TryParseTrustTier"/>; a duplicate entry is absorbed
+    /// silently since <paramref name="tiers"/> is a set. The single grammar
+    /// shared by the CLI's <c>--trust</c> flag and the <c>okf_audit</c> tool's
+    /// <c>trust</c> parameter -- callers differ only in what they do on
+    /// failure (the CLI raises a <c>CliOperationException</c> naming
+    /// <paramref name="badEntry"/>; the tool returns a usage message).
+    /// </summary>
+    /// <param name="raw">The comma-separated list, as typed by the caller.</param>
+    /// <param name="tiers">On success, the parsed tiers; empty on failure.</param>
+    /// <param name="badEntry">On failure, the first entry (trimmed) that failed to parse; <see langword="null"/> on success.</param>
+    /// <returns><see langword="true"/> when every entry parsed.</returns>
+    public static bool TryParseTrustTiers(string raw, out HashSet<TrustTier> tiers, out string? badEntry)
+    {
+        tiers = [];
+        foreach (var entry in raw.Split(','))
+        {
+            var trimmed = entry.Trim();
+            if (!TryParseTrustTier(trimmed, out var tier))
+            {
+                tiers = [];
+                badEntry = trimmed;
+                return false;
+            }
+
+            tiers.Add(tier);
+        }
+
+        badEntry = null;
+        return true;
+    }
+
+    /// <summary>
+    /// The freshness token for one concept line (§5.5): <c>"stale &lt;date&gt;"</c>
+    /// or <c>"fresh &lt;date&gt;"</c> when <c>stale_after</c> parsed, or
+    /// <c>"no-stale-after"</c> when it is absent or malformed. The single
+    /// spelling shared by both renderers -- do not spell these tokens as
+    /// literals outside this method.
+    /// </summary>
+    /// <param name="lifecycle">The concept's lifecycle fields.</param>
+    /// <param name="isStale">Whether the concept is stale as of the report's <c>AsOf</c> date.</param>
+    public static string Freshness(Lifecycle lifecycle, bool isStale) =>
+        lifecycle.StaleAfter is { } date
+            ? (isStale ? "stale " : "fresh ") + date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            : "no-stale-after";
 }
 
 /// <summary>
