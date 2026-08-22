@@ -25,6 +25,11 @@ public sealed class OkfBundleTools
         "Usage: okf_changes_since requires a valid ISO date (yyyy-MM-dd), inclusive. "
         + "Example: okf_changes_since(\"2026-01-01\").";
 
+    private const string AuditUsageMessage =
+        "Usage: okf_audit takes optional filters — stale (bool), trust (comma-separated: "
+        + "unverified, machine-confirmed, human-reviewed), status (draft, stable or deprecated) "
+        + "and type (exact frontmatter type). Example: okf_audit(stale: true, trust: \"unverified\").";
+
     /// <summary>
     /// The core write primitive this tool set delegates every write to:
     /// producer-validated create/update (<see cref="WriteConcept"/>) and
@@ -139,6 +144,16 @@ public sealed class OkfBundleTools
     private DateOnly Today => DateOnly.FromDateTime(UtcNow().Date);
 
     /// <summary>
+    /// Pins <see cref="ConceptAudit"/> to <see cref="Today"/> — the same
+    /// UtcNow seam <see cref="ReadConcept"/> and <see cref="Search"/> use — so
+    /// the tool's output never depends on the day it runs.
+    /// </summary>
+    private sealed class PinnedClock(DateOnly today) : IOkfClock
+    {
+        public DateOnly Today { get; } = today;
+    }
+
+    /// <summary>
     /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
     /// first access and caching it thereafter until <see cref="InvalidateBundle"/>
     /// is called.
@@ -194,7 +209,7 @@ public sealed class OkfBundleTools
     /// <see cref="AIFunctionFactory"/> from each method's own
     /// <see cref="DescriptionAttribute"/> — the single source of truth, so
     /// the two can never drift apart. The order is stable: read → browse →
-    /// graph → search → write → append → regenerate → validate →
+    /// graph → search → audit → write → append → regenerate → validate →
     /// changes-since → get-computation → (conditionally) run-computation.
     ///
     /// <c>okf_get_computation</c> is always included — it is read-only and
@@ -213,6 +228,7 @@ public sealed class OkfBundleTools
             AIFunctionFactory.Create(Browse, "okf_browse"),
             AIFunctionFactory.Create(Graph, "okf_graph"),
             AIFunctionFactory.Create(Search, "okf_search"),
+            AIFunctionFactory.Create(Audit, "okf_audit"),
             AIFunctionFactory.Create(WriteConcept, "okf_write_concept"),
             AIFunctionFactory.Create(AppendLog, "okf_append_log"),
             AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes"),
@@ -445,6 +461,66 @@ public sealed class OkfBundleTools
         ConceptSearch.Search(GetBundle().Concepts, query, tag)
             .Select(s => (s.Concept, s.Score))
             .ToList();
+
+    /// <summary>
+    /// Audits the bundle's trust, freshness and lifecycle signals (§5.3–§5.5):
+    /// counts over the whole bundle, then the concepts the filters select,
+    /// bounded to 20 entries. The worklist heading tracks <paramref name="stale"/>:
+    /// with it true (the default) the selection is the stale worklist, so the
+    /// heading reads "needs attention"; with it false the selection can include
+    /// perfectly fresh concepts, so the heading reads the neutral "selected"
+    /// instead.
+    /// </summary>
+    /// <param name="stale">Keep only concepts past their <c>stale_after</c> date.</param>
+    /// <param name="trust">Comma-separated trust tiers to keep.</param>
+    /// <param name="status">Keep only concepts with this lifecycle status.</param>
+    /// <param name="type">Keep only concepts with this frontmatter type (exact match).</param>
+    [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status, plus the concepts needing attention. Filter with stale/trust/status/type.")]
+    public string Audit(
+        [Description("Only concepts past their stale_after date. Defaults to true.")] bool stale = true,
+        [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
+        [Description("Only concepts with this lifecycle status: draft, stable or deprecated.")] string? status = null,
+        [Description("Only concepts with this frontmatter type (exact match).")] string? type = null)
+    {
+        HashSet<TrustTier>? tiers = null;
+        if (trust is not null)
+        {
+            if (!AuditVocabulary.TryParseTrustTiers(trust, out var parsed, out _))
+            {
+                return AuditUsageMessage;
+            }
+
+            tiers = parsed;
+        }
+
+        ConceptStatus? parsedStatus = null;
+        if (status is not null)
+        {
+            if (!AuditVocabulary.TryParseStatus(status.Trim(), out var value))
+            {
+                return AuditUsageMessage;
+            }
+
+            parsedStatus = value;
+        }
+
+        // Everything that can touch the filesystem goes through RunTool, the
+        // guard every bundle-loading tool uses: it turns OkfException (hence
+        // BundleLoadException), ArgumentException, IOException,
+        // UnauthorizedAccessException and DecoderFallbackException into an
+        // "Error: ..." string. A function tool must return an error, not throw
+        // one -- a directory deleted after construction would otherwise escape
+        // as an exception into the agent runtime.
+        return RunTool(() =>
+        {
+            var report = ConceptAudit.Run(
+                GetBundle(),
+                new AuditQuery(stale, tiers, parsedStatus, type),
+                new PinnedClock(Today));
+
+            return RenderAudit(report, staleOnly: stale);
+        });
+    }
 
     /// <summary>
     /// Creates or updates one concept document. Producer-grade validation
@@ -1078,6 +1154,76 @@ public sealed class OkfBundleTools
             {
                 sb.Append("  ").Append(excerpt).Append('\n');
             }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Renders an audit for an agent: the same shape as the CLI's report form,
+    /// minus the bundle line (the tool is bound to one bundle) and bounded to
+    /// 20 findings. Deliberately not shared with the CLI renderer, whose bytes
+    /// are golden-locked and must not move when this string is tuned.
+    /// </summary>
+    /// <param name="report">The audit report to render.</param>
+    /// <param name="staleOnly">
+    /// Whether the selection IS the stale worklist (the tool's <c>stale</c>
+    /// parameter). When true, the worklist heading reads <c>needs attention</c>
+    /// -- otherwise, the selection was narrowed or widened by other filters, so
+    /// the neutral <c>selected</c> heading is used instead: calling every
+    /// selected concept a concept that "needs attention" would misstate a
+    /// selection like <c>stale: false</c>, which can include perfectly fresh
+    /// concepts.
+    /// </param>
+    private static string RenderAudit(AuditReport report, bool staleOnly)
+    {
+        const int MaxResults = 20;
+        var sb = new StringBuilder();
+
+        sb.Append("as of:      ").Append(report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append('\n');
+        sb.Append("concepts:   ").Append(report.ConceptCount).Append('\n');
+
+        // Same rule as the CLI renderer: labels from AuditVocabulary, never
+        // literals. The two renderers are separate on purpose (the CLI's bytes
+        // are golden-locked), but they must not spell the vocabulary twice.
+        sb.Append("\ntrust:\n");
+        foreach (var tier in AuditVocabulary.TrustTiersInOrder.Reverse())
+        {
+            sb.Append($"  {report.TrustCounts[tier],4}  {AuditVocabulary.Name(tier)}\n");
+        }
+
+        sb.Append("\nstatus:\n");
+        foreach (var status in AuditVocabulary.StatusesInOrder)
+        {
+            sb.Append($"  {report.StatusCounts[status],4}  {AuditVocabulary.Name(status)}\n");
+        }
+
+        sb.Append($"\nstale:      {report.StaleCount} of {report.ConceptCount} past stale_after\n");
+
+        var heading = staleOnly ? "needs attention" : "selected";
+
+        if (report.Findings.Count == 0)
+        {
+            sb.Append($"\n{heading}: none\n");
+            return sb.ToString();
+        }
+
+        sb.Append($"\n{heading} ({report.Findings.Count}):\n");
+        foreach (var finding in report.Findings.Take(MaxResults))
+        {
+            var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
+
+            sb.Append("  ")
+              .Append(finding.Id)
+              .Append("  ").Append(freshness)
+              .Append("  ").Append(AuditVocabulary.Name(finding.Trust))
+              .Append("  ").Append(AuditVocabulary.Name(finding.Lifecycle.Status))
+              .Append('\n');
+        }
+
+        if (report.Findings.Count > MaxResults)
+        {
+            sb.Append($"… and {report.Findings.Count - MaxResults} more (narrow with stale/trust/status/type)\n");
         }
 
         return sb.ToString();

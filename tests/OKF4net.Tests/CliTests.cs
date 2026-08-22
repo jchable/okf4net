@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Linq;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using OKF4net.Cli;
 
@@ -19,6 +20,9 @@ public class CliTests
     // TestPaths.RepoRoot, walking up from the test assembly to the .sln)
     // rather than assumed relative to the process's current directory.
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
+
+    private static readonly string V02BundlePath =
+        Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02");
 
     private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
 
@@ -433,5 +437,297 @@ public class CliTests
         Assert.Equal(1, r.Code);
         Assert.Contains("error:", r.Err);
         Assert.False(Directory.Exists(outDir));
+    }
+
+    // ----------------------------------------------------------------
+    // audit
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Audit_report_mode_prints_summary_and_worklist()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("as of:      2099-06-01\n", r.Out);
+        Assert.Contains("concepts:   2\n", r.Out);
+        Assert.Contains("     1  human-reviewed\n", r.Out);
+        Assert.Contains("     1  unverified\n", r.Out);
+        Assert.Contains("     2  stable\n", r.Out);
+        Assert.Contains("stale:      1 of 2 past stale_after\n", r.Out);
+        Assert.Contains("needs attention (1):\n", r.Out);
+        Assert.Contains("  metrics/dau  stale 2099-01-01  human-reviewed  stable\n", r.Out);
+    }
+
+    [Fact]
+    public void Audit_query_mode_prints_bare_lines_only()
+    {
+        var r = Run("audit", V02BundlePath, "--stale", "--as-of", "2099-06-01");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("metrics/dau  stale 2099-01-01  human-reviewed  stable\n", r.Out);
+    }
+
+    [Fact]
+    public void Audit_without_flags_selects_the_same_set_as_stale()
+    {
+        var report = Run("audit", V02BundlePath, "--as-of", "2099-06-01");
+        var query = Run("audit", V02BundlePath, "--stale", "--as-of", "2099-06-01");
+
+        var reportIds = report.Out
+            .Split('\n')
+            .Where(l => l.StartsWith("  metrics/", StringComparison.Ordinal))
+            .Select(l => l.Trim().Split("  ")[0])
+            .ToList();
+        var queryIds = query.Out
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Split("  ")[0])
+            .ToList();
+
+        Assert.Equal(queryIds, reportIds);
+    }
+
+    [Fact]
+    public void Audit_empty_selection_prints_nothing()
+    {
+        var r = Run("audit", V02BundlePath, "--status", "deprecated");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Positive-selection coverage for <c>--type</c>: both fixture concepts
+    /// are <c>type: Metric</c>, so the exact-case value must select both, and
+    /// the lowercase variant must select none -- pinning the documented
+    /// ordinal, case-sensitive rule (§ Audit.cs <c>AuditQuery.Type</c>) at the
+    /// CLI boundary. Without this, transposing <c>Type</c>/<c>Status</c> in
+    /// <c>ParseAuditQuery</c> would leave the suite green.
+    /// </summary>
+    [Fact]
+    public void Audit_type_filter_selects_matching_concepts_case_sensitively()
+    {
+        var match = Run("audit", V02BundlePath, "--type", "Metric");
+        Assert.Equal(0, match.Code);
+        Assert.Equal(2, match.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+
+        var noMatch = Run("audit", V02BundlePath, "--type", "metric");
+        Assert.Equal(0, noMatch.Code);
+        Assert.Equal("", noMatch.Out);
+    }
+
+    /// <summary>
+    /// Positive-selection coverage for <c>--status</c>: both fixture concepts
+    /// resolve to <c>status: stable</c> (one explicitly, one via
+    /// <c>Lifecycle.From</c>'s fallback for the unknown "retired" value), so
+    /// this must select both.
+    /// </summary>
+    [Fact]
+    public void Audit_status_filter_selects_matching_concepts()
+    {
+        var r = Run("audit", V02BundlePath, "--status", "stable");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Audit_three_tier_idiom_returns_every_concept()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "unverified,machine-confirmed,human-reviewed");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_invalid_as_of_date()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2026-13-01");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: --as-of is not a valid YYYY-MM-DD date: \"2026-13-01\"\n", r.Err);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_unknown_trust_tier()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "foo");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal(
+            "error: unknown trust tier \"foo\"; expected unverified, machine-confirmed or human-reviewed\n",
+            r.Err);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_unknown_status()
+    {
+        var r = Run("audit", V02BundlePath, "--status", "retired");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown status \"retired\"; expected draft, stable or deprecated\n", r.Err);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_empty_trust_entry_but_absorbs_duplicates()
+    {
+        var empty = Run("audit", V02BundlePath, "--trust", "unverified,,human-reviewed");
+        Assert.Equal(1, empty.Code);
+        Assert.Contains("unknown trust tier", empty.Err);
+
+        var duplicated = Run("audit", V02BundlePath, "--trust", "unverified,unverified");
+        var single = Run("audit", V02BundlePath, "--trust", "unverified");
+        Assert.Equal(0, duplicated.Code);
+        Assert.Equal(single.Out, duplicated.Out);
+    }
+
+    /// <summary>
+    /// Regression guard: valued flags must be declared to <c>Positional</c>, or
+    /// their value is mistaken for the bundle path when they precede it.
+    /// </summary>
+    [Theory]
+    [InlineData("--as-of", "2099-06-01")]
+    [InlineData("--trust", "unverified")]
+    [InlineData("--status", "stable")]
+    [InlineData("--type", "Metric")]
+    public void Audit_valued_flags_before_the_positional_resolve_the_bundle(string flag, string value)
+    {
+        var r = Run("audit", flag, value, V02BundlePath);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+    }
+
+    /// <summary>
+    /// A valued flag left without a value must name itself, even when it is the
+    /// only argument -- otherwise the user is told the bundle is missing and the
+    /// real mistake is hidden. This is why CmdAudit validates flag values before
+    /// resolving the positional.
+    /// </summary>
+    [Theory]
+    [InlineData("--as-of")]
+    [InlineData("--trust")]
+    [InlineData("--status")]
+    [InlineData("--type")]
+    public void Audit_reports_a_valued_flag_left_without_a_value(string flag)
+    {
+        var r = Run("audit", flag);
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal($"error: {flag} requires a value\n", r.Err);
+    }
+
+    [Fact]
+    public void Audit_as_of_alone_stays_in_report_mode()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01");
+
+        Assert.Contains("needs attention", r.Out);
+    }
+
+    /// <summary>
+    /// Report mode's empty-worklist branch: <c>--as-of</c> pinned before
+    /// <c>metrics/dau</c>'s <c>stale_after</c> (2099-01-01) leaves nothing
+    /// stale, so <c>WriteAuditReport</c> takes its early-return branch and
+    /// prints the "none" line instead of a "needs attention (N):" worklist.
+    /// </summary>
+    [Fact]
+    public void Audit_report_mode_prints_none_when_nothing_is_stale()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2026-01-01");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("stale:      0 of 2 past stale_after\n", r.Out);
+        Assert.Contains("needs attention: none\n", r.Out);
+        Assert.DoesNotContain("needs attention (", r.Out);
+    }
+
+    /// <summary>
+    /// <c>metrics/legacy</c> has no <c>stale_after</c> at all, so
+    /// <c>FormatAuditFinding</c> takes its "no-stale-after" branch rather than
+    /// "stale "/"fresh " + a date. <c>--trust unverified</c> selects exactly
+    /// this concept (it has no <c>verified</c> entries), independent of
+    /// <c>--as-of</c>/the system clock.
+    /// </summary>
+    [Fact]
+    public void Audit_finding_line_reports_no_stale_after_when_the_field_is_absent()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "unverified");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("metrics/legacy  no-stale-after  unverified  stable\n", r.Out);
+    }
+
+    [Fact]
+    public void Help_lists_audit_right_after_validate()
+    {
+        var r = Run("--help");
+
+        Assert.Equal(0, r.Code);
+        var lines = r.Out.Split('\n').Select(l => l.TrimStart()).ToList();
+        var validateIndex = lines.FindIndex(l => l.StartsWith("validate ", StringComparison.Ordinal));
+        var auditIndex = lines.FindIndex(l => l.StartsWith("audit ", StringComparison.Ordinal));
+
+        Assert.True(validateIndex >= 0 && auditIndex == validateIndex + 1);
+    }
+
+    [Fact]
+    public void Audit_json_carries_counts_query_and_findings()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01", "--json");
+
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var root = doc.RootElement;
+
+        Assert.Equal("2099-06-01", root.GetProperty("asOf").GetString());
+        Assert.Equal(2, root.GetProperty("conceptCount").GetInt32());
+        Assert.Equal(1, root.GetProperty("staleCount").GetInt32());
+
+        // Report mode selects what --stale selects, so the replayed query says so.
+        Assert.True(root.GetProperty("query").GetProperty("stale").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("query").GetProperty("trust").ValueKind);
+
+        Assert.Equal(1, root.GetProperty("trust").GetProperty("humanReviewed").GetInt32());
+        Assert.Equal(1, root.GetProperty("trust").GetProperty("unverified").GetInt32());
+        Assert.Equal(2, root.GetProperty("status").GetProperty("stable").GetInt32());
+
+        var finding = root.GetProperty("findings").EnumerateArray().Single();
+        Assert.Equal("metrics/dau", finding.GetProperty("conceptId").GetString());
+        Assert.Equal("Metric", finding.GetProperty("type").GetString());
+        Assert.Equal("Daily Active Users", finding.GetProperty("title").GetString());
+        Assert.Equal("human-reviewed", finding.GetProperty("trust").GetString());
+        Assert.Equal("2099-01-01", finding.GetProperty("staleAfter").GetString());
+        Assert.True(finding.GetProperty("stale").GetBoolean());
+    }
+
+    [Fact]
+    public void Audit_json_serializes_trust_query_in_ladder_order()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "human-reviewed,unverified", "--json");
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var trust = doc.RootElement.GetProperty("query").GetProperty("trust")
+            .EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Equal(["unverified", "human-reviewed"], trust);
+    }
+
+    [Fact]
+    public void Audit_json_keeps_a_malformed_stale_after_raw_and_not_stale()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\nstale_after: not-a-date\n---\n");
+
+        var r = Run("audit", tmp.Path, "--trust", "unverified", "--json");
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var finding = doc.RootElement.GetProperty("findings").EnumerateArray().Single();
+
+        Assert.Equal("not-a-date", finding.GetProperty("staleAfter").GetString());
+        Assert.False(finding.GetProperty("stale").GetBoolean());
     }
 }

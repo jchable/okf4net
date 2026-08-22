@@ -117,6 +117,45 @@ public class GoldenParityTests
         Assert.Equal(Golden("info.out"), r.Out);
     }
 
+    /// <summary>
+    /// <c>audit</c>'s goldens are hand-authored and verified against the spec
+    /// text (§5.3 tiers, §5.4 statuses, §5.5 staleness), not captured from the
+    /// reference CLI -- the verb has no upstream counterpart. The date is
+    /// pinned with <c>--as-of</c> so the output cannot drift with the calendar.
+    /// There is no <c>audit-v02.exitcode</c>: the verb always exits 0, so the
+    /// code is asserted inline (as <see cref="Info_output_matches_golden"/> does).
+    /// </summary>
+    [Fact]
+    public void Audit_report_matches_golden()
+    {
+        var r = WithRepoRootAsCwd(() => Run("audit", "tests/fixtures/okf_v02", "--as-of", "2099-06-01"));
+
+        Assert.Equal(0, r.Code);
+
+        // Every path in this output is a concept id, always '/'-normalized by
+        // ConceptId.FromPath, so the comparison is strict byte-for-byte.
+        Assert.Equal(Golden("audit-v02.out"), r.Out);
+    }
+
+    [Fact]
+    public void Audit_json_matches_golden()
+    {
+        var r = WithRepoRootAsCwd(() => Run("audit", "tests/fixtures/okf_v02", "--as-of", "2099-06-01", "--json"));
+
+        Assert.Equal(0, r.Code);
+
+        // Only the findings' `path` field carries a native separator (it is a
+        // real file path, not a concept id), so it alone is normalized in the
+        // C# OUTPUT -- never in the golden -- exactly like validate.out. Unlike
+        // validate.out (plain text, one real backslash char per separator),
+        // r.Out here is serialized JSON: JsonSerializer escapes each backslash
+        // as the two-character sequence `\\` in the JSON text itself. A naive
+        // single-char Replace('\\', '/') would turn that pair into "//" instead
+        // of collapsing it to one '/', so the search pattern below is the
+        // two-character escaped sequence, not the bare character.
+        Assert.Equal(Golden("audit-v02.json"), r.Out.Replace("\\\\", "/"));
+    }
+
     [Fact]
     public void Graph_dot_matches_golden()
     {

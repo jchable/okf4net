@@ -176,6 +176,7 @@ On any OS, build from source — see [Building & testing](#building--testing).
 
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
+okf audit    <bundle>    Report trust, freshness and lifecycle across the bundle
 okf info     <bundle>    Summarize a bundle (concepts, types, links, version)
 okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
@@ -191,6 +192,21 @@ straight into CI:
 okf validate ./bundles/ga4
 okf graph ./bundles/ga4 --dot | dot -Tsvg > graph.svg
 ```
+
+`okf audit <bundle>` reports trust, freshness and lifecycle across a whole
+bundle: counts per trust tier (§5.3) and status (§5.4), plus the worklist of
+stale concepts (§5.5). Filter it to ask corpus-level questions —
+
+```sh
+# Which concepts are past stale_after and were never verified by a human?
+okf audit bundles/acme_retail --stale --trust unverified,machine-confirmed
+```
+
+Without filter flags it selects exactly what `--stale` selects and prints the
+summary form; with any filter flag it prints one line per matching concept, so
+the output pipes. `--json` always emits the full document. Note the counts
+always cover the whole bundle while `findings` covers the selection: `audit` is
+a worklist, not an inventory (use `okf info --json` for that).
 
 Generate a browsable HTML site from a bundle:
 
@@ -213,8 +229,8 @@ machine. Full command reference with real output samples:
 `src/OKF4net.Agents/` exposes bundle operations as function tools for the
 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework):
 `OkfBundleTools` wraps one bundle root and its `GetTools()` method returns
-ten ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
-agent's tool list, plus an eleventh — `okf_run_computation` — only when the
+eleven ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
+agent's tool list, plus a twelfth — `okf_run_computation` — only when the
 tool set is constructed with an `OKF4net.Attestation` orchestrator wired in
 (see [Attested computation](#attested-computation-okf4netattestation)).
 
@@ -231,9 +247,9 @@ var response = await agent.RunAsync("Search the bundle for concepts about refund
 Console.WriteLine(response.Text);
 ```
 
-The ten unconditional tools, plus the eleventh conditional on an attestation
-orchestrator being wired (read → browse → graph → search → write → append →
-regenerate → validate → changes-since → get-computation → run-computation):
+The eleven unconditional tools, plus the twelfth conditional on an attestation
+orchestrator being wired (read → browse → graph → search → audit → write →
+append → regenerate → validate → changes-since → get-computation → run-computation):
 
 | Tool                     | Description                                                                                                                                                                                                    |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -241,6 +257,7 @@ regenerate → validate → changes-since → get-computation → run-computatio
 | `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                                                        |
 | `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                                                                  |
 | `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                                                      |
+| `okf_audit`              | Audit the bundle's trust, freshness and lifecycle signals (§5.3–§5.5): counts by trust tier and status, plus the concepts needing attention. Read-only.                                                       |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
 | `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
@@ -507,6 +524,7 @@ This table is also published as the
 | §4 Concept documents                  | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
 | §4.2 Body headings                    | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
 | §5 Provenance, trust, and lifecycle   | `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/`Status`/`StaleAfter`, `Actor`/`Trust`/`Provenance`/`Lifecycle` |
+| §5.3–§5.5 | `ConceptAudit`, `AuditQuery`, `AuditReport` — corpus-level trust/freshness query behind `okf audit` and `okf_audit` |
 | §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
 | §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
 | §7 Actor convention                   | `OKF4net.Actor.Parse` — `human:`/`process:`/`<producer>/<version>` |

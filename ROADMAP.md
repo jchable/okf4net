@@ -14,6 +14,12 @@ are the concrete entry points.
 
 ## Next
 
+- **`okf audit` shipped** — a corpus-level query over a bundle's trust (§5.3),
+  lifecycle (§5.4) and staleness (§5.5) signals: counts plus a filterable
+  worklist, across the CLI verb and the read-only `okf_audit` agent tool,
+  backed by the shared `ConceptAudit`/`AuditVocabulary` model in `OKF4net`.
+  Motivated by ["OKF v0.2 Quietly Admits the Folder Has a Ceiling"](https://medium.com/@davidroliver/okf-v0-2-quietly-admits-the-folder-has-a-ceiling-the-way-up-is-a-library-25fa54e872f9)
+  — see [its design spec](docs/superpowers/specs/2026-08-21-okf-audit-design.md).
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
 - `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source
