@@ -249,8 +249,16 @@ export default function Cli() {
           </table>
           <p>
             Global options: <code>-h</code>/<code>--help</code> prints usage; <code>-V</code>/<code>--version</code>{' '}
-            prints the build and spec version. A path beginning with <code>-</code> can be passed after a{' '}
-            <code>--</code> separator.
+            prints the build and spec version; <code>--as-of &lt;YYYY-MM-DD&gt;</code> pins today's date for{' '}
+            <a href="#validate">validate</a> and <a href="#audit">audit</a>.
+          </p>
+          <p>
+            Everything after a <code>--</code> separator is an argument, never an option — which is how a path
+            beginning with <code>-</code> is passed. The rule holds for every verb and every flag, so{' '}
+            <code>okf fmt -- notes.md -w</code> treats <code>-w</code> as a second filename rather than as the
+            write-in-place flag; write it as <code>okf fmt -w -- notes.md</code> if that is what you meant. A value
+            belonging to an option is likewise only ever a value: in <code>okf audit b --type --stale</code>,{' '}
+            <code>--stale</code> is the type being searched for, not a filter.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: versionHtml }} />
         </Chapter>
