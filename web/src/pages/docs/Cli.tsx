@@ -18,6 +18,36 @@ const validateHtml = `$ okf validate tests/fixtures/appendix_a
 4 concept(s); 0 error(s), 2 warning(s), 0 info.
 <span class="ok">✓ conformant with OKF v0.2</span>`
 
+const auditHtml = `$ okf audit bundles/acme_retail --as-of 2027-06-01
+bundle:     bundles/acme_retail
+as of:      2027-06-01
+concepts:   9
+
+trust:
+     8  human-reviewed
+     0  machine-confirmed
+     1  unverified
+
+status:
+     0  draft
+     8  stable
+     1  deprecated
+
+stale:      7 of 9 past stale_after
+
+needs attention (7):
+  computations/gross-margin-period  stale 2026-12-31  human-reviewed  stable
+  computations/revenue-ytd  stale 2026-12-31  human-reviewed  stable
+  metrics/gross-margin  stale 2026-12-31  human-reviewed  stable
+  metrics/revenue  stale 2026-12-31  human-reviewed  stable
+  policies/margin-standard  stale 2026-12-31  human-reviewed  stable
+  policies/revenue-recognition  stale 2026-12-31  human-reviewed  stable
+  tables/orders  stale 2026-12-31  human-reviewed  stable`
+
+const auditQueryHtml = `<span class="c"># any filter flag switches to one line per concept — pipe-friendly</span>
+$ okf audit bundles/acme_retail --trust unverified
+skills/run-on-bq  no-stale-after  unverified  stable`
+
 const infoHtml = `$ okf info tests/fixtures/appendix_a
 bundle:     tests/fixtures/appendix_a
 concepts:   4
@@ -162,6 +192,13 @@ export default function Cli() {
               </tr>
               <tr>
                 <td>
+                  <a href="#audit">audit</a>
+                </td>
+                <td>&lt;bundle&gt;</td>
+                <td>Report trust, freshness and lifecycle across the bundle (§5.3–§5.5)</td>
+              </tr>
+              <tr>
+                <td>
                   <a href="#info">info</a>
                 </td>
                 <td>&lt;bundle&gt;</td>
@@ -232,6 +269,28 @@ export default function Cli() {
             finding without parsing prose.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: validateJsonHtml }} />
+        </Chapter>
+
+        <Chapter id="audit" title="audit <bundle>" refText="§5.3–§5.5 — the corpus, not the concept">
+          <p>
+            Answers questions about the bundle <em>as a whole</em>: how much of it is human-reviewed, what has passed
+            its <code>stale_after</code> date, what is deprecated. Counts always describe the whole bundle while the
+            worklist describes the selection — <code>audit</code> is a worklist, not an inventory. Always exits{' '}
+            <code>0</code>: a stale concept is editorial hygiene, not a conformance failure.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: auditHtml }} />
+          <p>
+            With no filter flag it selects exactly what <code>--stale</code> selects and prints the summary above.
+            With any of <code>--stale</code>, <code>--trust</code>, <code>--status</code> or <code>--type</code> it
+            prints one line per matching concept and nothing else, so the output pipes. <code>--as-of</code> pins the
+            observation date (it never changes the mode), and <code>--json</code> always emits the full document.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: auditQueryHtml }} />
+          <p>
+            The question this exists for — <em>which concepts are past their <code>stale_after</code> date and have
+            never been verified by a human?</em> — is <code>--stale --trust unverified,machine-confirmed</code>: both
+            tiers, because &ldquo;machine-confirmed&rdquo; also means no human ever looked.
+          </p>
         </Chapter>
 
         <Chapter id="info" title="info <bundle>" refText="a summary, no mutation">
