@@ -10,6 +10,11 @@ and this project adheres to
 
 ### Added
 
+- **`FixedClock`** — an `IOkfClock` pinned to one date, alongside `SystemClock`.
+  Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
+  exists to make staleness (§5.5) reproducible; until now each caller wanting
+  that had to write the same four-line type, and three copies of it had
+  accumulated inside this repo alone.
 - **`okf audit`** — a corpus-level query over a bundle's trust (§5.3), lifecycle
   (§5.4) and staleness (§5.5) signals: counts plus a filterable worklist, with
   `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by

@@ -144,16 +144,6 @@ public sealed class OkfBundleTools
     private DateOnly Today => DateOnly.FromDateTime(UtcNow().Date);
 
     /// <summary>
-    /// Pins <see cref="ConceptAudit"/> to <see cref="Today"/> — the same
-    /// UtcNow seam <see cref="ReadConcept"/> and <see cref="Search"/> use — so
-    /// the tool's output never depends on the day it runs.
-    /// </summary>
-    private sealed class PinnedClock(DateOnly today) : IOkfClock
-    {
-        public DateOnly Today { get; } = today;
-    }
-
-    /// <summary>
     /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
     /// first access and caching it thereafter until <see cref="InvalidateBundle"/>
     /// is called.
@@ -516,7 +506,10 @@ public sealed class OkfBundleTools
             var report = ConceptAudit.Run(
                 GetBundle(),
                 new AuditQuery(stale, tiers, parsedStatus, type),
-                new PinnedClock(Today));
+                // Pinned to Today -- the same UtcNow seam ReadConcept and
+                // Search use -- so the tool's output never depends on the day
+                // it runs.
+                new FixedClock(Today));
 
             return RenderAudit(report, staleOnly: stale);
         });
