@@ -120,6 +120,41 @@ public class OkfAuditToolTests
     }
 
     /// <summary>
+    /// The tool follows the CLI's rule when <c>stale</c> is left unset: bare, it
+    /// is the stale worklist; with another filter, staleness stops being
+    /// implied. Without this, "which concepts were never verified by a human?"
+    /// silently meant "…and are also stale" and answered "none" whenever the
+    /// unverified concept had no <c>stale_after</c> — which is exactly the
+    /// bundle the sample ships.
+    /// </summary>
+    [Fact]
+    public void Audit_unset_stale_follows_the_cli_rule()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("fresh-unverified.md", "---\ntype: Metric\n---\n");
+        tmp.Write(
+            "stale-reviewed.md",
+            "---\ntype: Metric\nstale_after: 2026-01-01\n"
+            + "verified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n---\n");
+
+        var tools = ToolsOver(tmp, new DateOnly(2026, 8, 21));
+
+        // Bare: the stale worklist, so the human-reviewed stale one.
+        var bare = tools.Audit();
+        Assert.Contains("needs attention (1):", bare);
+        Assert.Contains("stale-reviewed", bare);
+
+        // Filtered: no staleness implied, so the fresh unverified one — the
+        // question the sample advertises.
+        var filtered = tools.Audit(trust: "unverified");
+        Assert.Contains("selected (1):", filtered);
+        Assert.Contains("fresh-unverified", filtered);
+
+        // An explicit stale still wins over the rule.
+        Assert.Contains("needs attention: none", tools.Audit(stale: true, trust: "unverified"));
+    }
+
+    /// <summary>
     /// Regression guard for the bug fixed here: with <c>stale: false</c>, the
     /// selection can include perfectly fresh concepts, so calling every one of
     /// them "needs attention" would be a factual misstatement the agent could

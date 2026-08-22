@@ -52,7 +52,7 @@ export default function Cli() {
         type="Reference"
         title={
           <>
-            Seven commands, <em>one binary.</em>
+            Eight commands, <em>one binary.</em>
           </>
         }
         lede={
@@ -69,6 +69,13 @@ export default function Cli() {
             head={['Command', 'Does']}
             rows={[
               ['okf validate <bundle>', 'Check a bundle against OKF v0.2 conformance (§11); exits non-zero on failure'],
+              [
+                'okf audit <bundle>',
+                <>
+                  Report trust (§5.3), lifecycle (§5.4) and staleness (§5.5) across the bundle; filter with{' '}
+                  <code>--stale</code>, <code>--trust</code>, <code>--status</code>, <code>--type</code>
+                </>,
+              ],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],
               ['okf index <bundle>', '(Re)generate every index.md in the bundle (§8)'],
               [

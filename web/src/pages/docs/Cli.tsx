@@ -18,6 +18,36 @@ const validateHtml = `$ okf validate tests/fixtures/appendix_a
 4 concept(s); 0 error(s), 2 warning(s), 0 info.
 <span class="ok">✓ conformant with OKF v0.2</span>`
 
+const auditHtml = `$ okf audit bundles/acme_retail --as-of 2027-06-01
+bundle:     bundles/acme_retail
+as of:      2027-06-01
+concepts:   9
+
+trust:
+     8  human-reviewed
+     0  machine-confirmed
+     1  unverified
+
+status:
+     0  draft
+     8  stable
+     1  deprecated
+
+stale:      7 of 9 past stale_after
+
+needs attention (7):
+  computations/gross-margin-period  stale 2026-12-31  human-reviewed  stable
+  computations/revenue-ytd  stale 2026-12-31  human-reviewed  stable
+  metrics/gross-margin  stale 2026-12-31  human-reviewed  stable
+  metrics/revenue  stale 2026-12-31  human-reviewed  stable
+  policies/margin-standard  stale 2026-12-31  human-reviewed  stable
+  policies/revenue-recognition  stale 2026-12-31  human-reviewed  stable
+  tables/orders  stale 2026-12-31  human-reviewed  stable`
+
+const auditQueryHtml = `<span class="c"># any filter flag switches to one line per concept — pipe-friendly</span>
+$ okf audit bundles/acme_retail --trust unverified
+skills/run-on-bq  no-stale-after  unverified  stable`
+
 const infoHtml = `$ okf info tests/fixtures/appendix_a
 bundle:     tests/fixtures/appendix_a
 concepts:   4
@@ -111,7 +141,7 @@ const buildHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary</span>`
 
 /**
- * Port of `website/docs/cli.html` — the seven `okf` subcommands: synopsis,
+ * Port of `website/docs/cli.html` — the eight `okf` subcommands: synopsis,
  * per-command reference with real captured output, exit codes, build.
  */
 export default function Cli() {
@@ -135,7 +165,7 @@ export default function Cli() {
         }
         lede={
           <>
-            Seven subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
+            Eight subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
             runtime to install. <code>validate</code> exits non-zero on a non-conformant bundle, so the whole tool
             drops into CI as one line.
           </>
@@ -159,6 +189,13 @@ export default function Cli() {
                 </td>
                 <td>&lt;bundle&gt;</td>
                 <td>Check a bundle against OKF v0.2 conformance (§11)</td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="#audit">audit</a>
+                </td>
+                <td>&lt;bundle&gt;</td>
+                <td>Report trust, freshness and lifecycle across the bundle (§5.3–§5.5)</td>
               </tr>
               <tr>
                 <td>
@@ -212,8 +249,16 @@ export default function Cli() {
           </table>
           <p>
             Global options: <code>-h</code>/<code>--help</code> prints usage; <code>-V</code>/<code>--version</code>{' '}
-            prints the build and spec version. A path beginning with <code>-</code> can be passed after a{' '}
-            <code>--</code> separator.
+            prints the build and spec version; <code>--as-of &lt;YYYY-MM-DD&gt;</code> pins today's date for{' '}
+            <a href="#validate">validate</a> and <a href="#audit">audit</a>.
+          </p>
+          <p>
+            Everything after a <code>--</code> separator is an argument, never an option — which is how a path
+            beginning with <code>-</code> is passed. The rule holds for every verb and every flag, so{' '}
+            <code>okf fmt -- notes.md -w</code> treats <code>-w</code> as a second filename rather than as the
+            write-in-place flag; write it as <code>okf fmt -w -- notes.md</code> if that is what you meant. A value
+            belonging to an option is likewise only ever a value: in <code>okf audit b --type --stale</code>,{' '}
+            <code>--stale</code> is the type being searched for, not a filter.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: versionHtml }} />
         </Chapter>
@@ -232,6 +277,33 @@ export default function Cli() {
             finding without parsing prose.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: validateJsonHtml }} />
+          <p>
+            <code>--as-of &lt;YYYY-MM-DD&gt;</code> pins the date the §5.5 staleness warning is evaluated against.
+            Without it that one diagnostic depends on the day the command runs, so a pipeline asserting on
+            validate's output should pin it rather than let the calendar move underneath.
+          </p>
+        </Chapter>
+
+        <Chapter id="audit" title="audit <bundle>" refText="§5.3–§5.5 — the corpus, not the concept">
+          <p>
+            Answers questions about the bundle <em>as a whole</em>: how much of it is human-reviewed, what has passed
+            its <code>stale_after</code> date, what is deprecated. Counts always describe the whole bundle while the
+            worklist describes the selection — <code>audit</code> is a worklist, not an inventory. Always exits{' '}
+            <code>0</code>: a stale concept is editorial hygiene, not a conformance failure.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: auditHtml }} />
+          <p>
+            With no filter flag it selects exactly what <code>--stale</code> selects and prints the summary above.
+            With any of <code>--stale</code>, <code>--trust</code>, <code>--status</code> or <code>--type</code> it
+            prints one line per matching concept and nothing else, so the output pipes. <code>--as-of</code> pins the
+            observation date (it never changes the mode), and <code>--json</code> always emits the full document.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: auditQueryHtml }} />
+          <p>
+            The question this exists for — <em>which concepts are past their <code>stale_after</code> date and have
+            never been verified by a human?</em> — is <code>--stale --trust unverified,machine-confirmed</code>: both
+            tiers, because &ldquo;machine-confirmed&rdquo; also means no human ever looked.
+          </p>
         </Chapter>
 
         <Chapter id="info" title="info <bundle>" refText="a summary, no mutation">

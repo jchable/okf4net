@@ -36,6 +36,42 @@ and this project adheres to
 
 ### Changed
 
+- **`okf audit --json` spells trust tiers one way.** The counts object used
+  camelCase property names (`humanReviewed`) while `findings[].trust` and
+  `query.trust[]` used the vocabulary's own hyphenated names, so
+  `counts[finding.trust]` did not resolve. The counts object now uses
+  `unverified` / `machine-confirmed` / `human-reviewed`, in that ladder order.
+  Done before `okf audit` appears in any release, while the schema is still
+  free to move.
+- **`okf validate --json` now reports `asOf`**, the date its §5.5 staleness
+  warning was evaluated against — without it, an archived CI report could not
+  be told apart from an unpinned run, which is what `--as-of` exists to fix.
+- **`okf_audit`'s `stale` parameter is now unset by default** rather than
+  `true`, and follows the CLI's rule: the stale worklist when no other filter
+  is given, no staleness constraint once one is. Asking an agent "which
+  concepts were never verified by a human?" previously meant "…and are also
+  stale", and answered "none" whenever the unverified concept simply had no
+  `stale_after`. An explicit `stale` still wins.
+- **A blank `--type` (or `type:` on the tool) is now "no type filter"** rather
+  than a filter for the empty string, which §11 forbids a concept from carrying
+  and which could therefore only ever select nothing.
+- **The `--` separator now applies to every verb, not just to the positional
+  lookup.** Argument presence, flag values and the positional were three
+  independent scans of the raw argument array, and only the last honoured `--`;
+  a flag written after the separator was still obeyed. They are now one scan, so
+  everything after `--` is positional on every verb — which is what the
+  separator has always been documented to mean. Concretely: `okf fmt -- file -w`
+  no longer rewrites the file in place (`-w` is a filename there, not a flag),
+  and the same applies to `--json`, `--dot` and `--out` written after a
+  separator. The well-formed spellings (`okf fmt file -w`, `okf fmt -w file`)
+  are unaffected. The same rewrite also fixes a token consumed as a flag's value
+  still counting as a flag: `okf audit b --type --stale` no longer sets the
+  stale filter.
+- **`okf validate` gains `--as-of <YYYY-MM-DD>`**, pinning the date its §5.5
+  staleness warning is evaluated against. `BundleValidator.Validate` already
+  accepted a clock, but the verb exposed no way to set one, so its
+  `concept is stale` warning depended on the day it ran and could not be
+  asserted in CI. Default behaviour is unchanged.
 - **winget manifests move to schema 1.12.0** (from the now-deprecated 1.6.0).
   winget-pkgs' automated reviewer flags older schemas, and an unresolved flag
   of that kind blocked the first submission

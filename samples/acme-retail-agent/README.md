@@ -63,8 +63,12 @@ Questions about the bundle **as a whole** — these go through `okf_audit`, in
 one call rather than by opening concepts one at a time:
 
 - *Which concepts have never been verified by a human?* — the interesting
-  one today: eight of the nine concepts carry a `human:` verifier, so this
-  isolates `skills/run-on-bq`.
+  one today: eight of the nine concepts carry a `human:` verifier, so the
+  answer is `skills/run-on-bq`. Note that asking about trust alone does not
+  quietly also demand staleness: `okf_audit` only defaults to the stale
+  worklist when it is called with no other filter, mirroring the CLI, where
+  `okf audit <bundle>` reports the worklist but `--trust unverified` filters
+  on trust alone.
 - *How healthy is this knowledge base — how much of it is human-reviewed,
   and how much is stale?*
 - *Is anything deprecated?*

@@ -318,6 +318,15 @@ export default function Library() {
                   <Link to="/docs/catalog">docs/catalog.md</Link>.
                 </>,
               ],
+              [
+                'ConceptAudit · AuditVocabulary',
+                <>
+                  <code>Run(bundle, query?, clock?)</code> — the corpus-level query over §5.3–§5.5 signals behind
+                  both <Link to="/docs/cli">okf audit</Link> and the <code>okf_audit</code> tool. Counts describe
+                  the whole bundle, findings describe the selection; <code>AuditVocabulary</code> is the one
+                  spelling of the trust, status and freshness labels every surface renders.
+                </>,
+              ],
             ]}
           />
         </Chapter>

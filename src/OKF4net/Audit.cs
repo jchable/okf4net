@@ -17,7 +17,11 @@ namespace OKF4net;
 /// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> date.</param>
 /// <param name="Trust">Keep only concepts whose derived tier is in this set; null keeps every tier.</param>
 /// <param name="Status">Keep only concepts with this lifecycle status; null keeps every status.</param>
-/// <param name="Type">Keep only concepts whose frontmatter <c>type</c> matches exactly (ordinal); null keeps every type.</param>
+/// <param name="Type">
+/// Keep only concepts whose frontmatter <c>type</c> matches exactly (ordinal).
+/// Null — or blank, which §11 forbids as a concept's type and which callers
+/// emit for "unset" — keeps every type.
+/// </param>
 public readonly record struct AuditQuery(
     bool StaleOnly = false,
     IReadOnlySet<TrustTier>? Trust = null,
@@ -92,7 +96,13 @@ public sealed class AuditReport
     /// <summary>The number of stale concepts in the whole bundle.</summary>
     public int StaleCount { get; }
 
-    /// <summary>The selected concepts, sorted by concept id (ordinal).</summary>
+    /// <summary>
+    /// The selected concepts, sorted by concept id — component-wise, via
+    /// <see cref="ConceptId.CompareTo"/>, the same ordering <c>Bundle.Load</c>
+    /// and <c>IndexGenerator</c> use. Not a flat ordinal compare of the joined
+    /// id: the two disagree wherever a separator meets a segment character
+    /// (<c>orders/extra</c> sorts before <c>orders-extra</c>).
+    /// </summary>
     public IReadOnlyList<AuditFinding> Findings { get; }
 }
 
@@ -219,19 +229,13 @@ public static class ConceptAudit
     {
         var asOf = (clock ?? new SystemClock()).Today;
 
-        var trustCounts = new Dictionary<TrustTier, int>
-        {
-            [TrustTier.Unverified] = 0,
-            [TrustTier.MachineConfirmed] = 0,
-            [TrustTier.HumanReviewed] = 0,
-        };
-
-        var statusCounts = new Dictionary<ConceptStatus, int>
-        {
-            [ConceptStatus.Draft] = 0,
-            [ConceptStatus.Stable] = 0,
-            [ConceptStatus.Deprecated] = 0,
-        };
+        // Seeded from the vocabulary rather than from a hand-written list of
+        // members: a tier or status added to the enum without a matching line
+        // here would make the increments below throw KeyNotFoundException on the
+        // first concept carrying it, breaking this type's "never throws on data"
+        // contract exactly where the vocabulary exists to prevent drift.
+        var trustCounts = AuditVocabulary.TrustTiersInOrder.ToDictionary(tier => tier, _ => 0);
+        var statusCounts = AuditVocabulary.StatusesInOrder.ToDictionary(status => status, _ => 0);
 
         var staleCount = 0;
         var findings = new List<AuditFinding>();
@@ -265,7 +269,13 @@ public static class ConceptAudit
                 continue;
             }
 
-            if (query.Type is { } type && !string.Equals(frontmatter.Type, type, StringComparison.Ordinal))
+            // Blank is treated as "no type filter", not as a filter for the
+            // empty string: §11 requires a non-empty `type`, so no conformant
+            // concept can carry one, and a blank filter could only ever select
+            // nothing. Callers whose filters come from a model or a form pass
+            // "" for "unset" far more often than they mean it literally.
+            if (!string.IsNullOrWhiteSpace(query.Type)
+                && !string.Equals(frontmatter.Type, query.Type, StringComparison.Ordinal))
             {
                 continue;
             }

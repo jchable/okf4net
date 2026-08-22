@@ -168,9 +168,17 @@ public class AuditTests
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Metric\n---\n");
 
+        // The only test here that does not pin the clock -- it is the one
+        // asserting the unpinned fallback. Sampling UtcNow on both sides of the
+        // call would flake on a run crossing midnight UTC, so the assertion
+        // accepts either date the call could legitimately have observed.
+        var before = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var report = ConceptAudit.Run(Load(tmp));
+        var after = DateOnly.FromDateTime(DateTime.UtcNow.Date);
 
-        Assert.Equal(DateOnly.FromDateTime(DateTime.UtcNow.Date), report.AsOf);
+        Assert.True(
+            report.AsOf == before || report.AsOf == after,
+            $"AsOf {report.AsOf} was neither {before} nor {after}");
     }
 
     [Fact]

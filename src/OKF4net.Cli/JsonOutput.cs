@@ -17,6 +17,7 @@ internal sealed record DiagnosticJson(
 /// <summary>The full result of <c>okf validate --json</c>.</summary>
 internal sealed record ValidateJsonResult(
     string Bundle,
+    string AsOf,
     bool Conformant,
     int ConceptCount,
     int ErrorCount,
@@ -42,10 +43,23 @@ internal sealed record InfoJsonResult(
 /// <summary>The query <c>okf audit</c> applied, replayed for <c>--json</c> consumers.</summary>
 internal sealed record AuditQueryJson(bool Stale, IReadOnlyList<string>? Trust, string? Status, string? Type);
 
-/// <summary>Concept counts per trust tier (§5.3), over the whole bundle.</summary>
-internal sealed record TrustCountsJson(int HumanReviewed, int MachineConfirmed, int Unverified);
+/// <summary>
+/// Concept counts per trust tier (§5.3), over the whole bundle. The property
+/// names are spelled out rather than left to the camelCase policy so one
+/// document says <c>human-reviewed</c> everywhere: a consumer grouping findings
+/// by tier can look the tier straight up in these counts. Declared weakest to
+/// strongest, the same ladder order <c>query.trust</c> serializes in.
+/// </summary>
+internal sealed record TrustCountsJson(
+    [property: JsonPropertyName("unverified")] int Unverified,
+    [property: JsonPropertyName("machine-confirmed")] int MachineConfirmed,
+    [property: JsonPropertyName("human-reviewed")] int HumanReviewed);
 
-/// <summary>Concept counts per lifecycle status (§5.4), over the whole bundle.</summary>
+/// <summary>
+/// Concept counts per lifecycle status (§5.4), over the whole bundle, in §5.4
+/// order. These names need no override: the camelCase policy already emits the
+/// vocabulary's own spelling for single-word statuses.
+/// </summary>
 internal sealed record StatusCountsJson(int Draft, int Stable, int Deprecated);
 
 /// <summary>One selected concept, projected for <c>--json</c> output.</summary>
@@ -90,7 +104,22 @@ internal partial class CliJsonContext : JsonSerializerContext
 internal static class JsonOutput
 {
     /// <summary>Writes <c>okf validate --json</c>'s result to <paramref name="stdout"/> as a single line-terminated JSON document.</summary>
-    internal static void WriteValidate(TextWriter stdout, string bundlePath, Bundle bundle, ValidationReport report)
+    /// <param name="stdout">Where the document is written.</param>
+    /// <param name="bundlePath">The bundle path, echoed as given on the command line.</param>
+    /// <param name="asOf">
+    /// The date staleness (§5.5) was evaluated against — the whole point of
+    /// <c>--as-of</c>. Without it in the document, an archived report cannot be
+    /// told apart from an unpinned run, so the reproducibility the flag buys is
+    /// not visible in the artefact itself.
+    /// </param>
+    /// <param name="bundle">The validated bundle.</param>
+    /// <param name="report">The validator's findings.</param>
+    internal static void WriteValidate(
+        TextWriter stdout,
+        string bundlePath,
+        DateOnly asOf,
+        Bundle bundle,
+        ValidationReport report)
     {
         var diagnostics = report.Diagnostics
             .Select(d => new DiagnosticJson(
@@ -104,6 +133,7 @@ internal static class JsonOutput
 
         var result = new ValidateJsonResult(
             bundlePath,
+            asOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             report.IsConformant,
             bundle.Count,
             report.ErrorCount,
@@ -184,9 +214,9 @@ internal static class JsonOutput
                 query.Status is { } status ? AuditVocabulary.Name(status) : null,
                 query.Type),
             new TrustCountsJson(
-                report.TrustCounts[TrustTier.HumanReviewed],
+                report.TrustCounts[TrustTier.Unverified],
                 report.TrustCounts[TrustTier.MachineConfirmed],
-                report.TrustCounts[TrustTier.Unverified]),
+                report.TrustCounts[TrustTier.HumanReviewed]),
             new StatusCountsJson(
                 report.StatusCounts[ConceptStatus.Draft],
                 report.StatusCounts[ConceptStatus.Stable],

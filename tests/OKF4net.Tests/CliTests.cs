@@ -85,6 +85,104 @@ public class CliTests
         Assert.Contains("conformant with OKF v0.2", r.Out);
     }
 
+    /// <summary>
+    /// §5.5's staleness warning depends on what "today" is, so without a way
+    /// to pin the date `okf validate`'s output was not reproducible: the same
+    /// bundle validated clean before a concept's stale_after and warned after
+    /// it, with no way to assert either in CI. `okf audit` gained `--as-of`
+    /// first; this closes the asymmetry on the verb that reports the warning.
+    /// </summary>
+    [Fact]
+    public void Validate_as_of_pins_the_staleness_warning()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/dau.md",
+            "---\ntype: Metric\ntitle: Daily Active Users\ndescription: Count.\nstale_after: 2026-06-01\n---\n");
+
+        var before = Run("validate", tmp.Path, "--as-of", "2026-05-31");
+        var onTheDay = Run("validate", tmp.Path, "--as-of", "2026-06-01");
+
+        // §5.5 is `today >= stale_after`, so the boundary date is already stale.
+        Assert.DoesNotContain("concept is stale", before.Out);
+        Assert.Contains("concept is stale (stale_after 2026-06-01)", onTheDay.Out);
+
+        // Staleness is a warning, not a conformance error: both still exit 0.
+        Assert.Equal(0, before.Code);
+        Assert.Equal(0, onTheDay.Code);
+    }
+
+    /// <summary>
+    /// `--as-of` exists so a CI job's verdict is reproducible; an archived
+    /// report that does not say which date it was evaluated against cannot be
+    /// told apart from an unpinned run, so the date belongs in the document.
+    /// </summary>
+    [Fact]
+    public void Validate_json_records_the_date_it_was_evaluated_against()
+    {
+        var pinned = Run("validate", BundlePath, "--as-of", "2026-06-01", "--json");
+        using var pinnedDoc = JsonDocument.Parse(pinned.Out);
+        Assert.Equal("2026-06-01", pinnedDoc.RootElement.GetProperty("asOf").GetString());
+
+        // Unpinned runs report the date they actually used, rather than omitting it.
+        var unpinned = Run("validate", BundlePath, "--json");
+        using var unpinnedDoc = JsonDocument.Parse(unpinned.Out);
+        Assert.False(string.IsNullOrEmpty(unpinnedDoc.RootElement.GetProperty("asOf").GetString()));
+    }
+
+    /// <summary>
+    /// One document, one spelling: a consumer grouping findings by trust tier
+    /// must be able to look that tier straight up in the counts object.
+    /// </summary>
+    [Fact]
+    public void Audit_json_spells_trust_tiers_the_same_way_in_counts_and_findings()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01", "--json");
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var counts = doc.RootElement.GetProperty("trust");
+        var finding = doc.RootElement.GetProperty("findings").EnumerateArray().Single();
+
+        Assert.Equal(["unverified", "machine-confirmed", "human-reviewed"], counts.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(1, counts.GetProperty(finding.GetProperty("trust").GetString()!).GetInt32());
+    }
+
+    /// <summary>
+    /// A blank `--type` is "no type filter", not a filter for the empty string:
+    /// §11 forbids an empty frontmatter type, so filtering for one could only
+    /// ever select nothing.
+    /// </summary>
+    [Fact]
+    public void Audit_a_blank_type_filter_selects_every_concept()
+    {
+        var r = Run("audit", V02BundlePath, "--type", "");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Validate_rejects_an_invalid_as_of_date()
+    {
+        var r = Run("validate", BundlePath, "--as-of", "2026-13-01");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: --as-of is not a valid YYYY-MM-DD date: \"2026-13-01\"\n", r.Err);
+    }
+
+    /// <summary>
+    /// Regression guard: `--as-of` must be declared as a valued flag on
+    /// `validate` too, or its value is mistaken for the bundle path.
+    /// </summary>
+    [Fact]
+    public void Validate_as_of_before_the_positional_resolves_the_bundle()
+    {
+        var r = Run("validate", "--as-of", "2026-06-01", BundlePath);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+    }
+
     [Fact]
     public void Validate_nonconformant_bundle_exits_nonzero()
     {
@@ -618,6 +716,97 @@ public class CliTests
         Assert.Equal($"error: {flag} requires a value\n", r.Err);
     }
 
+    /// <summary>
+    /// A token consumed as a valued flag's value is that value and nothing
+    /// else — it must not also register as a flag. Before the arguments were
+    /// scanned once, presence and value were independent scans of the raw
+    /// array, so `--type --stale` set the stale filter as well as the type.
+    /// </summary>
+    [Fact]
+    public void Audit_a_flag_name_used_as_a_value_is_not_also_a_flag()
+    {
+        var r = Run("audit", V02BundlePath, "--type", "--stale", "--json");
+
+        Assert.Equal(0, r.Code);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var query = doc.RootElement.GetProperty("query");
+
+        Assert.Equal("--stale", query.GetProperty("type").GetString());
+        Assert.False(query.GetProperty("stale").GetBoolean());
+    }
+
+    /// <summary>
+    /// Everything after `--` is positional, never a flag — that is what the
+    /// separator is for. Only the positional scan used to honour it, so a
+    /// `--json` sitting after the separator still switched the output format.
+    /// </summary>
+    [Fact]
+    public void Audit_tokens_after_the_separator_are_never_flags()
+    {
+        var r = Run("audit", "--", V02BundlePath, "--json");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith("bundle:     ", r.Out);
+        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+    }
+
+    /// <summary>
+    /// The `--` rule is the CLI's, not audit's: on every verb, a token after the
+    /// separator is positional and never a flag. This pins it on `fmt`, whose
+    /// `-w` is the one flag with a side effect on disk — before the arguments
+    /// were scanned once, only the positional lookup honoured the separator, so
+    /// `-w` sitting after it still rewrote the file.
+    /// </summary>
+    [Fact]
+    public void Fmt_a_write_flag_after_the_separator_is_not_a_flag()
+    {
+        using var tmp = new TempDir();
+        const string unformatted = "---\ntype: Note\ntitle:   Spaced\n---\n\nbody\n";
+        var file = tmp.Write("note.md", unformatted);
+
+        var r = Run("fmt", "--", file, "-w");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(unformatted, File.ReadAllText(file));
+        Assert.Contains("title: Spaced", r.Out);
+    }
+
+    /// <summary>
+    /// A `--` with nothing after it still ends the option scan, but it does not
+    /// discard a positional that came before: `okf audit b --` resolves `b`.
+    /// This is the case that distinguishes "clear the positionals at the
+    /// separator" from "only override when the separator has a token after it".
+    /// </summary>
+    [Fact]
+    public void Audit_a_trailing_separator_keeps_the_earlier_positional()
+    {
+        var r = Run("audit", V02BundlePath, "--");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"bundle:     {V02BundlePath}", r.Out);
+    }
+
+    /// <summary>
+    /// A repeated flag resolves to its FIRST occurrence, the rule every verb
+    /// inherited from the original `Array.IndexOf` lookup and which the design
+    /// spec (§4.1) documents. The later occurrence still consumes its own
+    /// value, so that value never lands in the positional slot.
+    /// </summary>
+    [Fact]
+    public void Audit_a_repeated_flag_resolves_to_its_first_occurrence()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "human-reviewed", "--trust", "unverified", "--json");
+
+        Assert.Equal(0, r.Code);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var trust = doc.RootElement.GetProperty("query").GetProperty("trust")
+            .EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Equal(["human-reviewed"], trust);
+    }
+
     [Fact]
     public void Audit_as_of_alone_stays_in_report_mode()
     {
@@ -691,7 +880,7 @@ public class CliTests
         Assert.True(root.GetProperty("query").GetProperty("stale").GetBoolean());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("query").GetProperty("trust").ValueKind);
 
-        Assert.Equal(1, root.GetProperty("trust").GetProperty("humanReviewed").GetInt32());
+        Assert.Equal(1, root.GetProperty("trust").GetProperty("human-reviewed").GetInt32());
         Assert.Equal(1, root.GetProperty("trust").GetProperty("unverified").GetInt32());
         Assert.Equal(2, root.GetProperty("status").GetProperty("stable").GetInt32());
 
