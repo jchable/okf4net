@@ -42,7 +42,10 @@ public static class OkfCli
         "    -h, --help           Show this help\n" +
         "    -V, --version        Show version\n" +
         "        --json           Machine-readable output for validate/info/audit\n" +
-        "        --out <dir>      Output directory for `render`";
+        "        --out <dir>      Output directory for `render`\n" +
+        "        --as-of <date>   Pin today's date (YYYY-MM-DD) for validate/audit\n" +
+        "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
+        "                         Filter `audit`'s worklist";
 
     /// <summary>
     /// Internal control-flow signal for a command failure: caught once at the
@@ -285,9 +288,12 @@ public static class OkfCli
     /// <summary>Implements the <c>validate</c> subcommand.</summary>
     private static int CmdValidate(string[] args, TextWriter stdout)
     {
-        var path = Positional(args, "<bundle>");
+        // --as-of is parsed before the positional, so an unvalued flag names
+        // itself rather than surfacing as "missing <bundle>".
+        var clock = ParseAsOf(args);
+        var path = Positional(args, "<bundle>", "--as-of");
         var bundle = Load(path);
-        var report = BundleValidator.Validate(bundle);
+        var report = BundleValidator.Validate(bundle, clock);
 
         if (HasFlag(args, "--json"))
         {

@@ -20,6 +20,14 @@ are the concrete entry points.
   backed by the shared `ConceptAudit`/`AuditVocabulary` model in `OKF4net`.
   Motivated by ["OKF v0.2 Quietly Admits the Folder Has a Ceiling"](https://medium.com/@davidroliver/okf-v0-2-quietly-admits-the-folder-has-a-ceiling-the-way-up-is-a-library-25fa54e872f9)
   — see [its design spec](docs/superpowers/specs/2026-08-21-okf-audit-design.md).
+- **Per-verb `--help` for the CLI.** `okf audit --help` today prints
+  `error: missing <bundle>`, and so do `okf validate --help` and every other
+  verb: the CLI has one global usage block and no per-verb help, so a verb's
+  own flags are only discoverable by reading OPTIONS or this repo. `audit`
+  makes it visible (six optional flags, none of which fit on its COMMANDS
+  line), but the gap is CLI-wide and should be closed for all eight verbs at
+  once — intercepting `--help` inside each command before its positional is
+  resolved, which also changes those invocations from exit 1 to exit 0.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
 - `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source

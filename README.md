@@ -524,7 +524,7 @@ This table is also published as the
 | §4 Concept documents                  | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
 | §4.2 Body headings                    | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
 | §5 Provenance, trust, and lifecycle   | `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/`Status`/`StaleAfter`, `Actor`/`Trust`/`Provenance`/`Lifecycle` |
-| §5.3–§5.5 | `ConceptAudit`, `AuditQuery`, `AuditReport` — corpus-level trust/freshness query behind `okf audit` and `okf_audit` |
+| §5.3–§5.5 trust, lifecycle, staleness | `ConceptAudit`, `AuditQuery`, `AuditReport` — the corpus-level query behind `okf audit` and `okf_audit` |
 | §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
 | §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
 | §7 Actor convention                   | `OKF4net.Actor.Parse` — `human:`/`process:`/`<producer>/<version>` |

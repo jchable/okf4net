@@ -85,6 +85,55 @@ public class CliTests
         Assert.Contains("conformant with OKF v0.2", r.Out);
     }
 
+    /// <summary>
+    /// §5.5's staleness warning depends on what "today" is, so without a way
+    /// to pin the date `okf validate`'s output was not reproducible: the same
+    /// bundle validated clean before a concept's stale_after and warned after
+    /// it, with no way to assert either in CI. `okf audit` gained `--as-of`
+    /// first; this closes the asymmetry on the verb that reports the warning.
+    /// </summary>
+    [Fact]
+    public void Validate_as_of_pins_the_staleness_warning()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/dau.md",
+            "---\ntype: Metric\ntitle: Daily Active Users\ndescription: Count.\nstale_after: 2026-06-01\n---\n");
+
+        var before = Run("validate", tmp.Path, "--as-of", "2026-05-31");
+        var onTheDay = Run("validate", tmp.Path, "--as-of", "2026-06-01");
+
+        // §5.5 is `today >= stale_after`, so the boundary date is already stale.
+        Assert.DoesNotContain("concept is stale", before.Out);
+        Assert.Contains("concept is stale (stale_after 2026-06-01)", onTheDay.Out);
+
+        // Staleness is a warning, not a conformance error: both still exit 0.
+        Assert.Equal(0, before.Code);
+        Assert.Equal(0, onTheDay.Code);
+    }
+
+    [Fact]
+    public void Validate_rejects_an_invalid_as_of_date()
+    {
+        var r = Run("validate", BundlePath, "--as-of", "2026-13-01");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: --as-of is not a valid YYYY-MM-DD date: \"2026-13-01\"\n", r.Err);
+    }
+
+    /// <summary>
+    /// Regression guard: `--as-of` must be declared as a valued flag on
+    /// `validate` too, or its value is mistaken for the bundle path.
+    /// </summary>
+    [Fact]
+    public void Validate_as_of_before_the_positional_resolves_the_bundle()
+    {
+        var r = Run("validate", "--as-of", "2026-06-01", BundlePath);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+    }
+
     [Fact]
     public void Validate_nonconformant_bundle_exits_nonzero()
     {

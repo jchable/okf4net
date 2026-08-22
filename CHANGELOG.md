@@ -31,6 +31,11 @@ and this project adheres to
 
 ### Changed
 
+- **`okf validate` gains `--as-of <YYYY-MM-DD>`**, pinning the date its §5.5
+  staleness warning is evaluated against. `BundleValidator.Validate` already
+  accepted a clock, but the verb exposed no way to set one, so its
+  `concept is stale` warning depended on the day it ran and could not be
+  asserted in CI. Default behaviour is unchanged.
 - **winget manifests move to schema 1.12.0** (from the now-deprecated 1.6.0).
   winget-pkgs' automated reviewer flags older schemas, and an unresolved flag
   of that kind blocked the first submission

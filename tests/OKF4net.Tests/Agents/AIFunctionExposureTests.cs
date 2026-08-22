@@ -89,6 +89,31 @@ public class AIFunctionExposureTests
         Assert.Contains("conceptId", required);
     }
 
+    /// <summary>
+    /// Every parameter of <c>okf_audit</c> is optional, and <c>stale</c>
+    /// defaults to true -- calling it with no arguments must therefore mean
+    /// "the stale worklist", which is the whole point of the tool's default.
+    /// A schema that marked any parameter required, or dropped the default,
+    /// would change what a bare call means without any C# signature changing.
+    /// </summary>
+    [Fact]
+    public void okf_audit_schema_is_all_optional_and_defaults_stale_to_true()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_audit");
+        var properties = function.JsonSchema.GetProperty("properties");
+
+        foreach (var name in new[] { "stale", "trust", "status", "type" })
+        {
+            Assert.True(properties.TryGetProperty(name, out _), $"schema should declare a '{name}' property.");
+        }
+
+        Assert.Empty(RequiredProperties(function));
+
+        var stale = properties.GetProperty("stale");
+        Assert.Equal("boolean", stale.GetProperty("type").GetString());
+        Assert.True(stale.GetProperty("default").GetBoolean());
+    }
+
     [Fact]
     public void okf_search_schema_has_optional_tag()
     {
