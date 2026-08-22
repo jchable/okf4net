@@ -204,7 +204,13 @@ okf audit bundles/acme_retail --stale --trust unverified,machine-confirmed
 
 Without filter flags it selects exactly what `--stale` selects and prints the
 summary form; with any filter flag it prints one line per matching concept, so
-the output pipes. `--json` always emits the full document. Note the counts
+the output pipes. `--json` always emits the full document.
+
+`--as-of <YYYY-MM-DD>` pins the date staleness is evaluated against, on both
+`okf audit` and `okf validate`. Without it, anything touching `stale_after`
+(§5.5) depends on the day it runs — including `okf validate`'s
+`concept is stale` warning, which is why a CI job that wants a reproducible
+verdict should pin the date rather than let the calendar move under it. Note the counts
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 

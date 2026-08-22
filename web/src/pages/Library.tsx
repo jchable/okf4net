@@ -145,6 +145,10 @@ export default function Library() {
                 'Atomic, per-path-locked, reparse-guarded concept writes — shared by Agents & Catalog',
               ],
               [<code key="csrch">ConceptSearch</code>, 'The full-text scorer shared by okf_search and the local catalog'],
+              [
+                <code key="caud">ConceptAudit</code>,
+                'The corpus-level trust/freshness/lifecycle query shared by okf audit and okf_audit',
+              ],
             ]}
           />
           <Next>

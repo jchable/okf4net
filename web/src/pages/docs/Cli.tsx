@@ -269,6 +269,11 @@ export default function Cli() {
             finding without parsing prose.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: validateJsonHtml }} />
+          <p>
+            <code>--as-of &lt;YYYY-MM-DD&gt;</code> pins the date the §5.5 staleness warning is evaluated against.
+            Without it that one diagnostic depends on the day the command runs, so a pipeline asserting on
+            validate's output should pin it rather than let the calendar move underneath.
+          </p>
         </Chapter>
 
         <Chapter id="audit" title="audit <bundle>" refText="§5.3–§5.5 — the corpus, not the concept">
