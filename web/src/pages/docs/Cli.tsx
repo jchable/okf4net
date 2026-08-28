@@ -48,6 +48,20 @@ const auditQueryHtml = `<span class="c"># any filter flag switches to one line p
 $ okf audit bundles/acme_retail --trust unverified
 skills/run-on-bq  no-stale-after  unverified  stable`
 
+const verifyHtml = `$ okf verify bundles/acme_retail metrics/revenue --by human:ada --at 2026-08-28T09:14:00Z
+recorded metrics/revenue  human:ada  2026-08-28T09:14:00Z
+
+<span class="c"># a repeat review from the same actor replaces its own stamp</span>
+$ okf verify bundles/acme_retail metrics/revenue --by human:ada --at 2026-09-15T09:00:00Z
+recorded metrics/revenue  human:ada  2026-09-15T09:00:00Z  (replaces 2026-08-28T09:14:00Z)`
+
+const verifyLoopHtml = `<span class="c"># "-" reads concept ids from standard input, one per line -- audit's worklist becomes verify's input</span>
+$ okf audit bundles/acme_retail --trust unverified | cut -d' ' -f1 | okf verify bundles/acme_retail --by human:ada -
+recorded skills/run-on-bq  human:ada  2026-08-28T21:22:23Z`
+
+const verifyDryRunHtml = `$ okf verify bundles/acme_retail metrics/gross-margin --by human:ada --dry-run
+would record metrics/gross-margin  human:ada  (now)`
+
 const infoHtml = `$ okf info tests/fixtures/appendix_a
 bundle:     tests/fixtures/appendix_a
 concepts:   4
@@ -141,14 +155,14 @@ const buildHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary</span>`
 
 /**
- * Port of `website/docs/cli.html` — the eight `okf` subcommands: synopsis,
+ * Port of `website/docs/cli.html` — the nine `okf` subcommands: synopsis,
  * per-command reference with real captured output, exit codes, build.
  */
 export default function Cli() {
   return (
     <DocsLayout
       title="CLI reference — OKF4net docs"
-      description="Reference for the okf command-line tool: validate, info, index, graph, parse, fmt and render — arguments, flags, real output, and exit codes. A self-contained Native AOT binary."
+      description="Reference for the okf command-line tool: validate, audit, verify, info, index, graph, parse, fmt and render — arguments, flags, real output, and exit codes. A self-contained Native AOT binary."
       current="cli"
     >
       <PageDoc
@@ -165,7 +179,7 @@ export default function Cli() {
         }
         lede={
           <>
-            Eight subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
+            Nine subcommands over a bundle or a file, a self-contained <strong>Native AOT binary</strong> with no
             runtime to install. <code>validate</code> exits non-zero on a non-conformant bundle, so the whole tool
             drops into CI as one line.
           </>
@@ -196,6 +210,15 @@ export default function Cli() {
                 </td>
                 <td>&lt;bundle&gt;</td>
                 <td>Report trust, freshness and lifecycle across the bundle (§5.3–§5.5)</td>
+              </tr>
+              <tr>
+                <td>
+                  <a href="#verify">verify</a>
+                </td>
+                <td>&lt;bundle&gt; &lt;id&gt;…</td>
+                <td>
+                  Record a review (§5.2) with <code>--by &lt;actor&gt;</code>; closes the audit worklist
+                </td>
               </tr>
               <tr>
                 <td>
@@ -258,7 +281,9 @@ export default function Cli() {
             <code>okf fmt -- notes.md -w</code> treats <code>-w</code> as a second filename rather than as the
             write-in-place flag; write it as <code>okf fmt -w -- notes.md</code> if that is what you meant. A value
             belonging to an option is likewise only ever a value: in <code>okf audit b --type --stale</code>,{' '}
-            <code>--stale</code> is the type being searched for, not a filter.
+            <code>--stale</code> is the type being searched for, not a filter. A lone <code>-</code> is never a
+            flag — it is POSIX's "read standard input" argument, which is what lets{' '}
+            <a href="#verify">verify</a>'s <code>&lt;id&gt;…</code> read concept ids from a pipe.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: versionHtml }} />
         </Chapter>
@@ -303,6 +328,38 @@ export default function Cli() {
             The question this exists for — <em>which concepts are past their <code>stale_after</code> date and have
             never been verified by a human?</em> — is <code>--stale --trust unverified,machine-confirmed</code>: both
             tiers, because &ldquo;machine-confirmed&rdquo; also means no human ever looked.
+          </p>
+        </Chapter>
+
+        <Chapter id="verify" title="verify <bundle> <id>… --by <actor>" refText="§5.2 — the verb that answers audit">
+          <p>
+            Records a review: adds — or, for a repeat review from the same actor, replaces — a{' '}
+            <code>{'{by, at}'}</code> entry in each named concept's <code>verified</code> list. Every id is checked
+            for existence and §11 conformance <strong>before anything is written</strong>, so a batch with one bad id
+            is rejected as a whole at that stage; a failure partway through the write phase (I/O, permissions) can
+            still leave the concepts already written stamped, and the output says exactly what landed. Exits{' '}
+            <code>0</code> on success, <code>1</code> otherwise.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: verifyHtml }} />
+          <p>
+            <code>&lt;id&gt;…</code> also accepts a single <code>-</code>, reading one concept id per line from
+            standard input — which is what lets <code>okf audit</code>'s worklist feed <code>okf verify</code>
+            directly, closing the loop in one line:
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: verifyLoopHtml }} />
+          <p>
+            Re-running <code>okf audit … --trust unverified</code> afterward prints nothing — the concept it just
+            stamped left the worklist. <code>--dry-run</code> shows what would be recorded without writing;{' '}
+            <code>--at &lt;yyyy-MM-ddTHH:mm:ssZ&gt;</code> overrides the default of "now" for reproducible scripting.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: verifyDryRunHtml }} />
+          <p>
+            <strong>A stamp is a dated declaration, not a proof.</strong> It guarantees the entry is well-formed,
+            dated, and attached to the concepts named — it does not, and cannot, guarantee the signer's identity or
+            that anyone read the concept: no zero-dependency tool can authenticate <code>--by</code>, and{' '}
+            <code>okf_write_concept</code> can write the same field with no ceremony at all. What makes a stamp
+            credible is where it lands — in a diff a human reviewed — never a stamp inferred from a PR approval; see
+            the <a href="https://github.com/jchable/okf4net#as-a-cli">project README</a> for the full reasoning.
           </p>
         </Chapter>
 

@@ -15,7 +15,7 @@ public static class OkfMcpToolset
 {
     /// <summary>
     /// Creates the MCP tools rooted at <paramref name="bundleRoot"/>. When
-    /// <paramref name="readOnly"/> is <see langword="true"/>, the three write
+    /// <paramref name="readOnly"/> is <see langword="true"/>, the four write
     /// tools (<see cref="OkfBundleTools.WriteToolNames"/>) are omitted so the
     /// bundle is served for consultation only.
     /// </summary>

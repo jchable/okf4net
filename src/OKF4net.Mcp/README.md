@@ -41,8 +41,8 @@ The bundle root may instead be supplied via the environment:
 ```
 
 Set `OKF_MCP_READONLY=1` to serve the bundle for consultation only (the write
-tools `okf_write_concept`, `okf_append_log`, `okf_regenerate_indexes` are not
-registered).
+tools `okf_write_concept`, `okf_verify`, `okf_append_log`,
+`okf_regenerate_indexes` are not registered).
 
 ## Bundle resolution order
 
@@ -69,20 +69,23 @@ or `OKF_BUNDLE_ROOT` in `claude_desktop_config.json`.
 ## Tools
 
 `okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`, `okf_audit`,
-`okf_write_concept`, `okf_append_log`, `okf_regenerate_indexes`, `okf_validate_bundle`,
-`okf_changes_since`, `okf_get_computation`.
+`okf_write_concept`, `okf_verify`, `okf_append_log`, `okf_regenerate_indexes`,
+`okf_validate_bundle`, `okf_changes_since`, `okf_get_computation`.
 
 Each is the corresponding `OkfBundleTools` operation, so all OKF v0.2 behaviour,
 producer-grade validation, path-safety, and locking apply unchanged.
 
-That's eleven tools full (eight read-only tools above plus the three write
-tools), or eight when `OKF_MCP_READONLY=1` drops the three write tools.
+That's twelve tools full (eight read-only tools above plus the four write
+tools), or eight when `OKF_MCP_READONLY=1` drops the four write tools.
 `okf_get_computation` reads a §10 attested-computation concept's contract and
 sanctioned computation source — read-only, no attestation runtime needed.
 `okf_audit` reads the bundle's trust/freshness/lifecycle signals — also
-read-only. The twelfth `OkfBundleTools` tool, `okf_run_computation`, is
-**not** exposed by this server: it only appears in `GetTools()` when the tool
-set is constructed with an `OKF4net.Attestation` `AttestationOrchestrator`
-wired in, and this server starts `OkfBundleTools` with no orchestrator (it
-wires no host-specific binder/executor/attester runtime). Embed
-`OKF4net.Agents` directly if you need `okf_run_computation`.
+read-only. `okf_verify` records a `{by, at}` review stamp (§5.2) in a named
+concept's `verified` list — a dated declaration, not a proof; see the project
+README's `okf verify` section for what it does and doesn't guarantee. The
+thirteenth `OkfBundleTools` tool, `okf_run_computation`, is **not** exposed
+by this server: it only appears in `GetTools()` when the tool set is
+constructed with an `OKF4net.Attestation` `AttestationOrchestrator` wired in,
+and this server starts `OkfBundleTools` with no orchestrator (it wires no
+host-specific binder/executor/attester runtime). Embed `OKF4net.Agents`
+directly if you need `okf_run_computation`.

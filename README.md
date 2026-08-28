@@ -69,7 +69,7 @@ other project layers a specific integration on top and points back to it.
 | Project                  | NuGet package             | Responsibility                                                              | Deep dive                                                     |
 |--------------------------|---------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------|
 | `OKF4net`                | `OKF4net`                 | Zero-dependency core library: parse, validate, index, graph OKF bundles.   | [Library overview](#library-overview)                        |
-| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`info`/`index`/`graph`/`parse`/`fmt`/`render`). | [As a CLI](#as-a-cli)                                    |
+| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`audit`/`verify`/`info`/`index`/`graph`/`parse`/`fmt`/`render`). | [As a CLI](#as-a-cli)                                    |
 | `OKF4net.Viewer`         | — (ships inside the `okf` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs the `okf render` verb. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
@@ -177,6 +177,7 @@ On any OS, build from source — see [Building & testing](#building--testing).
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
 okf audit    <bundle>    Report trust, freshness and lifecycle across the bundle
+okf verify   <bundle> <id>…   Record a review of one or more concepts (--by <actor>)
 okf info     <bundle>    Summarize a bundle (concepts, types, links, version)
 okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
@@ -214,6 +215,41 @@ verdict should pin the date rather than let the calendar move under it. Note the
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 
+`okf verify <bundle> <id>… --by <actor>` records a review (§5.2): it adds — or,
+for a repeat review from the same actor, replaces — a `{ by, at }` entry in
+each named concept's `verified` list. It is the verb that answers what
+`okf audit` asks: audit finds what needs a look, verify records that the look
+happened, and the reviewed concept leaves the worklist. `<id>…` also accepts a
+single `-`, reading one concept id per line from standard input, so the two
+verbs compose into one line:
+
+```sh
+okf audit bundles/acme_retail --trust unverified | cut -d' ' -f1 | okf verify bundles/acme_retail --by human:ada -
+```
+
+Every named concept is checked for existence and §11 conformance before
+anything is written, so a batch is rejected as a whole at that stage; a
+mid-batch I/O failure can still leave the concepts already written stamped
+(`okf verify`'s output lists exactly what landed). `--dry-run` prints what
+would be recorded without writing anything; `--at <timestamp>` overrides the
+default of "now" for reproducible scripting.
+
+> **What a `verified` stamp does and doesn't prove.** It guarantees the
+> stamp is well-formed, dated, and attached to the concepts named — nothing
+> more. It does **not** guarantee the signer's identity, nor that anyone
+> actually read the concept: no zero-dependency tool can authenticate `--by`,
+> and `okf_write_concept` can write the exact same field with no ceremony at
+> all — deliberately unguarded, since a full frontmatter rewrite (importing a
+> bundle, correcting a concept) has to be able to touch `verified` too.
+> Credibility comes from *where the stamp lands*: in a diff a human reviewed,
+> under branch protection, where the reviewer sees the assertion and can
+> reject it. **Never infer a stamp from a PR approval** — that turns "a human
+> approved this diff" into "a human vouches for this knowledge," which are
+> different every time a PR touches a file for a reason other than reviewing
+> it (which is most of the time). Doing so would mass-promote every concept
+> the diff happens to touch and silently empty the very worklist this feature
+> exists to populate.
+
 Generate a browsable HTML site from a bundle:
 
 ```sh
@@ -235,8 +271,8 @@ machine. Full command reference with real output samples:
 `src/OKF4net.Agents/` exposes bundle operations as function tools for the
 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework):
 `OkfBundleTools` wraps one bundle root and its `GetTools()` method returns
-eleven ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
-agent's tool list, plus a twelfth — `okf_run_computation` — only when the
+twelve ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
+agent's tool list, plus a thirteenth — `okf_run_computation` — only when the
 tool set is constructed with an `OKF4net.Attestation` orchestrator wired in
 (see [Attested computation](#attested-computation-okf4netattestation)).
 
@@ -253,9 +289,9 @@ var response = await agent.RunAsync("Search the bundle for concepts about refund
 Console.WriteLine(response.Text);
 ```
 
-The eleven unconditional tools, plus the twelfth conditional on an attestation
+The twelve unconditional tools, plus the thirteenth conditional on an attestation
 orchestrator being wired (read → browse → graph → search → audit → write →
-append → regenerate → validate → changes-since → get-computation → run-computation):
+verify → append → regenerate → validate → changes-since → get-computation → run-computation):
 
 | Tool                     | Description                                                                                                                                                                                                    |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -265,6 +301,7 @@ append → regenerate → validate → changes-since → get-computation → run
 | `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                                                      |
 | `okf_audit`              | Audit the bundle's trust, freshness and lifecycle signals (§5.3–§5.5): counts by trust tier and status, plus the concepts needing attention. Read-only.                                                       |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
+| `okf_verify`             | Record a review of one or more concepts (§5.2): adds or replaces the caller's `{by, at}` entry in each concept's `verified` list. A stamp is a dated declaration, not a proof — never infer one from a PR approval.                                          |
 | `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
 | `okf_validate_bundle`    | Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.                                                                                                                        |
@@ -276,8 +313,8 @@ append → regenerate → validate → changes-since → get-computation → run
 is untrusted — it comes from files on disk that may have been written by
 another agent or a human contributor — and is never injected into the
 conversation with a `system` role; it only ever reaches the model as tool
-output. The three write-capable tools (`okf_write_concept`, `okf_append_log`
-and `okf_regenerate_indexes`)
+output. The four write-capable tools (`okf_write_concept`, `okf_verify`,
+`okf_append_log` and `okf_regenerate_indexes`)
 rely entirely on the Agent Framework's own tool-approval mechanism to gate
 execution — `OkfBundleTools` performs no additional confirmation step of its
 own.
@@ -530,6 +567,7 @@ This table is also published as the
 | §4 Concept documents                  | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
 | §4.2 Body headings                    | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
 | §5 Provenance, trust, and lifecycle   | `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/`Status`/`StaleAfter`, `Actor`/`Trust`/`Provenance`/`Lifecycle` |
+| §5.2 Generation and verification stamps | `Frontmatter.Generated`/`Verified`, `BundleConceptWriter.RecordVerifications` — the governed writer behind `okf verify` and `okf_verify` |
 | §5.3–§5.5 trust, lifecycle, staleness | `ConceptAudit`, `AuditQuery`, `AuditReport` — the corpus-level query behind `okf audit` and `okf_audit` |
 | §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
 | §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |

@@ -98,6 +98,7 @@ export default function Home() {
               <tr><th>Command</th><th>Does</th></tr>
               <tr><td>okf validate &lt;bundle&gt;</td><td>Conformance check (§11), non-zero exit on failure</td></tr>
               <tr><td>okf audit &lt;bundle&gt;</td><td>Trust, freshness and lifecycle across the bundle (§5.3–§5.5)</td></tr>
+              <tr><td>okf verify &lt;bundle&gt; &lt;id&gt;…</td><td>Record a review (§5.2), closing the audit worklist</td></tr>
               <tr><td>okf info &lt;bundle&gt;</td><td>Concepts, types, links, version</td></tr>
               <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md (§8)</td></tr>
               <tr><td>okf graph &lt;bundle&gt;</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
@@ -114,9 +115,9 @@ export default function Home() {
           <div className="chead">
             <span className="h">##</span>
             <h2>The Agent tools</h2>
-            <span className="ref">Microsoft Agent Framework — ten tools + bounded context</span>
+            <span className="ref">Microsoft Agent Framework — twelve tools + bounded context</span>
           </div>
-          <p><code>OKF4net.Agents</code> turns a bundle into <strong>ten <code>AIFunction</code> tools</strong> (read, search, write, validate, log, §10 attested computation, …) — an eleventh, <code>okf_run_computation</code>, when an attestation orchestrator is wired in — plus <code>OkfContextProvider</code>, which injects budget-bounded reference data automatically — never as instructions — and, opt-in, captures exchanges as deterministic memory, single-bundle or scoped across tenants, users, and sessions.</p>
+          <p><code>OKF4net.Agents</code> turns a bundle into <strong>twelve <code>AIFunction</code> tools</strong> (read, search, write, verify, validate, log, §10 attested computation, …) — a thirteenth, <code>okf_run_computation</code>, when an attestation orchestrator is wired in — plus <code>OkfContextProvider</code>, which injects budget-bounded reference data automatically — never as instructions — and, opt-in, captures exchanges as deterministic memory, single-bundle or scoped across tenants, users, and sessions.</p>
           <p className="next">→ <Link to="/docs/agents">docs/agents.md</Link> — the tools, the context provider, and scoped memory capture</p>
         </section>
 
@@ -136,7 +137,7 @@ export default function Home() {
             <h2>MCP — In Claude & your editor</h2>
             <span className="ref">MCP — the bundle as tools</span>
           </div>
-          <p>Run <code>okf-mcp</code>, point it at a bundle, and its ten operations become tools inside <strong>Claude Desktop, Claude Code, and Cursor</strong> — read, search, and write concepts from a conversation, over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>. Same engine as the library and the CLI, exposed to any MCP client.</p>
+          <p>Run <code>okf-mcp</code>, point it at a bundle, and its twelve operations become tools inside <strong>Claude Desktop, Claude Code, and Cursor</strong> — read, search, and write concepts from a conversation, over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>. Same engine as the library and the CLI, exposed to any MCP client.</p>
           <p>On <strong>Claude Code</strong>, skip the manual config: the <a href="https://github.com/jchable/okf4net-claude-plugin">OKF plugin</a> installs <code>okf-mcp</code>, an <code>okf</code> skill, and guided <code>/okf-init</code> / <code>/okf-validate</code> slash commands in one step — <code>/plugin marketplace add jchable/okf4net-claude-plugin</code>, then <code>/plugin install okf@okf4net</code>.</p>
           <p className="next">→ <Link to="/docs/mcp">docs/mcp.md</Link> — install <code>okf-mcp</code> and connect each client, step by step</p>
         </section>

@@ -20,12 +20,36 @@ are the concrete entry points.
   backed by the shared `ConceptAudit`/`AuditVocabulary` model in `OKF4net`.
   Motivated by ["OKF v0.2 Quietly Admits the Folder Has a Ceiling"](https://medium.com/@davidroliver/okf-v0-2-quietly-admits-the-folder-has-a-ceiling-the-way-up-is-a-library-25fa54e872f9)
   — see [its design spec](docs/superpowers/specs/2026-08-21-okf-audit-design.md).
+- **`okf verify` shipped** — the verb that answers what `okf audit` asks: it
+  records a review by adding, or from the same actor replacing, a
+  `{by, at}` entry in a named concept's `verified` list (§5.2), so the
+  concept leaves the audit worklist at the next pass. `<id>…` accepts `-` to
+  read ids from standard input, so `okf audit … --trust unverified | cut
+  -d' ' -f1 | okf verify … --by human:ada -` closes the loop in one line.
+  Backed by the new `BundleConceptWriter.RecordVerifications` — the single
+  governed writer of `verified` — and exposed to agents as `okf_verify`. See
+  [its design spec](docs/superpowers/specs/2026-08-28-okf-verify-design.md).
+  - **Next, highest-value follow-up: a time-aware audit.** A `verified`
+    stamp today attests a moment, not a version — `Trust.DeriveTier` derives
+    `human-reviewed` from an actor's presence alone, so a five-year-old human
+    stamp counts the same as one from this morning, and nothing currently
+    flags that the concept's content moved after the review. Exposing the
+    stamps' timestamps on `AuditFinding` would let `okf audit` ask "reviewed,
+    but as of when, and has the file changed since?" — answered outside the
+    library, by comparing `max(verified[].at)` against
+    `git log -1 --format=%cI -- <path>` (the folder is canonical; its
+    history is git's, not the frontmatter's). Deliberately out of `okf
+    verify`'s scope: it needs no new write path, only turns an existing
+    field from a permanent alibi into a signal that decays. No schema
+    extension (`digest`, `scope`, `note` on the stamp) is planned to
+    recreate this information inside the bundle instead — that question is
+    answered by git, on purpose.
 - **Per-verb `--help` for the CLI.** `okf audit --help` today prints
   `error: missing <bundle>`, and so do `okf validate --help` and every other
   verb: the CLI has one global usage block and no per-verb help, so a verb's
   own flags are only discoverable by reading OPTIONS or this repo. `audit`
   makes it visible (six optional flags, none of which fit on its COMMANDS
-  line), but the gap is CLI-wide and should be closed for all eight verbs at
+  line), but the gap is CLI-wide and should be closed for all nine verbs at
   once — intercepting `--help` inside each command before its positional is
   resolved, which also changes those invocations from exit 1 to exit 0.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,

@@ -142,7 +142,7 @@ export default function Library() {
               [<code key="sp">StalePolicy</code>, 'Consumer-side policy for stale concepts (§5.5)'],
               [
                 <code key="bcw">BundleConceptWriter</code>,
-                'Atomic, per-path-locked, reparse-guarded concept writes — shared by Agents & Catalog',
+                'Atomic, per-path-locked, reparse-guarded concept writes, incl. RecordVerifications (§5.2) — shared by Agents & Catalog',
               ],
               [<code key="csrch">ConceptSearch</code>, 'The full-text scorer shared by okf_search and the local catalog'],
               [

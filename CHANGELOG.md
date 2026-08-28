@@ -20,6 +20,24 @@ and this project adheres to
   `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by
   the new `ConceptAudit` in the core library and exposed to agents as the
   read-only `okf_audit` tool.
+- **`okf verify <bundle> <id>… --by <actor>`** — the verb that answers what
+  `okf audit` asks: it records a review (§5.2) by adding, or from the same
+  actor replacing, a `{by, at}` entry in each named concept's `verified`
+  list, so a reviewed concept leaves the audit worklist. `<id>…` also accepts
+  a single `-`, reading concept ids from standard input, so
+  `okf audit … --trust unverified | cut -d' ' -f1 | okf verify … --by
+  human:ada -` closes the loop in one line. `--dry-run` shows what would be
+  recorded without writing; `--at` overrides the default of "now". A batch
+  is validated (existence, §11 conformance, no duplicate id) before the
+  first write, but writing several files cannot be atomic — a mid-batch I/O
+  failure still leaves the earlier concepts stamped, and is reported as
+  such. Backed by the new `BundleConceptWriter.RecordVerifications` in the
+  core library — the single governed writer of `verified` — and exposed to
+  agents as the `okf_verify` tool. **A `verified` stamp is a dated
+  declaration, not a proof**: it cannot and does not authenticate the
+  signer's identity, nor confirm anyone read the concept. Credibility comes
+  from where the stamp lands — a diff a human reviewed — never from
+  inferring one out of a PR approval.
 - **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
   HTML site from a bundle: one page per concept (frontmatter table + rendered
   body), a generated index, navigable cross-links with broken links flagged,
@@ -67,6 +85,27 @@ and this project adheres to
   are unaffected. The same rewrite also fixes a token consumed as a flag's value
   still counting as a flag: `okf audit b --type --stale` no longer sets the
   stale filter.
+- **`OkfCli.Run` gains a `TextReader stdin` parameter** (now
+  `Run(args, stdin, stdout, stderr)`), so `verify -` can read concept ids
+  from standard input without every other verb paying for a blocking read.
+  This is a breaking change to a public API signature, but it breaks no
+  external caller: `OKF4net.Cli` is the only project under `src/` with no
+  `PackageId`/`IsPackable` — it ships only as the `okf` binary, never
+  published as a library — and the sole call site outside `Program.cs` is
+  the test suite's `TestPaths.cs`, updated alongside it.
+- **`--` now keeps the positionals given before it, instead of discarding
+  them.** The separator used to let the token right after it take the single
+  positional slot outright, so `okf <verb> a -- b` resolved to `b`; verbs now
+  keep every positional in order, `--` included, so the same invocation
+  resolves to `a`. This is what makes `verify <bundle> <id>…`'s multiple
+  positionals possible — a single "the positional" slot could never have
+  held more than one concept id.
+- **A lone `-` is now a positional argument, not a flag.** The flag scan
+  previously matched any token starting with `-`, including the bare
+  character, so `-` was silently absorbed as a valueless, meaningless flag.
+  It now falls through to the positional list, which is what lets
+  `okf verify <bundle> -` mean "read concept ids from standard input" — the
+  POSIX convention — instead of being swallowed before `verify` ever sees it.
 - **`okf validate` gains `--as-of <YYYY-MM-DD>`**, pinning the date its §5.5
   staleness warning is evaluated against. `BundleValidator.Validate` already
   accepted a clock, but the verb exposed no way to set one, so its
