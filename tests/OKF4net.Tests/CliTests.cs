@@ -936,6 +936,192 @@ public class CliTests
         Assert.DoesNotContain("\"conceptCount\"", r.Out);
     }
 
+    private static string NewBundleWithTwoConcepts(TempDir tmp)
+    {
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\ntitle: DAU\n---\n\nbody\n");
+        tmp.Write("metrics/rev.md", "---\ntype: Metric\ntitle: Revenue\n---\n\nbody\n");
+        return tmp.Path;
+    }
+
+    [Fact]
+    public void Verify_records_a_stamp_on_each_named_concept()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/rev", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n"
+            + "recorded metrics/rev  human:ada  2026-08-28T09:14:00Z\n",
+            r.Out);
+        Assert.Contains("by: human:ada", File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Fact]
+    public void Verify_reports_the_timestamp_it_superseded()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/dau.md",
+            "---\ntype: Metric\nverified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n---\n\nbody\n");
+
+        var r = Run("verify", tmp.Path, "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z  (replaces 2026-01-01T00:00:00Z)\n",
+            r.Out);
+    }
+
+    /// <summary>The line that closes the loop: audit's ids piped into verify.</summary>
+    [Fact]
+    public void Verify_reads_ids_from_stdin_when_the_id_is_a_dash()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = TestPaths.RunWithStdin(
+            "metrics/dau\n\nmetrics/rev\n",
+            "verify", bundle, "-", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        // The blank line is ignored, both concepts are stamped, order preserved.
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n"
+            + "recorded metrics/rev  human:ada  2026-08-28T09:14:00Z\n",
+            r.Out);
+    }
+
+    /// <summary>
+    /// Fully validated first: every id is resolved before anything is written, so one
+    /// unknown id leaves the whole bundle untouched.
+    /// </summary>
+    [Fact]
+    public void Verify_writes_nothing_when_one_id_is_unknown()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/nope", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown concept \"metrics/nope\"\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// Existence is not enough for the pre-flight: a document with no `type`
+    /// loads into the bundle but is refused at write time, so without the
+    /// conformance check here the concepts named before it would already be
+    /// stamped.
+    /// </summary>
+    [Fact]
+    public void Verify_writes_nothing_when_one_concept_is_not_conformant()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        tmp.Write("metrics/broken.md", "---\ntitle: No type\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/broken", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept \"metrics/broken\" has no `type` and is not §11-conformant\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Fact]
+    public void Verify_refuses_a_concept_named_twice()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept 'metrics/dau' is named more than once\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Fact]
+    public void Verify_dry_run_writes_nothing()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z", "--dry-run");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("would record metrics/dau  human:ada  2026-08-28T09:14:00Z\n", r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Theory]
+    [InlineData(new[] { "verify", "BUNDLE" }, "error: missing <concept-id>\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau" }, "error: verify requires --by <actor>\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:" }, "error: --by is not a well-formed §7 actor: \"human:\"\n")]
+    // Three shapes a permissive reader accepts and a writer must not: garbage,
+    // a bare date, and a non-UTC offset.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "hier" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"hier\"\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28\"\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00+02:00" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28T09:14:00+02:00\"\n")]
+    public void Verify_rejects_bad_invocations(string[] args, string expected)
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var resolved = args.Select(a => a == "BUNDLE" ? bundle : a).ToArray();
+
+        var r = Run(resolved);
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal(expected, r.Err);
+    }
+
+    [Fact]
+    public void Verify_refuses_to_mix_stdin_with_explicit_ids()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "-", "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: \"-\" (stdin) cannot be combined with explicit concept ids\n", r.Err);
+    }
+
+    /// <summary>The loop, end to end: audit lists it, verify clears it.</summary>
+    [Fact]
+    public void Audit_then_verify_removes_the_concept_from_the_unverified_worklist()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\n---\n\nbody\n");
+
+        var before = Run("audit", tmp.Path, "--trust", "unverified");
+        Assert.Contains("metrics/dau", before.Out);
+
+        Run("verify", tmp.Path, "metrics/dau", "--by", "human:ada");
+
+        var after = Run("audit", tmp.Path, "--trust", "unverified");
+        Assert.Equal("", after.Out);
+    }
+
+    [Fact]
+    public void Help_lists_verify_after_audit()
+    {
+        var r = Run("--help");
+
+        var lines = r.Out.Split('\n').Select(l => l.TrimStart()).ToList();
+        var auditIndex = lines.FindIndex(l => l.StartsWith("audit ", StringComparison.Ordinal));
+        var verifyIndex = lines.FindIndex(l => l.StartsWith("verify ", StringComparison.Ordinal));
+
+        Assert.True(auditIndex >= 0 && verifyIndex == auditIndex + 1);
+    }
+
     /// <summary>
     /// A verb that does not document reading standard input must never touch
     /// it — otherwise `okf fmt file` inside a pipeline would block on a reader

@@ -7,10 +7,10 @@ using OKF4net.Viewer;
 namespace OKF4net.Cli;
 
 /// <summary>
-/// The <c>okf</c> command-line tool. Eight subcommands (<c>validate</c>,
-/// <c>audit</c>, <c>info</c>, <c>index</c>, <c>graph</c>, <c>parse</c>,
-/// <c>fmt</c>, <c>render</c>) over hand-rolled argument parsing -- no
-/// third-party dependencies.
+/// The <c>okf</c> command-line tool. Nine subcommands (<c>validate</c>,
+/// <c>audit</c>, <c>verify</c>, <c>info</c>, <c>index</c>, <c>graph</c>,
+/// <c>parse</c>, <c>fmt</c>, <c>render</c>) over hand-rolled argument
+/// parsing -- no third-party dependencies.
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// CLI in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -31,6 +31,7 @@ public static class OkfCli
         "COMMANDS:\n" +
         "    validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)\n" +
         "    audit    <bundle>    Report trust, freshness and lifecycle across the bundle\n" +
+        "    verify   <bundle> <id>…   Record a review of one or more concepts (--by <actor>)\n" +
         "    info     <bundle>    Summarize a bundle (concepts, types, links, version)\n" +
         "    index    <bundle>    (Re)generate every index.md in the bundle\n" +
         "    graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)\n" +
@@ -44,6 +45,8 @@ public static class OkfCli
         "        --json           Machine-readable output for validate/info/audit\n" +
         "        --out <dir>      Output directory for `render`\n" +
         "        --as-of <date>   Pin today's date (YYYY-MM-DD) for validate/audit\n" +
+        "        --by <actor>     Who is recording the review, for `verify` (required)\n" +
+        "        --dry-run        Show what `verify` would record, write nothing\n" +
         "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
         "                         Filter `audit`'s worklist";
 
@@ -100,6 +103,7 @@ public static class OkfCli
             {
                 "validate" => CmdValidate(rest, stdout),
                 "audit" => CmdAudit(rest, stdout),
+                "verify" => CmdVerify(rest, stdin, stdout),
                 "info" => CmdInfo(rest, stdout),
                 "index" => CmdIndex(rest, stdout),
                 "graph" => CmdGraph(rest, stdout),
@@ -564,6 +568,148 @@ public static class OkfCli
             stdout.Write(FormatAuditFinding(finding));
             stdout.Write("\n");
         }
+    }
+
+    /// <summary>Implements the <c>verify</c> subcommand.</summary>
+    private static int CmdVerify(string[] args, TextReader stdin, TextWriter stdout)
+    {
+        var parsed = CliArgs.Scan(args, "--by", "--at");
+
+        // Both values are READ first, so a flag present without a value names
+        // itself ("--by requires a value") rather than surfacing later as a
+        // missing argument. They are VALIDATED after the ids, so that the most
+        // structural mistake — no concept named at all — is reported first.
+        var by = parsed.Value("--by");
+        var at = parsed.Value("--at");
+
+        var positionals = parsed.Positionals;
+        var path = positionals.Count > 0 ? positionals[0] : throw new CliOperationException("missing <bundle>");
+        var ids = positionals.Skip(1).ToList();
+        if (ids.Count == 0)
+        {
+            throw new CliOperationException("missing <concept-id>");
+        }
+
+        if (ids.Contains("-"))
+        {
+            if (ids.Count > 1)
+            {
+                throw new CliOperationException("\"-\" (stdin) cannot be combined with explicit concept ids");
+            }
+
+            ids = ReadIdsFrom(stdin);
+            if (ids.Count == 0)
+            {
+                throw new CliOperationException("no concept ids on standard input");
+            }
+        }
+
+        // Validated only now: an invocation naming no concept at all is the
+        // more structural mistake, and its message must come first.
+        if (by is null)
+        {
+            throw new CliOperationException("verify requires --by <actor>");
+        }
+
+        if (!Actor.Parse(by).IsWellFormed)
+        {
+            throw new CliOperationException($"--by is not a well-formed §7 actor: \"{by}\"");
+        }
+
+        // The writer applies the same strict UTC rule; checking here too turns a
+        // generic write error into a message naming the flag. Deliberately NOT
+        // BundleValidator.IsIso8601DateTime, which only validates the date part.
+        if (at is not null && !DateTime.TryParseExact(
+                at,
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out _))
+        {
+            throw new CliOperationException($"--at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"{at}\"");
+        }
+
+        var bundle = Load(path);
+
+        // Refused here as well as in the writer, so the message reads like its
+        // siblings (the writer's ends with a period; the CLI's do not).
+        var duplicate = ids.GroupBy(id => id, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new CliOperationException($"concept '{duplicate.Key}' is named more than once");
+        }
+
+        // Every id is resolved AND checked for §11 conformance before anything
+        // is written. Existence alone would not be enough: Bundle indexes any
+        // document that parses, including one with no `type`, which the writer
+        // then refuses at write time — so a mistyped id in third position would
+        // leave the first two stamped. Both checks here, so a rejected batch
+        // is true rather than nearly true.
+        foreach (var id in ids)
+        {
+            if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
+            {
+                throw new CliOperationException($"unknown concept \"{id}\"");
+            }
+
+            if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
+            {
+                throw new CliOperationException($"concept \"{id}\" has no `type` and is not §11-conformant");
+            }
+        }
+
+        var writer = new BundleConceptWriter(path);
+
+        if (parsed.Has("--dry-run"))
+        {
+            // A dry run writes nothing, so there is no timestamp to report. It
+            // could format one (OkfTimestamp is reachable here), but printing a
+            // date the real run would not reproduce is worse than saying "now".
+            foreach (var id in ids)
+            {
+                stdout.Write($"would record {id}  {by}  {at ?? "(now)"}\n");
+            }
+
+            return 0;
+        }
+
+        // One batch call: the writer prepares every concept before writing any,
+        // so nothing is half-stamped if a later one turns out unwritable.
+        var outcome = writer.RecordVerifications(ids, by, at);
+        // Printed BEFORE deciding the exit code: a batch can fail part-way
+        // through the write phase, and the concepts that did land must be
+        // reported. Staying silent about them would repeat, one layer up, the
+        // very thing the writer was fixed not to do.
+        foreach (var record in outcome.Records)
+        {
+            // record.At is the timestamp the writer actually used — the CLI
+            // reports it rather than recomputing one that could differ.
+            var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
+            stdout.Write($"recorded {record.ConceptId}  {by}  {record.At}{replaces}\n");
+        }
+
+        if (!outcome.Recorded)
+        {
+            throw new CliOperationException(outcome.Message.Replace("Error: ", string.Empty, StringComparison.Ordinal));
+        }
+
+        return 0;
+    }
+
+    /// <summary>Reads concept ids from <paramref name="stdin"/>, one per line, ignoring blank lines.</summary>
+    private static List<string> ReadIdsFrom(TextReader stdin)
+    {
+        var ids = new List<string>();
+        while (stdin.ReadLine() is { } line)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length > 0)
+            {
+                ids.Add(trimmed);
+            }
+        }
+
+        return ids;
     }
 
     /// <summary>Implements the <c>info</c> subcommand.</summary>
