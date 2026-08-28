@@ -23,7 +23,7 @@
 
 ## Écart assumé par rapport à la spec
 
-La spec §4.1 donne `RecordVerification` rendant `string?` (null = succès). Le plan
+La spec §4.1 décrivait initialement un `RecordVerification` unitaire rendant `string?`. La spec a depuis été alignée sur l'API de lot ci-dessous ; cette section garde la trace du chemin parcouru.
 rend à la place un **`VerificationOutcome`** structuré. Raison : les deux
 consommateurs ont des besoins différents — le CLI doit formater sa propre ligne
 et connaître l'horodatage remplacé, le tool agent veut un message prêt à rendre.
@@ -589,7 +589,7 @@ public class RecordVerificationTests
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~RecordVerificationTests"`
-Expected: échec de compilation — `RecordVerification` et `VerificationOutcome` n'existent pas.
+Expected: échec de compilation — `RecordVerifications` et `VerificationOutcome` n'existent pas.
 
 - [ ] **Step 3: Implémenter**
 
@@ -852,7 +852,7 @@ Enfin, corriger le commentaire XML du seam d'horloge, qui devient faux :
 ```csharp
     /// <summary>
     /// Clock seam for the <c>generated</c> auto-stamp and for
-    /// <see cref="RecordVerification"/>'s <c>at</c>; overridable in tests.
+    /// <see cref="RecordVerifications"/>'s <c>at</c>; overridable in tests.
     /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 ```
@@ -866,7 +866,7 @@ Expected: PASS — 13 méthodes (14 cas, la `[Theory]` en comptant deux).
 
 ```bash
 git add src/OKF4net/BundleConceptWriter.cs tests/OKF4net.Tests/RecordVerificationTests.cs
-git commit -m "feat(core): RecordVerification, the governed writer of verified"
+git commit -m "feat(core): RecordVerifications, the governed writer of verified"
 ```
 
 ---
@@ -878,7 +878,7 @@ git commit -m "feat(core): RecordVerification, the governed writer of verified"
 - Test: `tests/OKF4net.Tests/CliTests.cs`
 
 **Interfaces:**
-- Consumes: Task 0 (`CliArgs.Positionals`, `Run(…, TextReader stdin, …)`), Task 1 (`RecordVerification`, `VerificationOutcome`).
+- Consumes: Task 0 (`CliArgs.Positionals`, `Run(…, TextReader stdin, …)`), Task 1 (`RecordVerifications`, `VerificationOutcome`).
 - Produces: le verbe et son format de sortie, que la Task 3 fige en golden.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
@@ -1212,17 +1212,21 @@ Puis la méthode :
         // One batch call: the writer prepares every concept before writing any,
         // so nothing is half-stamped if a later one turns out unwritable.
         var outcome = writer.RecordVerifications(ids, by, at);
-        if (!outcome.Recorded)
-        {
-            throw new CliOperationException(outcome.Message.Replace("Error: ", string.Empty, StringComparison.Ordinal));
-        }
-
+        // Printed BEFORE deciding the exit code: a batch can fail part-way
+        // through the write phase, and the concepts that did land must be
+        // reported. Staying silent about them would repeat, one layer up, the
+        // very thing the writer was fixed not to do.
         foreach (var record in outcome.Records)
         {
             // record.At is the timestamp the writer actually used — the CLI
             // reports it rather than recomputing one that could differ.
             var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
             stdout.Write($"recorded {record.ConceptId}  {by}  {record.At}{replaces}\n");
+        }
+
+        if (!outcome.Recorded)
+        {
+            throw new CliOperationException(outcome.Message.Replace("Error: ", string.Empty, StringComparison.Ordinal));
         }
 
         return 0;
@@ -1383,7 +1387,7 @@ git commit -m "test(verify): pin the verb's output with a golden"
 - Test: `tests/OKF4net.Tests/Agents/OkfVerifyToolTests.cs` (créé), `tests/OKF4net.Tests/Agents/OkfBundleToolsTests.cs`, `tests/OKF4net.Tests/Agents/AIFunctionExposureTests.cs`, `tests/OKF4net.Tests/Mcp/OkfMcpServerTests.cs`
 
 **Interfaces:**
-- Consumes: Task 1 (`RecordVerification`, `VerificationOutcome`).
+- Consumes: Task 1 (`RecordVerifications`, `VerificationOutcome`).
 - Produces: le tool `okf_verify`, **mutateur** (dans `WriteToolNames`).
 
 **Fallout attendu** : ajouter un 12e tool casse les tests qui figent le nombre et
@@ -1644,10 +1648,6 @@ La méthode :
             // the clock seam and reports the timestamp it used, so the tool
             // never dates anything itself.
             var outcome = _writer.RecordVerifications(ids, by, at);
-            if (!outcome.Recorded)
-            {
-                return outcome.Message;
-            }
 
             // The same line shape as the CLI verb, deliberately re-implemented
             // rather than shared: the CLI's bytes are golden-locked and must not
@@ -1658,6 +1658,15 @@ La méthode :
             {
                 var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
                 lines.Append($"recorded {record.ConceptId}  {by}  {record.At}{replaces}").Append('\n');
+            }
+
+            // A rejected batch has no records and yields the message alone; a
+            // batch that failed part-way through writing has both, and the
+            // agent must see both — the lines for what landed, then why it
+            // stopped.
+            if (!outcome.Recorded)
+            {
+                lines.Append(outcome.Message).Append('\n');
             }
 
             return lines.ToString();
@@ -1705,7 +1714,7 @@ git commit -m "feat(agents): expose okf_verify as a write tool"
 
 Ajouter `verify` à la liste des verbes (après `audit`), une section montrant la
 boucle complète (`okf audit … | cut -d' ' -f1 | okf verify … -`), la ligne du
-tableau §5.2 → `RecordVerification`, et **l'encadré d'honnêteté** : ce que
+tableau §5.2 → `RecordVerifications`, et **l'encadré d'honnêteté** : ce que
 l'estampille garantit (bien formée, datée, sur les concepts nommés), ce qu'elle
 ne garantit pas (l'identité du signataire, qu'il ait lu), le fait
 qu'`okf_write_concept` peut aussi en écrire une, et le mécanisme recommandé —
@@ -1726,7 +1735,7 @@ Mettre aussi à jour `CLAUDE.md`, qui documente encore
 - [ ] **Step 3: CLAUDE.md et ROADMAP.md**
 
 `CLAUDE.md` : ajouter `verify` à la liste des verbes, et une ligne disant que
-`RecordVerification` est l'écrivain gouverné unique de `verified` — ne pas en
+`RecordVerifications` est l'écrivain gouverné unique de `verified` — ne pas en
 forker un second. `ROADMAP.md` : `okf verify` livré ; et l'**audit conscient du
 temps** comme suite immédiate (exposer les estampilles dans `AuditFinding` pour
 demander « human-reviewed, mais depuis quand, et le contenu a-t-il bougé ? »,
@@ -1736,7 +1745,7 @@ la question se répondant par `git log -1 -- <chemin>` contre `max(verified[].at
 
 Verbe dans les deux tables (`Home.tsx`, `Cli.tsx`), chapitre dans
 `docs/Cli.tsx` avec **sortie réellement capturée** (lancer la commande, ne pas
-l'inventer), ligne `RecordVerification` dans les deux pages bibliothèque, et
+l'inventer), ligne `RecordVerifications` dans les deux pages bibliothèque, et
 tables de tools (12e tool) dans `src/OKF4net.Agents/README.md`,
 `src/OKF4net.Mcp/README.md` et les pages correspondantes.
 
