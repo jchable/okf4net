@@ -15,7 +15,7 @@
 - **Zéro dépendance tierce** dans `src/OKF4net/` et `src/OKF4net.Cli/` : BCL uniquement, aucun `PackageReference` ajouté.
 - Tout nouveau fichier commence par `// SPDX-License-Identifier: LGPL-3.0-or-later`.
 - Namespaces file-scoped, XML doc sur toute API publique, nullable activé, `TreatWarningsAsErrors` — un warning casse le build.
-- **Ne jamais modifier un fichier existant sous `tests/fixtures/`.** Les goldens neufs sont écrits à la main, en LF, avec leur provenance documentée dans `tests/fixtures/README.md`.
+- **Ne jamais modifier un bundle de fixtures ni un golden existant** sous `tests/fixtures/`. Les goldens neufs sont écrits à la main, en LF avec LF final, avec leur provenance documentée dans `tests/fixtures/README.md` — ce fichier-là, qui est de la documentation, se modifie normalement.
 - **Errors-as-data** : aucune exception pour un cas attendu (concept absent, acteur mal formé, date invalide). Le CLI traduit en `error: …` + code 1.
 - Aucune sortie existante ne change, à **une exception assumée** (Task 0, règle du `--`), qui a son entrée de CHANGELOG et son test.
 - Baseline avant de commencer : `dotnet test OKF4net.sln` = **1055 tests, 0 échec**. Vérifier avant la Task 0.
@@ -67,9 +67,12 @@ sens (lequel gagne ?), et elle perdrait le bundle sur `okf verify b -- id1 id2`.
 La règle devient donc celle de POSIX : `--` **termine la lecture des options**,
 les positionnels qui le précèdent sont conservés, ceux qui le suivent s'ajoutent.
 Seul cas divergent : `okf <verbe> a -- b` rendait `b` comme positionnel, rendra
-`a`. Aucun test existant ne couvre ce cas (vérifié : les deux tests du séparateur
-n'ont pas de positionnel avant `--`), d'où le test 3 ci-dessous et l'entrée de
-CHANGELOG en Task 5.
+`a`. Trois tests du séparateur existent (`CliTests.cs:745`, `:762`, `:782`) et
+aucun ne change de résultat sous la nouvelle règle — le troisième a bien un
+positionnel avant `--`, mais rien après, donc les deux règles coïncident. En
+revanche, la doc XML de ce troisième test décrit une distinction que ce
+changement efface (« clear the positionals » contre « only override ») : la
+réécrire dans la même tâche, sinon elle explique un comportement disparu.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -95,22 +98,39 @@ Ajouter à `tests/OKF4net.Tests/CliTests.cs` :
     }
 
     /// <summary>
-    /// The CLI reads standard input only through the reader handed to
-    /// <c>OkfCli.Run</c>, so a test can drive the `-` form in-process instead
-    /// of spawning a subprocess.
+    /// A verb that does not document reading standard input must never touch
+    /// it — otherwise `okf fmt file` inside a pipeline would block on a reader
+    /// nobody is feeding. A StringReader could not prove this (it records
+    /// nothing), so the reader here throws if anything reads it.
     /// </summary>
     [Fact]
-    public void Run_reads_ids_from_the_injected_stdin()
+    public void A_verb_that_does_not_read_stdin_never_touches_it()
     {
-        // `fmt` is the simplest verb with a positional; passing the path via
-        // stdin is not supported, so this asserts the plumbing only: a reader
-        // is accepted and the verb that ignores it behaves unchanged.
-        var r = TestPaths.RunWithStdin("ignored\n", "fmt", Path.Combine(BundlePath, "tables", "users.md"));
+        var r = TestPaths.RunWithReader(
+            new ThrowingReader(),
+            "fmt",
+            Path.Combine(BundlePath, "tables", "users.md"));
 
         Assert.Equal(0, r.Code);
-        Assert.Contains("title: Orders", r.Out);
+        Assert.Contains("title: Users", r.Out);
+    }
+
+    /// <summary>A reader that fails the test if the CLI reads from it at all.</summary>
+    private sealed class ThrowingReader : TextReader
+    {
+        public override int Peek() => throw new InvalidOperationException("stdin was read");
+
+        public override int Read() => throw new InvalidOperationException("stdin was read");
+
+        public override string? ReadLine() => throw new InvalidOperationException("stdin was read");
     }
 ```
+
+Le titre asserté est `Users` : c'est le frontmatter de `tables/users.md`
+([appendix_a/tables/users.md:3](../../../tests/fixtures/appendix_a/tables/users.md#L3)).
+
+`TestPaths` gagne donc **deux** aides : `RunWithStdin(string, params string[])`
+pour le contenu, et `RunWithReader(TextReader, params string[])` pour ce test.
 
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
 
@@ -129,6 +149,23 @@ Dans `src/OKF4net.Cli/OkfCli.cs`, remplacer le champ unique et sa lecture :
         /// </summary>
         private readonly List<string> _positionals = [];
 ```
+
+**Un `-` seul est un positionnel, pas un flag.** La branche des flags est
+`if (token.StartsWith('-'))`, et `"-"` y entre : il est enregistré comme flag et
+n'atteint jamais la liste des positionnels. Vérifié en conditions réelles —
+`okf fmt -` répond aujourd'hui `error: missing <file>`. Sans ce correctif, toute
+la forme stdin de §5.1 est inatteignable : `ids.Contains("-")` serait
+systématiquement faux. Le garde à ajouter, dans la même branche :
+
+```csharp
+                // A lone "-" is POSIX's "read from standard input" — an
+                // argument, not an option. Only a token with something after
+                // the dash is a flag.
+                if (token.Length > 1 && token.StartsWith('-'))
+```
+
+Aucun test existant ne passe un `-` seul (vérifié par recherche), donc rien ne
+casse ; c'est une **troisième** entrée « Changed » au CHANGELOG en Task 5.
 
 Dans `Scan`, la branche du séparateur devient un ajout, non un écrasement :
 
@@ -191,11 +228,19 @@ appels existants et ajouter la variante :
     /// Runs the CLI in-process like <see cref="Run"/>, with <paramref name="stdin"/>
     /// as its standard input — for the verbs that read ids from a pipe.
     /// </summary>
-    internal static (int Code, string Out, string Err) RunWithStdin(string stdin, params string[] args)
+    internal static (int Code, string Out, string Err) RunWithStdin(string stdin, params string[] args) =>
+        RunWithReader(new StringReader(stdin), args);
+
+    /// <summary>
+    /// Runs the CLI in-process with an arbitrary <paramref name="stdin"/> reader —
+    /// lets a test prove a verb never touches standard input by handing it one
+    /// that throws.
+    /// </summary>
+    internal static (int Code, string Out, string Err) RunWithReader(TextReader stdin, params string[] args)
     {
         var o = new StringWriter();
         var e = new StringWriter();
-        return (OkfCli.Run(args, new StringReader(stdin), o, e), o.ToString(), e.ToString());
+        return (OkfCli.Run(args, stdin, o, e), o.ToString(), e.ToString());
     }
 ```
 
@@ -227,7 +272,7 @@ git commit -m "refactor(cli): ordered positionals and a stdin seam"
 
 **Interfaces:**
 - Consumes: `ValidateConceptTarget`, `_bundleLock`, `WriteValidatedContentLocked`, `RunTool`, `UtcNow`, `OkfEncodings.Strict`, `OkfTimestamp.FormatUtc`, `BundleValidator.IsIso8601DateTime`, `OkfDocument.Parse`/`ValidateConformance`/`Serialize`, `Frontmatter.AsMapping`, `Actor.Parse`, `YamlMapping.Insert/Get`, `YamlSequence.Items`, `YamlString`.
-- Produces: `VerificationOutcome(bool Recorded, string Message, string? ReplacedAt)` et `BundleConceptWriter.RecordVerification(string conceptId, string by, string? at = null) → VerificationOutcome`.
+- Produces: `VerificationOutcome(bool Recorded, string Message, string At, string? ReplacedAt)` et `BundleConceptWriter.RecordVerification(string conceptId, string by, string? at = null) → VerificationOutcome`. **Les quatre membres comptent** : la Task 2 lit `At` et `ReplacedAt`, la Task 4 lit `Message`.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -494,9 +539,11 @@ Dans `src/OKF4net/BundleConceptWriter.cs`, ajouter le type de résultat au-dessu
 /// <param name="Recorded">Whether the stamp was written.</param>
 /// <param name="Message">A confirmation, or the reason nothing was written.</param>
 /// <param name="At">
-/// The timestamp actually written. Callers outside this assembly cannot format
-/// one themselves — <c>OkfTimestamp</c> is internal — so the writer reports the
-/// value it used rather than leaving them to guess it.
+/// The timestamp actually written. Callers could format their own — the CLI and
+/// the Agents layer both see <c>OkfTimestamp</c> through <c>InternalsVisibleTo</c>
+/// — but two clocks are one too many: only the writer holds the seam tests pin,
+/// so it reports what it wrote instead of letting a caller compute a value that
+/// could differ from the file's.
 /// </param>
 /// <param name="ReplacedAt">The superseded <c>at</c>, or null when the stamp is new.</param>
 public readonly record struct VerificationOutcome(bool Recorded, string Message, string At, string? ReplacedAt);
@@ -753,6 +800,27 @@ Ajouter à `tests/OKF4net.Tests/CliTests.cs` :
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
 
+    /// <summary>
+    /// Existence is not enough for the pre-flight: a document with no `type`
+    /// loads into the bundle but is refused at write time, so without the
+    /// conformance check here the concepts named before it would already be
+    /// stamped.
+    /// </summary>
+    [Fact]
+    public void Verify_writes_nothing_when_one_concept_is_not_conformant()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        tmp.Write("metrics/broken.md", "---\ntitle: No type\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/broken", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept \"metrics/broken\" has no `type` and is not §11-conformant\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
     [Fact]
     public void Verify_dry_run_writes_nothing()
     {
@@ -911,13 +979,22 @@ Puis la méthode :
 
         var bundle = Load(path);
 
-        // All-or-nothing: every id is resolved against the loaded bundle before
-        // anything is written, so one typo cannot leave a half-stamped bundle.
+        // Every id is resolved AND checked for §11 conformance before anything
+        // is written. Existence alone would not be enough: Bundle indexes any
+        // document that parses, including one with no `type`, which
+        // RecordVerification then refuses at write time — so a mistyped id in
+        // third position would leave the first two stamped. Both checks here,
+        // and "all-or-nothing" is true rather than nearly true.
         foreach (var id in ids)
         {
-            if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is null)
+            if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
             {
                 throw new CliOperationException($"unknown concept \"{id}\"");
+            }
+
+            if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
+            {
+                throw new CliOperationException($"concept \"{id}\" has no `type` and is not §11-conformant");
             }
         }
 
@@ -925,9 +1002,9 @@ Puis la méthode :
 
         if (parsed.Has("--dry-run"))
         {
-            // The CLI cannot format a timestamp itself (OkfTimestamp is
-            // internal to OKF4net) and must not invent one it will not write,
-            // so an unpinned dry run says so rather than showing a fake date.
+            // A dry run writes nothing, so there is no timestamp to report. It
+            // could format one (OkfTimestamp is reachable here), but printing a
+            // date the real run would not reproduce is worse than saying "now".
             foreach (var id in ids)
             {
                 stdout.Write($"would record {id}  {by}  {at ?? "(now)"}\n");
@@ -970,12 +1047,13 @@ Puis la méthode :
     }
 ```
 
-**Pourquoi le CLI ne calcule jamais l'horodatage.** `OkfTimestamp` est
-`internal` à `OKF4net` : cet assembly ne peut pas en formater un. C'est la
-raison d'être du champ `At` de `VerificationOutcome` (Task 1) — le writer
-rapporte la valeur qu'il a écrite, le CLI l'affiche. En `--dry-run`, rien n'est
-écrit, donc rien n'est à rapporter : la sortie montre `(now)` plutôt qu'une date
-inventée que la vraie exécution ne produirait pas forcément.
+**Pourquoi le CLI ne calcule jamais l'horodatage.** Ce n'est pas qu'il ne peut
+pas : `OKF4net.csproj` accorde `InternalsVisibleTo` à `okf` comme à
+`OKF4net.Agents`, et `OkfCli.cs` importe déjà `OKF4net.Internal`. C'est qu'une
+seconde horloge serait une horloge de trop — seul le writer porte le seam que
+les tests épinglent, donc lui seul date, et il rapporte ce qu'il a écrit via
+`outcome.At`. En `--dry-run`, rien n'est écrit : afficher `(now)` est plus
+honnête qu'une date que la vraie exécution ne reproduirait pas.
 
 - [ ] **Step 4: Lancer les tests**
 
@@ -1011,9 +1089,19 @@ de référence — `verify` n'existe pas en amont.
 `tests/fixtures/golden/verify.out`, fins de ligne **LF** :
 
 ```
-recorded metrics/dau  human:ada  2026-08-28T09:14:00Z
+recorded metrics/dau  human:ada  2026-08-28T09:14:00Z  (replaces 2026-07-03T00:00:00Z)
 recorded metrics/legacy  human:ada  2026-08-28T09:14:00Z
 ```
+
+Les deux lignes ne sont pas identiques par accident : `metrics/dau` porte déjà
+`{ by: human:ada, at: 2026-07-03T00:00:00Z }`
+([okf_v02/metrics/dau.md:10](../../../tests/fixtures/okf_v02/metrics/dau.md#L10)),
+donc `UpsertStamp` prend le chemin du remplacement et la ligne porte son suffixe ;
+`metrics/legacy` n'a aucune estampille, donc ajout simple. Ce golden épingle les
+**deux** chemins d'un coup, ce qui est mieux qu'un golden n'exerçant que l'ajout.
+Le fichier doit se terminer par un LF final (le CLI écrit `\n` après la dernière
+ligne) : `.editorconfig` met `insert_final_newline = unset` sous
+`tests/fixtures/**`, donc aucun outil ne l'ajoutera à ta place.
 
 - [ ] **Step 2: Écrire le test de parité**
 
@@ -1150,6 +1238,58 @@ public class OkfVerifyToolTests
         Assert.False(File.Exists(Path.Combine(tmp.Path, "metrics", "nope.md")));
     }
 
+    /// <summary>
+    /// All-or-nothing across the whole list: one unknown id leaves every other
+    /// concept untouched. A single-id test cannot catch this.
+    /// </summary>
+    [Fact]
+    public void Verify_writes_nothing_when_one_id_of_several_is_unknown()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(tmp.Path, "a.md"));
+
+        var text = ToolsOver(tmp).Verify("a, nope", "human:ada");
+
+        Assert.Contains("does not exist", text);
+        Assert.DoesNotContain("Recorded a", text);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "a.md")));
+    }
+
+    /// <summary>
+    /// The schema is what decides what a bare call means, like okf_audit's:
+    /// the two ids/actor parameters required, the timestamp optional.
+    /// </summary>
+    [Fact]
+    public void Verify_schema_requires_ids_and_actor_but_not_at()
+    {
+        var tools = new OkfBundleTools(Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02"));
+        var function = tools.GetTools().OfType<AIFunction>().Single(t => t.Name == "okf_verify");
+        var properties = function.JsonSchema.GetProperty("properties");
+
+        foreach (var name in new[] { "conceptIds", "by", "at" })
+        {
+            Assert.True(properties.TryGetProperty(name, out _), $"schema should declare '{name}'.");
+        }
+
+        var required = function.JsonSchema.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains("conceptIds", required);
+        Assert.Contains("by", required);
+        Assert.DoesNotContain("at", required);
+    }
+
+    /// <summary>A bundle that vanishes after construction surfaces as an error string, never an exception.</summary>
+    [Fact]
+    public void Verify_returns_an_error_string_when_the_bundle_is_gone()
+    {
+        var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = ToolsOver(tmp);
+        tmp.Dispose();
+
+        Assert.StartsWith("Error: ", tools.Verify("a", "human:ada"));
+    }
+
     [Fact]
     public void Verify_stamps_every_id_in_a_comma_separated_list()
     {
@@ -1216,23 +1356,37 @@ La méthode :
 
         return RunTool(() =>
         {
+            // All-or-nothing, like the CLI: every id is resolved before the
+            // first write, so a typo in the third id cannot leave the first two
+            // stamped. Without this, `okf_verify("a, nope", …)` writes to `a`
+            // and then reports a failure — the worst of both.
+            var bundle = GetBundle();
+            foreach (var id in ids)
+            {
+                if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is null)
+                {
+                    return $"Error: concept '{id}' does not exist.";
+                }
+            }
+
             var lines = new StringBuilder();
 
             // `at` is passed through untouched, null included: the writer owns
-            // the clock seam (OkfTimestamp is internal to OKF4net, so this
-            // assembly could not format a timestamp anyway) and reports the one
-            // it used. The tool invents no date.
+            // the clock seam and reports the timestamp it used, so the tool
+            // never dates anything itself.
             foreach (var id in ids)
             {
-                var outcome = _writer.RecordVerification(id, by, at);
-                lines.Append(outcome.Message).Append('\n');
+                lines.Append(_writer.RecordVerification(id, by, at).Message).Append('\n');
             }
 
-            InvalidateBundle();
             return lines.ToString();
         });
     }
 ```
+
+`InvalidateBundle()` est inutile ici : `_writer` est construit avec
+`onWriteCommitted: () => _bundle = null`, donc le cache est déjà purgé à chaque
+écriture — `WriteConcept` ne l'appelle pas non plus.
 
 Enregistrer dans `GetTools()`, après `okf_write_concept` :
 
@@ -1278,10 +1432,15 @@ l'estampille **dans** le diff relu, jamais inférée d'une approbation.
 
 - [ ] **Step 2: CHANGELOG** — sous `Unreleased` :
 
-`### Added` : le verbe et le tool. `### Changed` : **deux ruptures** — la
-signature de `OkfCli.Run` (paramètre `TextReader`), et la règle du `--` qui
-conserve désormais les positionnels antérieurs (`okf <verbe> a -- b` rend `a`, non
-plus `b`).
+`### Added` : le verbe et le tool. `### Changed` : **trois changements** — la
+signature de `OkfCli.Run` (paramètre `TextReader` ; `OKF4net.Cli` n'a pas de
+`PackageId` et n'est pas publié comme bibliothèque, donc pas de « casse les
+appelants externes » : le seul site d'appel hors `Program.cs` est
+`TestPaths.cs`) ; la règle du `--`, qui conserve désormais les positionnels
+antérieurs (`okf <verbe> a -- b` rend `a`, non plus `b`) ; et un `-` seul, qui
+devient un argument (« lire stdin ») au lieu d'être avalé comme flag.
+Mettre aussi à jour `CLAUDE.md`, qui documente encore
+`OkfCli.Run(args, out, err)`.
 
 - [ ] **Step 3: CLAUDE.md et ROADMAP.md**
 
