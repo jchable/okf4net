@@ -223,8 +223,8 @@ public class GoldenParityTests
         var r = Run("verify", tmp.Path, "metrics/dau", "metrics/legacy", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
 
         Assert.Equal(0, r.Code);
-        // Concept ids only -- always '/'-normalized -- so no separator
-        // normalization is needed on any platform.
+        // Concept ids are echoed verbatim from the '/'-form ids this test
+        // passes -- no separator normalization is needed on any platform.
         Assert.Equal(Golden("verify.out"), r.Out);
 
         // stdout alone would stay green if the verb printed the right line and

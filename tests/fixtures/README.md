@@ -208,20 +208,22 @@ them a re-capture from the (removed) Rust binary:
   metrics/legacy --by human:ada --at 2026-08-28T09:14:00Z`. **Hand-authored**,
   verified against the design spec's stated output format rather than captured
   from a reference CLI: `verify` is an OKF4net verb with no upstream
-  counterpart. The bundle is a throwaway copy because the verb writes. The
-  first line carries a `(replaces …)` suffix because `okf_v02/metrics/dau.md`
-  already holds a `human:ada` stamp, so that run exercises the replace path
-  while the second line exercises the append path.
+  counterpart. The two lines were written into the plan before that run, then
+  confirmed byte-for-byte against its actual stdout — the same run that
+  produced `verify-dau.md` below. The bundle is a throwaway copy because the
+  verb writes. The first line carries a `(replaces …)` suffix because
+  `okf_v02/metrics/dau.md` already holds a `human:ada` stamp, so that run
+  exercises the replace path while the second line exercises the append path.
 - `golden/verify-dau.md` — `metrics/dau.md` as it stands **after** that same
   run. Pins what stdout cannot: that the stamp replaced the existing `human:ada`
   entry **in place** (still the second entry, after `process:nightly`, which is
   untouched), that `generated` was neither rewritten nor refreshed, and that no
   key was added, dropped or reordered. Note that the frontmatter is re-emitted in
-  the YAML emitter's canonical block style, so the source fixture's flow mappings
-  and inline list (`tags: [engagement]`, `generated: { … }`, `usage_window:
-  { … }`, and the `verified`/`sources` entries) appear here expanded. That reflow
-  is pre-existing behaviour of every bundle write, not something `verify` does,
-  and pinning it is deliberate. Every scalar value other than the replaced `at`
-  is unchanged, as is the body. Produced by running the command once on a copy,
-  then **read line by line and justified by hand** before being frozen — the
-  inspection is the provenance, not the capture.
+  the YAML emitter's canonical block style, so the source fixture's flow mappings,
+  inline list, and compact entries (`tags: [engagement]`, `generated: { … }`,
+  `usage_window: { … }`, and the `verified`/`sources` entries) appear here
+  expanded. That reflow is pre-existing behaviour of every bundle write, not
+  something `verify` does, and pinning it is deliberate. Every scalar value
+  other than the replaced `at` is unchanged, as is the body. Produced by running
+  the command once on a copy, then **read line by line and justified by hand**
+  before being frozen — the inspection is the provenance, not the capture.
