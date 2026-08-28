@@ -775,8 +775,6 @@ public class CliTests
     /// <summary>
     /// A `--` with nothing after it still ends the option scan, but it does not
     /// discard a positional that came before: `okf audit b --` resolves `b`.
-    /// This is the case that distinguishes "clear the positionals at the
-    /// separator" from "only override when the separator has a token after it".
     /// </summary>
     [Fact]
     public void Audit_a_trailing_separator_keeps_the_earlier_positional()
@@ -918,5 +916,51 @@ public class CliTests
 
         Assert.Equal("not-a-date", finding.GetProperty("staleAfter").GetString());
         Assert.False(finding.GetProperty("stale").GetBoolean());
+    }
+
+    /// <summary>
+    /// `--` ends option parsing; it does not discard the positionals that came
+    /// before it. With a single positional slot the old rule ("the token after
+    /// the separator wins") was indistinguishable from this one; with a verb
+    /// that takes several, it would silently drop the bundle.
+    /// </summary>
+    [Fact]
+    public void Separator_keeps_positionals_from_both_sides()
+    {
+        var r = Run("audit", V02BundlePath, "--", "--json");
+
+        // The bundle before `--` is still the positional; `--json` after it is
+        // an argument, not a flag, so the output is the text report.
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"bundle:     {V02BundlePath}", r.Out);
+        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+    }
+
+    /// <summary>
+    /// A verb that does not document reading standard input must never touch
+    /// it — otherwise `okf fmt file` inside a pipeline would block on a reader
+    /// nobody is feeding. A StringReader could not prove this (it records
+    /// nothing), so the reader here throws if anything reads it.
+    /// </summary>
+    [Fact]
+    public void A_verb_that_does_not_read_stdin_never_touches_it()
+    {
+        var r = TestPaths.RunWithReader(
+            new ThrowingReader(),
+            "fmt",
+            Path.Combine(BundlePath, "tables", "users.md"));
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("title: Users", r.Out);
+    }
+
+    /// <summary>A reader that fails the test if the CLI reads from it at all.</summary>
+    private sealed class ThrowingReader : TextReader
+    {
+        public override int Peek() => throw new InvalidOperationException("stdin was read");
+
+        public override int Read() => throw new InvalidOperationException("stdin was read");
+
+        public override string? ReadLine() => throw new InvalidOperationException("stdin was read");
     }
 }
