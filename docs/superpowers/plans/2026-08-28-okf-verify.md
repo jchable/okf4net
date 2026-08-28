@@ -427,6 +427,26 @@ public class RecordVerificationTests
         Assert.Equal("human:ada", stamps[1].By!.Value.Raw);
     }
 
+    /// <summary>
+    /// A concept named twice is refused rather than collapsed: preparing the
+    /// same file twice from the same original content would write it twice and
+    /// report two lines for one surviving stamp — a result that reads like two
+    /// reviews. Nothing is written.
+    /// </summary>
+    [Fact]
+    public void A_duplicate_concept_id_is_refused()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/dau"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("named more than once", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
     [Theory]
     [InlineData("human:", "not a well-formed")]
     [InlineData("", "not a well-formed")]
@@ -626,6 +646,19 @@ Puis, dans la classe, la méthode de lot et ses aides privées :
         if (conceptIds is null || conceptIds.Count == 0)
         {
             return Failed("Error: no concept id given.");
+        }
+
+        // Duplicates are refused, not silently collapsed. Preparing the same
+        // file twice would build both versions from the same original content
+        // and write it twice, reporting two `recorded` lines for the single
+        // stamp that survives — a result that reads like two reviews. Naming a
+        // concept twice is a mistake in the caller's list; say so.
+        var duplicate = conceptIds
+            .GroupBy(id => id, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            return Failed($"Error: concept '{duplicate.Key}' is named more than once.");
         }
 
         // Strict on input, permissive on read: `human:` with no id promotes the
@@ -911,6 +944,20 @@ Ajouter à `tests/OKF4net.Tests/CliTests.cs` :
     }
 
     [Fact]
+    public void Verify_refuses_a_concept_named_twice()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept 'metrics/dau' is named more than once\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Fact]
     public void Verify_dry_run_writes_nothing()
     {
         using var tmp = new TempDir();
@@ -1080,12 +1127,20 @@ Puis la méthode :
 
         var bundle = Load(path);
 
+        // Refused here as well as in the writer, so the message reads like its
+        // siblings (the writer's ends with a period; the CLI's do not).
+        var duplicate = ids.GroupBy(id => id, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new CliOperationException($"concept '{duplicate.Key}' is named more than once");
+        }
+
         // Every id is resolved AND checked for §11 conformance before anything
         // is written. Existence alone would not be enough: Bundle indexes any
-        // document that parses, including one with no `type`, which
-        // RecordVerification then refuses at write time — so a mistyped id in
-        // third position would leave the first two stamped. Both checks here,
-        // and "all-or-nothing" is true rather than nearly true.
+        // document that parses, including one with no `type`, which the writer
+        // then refuses at write time — so a mistyped id in third position would
+        // leave the first two stamped. Both checks here, and "all-or-nothing"
+        // is true rather than nearly true.
         foreach (var id in ids)
         {
             if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
@@ -1360,6 +1415,19 @@ public class OkfVerifyToolTests
     /// All-or-nothing across the whole list: one unknown id leaves every other
     /// concept untouched. A single-id test cannot catch this.
     /// </summary>
+    [Fact]
+    public void Verify_refuses_a_concept_named_twice()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(tmp.Path, "a.md"));
+
+        var text = ToolsOver(tmp).Verify("a, a", "human:ada");
+
+        Assert.Contains("named more than once", text);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "a.md")));
+    }
+
     [Fact]
     public void Verify_writes_nothing_when_one_id_of_several_is_unknown()
     {
