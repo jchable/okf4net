@@ -30,6 +30,11 @@ public sealed class OkfBundleTools
         + "unverified, machine-confirmed, human-reviewed), status (draft, stable or deprecated) "
         + "and type (exact frontmatter type). Example: okf_audit(stale: true, trust: \"unverified\").";
 
+    private const string VerifyUsageMessage =
+        "Usage: okf_verify records a review — comma-separated concept ids, plus a well-formed "
+        + "§7 actor (human:<id>, agent:<producer>/<version>, process:<id>). Example: "
+        + "okf_verify(\"metrics/dau, metrics/revenue\", \"human:ada\").";
+
     /// <summary>
     /// The core write primitive this tool set delegates every write to:
     /// producer-validated create/update (<see cref="WriteConcept"/>) and
@@ -170,8 +175,8 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// The tool names among <see cref="GetTools"/>'s output that write to the
-    /// bundle: <c>okf_write_concept</c>, <c>okf_append_log</c>, and
-    /// <c>okf_regenerate_indexes</c>. A host that wants a read-only tool set
+    /// bundle: <c>okf_write_concept</c>, <c>okf_append_log</c>,
+    /// <c>okf_regenerate_indexes</c>, and <c>okf_verify</c>. A host that wants a read-only tool set
     /// (e.g. a read-only MCP server, or a demo that must never mutate a
     /// pinned/shared bundle) can filter <see cref="GetTools"/>'s result
     /// against this set instead of hand-maintaining its own list of tool
@@ -184,6 +189,7 @@ public sealed class OkfBundleTools
         "okf_write_concept",
         "okf_append_log",
         "okf_regenerate_indexes",
+        "okf_verify",
     };
 
     /// <summary>
@@ -199,8 +205,9 @@ public sealed class OkfBundleTools
     /// <see cref="AIFunctionFactory"/> from each method's own
     /// <see cref="DescriptionAttribute"/> — the single source of truth, so
     /// the two can never drift apart. The order is stable: read → browse →
-    /// graph → search → audit → write → append → regenerate → validate →
-    /// changes-since → get-computation → (conditionally) run-computation.
+    /// graph → search → audit → write → verify → append → regenerate →
+    /// validate → changes-since → get-computation → (conditionally)
+    /// run-computation.
     ///
     /// <c>okf_get_computation</c> is always included — it is read-only and
     /// needs no attestation runtime. <c>okf_run_computation</c> is included
@@ -220,6 +227,7 @@ public sealed class OkfBundleTools
             AIFunctionFactory.Create(Search, "okf_search"),
             AIFunctionFactory.Create(Audit, "okf_audit"),
             AIFunctionFactory.Create(WriteConcept, "okf_write_concept"),
+            AIFunctionFactory.Create(Verify, "okf_verify"),
             AIFunctionFactory.Create(AppendLog, "okf_append_log"),
             AIFunctionFactory.Create(RegenerateIndexes, "okf_regenerate_indexes"),
             AIFunctionFactory.Create(ValidateBundle, "okf_validate_bundle"),
@@ -548,6 +556,76 @@ public sealed class OkfBundleTools
         [Description("Frontmatter as 'key: value' lines (YAML subset).")] string frontmatterYaml,
         [Description("The markdown body.")] string body) =>
         _writer.WriteConcept(conceptId, frontmatterYaml, body);
+
+    /// <summary>
+    /// Records a review of one or more concepts: adds — or replaces — the
+    /// caller's <c>{ by, at }</c> entry in each concept's <c>verified</c> list.
+    /// A stamp is a dated declaration, not a proof: this tool cannot check that
+    /// the caller is who <paramref name="by"/> names, exactly like the CLI verb.
+    /// </summary>
+    /// <param name="conceptIds">Comma-separated concept ids; each must already exist.</param>
+    /// <param name="by">The §7 actor recording the review.</param>
+    /// <param name="at">ISO-8601 timestamp; omit for now.</param>
+    [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
+    public string Verify(
+        [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
+        [Description("The §7 actor recording the review, e.g. human:ada, agent:assistant/1.0, process:nightly.")] string by,
+        [Description("ISO-8601 UTC timestamp; omit for now.")] string? at = null)
+    {
+        var ids = (conceptIds ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        if (ids.Count == 0 || by is null || !Actor.Parse(by).IsWellFormed)
+        {
+            return VerifyUsageMessage;
+        }
+
+        return RunTool(() =>
+        {
+            // Pre-resolved like the CLI: every id is checked before the
+            // first write, so a typo in the third id cannot leave the first two
+            // stamped. Without this, `okf_verify("a, nope", …)` writes to `a`
+            // and then reports a failure — the worst of both.
+            var bundle = GetBundle();
+            foreach (var id in ids)
+            {
+                if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is null)
+                {
+                    return $"Error: concept '{id}' does not exist.";
+                }
+            }
+
+            // One batch call — the validation guarantee comes from the writer, so the
+            // pre-resolution above is only there to give a nicer message.
+            // `at` is passed through untouched, null included: the writer owns
+            // the clock seam and reports the timestamp it used, so the tool
+            // never dates anything itself.
+            var outcome = _writer.RecordVerifications(ids, by, at);
+
+            // The same line shape as the CLI verb, deliberately re-implemented
+            // rather than shared: the CLI's bytes are golden-locked and must not
+            // move because an agent-facing string was tuned. The tool's tests
+            // assert this exact shape so the two cannot drift unnoticed.
+            var lines = new StringBuilder();
+            foreach (var record in outcome.Records)
+            {
+                var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
+                lines.Append($"recorded {record.ConceptId}  {by}  {record.At}{replaces}").Append('\n');
+            }
+
+            // A rejected batch has no records and yields the message alone; a
+            // batch that failed part-way through writing has both, and the
+            // agent must see both — the lines for what landed, then why it
+            // stopped.
+            if (!outcome.Recorded)
+            {
+                lines.Append(outcome.Message).Append('\n');
+            }
+
+            return lines.ToString();
+        });
+    }
 
     /// <summary>
     /// Atomically reads, transforms, and rewrites one concept's body — the

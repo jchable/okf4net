@@ -76,7 +76,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public async Task Build_exposes_all_eleven_tools()
+    public async Task Build_exposes_all_twelve_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -94,7 +94,7 @@ public sealed class OkfMcpServerTests
                 {
                     "okf_append_log", "okf_audit", "okf_browse", "okf_changes_since", "okf_get_computation",
                     "okf_graph", "okf_read_concept", "okf_regenerate_indexes", "okf_search",
-                    "okf_validate_bundle", "okf_write_concept",
+                    "okf_validate_bundle", "okf_verify", "okf_write_concept",
                 },
                 names);
 
@@ -110,7 +110,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public async Task Build_readOnly_omits_the_three_write_tools()
+    public async Task Build_readOnly_omits_the_four_write_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -126,6 +126,7 @@ public sealed class OkfMcpServerTests
             Assert.DoesNotContain("okf_write_concept", names);
             Assert.DoesNotContain("okf_append_log", names);
             Assert.DoesNotContain("okf_regenerate_indexes", names);
+            Assert.DoesNotContain("okf_verify", names);
             Assert.Contains("okf_read_concept", names);
             // okf_get_computation is read-only and needs no attestation runtime,
             // so it surfaces in read-only mode too -- this is deliberate.
@@ -140,7 +141,7 @@ public sealed class OkfMcpServerTests
     }
 
     [Fact]
-    public void ConfigureServices_registers_all_eleven_tools()
+    public void ConfigureServices_registers_all_twelve_tools()
     {
         var bundle = NewBundleDir();
         try
@@ -149,7 +150,7 @@ public sealed class OkfMcpServerTests
             OkfMcpHost.ConfigureServices(services, bundle, readOnly: false, version: "0.0.0");
             using var provider = services.BuildServiceProvider();
             var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
-            Assert.Equal(11, options.ToolCollection?.Count);
+            Assert.Equal(12, options.ToolCollection?.Count);
         }
         finally
         {
@@ -222,6 +223,49 @@ public sealed class OkfMcpServerTests
 
             // The counters still describe the whole bundle, not the selection.
             Assert.Contains("concepts:   2", text);
+        }
+        finally
+        {
+            Directory.Delete(bundle, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The other MCP tests only prove <c>okf_verify</c> appears in the tool
+    /// list (and, in read-only mode, does not). This one calls it, because the
+    /// MCP adapter does its own schema-driven argument conversion for the two
+    /// required string parameters plus the optional timestamp — a conversion
+    /// or binding regression could ship while the Agent-level test stayed
+    /// green. On the same model as <see cref="Audit_tool_invoked_over_mcp_applies_its_filters"/>.
+    /// </summary>
+    [Fact]
+    public async Task Verify_tool_invoked_over_mcp_stamps_the_concept()
+    {
+        var bundle = NewBundleDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(bundle, "metrics"));
+            await File.WriteAllTextAsync(
+                Path.Combine(bundle, "metrics", "dau.md"),
+                "---\ntype: Metric\ntitle: DAU\n---\n");
+
+            var tools = OkfMcpToolset.Build(bundle, readOnly: false);
+            var (server, client) = await ConnectAsync(tools);
+            await using var _ = server;
+            await using var __ = client;
+
+            var verify = await client.CallToolAsync(
+                "okf_verify",
+                new Dictionary<string, object?>
+                {
+                    ["conceptIds"] = "metrics/dau",
+                    ["by"] = "human:ada",
+                    ["at"] = "2026-08-28T09:14:00Z",
+                });
+
+            var text = ResultText(verify);
+            Assert.Contains("recorded metrics/dau  human:ada  2026-08-28T09:14:00Z", text);
+            Assert.Contains("by: human:ada", await File.ReadAllTextAsync(Path.Combine(bundle, "metrics", "dau.md")));
         }
         finally
         {

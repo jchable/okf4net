@@ -40,10 +40,10 @@ public class OkfBundleToolsTests
     /// fail this test rather than leaking into a "read-only" consumer.
     /// </summary>
     [Fact]
-    public void WriteToolNames_matches_the_three_mutating_tools_and_filters_them_out()
+    public void WriteToolNames_matches_the_four_mutating_tools_and_filters_them_out()
     {
         Assert.Equal(
-            new HashSet<string> { "okf_write_concept", "okf_append_log", "okf_regenerate_indexes" },
+            new HashSet<string> { "okf_write_concept", "okf_append_log", "okf_regenerate_indexes", "okf_verify" },
             OkfBundleTools.WriteToolNames);
 
         var tools = new OkfBundleTools(BundlePath);
@@ -57,6 +57,7 @@ public class OkfBundleToolsTests
         Assert.DoesNotContain("okf_write_concept", readOnlyNames);
         Assert.DoesNotContain("okf_append_log", readOnlyNames);
         Assert.DoesNotContain("okf_regenerate_indexes", readOnlyNames);
+        Assert.DoesNotContain("okf_verify", readOnlyNames);
         Assert.Contains("okf_read_concept", readOnlyNames);
         Assert.Contains("okf_get_computation", readOnlyNames);
         Assert.Contains("okf_audit", readOnlyNames);
