@@ -149,6 +149,76 @@ public class RecordVerificationTests
         Assert.Equal(before, Read(tmp, "metrics/dau.md"));
     }
 
+    /// <summary>
+    /// The duplicate guard is checked on the RESOLVED target path, not the raw
+    /// id string, so two case-variant spellings of the same concept collide
+    /// too on a case-insensitive filesystem (Windows/macOS) — matching the
+    /// <c>OrdinalIgnoreCase</c> the <c>BundleLocks</c> registry uses for the
+    /// same reason. A raw-string, case-sensitive guard would let this pair
+    /// through and write two records for the one stamp that survives.
+    /// </summary>
+    [Fact]
+    public void A_case_variant_duplicate_concept_id_is_refused()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/DAU"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("named more than once", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
+    /// A null element must be rejected as data, not thrown: ConceptId.Parse's
+    /// <c>s.Split('/')</c> throws NullReferenceException for a null id, which
+    /// is not in RunTool's catch filter — and a JSON binder can hand this
+    /// list a null element (e.g. <c>["a", null]</c>) regardless of the
+    /// compile-time <c>IReadOnlyList&lt;string&gt;</c> annotation.
+    /// </summary>
+    [Fact]
+    public void A_null_concept_id_in_the_batch_is_refused_without_throwing()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", null!], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("must not be empty", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
+    /// The whole point of a batch is that concept 2 failing rejects concept 1
+    /// too, even though concept 1's content was already built successfully in
+    /// the prepare loop. A regression that moved validation/writing into a
+    /// single per-concept loop (writing as it goes, instead of preparing the
+    /// whole batch before writing any of it) would still pass every
+    /// single-concept test in this file but fail this one. Also covers the
+    /// <see cref="VerificationOutcome.Records"/> contract: rejected during
+    /// PREPARE means nothing was ever written, so <c>Records</c> is empty —
+    /// not just <c>Recorded == false</c>.
+    /// </summary>
+    [Fact]
+    public void A_later_concept_failing_validation_leaves_an_earlier_one_unwritten()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        tmp.Write("metrics/no-type.md", "---\ntitle: No type\n---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/no-type"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Empty(outcome.Records);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+        Assert.DoesNotContain("verified", Read(tmp, "metrics/dau.md"));
+    }
+
     [Theory]
     [InlineData("human:", "not a well-formed")]
     [InlineData("", "not a well-formed")]
@@ -164,13 +234,24 @@ public class RecordVerificationTests
         Assert.DoesNotContain("verified", Read(tmp, "metrics/dau.md"));
     }
 
-    [Fact]
-    public void A_non_iso_at_is_refused()
+    /// <summary>
+    /// Pins the deliberate divergence from <c>BundleValidator.IsIso8601DateTime</c>
+    /// (which validates only the date part and ignores everything after the
+    /// <c>T</c>, because reading frontmatter is permissive): a bare date and a
+    /// non-UTC offset both pass that permissive predicate, so testing only a
+    /// garbage string like "hier" would stay green even if the strict parse
+    /// were "simplified" back to it.
+    /// </summary>
+    [Theory]
+    [InlineData("hier")]
+    [InlineData("2026-08-28")]
+    [InlineData("2026-08-28T09:14:00+02:00")]
+    public void A_non_iso_at_is_refused(string at)
     {
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
 
-        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada", "hier");
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada", at);
 
         Assert.False(outcome.Recorded);
         Assert.Contains("yyyy-MM-ddTHH:mm:ssZ", outcome.Message);

@@ -503,17 +503,22 @@ public sealed class BundleConceptWriter
             return Failed("Error: no concept id given.");
         }
 
-        // Duplicates are refused, not silently collapsed. Preparing the same
-        // file twice would build both versions from the same original content
-        // and write it twice, reporting two `recorded` lines for the single
-        // stamp that survives — a result that reads like two reviews. Naming a
-        // concept twice is a mistake in the caller's list; say so.
-        var duplicate = conceptIds
-            .GroupBy(id => id, StringComparer.Ordinal)
-            .FirstOrDefault(group => group.Count() > 1);
-        if (duplicate is not null)
+        // Guard every element before any of them reaches ValidateConceptTarget:
+        // ConceptId.TryParse's Parse -> s.Split('/') throws NullReferenceException
+        // for a null element (NRE is not in RunTool's catch filter), and a JSON
+        // binder handing this list to a string[] can put a null in it regardless
+        // of nullable annotations. Mirrors WriteConcept's own id guards verbatim.
+        foreach (var conceptId in conceptIds)
         {
-            return Failed($"Error: concept '{duplicate.Key}' is named more than once.");
+            if (string.IsNullOrWhiteSpace(conceptId))
+            {
+                return Failed("Error: invalid concept id — it must not be empty.");
+            }
+
+            if (conceptId.Contains('\0'))
+            {
+                return Failed("Error: invalid concept id — it must not contain a null character.");
+            }
         }
 
         // Strict on input, permissive on read: `human:` with no id promotes the
@@ -557,11 +562,33 @@ public sealed class BundleConceptWriter
                 targets.Add(target);
             }
 
+            // Duplicates are refused, not silently collapsed: preparing the same
+            // file twice would build both versions from the same original
+            // content and write it twice, reporting two records for the single
+            // stamp that survives — a result that reads like two reviews.
+            // Checked on the RESOLVED target path, not the raw id string that
+            // was passed in: two case-variant spellings of the same concept
+            // ("metrics/dau" / "metrics/DAU") resolve to the same file on a
+            // case-insensitive filesystem (Windows/macOS) and must collide too
+            // — the same OrdinalIgnoreCase reasoning the BundleLocks registry
+            // above uses for exactly this class of bug.
+            var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < targets.Count; i++)
+            {
+                if (!seenPaths.Add(targets[i].TargetPath))
+                {
+                    return $"Error: concept '{conceptIds[i]}' is named more than once.";
+                }
+            }
+
             lock (_bundleLock)
             {
-                // PREPARE every concept — read, parse, upsert, validate — before
-                // writing any of them — so a batch is REJECTED as a whole, even if
-                var prepared = new List<(ConceptTarget Target, string Content)>(targets.Count);
+                // PREPARE every concept — read, parse, upsert the stamp, and
+                // validate — before writing any of them, so an unknown,
+                // unreadable, or non-conformant concept later in the list
+                // rejects the WHOLE batch, even though earlier concepts in it
+                // already built successfully.
+                var prepared = new List<(ConceptTarget Target, string Content, string ConceptId, string? ReplacedAt)>(targets.Count);
                 for (var i = 0; i < targets.Count; i++)
                 {
                     var target = targets[i];
@@ -576,33 +603,38 @@ public sealed class BundleConceptWriter
 
                     map.Insert("verified", UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt));
 
-                    var (content, buildError) = BuildConformantContent(map, document.Body);
-                    if (buildError is not null)
-                    {
-                        return buildError;
-                    }
+                    // Throws DocumentValidationException on a failed §11 check,
+                    // caught by RunTool -- nothing in `prepared` so far has been
+                    // written, so the whole batch is rejected cleanly.
+                    var content = BuildConformantContent(map, document.Body);
 
-                    prepared.Add((target, content!));
-                    records.Add(new VerificationRecord(conceptIds[i], stampedAt, replacedAt));
+                    prepared.Add((target, content, conceptIds[i], replacedAt));
                 }
 
                 // Writing N files cannot be atomic, so a failure here — I/O,
                 // permissions, a reparse point appearing between the late
-                // re-check and the write — leaves the earlier concepts stamped.
-                // That is reported rather than hidden: `written` is trimmed to
-                // what actually landed, and the message names it.
+                // re-check and the write — leaves the earlier concepts
+                // stamped. `records` is built HERE, one entry per successful
+                // write, deliberately NOT in the prepare loop above: that is
+                // what makes it mean "landed on disk", not "was validated". A
+                // batch rejected during PREPARE never reaches this loop, so
+                // `records` stays empty; a batch that fails partway through
+                // WRITE leaves `records` holding exactly the prefix that
+                // actually made it to disk — no separate trim/rollback step
+                // to keep in sync, and no way for a future early return in
+                // this loop to under- or over-report what landed.
                 for (var i = 0; i < prepared.Count; i++)
                 {
-                    var (target, content) = prepared[i];
+                    var (target, content, conceptId, replacedAt) = prepared[i];
                     var writeResult = WriteValidatedContentLocked(target.Id, target.TargetPath, content, existedBefore: true);
                     if (writeResult.StartsWith("Error:", StringComparison.Ordinal))
                     {
-                        var stamped = records.Take(i).Select(r => r.ConceptId).ToList();
-                        records.RemoveRange(i, records.Count - i);
-                        return stamped.Count == 0
+                        return records.Count == 0
                             ? writeResult
-                            : $"{writeResult} — already written: {string.Join(", ", stamped)}";
+                            : $"{writeResult} — already written: {string.Join(", ", records.Select(r => r.ConceptId))}";
                     }
+
+                    records.Add(new VerificationRecord(conceptId, stampedAt, replacedAt));
                 }
 
                 return $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}.";
@@ -664,14 +696,19 @@ public sealed class BundleConceptWriter
     /// producer-grade check. Deliberate: recording a review is not producing
     /// content, and refusing a reviewer because a third party omitted a
     /// <c>description</c> would make precisely the concepts an audit surfaces
-    /// unstampable. Throws <see cref="DocumentValidationException"/>, caught by
-    /// the caller's <see cref="RunTool"/> wrapper.
+    /// unstampable. Unlike the <see cref="YamlValue"/>-based overload above,
+    /// there is no "not a mapping" case to report here — the caller always
+    /// passes an already-typed <see cref="YamlMapping"/> — so this returns the
+    /// serialized content directly rather than an <c>(Content, Error)</c> pair
+    /// whose <c>Error</c> half could never be anything but <see langword="null"/>.
+    /// Throws <see cref="DocumentValidationException"/> on a failed conformance
+    /// check, caught by the caller's <see cref="RunTool"/> wrapper.
     /// </summary>
-    private static (string? Content, string? Error) BuildConformantContent(YamlMapping frontmatter, string body)
+    private static string BuildConformantContent(YamlMapping frontmatter, string body)
     {
         var document = new OkfDocument(Frontmatter.FromMapping(frontmatter), body);
         document.ValidateConformance();
-        return (document.Serialize(), null);
+        return document.Serialize();
     }
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
