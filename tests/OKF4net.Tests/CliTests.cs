@@ -1094,6 +1094,74 @@ public class CliTests
         Assert.Equal("error: \"-\" (stdin) cannot be combined with explicit concept ids\n", r.Err);
     }
 
+    /// <summary>
+    /// The write phase cannot be atomic across several files: RecordVerifications
+    /// writes "metrics/dau" first, THEN fails writing "metrics/rev" (made
+    /// unwritable below), so "dau" already landed on disk by the time the
+    /// batch fails. This pins the exact contract fixed twice already —  once
+    /// in the core (b25553b, moving <c>records.Add</c> out of the prepare
+    /// loop so <c>Records</c> means "written", not "prepared") and once here,
+    /// in the verb itself, which must print every landed record BEFORE
+    /// throwing on <c>!outcome.Recorded</c> rather than swallow it. A version
+    /// of <c>CmdVerify</c> that swapped that print loop and the throw would
+    /// print nothing and still exit 1 -- indistinguishable from this test's
+    /// perspective if it only checked the exit code, which is why stdout is
+    /// asserted here, not just <c>r.Code</c>.
+    ///
+    /// Deliberately does NOT use the internal
+    /// <see cref="BundleConceptWriter.BeforeLateReparseCheckForTest"/> hook
+    /// <see cref="RecordVerificationTests"/> uses for the same kind of
+    /// injected write-time failure: <see cref="CmdVerify"/> constructs its
+    /// own private <see cref="BundleConceptWriter"/> instance that a test has
+    /// no handle to, so that seam cannot be reached from here. Instead this
+    /// makes the SECOND file genuinely unwritable (read-only) before
+    /// invoking the verb at all -- a black-box failure any process,
+    /// including a real filesystem permission error, could produce.
+    /// </summary>
+    [Fact]
+    public void Verify_prints_the_records_that_landed_before_a_later_write_failure()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var revPath = Path.Combine(bundle, "metrics", "rev.md");
+        var originalRev = File.ReadAllText(revPath);
+        File.SetAttributes(revPath, File.GetAttributes(revPath) | FileAttributes.ReadOnly);
+
+        try
+        {
+            // Probe before asserting anything real depends on it: some
+            // environments (e.g. a CI job running as root on Linux) do not
+            // enforce the read-only bit at all, which would silently turn
+            // this into a false pass/fail rather than a skip. Restoring the
+            // original content afterward keeps the probe write itself inert.
+            try
+            {
+                File.WriteAllText(revPath, originalRev);
+                return; // read-only wasn't enforced on this platform/user -- skip.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Expected: read-only is enforced here, continue.
+            }
+
+            var r = Run("verify", bundle, "metrics/dau", "metrics/rev", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+            Assert.Equal(1, r.Code);
+            // The concept written BEFORE the failure must be reported, not
+            // swallowed -- this is the assertion a swapped print/throw order
+            // would fail.
+            Assert.Equal("recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n", r.Out);
+            Assert.StartsWith("error: ", r.Err);
+            Assert.DoesNotContain("recorded metrics/rev", r.Out);
+            // The write really landed on disk, not just in memory.
+            Assert.Contains("by: human:ada", File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+        }
+        finally
+        {
+            File.SetAttributes(revPath, File.GetAttributes(revPath) & ~FileAttributes.ReadOnly);
+        }
+    }
+
     /// <summary>The loop, end to end: audit lists it, verify clears it.</summary>
     [Fact]
     public void Audit_then_verify_removes_the_concept_from_the_unverified_worklist()

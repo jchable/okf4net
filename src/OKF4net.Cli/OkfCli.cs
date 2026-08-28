@@ -658,8 +658,6 @@ public static class OkfCli
             }
         }
 
-        var writer = new BundleConceptWriter(path);
-
         if (parsed.Has("--dry-run"))
         {
             // A dry run writes nothing, so there is no timestamp to report. It
@@ -672,6 +670,9 @@ public static class OkfCli
 
             return 0;
         }
+
+        // Constructed only now: a dry run above never needs a writer at all.
+        var writer = new BundleConceptWriter(path);
 
         // One batch call: the writer prepares every concept before writing any,
         // so nothing is half-stamped if a later one turns out unwritable.
