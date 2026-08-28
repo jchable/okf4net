@@ -135,7 +135,15 @@ pour le contenu, et `RunWithReader(TextReader, params string[])` pour ce test.
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
 
 Run: `dotnet test OKF4net.sln --filter "FullyQualifiedName~CliTests.Separator_keeps|FullyQualifiedName~CliTests.Run_reads_ids"`
-Expected: le premier ÉCHOUE (le séparateur écrase encore), le second ne compile pas (`RunWithStdin` n'existe pas).
+**Écris et lance le test du séparateur SEUL d'abord** : il doit échouer, et
+c'est la seule preuve que la régression existe avant le correctif. Les deux
+autres tests utilisent `RunWithReader`, qui n'existe pas encore — les ajouter
+maintenant empêcherait la compilation de tout le projet de tests, donc le
+premier ne s'exécuterait jamais et on ne verrait rien échouer. Les ajouter
+après le Step 4.
+
+Expected (test du séparateur seul) : ÉCHEC — la sortie est le JSON, parce que
+`--json` placé après `--` est encore honoré comme flag.
 
 - [ ] **Step 3: Positionnels multiples dans `CliArgs`**
 
@@ -271,8 +279,24 @@ git commit -m "refactor(cli): ordered positionals and a stdin seam"
 - Test: `tests/OKF4net.Tests/RecordVerificationTests.cs` (créé)
 
 **Interfaces:**
-- Consumes: `ValidateConceptTarget`, `_bundleLock`, `WriteValidatedContentLocked`, `RunTool`, `UtcNow`, `OkfEncodings.Strict`, `OkfTimestamp.FormatUtc`, `BundleValidator.IsIso8601DateTime`, `OkfDocument.Parse`/`ValidateConformance`/`Serialize`, `Frontmatter.AsMapping`, `Actor.Parse`, `YamlMapping.Insert/Get`, `YamlSequence.Items`, `YamlString`.
-- Produces: `VerificationOutcome(bool Recorded, string Message, string At, string? ReplacedAt)` et `BundleConceptWriter.RecordVerification(string conceptId, string by, string? at = null) → VerificationOutcome`. **Les quatre membres comptent** : la Task 2 lit `At` et `ReplacedAt`, la Task 4 lit `Message`.
+- Consumes: `ValidateConceptTarget`, `_bundleLock`, `WriteValidatedContentLocked`, `RunTool`, `UtcNow`, `OkfEncodings.Strict`, `OkfTimestamp.FormatUtc`, `OkfDocument.Parse`/`ValidateConformance`/`Serialize`, `Frontmatter.AsMapping`, `Actor.Parse`, `YamlMapping.Insert/Get`, `YamlSequence.Items`, `YamlString`.
+- Produces: `VerificationRecord(string ConceptId, string At, string? ReplacedAt)`, `VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records)` et **une seule** méthode publique : `BundleConceptWriter.RecordVerifications(IReadOnlyList<string> conceptIds, string by, string? at = null) → VerificationOutcome`.
+
+**Pourquoi une opération de lot, et pas une par concept.** Une boucle
+d'écritures unitaires n'est pas tout-ou-rien : un second document non conforme,
+illisible ou disparu laisse le premier déjà estampillé. Prévalider dans
+l'appelant ne suffit pas non plus — la fenêtre entre le contrôle et l'écriture
+reste ouverte, et il faudrait la refermer dans le CLI *et* dans le tool, deux
+fois. Le lot résout, lit, parse, valide et **prépare le contenu de tous les
+concepts** avant d'en écrire un seul, le tout sous une seule détention du
+verrou. Les deux consommateurs appellent la même méthode et héritent de la
+garantie ; il n'y a pas de version « un seul concept » à maintenir en parallèle
+(un id unique est une liste de un).
+
+Limite à documenter, pas à cacher : le verrou est un verrou C# in-process, et
+.NET n'offre pas d'écriture multi-fichiers atomique. Un acteur externe qui
+modifie le bundle pendant le lot n'est pas arrêté — même modèle de menace, déjà
+documenté, que la garde reparse-point du writer.
 
 - [ ] **Step 1: Écrire les tests qui échouent**
 
@@ -303,16 +327,22 @@ public class RecordVerificationTests
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "custom_key: kept\n---\n\n# Body\n");
 
-        var outcome = WriterOver(tmp).RecordVerification("metrics/dau", "human:ada");
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
 
         Assert.True(outcome.Recorded);
-        Assert.Null(outcome.ReplacedAt);
+        Assert.Null(outcome.Records.Single().ReplacedAt);
 
-        var text = Read(tmp, "metrics/dau.md");
-        Assert.Contains("by: human:ada", text);
-        Assert.Contains("at: 2026-08-28T09:14:00Z", text);
-        Assert.Contains("custom_key: kept", text);
-        Assert.Contains("# Body", text);
+        // Substring checks would miss a dropped key or a mangled body, so the
+        // whole document is compared: the frontmatter is exactly the original
+        // keys in order plus `verified`, and the body is untouched.
+        var after = OkfDocument.Parse(Read(tmp, "metrics/dau.md"));
+        Assert.Equal(["type", "title", "custom_key", "verified"], after.Frontmatter.AsMapping().Keys);
+        Assert.Equal("kept", after.Frontmatter.Get("custom_key")!.AsDisplayString());
+        Assert.Equal("# Body\n", after.Body);
+
+        var stamp = Assert.Single(after.Frontmatter.Verified);
+        Assert.Equal("human:ada", stamp.By!.Value.Raw);
+        Assert.Equal("2026-08-28T09:14:00Z", stamp.At);
     }
 
     [Fact]
@@ -324,10 +354,10 @@ public class RecordVerificationTests
             Fm + "verified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n"
             + "  - { by: process:nightly, at: 2026-02-02T00:00:00Z }\n---\n\nbody\n");
 
-        var outcome = WriterOver(tmp).RecordVerification("metrics/dau", "human:ada");
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
 
         Assert.True(outcome.Recorded);
-        Assert.Equal("2026-01-01T00:00:00Z", outcome.ReplacedAt);
+        Assert.Equal("2026-01-01T00:00:00Z", outcome.Records.Single().ReplacedAt);
 
         var doc = OkfDocument.Parse(Read(tmp, "metrics/dau.md"));
         var stamps = doc.Frontmatter.Verified;
@@ -347,7 +377,7 @@ public class RecordVerificationTests
             "metrics/dau.md",
             Fm + "verified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n---\n\nbody\n");
 
-        WriterOver(tmp).RecordVerification("metrics/dau", "process:nightly");
+        WriterOver(tmp).RecordVerifications(["metrics/dau"], "process:nightly");
 
         var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
         Assert.Equal(2, stamps.Count);
@@ -370,7 +400,7 @@ public class RecordVerificationTests
             Fm + "verified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n"
             + "  - { by: human:ada, at: 2026-02-02T00:00:00Z }\n---\n\nbody\n");
 
-        WriterOver(tmp).RecordVerification("metrics/dau", "human:ada");
+        WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
 
         var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
         Assert.Equal(2, stamps.Count);
@@ -389,7 +419,7 @@ public class RecordVerificationTests
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "verified: { by: process:nightly, at: 2026-01-01T00:00:00Z }\n---\n\nbody\n");
 
-        WriterOver(tmp).RecordVerification("metrics/dau", "human:ada");
+        WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
 
         var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
         Assert.Equal(2, stamps.Count);
@@ -405,7 +435,7 @@ public class RecordVerificationTests
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
 
-        var outcome = WriterOver(tmp).RecordVerification("metrics/dau", by);
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], by);
 
         Assert.False(outcome.Recorded);
         Assert.Contains(expected, outcome.Message);
@@ -418,10 +448,10 @@ public class RecordVerificationTests
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
 
-        var outcome = WriterOver(tmp).RecordVerification("metrics/dau", "human:ada", "hier");
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada", "hier");
 
         Assert.False(outcome.Recorded);
-        Assert.Contains("ISO-8601", outcome.Message);
+        Assert.Contains("yyyy-MM-ddTHH:mm:ssZ", outcome.Message);
     }
 
     [Fact]
@@ -429,7 +459,7 @@ public class RecordVerificationTests
     {
         using var tmp = new TempDir();
 
-        var outcome = WriterOver(tmp).RecordVerification("metrics/nope", "human:ada");
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/nope"], "human:ada");
 
         Assert.False(outcome.Recorded);
         Assert.Contains("does not exist", outcome.Message);
@@ -448,7 +478,7 @@ public class RecordVerificationTests
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", "---\ntype: Metric\n---\n\nbody\n");
 
-        var outcome = WriterOver(tmp).RecordVerification("metrics/dau", "human:ada");
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
 
         Assert.True(outcome.Recorded);
         Assert.Contains("by: human:ada", Read(tmp, "metrics/dau.md"));
@@ -460,7 +490,7 @@ public class RecordVerificationTests
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", "---\ntitle: No type\n---\n\nbody\n");
 
-        var outcome = WriterOver(tmp).RecordVerification("metrics/dau", "human:ada");
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
 
         Assert.False(outcome.Recorded);
         Assert.Contains("type", outcome.Message);
@@ -473,9 +503,20 @@ public class RecordVerificationTests
         tmp.Write("a.md", Fm + "generated: { by: okf4net/0.3.0, at: 2020-01-01T00:00:00Z }\n---\n\nbody\n");
         tmp.Write("b.md", Fm + "---\n\nbody\n");
 
+        // AutoStampGenerated defaults to false, so a bare writer would pass this
+        // test even if RecordVerifications went through the auto-stamping path.
+        // OkfBundleTools turns it ON, which is the configuration that matters.
+        var stamping = new BundleConceptWriter(tmp.Path)
+        {
+            AutoStampGenerated = true,
+            UtcNow = () => new DateTime(2026, 8, 28, 9, 14, 0, DateTimeKind.Utc),
+        };
+        stamping.RecordVerifications(["b"], "human:ada");
+        Assert.DoesNotContain("generated", Read(tmp, "b.md"));
+
         var writer = WriterOver(tmp);
-        writer.RecordVerification("a", "human:ada");
-        writer.RecordVerification("b", "human:ada");
+        writer.RecordVerifications(["a"], "human:ada");
+        writer.RecordVerifications(["b"], "human:ada");
 
         Assert.Contains("at: 2020-01-01T00:00:00Z", Read(tmp, "a.md"));
         Assert.DoesNotContain("generated", Read(tmp, "b.md"));
@@ -491,10 +532,10 @@ public class RecordVerificationTests
 
         Assert.Equal(TrustTier.Unverified, Bundle.Load(tmp.Path).Concepts[0].Document.Frontmatter.TrustTier);
 
-        writer.RecordVerification("metrics/dau", "process:nightly");
+        writer.RecordVerifications(["metrics/dau"], "process:nightly");
         Assert.Equal(TrustTier.MachineConfirmed, Bundle.Load(tmp.Path).Concepts[0].Document.Frontmatter.TrustTier);
 
-        writer.RecordVerification("metrics/dau", "human:ada");
+        writer.RecordVerifications(["metrics/dau"], "human:ada");
         Assert.Equal(TrustTier.HumanReviewed, Bundle.Load(tmp.Path).Concepts[0].Document.Frontmatter.TrustTier);
     }
 
@@ -511,8 +552,8 @@ public class RecordVerificationTests
         var writer = WriterOver(tmp);
 
         Parallel.Invoke(
-            () => writer.RecordVerification("metrics/dau", "human:ada"),
-            () => writer.RecordVerification("metrics/dau", "process:nightly"));
+            () => writer.RecordVerifications(["metrics/dau"], "human:ada"),
+            () => writer.RecordVerifications(["metrics/dau"], "process:nightly"));
 
         var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
         Assert.Equal(2, stamps.Count);
@@ -527,55 +568,64 @@ Expected: échec de compilation — `RecordVerification` et `VerificationOutcome
 
 - [ ] **Step 3: Implémenter**
 
-Dans `src/OKF4net/BundleConceptWriter.cs`, ajouter le type de résultat au-dessus de la classe :
+Dans `src/OKF4net/BundleConceptWriter.cs`, les deux types de résultat au-dessus de la classe :
 
 ```csharp
-/// <summary>
-/// The outcome of <see cref="BundleConceptWriter.RecordVerification"/>:
-/// errors-as-data, never thrown. <see cref="ReplacedAt"/> carries the
-/// timestamp of the actor's previous stamp when this one replaced it, so a
-/// caller can show that a review superseded an earlier one.
-/// </summary>
-/// <param name="Recorded">Whether the stamp was written.</param>
-/// <param name="Message">A confirmation, or the reason nothing was written.</param>
+/// <summary>One concept stamped by <see cref="BundleConceptWriter.RecordVerifications"/>.</summary>
+/// <param name="ConceptId">The concept that was stamped.</param>
 /// <param name="At">
-/// The timestamp actually written. Callers could format their own — the CLI and
-/// the Agents layer both see <c>OkfTimestamp</c> through <c>InternalsVisibleTo</c>
-/// — but two clocks are one too many: only the writer holds the seam tests pin,
-/// so it reports what it wrote instead of letting a caller compute a value that
-/// could differ from the file's.
+/// The timestamp written. Callers could format their own — the CLI and the
+/// Agents layer both see <c>OkfTimestamp</c> through <c>InternalsVisibleTo</c> —
+/// but two clocks are one too many: only the writer holds the seam tests pin,
+/// so it reports what it wrote.
 /// </param>
 /// <param name="ReplacedAt">The superseded <c>at</c>, or null when the stamp is new.</param>
-public readonly record struct VerificationOutcome(bool Recorded, string Message, string At, string? ReplacedAt);
+public readonly record struct VerificationRecord(string ConceptId, string At, string? ReplacedAt);
+
+/// <summary>
+/// The outcome of <see cref="BundleConceptWriter.RecordVerifications"/>:
+/// errors-as-data, never thrown. All-or-nothing — when
+/// <see cref="Recorded"/> is false, nothing was written and
+/// <see cref="Records"/> is empty.
+/// </summary>
+/// <param name="Recorded">Whether the batch was written.</param>
+/// <param name="Message">A confirmation, or the reason nothing was written.</param>
+/// <param name="Records">One entry per stamped concept, in the order given.</param>
+public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
 ```
 
-Puis, dans la classe, la méthode et ses deux aides privées :
+Puis, dans la classe, la méthode de lot et ses aides privées :
 
 ```csharp
     /// <summary>
-    /// Records a review: adds — or replaces, in place — the <c>{ by, at }</c>
-    /// entry of <paramref name="by"/> in the concept's §5.2 <c>verified</c>
-    /// list, preserving every other frontmatter key and the body. The read,
-    /// the edit and the write happen inside one hold of the bundle lock.
+    /// Records a review of every concept in <paramref name="conceptIds"/>:
+    /// adds — or replaces, at its position — the <c>{ by, at }</c> entry of
+    /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list,
+    /// preserving every other frontmatter key and the body.
+    ///
+    /// All-or-nothing: every concept is resolved, read, edited and validated
+    /// before the first byte is written, all inside one hold of the bundle
+    /// lock, so a bad third id cannot leave the first two stamped. The lock is
+    /// an in-process one and .NET has no multi-file atomic write, so an
+    /// external actor mutating the bundle mid-batch is not stopped — the same
+    /// documented limit as this class's reparse-point guard.
     ///
     /// A stamp is a dated declaration, not an authentication result: this
     /// method cannot and does not check that the caller is who
     /// <paramref name="by"/> names. What makes a stamp credible is where it
     /// lands — a reviewed diff — not the tool that wrote it.
     /// </summary>
-    /// <param name="conceptId">The concept id (path without <c>.md</c>). Must already exist.</param>
+    /// <param name="conceptIds">Concept ids (paths without <c>.md</c>); each must already exist.</param>
     /// <param name="by">The §7 actor recording the review; must be well-formed.</param>
-    /// <param name="at">ISO-8601 timestamp; null uses <see cref="UtcNow"/>.</param>
-    public VerificationOutcome RecordVerification(string conceptId, string by, string? at = null)
+    /// <param name="at">
+    /// Timestamp in the library's own UTC shape (<c>yyyy-MM-ddTHH:mm:ssZ</c>);
+    /// null uses <see cref="UtcNow"/>.
+    /// </param>
+    public VerificationOutcome RecordVerifications(IReadOnlyList<string> conceptIds, string by, string? at = null)
     {
-        if (string.IsNullOrWhiteSpace(conceptId))
+        if (conceptIds is null || conceptIds.Count == 0)
         {
-            return new VerificationOutcome(false, "Error: invalid concept id — it must not be empty.", string.Empty, null);
-        }
-
-        if (conceptId.Contains('\0'))
-        {
-            return new VerificationOutcome(false, "Error: invalid concept id — it must not contain a null character.", string.Empty, null);
+            return Failed("Error: no concept id given.");
         }
 
         // Strict on input, permissive on read: `human:` with no id promotes the
@@ -583,50 +633,89 @@ Puis, dans la classe, la méthode et ses deux aides privées :
         // written here even though a parser would accept it.
         if (by is null || !Actor.Parse(by).IsWellFormed)
         {
-            return new VerificationOutcome(false, $"Error: '{by}' is not a well-formed §7 actor.", string.Empty, null);
+            return Failed($"Error: '{by}' is not a well-formed §7 actor.");
         }
 
+        // NOT BundleValidator.IsIso8601DateTime: that predicate validates the
+        // date and ignores everything after the `T` (Validate.cs:618), because
+        // reading frontmatter is deliberately permissive. Writing is not: a
+        // stamp this library produces is UTC in one exact shape, and accepting
+        // "2026-08-28" or a +02:00 offset here would write a value the field's
+        // own documentation calls UTC.
         var stampedAt = at ?? OkfTimestamp.FormatUtc(UtcNow());
-        if (!BundleValidator.IsIso8601DateTime(stampedAt))
+        if (!DateTime.TryParseExact(
+                stampedAt,
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out _))
         {
-            return new VerificationOutcome(false, $"Error: '{stampedAt}' is not an ISO-8601 timestamp.", stampedAt, null);
+            return Failed($"Error: '{stampedAt}' is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ.");
         }
 
-        string? replacedAt = null;
-        var result = RunTool(() =>
+        var records = new List<VerificationRecord>(conceptIds.Count);
+        var message = RunTool(() =>
         {
-            var targetError = ValidateConceptTarget(conceptId, out var target);
-            if (targetError is not null)
+            // Resolved outside the lock, like AppendToConceptAtomic does.
+            var targets = new List<ConceptTarget>(conceptIds.Count);
+            foreach (var conceptId in conceptIds)
             {
-                return targetError;
+                var targetError = ValidateConceptTarget(conceptId, out var target);
+                if (targetError is not null)
+                {
+                    return targetError;
+                }
+
+                targets.Add(target);
             }
 
             lock (_bundleLock)
             {
-                if (!File.Exists(target.TargetPath))
+                // PREPARE every concept — read, parse, upsert, validate — before
+                // writing any of them. This is what makes the batch all-or-nothing.
+                var prepared = new List<(ConceptTarget Target, string Content)>(targets.Count);
+                for (var i = 0; i < targets.Count; i++)
                 {
-                    return $"Error: concept '{conceptId}' does not exist.";
+                    var target = targets[i];
+                    if (!File.Exists(target.TargetPath))
+                    {
+                        return $"Error: concept '{conceptIds[i]}' does not exist.";
+                    }
+
+                    var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
+                    var document = OkfDocument.Parse(text);
+                    var map = document.Frontmatter.AsMapping();
+
+                    map.Insert("verified", UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt));
+
+                    var (content, buildError) = BuildConformantContent(map, document.Body);
+                    if (buildError is not null)
+                    {
+                        return buildError;
+                    }
+
+                    prepared.Add((target, content!));
+                    records.Add(new VerificationRecord(conceptIds[i], stampedAt, replacedAt));
                 }
 
-                var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
-                var document = OkfDocument.Parse(text);
-                var map = document.Frontmatter.AsMapping();
-
-                map.Insert("verified", UpsertStamp(map.Get("verified"), by, stampedAt, out replacedAt));
-
-                var (content, buildError) = BuildConformantContent(map, document.Body);
-                if (buildError is not null)
+                foreach (var (target, content) in prepared)
                 {
-                    return buildError;
+                    var writeResult = WriteValidatedContentLocked(target.Id, target.TargetPath, content, existedBefore: true);
+                    if (writeResult.StartsWith("Error:", StringComparison.Ordinal))
+                    {
+                        return writeResult;
+                    }
                 }
 
-                return WriteValidatedContentLocked(target.Id, target.TargetPath, content!, existedBefore: true);
+                return $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}.";
             }
         });
 
-        return result.StartsWith("Error:", StringComparison.Ordinal)
-            ? new VerificationOutcome(false, result, stampedAt, null)
-            : new VerificationOutcome(true, $"Recorded {conceptId} verified by {by} at {stampedAt}.", stampedAt, replacedAt);
+        return message.StartsWith("Error:", StringComparison.Ordinal)
+            ? Failed(message)
+            : new VerificationOutcome(true, message, records);
+
+        static VerificationOutcome Failed(string message) => new(false, message, []);
     }
 
     /// <summary>
@@ -839,7 +928,11 @@ Ajouter à `tests/OKF4net.Tests/CliTests.cs` :
     [InlineData(new[] { "verify", "BUNDLE" }, "error: missing <concept-id>\n")]
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau" }, "error: verify requires --by <actor>\n")]
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:" }, "error: --by is not a well-formed §7 actor: \"human:\"\n")]
-    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "hier" }, "error: --at is not ISO-8601: \"hier\"\n")]
+    // Three shapes a permissive reader accepts and a writer must not: garbage,
+    // a bare date, and a non-UTC offset.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "hier" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"hier\"\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28\"\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00+02:00" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28T09:14:00+02:00\"\n")]
     public void Verify_rejects_bad_invocations(string[] args, string expected)
     {
         using var tmp = new TempDir();
@@ -972,9 +1065,17 @@ Puis la méthode :
             throw new CliOperationException($"--by is not a well-formed §7 actor: \"{by}\"");
         }
 
-        if (at is not null && !BundleValidator.IsIso8601DateTime(at))
+        // The writer applies the same strict UTC rule; checking here too turns a
+        // generic write error into a message naming the flag. Deliberately NOT
+        // BundleValidator.IsIso8601DateTime, which only validates the date part.
+        if (at is not null && !DateTime.TryParseExact(
+                at,
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out _))
         {
-            throw new CliOperationException($"--at is not ISO-8601: \"{at}\"");
+            throw new CliOperationException($"--at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"{at}\"");
         }
 
         var bundle = Load(path);
@@ -1013,18 +1114,20 @@ Puis la méthode :
             return 0;
         }
 
-        foreach (var id in ids)
+        // One batch call: the writer prepares every concept before writing any,
+        // so nothing is half-stamped if a later one turns out unwritable.
+        var outcome = writer.RecordVerifications(ids, by, at);
+        if (!outcome.Recorded)
         {
-            var outcome = writer.RecordVerification(id, by, at);
-            if (!outcome.Recorded)
-            {
-                throw new CliOperationException(outcome.Message.Replace("Error: ", string.Empty, StringComparison.Ordinal));
-            }
+            throw new CliOperationException(outcome.Message.Replace("Error: ", string.Empty, StringComparison.Ordinal));
+        }
 
-            // outcome.At is the timestamp the writer actually used — the CLI
+        foreach (var record in outcome.Records)
+        {
+            // record.At is the timestamp the writer actually used — the CLI
             // reports it rather than recomputing one that could differ.
-            var replaces = outcome.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
-            stdout.Write($"recorded {id}  {by}  {outcome.At}{replaces}\n");
+            var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
+            stdout.Write($"recorded {record.ConceptId}  {by}  {record.At}{replaces}\n");
         }
 
         return 0;
@@ -1103,6 +1206,14 @@ Le fichier doit se terminer par un LF final (le CLI écrit `\n` après la derni�
 ligne) : `.editorconfig` met `insert_final_newline = unset` sous
 `tests/fixtures/**`, donc aucun outil ne l'ajoutera à ta place.
 
+**Second golden : `tests/fixtures/golden/verify-dau.md`**, le contenu du concept
+après écriture. Ne pas l'écrire de tête : lancer la commande une fois sur une
+copie, lire le fichier produit, et **vérifier à la main** que chaque ligne est
+justifiée avant de la figer — l'estampille `human:ada` porte le nouvel
+horodatage à sa position d'origine, `process:nightly` est intacte, `generated`
+n'a pas bougé, et le reste du frontmatter comme le corps sont identiques à la
+fixture d'origine. C'est ce contrôle-là qui vaut, pas la capture.
+
 - [ ] **Step 2: Écrire le test de parité**
 
 Ajouter à `tests/OKF4net.Tests/GoldenParityTests.cs` :
@@ -1126,6 +1237,11 @@ Ajouter à `tests/OKF4net.Tests/GoldenParityTests.cs` :
         // Concept ids only — always '/'-normalized — so no separator
         // normalization is needed on any platform.
         Assert.Equal(Golden("verify.out"), r.Out);
+
+        // stdout alone would stay green if the verb printed the right line and
+        // wrote the wrong stamp, touched `generated`, or mangled the document.
+        // The written file is the artefact that matters, so it is pinned too.
+        Assert.Equal(Golden("verify-dau.md"), File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
     }
 ```
 
@@ -1203,7 +1319,9 @@ public class OkfVerifyToolTests
 
         var text = ToolsOver(tmp).Verify("metrics/dau", "human:ada");
 
-        Assert.Contains("Recorded metrics/dau", text);
+        // Byte-identical to the CLI verb's line — the two renderers are
+        // separate on purpose, so only an exact assertion keeps them aligned.
+        Assert.Equal("recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n", text);
         Assert.Contains("by: human:ada", File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
     }
 
@@ -1252,7 +1370,7 @@ public class OkfVerifyToolTests
         var text = ToolsOver(tmp).Verify("a, nope", "human:ada");
 
         Assert.Contains("does not exist", text);
-        Assert.DoesNotContain("Recorded a", text);
+        Assert.DoesNotContain("recorded a", text);
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "a.md")));
     }
 
@@ -1278,6 +1396,35 @@ public class OkfVerifyToolTests
         Assert.DoesNotContain("at", required);
     }
 
+    /// <summary>
+    /// Invoked through the framework's own binding, not by calling the C#
+    /// method: the arguments arrive as JSON and must reach the parameters for
+    /// the stamp to land. A tool can be registered, schema-correct and still
+    /// unusable from a host if that binding is wrong.
+    /// </summary>
+    [Fact]
+    public async Task Verify_stamps_when_invoked_through_the_AIFunction_binding()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = ToolsOver(tmp);
+        var function = tools.GetTools().OfType<AIFunction>().Single(t => t.Name == "okf_verify");
+
+        // Check AIFunction.InvokeAsync's exact overload against the installed
+        // Microsoft.Extensions.AI before writing this call — the argument type
+        // has changed across versions, and inventing a signature here is the
+        // failure mode this plan exists to avoid. The arguments are:
+        // conceptIds = "metrics/dau", by = "human:ada", at = "2026-08-28T09:14:00Z".
+        await function.InvokeAsync(/* the version's argument shape */);
+
+        // The emitter writes sequences in BLOCK style — a bare `-`, then the
+        // mapping indented under it (verified by running `okf fmt`) — so assert
+        // the two lines, never a flow-style `- { by: …, at: … }`.
+        var text = File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md"));
+        Assert.Contains("by: human:ada", text);
+        Assert.Contains("at: 2026-08-28T09:14:00Z", text);
+    }
+
     /// <summary>A bundle that vanishes after construction surfaces as an error string, never an exception.</summary>
     [Fact]
     public void Verify_returns_an_error_string_when_the_bundle_is_gone()
@@ -1299,8 +1446,8 @@ public class OkfVerifyToolTests
 
         var text = ToolsOver(tmp).Verify("a, b", "human:ada");
 
-        Assert.Contains("Recorded a", text);
-        Assert.Contains("Recorded b", text);
+        Assert.Contains("recorded a  human:ada", text);
+        Assert.Contains("recorded b  human:ada", text);
     }
 }
 ```
@@ -1369,14 +1516,26 @@ La méthode :
                 }
             }
 
-            var lines = new StringBuilder();
-
+            // One batch call — all-or-nothing comes from the writer, so the
+            // pre-resolution above is only there to give a nicer message.
             // `at` is passed through untouched, null included: the writer owns
             // the clock seam and reports the timestamp it used, so the tool
             // never dates anything itself.
-            foreach (var id in ids)
+            var outcome = _writer.RecordVerifications(ids, by, at);
+            if (!outcome.Recorded)
             {
-                lines.Append(_writer.RecordVerification(id, by, at).Message).Append('\n');
+                return outcome.Message;
+            }
+
+            // The same line shape as the CLI verb, deliberately re-implemented
+            // rather than shared: the CLI's bytes are golden-locked and must not
+            // move because an agent-facing string was tuned. The tool's tests
+            // assert this exact shape so the two cannot drift unnoticed.
+            var lines = new StringBuilder();
+            foreach (var record in outcome.Records)
+            {
+                var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
+                lines.Append($"recorded {record.ConceptId}  {by}  {record.At}{replaces}").Append('\n');
             }
 
             return lines.ToString();
