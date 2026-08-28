@@ -1,9 +1,38 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Concurrent;
+using System.Globalization;
 using OKF4net.Internal;
 using OKF4net.Yaml;
 
 namespace OKF4net;
+
+/// <summary>One concept stamped by <see cref="BundleConceptWriter.RecordVerifications"/>.</summary>
+/// <param name="ConceptId">The concept that was stamped.</param>
+/// <param name="At">
+/// The timestamp written. Callers could format their own — the CLI and the
+/// Agents layer both see <c>OkfTimestamp</c> through <c>InternalsVisibleTo</c> —
+/// but two clocks are one too many: only the writer holds the seam tests pin,
+/// so it reports what it wrote.
+/// </param>
+/// <param name="ReplacedAt">The superseded <c>at</c>, or null when the stamp is new.</param>
+public readonly record struct VerificationRecord(string ConceptId, string At, string? ReplacedAt);
+
+/// <summary>
+/// The outcome of <see cref="BundleConceptWriter.RecordVerifications"/>:
+/// errors-as-data, never thrown.
+///
+/// <b>Read <see cref="Records"/>, not just <see cref="Recorded"/>.</b> Every
+/// concept is validated before the first byte is written, so a rejected batch
+/// — unknown id, malformed actor, non-conformant document — writes nothing.
+/// But writing several files cannot be atomic: if the third write fails on
+/// I/O, the first two are already on disk. <see cref="Recorded"/> is then
+/// false while <see cref="Records"/> lists what actually landed, and
+/// <see cref="Message"/> names them.
+/// </summary>
+/// <param name="Recorded">Whether the whole batch was written.</param>
+/// <param name="Message">A confirmation, or what went wrong and how far it got.</param>
+/// <param name="Records">One entry per concept actually stamped, in the order given.</param>
+public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
 
 /// <summary>
 /// The core, thread-safe write primitive for OKF bundles: producer-validated,
@@ -77,7 +106,10 @@ public sealed class BundleConceptWriter
     /// <summary>When true, <see cref="WriteConcept(string, string, string)"/> stamps a <c>generated</c> block (§5.2) if the caller omitted one. Off by default so only opt-in producer paths (the Agents write tool) auto-stamp.</summary>
     internal bool AutoStampGenerated { get; set; }
 
-    /// <summary>Clock seam for the auto-stamp; overridable in tests. Only consulted when <see cref="AutoStampGenerated"/> is true.</summary>
+    /// <summary>
+    /// Clock seam for the <c>generated</c> auto-stamp and for
+    /// <see cref="RecordVerifications"/>'s <c>at</c>; overridable in tests.
+    /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
     /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
@@ -431,6 +463,215 @@ public sealed class BundleConceptWriter
                 return WriteValidatedContentLocked(target.Id, target.TargetPath, content!, existedBefore);
             }
         });
+    }
+
+    /// <summary>
+    /// Records a review of every concept in <paramref name="conceptIds"/>:
+    /// adds — or replaces, at its position — the <c>{ by, at }</c> entry of
+    /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list,
+    /// preserving every other frontmatter key and the body.
+    ///
+    /// Fully validated before the first write: every concept is resolved, read,
+    /// edited and validated inside one hold of the bundle lock, before a single
+    /// byte is written. A batch is therefore REJECTED as a whole — an unknown
+    /// id, a malformed actor or a non-conformant document writes nothing.
+    ///
+    /// It is NOT a transaction. Writing several files cannot be atomic in
+    /// .NET, so a failure during the write phase (I/O, permissions, a reparse
+    /// point appearing after the late re-check) leaves the concepts already
+    /// written stamped. That case reports <c>Recorded = false</c> with
+    /// <c>Records</c> listing what did land — see <see cref="VerificationOutcome"/>.
+    /// The lock is also in-process, so an external actor mutating the bundle
+    /// mid-batch is not stopped: the same documented limit as this class's
+    /// reparse-point guard.
+    ///
+    /// A stamp is a dated declaration, not an authentication result: this
+    /// method cannot and does not check that the caller is who
+    /// <paramref name="by"/> names. What makes a stamp credible is where it
+    /// lands — a reviewed diff — not the tool that wrote it.
+    /// </summary>
+    /// <param name="conceptIds">Concept ids (paths without <c>.md</c>); each must already exist.</param>
+    /// <param name="by">The §7 actor recording the review; must be well-formed.</param>
+    /// <param name="at">
+    /// Timestamp in the library's own UTC shape (<c>yyyy-MM-ddTHH:mm:ssZ</c>);
+    /// null uses <see cref="UtcNow"/>.
+    /// </param>
+    public VerificationOutcome RecordVerifications(IReadOnlyList<string> conceptIds, string by, string? at = null)
+    {
+        if (conceptIds is null || conceptIds.Count == 0)
+        {
+            return Failed("Error: no concept id given.");
+        }
+
+        // Duplicates are refused, not silently collapsed. Preparing the same
+        // file twice would build both versions from the same original content
+        // and write it twice, reporting two `recorded` lines for the single
+        // stamp that survives — a result that reads like two reviews. Naming a
+        // concept twice is a mistake in the caller's list; say so.
+        var duplicate = conceptIds
+            .GroupBy(id => id, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            return Failed($"Error: concept '{duplicate.Key}' is named more than once.");
+        }
+
+        // Strict on input, permissive on read: `human:` with no id promotes the
+        // tier (Actor.IsHuman ignores well-formedness), so it must never be
+        // written here even though a parser would accept it.
+        if (by is null || !Actor.Parse(by).IsWellFormed)
+        {
+            return Failed($"Error: '{by}' is not a well-formed §7 actor.");
+        }
+
+        // NOT BundleValidator.IsIso8601DateTime: that predicate validates the
+        // date and ignores everything after the `T` (Validate.cs:618), because
+        // reading frontmatter is deliberately permissive. Writing is not: a
+        // stamp this library produces is UTC in one exact shape, and accepting
+        // "2026-08-28" or a +02:00 offset here would write a value the field's
+        // own documentation calls UTC.
+        var stampedAt = at ?? OkfTimestamp.FormatUtc(UtcNow());
+        if (!DateTime.TryParseExact(
+                stampedAt,
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out _))
+        {
+            return Failed($"Error: '{stampedAt}' is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ.");
+        }
+
+        var records = new List<VerificationRecord>(conceptIds.Count);
+        var message = RunTool(() =>
+        {
+            // Resolved outside the lock, like AppendToConceptAtomic does.
+            var targets = new List<ConceptTarget>(conceptIds.Count);
+            foreach (var conceptId in conceptIds)
+            {
+                var targetError = ValidateConceptTarget(conceptId, out var target);
+                if (targetError is not null)
+                {
+                    return targetError;
+                }
+
+                targets.Add(target);
+            }
+
+            lock (_bundleLock)
+            {
+                // PREPARE every concept — read, parse, upsert, validate — before
+                // writing any of them — so a batch is REJECTED as a whole, even if
+                var prepared = new List<(ConceptTarget Target, string Content)>(targets.Count);
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    var target = targets[i];
+                    if (!File.Exists(target.TargetPath))
+                    {
+                        return $"Error: concept '{conceptIds[i]}' does not exist.";
+                    }
+
+                    var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
+                    var document = OkfDocument.Parse(text);
+                    var map = document.Frontmatter.AsMapping();
+
+                    map.Insert("verified", UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt));
+
+                    var (content, buildError) = BuildConformantContent(map, document.Body);
+                    if (buildError is not null)
+                    {
+                        return buildError;
+                    }
+
+                    prepared.Add((target, content!));
+                    records.Add(new VerificationRecord(conceptIds[i], stampedAt, replacedAt));
+                }
+
+                // Writing N files cannot be atomic, so a failure here — I/O,
+                // permissions, a reparse point appearing between the late
+                // re-check and the write — leaves the earlier concepts stamped.
+                // That is reported rather than hidden: `written` is trimmed to
+                // what actually landed, and the message names it.
+                for (var i = 0; i < prepared.Count; i++)
+                {
+                    var (target, content) = prepared[i];
+                    var writeResult = WriteValidatedContentLocked(target.Id, target.TargetPath, content, existedBefore: true);
+                    if (writeResult.StartsWith("Error:", StringComparison.Ordinal))
+                    {
+                        var stamped = records.Take(i).Select(r => r.ConceptId).ToList();
+                        records.RemoveRange(i, records.Count - i);
+                        return stamped.Count == 0
+                            ? writeResult
+                            : $"{writeResult} — already written: {string.Join(", ", stamped)}";
+                    }
+                }
+
+                return $"Recorded {prepared.Count} verification(s) by {by} at {stampedAt}.";
+            }
+        });
+
+        // On failure, Records is NOT emptied: it carries whatever reached disk
+        // before the failure, so a caller can tell "nothing happened" from
+        // "three of five were stamped and then it broke".
+        return message.StartsWith("Error:", StringComparison.Ordinal)
+            ? new VerificationOutcome(false, message, records)
+            : new VerificationOutcome(true, message, records);
+
+        static VerificationOutcome Failed(string message) => new(false, message, []);
+    }
+
+    /// <summary>
+    /// Returns the <c>verified</c> sequence with <paramref name="by"/>'s stamp
+    /// added, or replaced at its existing position. <see cref="YamlSequence"/>
+    /// is immutable, so the list is rebuilt; only the FIRST entry matching the
+    /// actor is replaced — a permissive reader accepts duplicates, and this
+    /// writer never deletes an entry it is not replacing.
+    /// </summary>
+    private static YamlSequence UpsertStamp(YamlValue? existing, string by, string at, out string? replacedAt)
+    {
+        replacedAt = null;
+
+        var items = existing switch
+        {
+            YamlSequence sequence => new List<YamlValue>(sequence.Items),
+            // `verified: { by, at }` — a bare mapping — is a shape ParseVerified
+            // accepts, so normalize it into the list rather than discarding it.
+            YamlMapping single => [single],
+            _ => [],
+        };
+
+        var stamp = new YamlMapping();
+        stamp.Insert("by", new YamlString(by));
+        stamp.Insert("at", new YamlString(at));
+
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (items[i] is YamlMapping mapping
+                && string.Equals(mapping.Get("by")?.AsDisplayString(), by, StringComparison.Ordinal))
+            {
+                replacedAt = mapping.Get("at")?.AsDisplayString();
+                items[i] = stamp;
+                return new YamlSequence(items);
+            }
+        }
+
+        items.Add(stamp);
+        return new YamlSequence(items);
+    }
+
+    /// <summary>
+    /// Serializes after §11 conformance validation only (non-empty <c>type</c>),
+    /// unlike <see cref="BuildValidatedContent(YamlValue, string)"/>'s
+    /// producer-grade check. Deliberate: recording a review is not producing
+    /// content, and refusing a reviewer because a third party omitted a
+    /// <c>description</c> would make precisely the concepts an audit surfaces
+    /// unstampable. Throws <see cref="DocumentValidationException"/>, caught by
+    /// the caller's <see cref="RunTool"/> wrapper.
+    /// </summary>
+    private static (string? Content, string? Error) BuildConformantContent(YamlMapping frontmatter, string body)
+    {
+        var document = new OkfDocument(Frontmatter.FromMapping(frontmatter), body);
+        document.ValidateConformance();
+        return (document.Serialize(), null);
     }
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
