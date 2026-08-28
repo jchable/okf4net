@@ -99,13 +99,54 @@ l'aide du verbe.
 
 ## 3. Périmètre
 
-**Dans le périmètre** — trois unités, une par couche :
+**Dans le périmètre** — quatre unités, la première étant un prérequis
+d'infrastructure que la relecture de cette spec a révélé nécessaire :
 
+0. **Deux extensions du CLI, sans lesquelles la grammaire de §5 est
+   inexprimable** (voir §3.1).
 1. `BundleConceptWriter.RecordVerification` + le primitif atomique de
    read-modify-write sur le **frontmatter** (il n'existe aujourd'hui que pour le
    corps).
 2. Le verbe CLI `okf verify`.
 3. Le tool agent `okf_verify` (mutateur).
+
+### 3.1 Unité 0 — les deux prérequis du CLI
+
+**`CliArgs` ne porte qu'un seul positionnel.** `_positional` est un `string?`
+([OkfCli.cs:151](../../../src/OKF4net.Cli/OkfCli.cs#L151)) et `Positional(what)`
+le rend seul ; les huit verbes existants prennent tous exactement un positionnel
+(`<bundle>` ou `<file>`). `verify` est le premier à en vouloir N
+(`<bundle> <id>…`). Le scanner doit donc exposer, en plus, la **liste ordonnée**
+des positionnels suivants — `Rest()` ou équivalent, tokens dans l'ordre, ceux
+d'après `--` inclus.
+
+Note d'honnêteté, parce qu'un futur relecteur la posera : cette liste **a
+existé**, et a été réduite à un champ unique le 2026-08-22 lors d'une passe
+`/simplify`, au motif exact que rien ne lisait jamais au-delà du premier
+élément. C'était vrai à ce moment-là. La restaurer n'annule pas cette
+simplification, elle répond à un besoin qui n'existait pas encore — et le champ
+unique redevient ce qu'il aurait dû rester : un cas particulier de la liste, pas
+son remplaçant.
+
+**`OkfCli.Run` ne reçoit pas stdin.** Sa signature est
+`Run(string[] args, TextWriter stdout, TextWriter stderr)`
+([Program.cs:17](../../../src/OKF4net.Cli/Program.cs#L17)) et rien dans le CLI
+ne lit `Console.In` aujourd'hui. Or la forme `-` de §5.1 — la ligne qui referme
+la boucle — en dépend, et les tests pilotent le CLI **en processus** via
+`TestPaths.Run` : sans seam, le chemin stdin ne serait testable qu'en lançant un
+sous-processus, ce que la suite ne fait nulle part.
+
+Décision : ajouter un paramètre `TextReader stdin` à `OkfCli.Run`, câblé à
+`Console.In` par `Program.Main` et à un `StringReader` par les tests. C'est un
+changement de signature d'une API publique (`OkfCli.Run` est le point d'entrée
+unique, documenté comme tel) : il casse tout appelant externe, doit figurer au
+CHANGELOG comme rupture, et `TestPaths.Run` gagne une surcharge pour que les
+~60 appels existants restent inchangés.
+
+Alternative écartée : lire `Console.In` directement dans `CmdVerify`. Moins de
+surface remuée, mais le chemin le plus important de la feature deviendrait le
+seul non couvert par la suite — exactement le trou que la spec d'audit a payé
+cher ailleurs.
 
 **Hors périmètre, consigné au ROADMAP** (voir §10 pour les raisons) : l'audit
 conscient du temps (exposer les estampilles dans `AuditFinding` pour demander
@@ -139,9 +180,18 @@ l'écriture.
 
 - **Dernière estampille par acteur — ni journal, ni état.** Si `verified`
   contient déjà une entrée dont `by` est **textuellement identique** (comparaison
-  ordinale du `Raw`) à l'acteur donné, cette entrée est réécrite **en place**
-  (position préservée — `YamlMapping.Insert` sait déjà le faire pour une clé
-  existante) ; sinon l'entrée `{ by, at }` est ajoutée en fin de liste.
+  ordinale du `Raw`) à l'acteur donné, cette entrée est réécrite **à sa
+  position** ; sinon l'entrée `{ by, at }` est ajoutée en fin de liste.
+  Mécaniquement : `YamlSequence` est immuable (`Items` est un
+  `IReadOnlyList<YamlValue>` fixé au constructeur,
+  [YamlValue.cs:255-266](../../../src/OKF4net/Yaml/YamlValue.cs#L255-L266)), donc
+  on reconstruit une séquence en recopiant les items dans l'ordre et en
+  substituant celui qui correspond, puis on la repose sous la clé `verified` via
+  `YamlMapping.Insert` — qui remplace en place et **préserve la position de la
+  clé** dans le frontmatter
+  ([YamlMapping.cs:59-74](../../../src/OKF4net/Yaml/YamlMapping.cs#L59-L74)).
+  Deux niveaux, deux mécanismes : ne pas confondre la position de l'estampille
+  dans la séquence avec celle de `verified` dans le mapping.
   L'écrivain ne touche **jamais** l'entrée d'un autre acteur : un `process:`
   ne peut pas dégrader une relecture humaine en la remplaçant. Pourquoi pas un
   journal : l'émetteur YAML coûte trois lignes par estampille et le frontmatter
@@ -168,11 +218,18 @@ l'écriture.
   insensible à la bonne formation) est rejetée à l'écriture. Strict en entrée,
   permissif en lecture, comme partout.
 - **`at` : toujours écrit.** Fourni ⇒ validé par
-  `BundleValidator.IsIso8601DateTime` (le prédicat du validateur lui-même, pour
-  que `verify` ne puisse jamais écrire ce que `validate` avertirait) ; absent ⇒
-  `OkfTimestamp.FormatUtc(UtcNow())` via le seam d'horloge existant du writer
+  `BundleValidator.IsIso8601DateTime` (public,
+  [Validate.cs:618](../../../src/OKF4net/Validate.cs#L618) — le prédicat du
+  validateur lui-même, pour que `verify` ne puisse jamais écrire ce que
+  `validate` avertirait) ; absent ⇒ `OkfTimestamp.FormatUtc(UtcNow())` via le
+  seam d'horloge existant du writer
   ([BundleConceptWriter.cs:81](../../../src/OKF4net/BundleConceptWriter.cs#L81)),
   donc épinglable en test.
+  **Élargissement de contrat à acter** : la doc de ce seam dit aujourd'hui
+  « consulté uniquement quand `AutoStampGenerated` est vrai ». `RecordVerification`
+  le consultera indépendamment de ce flag — c'est voulu (une seule horloge dans
+  le writer, épinglée une seule fois en test), mais le commentaire XML doit être
+  corrigé dans le même changement, sinon il ment.
 - **`generated` n'est jamais touché.** Ni écrit, ni rafraîchi : une relecture
   n'est pas une génération, et la rafraîchir maquillerait la question « le
   contenu a-t-il bougé depuis ? » (§1.1).
@@ -209,10 +266,12 @@ existants. **Tout-ou-rien** : les ids sont tous validés (existence, bonne forme
 avant la première écriture ; un id inconnu fait échouer la commande entière sans
 rien écrire.
 
-**Pourquoi pas de forme groupée** : `verify` et `validate` diffèrent de deux
-lettres et signifient l'inverse (conformité machine / endossement humain). Un
-`okf verify monbundle` mal tapé doit échouer bruyamment (`error: missing
-<concept-id>`) plutôt que faire quelque chose de plausible. Et une forme `--all`
+**Pourquoi pas de forme groupée** : `verify` et `validate` partagent leur
+préfixe, s'autocomplètent l'un vers l'autre et signifient l'inverse (conformité
+machine / endossement humain), alors que les deux prennent un bundle en premier
+argument. Un `okf verify monbundle` — frappe erronée de `validate`, ou complétion
+malheureuse — doit donc échouer bruyamment (`error: missing <concept-id>`)
+plutôt que faire quelque chose de plausible sur tout le corpus. Et une forme `--all`
 est le geste exact de la promotion de masse : lancée une fois à l'onboarding,
 elle vide la worklist pour toujours et ressemble à un succès.
 
@@ -346,6 +405,24 @@ public string Verify(
 21. Schéma : `conceptIds` et `by` requis, `at` optionnel — épinglé comme pour
     `okf_audit`.
 
+### 7.4 Unité 0 — les prérequis CLI
+
+Numérotés à la suite bien que la tâche vienne en premier : la numérotation sert
+à référencer un cas depuis le plan, pas à ordonner le travail.
+
+22. `CliArgs` : plusieurs positionnels rendus **dans l'ordre** ; un seul ⇒ la
+    liste a un élément et `Positional(what)` continue de rendre le premier
+    (aucun des huit verbes existants ne change de comportement) ; aucun ⇒
+    `Positional` lève toujours `missing <what>`.
+23. `CliArgs` : les tokens après `--` entrent dans la liste des positionnels et
+    **jamais** dans les flags — la règle établie le 2026-08-22 vaut aussi pour
+    les positionnels au-delà du premier. Cas : `verify b -- --by` traite
+    `--by` comme un id, pas comme un flag.
+24. `OkfCli.Run` : le `TextReader` injecté est bien la source de la forme `-`
+    (un `StringReader` en test produit les mêmes estampilles qu'une liste d'ids
+    explicites), et un verbe qui ne lit pas stdin n'y touche jamais — aucune
+    lecture bloquante introduite sur les huit verbes existants.
+
 ## 8. Documentation
 
 - README : le verbe (avec l'enchaînement `audit | verify` en exemple), la ligne
@@ -353,7 +430,9 @@ public string Verify(
   preuve » : ce que l'estampille garantit, ce qu'elle ne garantit pas, le fait
   qu'`okf_write_concept` peut aussi en écrire une, et le mécanisme recommandé
   (l'estampille dans le diff relu, jamais inférée d'une approbation).
-- CHANGELOG sous `Unreleased`.
+- CHANGELOG sous `Unreleased`, avec **une entrée de rupture** pour la signature
+  de `OkfCli.Run` (§3.1) : `OKF4net.Cli` est publié, et le point d'entrée gagne
+  un paramètre.
 - Site (`web/`) : ligne dans les deux tables de verbes + chapitre docs/Cli, avec
   sortie réelle capturée ; tables de tools (12e tool) dans les README Agents et
   Mcp + pages du site.
