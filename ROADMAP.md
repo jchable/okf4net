@@ -23,8 +23,11 @@ are the concrete entry points.
 - **`okf verify` shipped** — the verb that answers what `okf audit` asks
   about trust: it records a review by adding, or from the same actor
   replacing, a `{by, at}` entry in a named concept's `verified` list (§5.2),
-  so the concept clears audit's trust-filtered selection at the next pass.
-  Verification only moves the trust dimension (§5.3) — `stale_after` is
+  so — for a `human:` actor — the concept clears audit's trust-filtered
+  selection at the next pass. A `process:`/`agent:` actor is accepted
+  symmetrically (§7) but only moves the concept from `unverified` to
+  `machine-confirmed`, which `--trust unverified,machine-confirmed` still
+  selects. Verification only moves the trust dimension (§5.3) — `stale_after` is
   untouched, so a just-reviewed concept can still appear in `okf audit`'s
   *default* (staleness-only) worklist. `<id>…` accepts `-` to
   read ids from standard input, so `okf audit … --trust unverified | cut

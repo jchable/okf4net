@@ -23,9 +23,12 @@ and this project adheres to
 - **`okf verify <bundle> <id>… --by <actor>`** — the verb that answers what
   `okf audit` asks about trust: it records a review (§5.2) by adding, or
   from the same actor replacing, a `{by, at}` entry in each named concept's
-  `verified` list, so the concept clears audit's trust-filtered
-  (`--trust unverified`/`unverified,machine-confirmed`) selection.
-  Verification only moves the trust dimension (§5.3) — it never touches
+  `verified` list, so — for a `human:` actor — the concept clears audit's
+  trust-filtered (`--trust unverified`/`unverified,machine-confirmed`)
+  selection. A `process:`/`agent:` actor is accepted symmetrically (§7) but
+  only moves the concept from `unverified` to `machine-confirmed`, which
+  that same filter still selects. Verification only moves the trust
+  dimension (§5.3) — it never touches
   `stale_after`, so a just-reviewed concept can still appear in `okf audit`'s
   *default* worklist, which selects on staleness alone. `<id>…` also accepts
   a single `-`, reading concept ids from standard input, so

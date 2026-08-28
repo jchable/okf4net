@@ -471,10 +471,13 @@ public sealed class BundleConceptWriter
     /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list,
     /// preserving every other frontmatter key and the body.
     ///
-    /// Fully validated before the first write: every concept is resolved, read,
-    /// edited and validated inside one hold of the bundle lock, before a single
-    /// byte is written. A batch is therefore REJECTED as a whole — an unknown
-    /// id, a malformed actor or a non-conformant document writes nothing.
+    /// Fully validated before the first write: every concept id is resolved
+    /// to a target path before the bundle lock is taken (like
+    /// <see cref="AppendToConceptAtomic"/> does); then, inside one hold of
+    /// that lock, each target is read, edited and validated, all before a
+    /// single byte is written. A batch is therefore REJECTED as a whole — an
+    /// unknown id, a malformed actor or a non-conformant document writes
+    /// nothing.
     ///
     /// It is NOT a transaction. Writing several files cannot be atomic in
     /// .NET, so a failure during the write phase (I/O, permissions, a reparse
@@ -655,8 +658,14 @@ public sealed class BundleConceptWriter
     /// Returns the <c>verified</c> sequence with <paramref name="by"/>'s stamp
     /// added, or replaced at its existing position. <see cref="YamlSequence"/>
     /// is immutable, so the list is rebuilt; only the FIRST entry matching the
-    /// actor is replaced — a permissive reader accepts duplicates, and this
-    /// writer never deletes an entry it is not replacing.
+    /// actor is replaced — a permissive reader accepts duplicates, and when
+    /// <paramref name="existing"/> is already a sequence (or the single-entry
+    /// mapping shape it is normalized into) this writer never deletes an
+    /// entry it is not replacing. A malformed <c>verified</c> value that is
+    /// neither — a bare scalar such as <c>verified: 2026-01-01</c> — is not
+    /// preserved at all: it is discarded whole and replaced by a new
+    /// single-entry sequence, the same input shape
+    /// <see cref="DiagnosticCode.VerifiedMalformed"/> already reports.
     /// </summary>
     private static YamlSequence UpsertStamp(YamlValue? existing, string by, string at, out string? replacedAt)
     {

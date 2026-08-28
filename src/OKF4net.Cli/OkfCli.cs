@@ -640,12 +640,14 @@ public static class OkfCli
             throw new CliOperationException($"concept '{duplicate.Key}' is named more than once");
         }
 
-        // Every id is resolved AND checked for §11 conformance before anything
-        // is written. Existence alone would not be enough: Bundle indexes any
-        // document that parses, including one with no `type`, which the writer
-        // then refuses at write time — so a mistyped id in third position would
-        // leave the first two stamped. Both checks here, so a rejected batch
-        // is true rather than nearly true.
+        // The writer itself already refuses the whole batch atomically if any
+        // id is unknown or non-conformant (BundleConceptWriter.RecordVerifications
+        // resolves, reads, parses and validates every concept before writing
+        // any) — this loop does not exist to prevent a half-stamped batch.
+        // What it buys is message quality: naming the offending id directly
+        // ("unknown concept \"x\"" / "concept \"x\" has no `type`...") instead
+        // of the writer's unattributed "Missing required frontmatter keys:
+        // type", which does not say which of several ids was at fault.
         foreach (var id in ids)
         {
             if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)

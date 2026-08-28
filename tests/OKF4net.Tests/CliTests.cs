@@ -1013,10 +1013,11 @@ public class CliTests
     }
 
     /// <summary>
-    /// Existence is not enough for the pre-flight: a document with no `type`
-    /// loads into the bundle but is refused at write time, so without the
-    /// conformance check here the concepts named before it would already be
-    /// stamped.
+    /// A document with no `type` loads into the bundle but is refused at
+    /// write time by <c>BundleConceptWriter.RecordVerifications</c> itself,
+    /// which validates every concept before writing any — so this pins that
+    /// the whole batch is still rejected, and via the CLI's own message
+    /// (naming the concept) rather than the writer's unattributed one.
     /// </summary>
     [Fact]
     public void Verify_writes_nothing_when_one_concept_is_not_conformant()
@@ -1070,6 +1071,11 @@ public class CliTests
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "hier" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"hier\"\n")]
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28\"\n")]
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00+02:00" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28T09:14:00+02:00\"\n")]
+    // --by present but with nothing attached to it.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by" }, "error: --by requires a value\n")]
+    // "-" (stdin) with nothing on it -- Run() below passes TextReader.Null,
+    // whose ReadLine() returns null immediately, so ReadIdsFrom sees zero ids.
+    [InlineData(new[] { "verify", "BUNDLE", "-", "--by", "human:ada" }, "error: no concept ids on standard input\n")]
     public void Verify_rejects_bad_invocations(string[] args, string expected)
     {
         using var tmp = new TempDir();

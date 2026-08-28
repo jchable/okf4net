@@ -587,17 +587,16 @@ public sealed class OkfBundleTools
 
         return RunTool(() =>
         {
-            // Pre-resolved like the CLI (OkfCli.cs's CmdVerify): every id is
-            // checked for BOTH existence and §11 conformance before the first
-            // write, so a typo or a typeless draft in the third id cannot
-            // leave the first two stamped. Existence alone would not be
-            // enough: Bundle indexes any document that parses, including one
-            // with no `type`, which the writer then refuses at write time —
-            // naming the offender only through the writer's own error would
-            // leave an agent bisecting an eight-id batch by hand to find
-            // which one lacks `type`. Without either check here at all,
-            // `okf_verify("a, nope", …)` would write to `a` and then report a
-            // failure — the worst of both.
+            // Pre-resolved like the CLI (OkfCli.cs's CmdVerify). The writer
+            // already refuses the whole batch atomically on its own if any id
+            // is unknown or non-conformant — RecordVerifications resolves,
+            // reads, parses and validates every concept before writing any —
+            // so this loop is not what stops a half-stamped batch. What it
+            // buys is message quality: naming the offender directly ("concept
+            // 'x' does not exist" / "concept 'x' has no `type`...") instead of
+            // the writer's unattributed "Missing required frontmatter keys:
+            // type", which would leave an agent bisecting an eight-id batch by
+            // hand to find which one lacks `type`.
             var bundle = GetBundle();
             foreach (var id in ids)
             {

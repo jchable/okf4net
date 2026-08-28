@@ -220,8 +220,11 @@ for a repeat review from the same actor, replaces — a `{ by, at }` entry in
 each named concept's `verified` list. It is the verb that answers what
 `okf audit` asks about trust: audit finds concepts a human has never reviewed
 (`--trust unverified` / `unverified,machine-confirmed`), verify records that
-the review happened, and the reviewed concept clears that trust-filtered
-selection. Verification only moves the trust dimension (§5.3) — it never
+the review happened, and — for a `human:` actor — the reviewed concept
+clears that trust-filtered selection. A `process:`/`agent:` actor is accepted
+symmetrically (§7), but only moves the concept from `unverified` to
+`machine-confirmed` (§5.3), which `--trust unverified,machine-confirmed`
+still selects. Verification only moves the trust dimension (§5.3) — it never
 touches `stale_after`, so a concept just reviewed can still show up in
 `okf audit`'s *default* worklist, which selects on staleness alone (see
 above). `<id>…` also accepts a single `-`, reading one concept id per line

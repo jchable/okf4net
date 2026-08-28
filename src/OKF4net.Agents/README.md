@@ -39,13 +39,18 @@ expected errors (unknown ids, invalid paths, malformed input) — the agent
 receives an explanatory message instead. All four write tools
 (`okf_write_concept`, `okf_verify`, `okf_append_log`, `okf_regenerate_indexes`)
 serialize their writes and rely on the Agent Framework's tool-approval
-mechanism for gating. `okf_write_concept`, `okf_append_log` and
-`okf_regenerate_indexes` validate documents against the stricter
-producer-grade OKF rules before touching disk; `okf_verify` deliberately
-enforces only §11 conformance (a non-empty `type`) instead — recording a
-review is not producing content, and refusing a reviewer because a concept
-is missing a `description` would make precisely the concepts an audit
-surfaces unstampable. It records a `{by, at}` review stamp (§5.2) — a dated
+mechanism for gating. Their validation levels differ, though: only
+`okf_write_concept` checks a document against the stricter producer-grade
+OKF rules (non-empty `type`, `title`, `description`) before touching disk;
+`okf_verify` deliberately enforces only §11 conformance (a non-empty `type`)
+instead — recording a review is not producing content, and refusing a
+reviewer because a concept is missing a `description` would make precisely
+the concepts an audit surfaces unstampable. `okf_append_log` validates only
+its own `kind`/`text` arguments (non-empty, no embedded newline or null
+byte) and re-renders `log.md` through the §9 model — it does not touch
+concept documents at all. `okf_regenerate_indexes` performs no document
+validation whatsoever; it only rebuilds `index.md` listings from whatever is
+already on disk. It records a `{by, at}` review stamp (§5.2) — a dated
 declaration, not a proof; see the project README's `okf verify` section for
 what it does and doesn't guarantee. Bundle content is treated as untrusted
 and is never injected as a system message.

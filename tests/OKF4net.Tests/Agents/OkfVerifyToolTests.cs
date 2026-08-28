@@ -63,8 +63,8 @@ public class OkfVerifyToolTests
     }
 
     /// <summary>
-    /// All-or-nothing across the whole list: one unknown id leaves every other
-    /// concept untouched. A single-id test cannot catch this.
+    /// A repeated id is refused outright, rather than silently collapsed to
+    /// one stamp or double-recorded as two.
     /// </summary>
     [Fact]
     public void Verify_refuses_a_concept_named_twice()
@@ -79,6 +79,10 @@ public class OkfVerifyToolTests
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "a.md")));
     }
 
+    /// <summary>
+    /// All-or-nothing across the whole list: one unknown id leaves every other
+    /// concept untouched. A single-id test cannot catch this.
+    /// </summary>
     [Fact]
     public void Verify_writes_nothing_when_one_id_of_several_is_unknown()
     {
