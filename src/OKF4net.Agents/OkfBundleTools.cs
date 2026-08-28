@@ -565,12 +565,16 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="conceptIds">Comma-separated concept ids; each must already exist.</param>
     /// <param name="by">The §7 actor recording the review.</param>
-    /// <param name="at">ISO-8601 timestamp; omit for now.</param>
+    /// <param name="at">
+    /// UTC timestamp in the exact form <c>yyyy-MM-ddTHH:mm:ssZ</c> (the writer's
+    /// <see cref="BundleConceptWriter.RecordVerifications"/> rejects fractional
+    /// seconds, a numeric offset, and a bare date); omit for now.
+    /// </param>
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
     public string Verify(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
         [Description("The §7 actor recording the review, e.g. human:ada, agent:assistant/1.0, process:nightly.")] string by,
-        [Description("ISO-8601 UTC timestamp; omit for now.")] string? at = null)
+        [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null)
     {
         var ids = (conceptIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -583,16 +587,28 @@ public sealed class OkfBundleTools
 
         return RunTool(() =>
         {
-            // Pre-resolved like the CLI: every id is checked before the
-            // first write, so a typo in the third id cannot leave the first two
-            // stamped. Without this, `okf_verify("a, nope", …)` writes to `a`
-            // and then reports a failure — the worst of both.
+            // Pre-resolved like the CLI (OkfCli.cs's CmdVerify): every id is
+            // checked for BOTH existence and §11 conformance before the first
+            // write, so a typo or a typeless draft in the third id cannot
+            // leave the first two stamped. Existence alone would not be
+            // enough: Bundle indexes any document that parses, including one
+            // with no `type`, which the writer then refuses at write time —
+            // naming the offender only through the writer's own error would
+            // leave an agent bisecting an eight-id batch by hand to find
+            // which one lacks `type`. Without either check here at all,
+            // `okf_verify("a, nope", …)` would write to `a` and then report a
+            // failure — the worst of both.
             var bundle = GetBundle();
             foreach (var id in ids)
             {
-                if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is null)
+                if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
                 {
                     return $"Error: concept '{id}' does not exist.";
+                }
+
+                if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
+                {
+                    return $"Error: concept '{id}' has no `type` and is not §11-conformant.";
                 }
             }
 
