@@ -104,7 +104,7 @@ d'infrastructure que la relecture de cette spec a révélé nécessaire :
 
 0. **Deux extensions du CLI, sans lesquelles la grammaire de §5 est
    inexprimable** (voir §3.1).
-1. `BundleConceptWriter.RecordVerification` + le primitif atomique de
+1. `BundleConceptWriter.RecordVerifications` + le primitif atomique de
    read-modify-write sur le **frontmatter** (il n'existe aujourd'hui que pour le
    corps).
 2. Le verbe CLI `okf verify`.
@@ -166,11 +166,35 @@ Méthode ajoutée à `BundleConceptWriter` (classe existante) :
     /// reste du frontmatter et le corps. Erreurs rendues en chaîne (errors-as-
     /// data), null en cas de succès — même contrat que WriteConcept.
     /// </summary>
-    /// <param name="conceptId">L'id du concept (chemin sans .md).</param>
+    /// <param name="conceptIds">Les ids des concepts (chemins sans .md), sans doublon.</param>
     /// <param name="by">L'acteur §7, requis, bien formé.</param>
-    /// <param name="at">Horodatage ISO-8601 UTC ; null ⇒ UtcNow formaté.</param>
-    public string? RecordVerification(string conceptId, string by, string? at = null);
+    /// <param name="at">Horodatage UTC `yyyy-MM-ddTHH:mm:ssZ` ; null ⇒ UtcNow formaté.</param>
+    public VerificationOutcome RecordVerifications(
+        IReadOnlyList<string> conceptIds, string by, string? at = null);
+
+// où :
+public readonly record struct VerificationRecord(string ConceptId, string At, string? ReplacedAt);
+public readonly record struct VerificationOutcome(
+    bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
 ```
+
+**Une opération de lot, pas une par concept** (décidé à la rédaction du plan,
+sur retour de revue). Une boucle d'écritures unitaires laisse le premier concept
+estampillé quand le second échoue, et obligerait le CLI **et** le tool à
+refermer cette fenêtre chacun de leur côté. Le lot résout, lit, parse, valide et
+prépare **tous** les contenus avant d'en écrire un seul : un lot est donc rejeté
+en bloc — id inconnu, acteur mal formé, document non conforme n'écrivent rien.
+
+Ce n'est pas pour autant une transaction, et la spec ne le prétend pas : écrire
+N fichiers n'est pas atomique en .NET. Une défaillance pendant la phase
+d'écriture (I/O, droits, reparse point apparu) laisse estampillés les concepts
+déjà écrits. Ce cas rend `Recorded = false` **avec** `Records` listant ce qui a
+réellement atterri, et le message les nomme. Un appelant doit lire `Records`, pas
+seulement `Recorded`.
+
+Les ids en double sont **refusés**, pas dédupliqués : préparer deux fois le même
+fichier depuis le même contenu d'origine produirait deux lignes `recorded` pour
+une seule estampille survivante.
 
 Un seul écrivain gouverné, appelé par le CLI et par le tool — le partage retenu
 pour `ConceptAudit` (calcul commun, présentations distinctes) s'applique ici à
@@ -206,7 +230,7 @@ l'écriture.
   doublons de tout autre producteur — même asymétrie strict-en-entrée /
   permissif-en-lecture que la spec d'audit §4.1.
 - **Validation à l'écriture : conformité §11, pas mode producteur.**
-  `RecordVerification` appelle `ValidateConformance()` (type non vide,
+  `RecordVerifications` appelle `ValidateConformance()` (type non vide,
   [OkfDocument.cs:158](../../../src/OKF4net/OkfDocument.cs#L158)), **pas**
   `Validate()`. Divergence délibérée avec `WriteConcept` : `verify` ne produit
   pas de contenu, il enregistre la relecture d'un contenu qu'il n'a pas écrit ;
@@ -217,16 +241,22 @@ l'écriture.
   la chaîne `human:` nue (qui promeut pourtant le tier, `IsHuman` étant
   insensible à la bonne formation) est rejetée à l'écriture. Strict en entrée,
   permissif en lecture, comme partout.
-- **`at` : toujours écrit.** Fourni ⇒ validé par
-  `BundleValidator.IsIso8601DateTime` (public,
-  [Validate.cs:618](../../../src/OKF4net/Validate.cs#L618) — le prédicat du
-  validateur lui-même, pour que `verify` ne puisse jamais écrire ce que
-  `validate` avertirait) ; absent ⇒ `OkfTimestamp.FormatUtc(UtcNow())` via le
+- **`at` : toujours écrit, et strictement UTC.** Fourni ⇒ doit avoir exactement
+  la forme que la bibliothèque émet, `yyyy-MM-ddTHH:mm:ssZ`, contrôlée par un
+  `DateTime.TryParseExact` en `InvariantCulture`. **Surtout pas**
+  `BundleValidator.IsIso8601DateTime` : ce prédicat ne valide que la partie
+  date et ignore tout ce qui suit le `T`
+  ([Validate.cs:618](../../../src/OKF4net/Validate.cs#L618)), délibérément,
+  parce que *lire* un frontmatter est permissif. L'employer comme garde
+  d'écriture ferait accepter `2026-08-28` ou `2026-08-28T09:14:00+02:00` comme
+  estampilles que le champ documente pourtant en UTC — la règle « strict en
+  entrée, permissif en lecture » vaut ici comme pour l'acteur. Absent ⇒
+  `OkfTimestamp.FormatUtc(UtcNow())` via le
   seam d'horloge existant du writer
   ([BundleConceptWriter.cs:81](../../../src/OKF4net/BundleConceptWriter.cs#L81)),
   donc épinglable en test.
   **Élargissement de contrat à acter** : la doc de ce seam dit aujourd'hui
-  « consulté uniquement quand `AutoStampGenerated` est vrai ». `RecordVerification`
+  « consulté uniquement quand `AutoStampGenerated` est vrai ». `RecordVerifications`
   le consultera indépendamment de ce flag — c'est voulu (une seule horloge dans
   le writer, épinglée une seule fois en test), mais le commentaire XML doit être
   corrigé dans le même changement, sinon il ment.
@@ -257,7 +287,7 @@ okf verify <bundle> - --by <acteur>            # ids lus sur stdin, un par ligne
 | `<concept-id>…` | Un ou plusieurs ids **explicites**. Aucune forme « tout le bundle ». |
 | `-` | Seul id positionnel : les ids arrivent de stdin, un par ligne, lignes vides ignorées, chaque ligne trimée. Pas de mélange `-` + ids explicites. |
 | `--by` | Requis, valué, acteur §7 bien formé. Aucun défaut, aucune variable d'environnement, aucune lecture de git config : l'outil n'invente jamais un auteur. |
-| `--at` | Optionnel, valué, ISO-8601 ; défaut : UTC maintenant. Sert la transcription différée (CI future) et les goldens déterministes. |
+| `--at` | Optionnel, valué, UTC strict `yyyy-MM-ddTHH:mm:ssZ` ; défaut : UTC maintenant. Sert la transcription différée (CI future) et les goldens déterministes. |
 | `--dry-run` | Affiche ce qui serait écrit, n'écrit rien, code 0. |
 
 Le parsing passe par `CliArgs.Scan(args, "--by", "--at")` — les flags valués
@@ -308,7 +338,7 @@ silencieux.
 | `--by` absent | `error: verify requires --by <actor>` |
 | `--by` sans valeur | `error: --by requires a value` (contrat `CliArgs`) |
 | `--by` mal formé | `error: --by is not a well-formed §7 actor: "human:"` |
-| `--at` invalide | `error: --at is not ISO-8601: "hier"` |
+| `--at` invalide | `error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: "hier"` |
 | id inconnu | `error: unknown concept "metrics/nope"` (et rien n'est écrit) |
 | `-` mélangé à des ids | `error: "-" (stdin) cannot be combined with explicit concept ids` |
 
@@ -370,7 +400,7 @@ public string Verify(
 6. `at` absent ⇒ `UtcNow` du writer, épinglé par le seam.
 7. Le tier observé par `ConceptAudit` bascule : unverified → machine-confirmed
    (acteur `process:`) → human-reviewed (acteur `human:`) après estampille.
-8. Concurrence : deux `RecordVerification` en parallèle sur le même concept,
+8. Concurrence : deux `RecordVerifications` en parallèle sur le même concept,
    acteurs distincts ⇒ les deux estampilles présentes.
 9. `generated` absent avant ⇒ toujours absent après ; présent avant ⇒
    byte-identique après.
@@ -426,7 +456,7 @@ Numérotés à la suite bien que la tâche vienne en premier : la numérotation 
 ## 8. Documentation
 
 - README : le verbe (avec l'enchaînement `audit | verify` en exemple), la ligne
-  du tableau §5.2-§5.3 → `RecordVerification`, et l'encadré « déclaration, pas
+  du tableau §5.2-§5.3 → `RecordVerifications`, et l'encadré « déclaration, pas
   preuve » : ce que l'estampille garantit, ce qu'elle ne garantit pas, le fait
   qu'`okf_write_concept` peut aussi en écrire une, et le mécanisme recommandé
   (l'estampille dans le diff relu, jamais inférée d'une approbation).
@@ -436,7 +466,7 @@ Numérotés à la suite bien que la tâche vienne en premier : la numérotation 
 - Site (`web/`) : ligne dans les deux tables de verbes + chapitre docs/Cli, avec
   sortie réelle capturée ; tables de tools (12e tool) dans les README Agents et
   Mcp + pages du site.
-- `CLAUDE.md` : une ligne — `RecordVerification` est l'écrivain gouverné unique
+- `CLAUDE.md` : une ligne — `RecordVerifications` est l'écrivain gouverné unique
   de `verified` ; ne pas en forker un second.
 - ROADMAP : l'audit conscient du temps (le follow-up à plus forte valeur : il
   transforme les estampilles d'alibi permanent en signal qui décroît, et ne

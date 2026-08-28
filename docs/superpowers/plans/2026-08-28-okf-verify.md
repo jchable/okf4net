@@ -4,7 +4,7 @@
 
 **Goal:** Enregistrer une relecture — une estampille datée `{ by, at }` dans le champ `verified` d'un concept — pour que la worklist d'`okf audit` ait enfin une sortie.
 
-**Architecture:** Un écrivain gouverné unique dans le cœur (`BundleConceptWriter.RecordVerification`, read-modify-write atomique sur le frontmatter), consommé par un verbe CLI et par un tool agent mutateur. Deux prérequis d'infrastructure CLI (positionnels multiples, seam stdin) précèdent le tout.
+**Architecture:** Un écrivain gouverné unique dans le cœur (`BundleConceptWriter.RecordVerifications`, read-modify-write atomique sur le frontmatter), consommé par un verbe CLI et par un tool agent mutateur. Deux prérequis d'infrastructure CLI (positionnels multiples, seam stdin) précèdent le tout.
 
 **Tech Stack:** C# / net10.0, xunit, zéro dépendance tierce, Native AOT pour le CLI.
 
@@ -38,11 +38,12 @@ chaîne qu'on évite ailleurs. Errors-as-data est préservé : le type ne lève 
 | `src/OKF4net.Cli/OkfCli.cs` | `CliArgs` : positionnels multiples ; `Run` : paramètre stdin | 0 |
 | `src/OKF4net.Cli/Program.cs` | câble `Console.In` | 0 |
 | `tests/OKF4net.Tests/TestPaths.cs` | surcharge `Run` avec stdin | 0 |
-| `src/OKF4net/BundleConceptWriter.cs` | `RecordVerification`, `UpsertStamp`, `BuildConformantContent` | 1 |
+| `src/OKF4net/BundleConceptWriter.cs` | `RecordVerifications`, `UpsertStamp`, `BuildConformantContent` | 1 |
 | `tests/OKF4net.Tests/RecordVerificationTests.cs` (créé) | tests du cœur | 1 |
 | `src/OKF4net.Cli/OkfCli.cs` | `Usage`, dispatch, `CmdVerify` | 2 |
 | `tests/OKF4net.Tests/CliTests.cs` | tests CLI | 2 |
 | `tests/fixtures/golden/verify.out` (créé) | golden de sortie | 3 |
+| `tests/fixtures/golden/verify-dau.md` (créé) | golden du concept après écriture | 3 |
 | `tests/OKF4net.Tests/GoldenParityTests.cs`, `tests/fixtures/README.md` | parité + provenance | 3 |
 | `src/OKF4net.Agents/OkfBundleTools.cs` | tool `okf_verify`, `WriteToolNames` | 4 |
 | `tests/OKF4net.Tests/Agents/*`, `tests/OKF4net.Tests/Mcp/*` | tests tool + MCP | 4 |
@@ -142,8 +143,12 @@ maintenant empêcherait la compilation de tout le projet de tests, donc le
 premier ne s'exécuterait jamais et on ne verrait rien échouer. Les ajouter
 après le Step 4.
 
-Expected (test du séparateur seul) : ÉCHEC — la sortie est le JSON, parce que
-`--json` placé après `--` est encore honoré comme flag.
+Expected (test du séparateur seul) : ÉCHEC. Attention au **diagnostic** : avec
+le scanner actuel, la branche du séparateur *écrase* le positionnel, donc
+`audit <bundle> -- --json` prend `--json` comme chemin de bundle et échoue au
+chargement (code 1, `error:` sur stderr). Ce n'est pas « la sortie est du
+JSON » — c'est la perte du bundle qui fait échouer le test, et c'est bien la
+régression que le correctif supprime.
 
 - [ ] **Step 3: Positionnels multiples dans `CliArgs`**
 
@@ -272,7 +277,7 @@ git commit -m "refactor(cli): ordered positionals and a stdin seam"
 
 ---
 
-### Task 1: Le cœur — `RecordVerification`
+### Task 1: Le cœur — `RecordVerifications`
 
 **Files:**
 - Modify: `src/OKF4net/BundleConceptWriter.cs`
@@ -307,7 +312,7 @@ Créer `tests/OKF4net.Tests/RecordVerificationTests.cs` :
 namespace OKF4net.Tests;
 
 /// <summary>
-/// Tests for <see cref="BundleConceptWriter.RecordVerification"/>: the single
+/// Tests for <see cref="BundleConceptWriter.RecordVerifications"/>: the single
 /// governed writer of the §5.2 <c>verified</c> field. Every test pins the
 /// clock through the writer's own <c>UtcNow</c> seam so no assertion depends
 /// on the day the suite runs.
@@ -588,7 +593,16 @@ Expected: échec de compilation — `RecordVerification` et `VerificationOutcome
 
 - [ ] **Step 3: Implémenter**
 
-Dans `src/OKF4net/BundleConceptWriter.cs`, les deux types de résultat au-dessus de la classe :
+Dans `src/OKF4net/BundleConceptWriter.cs`, **ajouter d'abord l'import** — le
+projet a `ImplicitUsings`, mais `System.Globalization` n'en fait pas partie
+(`Audit.cs` et `Lifecycle.cs` l'importent explicitement), et le parse strict de
+`at` a besoin de `CultureInfo` et `DateTimeStyles` :
+
+```csharp
+using System.Globalization;
+```
+
+Puis les deux types de résultat au-dessus de la classe :
 
 ```csharp
 /// <summary>One concept stamped by <see cref="BundleConceptWriter.RecordVerifications"/>.</summary>
@@ -604,13 +618,19 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 
 /// <summary>
 /// The outcome of <see cref="BundleConceptWriter.RecordVerifications"/>:
-/// errors-as-data, never thrown. All-or-nothing — when
-/// <see cref="Recorded"/> is false, nothing was written and
-/// <see cref="Records"/> is empty.
+/// errors-as-data, never thrown.
+///
+/// <b>Read <see cref="Records"/>, not just <see cref="Recorded"/>.</b> Every
+/// concept is validated before the first byte is written, so a rejected batch
+/// — unknown id, malformed actor, non-conformant document — writes nothing.
+/// But writing several files cannot be atomic: if the third write fails on
+/// I/O, the first two are already on disk. <see cref="Recorded"/> is then
+/// false while <see cref="Records"/> lists what actually landed, and
+/// <see cref="Message"/> names them.
 /// </summary>
-/// <param name="Recorded">Whether the batch was written.</param>
-/// <param name="Message">A confirmation, or the reason nothing was written.</param>
-/// <param name="Records">One entry per stamped concept, in the order given.</param>
+/// <param name="Recorded">Whether the whole batch was written.</param>
+/// <param name="Message">A confirmation, or what went wrong and how far it got.</param>
+/// <param name="Records">One entry per concept actually stamped, in the order given.</param>
 public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
 ```
 
@@ -623,12 +643,19 @@ Puis, dans la classe, la méthode de lot et ses aides privées :
     /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list,
     /// preserving every other frontmatter key and the body.
     ///
-    /// All-or-nothing: every concept is resolved, read, edited and validated
-    /// before the first byte is written, all inside one hold of the bundle
-    /// lock, so a bad third id cannot leave the first two stamped. The lock is
-    /// an in-process one and .NET has no multi-file atomic write, so an
-    /// external actor mutating the bundle mid-batch is not stopped — the same
-    /// documented limit as this class's reparse-point guard.
+    /// Fully validated before the first write: every concept is resolved, read,
+    /// edited and validated inside one hold of the bundle lock, before a single
+    /// byte is written. A batch is therefore REJECTED as a whole — an unknown
+    /// id, a malformed actor or a non-conformant document writes nothing.
+    ///
+    /// It is NOT a transaction. Writing several files cannot be atomic in
+    /// .NET, so a failure during the write phase (I/O, permissions, a reparse
+    /// point appearing after the late re-check) leaves the concepts already
+    /// written stamped. That case reports <c>Recorded = false</c> with
+    /// <c>Records</c> listing what did land — see <see cref="VerificationOutcome"/>.
+    /// The lock is also in-process, so an external actor mutating the bundle
+    /// mid-batch is not stopped: the same documented limit as this class's
+    /// reparse-point guard.
     ///
     /// A stamp is a dated declaration, not an authentication result: this
     /// method cannot and does not check that the caller is who
@@ -705,7 +732,7 @@ Puis, dans la classe, la méthode de lot et ses aides privées :
             lock (_bundleLock)
             {
                 // PREPARE every concept — read, parse, upsert, validate — before
-                // writing any of them. This is what makes the batch all-or-nothing.
+                // writing any of them — so a batch is REJECTED as a whole, even if
                 var prepared = new List<(ConceptTarget Target, string Content)>(targets.Count);
                 for (var i = 0; i < targets.Count; i++)
                 {
@@ -731,12 +758,22 @@ Puis, dans la classe, la méthode de lot et ses aides privées :
                     records.Add(new VerificationRecord(conceptIds[i], stampedAt, replacedAt));
                 }
 
-                foreach (var (target, content) in prepared)
+                // Writing N files cannot be atomic, so a failure here — I/O,
+                // permissions, a reparse point appearing between the late
+                // re-check and the write — leaves the earlier concepts stamped.
+                // That is reported rather than hidden: `written` is trimmed to
+                // what actually landed, and the message names it.
+                for (var i = 0; i < prepared.Count; i++)
                 {
+                    var (target, content) = prepared[i];
                     var writeResult = WriteValidatedContentLocked(target.Id, target.TargetPath, content, existedBefore: true);
                     if (writeResult.StartsWith("Error:", StringComparison.Ordinal))
                     {
-                        return writeResult;
+                        var stamped = records.Take(i).Select(r => r.ConceptId).ToList();
+                        records.RemoveRange(i, records.Count - i);
+                        return stamped.Count == 0
+                            ? writeResult
+                            : $"{writeResult} — already written: {string.Join(", ", stamped)}";
                     }
                 }
 
@@ -744,8 +781,11 @@ Puis, dans la classe, la méthode de lot et ses aides privées :
             }
         });
 
+        // On failure, Records is NOT emptied: it carries whatever reached disk
+        // before the failure, so a caller can tell "nothing happened" from
+        // "three of five were stamped and then it broke".
         return message.StartsWith("Error:", StringComparison.Ordinal)
-            ? Failed(message)
+            ? new VerificationOutcome(false, message, records)
             : new VerificationOutcome(true, message, records);
 
         static VerificationOutcome Failed(string message) => new(false, message, []);
@@ -905,7 +945,7 @@ Ajouter à `tests/OKF4net.Tests/CliTests.cs` :
     }
 
     /// <summary>
-    /// All-or-nothing: every id is resolved before anything is written, so one
+    /// Fully validated first: every id is resolved before anything is written, so one
     /// unknown id leaves the whole bundle untouched.
     /// </summary>
     [Fact]
@@ -1139,7 +1179,7 @@ Puis la méthode :
         // is written. Existence alone would not be enough: Bundle indexes any
         // document that parses, including one with no `type`, which the writer
         // then refuses at write time — so a mistyped id in third position would
-        // leave the first two stamped. Both checks here, and "all-or-nothing"
+        // leave the first two stamped. Both checks here, so a rejected batch
         // is true rather than nearly true.
         foreach (var id in ids)
         {
@@ -1309,7 +1349,17 @@ Dans `tests/fixtures/README.md`, à la liste des goldens :
   metrics/legacy --by human:ada --at 2026-08-28T09:14:00Z`. **Hand-authored**,
   verified against the design spec's stated output format rather than captured
   from a reference CLI: `verify` is an OKF4net verb with no upstream
-  counterpart. The bundle is a throwaway copy because the verb writes.
+  counterpart. The bundle is a throwaway copy because the verb writes. The
+  first line carries a `(replaces …)` suffix because `okf_v02/metrics/dau.md`
+  already holds a `human:ada` stamp, so that run exercises the replace path
+  while the second line exercises the append path.
+- `golden/verify-dau.md` — `metrics/dau.md` as it stands **after** that same
+  run. Pins what stdout cannot: that the stamp landed at the existing entry's
+  position, that `process:nightly` survived untouched, that `generated` was not
+  written or refreshed, and that every other key and the body are byte-identical
+  to the source fixture. Produced by running the command once on a copy, then
+  **read line by line and justified by hand** before being frozen — the
+  inspection is the provenance, not the capture.
 ```
 
 - [ ] **Step 4: Lancer les tests**
@@ -1320,7 +1370,7 @@ Expected: PASS. **En cas d'écart, corriger le code, jamais le golden** — sauf
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tests/fixtures/golden/verify.out tests/OKF4net.Tests/GoldenParityTests.cs tests/fixtures/README.md
+git add tests/fixtures/golden/verify.out tests/fixtures/golden/verify-dau.md tests/OKF4net.Tests/GoldenParityTests.cs tests/fixtures/README.md
 git commit -m "test(verify): pin the verb's output with a golden"
 ```
 
@@ -1478,12 +1528,16 @@ public class OkfVerifyToolTests
         var tools = ToolsOver(tmp);
         var function = tools.GetTools().OfType<AIFunction>().Single(t => t.Name == "okf_verify");
 
-        // Check AIFunction.InvokeAsync's exact overload against the installed
-        // Microsoft.Extensions.AI before writing this call — the argument type
-        // has changed across versions, and inventing a signature here is the
-        // failure mode this plan exists to avoid. The arguments are:
-        // conceptIds = "metrics/dau", by = "human:ada", at = "2026-08-28T09:14:00Z".
-        await function.InvokeAsync(/* the version's argument shape */);
+        // Same shape as okf_read_concept's invocation test
+        // (AIFunctionExposureTests.cs:223) — including the null-forgiving `!`,
+        // which that call needs too.
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["conceptIds"] = "metrics/dau",
+            ["by"] = "human:ada",
+            ["at"] = "2026-08-28T09:14:00Z",
+        }!);
+        await function.InvokeAsync(arguments);
 
         // The emitter writes sequences in BLOCK style — a bare `-`, then the
         // mapping indented under it (verified by running `okf fmt`) — so assert
@@ -1571,7 +1625,7 @@ La méthode :
 
         return RunTool(() =>
         {
-            // All-or-nothing, like the CLI: every id is resolved before the
+            // Pre-resolved like the CLI: every id is checked before the
             // first write, so a typo in the third id cannot leave the first two
             // stamped. Without this, `okf_verify("a, nope", …)` writes to `a`
             // and then reports a failure — the worst of both.
@@ -1584,7 +1638,7 @@ La méthode :
                 }
             }
 
-            // One batch call — all-or-nothing comes from the writer, so the
+            // One batch call — the validation guarantee comes from the writer, so the
             // pre-resolution above is only there to give a nicer message.
             // `at` is passed through untouched, null included: the writer owns
             // the clock seam and reports the timestamp it used, so the tool
