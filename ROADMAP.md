@@ -20,10 +20,13 @@ are the concrete entry points.
   backed by the shared `ConceptAudit`/`AuditVocabulary` model in `OKF4net`.
   Motivated by ["OKF v0.2 Quietly Admits the Folder Has a Ceiling"](https://medium.com/@davidroliver/okf-v0-2-quietly-admits-the-folder-has-a-ceiling-the-way-up-is-a-library-25fa54e872f9)
   — see [its design spec](docs/superpowers/specs/2026-08-21-okf-audit-design.md).
-- **`okf verify` shipped** — the verb that answers what `okf audit` asks: it
-  records a review by adding, or from the same actor replacing, a
-  `{by, at}` entry in a named concept's `verified` list (§5.2), so the
-  concept leaves the audit worklist at the next pass. `<id>…` accepts `-` to
+- **`okf verify` shipped** — the verb that answers what `okf audit` asks
+  about trust: it records a review by adding, or from the same actor
+  replacing, a `{by, at}` entry in a named concept's `verified` list (§5.2),
+  so the concept clears audit's trust-filtered selection at the next pass.
+  Verification only moves the trust dimension (§5.3) — `stale_after` is
+  untouched, so a just-reviewed concept can still appear in `okf audit`'s
+  *default* (staleness-only) worklist. `<id>…` accepts `-` to
   read ids from standard input, so `okf audit … --trust unverified | cut
   -d' ' -f1 | okf verify … --by human:ada -` closes the loop in one line.
   Backed by the new `BundleConceptWriter.RecordVerifications` — the single

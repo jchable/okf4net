@@ -73,7 +73,11 @@ or `OKF_BUNDLE_ROOT` in `claude_desktop_config.json`.
 `okf_validate_bundle`, `okf_changes_since`, `okf_get_computation`.
 
 Each is the corresponding `OkfBundleTools` operation, so all OKF v0.2 behaviour,
-producer-grade validation, path-safety, and locking apply unchanged.
+path-safety, and locking apply unchanged — including each write tool's exact
+validation level: producer-grade for `okf_write_concept`, `okf_append_log`
+and `okf_regenerate_indexes`, but only §11 conformance (a non-empty `type`)
+for `okf_verify`, deliberately, so a concept missing a `description` can
+still be reviewed.
 
 That's twelve tools full (eight read-only tools above plus the four write
 tools), or eight when `OKF_MCP_READONLY=1` drops the four write tools.

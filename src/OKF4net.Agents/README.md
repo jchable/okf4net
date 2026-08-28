@@ -36,14 +36,19 @@ thirteenth, `okf_run_computation`, only when the tool set is constructed with an
 
 All tools return agent-friendly markdown/plain text and never throw for
 expected errors (unknown ids, invalid paths, malformed input) — the agent
-receives an explanatory message instead. Write tools (`okf_write_concept`,
-`okf_verify`, `okf_append_log`, `okf_regenerate_indexes`) validate documents
-(producer-grade OKF rules) before touching disk, serialize their writes, and
-rely on the Agent Framework's tool-approval mechanism for gating. `okf_verify`
-records a `{by, at}` review stamp (§5.2) — a dated declaration, not a proof;
-see the project README's `okf verify` section for what it does and doesn't
-guarantee. Bundle content is treated as untrusted and is never injected as a
-system message.
+receives an explanatory message instead. All four write tools
+(`okf_write_concept`, `okf_verify`, `okf_append_log`, `okf_regenerate_indexes`)
+serialize their writes and rely on the Agent Framework's tool-approval
+mechanism for gating. `okf_write_concept`, `okf_append_log` and
+`okf_regenerate_indexes` validate documents against the stricter
+producer-grade OKF rules before touching disk; `okf_verify` deliberately
+enforces only §11 conformance (a non-empty `type`) instead — recording a
+review is not producing content, and refusing a reviewer because a concept
+is missing a `description` would make precisely the concepts an audit
+surfaces unstampable. It records a `{by, at}` review stamp (§5.2) — a dated
+declaration, not a proof; see the project README's `okf verify` section for
+what it does and doesn't guarantee. Bundle content is treated as untrusted
+and is never injected as a system message.
 
 `OkfContextProvider` (an `AIContextProvider`, registered via
 `ChatClientAgentOptions.AIContextProviders`) layers on top of the same

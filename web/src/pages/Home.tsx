@@ -98,7 +98,7 @@ export default function Home() {
               <tr><th>Command</th><th>Does</th></tr>
               <tr><td>okf validate &lt;bundle&gt;</td><td>Conformance check (§11), non-zero exit on failure</td></tr>
               <tr><td>okf audit &lt;bundle&gt;</td><td>Trust, freshness and lifecycle across the bundle (§5.3–§5.5)</td></tr>
-              <tr><td>okf verify &lt;bundle&gt; &lt;id&gt;…</td><td>Record a review (§5.2), closing the audit worklist</td></tr>
+              <tr><td>okf verify &lt;bundle&gt; &lt;id&gt;…</td><td>Record a review (§5.2) — clears the unverified worklist, not staleness</td></tr>
               <tr><td>okf info &lt;bundle&gt;</td><td>Concepts, types, links, version</td></tr>
               <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md (§8)</td></tr>
               <tr><td>okf graph &lt;bundle&gt;</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>

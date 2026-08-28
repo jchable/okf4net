@@ -21,14 +21,19 @@ and this project adheres to
   the new `ConceptAudit` in the core library and exposed to agents as the
   read-only `okf_audit` tool.
 - **`okf verify <bundle> <id>… --by <actor>`** — the verb that answers what
-  `okf audit` asks: it records a review (§5.2) by adding, or from the same
-  actor replacing, a `{by, at}` entry in each named concept's `verified`
-  list, so a reviewed concept leaves the audit worklist. `<id>…` also accepts
+  `okf audit` asks about trust: it records a review (§5.2) by adding, or
+  from the same actor replacing, a `{by, at}` entry in each named concept's
+  `verified` list, so the concept clears audit's trust-filtered
+  (`--trust unverified`/`unverified,machine-confirmed`) selection.
+  Verification only moves the trust dimension (§5.3) — it never touches
+  `stale_after`, so a just-reviewed concept can still appear in `okf audit`'s
+  *default* worklist, which selects on staleness alone. `<id>…` also accepts
   a single `-`, reading concept ids from standard input, so
   `okf audit … --trust unverified | cut -d' ' -f1 | okf verify … --by
   human:ada -` closes the loop in one line. `--dry-run` shows what would be
-  recorded without writing; `--at` overrides the default of "now". A batch
-  is validated (existence, §11 conformance, no duplicate id) before the
+  recorded without writing; `--at <yyyy-MM-ddTHH:mm:ssZ>` overrides the
+  default of "now" (a bare date, an offset, or fractional seconds are
+  rejected). A batch is validated (existence, §11 conformance, no duplicate id) before the
   first write, but writing several files cannot be atomic — a mid-batch I/O
   failure still leaves the earlier concepts stamped, and is reported as
   such. Backed by the new `BundleConceptWriter.RecordVerifications` in the

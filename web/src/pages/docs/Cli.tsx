@@ -217,7 +217,8 @@ export default function Cli() {
                 </td>
                 <td>&lt;bundle&gt; &lt;id&gt;…</td>
                 <td>
-                  Record a review (§5.2) with <code>--by &lt;actor&gt;</code>; closes the audit worklist
+                  Record a review (§5.2) with <code>--by &lt;actor&gt;</code>; clears the unverified worklist,
+                  not staleness
                 </td>
               </tr>
               <tr>

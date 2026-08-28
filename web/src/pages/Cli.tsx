@@ -79,8 +79,8 @@ export default function Cli() {
               [
                 'okf verify <bundle> <id>…',
                 <>
-                  Record a review (§5.2) — adds or replaces a <code>{'{by, at}'}</code> stamp; closes the audit
-                  worklist
+                  Record a review (§5.2) — adds or replaces a <code>{'{by, at}'}</code> stamp; clears the
+                  unverified worklist, not staleness
                 </>,
               ],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],

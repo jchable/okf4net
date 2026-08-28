@@ -218,10 +218,14 @@ a worklist, not an inventory (use `okf info --json` for that).
 `okf verify <bundle> <id>… --by <actor>` records a review (§5.2): it adds — or,
 for a repeat review from the same actor, replaces — a `{ by, at }` entry in
 each named concept's `verified` list. It is the verb that answers what
-`okf audit` asks: audit finds what needs a look, verify records that the look
-happened, and the reviewed concept leaves the worklist. `<id>…` also accepts a
-single `-`, reading one concept id per line from standard input, so the two
-verbs compose into one line:
+`okf audit` asks about trust: audit finds concepts a human has never reviewed
+(`--trust unverified` / `unverified,machine-confirmed`), verify records that
+the review happened, and the reviewed concept clears that trust-filtered
+selection. Verification only moves the trust dimension (§5.3) — it never
+touches `stale_after`, so a concept just reviewed can still show up in
+`okf audit`'s *default* worklist, which selects on staleness alone (see
+above). `<id>…` also accepts a single `-`, reading one concept id per line
+from standard input, so the two verbs compose into one line:
 
 ```sh
 okf audit bundles/acme_retail --trust unverified | cut -d' ' -f1 | okf verify bundles/acme_retail --by human:ada -
@@ -231,8 +235,9 @@ Every named concept is checked for existence and §11 conformance before
 anything is written, so a batch is rejected as a whole at that stage; a
 mid-batch I/O failure can still leave the concepts already written stamped
 (`okf verify`'s output lists exactly what landed). `--dry-run` prints what
-would be recorded without writing anything; `--at <timestamp>` overrides the
-default of "now" for reproducible scripting.
+would be recorded without writing anything; `--at <yyyy-MM-ddTHH:mm:ssZ>`
+overrides the default of "now" for reproducible scripting — a bare date, a
+numeric offset, or fractional seconds are all rejected, not silently rounded.
 
 > **What a `verified` stamp does and doesn't prove.** It guarantees the
 > stamp is well-formed, dated, and attached to the concepts named — nothing
@@ -243,7 +248,14 @@ default of "now" for reproducible scripting.
 > bundle, correcting a concept) has to be able to touch `verified` too.
 > Credibility comes from *where the stamp lands*: in a diff a human reviewed,
 > under branch protection, where the reviewer sees the assertion and can
-> reject it. **Never infer a stamp from a PR approval** — that turns "a human
+> reject it. That argument only works if the diff is legible: like every
+> write path in this library, `verify` re-serializes the whole document in
+> canonical form (the same shape `okf fmt` produces) — a flow-style mapping
+> or an inline list expands to one entry per line, so a three-line stamp can
+> land as a much larger diff with the new `verified` entry buried inside a
+> reformat. Run `okf fmt -w` on the bundle first, as its own reviewed commit,
+> if you want a review's diff to be the stamp and nothing else. **Never infer
+> a stamp from a PR approval** — that turns "a human
 > approved this diff" into "a human vouches for this knowledge," which are
 > different every time a PR touches a file for a reason other than reviewing
 > it (which is most of the time). Doing so would mass-promote every concept
@@ -301,7 +313,7 @@ verify → append → regenerate → validate → changes-since → get-computat
 | `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                                                      |
 | `okf_audit`              | Audit the bundle's trust, freshness and lifecycle signals (§5.3–§5.5): counts by trust tier and status, plus the concepts needing attention. Read-only.                                                       |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
-| `okf_verify`             | Record a review of one or more concepts (§5.2): adds or replaces the caller's `{by, at}` entry in each concept's `verified` list. A stamp is a dated declaration, not a proof — never infer one from a PR approval.                                          |
+| `okf_verify`             | Record a review (§5.2): adds or replaces the caller's `{by, at}` entry in each concept's `verified` list — a dated declaration, not a proof; never infer one from a PR approval.                            |
 | `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
 | `okf_validate_bundle`    | Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.                                                                                                                        |

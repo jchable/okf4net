@@ -46,6 +46,7 @@ public static class OkfCli
         "        --out <dir>      Output directory for `render`\n" +
         "        --as-of <date>   Pin today's date (YYYY-MM-DD) for validate/audit\n" +
         "        --by <actor>     Who is recording the review, for `verify` (required)\n" +
+        "        --at <ts>        UTC timestamp yyyy-MM-ddTHH:mm:ssZ for `verify` (default: now)\n" +
         "        --dry-run        Show what `verify` would record, write nothing\n" +
         "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
         "                         Filter `audit`'s worklist";
