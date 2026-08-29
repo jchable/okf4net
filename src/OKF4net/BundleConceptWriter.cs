@@ -26,8 +26,24 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 /// — unknown id, malformed actor, non-conformant document — writes nothing.
 /// But writing several files cannot be atomic: if the third write fails on
 /// I/O, the first two are already on disk. <see cref="Recorded"/> is then
-/// false while <see cref="Records"/> lists what actually landed, and
-/// <see cref="Message"/> names them.
+/// false while <see cref="Records"/> lists the concepts whose write returned
+/// successfully, and <see cref="Message"/> names them.
+///
+/// <b>The precise scope of that list.</b> An entry means "this file's write
+/// call completed", which is stronger than "was validated" (the reason
+/// <c>Records</c> is built in the write loop, not the prepare loop) and
+/// weaker than "the file on disk is now exactly one of these two versions".
+/// The underlying primitive is <see cref="File.WriteAllText(string, string?, System.Text.Encoding)"/>,
+/// which truncates and writes IN PLACE, so a failure part-way through one
+/// file — a full disk, a device error — can leave that file truncated or
+/// half-written while <c>Records</c> omits it, having never returned. That is
+/// a property of the write primitive shared by EVERY write path in this class,
+/// not something verification introduced; closing it needs write-then-rename,
+/// which has to be designed against the reparse-point guard and the bundle
+/// lock it sits between (see ROADMAP). Until then, the honest reading of a
+/// failed batch is: the concepts listed are stamped, the ones after them were
+/// not written, and the one it stopped on is unknown — re-run it, or check
+/// that file.
 /// </summary>
 /// <param name="Recorded">Whether the whole batch was written.</param>
 /// <param name="Message">A confirmation, or what went wrong and how far it got.</param>
@@ -483,7 +499,10 @@ public sealed class BundleConceptWriter
     /// .NET, so a failure during the write phase (I/O, permissions, a reparse
     /// point appearing after the late re-check) leaves the concepts already
     /// written stamped. That case reports <c>Recorded = false</c> with
-    /// <c>Records</c> listing what did land — see <see cref="VerificationOutcome"/>.
+    /// <c>Records</c> listing the concepts whose write returned — which is not
+    /// quite the same as "the file on disk is intact", since the write
+    /// primitive truncates in place; <see cref="VerificationOutcome"/> states
+    /// exactly what the list does and does not promise.
     /// The lock is also in-process, so an external actor mutating the bundle
     /// mid-batch is not stopped: the same documented limit as this class's
     /// reparse-point guard.
@@ -587,12 +606,22 @@ public sealed class BundleConceptWriter
             // file twice would build both versions from the same original
             // content and write it twice, reporting two records for the single
             // stamp that survives — a result that reads like two reviews.
+            //
             // Checked on the RESOLVED target path, not the raw id string that
-            // was passed in: two case-variant spellings of the same concept
-            // ("metrics/dau" / "metrics/DAU") resolve to the same file on a
-            // case-insensitive filesystem (Windows/macOS) and must collide too
-            // — the same OrdinalIgnoreCase reasoning the BundleLocks registry
-            // above uses for exactly this class of bug.
+            // was passed in, and case-INSENSITIVELY. Note this is NOT the
+            // "Windows/macOS are case-insensitive" heuristic Bundle.cs
+            // explicitly rejects (see Bundle.PathComparison): case-sensitivity
+            // is a property of the volume, not the OS, so no OS test could
+            // decide this correctly either way. The comparison is deliberately
+            // pessimistic instead — a batch is refused whenever two ids COULD
+            // name one file — because the cost of the two errors is not
+            // symmetric: collapsing two spellings on a case-insensitive volume
+            // silently double-reports a single stamp, while the residual here
+            // is that on a case-SENSITIVE volume genuinely holding both
+            // metrics/dau.md and metrics/DAU.md, a batch naming both is
+            // refused and must be run as two. Stated rather than reasoned
+            // away: that refusal is real, and this is the same call the
+            // BundleLocks registry above makes for the same class of bug.
             var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (var i = 0; i < targets.Count; i++)
             {

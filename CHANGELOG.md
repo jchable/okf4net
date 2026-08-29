@@ -25,7 +25,7 @@ and this project adheres to
   from the same actor replacing, a `{by, at}` entry in each named concept's
   `verified` list, so — for a `human:` actor — the concept clears audit's
   trust-filtered (`--trust unverified`/`unverified,machine-confirmed`)
-  selection. A `process:`/`agent:` actor is accepted symmetrically (§7) but
+  selection. A `process:` or `<producer>/<version>` actor is accepted symmetrically (§7) but
   only moves the concept from `unverified` to `machine-confirmed`, which
   that same filter still selects. Verification only moves the trust
   dimension (§5.3) — it never touches
@@ -37,7 +37,11 @@ and this project adheres to
   is "nothing to do", not an error: `verify -` writes nothing and exits 0,
   matching `audit`'s own empty-worklist exit, so the loop stays idempotent
   and safe under `set -e` when the bundle needs no attention. Naming no
-  concept at all (`okf verify <bundle>`) is still an error. `--dry-run` shows what would be
+  concept at all (`okf verify <bundle>`) is still an error. An actor carrying
+  a control character is refused by `RecordVerifications` itself, so a `--by`
+  value can never forge a line in the verb's own line-oriented output; reading
+  an actor out of an existing bundle (`Actor.Parse`, `Trust.DeriveTier`) stays
+  permissive, as it must. `--dry-run` shows what would be
   recorded without writing; `--at <yyyy-MM-ddTHH:mm:ssZ>` overrides the
   default of "now" (a bare date, an offset, or fractional seconds are
   rejected). A batch is validated (existence, §11 conformance, no duplicate id) before the
@@ -137,6 +141,22 @@ and this project adheres to
 
 ### Fixed
 
+- **`YamlEmitter`'s nesting guard now throws `YamlEmitException`** (an
+  `OkfException`, like the parser's `YamlParseException`) instead of a bare
+  `InvalidOperationException`. The parser enforces its 1000-level cap with two
+  independent counters — one for block nesting, one for flow — while the
+  emitter has a single counter covering both, so a frontmatter mixing the two
+  can parse and then fail to re-emit. That exception matched no catch filter
+  in the library: it escaped `BundleConceptWriter`'s errors-as-data contract,
+  threw out of the `okf_verify` tool into its host, and killed the CLI with a
+  stack trace. Every existing filter already covers `OkfException`, so the
+  failure is now data on all three paths. Reconciling the two counters with
+  the one is a separate, read-path question and is left open.
+- **`okf` reports an unanticipated library failure as `error: <message>`,
+  exit 1**, instead of a stack trace and exit 127. `OkfCli.Run` caught only
+  its own internal `CliOperationException`; it now also catches
+  `OkfException`, the library's expected-error base. Applies to all nine
+  verbs. An unexpected BCL exception still crashes loudly, on purpose.
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had
   drifted: the 0.2.0 winget package shipped a binary printing

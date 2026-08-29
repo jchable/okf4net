@@ -24,7 +24,7 @@ are the concrete entry points.
   about trust: it records a review by adding, or from the same actor
   replacing, a `{by, at}` entry in a named concept's `verified` list (§5.2),
   so — for a `human:` actor — the concept clears audit's trust-filtered
-  selection at the next pass. A `process:`/`agent:` actor is accepted
+  selection at the next pass. A `process:` or `<producer>/<version>` actor is accepted
   symmetrically (§7) but only moves the concept from `unverified` to
   `machine-confirmed`, which `--trust unverified,machine-confirmed` still
   selects. Verification only moves the trust dimension (§5.3) — `stale_after` is
@@ -50,6 +50,22 @@ are the concrete entry points.
     extension (`digest`, `scope`, `note` on the stamp) is planned to
     recreate this information inside the bundle instead — that question is
     answered by git, on purpose.
+  - **Atomic write-then-rename in `BundleConceptWriter`.** Every write path
+    in the class ends at `File.WriteAllText`, which truncates the target and
+    writes in place, so a failure mid-write (full disk, device error) can
+    leave a concept truncated or half-written. `RecordVerifications` reports
+    the concepts whose write returned, and that file is not among them — so
+    the report is not wrong, but "exactly what landed" is a stronger claim
+    than the primitive supports, and the docs now say so. Closing it means
+    writing to a temporary file in the same directory and `File.Replace`-ing
+    it over the target. Deliberately its own pass rather than a footnote to
+    `okf verify`: the call sits immediately after the late reparse-point
+    re-check and inside the per-bundle lock, so a replacement needs tests for
+    `File.Replace` semantics (cross-volume, existing-file, permissions,
+    what happens to the backup), for the path-safety guard still holding
+    against the *temporary* name, and for the lock — a security-sensitive
+    seam that must not be swapped in passing. Pre-existing and shared by
+    every write path; not introduced by verification.
 - **Per-verb `--help` for the CLI.** `okf audit --help` today prints
   `error: missing <bundle>`, and so do `okf validate --help` and every other
   verb: the CLI has one global usage block and no per-verb help, so a verb's

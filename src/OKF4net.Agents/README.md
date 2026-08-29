@@ -45,14 +45,15 @@ OKF rules (non-empty `type`, `title`, `description`) before touching disk;
 `okf_verify` deliberately enforces only §11 conformance (a non-empty `type`)
 instead — recording a review is not producing content, and refusing a
 reviewer because a concept is missing a `description` would make precisely
-the concepts an audit surfaces unstampable. `okf_append_log` validates only
+the concepts an audit surfaces unstampable. What `okf_verify` writes is a
+`{by, at}` review stamp (§5.2) — a dated declaration, not a proof; see the
+project README's `okf verify` section for what it does and doesn't
+guarantee. `okf_append_log` validates only
 its own `kind`/`text` arguments (non-empty, no embedded newline or null
 byte) and re-renders `log.md` through the §9 model — it does not touch
 concept documents at all. `okf_regenerate_indexes` performs no document
 validation whatsoever; it only rebuilds `index.md` listings from whatever is
-already on disk. It records a `{by, at}` review stamp (§5.2) — a dated
-declaration, not a proof; see the project README's `okf verify` section for
-what it does and doesn't guarantee. Bundle content is treated as untrusted
+already on disk. Bundle content is treated as untrusted
 and is never injected as a system message.
 
 `OkfContextProvider` (an `AIContextProvider`, registered via

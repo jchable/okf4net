@@ -32,7 +32,8 @@ public sealed class OkfBundleTools
 
     private const string VerifyUsageMessage =
         "Usage: okf_verify records a review — comma-separated concept ids, plus a well-formed "
-        + "§7 actor (human:<id>, agent:<producer>/<version>, process:<id>). Example: "
+        + "§7 actor — one of exactly three forms: human:<id>, process:<id>, or "
+        + "<producer>/<version> (no agent: prefix). Example: "
         + "okf_verify(\"metrics/dau, metrics/revenue\", \"human:ada\").";
 
     /// <summary>
@@ -584,7 +585,7 @@ public sealed class OkfBundleTools
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
     public string Verify(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
-        [Description("The §7 actor recording the review, e.g. human:ada, agent:assistant/1.0, process:nightly. Must not contain control characters.")] string by,
+        [Description("The §7 actor recording the review — one of exactly three forms: human:<id> (e.g. human:ada), process:<id> (e.g. process:nightly), or <producer>/<version> for an agent or tool (e.g. assistant/1.0). There is no agent: prefix: writing agent:assistant/1.0 stores the producer name \"agent:assistant\". Must not contain control characters.")] string by,
         [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null)
     {
         var ids = (conceptIds ?? string.Empty)

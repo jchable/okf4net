@@ -221,7 +221,7 @@ each named concept's `verified` list. It is the verb that answers what
 `okf audit` asks about trust: audit finds concepts a human has never reviewed
 (`--trust unverified` / `unverified,machine-confirmed`), verify records that
 the review happened, and — for a `human:` actor — the reviewed concept
-clears that trust-filtered selection. A `process:`/`agent:` actor is accepted
+clears that trust-filtered selection. A `process:` or `<producer>/<version>` actor is accepted
 symmetrically (§7), but only moves the concept from `unverified` to
 `machine-confirmed` (§5.3), which `--trust unverified,machine-confirmed`
 still selects. Verification only moves the trust dimension (§5.3) — it never
@@ -244,7 +244,7 @@ case, and it stays loud.
 Every named concept is checked for existence and §11 conformance before
 anything is written, so a batch is rejected as a whole at that stage; a
 mid-batch I/O failure can still leave the concepts already written stamped
-(`okf verify`'s output lists exactly what landed). `--dry-run` prints what
+(`okf verify` lists the concepts it wrote before it stopped). `--dry-run` prints what
 would be recorded without writing anything; `--at <yyyy-MM-ddTHH:mm:ssZ>`
 overrides the default of "now" for reproducible scripting — a bare date, a
 numeric offset, or fractional seconds are all rejected, not silently rounded.
@@ -263,8 +263,13 @@ numeric offset, or fractional seconds are all rejected, not silently rounded.
 > canonical form (the same shape `okf fmt` produces) — a flow-style mapping
 > or an inline list expands to one entry per line, so a three-line stamp can
 > land as a much larger diff with the new `verified` entry buried inside a
-> reformat. Run `okf fmt -w` on the bundle first, as its own reviewed commit,
-> if you want a review's diff to be the stamp and nothing else. **Never infer
+> reformat. The body is normalized too, to LF line endings, so on a bundle
+> checked out with CRLF the reformat is *the entire file* and the assertion a
+> reviewer is supposed to see is one changed line in a wall of them. Run
+> `okf fmt -w` on the bundle first, as its own reviewed commit, if you want a
+> review's diff to be the stamp and nothing else — it produces the same
+> canonical shape, so a `verify` run after it differs only by the stamp
+> lines. **Never infer
 > a stamp from a PR approval** — that turns "a human
 > approved this diff" into "a human vouches for this knowledge," which are
 > different every time a PR touches a file for a reason other than reviewing
