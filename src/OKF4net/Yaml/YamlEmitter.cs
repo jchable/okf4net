@@ -24,8 +24,18 @@ public static class YamlEmitter
     /// <c>YamlParser.MaxNestingDepth</c>. A safety guard: a pathologically
     /// deep <see cref="YamlValue"/> tree — however it was constructed, since
     /// this guards the emitter independently of the parser's own limit —
-    /// throws a catchable <see cref="InvalidOperationException"/> here
-    /// instead of overflowing the stack.
+    /// throws a catchable <see cref="YamlEmitException"/> here instead of
+    /// overflowing the stack.
+    ///
+    /// The numbers match; the counting does not. <c>YamlParser</c> enforces
+    /// its limit with TWO independent counters (one for block nesting, one for
+    /// flow), while this emitter has a single counter covering both, so a
+    /// frontmatter mixing, say, 450 block levels with 900 flow levels parses
+    /// happily and then exceeds the limit here. That asymmetry is a real
+    /// problem and is deliberately NOT fixed by this guard: it is a change to
+    /// what the library ACCEPTS, on the read path, and belongs in its own pass
+    /// with its own tests. What matters here is that reaching this line is
+    /// errors-as-data on every caller's path — see <see cref="YamlEmitException"/>.
     /// </summary>
     private const int MaxNestingDepth = 1000;
 
@@ -57,7 +67,7 @@ public static class YamlEmitter
     {
         if (depth > MaxNestingDepth)
         {
-            throw new InvalidOperationException("nesting depth limit exceeded");
+            throw new YamlEmitException("nesting depth limit exceeded");
         }
 
         var pad = new string(' ', indent);
@@ -86,7 +96,7 @@ public static class YamlEmitter
     {
         if (depth > MaxNestingDepth)
         {
-            throw new InvalidOperationException("nesting depth limit exceeded");
+            throw new YamlEmitException("nesting depth limit exceeded");
         }
 
         var pad = new string(' ', indent);

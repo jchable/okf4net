@@ -79,6 +79,27 @@ public class OkfVerifyToolTests
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
     }
 
+    /// <summary>
+    /// The vector that made this a host problem rather than a library one: a
+    /// concept whose frontmatter parses and cannot be re-emitted (see
+    /// <see cref="DeepYamlDocument"/>) reached <c>YamlEmitter</c>'s nesting
+    /// guard, which threw a bare <c>InvalidOperationException</c> — outside
+    /// both <c>RunTool</c> filters — so the exception left the
+    /// <c>AIFunction</c> and landed in the MCP host. A tool must always answer
+    /// with a string.
+    /// </summary>
+    [Fact]
+    public void Verify_returns_an_error_string_for_a_document_that_cannot_be_re_emitted()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+
+        var text = ToolsOver(tmp).Verify("metrics/deep", "human:ada");
+
+        Assert.StartsWith("Error: ", text);
+        Assert.Contains("nesting depth limit exceeded", text);
+    }
+
     [Fact]
     public void Verify_reports_an_unknown_concept_without_writing()
     {

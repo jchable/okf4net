@@ -279,6 +279,39 @@ public class RecordVerificationTests
     }
 
     /// <summary>
+    /// <see cref="VerificationOutcome"/> promises errors-as-data, never thrown
+    /// — and a hostile-but-loadable concept used to break that promise. A
+    /// frontmatter that parses and cannot be re-emitted (see
+    /// <see cref="DeepYamlDocument"/>) made <c>YamlEmitter</c> throw a bare
+    /// <c>InvalidOperationException</c>, which is not in <c>RunTool</c>'s catch
+    /// filter, so it escaped this method entirely — out of <c>okf_verify</c>
+    /// into the MCP host, and out of the CLI as a stack trace. The emitter now
+    /// signals it as a <c>YamlEmitException</c> (an <see cref="OkfException"/>,
+    /// like the parser's own), which that filter already covered.
+    ///
+    /// The throw lands in the PREPARE loop, before any write, so batch
+    /// atomicity holds: nothing is written and <c>Records</c> is empty.
+    /// </summary>
+    [Fact]
+    public void A_document_that_parses_but_cannot_be_emitted_is_reported_not_thrown()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/deep"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("nesting depth limit exceeded", outcome.Message);
+        Assert.StartsWith("Error: ", outcome.Message);
+        Assert.Empty(outcome.Records);
+        // The earlier concept in the batch is untouched: the failure happened
+        // while preparing, not while writing.
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
     /// Pins the deliberate divergence from <c>BundleValidator.IsIso8601DateTime</c>
     /// (which validates only the date part and ignores everything after the
     /// <c>T</c>, because reading frontmatter is permissive): a bare date and a

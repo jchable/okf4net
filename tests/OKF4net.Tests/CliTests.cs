@@ -1204,6 +1204,30 @@ public class CliTests
         }
     }
 
+    /// <summary>
+    /// A library failure no verb anticipated must still exit like every other
+    /// failure. A concept whose frontmatter parses and cannot be re-emitted
+    /// (see <see cref="DeepYamlDocument"/>) reached <c>YamlEmitter</c>'s
+    /// nesting guard, which threw a bare <c>InvalidOperationException</c>:
+    /// <c>OkfCli.Run</c> caught only <c>CliOperationException</c>, so the
+    /// process died with a stack trace. The emitter now raises an
+    /// <c>OkfException</c> and <c>Run</c> catches that base type, which is a
+    /// strict improvement for all nine verbs — no golden pinned a crash.
+    /// </summary>
+    [Fact]
+    public void A_document_that_cannot_be_re_emitted_exits_cleanly_rather_than_crashing()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+
+        var r = Run("verify", tmp.Path, "metrics/deep", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error: ", r.Err);
+        Assert.Contains("nesting depth limit exceeded", r.Err);
+        Assert.DoesNotContain("   at ", r.Err);
+    }
+
     /// <summary>The loop, end to end: audit lists it, verify clears it.</summary>
     [Fact]
     public void Audit_then_verify_removes_the_concept_from_the_unverified_worklist()

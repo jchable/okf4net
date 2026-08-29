@@ -119,6 +119,21 @@ public static class OkfCli
             stderr.Write($"error: {e.Message}\n");
             return 1;
         }
+        catch (OkfException e)
+        {
+            // The safety net for every verb, not a substitute for the targeted
+            // catches below: those exist to phrase a better message (naming the
+            // file, the flag, the concept) and still run first. This one only
+            // catches a library failure no verb anticipated — a YAML emit
+            // failure on a document that parsed, say — and turns it into the
+            // same `error: …`/exit 1 shape as everything else, instead of a
+            // stack trace and exit 127. Deliberately narrow: `OkfException` is
+            // this library's own expected-error base, so an unexpected BCL
+            // exception still crashes loudly rather than being reported as a
+            // routine failure.
+            stderr.Write($"error: {e.Message}\n");
+            return 1;
+        }
     }
 
     /// <summary>Handles an unknown subcommand: writes the message and usage directly, bypassing the <c>error: </c> prefix.</summary>
