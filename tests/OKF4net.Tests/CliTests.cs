@@ -995,6 +995,30 @@ public class CliTests
     }
 
     /// <summary>
+    /// Ids arriving from a pipe carry whatever whitespace produced them — a
+    /// <c>cut</c> field, a CRLF-terminated line — so <c>ReadIdsFrom</c> trims
+    /// each one. Blank-line skipping is covered by the test above; the trim
+    /// was not, and dropping <c>line.Trim()</c> left the suite green while
+    /// every such id turned into "unknown concept".
+    /// </summary>
+    [Fact]
+    public void Verify_trims_each_id_read_from_standard_input()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = TestPaths.RunWithStdin(
+            "  metrics/dau\t\r\n\tmetrics/rev  \n",
+            "verify", bundle, "-", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n"
+            + "recorded metrics/rev  human:ada  2026-08-28T09:14:00Z\n",
+            r.Out);
+    }
+
+    /// <summary>
     /// Fully validated first: every id is resolved before anything is written, so one
     /// unknown id leaves the whole bundle untouched.
     /// </summary>
@@ -1059,6 +1083,27 @@ public class CliTests
 
         Assert.Equal(0, r.Code);
         Assert.Equal("would record metrics/dau  human:ada  2026-08-28T09:14:00Z\n", r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// Without <c>--at</c> a dry run has no timestamp to report and prints the
+    /// literal <c>(now)</c> — the shape the website publishes as captured
+    /// output. Every other dry-run test passes <c>--at</c>, so that null
+    /// branch was unexercised: mutating <c>at ?? "(now)"</c> to any other
+    /// string left the whole suite green.
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_without_at_reports_now()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("would record metrics/dau  human:ada  (now)\n", r.Out);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
 
@@ -1268,6 +1313,32 @@ public class CliTests
         Assert.StartsWith("error: ", r.Err);
         Assert.Contains("nesting depth limit exceeded", r.Err);
         Assert.DoesNotContain("   at ", r.Err);
+    }
+
+    /// <summary>
+    /// The one path where the writer's own message reaches stderr: two
+    /// spellings of one concept ("metrics/dau" and "metrics//dau") differ as
+    /// strings, so the CLI's own duplicate check passes them, and both resolve
+    /// to the same file, so the writer's resolved-path check refuses the
+    /// batch. <c>CmdVerify</c> strips the writer's <c>Error: </c> prefix
+    /// before rethrowing, because the CLI adds its own <c>error: </c> —
+    /// dropping that <c>Replace</c> ships <c>error: Error: …</c>, and no test
+    /// asserted the stderr of a failed <c>okf verify</c> at all until this
+    /// one.
+    /// </summary>
+    [Fact]
+    public void Verify_reports_a_writer_failure_without_doubling_the_error_prefix()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept 'metrics//dau' is named more than once.\n", r.Err);
+        Assert.Equal(string.Empty, r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
 
     /// <summary>The loop, end to end: audit lists it, verify clears it.</summary>
