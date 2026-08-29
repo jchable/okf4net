@@ -4,6 +4,14 @@
 
 **Goal:** Enregistrer une relecture — une estampille datée `{ by, at }` dans le champ `verified` d'un concept — pour que la worklist d'`okf audit` ait enfin une sortie.
 
+> **Correction 2026-08-29 (post-audit).** Ce document présentait `agent:<producer>/<version>`
+> comme une des trois formes d'acteur §7. C'est faux : `Actor.Parse` ne connaît que
+> `human:<id>`, `process:<id>` et `<producer>/<version>`. Un identifiant `agent:x/1.0`
+> ne valide qu'en retombant sur la branche producteur, donnant `producer = "agent:x"`.
+> L'erreur venait d'ici et s'est propagée jusqu'à la `[Description]` que lit le modèle ;
+> elle est corrigée à la source plutôt que laissée en registre daté, pour qu'un futur
+> implémenteur ne la recopie pas.
+
 **Architecture:** Un écrivain gouverné unique dans le cœur (`BundleConceptWriter.RecordVerifications`, read-modify-write atomique sur le frontmatter), consommé par un verbe CLI et par un tool agent mutateur. Deux prérequis d'infrastructure CLI (positionnels multiples, seam stdin) précèdent le tout.
 
 **Tech Stack:** C# / net10.0, xunit, zéro dépendance tierce, Native AOT pour le CLI.
@@ -1590,7 +1598,7 @@ Dans `src/OKF4net.Agents/OkfBundleTools.cs` — la constante d'usage, à côté 
 ```csharp
     private const string VerifyUsageMessage =
         "Usage: okf_verify records a review — comma-separated concept ids, plus a well-formed "
-        + "§7 actor (human:<id>, agent:<producer>/<version>, process:<id>). Example: "
+        + "§7 actor (human:<id>, process:<id>, <producer>/<version>). Example: "
         + "okf_verify(\"metrics/dau, metrics/revenue\", \"human:ada\").";
 ```
 
@@ -1615,7 +1623,7 @@ La méthode :
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
     public string Verify(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
-        [Description("The §7 actor recording the review, e.g. human:ada, agent:assistant/1.0, process:nightly.")] string by,
+        [Description("The §7 actor recording the review, e.g. human:ada, process:nightly, okf4net/0.5.0.")] string by,
         [Description("ISO-8601 UTC timestamp; omit for now.")] string? at = null)
     {
         var ids = (conceptIds ?? string.Empty)

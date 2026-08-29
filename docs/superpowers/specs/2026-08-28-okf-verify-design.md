@@ -4,6 +4,14 @@ Date : 2026-08-28
 Statut : validé en brainstorming (design approuvé section par section, second avis
 indépendant intégré), prêt pour le plan d'implémentation
 
+> **Correction 2026-08-29 (post-audit).** Ce document présentait `agent:<producer>/<version>`
+> comme une des trois formes d'acteur §7. C'est faux : `Actor.Parse` ne connaît que
+> `human:<id>`, `process:<id>` et `<producer>/<version>`. Un identifiant `agent:x/1.0`
+> ne valide qu'en retombant sur la branche producteur, donnant `producer = "agent:x"`.
+> L'erreur venait d'ici et s'est propagée jusqu'à la `[Description]` que lit le modèle ;
+> elle est corrigée à la source plutôt que laissée en registre daté, pour qu'un futur
+> implémenteur ne la recopie pas.
+
 ## 1. Objectif
 
 `okf audit` (spec du 2026-08-21) a donné au bundle sa première question
@@ -361,7 +369,7 @@ ROADMAP.
 [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — same rules as the okf verify CLI verb.")]
 public string Verify(
     [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
-    [Description("The §7 actor recording the review, e.g. human:alice, agent:assistant/1.0, process:nightly. Required, well-formed.")] string by,
+    [Description("The §7 actor recording the review, e.g. human:alice, process:nightly, okf4net/0.5.0. Required, well-formed.")] string by,
     [Description("ISO-8601 UTC timestamp; omit for now.")] string? at = null)
 ```
 
