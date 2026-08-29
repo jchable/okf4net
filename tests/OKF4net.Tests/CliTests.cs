@@ -1109,9 +1109,6 @@ public class CliTests
     // arm must win, because the well-formedness message echoes the value and
     // would put the refused newline straight into stderr.
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control characters\n")]
-    // "-" (stdin) with nothing on it -- Run() below passes TextReader.Null,
-    // whose ReadLine() returns null immediately, so ReadIdsFrom sees zero ids.
-    [InlineData(new[] { "verify", "BUNDLE", "-", "--by", "human:ada" }, "error: no concept ids on standard input\n")]
     public void Verify_rejects_bad_invocations(string[] args, string expected)
     {
         using var tmp = new TempDir();
@@ -1122,6 +1119,51 @@ public class CliTests
 
         Assert.Equal(1, r.Code);
         Assert.Equal(expected, r.Err);
+    }
+
+    /// <summary>
+    /// The documented pipeline (<c>okf audit … --trust unverified | cut … |
+    /// okf verify … -</c>) must be idempotent. <c>okf audit --trust
+    /// unverified</c> deliberately exits 0 with no output when nothing needs
+    /// attention, so <c>verify</c> on that empty stream is "nothing to do" —
+    /// exiting 1 there made the headline pipeline fail under <c>set -e</c>
+    /// exactly when the bundle was healthy, and the obvious operator
+    /// workaround (<c>|| true</c>) would also have swallowed a real
+    /// partial-write failure.
+    /// </summary>
+    [Fact]
+    public void Verify_exits_zero_when_standard_input_is_empty()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = TestPaths.RunWithStdin(string.Empty, "verify", bundle, "-", "--by", "human:ada");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(string.Empty, r.Out);
+        Assert.Equal(string.Empty, r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// An invocation already doomed by its own arguments must not drain the
+    /// pipe first: behind a slow producer that is a pointless wait, and on a
+    /// terminal it hangs until the user finds Ctrl-D. The reader here throws
+    /// if anything reads it, so this fails rather than merely being slow. The
+    /// message ordering the <c>[Theory]</c> above pins is unaffected — every
+    /// one of those errors is decided from the argument list alone.
+    /// </summary>
+    [Fact]
+    public void Verify_validates_the_flags_before_reading_standard_input()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = TestPaths.RunWithReader(new ThrowingReader(), "verify", bundle, "-");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: verify requires --by <actor>\n", r.Err);
     }
 
     [Fact]

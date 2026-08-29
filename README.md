@@ -234,6 +234,13 @@ from standard input, so the two verbs compose into one line:
 okf audit bundles/acme_retail --trust unverified | cut -d' ' -f1 | okf verify bundles/acme_retail --by human:ada -
 ```
 
+An empty stream there is "nothing to do", not an error: `okf audit` exits 0
+printing nothing when the worklist is empty, and `okf verify -` on that
+stream writes nothing and exits 0 too, so the loop is idempotent and safe
+under `set -e` on a healthy bundle. Naming no concept at all
+(`okf verify <bundle>`) is still an error — that is the mistyped-`validate`
+case, and it stays loud.
+
 Every named concept is checked for existence and §11 conformance before
 anything is written, so a batch is rejected as a whole at that stage; a
 mid-batch I/O failure can still leave the concepts already written stamped

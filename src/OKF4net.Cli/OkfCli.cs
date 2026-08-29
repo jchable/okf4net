@@ -606,18 +606,11 @@ public static class OkfCli
             throw new CliOperationException("missing <concept-id>");
         }
 
-        if (ids.Contains("-"))
+        // Decided from the ARGUMENTS, before anything reads the pipe.
+        var readFromStdin = ids is ["-"];
+        if (!readFromStdin && ids.Contains("-"))
         {
-            if (ids.Count > 1)
-            {
-                throw new CliOperationException("\"-\" (stdin) cannot be combined with explicit concept ids");
-            }
-
-            ids = ReadIdsFrom(stdin);
-            if (ids.Count == 0)
-            {
-                throw new CliOperationException("no concept ids on standard input");
-            }
+            throw new CliOperationException("\"-\" (stdin) cannot be combined with explicit concept ids");
         }
 
         // Validated only now: an invocation naming no concept at all is the
@@ -656,6 +649,37 @@ public static class OkfCli
                 out _))
         {
             throw new CliOperationException($"--at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"{at}\"");
+        }
+
+        // Read LAST of this invocation's inputs, once every flag value is
+        // known to be usable. Draining the pipe first made an already-doomed
+        // invocation (`okf verify b -` with no --by) wait behind a slow
+        // producer, or hang on a terminal until the user found Ctrl-D, before
+        // printing an error it could have printed immediately. The message
+        // ordering above is unchanged — every one of those errors is decided
+        // from the argument list alone.
+        if (readFromStdin)
+        {
+            ids = ReadIdsFrom(stdin);
+
+            // An empty stream is "nothing to do", not an error. This is the
+            // documented `okf audit … --trust unverified | cut … | okf verify
+            // … -` pipeline, and `audit` deliberately exits 0 printing nothing
+            // when the bundle needs no attention; failing here made the
+            // headline pipeline non-idempotent and broke it under `set -e`
+            // exactly when the bundle was healthy. The cheapest workaround for
+            // that, `|| true`, would also swallow a genuine partial-write
+            // failure — the one outcome the Records-before-throw design exists
+            // to surface — so this is a correctness fix, not a cosmetic one.
+            //
+            // Every other empty/missing-id case stays an error: `okf verify
+            // <bundle>` naming no concept at all is still `missing
+            // <concept-id>` above, which is what keeps a mistyped `okf verify
+            // mybundle` (for `validate`) loud.
+            if (ids.Count == 0)
+            {
+                return 0;
+            }
         }
 
         var bundle = Load(path);

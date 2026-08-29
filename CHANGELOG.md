@@ -33,7 +33,11 @@ and this project adheres to
   *default* worklist, which selects on staleness alone. `<id>…` also accepts
   a single `-`, reading concept ids from standard input, so
   `okf audit … --trust unverified | cut -d' ' -f1 | okf verify … --by
-  human:ada -` closes the loop in one line. `--dry-run` shows what would be
+  human:ada -` closes the loop in one line. An empty stream on that pipeline
+  is "nothing to do", not an error: `verify -` writes nothing and exits 0,
+  matching `audit`'s own empty-worklist exit, so the loop stays idempotent
+  and safe under `set -e` when the bundle needs no attention. Naming no
+  concept at all (`okf verify <bundle>`) is still an error. `--dry-run` shows what would be
   recorded without writing; `--at <yyyy-MM-ddTHH:mm:ssZ>` overrides the
   default of "now" (a bare date, an offset, or fractional seconds are
   rejected). A batch is validated (existence, §11 conformance, no duplicate id) before the

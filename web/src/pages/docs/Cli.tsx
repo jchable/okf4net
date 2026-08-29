@@ -349,6 +349,13 @@ export default function Cli() {
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: verifyLoopHtml }} />
           <p>
+            An empty stream there is <em>nothing to do</em>, not an error: <code>okf audit</code> exits{' '}
+            <code>0</code> printing nothing when the worklist is empty, and <code>okf verify -</code> on that stream
+            writes nothing and exits <code>0</code> too — so the loop is idempotent and safe under{' '}
+            <code>set -e</code> on a healthy bundle. Naming no concept at all (<code>okf verify &lt;bundle&gt;</code>)
+            is still an error.
+          </p>
+          <p>
             Re-running <code>okf audit … --trust unverified</code> afterward prints nothing — the concept it just
             stamped left the worklist. <code>--dry-run</code> shows what would be recorded without writing;{' '}
             <code>--at &lt;yyyy-MM-ddTHH:mm:ssZ&gt;</code> overrides the default of "now" for reproducible scripting.
