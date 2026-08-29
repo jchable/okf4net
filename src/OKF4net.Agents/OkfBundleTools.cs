@@ -36,6 +36,17 @@ public sealed class OkfBundleTools
         + "okf_verify(\"metrics/dau, metrics/revenue\", \"human:ada\").";
 
     /// <summary>
+    /// Refusal message for an actor carrying a character that would break the
+    /// rendered line. The predicate is shared
+    /// (<c>Actor.ContainsControlCharacter</c>); only the phrasing is local, so
+    /// it reads like this class's other <c>Error: …</c> results rather than
+    /// like the CLI's. Deliberately does NOT echo the offending value: doing so
+    /// would put the newline it is refusing into this very message.
+    /// </summary>
+    private const string VerifyControlCharacterMessage =
+        "Error: a §7 actor must not contain control characters.";
+
+    /// <summary>
     /// The core write primitive this tool set delegates every write to:
     /// producer-validated create/update (<see cref="WriteConcept"/>) and
     /// atomic read-modify-write append (<see cref="AppendToConceptAtomic"/>),
@@ -573,12 +584,23 @@ public sealed class OkfBundleTools
     [Description("Record a review of one or more concepts: adds or replaces the caller's { by, at } entry in each concept's `verified` list. The stamp is a dated declaration, not a proof — the same rules as the okf verify CLI verb.")]
     public string Verify(
         [Description("Comma-separated concept ids (paths without .md). Explicit ids only — there is no whole-bundle form.")] string conceptIds,
-        [Description("The §7 actor recording the review, e.g. human:ada, agent:assistant/1.0, process:nightly.")] string by,
+        [Description("The §7 actor recording the review, e.g. human:ada, agent:assistant/1.0, process:nightly. Must not contain control characters.")] string by,
         [Description("UTC timestamp in the exact form yyyy-MM-ddTHH:mm:ssZ, e.g. 2026-08-28T09:14:00Z — no fractional seconds, no offset, no bare date. Omit for now.")] string? at = null)
     {
         var ids = (conceptIds ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
+
+        // Refused ahead of the usage message so a control-bearing actor gets a
+        // message that names the actual problem — an agent handed the generic
+        // usage text would most likely retry the same value. The write gate
+        // (BundleConceptWriter.RecordVerifications) is what stops the value
+        // being stored; this shares its one predicate rather than testing
+        // characters itself. See Actor.ContainsControlCharacter.
+        if (by is not null && Actor.ContainsControlCharacter(by))
+        {
+            return VerifyControlCharacterMessage;
+        }
 
         if (ids.Count == 0 || by is null || !Actor.Parse(by).IsWellFormed)
         {

@@ -235,6 +235,50 @@ public class RecordVerificationTests
     }
 
     /// <summary>
+    /// The governed gate for a control-bearing actor, and the reason both
+    /// renderers above it can stay escaping-free. <c>human:ada\nrecorded …</c>
+    /// is WELL-FORMED by <see cref="Actor.Parse"/> (a <c>human:</c> prefix and
+    /// a non-empty id), so nothing before this check would have stopped it;
+    /// interpolated into the CLI's or the tool's line-oriented output it forged
+    /// a complete <c>recorded &lt;concept&gt; …</c> line for a concept the
+    /// command never touched, at exit 0.
+    ///
+    /// Refused here rather than escaped at the renderers: this is the single
+    /// governed writer of <c>verified</c>, so one check covers the CLI verb,
+    /// the <c>okf_verify</c> tool and every future caller — and the value is
+    /// rejected, not sanitized, because an actor is an identity.
+    /// <see cref="Actor.Parse"/> itself stays permissive on purpose (it is also
+    /// the read path for <c>Trust.DeriveTier</c> and <c>BundleValidator</c>),
+    /// and <c>okf_write_concept</c> remains an unguarded path by design — so
+    /// this is a WRITE-time restriction, not a promise about what a bundle can
+    /// hold.
+    /// </summary>
+    [Theory]
+    [InlineData("human:ada\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z")]
+    [InlineData("human:ada\rrecorded x")]
+    // ESC: forges appearance in a terminal rather than a new line.
+    [InlineData("human:\u001b[2Kada")]
+    // U+2028: not char.IsControl, but a line terminator to JavaScript-family
+    // splitters, so the predicate names it explicitly.
+    [InlineData("human:ada\u2028recorded x")]
+    public void An_actor_carrying_a_control_character_is_refused(string by)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], by);
+
+        Assert.False(outcome.Recorded);
+        Assert.Equal("Error: a §7 actor must not contain control characters.", outcome.Message);
+        // The message must not carry the refused value: echoing it would forge
+        // a line in the caller's error output instead of the success output.
+        Assert.DoesNotContain("recorded", outcome.Message);
+        Assert.Empty(outcome.Records);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
     /// Pins the deliberate divergence from <c>BundleValidator.IsIso8601DateTime</c>
     /// (which validates only the date part and ignores everything after the
     /// <c>T</c>, because reading frontmatter is permissive): a bare date and a

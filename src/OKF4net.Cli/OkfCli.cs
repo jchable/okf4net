@@ -612,6 +612,19 @@ public static class OkfCli
             throw new CliOperationException("verify requires --by <actor>");
         }
 
+        // Checked BEFORE the well-formedness message below, which echoes `by`:
+        // a newline in an echoed value forges a line in the caller's error
+        // output. The write gate (BundleConceptWriter.RecordVerifications) is
+        // what actually stops the value from being stored — see
+        // Actor.ContainsControlCharacter; this call site exists only so the
+        // message names the flag instead of arriving unattributed from the
+        // writer, which is why it shares that one predicate rather than
+        // spelling out its own character test.
+        if (Actor.ContainsControlCharacter(by))
+        {
+            throw new CliOperationException("--by must not contain control characters");
+        }
+
         if (!Actor.Parse(by).IsWellFormed)
         {
             throw new CliOperationException($"--by is not a well-formed §7 actor: \"{by}\"");

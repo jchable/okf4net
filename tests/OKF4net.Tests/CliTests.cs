@@ -1062,6 +1062,38 @@ public class CliTests
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
 
+    /// <summary>
+    /// An actor carrying a newline could otherwise forge a whole <c>recorded
+    /// …</c> line — the renderer interpolates <c>by</c> into a line-oriented
+    /// result with no escaping — naming a concept the command never touched,
+    /// at exit 0. The refusal is the write gate's
+    /// (<c>BundleConceptWriter.RecordVerifications</c>, via the shared
+    /// <c>Actor.ContainsControlCharacter</c>); this pins that the CLI reports
+    /// it as a flag error and, crucially, that the message does NOT echo the
+    /// value — echoing it would put the refused newline into stderr instead.
+    /// </summary>
+    [Fact]
+    public void Verify_refuses_an_actor_carrying_a_control_character()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run(
+            "verify",
+            bundle,
+            "metrics/dau",
+            "--by",
+            "human:ada\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z",
+            "--at",
+            "2026-08-28T09:14:00Z");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: --by must not contain control characters\n", r.Err);
+        Assert.Equal(string.Empty, r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
     [Theory]
     [InlineData(new[] { "verify", "BUNDLE" }, "error: missing <concept-id>\n")]
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau" }, "error: verify requires --by <actor>\n")]
@@ -1073,6 +1105,10 @@ public class CliTests
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00+02:00" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28T09:14:00+02:00\"\n")]
     // --by present but with nothing attached to it.
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by" }, "error: --by requires a value\n")]
+    // An actor that is BOTH control-bearing and malformed: the control-character
+    // arm must win, because the well-formedness message echoes the value and
+    // would put the refused newline straight into stderr.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control characters\n")]
     // "-" (stdin) with nothing on it -- Run() below passes TextReader.Null,
     // whose ReadLine() returns null immediately, so ReadIdsFrom sees zero ids.
     [InlineData(new[] { "verify", "BUNDLE", "-", "--by", "human:ada" }, "error: no concept ids on standard input\n")]

@@ -524,6 +524,24 @@ public sealed class BundleConceptWriter
             }
         }
 
+        // THE governed gate for a control-bearing actor — see
+        // Actor.ContainsControlCharacter for why it lives on the write path and
+        // what it does not cover. Every layer above inherits it from here: the
+        // CLI verb and okf_verify re-run the same predicate only to phrase a
+        // better message, and both renderers interpolate `by` into a line with
+        // no escaping precisely because nothing this method wrote can carry a
+        // newline. Note this refuses the value rather than sanitizing it: an
+        // actor is an identity, and silently rewriting one would store a
+        // different identity than the caller asked for.
+        //
+        // Checked BEFORE the well-formedness arm below, whose message echoes
+        // `by`: echoing a newline-bearing value would forge a line in the
+        // caller's error output — the very thing being closed here.
+        if (by is not null && Actor.ContainsControlCharacter(by))
+        {
+            return Failed("Error: a §7 actor must not contain control characters.");
+        }
+
         // Strict on input, permissive on read: `human:` with no id promotes the
         // tier (Actor.IsHuman ignores well-formedness), so it must never be
         // written here even though a parser would accept it.
