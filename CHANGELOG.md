@@ -36,6 +36,13 @@ and this project adheres to
 
 ### Changed
 
+- **`ConceptId.FromPath`'s "not under bundle root" error now names the root, and
+  quotes both paths.** It previously reported only the offending path, leaving a
+  caller deriving ids against several bundles to guess which root rejected it.
+  Both the path and the root now go through the same `DebugQuote` treatment every
+  other `ConceptIdException` message uses, so a path containing spaces stays
+  unambiguous and one containing control characters cannot inject line breaks
+  into the message.
 - **`okf audit --json` spells trust tiers one way.** The counts object used
   camelCase property names (`humanReviewed`) while `findings[].trust` and
   `query.trust[]` used the vocabulary's own hyphenated names, so
