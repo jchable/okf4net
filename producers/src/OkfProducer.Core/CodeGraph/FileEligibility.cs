@@ -29,8 +29,9 @@ public static class FileEligibility
     /// discovered) is rejected, and so is a file under a conventionally-named <c>test</c>/
     /// <c>tests</c>/<c>spec</c> directory, even one with no owning project at all. A file this method
     /// rejects is out of scope for this run entirely: it produces no <see cref="FileStatus"/> entry
-    /// and never affects <see cref="RunStatus.IsComplete"/> -- the same treatment
-    /// <see cref="CodeGraphBuilder.Build"/> already gives a file matching no <see cref="LanguageProfile"/>.
+    /// and never affects <see cref="RunStatus.TraversalComplete"/> or <see cref="RunStatus.IsComplete"/>
+    /// -- the same treatment <see cref="CodeGraphBuilder.Build"/> already gives a file matching no
+    /// <see cref="LanguageProfile"/>.
     /// </summary>
     public static bool IsEligible(string relativePath, RepositorySnapshot snapshot, ScopeOptions scope)
     {

@@ -19,16 +19,23 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// A file whose extension matches none of <paramref name="profiles"/>, or that
     /// <see cref="FileEligibility.IsEligible"/> excludes under <paramref name="scope"/> (§5.4), is
     /// skipped entirely: neither is an error or a <see cref="FileStatus"/> skip reason, since both
-    /// simply fall outside what this run is asked to cover, so neither can make the run incomplete.
-    /// A file this run does attempt is still subject to <paramref name="limits"/>'s hostile-input
-    /// guards (§2.3), enforced by <see cref="ILanguageExtractor.Extract"/> itself; a real skip from
-    /// one of those guards -- or the overall <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/>
-    /// elapsing, or <paramref name="cancellationToken"/> itself being cancelled, before every file is
-    /// attempted -- does make the run incomplete (§2.3's closing rule). <paramref name="cancellationToken"/>
-    /// defaults to <see langword="default"/> (never cancelled by the caller) and is linked internally
-    /// with the timeout, so a caller does not have to fabricate a timeout to test cancellation, or vice
-    /// versa. Extracted symbols are further filtered by <see cref="FileEligibility.IsInScope"/> before
-    /// being returned, so an out-of-scope member never reaches <see cref="CodeGraph.Symbols"/>.
+    /// simply fall outside what this run is asked to cover, so neither affects
+    /// <see cref="RunStatus"/> at all. A file this run does attempt is subject to
+    /// <paramref name="limits"/>'s hostile-input guards (§2.3), enforced by
+    /// <see cref="ILanguageExtractor.Extract"/> itself, and its outcome -- clean or not -- is always
+    /// recorded in <see cref="RunStatus.Skipped"/>; a skip from one of those guards affects
+    /// <see cref="RunStatus.IsComplete"/> but, on its own, leaves <see cref="RunStatus.TraversalComplete"/>
+    /// <see langword="true"/> (the file WAS visited). Only the overall
+    /// <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/> elapsing, <paramref name="cancellationToken"/>
+    /// itself being cancelled, or the walk failing outright (a missing/unreadable repository root, or
+    /// an enumeration failure such as a circular reparse point) before every eligible file is even
+    /// visited flips <see cref="RunStatus.TraversalComplete"/> to <see langword="false"/> -- see
+    /// <see cref="RunStatus"/>'s own doc comment for why that distinction exists and matters to Task
+    /// 11's pruning gate. <paramref name="cancellationToken"/> defaults to <see langword="default"/>
+    /// (never cancelled by the caller) and is linked internally with the timeout, so a caller does not
+    /// have to fabricate a timeout to test cancellation, or vice versa. Extracted symbols are further
+    /// filtered by <see cref="FileEligibility.IsInScope"/> before being returned, so an out-of-scope
+    /// member never reaches <see cref="CodeGraph.Symbols"/>.
     /// </summary>
     public CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits, ScopeOptions scope, CancellationToken cancellationToken = default)
     {
@@ -186,16 +193,22 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
                 : e)
             .ToList();
 
+        // Every attempted file's outcome, INCLUDING FileStatus.Extracted -- not just the failures.
+        // §6.3's finer rule (a completed traversal may still prune, scoped to the files that
+        // extracted cleanly) needs a consumer to be able to ask "which files extracted cleanly?" and
+        // get an exact answer straight out of RunStatus, without also needing the full universe of
+        // eligible files to compute the complement of a failures-only list.
         var skipped = results
-            .Where(r => r.Result.Status != FileStatus.Extracted)
             .Select(r => (r.RelativePath, r.Result.Status))
             .ToList();
 
-        // A run cut short -- by timeout, explicit cancellation, or the walk itself failing -- is
-        // partial even when every file attempted before that point extracted cleanly: the files never
-        // reached are indistinguishable from "not modified", exactly the ambiguity RunStatus.IsComplete
-        // exists to rule out (§2.3, §6.3).
-        var status = skipped.Count == 0 && !incomplete ? RunStatus.Complete : new RunStatus(false, skipped);
+        // `incomplete` here means the TRAVERSAL was cut short -- by timeout, explicit cancellation, or
+        // the walk itself failing (missing root, enumeration failure) -- before every eligible file
+        // was even visited. That is a different, strictly worse risk than an individual file's own
+        // extraction quality: a symbol may have moved to a file this run never reached at all, so
+        // RunStatus.TraversalComplete carries it separately from RunStatus.IsComplete (see both types'
+        // own doc comments for the full reasoning §6.3 and this task's own measurement forced).
+        var status = new RunStatus(!incomplete, skipped);
 
         return new CodeGraph(symbols, edges, status);
     }

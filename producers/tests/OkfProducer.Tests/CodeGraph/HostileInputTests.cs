@@ -81,7 +81,40 @@ public class HostileInputTests : IDisposable
 
     [Fact]
     public void A_run_where_every_file_extracted_is_complete()
-        => Assert.True(BuildWith(("A.cs", FileStatus.Extracted)).Status.IsComplete);
+    {
+        // The all-clean shape: both facts RunStatus now carries separately agree.
+        var status = BuildWith(("A.cs", FileStatus.Extracted)).Status;
+
+        Assert.True(status.TraversalComplete);
+        Assert.True(status.IsComplete);
+    }
+
+    [Fact]
+    public void A_complete_traversal_with_one_partially_extracted_file_is_traversal_complete_but_not_is_complete()
+    {
+        // §6.3's finer rule, restated by the coordinator after the ERROR-node measurement: the
+        // traversal itself finished -- every eligible file was visited and has a recorded outcome --
+        // so pruning IS safe for whichever files extracted cleanly, even though this run as a whole
+        // is not fully clean. TraversalComplete and IsComplete must disagree here, on purpose --
+        // that disagreement is the entire point of splitting them.
+        var status = BuildWith(("A.cs", FileStatus.PartiallyExtracted)).Status;
+
+        Assert.True(status.TraversalComplete);
+        Assert.False(status.IsComplete);
+    }
+
+    [Fact]
+    public void Skipped_records_every_attempted_files_outcome_including_a_clean_extraction()
+    {
+        // So a consumer (Task 11) can ask "which files extracted cleanly?" and get an exact answer
+        // directly from RunStatus.Skipped, without also needing the full universe of eligible files
+        // to compute the complement of a failures-only list: a cleanly extracted file gets a real
+        // entry too, not just omission.
+        var skipped = BuildWith(("A.cs", FileStatus.Extracted), ("B.cs", FileStatus.SkippedTooLarge)).Status.Skipped;
+
+        Assert.Contains(skipped, s => s.Path == "A.cs" && s.Status == FileStatus.Extracted);
+        Assert.Contains(skipped, s => s.Path == "B.cs" && s.Status == FileStatus.SkippedTooLarge);
+    }
 
     [Fact]
     public void A_nonexistent_repository_root_reports_an_incomplete_run_not_an_empty_complete_one()
@@ -103,6 +136,7 @@ public class HostileInputTests : IDisposable
 
         var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
 
+        Assert.False(graph.Status.TraversalComplete);
         Assert.False(graph.Status.IsComplete);
         Assert.Empty(graph.Symbols);
     }
@@ -343,6 +377,10 @@ public class HostileInputTests : IDisposable
 
         var graph = builder.Build(snapshot, ExtractionLimits.Default with { MaxDepth = 2 }, ScopeOptions.Default);
 
+        // A per-file skip, not a walk failure: the file WAS visited (it has a recorded outcome), it
+        // just didn't extract cleanly -- so TraversalComplete stays true even though IsComplete does
+        // not, exactly the distinction this fix round exists to make.
+        Assert.True(graph.Status.TraversalComplete);
         Assert.False(graph.Status.IsComplete);
         Assert.Contains(graph.Status.Skipped, s => s.Path == deepRelativePath && s.Status == FileStatus.SkippedDepth);
         Assert.Empty(graph.Symbols);
@@ -376,6 +414,7 @@ public class HostileInputTests : IDisposable
 
             var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
 
+            Assert.False(graph.Status.TraversalComplete);
             Assert.False(graph.Status.IsComplete);
         }
         finally
@@ -396,7 +435,11 @@ public class HostileInputTests : IDisposable
         // The property that actually matters for Task 11's pruning gate is not "the timer fires at
         // the right moment" -- it is "a cancelled run never reports itself complete". Testable without
         // any clock: pass a token that is already cancelled before Build even starts, so not a single
-        // file is attempted, and the empty Skipped list alone must not read as success.
+        // file is attempted, and the empty Skipped list alone must not read as success. This is the
+        // truncated-traversal shape: TraversalComplete is what must be false here, since not a single
+        // file was even visited -- a symbol could have moved to one of the files this run never
+        // reached, which is a strictly different (and worse) risk than any individual file's own
+        // extraction quality. IsComplete is derived from TraversalComplete, so it follows suit.
         var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-cancel-").FullName;
         _tempDirectories.Add(repoPath);
         File.WriteAllText(Path.Combine(repoPath, "A.cs"), "namespace N;\npublic class T {}");
@@ -408,6 +451,7 @@ public class HostileInputTests : IDisposable
 
         var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default, cts.Token);
 
+        Assert.False(graph.Status.TraversalComplete);
         Assert.False(graph.Status.IsComplete);
         Assert.Empty(graph.Symbols);
     }
@@ -430,6 +474,7 @@ public class HostileInputTests : IDisposable
 
         var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default, cts.Token);
 
+        Assert.False(graph.Status.TraversalComplete);
         Assert.False(graph.Status.IsComplete);
         // Files sort Ordinal ("A.cs" before "B.cs"), so the first file the walk reaches is A.cs --
         // its symbol must still be present; B.cs must not have been attempted at all.
