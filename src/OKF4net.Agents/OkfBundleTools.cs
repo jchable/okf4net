@@ -447,10 +447,8 @@ public sealed class OkfBundleTools
     /// own precondition); a query that splits into zero terms yields an empty
     /// result rather than throwing.
     /// </summary>
-    internal IReadOnlyList<(Concept Concept, int Score)> ScoreConceptsFor(string query, string? tag = null) =>
-        ConceptSearch.Search(GetBundle().Concepts, query, tag)
-            .Select(s => (s.Concept, s.Score))
-            .ToList();
+    internal IReadOnlyList<ScoredConcept> ScoreConceptsFor(string query, string? tag = null) =>
+        ConceptSearch.Search(GetBundle().Concepts, query, tag);
 
     /// <summary>
     /// Audits the bundle's trust, freshness and lifecycle signals (§5.3–§5.5):
@@ -1124,10 +1122,15 @@ public sealed class OkfBundleTools
     /// <see cref="ConceptStatus.Deprecated"/> and/or a <c>[stale]</c> marker when it is stale as of
     /// <paramref name="today"/>.
     /// </summary>
-    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored, DateOnly today)
+    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<ScoredConcept> scored, DateOnly today)
     {
         const int MaxResults = 20;
-        var shown = scored.Take(MaxResults).ToList();
+
+        // Diversified rather than a plain Take: on a bundle carrying a generated
+        // `code/` subtree, the members otherwise fill all 20 slots before any
+        // curated concept is reached — measured at 0 curated results in the top
+        // 20 for broad queries (design §8.7).
+        var shown = ConceptSearch.TopDiversified(scored, MaxResults);
 
         var sb = new StringBuilder();
         sb.Append("# Search: \"").Append(query).Append('"');

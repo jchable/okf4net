@@ -7,12 +7,14 @@
 - **Prior art** : **okf-rs**, producer Rust qui extrait types, fonctions, méthodes et un graphe d'appels sur 11 langages via tree-sitter. Sert de référence de capacité et de repère de comparaison ; aucun code repris.
 - **Spike de faisabilité** : worktree `spike-treesitter-dotnet`. Résultats en annexe A — **provenance cassée, chiffres non reproductibles**, voir l'avertissement en tête d'annexe.
 
-> ## ⚠ Statut : ce design n'est **pas** prêt pour un plan d'implémentation
+> ## ✅ Statut : les deux verrous sont levés — le design est prêt pour un plan d'implémentation
 >
-> Deux audits indépendants (interne et externe, 2026-08-31) ont chacun trouvé des défauts porteurs. Les révisions rédactionnelles sont appliquées. Des deux blocages, **le premier est levé** :
+> Deux audits indépendants (interne et externe, 2026-08-31) ont chacun trouvé des défauts porteurs. Les révisions rédactionnelles sont appliquées, et les deux blocages sont traités :
 >
 > 1. ~~**L'étage Roslyn n'est pas démontré**~~ → **LEVÉ le 2026-08-31.** Le prototype `producers/spikes/RoslynCompilationSpike/` atteint **zéro erreur de compilation** sur trois projets réels sans `MSBuildWorkspace`. Il corrige au passage trois hypothèses de §7.2 — dont la plus lourde : le dépôt doit être **construit**, pas seulement restauré.
-> 2. **Le critère d'exploitabilité échoue, et le correctif n'est pas encore implémenté** (§8.7). Sur un corpus représentatif de 395 concepts, les concepts curatés n'obtiennent qu'**une place sur 55** dans le top 5 injecté à l'agent, et 5 requêtes sur 11 n'en ramènent aucun dans le top 20. Réduire la portée ne corrige rien. **Décision prise** : trier par diversification dans `OKF4net.Agents` (issue 1 de §8.7). Planifié dans `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md`, tâches 1-2 ; reste à exécuter.
+> 2. ~~**Le critère d'exploitabilité échoue**~~ → **LEVÉ le 2026-08-31.** `ConceptSearch.TopDiversified` fait tourner la sélection entre familles d'ids, branché dans `okf_search` et `OkfContextProvider`. Sur le même corpus, les places curatées dans le top 5 passent de **1/55 à 23/55**, et les requêtes sans aucun curaté dans le top 20 de **5/11 à 0/11** (§8.7).
+>
+> Reste à écrire : le plan d'implémentation du générateur lui-même, dont la séquence est donnée en fin de `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md`.
 >
 > Corrigé depuis le premier jet : résolution de `resource` (§4.3), granularité de `generated.at` (§6.1), unités de colonne entre les deux moteurs (§2.1), politique d'entrée hostile (§2.3), transactionnalité de l'élagage (§6.3), définition de `--check` (§6.2), appartenance des fichiers à un projet (§5.1), provenance du spike (annexe A).
 
@@ -491,13 +493,23 @@ Sur « bundle », les dix premiers résultats sont des membres d'`OkfBundleTools
 
 **Contrefactuel mesuré** — restreindre la portée aux types (147 concepts, membres retirés) : top 5 **1 / 55**, inchangé ; top 20 : 23 / 220 au lieu de 18. Réduire le volume **ne corrige pas** le problème, parce que la cause est l'ordre, pas le nombre.
 
-**Conséquence.** Le critère d'acceptation — les concepts curatés restent atteignables dans le top 5 injecté et le top 20 recherché — **n'est pas rempli**, et il ne le sera pas en jouant sur la portée. Il reste trois issues, et le choix est ouvert :
+**Décision prise, et implémentée le 2026-08-31 :** rotation par famille dans le sélecteur partagé (`ConceptSearch.TopDiversified`), branchée dans les deux seuls points de troncature — `okf_search` (20 résultats) et `OkfContextProvider` (5 concepts injectés). Les deux autres issues envisagées — sortir les concepts de code dans un bundle séparé, ou assumer un bundle non cherchable — sont écartées : la première coûte la navigation d'un seul tenant, la seconde rend l'auto-injection de contexte inutilisable.
 
-1. **Trier ou filtrer dans `OKF4net.Agents`** (par `tag`, que les concepts de code portent déjà, ou en séparant les surfaces connaissance/code). Traite la cause. `OKF4net.Agents` est un projet distinct de `src/OKF4net`, donc la contrainte « zéro modification de la bibliothèque » (§11) tient toujours — mais la revendication doit être reformulée.
-2. **Ne pas générer les concepts de code dans le bundle principal** — un bundle séparé, monté à côté. Préserve la recherche existante, au prix de la navigation d'un seul tenant.
-3. **Assumer** que ce bundle se parcourt (`okf_browse`) et se traverse (`okf graph`) plutôt qu'il ne se cherche, et l'écrire noir sur blanc — y compris que l'auto-injection de contexte deviendra inutilisable sur ce bundle.
+**Une hypothèse intermédiaire a été essayée et mesurée fausse**, et cela vaut d'être consigné parce que c'est contre-intuitif : diversifier *à l'intérieur* d'une bande de score ne suffit pas. Sur « bundle », un membre généré littéralement nommé `Bundle` matche le terme dans son titre, sa description et son corps et score le maximum (6), tandis que le concept curaté qui répond réellement à la question ne le mentionne que dans sa description (2). Ils sont dans des bandes différentes : aucune rotation intra-bande ne rend le curaté atteignable. La sélection doit donc **traverser les bandes**, en donnant son tour à chaque famille — au prix assumé qu'un concept mieux scoré soit déplacé par un moins bien scoré d'une famille non représentée.
 
-Le benchmark lui-même devient un **test permanent** du producer, avec ses seuils, quelle que soit l'issue retenue.
+**Résultat, même corpus, avant → après :**
+
+| Mesure | Avant | Après |
+|---|---|---|
+| Places curatées dans le top 5 | 1 / 55 | **23 / 55** |
+| Places curatées dans le top 20 | 18 / 220 | **34 / 220** |
+| Requêtes sans aucun curaté dans le top 20 | 5 / 11 | **0 / 11** |
+| Rang du premier curaté sur « bundle » | #74 | **#2** |
+| Rang du premier curaté sur « concept » | #83 | **#2** |
+
+Le critère d'acceptation est rempli. Le benchmark est devenu un **test permanent** (`tests/OKF4net.Tests/SearchScaleTests.cs`), assorti d'un troisième test qui verrouille le défaut lui-même : sans diversification, le même corpus starve toujours les concepts curatés — de sorte qu'un retour en arrière échoue bruyamment au lieu de repasser au vert pour la mauvaise raison.
+
+**La revendication §11 doit être lue précisément** : `src/OKF4net` n'est pas modifié dans son comportement — `ConceptSearch.Search` est inchangé, `TopDiversified` est une méthode ajoutée que seuls les consommateurs appellent. Mais le comportement d'`OKF4net.Agents`, lui, change délibérément.
 
 ---
 

@@ -252,9 +252,18 @@ public sealed class OkfContextProvider : AIContextProvider
             if (query is not null)
             {
                 var today = DateOnly.FromDateTime(UtcNow().Date);
-                foreach (var (concept, _) in _tools!.ScoreConceptsFor(query)
+
+                // Diversified rather than a plain Take, and applied after the
+                // stale filter so the injection window is spent on admitted
+                // concepts. With only MaxConceptsInjected slots (5 by default),
+                // a bundle carrying a generated `code/` subtree would otherwise
+                // inject nothing but members: measured at 1 curated concept
+                // across 55 slots (design §8.7).
+                var admitted = _tools!.ScoreConceptsFor(query)
                     .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, today))
-                    .Take(_options.MaxConceptsInjected))
+                    .ToList();
+
+                foreach (var (concept, _) in ConceptSearch.TopDiversified(admitted, _options.MaxConceptsInjected))
                 {
                     if (remaining <= 0)
                     {

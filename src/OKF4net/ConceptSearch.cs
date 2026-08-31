@@ -125,20 +125,41 @@ public static class ConceptSearch
     /// spreading scarce slots across top-level id segments.
     /// </summary>
     /// <remarks>
-    /// Score order is absolute: a lower-scoring concept never overtakes a
-    /// higher-scoring one. Diversification applies only <em>within</em> a score
-    /// band, which is where it is needed. <see cref="Search"/> breaks ties with
-    /// <see cref="ConceptId"/> order, and that order is ordinal by segment, so
-    /// one whole family precedes every other at equal score — every
-    /// <c>code/…</c> concept before any <c>docs/…</c>, <c>overview</c> or
-    /// <c>packages/…</c>. Scores are presence-based and capped at 6 per term,
-    /// so ties are the common case rather than the exception, and a corpus
-    /// dominated by one family starves the others of every slot: measured on a
-    /// 395-concept bundle, the curated concepts took 1 of 55 top-5 slots.
-    ///
-    /// Within a band, segments are visited round-robin in order of first
-    /// appearance. Since the band arrives in ordinal order, that order — and so
-    /// the result — is fully deterministic.
+    /// <para>
+    /// The problem this solves, measured rather than supposed. On a 395-concept
+    /// bundle shaped like a generated producer output, the curated concepts took
+    /// <b>1 of 55</b> top-5 slots and 5 of 11 broad queries returned none at all
+    /// in the top 20. Two mechanisms compound: <see cref="ScoreConcept"/> awards
+    /// presence rather than frequency and caps at 6 per term, so ties are the
+    /// common case; and <see cref="Search"/> breaks ties with
+    /// <see cref="ConceptId"/> order, which is ordinal by segment, putting every
+    /// <c>code/…</c> concept ahead of every <c>docs/…</c>, <c>overview</c> and
+    /// <c>packages/…</c> one.
+    /// </para>
+    /// <para>
+    /// Diversifying only <em>within</em> a score band was tried first and
+    /// measured insufficient: a generated member literally named <c>Bundle</c>
+    /// matches the query in its title, description and body and scores the
+    /// maximum, while the curated concept that actually answers "bundle"
+    /// mentions it only in its description and scores 2. They are in different
+    /// bands, so no amount of within-band rotation reaches the curated one.
+    /// </para>
+    /// <para>
+    /// So selection rotates across families outright: each top-level id segment
+    /// is a family, families are visited in order of their best-scoring member
+    /// (ties broken by segment, ordinal), and each contributes its next-best
+    /// concept per rotation. Every family present in the results is therefore
+    /// represented before any family takes a second slot. Within a family the
+    /// input order — score, then id — is preserved exactly, and the
+    /// highest-scoring concept overall is always first. With a single family
+    /// this degrades to a plain truncation.
+    /// </para>
+    /// <para>
+    /// The trade is deliberate: a high-scoring concept can be displaced by a
+    /// lower-scoring one from an unrepresented family. That is the point. A
+    /// window that shows twenty members of one type answers a narrower question
+    /// than one that also shows the package and the document describing them.
+    /// </para>
     /// </remarks>
     /// <param name="scored">Results from <see cref="Search"/>, in descending score order.</param>
     /// <param name="count">Maximum number of results to return.</param>
@@ -150,59 +171,52 @@ public static class ConceptSearch
             return [];
         }
 
-        var picked = new List<ScoredConcept>(Math.Min(count, scored.Count));
-
-        for (var i = 0; i < scored.Count && picked.Count < count;)
+        // Group by top-level id segment, preserving the input order (score
+        // descending, then id) inside each family.
+        var families = new List<(string Segment, Queue<ScoredConcept> Queue)>();
+        var bySegment = new Dictionary<string, Queue<ScoredConcept>>(StringComparer.Ordinal);
+        foreach (var entry in scored)
         {
-            // One score band: [i, bandEnd).
-            var band = scored[i].Score;
-            var bandEnd = i;
-            while (bandEnd < scored.Count && scored[bandEnd].Score == band)
+            var segments = entry.Concept.Id.Segments;
+            var segment = segments.Count > 0 ? segments[0] : string.Empty;
+            if (!bySegment.TryGetValue(segment, out var queue))
             {
-                bandEnd++;
+                queue = new Queue<ScoredConcept>();
+                bySegment[segment] = queue;
+                families.Add((segment, queue));
             }
 
-            // Group the band by top-level id segment, keeping the order in which
-            // each segment first appears.
-            var queues = new List<Queue<ScoredConcept>>();
-            var bySegment = new Dictionary<string, Queue<ScoredConcept>>(StringComparer.Ordinal);
-            for (var k = i; k < bandEnd; k++)
+            queue.Enqueue(entry);
+        }
+
+        // Visit families best-first, so the highest-scoring concept overall is
+        // always picked first. Ordinal on the segment breaks ties, keeping the
+        // rotation order deterministic.
+        families.Sort((a, b) =>
+        {
+            var byScore = b.Queue.Peek().Score.CompareTo(a.Queue.Peek().Score);
+            return byScore != 0 ? byScore : string.CompareOrdinal(a.Segment, b.Segment);
+        });
+
+        var picked = new List<ScoredConcept>(Math.Min(count, scored.Count));
+        var drained = false;
+        while (!drained && picked.Count < count)
+        {
+            drained = true;
+            foreach (var (_, queue) in families)
             {
-                var segments = scored[k].Concept.Id.Segments;
-                var segment = segments.Count > 0 ? segments[0] : string.Empty;
-                if (!bySegment.TryGetValue(segment, out var queue))
+                if (queue.Count == 0)
                 {
-                    queue = new Queue<ScoredConcept>();
-                    bySegment[segment] = queue;
-                    queues.Add(queue);
+                    continue;
                 }
 
-                queue.Enqueue(scored[k]);
-            }
-
-            // Round-robin across segments until the band is drained or the
-            // budget is spent.
-            var drained = false;
-            while (!drained && picked.Count < count)
-            {
-                drained = true;
-                foreach (var queue in queues)
+                drained = false;
+                picked.Add(queue.Dequeue());
+                if (picked.Count == count)
                 {
-                    if (queue.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    drained = false;
-                    picked.Add(queue.Dequeue());
-                    if (picked.Count == count)
-                    {
-                        break;
-                    }
+                    break;
                 }
             }
-
-            i = bandEnd;
         }
 
         return picked;

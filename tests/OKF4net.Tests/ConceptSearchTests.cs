@@ -216,15 +216,43 @@ public class ConceptSearchTests
     }
 
     [Fact]
-    public void TopDiversified_never_lets_a_lower_score_overtake_a_higher_one()
+    public void TopDiversified_puts_the_best_scoring_concept_first()
     {
         var scored = new List<ScoredConcept>();
         scored.AddRange(Band(6, "code/csharp/a", "code/csharp/b"));
         scored.AddRange(Band(3, "docs/readme"));
 
+        Assert.Equal("code/csharp/a", ConceptSearch.TopDiversified(scored, 3)[0].Concept.Id.ToString());
+    }
+
+    [Fact]
+    public void TopDiversified_reaches_a_lower_scoring_family_rather_than_filling_up_with_the_best_one()
+    {
+        // The measured failure this whole method exists for: a generated member
+        // literally named "Bundle" scores the maximum while the curated concept
+        // that answers the question only mentions it in its description. They
+        // are in different score bands, so the curated one is reachable only by
+        // giving each family a turn.
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "code/csharp/a", "code/csharp/b", "code/csharp/c"));
+        scored.AddRange(Band(2, "packages/okf4net"));
+
         var top = ConceptSearch.TopDiversified(scored, 2);
 
-        Assert.Equal(["code/csharp/a", "code/csharp/b"], top.Select(s => s.Concept.Id.ToString()));
+        Assert.Equal(["code/csharp/a", "packages/okf4net"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_preserves_input_order_inside_a_family()
+    {
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "code/a"));
+        scored.AddRange(Band(4, "code/b"));
+        scored.AddRange(Band(2, "code/c"));
+
+        var top = ConceptSearch.TopDiversified(scored, 3);
+
+        Assert.Equal(["code/a", "code/b", "code/c"], top.Select(s => s.Concept.Id.ToString()));
     }
 
     [Fact]
@@ -253,17 +281,17 @@ public class ConceptSearchTests
     }
 
     [Fact]
-    public void TopDiversified_drains_a_band_before_moving_to_the_next()
+    public void TopDiversified_visits_families_best_scoring_first()
     {
-        // Four slots, a two-entry band and a three-entry band: the whole first
-        // band must be taken before the second is touched.
+        // `packages` holds the single best result, so its family leads the
+        // rotation even though `code` sorts before it ordinally.
         var scored = new List<ScoredConcept>();
-        scored.AddRange(Band(6, "code/a", "docs/b"));
-        scored.AddRange(Band(2, "code/c", "docs/d", "overview"));
+        scored.AddRange(Band(6, "packages/x"));
+        scored.AddRange(Band(4, "code/a", "code/b"));
 
-        var top = ConceptSearch.TopDiversified(scored, 4);
+        var top = ConceptSearch.TopDiversified(scored, 3);
 
-        Assert.Equal(["code/a", "docs/b", "code/c", "docs/d"], top.Select(s => s.Concept.Id.ToString()));
+        Assert.Equal(["packages/x", "code/a", "code/b"], top.Select(s => s.Concept.Id.ToString()));
     }
 
     [Fact]
