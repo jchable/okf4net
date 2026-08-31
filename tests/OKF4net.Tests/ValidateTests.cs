@@ -605,7 +605,7 @@ public class ValidateTests
     public void Generated_invalid_date_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {by: 'human:bob', at: 'not-a-date'}\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated.at is not ISO-8601") && d.Code == DiagnosticCode.GeneratedInvalidDate && d.Field == "generated.at");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated.at is not an ISO-8601 datetime") && d.Code == DiagnosticCode.GeneratedInvalidDate && d.Field == "generated.at");
     }
 
     [Fact]
@@ -619,7 +619,7 @@ public class ValidateTests
     public void Verified_invalid_date_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified:\n  - by: 'human:bob'\n    at: 'not-a-date'\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified.at is not ISO-8601") && d.Code == DiagnosticCode.VerifiedInvalidDate && d.Field == "verified.at");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified.at is not an ISO-8601 datetime") && d.Code == DiagnosticCode.VerifiedInvalidDate && d.Field == "verified.at");
     }
 
     [Fact]
@@ -810,6 +810,29 @@ public class ValidateTests
         Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidTo);
         Assert.DoesNotContain(r.Of(Severity.Warning),
             d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp && d.Field == "usage_window.from");
+    }
+
+    [Theory]
+    [InlineData("2026-01-01T25:00:00Z")]  // hour out of range
+    [InlineData("2026-01-01T00:61:00Z")]  // minute out of range
+    public void A_generated_at_with_a_good_date_but_a_bad_time_is_invalid_not_legacy(string at)
+    {
+        // The date part alone used to decide this, so a broken time slipped past
+        // GeneratedInvalidDate and was mislabelled "a legacy date-only value" —
+        // which it is not. All six §5 keys must agree on malformed vs legacy.
+        var r = ValidateConcept($"type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {{by: 'human:bob', at: '{at}'}}\n");
+
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.GeneratedInvalidDate && d.Field == "generated.at");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void A_verified_at_with_a_good_date_but_a_bad_time_is_invalid_not_legacy()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified:\n  - by: 'human:bob'\n    at: '2026-01-01T25:00:00Z'\n");
+
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.VerifiedInvalidDate && d.Field == "verified.at");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
     }
 
     [Fact]

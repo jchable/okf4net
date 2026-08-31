@@ -311,13 +311,9 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.by is not a valid §7 actor: {DebugQuote.Quote(g.By.Value.Raw)}", DiagnosticCode.GeneratedInvalidActor, "generated.by"));
                 }
 
-                if (g.At is { } gat && !IsIso8601DateTime(gat))
+                if (g.At is { } gat)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.at is not ISO-8601: {DebugQuote.Quote(gat)}", DiagnosticCode.GeneratedInvalidDate, "generated.at"));
-                }
-                else if (g.At is { } gatConformance && !IsConformantInstant(gatConformance))
-                {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.at {DebugQuote.Quote(gatConformance)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, "generated.at"));
+                    CheckTemporal(diagnostics, concept, gat, "generated.at", "generated.at", DiagnosticCode.GeneratedInvalidDate);
                 }
             }
 
@@ -332,13 +328,9 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.by is not a valid §7 actor: {DebugQuote.Quote(stamp.By.Value.Raw)}", DiagnosticCode.VerifiedInvalidActor, "verified.by"));
                 }
 
-                if (stamp.At is { } vat && !IsIso8601DateTime(vat))
+                if (stamp.At is { } vat)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.at is not ISO-8601: {DebugQuote.Quote(vat)}", DiagnosticCode.VerifiedInvalidDate, "verified.at"));
-                }
-                else if (stamp.At is { } vatConformance && !IsConformantInstant(vatConformance))
-                {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.at {DebugQuote.Quote(vatConformance)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, "verified.at"));
+                    CheckTemporal(diagnostics, concept, vat, "verified.at", "verified.at", DiagnosticCode.VerifiedInvalidDate);
                 }
             }
 
@@ -635,9 +627,17 @@ public static class BundleValidator
     /// <summary>
     /// Light ISO-8601 datetime check: a valid <c>YYYY-MM-DD</c> date,
     /// optionally followed by <c>T&lt;time&gt;</c> with an optional zone.
-    /// This is intentionally permissive -- the spec treats <c>timestamp</c>
-    /// formatting as soft guidance.
+    /// This is intentionally permissive -- the spec treats the legacy §13.1
+    /// <c>timestamp</c> formatting as soft guidance.
     /// </summary>
+    /// <remarks>
+    /// It validates the <em>date part only</em>, so it accepts a broken time
+    /// (<c>2026-01-01T25:00:00Z</c>). That is why the validator no longer uses
+    /// it for §5 timestamp keys: those go through <see cref="IsConformantInstant"/>
+    /// and the shared parser behind it, which reads the whole value. Retained as
+    /// public API for consumers that want the loose shape check.
+    /// </remarks>
+    /// <param name="s">The value to check.</param>
     public static bool IsIso8601DateTime(string s)
     {
         var sepIndex = s.IndexOfAny(['T', ' ']);
@@ -660,8 +660,11 @@ public static class BundleValidator
     /// Checks one §5 timestamp-valued key: unreadable values get
     /// <paramref name="invalidCode"/>, readable-but-legacy ones get
     /// <see cref="DiagnosticCode.LegacyDateOnlyTimestamp"/>, and the §5 form is
-    /// silent. The three §5.1 keys share this so a value cannot be rejected in
-    /// one field and accepted in another.
+    /// silent. All six §5 timestamp keys go through here — <c>stale_after</c>
+    /// via <see cref="Lifecycle"/>, plus <c>generated.at</c>, <c>verified[].at</c>,
+    /// <c>sources[].last_modified</c> and both <c>usage_window</c> bounds — so a
+    /// value cannot be rejected in one field and accepted in another, and
+    /// "malformed" and "legacy" cannot swap places between fields.
     /// </summary>
     private static void CheckTemporal(
         List<Diagnostic> diagnostics,
