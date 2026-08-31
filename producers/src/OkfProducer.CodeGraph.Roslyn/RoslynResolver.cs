@@ -57,6 +57,16 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// lift the limit. Meanwhile the behaviour is the safe one: such a project degrades to the
 /// name-matching baseline and <see cref="IsComplete"/> says so, which is what a pruning consumer must
 /// see. See 7.2 of <c>docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md</c>.</para>
+///
+/// <para><b>Blast radius of a failed project.</b> A project that does not compile costs more than its
+/// own files, and the cost is worth stating plainly. Its files are not <see cref="Owns"/>ed, so every
+/// call <i>inside</i> it drops to the name-matching baseline -- and calls <i>into</i> it, from clean
+/// projects, are affected too: those bind against its <c>bin/</c> assembly, so the target arrives as a
+/// metadata symbol rather than a source one and cannot be resolved exactly. <see cref="Resolve"/>
+/// detects that case (see its remarks) and stays silent instead of retracting, so the baseline's
+/// verdict survives -- but the edge is <see cref="EdgeConfidence.ByName"/>, not
+/// <see cref="EdgeConfidence.Exact"/>. Precision degrades across the reverse-dependency cone of the
+/// failing project, not just within it.</para>
 /// </summary>
 public sealed class RoslynResolver : ISymbolResolver
 {
@@ -67,10 +77,20 @@ public sealed class RoslynResolver : ISymbolResolver
     // site this run actually asks about.
     private readonly Dictionary<string, IReadOnlyDictionary<int, CalleeMatch>> _indexCache;
 
-    private RoslynResolver(IReadOnlyList<RoslynProjectReport> projects, IReadOnlyDictionary<string, OwnedFile> ownedFiles)
+    // Build outputs of the repository's own projects, from MSBuild's provenance metadata. A target
+    // found in one of these is in the repository even though it arrived as metadata, which is what
+    // separates "the BCL, retract the guess" from "our own project that failed to compile, leave the
+    // baseline alone". A lookup only; never iterated into any output.
+    private readonly IReadOnlySet<string> _repositoryProjectAssemblies;
+
+    private RoslynResolver(
+        IReadOnlyList<RoslynProjectReport> projects,
+        IReadOnlyDictionary<string, OwnedFile> ownedFiles,
+        IReadOnlySet<string> repositoryProjectAssemblies)
     {
         Projects = projects;
         _ownedFiles = ownedFiles;
+        _repositoryProjectAssemblies = repositoryProjectAssemblies;
         _indexCache = new Dictionary<string, IReadOnlyDictionary<int, CalleeMatch>>(PathComparer);
     }
 
@@ -84,11 +104,23 @@ public sealed class RoslynResolver : ISymbolResolver
     public bool IsAvailable => Projects.Any(p => p.Availability == RoslynProjectAvailability.Compiled);
 
     /// <summary>
-    /// Whether <i>every</i> project compiled. <see langword="false"/> means some C# in the repository
-    /// was resolved by name alone, so a consumer that deletes concepts on the strength of this graph
-    /// (Task 11's pruning) is working from an incomplete picture and must not.
+    /// Whether this resolver covered the repository completely: at least one project, and every one of
+    /// them compiled. <see langword="false"/> means some C# was resolved by name alone, so a consumer
+    /// that deletes concepts on the strength of this graph (Task 11's pruning) is working from an
+    /// incomplete picture and must not.
+    ///
+    /// <para>
+    /// The <c>Count &gt; 0</c> clause is the whole point of this property, not a formality.
+    /// <c>Projects.All(...)</c> over an empty list is vacuously <see langword="true"/>, so a resolver
+    /// constructed with no projects at all -- which is precisely the state in which EVERY call in the
+    /// repository fell back to name matching -- would otherwise report itself complete and green-light
+    /// the one thing it must forbid. That state is reachable rather than theoretical: finding no
+    /// <c>.csproj</c> in a C# repository is a known gap in this producer, and it yields an empty
+    /// project list, not an error.
+    /// </para>
     /// </summary>
-    public bool IsComplete => Projects.All(p => p.Availability == RoslynProjectAvailability.Compiled);
+    public bool IsComplete =>
+        Projects.Count > 0 && Projects.All(p => p.Availability == RoslynProjectAvailability.Compiled);
 
     /// <summary>
     /// Compiles <paramref name="projectPaths"/>, plus every project they reference that lives under
@@ -139,7 +171,40 @@ public sealed class RoslynResolver : ISymbolResolver
 
         return new RoslynResolver(
             reports.Values.OrderBy(r => r.ProjectPath, StringComparer.Ordinal).ToList(),
-            ownedFiles);
+            ownedFiles,
+            RepositoryProjectAssemblies(repositoryRoot, queried));
+    }
+
+    /// <summary>
+    /// Every assembly path MSBuild reported as the output of a project under
+    /// <paramref name="repositoryRoot"/>, gathered across the whole queried closure.
+    ///
+    /// <para>
+    /// Membership is decided by <see cref="ProjectReferenceInput.ProjectPath"/> -- MSBuild's
+    /// <c>MSBuildSourceProjectFile</c> -- resolving under the repository root, not by the assembly's
+    /// own path or name. The distinction matters: a project's output can be redirected anywhere by
+    /// <c>OutputPath</c>, and a NuGet package can share a repository project's name, so neither the
+    /// path nor the name identifies a project output. The <c>.csproj</c> MSBuild names does.
+    /// </para>
+    /// </summary>
+    private static HashSet<string> RepositoryProjectAssemblies(
+        string repositoryRoot, Dictionary<string, ProjectInputs> queried)
+    {
+        var assemblies = new HashSet<string>(PathComparer);
+
+        foreach (var inputs in queried.Values)
+        {
+            foreach (var reference in inputs.References)
+            {
+                if (reference.ProjectPath is not null
+                    && RelativeToRepository(repositoryRoot, reference.ProjectPath) is not null)
+                {
+                    assemblies.Add(reference.AssemblyPath);
+                }
+            }
+        }
+
+        return assemblies;
     }
 
     /// <inheritdoc />
@@ -168,6 +233,16 @@ public sealed class RoslynResolver : ISymbolResolver
     /// declare exactly one method called <c>Format</c>, <see cref="NameMatchResolver"/> links every
     /// <c>string.Format</c> call to it; Roslyn knows better and says so.
     /// </para>
+    /// <para>
+    /// That retraction is withheld in one case, and the distinction is not a nicety. A call into one
+    /// of the repository's <i>own</i> projects also binds to a metadata symbol whenever that project
+    /// failed to compile and was referenced from its <c>bin/</c> assembly -- but there the concept
+    /// does exist, because the extractor read that project's source whether or not Roslyn could
+    /// compile it, so retracting would delete a correct baseline edge. Such a site is omitted, the
+    /// same as an unattached one. Without this, one failing project would silently cost edges in every
+    /// clean project that calls into it, which the source-generator limitation above makes a common
+    /// shape rather than a corner.
+    /// </para>
     /// <para><paramref name="symbols"/> is unused. This resolver reads the compilation's own symbol
     /// table, which is strictly better information than the extracted facts; <c>CodeGraphBuilder</c>
     /// already drops or degrades any edge naming a symbol absent from the graph, so re-filtering here
@@ -194,6 +269,16 @@ public sealed class RoslynResolver : ISymbolResolver
             // quietly re-pointing every call.
             if (!string.Equals(match.CalleeName, site.CalledName, StringComparison.Ordinal))
             {
+                continue;
+            }
+
+            if (match.Kind == TargetKind.UncompiledRepositoryProject)
+            {
+                // The target IS in this repository -- the extractor read its source and emitted a
+                // concept for it -- Roslyn just could not compile its project and saw it as metadata
+                // instead. Overriding here would retract a baseline edge that was correct and whose
+                // target concept exists, so one project's failure would cost edges in every clean
+                // project that calls into it. Say nothing and let the baseline stand.
                 continue;
             }
 
@@ -388,7 +473,7 @@ public sealed class RoslynResolver : ISymbolResolver
     /// (<c>name: (identifier) @callee</c>), and identity here is the offset the two engines share.
     /// </para>
     /// </summary>
-    private static Dictionary<int, CalleeMatch> BuildIndex(OwnedFile owned)
+    private Dictionary<int, CalleeMatch> BuildIndex(OwnedFile owned)
     {
         // The exact string the tree was parsed from: SourceText.From(string) stores it verbatim, so
         // this is the same text TreeSitterExtractor decoded and measured against, not a re-read.
@@ -405,14 +490,18 @@ public sealed class RoslynResolver : ISymbolResolver
             }
 
             var symbol = TargetSymbol(model, invocation, callee);
-            var (container, name) = DescribeTarget(symbol);
+            var (kind, container, name) = DescribeTarget(owned.Compilation, _repositoryProjectAssemblies, symbol);
 
             // Roslyn counts UTF-16 code units; a CallSite's identity is a UTF-8 byte offset. Do not
             // delete this conversion on the grounds that the tree-sitter side "already gives UTF-16
             // too" -- see Utf8Offsets' summary; that is an artefact of the binding, and the failure
             // mode when it stops holding is a call credited to the wrong symbol, silently.
             var offset = Utf8Offsets.ToUtf8(text, callee.Identifier.SpanStart);
-            index[offset] = new CalleeMatch(callee.Identifier.ValueText, container, name);
+
+            // Identifier.Text, not ValueText: ValueText strips the @ from a verbatim identifier, while
+            // CallSite.CalledName is the grammar's raw token and keeps it, so @class() would fail the
+            // name guard in Resolve on a difference that is purely about how the name was spelled.
+            index[offset] = new CalleeMatch(callee.Identifier.Text, kind, container, name);
         }
 
         return index;
@@ -472,17 +561,25 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </para>
     ///
     /// <para>
-    /// A symbol with no source declaration (the BCL, a NuGet package, a source-generated type from a
-    /// referenced assembly) returns <c>(null, null)</c> deliberately: there is no concept for it, and
-    /// saying so retracts the baseline's name-only guess rather than leaving a link to a same-named
-    /// declaration that has nothing to do with the call.
+    /// A symbol with no source declaration comes back <see cref="TargetKind.External"/>, and the two
+    /// reasons that can happen need opposite handling -- which is why this returns three outcomes, not
+    /// two. A target that is <i>genuinely</i> outside the repository (the BCL, a NuGet package) has no
+    /// concept to point at, so saying so is a gain: it retracts the baseline's name-only guess rather
+    /// than leaving a link to a same-named declaration that has nothing to do with the call. But a
+    /// target in one of the repository's OWN projects also arrives as metadata whenever that project
+    /// failed to compile and was referenced from its <c>bin/</c> assembly instead -- and there the
+    /// baseline was right, its target concept does exist (the extractor read that project's source
+    /// regardless of whether Roslyn could compile it), and retracting would destroy a correct edge.
+    /// That second case is <see cref="TargetKind.UncompiledRepositoryProject"/> and this resolver
+    /// stays out of its way.
     /// </para>
     /// </summary>
-    private static (string? Container, string? Name) DescribeTarget(ISymbol? symbol)
+    private static (TargetKind Kind, string? Container, string? Name) DescribeTarget(
+        CSharpCompilation compilation, IReadOnlySet<string> repositoryProjectAssemblies, ISymbol? symbol)
     {
         if (symbol is null)
         {
-            return (null, null);
+            return (TargetKind.External, null, null);
         }
 
         var definition = symbol.OriginalDefinition;
@@ -494,15 +591,47 @@ public sealed class RoslynResolver : ISymbolResolver
 
         if (definition.DeclaringSyntaxReferences.Length == 0 && !definition.Locations.Any(l => l.IsInSource))
         {
-            return (null, null);
+            return (
+                IsFromUncompiledRepositoryProject(compilation, repositoryProjectAssemblies, definition)
+                    ? TargetKind.UncompiledRepositoryProject
+                    : TargetKind.External,
+                null,
+                null);
         }
 
         if (!IsDeclarationKindThisProducerEmits(definition))
         {
-            return (null, null);
+            return (TargetKind.External, null, null);
         }
 
-        return (ContainerPathOf(definition), SimpleNameOf(definition));
+        return (TargetKind.InSource, ContainerPathOf(definition), SimpleNameOf(definition));
+    }
+
+    /// <summary>
+    /// Whether a metadata symbol came from an assembly that is one of the repository's own projects'
+    /// build outputs.
+    ///
+    /// <para>
+    /// Answered from MSBuild's own provenance, never from a filename: the assembly symbol is mapped
+    /// back to the <see cref="MetadataReference"/> it was loaded from, and that reference's path is
+    /// looked up among the <c>ReferencePath</c> items MSBuild tagged
+    /// <c>ReferenceSourceTarget=ProjectReference</c> with an <c>MSBuildSourceProjectFile</c> under the
+    /// repository root (see <see cref="ProjectReferenceInput"/>). Matching by assembly name would
+    /// confuse a repository project with a NuGet package that happens to share its name, and this
+    /// decision changes whether a correct edge survives -- not a place to guess.
+    /// </para>
+    /// </summary>
+    private static bool IsFromUncompiledRepositoryProject(
+        CSharpCompilation compilation, IReadOnlySet<string> repositoryProjectAssemblies, ISymbol definition)
+    {
+        var assembly = definition.ContainingAssembly;
+        if (assembly is null)
+        {
+            return false;
+        }
+
+        return compilation.GetMetadataReference(assembly) is PortableExecutableReference { FilePath: { } path }
+            && repositoryProjectAssemblies.Contains(path);
     }
 
     /// <summary>
@@ -561,12 +690,47 @@ public sealed class RoslynResolver : ISymbolResolver
     }
 
     /// <summary>
-    /// The declaration's name as it is written in source. Roslyn mangles an explicit interface
-    /// implementation's name to its fully qualified form (<c>N.IFoo.Bar</c>); the source token, and
-    /// so the extracted <see cref="SymbolFact.Name"/>, is just <c>Bar</c>.
+    /// The declaration's name <b>exactly as it is written in source</b>, because that -- not Roslyn's
+    /// idea of the name -- is what <see cref="SymbolFact.Name"/> holds, and the two have to be the
+    /// same string to join.
+    ///
+    /// <para>
+    /// They differ in two ways. Roslyn mangles an explicit interface implementation's name to its
+    /// fully qualified form (<c>N.IFoo.Bar</c>) where the source token is just <c>Bar</c>; and Roslyn
+    /// strips the <c>@</c> from a verbatim identifier (<c>@class</c> becomes <c>class</c>) where the
+    /// grammar hands the extractor the raw token, <c>@class</c>. So the declaring syntax's own
+    /// identifier token is preferred whenever there is one -- it is the same text the tree-sitter
+    /// query captured, by construction -- and <see cref="ISymbol.Name"/> is only the fallback, for a
+    /// symbol with no source declaration to read.
+    /// </para>
     /// </summary>
     private static string SimpleNameOf(ISymbol symbol)
     {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            // The node kinds here mirror CSharpProfile.DeclarationQuery's, deliberately: a declaration
+            // this producer does not extract has no SymbolFact to join anyway, so there is nothing to
+            // match its spelling against.
+            var identifier = reference.GetSyntax() switch
+            {
+                BaseTypeDeclarationSyntax type => type.Identifier,
+                DelegateDeclarationSyntax dele => dele.Identifier,
+                MethodDeclarationSyntax method => method.Identifier,
+                ConstructorDeclarationSyntax constructor => constructor.Identifier,
+                DestructorDeclarationSyntax destructor => destructor.Identifier,
+                PropertyDeclarationSyntax property => property.Identifier,
+                EventDeclarationSyntax @event => @event.Identifier,
+                LocalFunctionStatementSyntax local => local.Identifier,
+                VariableDeclaratorSyntax declarator => declarator.Identifier,
+                _ => default,
+            };
+
+            if (identifier.Text.Length > 0)
+            {
+                return identifier.Text;
+            }
+        }
+
         var name = symbol.Name;
         var lastDot = name.LastIndexOf('.');
         return lastDot >= 0 ? name[(lastDot + 1)..] : name;
@@ -611,7 +775,28 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </summary>
     private static StringComparer PathComparer => StringComparer.Ordinal;
 
+    /// <summary>What kind of thing a call site's target turned out to be.</summary>
+    private enum TargetKind
+    {
+        /// <summary>Declared in source this run compiled: an exact target, and one with a concept.</summary>
+        InSource,
+
+        /// <summary>
+        /// Declared outside the repository (the BCL, a NuGet package). No concept exists, so the
+        /// verdict is <see cref="EdgeConfidence.Unresolved"/> -- which deliberately overrides a
+        /// name-only baseline guess, because that guess is wrong.
+        /// </summary>
+        External,
+
+        /// <summary>
+        /// Declared in one of the repository's own projects, reached as metadata because that project
+        /// did not compile. A concept for it does exist, so the baseline's verdict is left alone
+        /// rather than overridden.
+        /// </summary>
+        UncompiledRepositoryProject,
+    }
+
     private sealed record OwnedFile(CSharpCompilation Compilation, SyntaxTree Tree);
 
-    private sealed record CalleeMatch(string CalleeName, string? TargetContainer, string? TargetName);
+    private sealed record CalleeMatch(string CalleeName, TargetKind Kind, string? TargetContainer, string? TargetName);
 }

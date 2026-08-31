@@ -287,6 +287,52 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
+    public void A_resolver_with_no_projects_at_all_is_not_complete()
+    {
+        // The one input where a vacuous answer is the DANGEROUS answer: Projects.All(...) over an
+        // empty list is true, so without the Count > 0 clause a resolver that resolved absolutely
+        // nothing would report itself complete and green-light Task 11's pruning. Reachable in
+        // practice -- finding no .csproj in a C# repository yields an empty list, not an error.
+        var resolver = RoslynResolver.Create(RepoRoot(), []);
+
+        Assert.False(resolver.IsComplete);
+        Assert.False(resolver.IsAvailable);
+        Assert.Empty(resolver.Projects);
+        Assert.False(resolver.Owns("src/OKF4net/ConceptId.cs"));
+    }
+
+    // Source for the test below. Roslyn strips the @ from a verbatim identifier and the grammar keeps
+    // it, so the two disagree about this method's name on both sides of the join at once.
+    public const string VerbatimSource = """
+        namespace Verbatim;
+        public class Holder
+        {
+            public int @class() => 1;
+            public int Caller() => @class();
+        }
+        """;
+
+    [Fact]
+    public void A_verbatim_identifier_keeps_its_at_sign_on_both_sides_of_the_identity()
+    {
+        // Identity mismatch on the exact axis this task is about, in both halves: the name guard
+        // compares the call site's spelling (CalledName, the grammar's raw token) against Roslyn's,
+        // and the target's name has to equal SymbolFact.Name for CodeGraphBuilder to join it. Roslyn's
+        // ValueText/ISymbol.Name give "class" for both; the extractor gives "@class" for both.
+        var site = Assert.Single(_scratch.SitesIn("Verbatim.cs"), s => s.CallerName == "Caller");
+        Assert.Equal("@class", site.CalledName);
+
+        var edge = Assert.Single(_scratch.Resolver.Resolve([site], _scratch.Symbols));
+
+        Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
+        Assert.Equal("Verbatim.Holder", edge.TargetContainer);
+        Assert.Equal("@class", edge.TargetName);
+
+        // And it actually joins, which is the half CodeGraphBuilder would otherwise degrade.
+        Assert.Contains(_scratch.Symbols, s => s.Container == edge.TargetContainer && s.Name == edge.TargetName);
+    }
+
+    [Fact]
     public void Chained_behind_NameMatch_in_CodeGraphBuilder_the_exact_verdict_wins()
     {
         // Every other test in this file calls Resolve directly. This one runs the real wiring, because
@@ -332,6 +378,41 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         var report = Assert.Single(resolver.Projects);
         Assert.Equal(RoslynProjectAvailability.CompilationHadErrors, report.Availability);
         Assert.False(resolver.Owns("Serialization.cs"));
+    }
+
+    [Fact]
+    public void A_failed_project_does_not_retract_correct_edges_in_the_clean_projects_that_call_it()
+    {
+        // The blast radius of the source-generator limitation, and the reason it needed fixing rather
+        // than documenting: project A fails (its generator's members are missing), but A's bin/ dll
+        // exists, so clean project B compiles against A's METADATA and a B->A call binds to a
+        // non-source symbol. Retracting there would delete a NameMatchResolver edge that was correct
+        // and whose target concept exists -- the extractor read A's source regardless of whether
+        // Roslyn could compile A. So one project's failure would silently cost edges in every project
+        // that calls into it.
+        using var repository = new GeneratorAcrossProjectsRepository();
+
+        var resolver = RoslynResolver.Create(repository.Root, [repository.ApplicationProject]);
+
+        // The situation is really set up: A failed, B compiled.
+        var library = Assert.Single(resolver.Projects, p => p.ProjectPath == repository.LibraryProject);
+        Assert.Equal(RoslynProjectAvailability.CompilationHadErrors, library.Availability);
+        var application = Assert.Single(resolver.Projects, p => p.ProjectPath == repository.ApplicationProject);
+        Assert.Equal(RoslynProjectAvailability.Compiled, application.Availability);
+        Assert.False(resolver.IsComplete);
+
+        using var extractor = new TreeSitterExtractor();
+        var extracted = extractor.Extract("app/Program.cs", repository.ApplicationSourceFile, CSharpProfile.Instance, ExtractionLimits.Default);
+
+        // The cross-project call: no verdict at all, so the baseline's ByName edge survives.
+        var intoLibrary = Assert.Single(extracted.Sites, s => s.CalledName == "Greet");
+        Assert.Empty(resolver.Resolve([intoLibrary], extracted.Symbols));
+
+        // The contrast, and the half that must NOT change: a genuinely external target is still
+        // retracted, because there the baseline's name-only guess is wrong.
+        var intoBcl = Assert.Single(extracted.Sites, s => s.CalledName == "Concat");
+        var external = Assert.Single(resolver.Resolve([intoBcl], extracted.Symbols));
+        Assert.Equal(EdgeConfidence.Unresolved, external.Confidence);
     }
 
     [Fact]
@@ -534,6 +615,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             ("Ambiguity.cs", AmbiguitySource),
             ("NonAscii.cs", NonAsciiSource),
             ("External.cs", ExternalSource),
+            ("Verbatim.cs", VerbatimSource),
         ];
 
         private readonly Dictionary<string, ExtractionResult> _extracted = new(StringComparer.Ordinal);
@@ -734,6 +816,82 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             """;
     }
 
+    /// <summary>
+    /// A <b>built</b> two-project repository where the library uses a Roslyn source generator and the
+    /// application calls a plain method on it. Built rather than merely restored, deliberately: the
+    /// library's <c>bin/</c> assembly has to exist for the application to compile against its metadata,
+    /// which is the whole situation under test. Real <c>csc</c> runs the generator, so the build
+    /// succeeds even though this producer's own compilation of the library cannot.
+    /// </summary>
+    private sealed class GeneratorAcrossProjectsRepository : ScratchRepository
+    {
+        public GeneratorAcrossProjectsRepository()
+            : base("generator-xproj")
+        {
+            LibraryProject = Write("lib/Library.csproj", LibraryProjectFile);
+            Write("lib/Greeter.cs", LibrarySource);
+            ApplicationProject = Write("app/Application.csproj", ApplicationProjectFile);
+            ApplicationSourceFile = Write("app/Program.cs", ApplicationSource);
+
+            Build(ApplicationProject);
+        }
+
+        public string LibraryProject { get; }
+
+        public string ApplicationProject { get; }
+
+        public string ApplicationSourceFile { get; }
+
+        private const string LibraryProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <Nullable>enable</Nullable>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private const string ApplicationProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <Nullable>enable</Nullable>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="..\lib\Library.csproj" />
+              </ItemGroup>
+            </Project>
+            """;
+
+        // Greet is ordinary and is what the application calls; PayloadContext.Default is what only the
+        // System.Text.Json generator supplies, and so what makes this project fail to compile here.
+        private const string LibrarySource = """
+            using System.Text.Json.Serialization;
+
+            namespace Library;
+
+            public record Payload(string Name);
+
+            [JsonSerializable(typeof(Payload))]
+            public partial class PayloadContext : JsonSerializerContext { }
+
+            public class Greeter
+            {
+                public string Greet(string who) => who;
+                public string Encode(Payload p) => System.Text.Json.JsonSerializer.Serialize(p, PayloadContext.Default.Payload);
+            }
+            """;
+
+        private const string ApplicationSource = """
+            namespace App;
+            public class Program
+            {
+                public static string Run() => new Library.Greeter().Greet("world");
+                public static string Join() => string.Concat("x", "y");
+            }
+            """;
+    }
+
     /// <summary>A restored repository whose single project targets two frameworks.</summary>
     private sealed class MultiTargetRepository : ScratchRepository
     {
@@ -855,7 +1013,16 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         }
     }
 
-    private static void Restore(string projectPath)
+    private static void Restore(string projectPath) => Dotnet("restore", projectPath);
+
+    /// <summary>
+    /// A full build, for the one fixture that needs a project's <c>bin/</c> assembly to actually exist.
+    /// Real <c>csc</c> runs source generators, so a project this producer cannot compile still builds
+    /// here -- which is precisely the asymmetry that fixture exercises.
+    /// </summary>
+    private static void Build(string projectPath) => Dotnet("build", projectPath);
+
+    private static void Dotnet(string verb, string projectPath)
     {
         var startInfo = new ProcessStartInfo("dotnet")
         {
@@ -863,7 +1030,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             RedirectStandardError = true,
             WorkingDirectory = Path.GetDirectoryName(projectPath)!,
         };
-        startInfo.ArgumentList.Add("restore");
+        startInfo.ArgumentList.Add(verb);
         startInfo.ArgumentList.Add(projectPath);
 
         using var process = Process.Start(startInfo)!;
@@ -873,6 +1040,6 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         Assert.True(
             process.ExitCode == 0,
-            $"`dotnet restore {projectPath}` exited {process.ExitCode}: {stdout.GetAwaiter().GetResult()} {stderr.GetAwaiter().GetResult()}");
+            $"`dotnet {verb} {projectPath}` exited {process.ExitCode}: {stdout.GetAwaiter().GetResult()} {stderr.GetAwaiter().GetResult()}");
     }
 }

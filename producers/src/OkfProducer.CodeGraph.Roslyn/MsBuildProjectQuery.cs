@@ -11,11 +11,13 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// output was not the JSON document <c>-getItem</c>/<c>-getProperty</c> promise.
 ///
 /// <para>
-/// A distinct exception type rather than a bare <see cref="InvalidOperationException"/> because
-/// <see cref="RoslynResolver"/> treats the two completely differently: this one is the degradation
-/// path (report the project unavailable, let the name-matching baseline stand), whereas the
-/// <see cref="InvalidOperationException"/> <see cref="CompilationFactory.Create"/> throws for an
-/// unknown <c>LangVersion</c> is the loud-failure path and is deliberately not caught anywhere.
+/// A distinct exception type rather than a bare <see cref="InvalidOperationException"/> so
+/// <see cref="RoslynResolver"/> can catch exactly this, rather than catching every
+/// <see cref="InvalidOperationException"/> anything downstream might raise and quietly turning a
+/// genuine bug into a "project unavailable" line. Both this and
+/// <see cref="UnknownLanguageVersionException"/> lead to the same outcome -- the project is reported
+/// unavailable and the name-matching baseline carries it -- but they are told apart so the report can
+/// name the actual cause, and so neither catch can swallow the other's failures.
 /// </para>
 /// </summary>
 public sealed class MsBuildQueryException : Exception
@@ -209,6 +211,14 @@ public static class MsBuildProjectQuery
 
         startInfo.ArgumentList.Add("msbuild");
         startInfo.ArgumentList.Add(projectPath);
+
+        // Node reuse is on by default, and it is wrong for this caller twice over. It leaves worker
+        // processes alive after the build -- N of them per producer run, which a tool meant for CI has
+        // no business doing -- and those workers INHERIT the redirected pipes, so the readers below can
+        // stay open long after the msbuild process itself has exited, hanging a call whose process-level
+        // timeout has already been satisfied.
+        startInfo.ArgumentList.Add("-nodeReuse:false");
+
         foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
@@ -229,21 +239,34 @@ public static class MsBuildProjectQuery
 
         using (process)
         {
+            // One token bounds the WHOLE call, not just the process. Process.WaitForExit(int) waits for
+            // the process to exit but not for the redirected readers to finish, so reading them
+            // afterwards is an unbounded block sitting just past a timeout that has already been
+            // honoured -- and anything else holding the write end of those pipes (an inherited MSBuild
+            // worker; see -nodeReuse:false above) keeps them open with no escape. Cancelling the reads
+            // as well as the wait closes that gap.
+            using var timeout = new CancellationTokenSource(QueryTimeout);
+
             // Both streams are drained concurrently, never one ReadToEnd() after the other: MSBuild
             // writes enough to fill a pipe buffer, and a sequential read deadlocks the moment the
             // stream being read second fills up while the process blocks writing to it.
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
 
-            if (!process.WaitForExit((int)QueryTimeout.TotalMilliseconds))
+            string stdout;
+            string stderr;
+            try
+            {
+                process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+                stdout = stdoutTask.GetAwaiter().GetResult();
+                stderr = stderrTask.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
             {
                 TryKill(process);
                 throw new MsBuildQueryException(
                     $"`dotnet msbuild` for {projectPath} did not finish within {QueryTimeout.TotalSeconds:0} s.");
             }
-
-            var stdout = stdoutTask.GetAwaiter().GetResult();
-            var stderr = stderrTask.GetAwaiter().GetResult();
 
             if (process.ExitCode != 0)
             {

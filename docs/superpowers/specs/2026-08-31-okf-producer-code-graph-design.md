@@ -433,6 +433,15 @@ La correction 1 récupère bien les fichiers générés **par le SDK** (`*.Globa
 
 **Conséquence, assumée et visible plutôt que découverte** : tout projet utilisant un générateur de source (`System.Text.Json`, `GeneratedRegex`, `LoggerMessage`, l'essentiel d'ASP.NET) a une compilation en erreur, `RoslynResolver` se déclare indisponible pour lui (`CompilationHadErrors`), ne le possède pas (`Owns` → `false`), et `NameMatchResolver` le porte au niveau *baseline*. `IsComplete` passe à `false`, ce que l'élagage de la Task 11 doit lire. C'est la dégradation propre — jamais une résolution depuis une table de symboles trouée, qui n'échouerait pas à résoudre les appels mais les attribuerait au mauvais symbole.
 
+**Rayon d'impact — il déborde du projet en échec.** C'est le point le moins intuitif et il doit être écrit noir sur blanc. Un projet qui ne compile pas ne coûte pas seulement la précision *sur ses propres fichiers* :
+
+- **Dans le projet A en échec** : ses fichiers ne sont pas `Owns()`és, donc chacun de ses appels retombe sur la baseline. Attendu.
+- **Dans les projets propres qui appellent A** : ils compilent, eux, mais contre le **`bin/`** de A — donc un appel B → A se lie à un symbole de *métadonnées*, pas de source, et n'est pas résoluble exactement. La précision se dégrade sur tout le **cône de dépendances inverses** de A, pas seulement dans A.
+
+Et ce second cas était initialement traité *à l'envers* : un symbole de métadonnées était rendu `Unresolved`, ce qui est juste pour une cible réellement externe (BCL, NuGet — la supposition par nom de la baseline y est fausse et la rétracter est un gain) mais **destructeur** pour une cible qui est un projet du dépôt : le concept existe (l'extracteur a lu la source de A, que Roslyn ait su compiler A ou non) et l'arête `ByName` de la baseline était correcte. Un seul projet en échec faisait donc disparaître des arêtes justes dans tous les projets qui l'appellent.
+
+Les deux cas sont désormais distingués par la **provenance MSBuild** — l'assembly de la cible est remontée à la `MetadataReference` dont elle vient, dont le chemin est cherché parmi les items `ReferencePath` que MSBuild a marqués `ReferenceSourceTarget=ProjectReference` avec un `MSBuildSourceProjectFile` sous la racine du dépôt. Jamais par nom de fichier ou d'assembly : un paquet NuGet peut porter le nom d'un projet du dépôt, et `OutputPath` peut rediriger une sortie n'importe où. Quand la cible est un projet du dépôt non compilé, le resolver **ne dit rien** et laisse la verdict de la baseline en place.
+
 **Chemin futur possible** : un *hôte de générateurs en bac à sable*. C'est cela, et non un `CSharpGeneratorDriver` non gardé, qui lèverait la limitation.
 
 La limitation est épinglée par un test (`A_project_completed_by_a_source_generator_degrades_rather_than_resolving_from_a_hole`, sur une fixture dédiée plutôt que sur `OKF4net.Cli` lui-même) pour qu'elle ne change pas silencieusement dans un sens ou dans l'autre.
