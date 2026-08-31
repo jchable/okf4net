@@ -469,6 +469,55 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void A_link_this_producer_derived_is_neutralized_before_it_reaches_a_body()
+    {
+        // Found by the end-to-end run, not by reasoning: LinkScanner's own XML summary in this
+        // repository contains the literal `<c>[text](dest)</c>`, DocCommentSource carries it into the
+        // description, and rendering it verbatim made it the only broken link in a 648-concept bundle.
+        // The author wrote doc syntax that merely looks like markdown; they did not write a bundle link.
+        //
+        // Asserted against OKF4net's own LinkScanner, which is what the validator uses -- not against
+        // the escaped text, which would only pin the spelling of the fix. Escaping `[` instead would
+        // pass a text assertion and fail this one: ScanLineLinks dispatches on `[` with no look-back.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "See [text](dest) for more."));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Empty(LinkScanner.ExtractLinks(body));
+        Assert.Contains("[text\\](dest)", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_link_a_human_wrote_is_left_exactly_as_written()
+    {
+        // The other half of the asymmetry, and the half that makes the rule a rule rather than a blanket
+        // escape: a `[text](dest)` in a manual description is a link the author meant. Keyed on
+        // `description_source`, so the set neutralized is exactly the set §4.2 re-derives.
+        var options = Options() with
+        {
+            ExistingFrontmatter = _ => ExistingFrontmatter("See [Other](/code/csharp/n/other) for more.", "manual"),
+        };
+
+        var body = Single(Generate(options), "code/csharp/n/scanner/scan").Document.Body;
+
+        Assert.Contains("[Other](/code/csharp/n/other)", body, StringComparison.Ordinal);
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n/other");
+    }
+
+    [Fact]
+    public void Neutralizing_never_doubles_an_escape_the_author_already_wrote()
+    {
+        // An already-escaped bracket must be copied through, not escaped again: `\\]` renders a visible
+        // backslash, which would be this fix corrupting the very text it exists to preserve.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "Keep [a\\] and [b](c)."));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Empty(LinkScanner.ExtractLinks(body));
+        Assert.DoesNotContain("\\\\]", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Every_generated_concept_passes_the_strict_producer_validation()
     {
         foreach (var concept in Generate())

@@ -137,6 +137,15 @@ public sealed class SourceOwnershipMap
     /// <paramref name="relativePath"/> -- what lets a symbol declared in a conditionally-compiled file
     /// say so in its own body instead of silently claiming to exist under every framework. Empty for a
     /// file whose owner was reported under a single framework, which is the ordinary case.
+    ///
+    /// <para><b>No caller in this producer supplies a multi-framework map today, so this method always
+    /// answers empty in the real pipeline -- do not mistake it for exercised code.</b>
+    /// <c>MsBuildProjectQuery.Query</c> returns one <c>ProjectInputs</c> for one framework (for a
+    /// multi-targeting project, the first its <c>TargetFrameworks</c> lists), so the composition root
+    /// can only build one <see cref="ProjectCompileItems"/> per project. The rule is implemented and
+    /// unit-tested against a synthetic two-entry map because it is the rule §5.1 fixes, and because the
+    /// query already re-runs itself per framework for its own purposes: making this reachable means
+    /// having that stage return one result per TFM, not changing anything here.</para>
     /// </summary>
     public IReadOnlyList<string> FrameworksAbsentFrom(string relativePath)
     {

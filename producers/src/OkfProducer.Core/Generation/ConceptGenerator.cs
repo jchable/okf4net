@@ -302,11 +302,12 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// <para><b>"container" and not "namespace", and that is a measured choice, not a hedge.</b> §5.1
     /// asks for a concept per namespace; what this pass can actually identify is a level of the path
     /// tree that no extracted declaration claims, which is a namespace <i>most</i> of the time and
-    /// demonstrably not always. Run against this repository, 8 of the ~31 synthesized containers are
-    /// private nested types -- <c>YamlParser.BlockParser</c>, <c>OkfContextProvider.ScopeBox</c>,
-    /// <c>HtmlSafeJson</c> -- whose own declaration the default visibility scope excludes while their
-    /// members survive it. Labelling those "C# Namespace" would put a plainly false statement about the
-    /// code into a knowledge bundle, ~25% of the time; "C# Container" is true of a namespace, of a
+    /// demonstrably not always. Measured against this repository, <b>11 of the 32</b> synthesized
+    /// containers are types, not namespaces -- <c>YamlParser</c>, <c>YamlParser.BlockParser</c>,
+    /// <c>OkfContextProvider.ScopeBox</c>, <c>HtmlSafeJson</c> and seven more -- private or internal
+    /// declarations the default visibility scope excludes while their members survive it. Labelling
+    /// those "C# Namespace" would put a plainly false statement about the code into a knowledge bundle
+    /// about a third of the time; "C# Container" is true of a namespace, of a
     /// module, and of a type alike. The inference that would recover "namespace" precisely -- a
     /// container with a member child is a type -- is right for C# and wrong for the next profile, where
     /// a module's members are functions, so it is not taken. If the scope filter is ever fixed to drop
@@ -854,7 +855,7 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Title(title)
             .Description(description)
             .Tags(ConceptTags(primary))
-            .Body(BuildCodeBody(title, description, declarations, edges, idsByName, primaryByName, profile, extras));
+            .Body(BuildCodeBody(title, BodyDescription(description, descriptionSource), declarations, edges, idsByName, primaryByName, profile, extras));
 
         // §4.3: a URL short-circuits the validator's path classifier, so it is the only shape of
         // `resource` a code concept can carry without earning a warning. No URL => no field.
@@ -968,7 +969,7 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         var body = new StringBuilder();
         body.Append("# ").Append(title).Append("\n\n");
-        body.Append(description.TrimEnd()).Append('\n');
+        body.Append(BodyDescription(description, descriptionSource).TrimEnd()).Append('\n');
         AppendContains(body, extras.Children);
         AppendAlsoCompiledBy(body, extras.AlsoCompiledBy);
 
@@ -1028,6 +1029,79 @@ public sealed class ConceptGenerator : IConceptGenerator
         StartLine: 0,
         EndLine: 0,
         DocComment: null);
+
+    /// <summary>
+    /// A <c>description</c> as it is rendered <b>into a body</b>: markdown link syntax neutralized when
+    /// this producer derived the description itself, and left exactly as the author wrote it when a
+    /// human or a model did.
+    ///
+    /// <para><b>The asymmetry is the whole rule.</b> A <c>[text](dest)</c> inside a C# doc comment is
+    /// doc syntax that merely looks like markdown -- <c>LinkScanner</c>'s own summary in this repository
+    /// contains the literal <c>&lt;c&gt;[text](dest)&lt;/c&gt;</c> -- and the author never meant a
+    /// bundle link. Rendered verbatim it becomes one: measured, that single doc comment was the only
+    /// broken link in a 648-concept bundle generated from this repository. The same syntax in a
+    /// <c>manual</c> or <c>llm</c> description is a link the author meant, and rewriting it would be
+    /// editing a human's text.</para>
+    ///
+    /// <para><b>Keyed on <c>description_source</c>, which makes it consistent with §4.2's preservation
+    /// table by construction rather than by coincidence:</b> the set neutralized here --
+    /// <see cref="DocCommentSource.SourceLabel"/> and <see cref="SignatureSource.SourceLabel"/> -- is
+    /// exactly the set <see cref="DescriptionResolver"/> re-derives, and everything it protects is
+    /// left alone. The comparison is <see cref="StringComparison.Ordinal"/> against the two literals,
+    /// where the resolver's own comparison is case-insensitive, and that is correct rather than a
+    /// mismatch: this value is not read off disk, it is whatever <see cref="DescriptionResolver.Resolve"/>
+    /// just returned, and a spelling variant of a derived label can only reach that return as a
+    /// <i>preserved</i> value -- which must not be touched, and is not.</para>
+    /// </summary>
+    private static string BodyDescription(string description, string descriptionSource) =>
+        descriptionSource is DocCommentSource.SourceLabel or SignatureSource.SourceLabel
+            ? NeutralizeMarkdownLinks(description)
+            : description;
+
+    /// <summary>
+    /// Escapes every unescaped <c>]</c>, which neutralizes markdown link <i>syntax</i> while leaving
+    /// every character the reader sees exactly where it was: CommonMark renders <c>\]</c> as <c>]</c>,
+    /// so <c>[text](dest)</c> still reads as <c>[text](dest)</c>.
+    ///
+    /// <para><b>The closing bracket, and not the opening one</b>, because the opening one does not
+    /// work: <c>LinkScanner.ScanLineLinks</c> dispatches on <c>[</c> with no look-back at all, so a
+    /// preceding backslash does not stop it and <c>\[text](dest)</c> would render correctly while still
+    /// being extracted as a link. Its <c>ParseInlineLink</c> does honour a backslash inside the link
+    /// text, where it skips the next character -- so an escaped <c>]</c> never closes the text, the
+    /// bracket depth never returns to zero, and the parse fails. Verified against the scanner itself in
+    /// <c>CodeConceptGeneratorTests</c> rather than reasoned about here alone.</para>
+    ///
+    /// <para>An already-escaped character is copied through untouched rather than escaped twice, which
+    /// would turn an invisible escape into a visible backslash.</para>
+    /// </summary>
+    private static string NeutralizeMarkdownLinks(string text)
+    {
+        if (!text.Contains(']', StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var builder = new StringBuilder(text.Length + 8);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '\\' && i + 1 < text.Length)
+            {
+                builder.Append(c).Append(text[i + 1]);
+                i++;
+                continue;
+            }
+
+            if (c == ']')
+            {
+                builder.Append('\\');
+            }
+
+            builder.Append(c);
+        }
+
+        return builder.ToString();
+    }
 
     /// <summary>The one level of containment below this concept (§5.2), as absolute links (§6.1).</summary>
     private static void AppendContains(StringBuilder body, IReadOnlyList<Child> children) =>

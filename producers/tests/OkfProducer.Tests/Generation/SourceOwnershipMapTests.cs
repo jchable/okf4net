@@ -73,6 +73,10 @@ public class SourceOwnershipMapTests
     {
         // §5.1's multi-TFM rule: the file set is the union across frameworks, and the gaps are
         // recoverable rather than silently flattened.
+        //
+        // The map is synthetic on purpose, and this test is the only thing exercising this rule: no
+        // caller supplies a multi-framework map today, because MsBuildProjectQuery.Query answers for one
+        // framework at a time. See SourceOwnershipMap.FrameworksAbsentFrom.
         var map = SourceOwnershipMap.From("/repo",
             [
                 new ProjectCompileItems("src/A/A.csproj", "net10.0", ["src/A/Modern.cs", "src/A/Shared.cs"]),

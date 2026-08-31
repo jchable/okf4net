@@ -28,8 +28,8 @@ public class ContainmentTests
         //
         // Typed "C# Container" and not "C# Namespace": what this pass identifies is a level of the path
         // tree no extracted declaration claims, which is a namespace most of the time and measurably not
-        // always -- 8 of the ~31 synthesized on this repository are private nested types whose members
-        // outlived the visibility scope filter. See ConceptGenerator.ContainerToken.
+        // always -- 11 of the 32 synthesized on this repository are private or internal types whose
+        // members outlived the visibility scope filter. See ConceptGenerator.ContainerToken.
         var concept = Single(Generate(), "code/csharp/n");
 
         Assert.Equal("C# Container", concept.Document.Frontmatter.Type);
