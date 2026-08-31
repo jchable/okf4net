@@ -140,8 +140,12 @@ public sealed class OkfBundleTools
     /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
-    /// <summary>Today's date, derived from <see cref="UtcNow"/> — the shared seam behind <see cref="ReadConcept"/>'s and <see cref="Search"/>'s staleness checks.</summary>
-    private DateOnly Today => DateOnly.FromDateTime(UtcNow().Date);
+    /// <summary>
+    /// The current instant, derived from <see cref="UtcNow"/> — the shared seam
+    /// behind <see cref="ReadConcept"/>'s and <see cref="Search"/>'s staleness
+    /// checks. §5 makes <c>stale_after</c> an instant, so these compare instants.
+    /// </summary>
+    private DateTimeOffset Now => new(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <summary>
     /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
@@ -265,7 +269,7 @@ public sealed class OkfBundleTools
             var fm = concept.Document.Frontmatter;
             var lc = fm.Lifecycle;
             var trust = fm.TrustTier;
-            var stale = lc.IsStale(Today);
+            var stale = lc.IsStale(Now);
             if (lc.Status != ConceptStatus.Stable || trust != TrustTier.Unverified || stale)
             {
                 sb.Append("> status: ").Append(StatusLabel(lc.Status))
@@ -430,7 +434,7 @@ public sealed class OkfBundleTools
                     : $"No results for query '{query}' with tag '{effectiveTag}'.";
             }
 
-            return FormatSearchResults(query, effectiveTag, scored, Today);
+            return FormatSearchResults(query, effectiveTag, scored, Now);
         });
     }
 
@@ -520,10 +524,10 @@ public sealed class OkfBundleTools
                 GetBundle(),
                 new AuditQuery(staleOnly, tiers, parsedStatus, type),
 
-                // Pinned to Today -- the same UtcNow seam ReadConcept and
+                // Pinned to Now -- the same UtcNow seam ReadConcept and
                 // Search use -- so the tool's output never depends on the day
                 // it runs.
-                new FixedClock(Today));
+                new FixedClock(Now));
 
             return RenderAudit(report, staleOnly);
         });
@@ -1122,9 +1126,9 @@ public sealed class OkfBundleTools
     /// Renders the ranked, bounded (top 20) search results as markdown, with the total match count.
     /// Each hit is annotated with a trailing <c>[deprecated]</c> marker when its lifecycle status is
     /// <see cref="ConceptStatus.Deprecated"/> and/or a <c>[stale]</c> marker when it is stale as of
-    /// <paramref name="today"/>.
+    /// <paramref name="now"/>.
     /// </summary>
-    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored, DateOnly today)
+    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<(Concept Concept, int Score)> scored, DateTimeOffset now)
     {
         const int MaxResults = 20;
         var shown = scored.Take(MaxResults).ToList();
@@ -1149,7 +1153,7 @@ public sealed class OkfBundleTools
                 sb.Append(" [deprecated]");
             }
 
-            if (lc.IsStale(today))
+            if (lc.IsStale(now))
             {
                 sb.Append(" [stale]");
             }

@@ -244,10 +244,10 @@ public static class BundleValidator
     /// Validates a loaded bundle against §11, returning all findings.
     /// </summary>
     /// <param name="bundle">The loaded bundle to validate.</param>
-    /// <param name="clock">Supplies "today" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
+    /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null)
     {
-        var today = (clock ?? new SystemClock()).Today;
+        var now = (clock ?? new SystemClock()).Now;
         var diagnostics = new List<Diagnostic>();
 
         // (1) Files whose frontmatter could not be parsed are conformance errors.
@@ -401,7 +401,7 @@ public static class BundleValidator
             {
                 diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after is not `YYYY-MM-DD`: {DebugQuote.Quote(lc.StaleAfterRaw!)}", DiagnosticCode.StaleAfterInvalid, "stale_after"));
             }
-            else if (lc.IsStale(today))
+            else if (lc.IsStale(now))
             {
                 diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"concept is stale (stale_after {lc.StaleAfterRaw})", DiagnosticCode.ConceptStale, "stale_after"));
             }

@@ -37,7 +37,7 @@ public class AttestationOrchestratorTests
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 })),
         });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
         Assert.True(outcome.Displayable);
         Assert.True(outcome.Verdict!.Value.Passed);
@@ -91,7 +91,7 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-01-01\n---\n# Computation\n\n```\nX\n```\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
             parameterValues: new Dictionary<string, object?>(), policy: StalePolicy.Strict);
         Assert.Equal(StaleState.Stale, outcome.Stale);
@@ -107,7 +107,7 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2099-01-01\n---\n# Computation\n\n```\nX\n```\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"),
             new Dictionary<string, object?>(), policy: StalePolicy.Strict);
         Assert.Equal(StaleState.Fresh, outcome.Stale);

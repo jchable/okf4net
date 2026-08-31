@@ -26,12 +26,14 @@ public readonly record struct StalePolicy(StaleMode Mode, int GraceDays)
     /// <summary>Admit stale concepts up to <paramref name="graceDays"/> days past <c>stale_after</c>.</summary>
     public static StalePolicy Tolerate(int graceDays) => new(StaleMode.Tolerate, graceDays);
 
-    /// <summary>Whether a concept with lifecycle <paramref name="lc"/> should be surfaced as of <paramref name="today"/>.</summary>
-    public bool Admits(Lifecycle lc, DateOnly today) => Mode switch
+    /// <summary>Whether a concept with lifecycle <paramref name="lc"/> should be surfaced as of <paramref name="now"/>.</summary>
+    /// <param name="lc">The concept's lifecycle fields.</param>
+    /// <param name="now">The instant to evaluate against, typically <see cref="IOkfClock.Now"/>.</param>
+    public bool Admits(Lifecycle lc, DateTimeOffset now) => Mode switch
     {
         StaleMode.Use => true,
-        StaleMode.Strict => !lc.IsStale(today),
-        StaleMode.Tolerate => lc.StaleAfter is not { } d || today <= d.AddDays(GraceDays),
+        StaleMode.Strict => !lc.IsStale(now),
+        StaleMode.Tolerate => lc.StaleAfter is not { } d || now <= d.AddDays(GraceDays),
         _ => true,
     };
 }

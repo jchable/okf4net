@@ -248,4 +248,48 @@ public class AuditTests
         Assert.False(AuditQuery.All.IsFiltered);
         Assert.True(new AuditQuery(StaleOnly: true).IsFiltered);
     }
+
+    [Fact]
+    public void Audit_detects_staleness_from_a_conformant_instant_stale_after()
+    {
+        // Before this fix, a §5-conformant stale_after failed to parse, so the
+        // concept was reported fresh forever. This is the defect, end to end.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\nstale_after: 2026-01-01T00:00:00Z\n---\n");
+
+        var report = Audit(tmp);
+
+        Assert.True(report.Findings.Single().IsStale);
+        Assert.Equal(1, report.StaleCount);
+    }
+
+    [Fact]
+    public void Audit_resolves_staleness_to_the_hour_not_the_day()
+    {
+        // A concept expiring at 18:00Z is fresh when audited at 09:00Z the same
+        // day and stale at 20:00Z -- a distinction the pre-fix date-only
+        // comparison could not make.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\nstale_after: 2026-08-21T18:00:00Z\n---\n");
+
+        var morning = ConceptAudit.Run(Load(tmp), default, new FixedClock(new DateTimeOffset(2026, 8, 21, 9, 0, 0, TimeSpan.Zero)));
+        var evening = ConceptAudit.Run(Load(tmp), default, new FixedClock(new DateTimeOffset(2026, 8, 21, 20, 0, 0, TimeSpan.Zero)));
+
+        Assert.False(morning.Findings.Single().IsStale);
+        Assert.True(evening.Findings.Single().IsStale);
+
+        // AsOf stays a date in both cases -- it is the report's display stamp.
+        Assert.Equal(new DateOnly(2026, 8, 21), morning.AsOf);
+        Assert.Equal(new DateOnly(2026, 8, 21), evening.AsOf);
+    }
+
+    [Fact]
+    public void Freshness_still_renders_a_bare_date_for_a_conformant_instant()
+    {
+        // Golden-locked format: tests/fixtures/golden/audit-v02.out captures
+        // "fresh 2099-01-01". Changing this rendering breaks the goldens.
+        var lc = Lifecycle.From(null, "2099-01-01T00:00:00Z");
+
+        Assert.Equal("fresh 2099-01-01", AuditVocabulary.Freshness(lc, isStale: false));
+    }
 }

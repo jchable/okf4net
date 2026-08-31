@@ -208,7 +208,7 @@ public static class AuditVocabulary
     /// <param name="lifecycle">The concept's lifecycle fields.</param>
     /// <param name="isStale">Whether the concept is stale as of the report's <c>AsOf</c> date.</param>
     public static string Freshness(Lifecycle lifecycle, bool isStale) =>
-        lifecycle.StaleAfter is { } date
+        lifecycle.StaleAfterDate is { } date
             ? (isStale ? "stale " : "fresh ") + date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
             : "no-stale-after";
 }
@@ -227,7 +227,12 @@ public static class ConceptAudit
     /// <param name="clock">Supplies "today" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static AuditReport Run(Bundle bundle, AuditQuery query = default, IOkfClock? clock = null)
     {
-        var asOf = (clock ?? new SystemClock()).Today;
+        var resolvedClock = clock ?? new SystemClock();
+
+        // Staleness is an instant comparison (§5/§5.5); AsOf stays a date
+        // because it is the report's display stamp, not the comparison input.
+        var now = resolvedClock.Now;
+        var asOf = resolvedClock.Today;
 
         // Seeded from the vocabulary rather than from a hand-written list of
         // members: a tier or status added to the enum without a matching line
@@ -245,7 +250,7 @@ public static class ConceptAudit
             var frontmatter = concept.Document.Frontmatter;
             var tier = frontmatter.TrustTier;
             var lifecycle = frontmatter.Lifecycle;
-            var isStale = lifecycle.IsStale(asOf);
+            var isStale = lifecycle.IsStale(now);
 
             trustCounts[tier]++;
             statusCounts[lifecycle.Status]++;

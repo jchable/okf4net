@@ -116,9 +116,9 @@ public sealed class AttestationOrchestrator
             return Fail(missingParameters);
         }
 
-        var today = _clock.Today;
-        var stale = ComputeStale(frontmatter.Lifecycle, today);
-        var staleAdmitted = (policy ?? _defaultPolicy).Admits(frontmatter.Lifecycle, today);
+        var now = _clock.Now;
+        var stale = ComputeStale(frontmatter.Lifecycle, now);
+        var staleAdmitted = (policy ?? _defaultPolicy).Admits(frontmatter.Lifecycle, now);
 
         // Step 5: bind.
         BoundComputation bound;
@@ -190,13 +190,17 @@ public sealed class AttestationOrchestrator
     private static AttestationOutcome Fail(IReadOnlyList<string> reasons, StaleState stale = StaleState.Unknown, Exception? error = null)
         => new(false, null, null, false, stale, reasons, error);
 
-    private static StaleState ComputeStale(Lifecycle lifecycle, DateOnly today)
+    private static StaleState ComputeStale(Lifecycle lifecycle, DateTimeOffset now)
     {
-        if (lifecycle.StaleAfter is not { } staleAfter)
+        // A stale_after that is absent *or unparseable* is Unknown, never
+        // Fresh: IsStale alone returns false for both, and reporting a
+        // malformed stamp as Fresh would let §10.6's gate pass on data it
+        // could not read.
+        if (lifecycle.StaleAfter is null)
         {
             return StaleState.Unknown;
         }
 
-        return today >= staleAfter ? StaleState.Stale : StaleState.Fresh;
+        return lifecycle.IsStale(now) ? StaleState.Stale : StaleState.Fresh;
     }
 }
