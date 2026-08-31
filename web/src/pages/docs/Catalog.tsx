@@ -188,7 +188,7 @@ export default function Catalog() {
             <code>Unverified</code>) and full <code>Lifecycle</code> (<code>Status</code>,{' '}
             <code>StaleAfter</code>), read straight off its frontmatter — a host can filter or render
             provenance without re-parsing anything. Staleness is a method, not a stored flag:{' '}
-            <code>Lifecycle.IsStale(today)</code>. <code>StalePolicy</code> has three modes: <code>Use</code>{' '}
+            <code>Lifecycle.IsStale(now)</code>. <code>StalePolicy</code> has three modes: <code>Use</code>{' '}
             (admit everything, the default — never a silent drop), <code>Strict</code> (exclude anything
             stale), and <code>Tolerate(graceDays)</code> (admit until <code>stale_after + graceDays</code>).
           </p>

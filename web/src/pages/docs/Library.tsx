@@ -269,8 +269,11 @@ export default function Library() {
               [
                 'Lifecycle(Status, StatusIsKnown, StaleAfterRaw, StaleAfter) · ConceptStatus',
                 <>
-                  §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>; <code>IsStale(DateOnly)</code> is{' '}
-                  <code>today &gt;= stale_after</code>.
+                  §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>;{' '}
+                  <code>IsStale(DateTimeOffset)</code> is <code>now &gt;= stale_after</code>. §5 makes{' '}
+                  <code>stale_after</code> an absolute instant, so <code>StaleAfter</code> is a{' '}
+                  <code>DateTimeOffset?</code>; the legacy date-only form is still read, normalized to
+                  midnight UTC and flagged by <code>StaleAfterIsLegacyDate</code>.
                 </>,
               ],
               [

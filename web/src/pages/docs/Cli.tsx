@@ -287,7 +287,7 @@ export default function Cli() {
         <Chapter id="audit" title="audit <bundle>" refText="§5.3–§5.5 — the corpus, not the concept">
           <p>
             Answers questions about the bundle <em>as a whole</em>: how much of it is human-reviewed, what has passed
-            its <code>stale_after</code> date, what is deprecated. Counts always describe the whole bundle while the
+            its <code>stale_after</code> instant, what is deprecated. Counts always describe the whole bundle while the
             worklist describes the selection — <code>audit</code> is a worklist, not an inventory. Always exits{' '}
             <code>0</code>: a stale concept is editorial hygiene, not a conformance failure.
           </p>
@@ -296,11 +296,12 @@ export default function Cli() {
             With no filter flag it selects exactly what <code>--stale</code> selects and prints the summary above.
             With any of <code>--stale</code>, <code>--trust</code>, <code>--status</code> or <code>--type</code> it
             prints one line per matching concept and nothing else, so the output pipes. <code>--as-of</code> pins the
-            observation date (it never changes the mode), and <code>--json</code> always emits the full document.
+            observation date to midnight UTC on that day (it never changes the mode), and <code>--json</code> always
+            emits the full document.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: auditQueryHtml }} />
           <p>
-            The question this exists for — <em>which concepts are past their <code>stale_after</code> date and have
+            The question this exists for — <em>which concepts are past their <code>stale_after</code> instant and have
             never been verified by a human?</em> — is <code>--stale --trust unverified,machine-confirmed</code>: both
             tiers, because &ldquo;machine-confirmed&rdquo; also means no human ever looked.
           </p>
