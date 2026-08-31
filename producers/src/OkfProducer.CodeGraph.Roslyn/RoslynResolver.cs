@@ -31,23 +31,32 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// resolved nothing" from "could not run" -- the difference between a repository with no internal
 /// calls and one whose graph should not be pruned against.</para>
 ///
-/// <para><b>Not caught, by design.</b> An unknown <c>LangVersion</c> throws
-/// <see cref="InvalidOperationException"/> out of <see cref="Create"/> rather than degrading to an
-/// unavailable project (correction 3): the whole hazard there is a silent change of parse semantics,
-/// and burying it in a per-project status line is exactly the silence being avoided.</para>
+/// <para><b>Loud, but never fatal to the run.</b> An unknown <c>LangVersion</c> is refused rather
+/// than degraded to a preview language version (correction 3) -- but the refusal is scoped to the one
+/// project that pinned it, reported as <see cref="RoslynProjectAvailability.UnknownLanguageVersion"/>
+/// with the version named. The hazard correction 3 identifies is a <i>silent</i> change of parse
+/// semantics, and not compiling that project answers it completely; failing the whole run on top would
+/// throw away the exact resolution of every other project for nothing.</para>
 ///
-/// <para><b>Known limit: Roslyn source generators do not run.</b> The MSBuild query returns the
+/// <para><b>Known limitation: Roslyn source generators do not run.</b> The MSBuild query returns the
 /// <i>files</i> the SDK generates (correction 1 is exactly about getting them), but a Roslyn source
 /// generator runs inside the compiler and contributes no <c>Compile</c> item at all. A project whose
 /// source references generated members therefore does not compile here, and this resolver reports it
 /// <see cref="RoslynProjectAvailability.CompilationHadErrors"/> and declines to resolve from it.
 /// Measured on this repository: <c>src/OKF4net.Cli</c> uses <c>System.Text.Json</c>'s generator and
-/// produces six errors on the members it generates, while the other seven <c>src/</c> projects compile
-/// clean. Running generators would mean loading and executing analyzer assemblies the scanned
-/// repository chooses -- arbitrary code, from the very input this producer treats as untrusted
-/// elsewhere -- so it is a deliberate, separately-decidable step, not an oversight. The behaviour
-/// without it is the safe one: such a project degrades to the name-matching baseline and
-/// <see cref="IsComplete"/> says so, which is what a pruning consumer must see.</para>
+/// produces six errors (<c>CS0534</c> x2, <c>CS7036</c>, <c>CS0117</c> x3) on the members that
+/// generator would have emitted, while the other seven <c>src/</c> projects compile clean.
+/// <c>System.Text.Json</c>, <c>GeneratedRegex</c>, <c>LoggerMessage</c> and most of ASP.NET are all in
+/// this category, so it is not a corner case.
+/// <b>This is a documented limitation, ruled on deliberately -- not an oversight and not a bug to
+/// fix in passing.</b> Running generators means loading and executing analyzer assemblies chosen by
+/// the <i>scanned repository</i>: arbitrary code, from exactly the input 2.3 treats as hostile, inside
+/// a tool whose whole job is to read untrusted source. Trading this producer's security posture for
+/// better resolution on some projects is not a trade to make quietly. A future path exists -- a
+/// sandboxed generator host -- and that, not an unguarded <c>CSharpGeneratorDriver</c>, is what would
+/// lift the limit. Meanwhile the behaviour is the safe one: such a project degrades to the
+/// name-matching baseline and <see cref="IsComplete"/> says so, which is what a pruning consumer must
+/// see. See 7.2 of <c>docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md</c>.</para>
 /// </summary>
 public sealed class RoslynResolver : ISymbolResolver
 {
@@ -97,10 +106,11 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </summary>
     /// <param name="repositoryPath">The repository root that <see cref="CallSite.RelativePath"/> values are relative to.</param>
     /// <param name="projectPaths">The <c>.csproj</c> files to compile. Order does not affect the result.</param>
-    /// <exception cref="InvalidOperationException">
-    /// A project declares a <c>LangVersion</c> this Roslyn build does not know. See the class summary:
-    /// this is the one failure deliberately not degraded into <see cref="Projects"/>.
-    /// </exception>
+    /// <remarks>
+    /// Does not throw for a project it cannot handle -- every failure, including a <c>LangVersion</c>
+    /// this Roslyn build does not know, is reported through <see cref="Projects"/> so the run
+    /// continues with whatever did compile.
+    /// </remarks>
     public static RoslynResolver Create(string repositoryPath, IReadOnlyList<string> projectPaths)
     {
         ArgumentException.ThrowIfNullOrEmpty(repositoryPath);
@@ -289,7 +299,25 @@ public sealed class RoslynResolver : ISymbolResolver
                 Compile(dependency, queried, reports, compiled, inProgress);
             }
 
-            var compilation = CompilationFactory.Create(inputs, compiled, out var missingReferences);
+            CSharpCompilation compilation;
+            IReadOnlyList<string> missingReferences;
+            try
+            {
+                compilation = CompilationFactory.Create(inputs, compiled, out missingReferences);
+            }
+            catch (UnknownLanguageVersionException e)
+            {
+                // Loud, but scoped. The hazard correction 3 names is a SILENT fallback to a preview
+                // language version, and refusing to do that is fully achieved by not compiling this
+                // project: its message lands verbatim in the report, its files are not owned, and the
+                // name-matching baseline carries it. Taking the whole run down as well would be a
+                // second, unrelated loss -- every other project in the repository can still be
+                // resolved exactly, and one project pinning a language this Roslyn has not learned yet
+                // is no reason to give that up.
+                reports[projectPath] = new RoslynProjectReport(
+                    projectPath, RoslynProjectAvailability.UnknownLanguageVersion, e.Message);
+                return;
+            }
 
             if (missingReferences.Count > 0)
             {
@@ -566,14 +594,22 @@ public sealed class RoslynResolver : ISymbolResolver
     }
 
     /// <summary>
-    /// Used only to look a path up, never to decide what a path means. Windows resolves <c>Foo.cs</c>
-    /// and <c>foo.cs</c> to one file, and MSBuild's spelling of a path need not match the walker's, so
-    /// an ordinal comparison would silently own nothing on a case difference. Being too permissive on
-    /// a case-sensitive filesystem is the safe direction: the worst it can do is claim a file whose
-    /// offsets then match no call site, and an unattached site is left to the baseline.
+    /// <see cref="StringComparer.Ordinal"/>, the same rule every other path comparison in this
+    /// producer uses (6.2's "never a culture-dependent comparison"; <c>FileEligibility</c> was
+    /// deliberately moved off <see cref="StringComparer.OrdinalIgnoreCase"/> for it, and a
+    /// case-sensitive filesystem can genuinely hold both <c>src/Foo</c> and <c>src/foo</c>).
+    ///
+    /// <para>
+    /// This is a join key between two extractors, so being permissive here would not paper over a
+    /// mismatch, it would hide one. Both sides derive their relative path the same way -- the
+    /// repository root, then <see cref="Path.GetRelativePath(string, string)"/>, then forward slashes
+    /// -- so they agree exactly, and if they ever stop agreeing the right outcome is that
+    /// <see cref="Owns"/> returns <see langword="false"/>, the attachment rate collapses, and the
+    /// floor test says so loudly. That is a finding about normalisation, and it should not be
+    /// swallowed by a comparison that shrugs at it.
+    /// </para>
     /// </summary>
-    private static StringComparer PathComparer =>
-        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    private static StringComparer PathComparer => StringComparer.Ordinal;
 
     private sealed record OwnedFile(CSharpCompilation Compilation, SyntaxTree Tree);
 

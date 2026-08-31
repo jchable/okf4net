@@ -416,6 +416,27 @@ Conséquence pour le design : la voie `CompilationReference` — compiler nous-m
 
 **Ce que le prototype n'établit pas**, et que le resolver de production devra traiter : projets multi-TFM, générateurs de source contribuant des items `Compile`, et des chaînes `Directory.Build.props` autres que celle de ce dépôt. Une seule machine, un seul SDK, une seule configuration (`Debug`).
 
+#### Traité depuis, par mesure (Task 6)
+
+Deux des trois angles morts ci-dessus ont été mesurés puis corrigés dans `RoslynResolver` :
+
+- **Multi-TFM.** La *outer build* d'un projet multi-cible n'a **pas de cible `ResolveReferences` du tout** — MSBuild répond `MSB4057`, la requête échoue entièrement. `MsBuildProjectQuery` réessaie donc avec `-p:TargetFramework=<premier listé>` après un échec (optimiste d'abord : aucun aller-retour supplémentaire dans le cas mono-TFM courant ; un projet non restauré échoue aussi la sonde et c'est son erreur d'origine, plus utile, qui remonte). *Premier listé* plutôt que *le plus récent* : une règle lisible dans le fichier projet, là où « le plus récent » ferait silencieusement changer l'ensemble des symboles le jour où quelqu'un ajoute un TFM.
+- **`LangVersion` absente.** `LanguageVersionFacts.TryParse("")` renvoie **false**. Confondre « absente » et « inconnue » ferait donc partir l'échec bruyant de la correction 3 sur n'importe quel projet qui n'épingle simplement pas de version. Or une propriété absente est exactement le cas où le SDK ne passe **aucun** `/langversion` à csc, et `LanguageVersion.Default` est par définition ce que csc fait alors. Seule une version *spécifiée* et non reconnue échoue — et cet échec est **scopé au projet** (`RoslynProjectAvailability.UnknownLanguageVersion`), pas au run : le danger que nomme la correction 3 est un repli *silencieux* vers `Preview`, et ne pas compiler ce projet-là y répond complètement ; faire tomber le run en plus sacrifierait la résolution exacte de tous les autres projets pour rien.
+
+#### Limitation documentée : les générateurs de source Roslyn ne s'exécutent pas
+
+La correction 1 récupère bien les fichiers générés **par le SDK** (`*.GlobalUsings.g.cs`, `*.AssemblyInfo.cs`) — ce sont des items `Compile`. Mais un **générateur de source Roslyn** s'exécute *dans le compilateur* et ne contribue **aucun** item `Compile` : ses membres sont donc purement et simplement absents d'une compilation construite depuis la requête MSBuild.
+
+**Mesuré sur ce dépôt** : `src/OKF4net.Cli` utilise le générateur `System.Text.Json` et produit **6 erreurs** — `CS0534` ×2 (`CliJsonContext` n'implémente pas `JsonSerializerContext.GetTypeInfo(Type)` ni `GeneratedSerializerOptions`), `CS7036` (constructeur `JsonSerializerContext(JsonSerializerOptions?)`), `CS0117` ×3 (`CliJsonContext` ne contient pas de définition pour `Default`) — toutes sur les membres que le générateur aurait émis. Les **sept autres** projets `src/` compilent à zéro erreur.
+
+**Décision : ne pas exécuter les générateurs.** Ce n'est pas un oubli ni un bug à corriger au passage. Les exécuter signifie charger et exécuter des assemblys d'analyseurs **choisis par le dépôt analysé** : du code arbitraire, issu exactement de l'entrée que §2.3 traite comme hostile, à l'intérieur d'un outil dont le métier est de lire des sources non fiables. Échanger la posture de sécurité du producer contre une meilleure résolution sur certains projets n'est pas un arbitrage à faire en silence.
+
+**Conséquence, assumée et visible plutôt que découverte** : tout projet utilisant un générateur de source (`System.Text.Json`, `GeneratedRegex`, `LoggerMessage`, l'essentiel d'ASP.NET) a une compilation en erreur, `RoslynResolver` se déclare indisponible pour lui (`CompilationHadErrors`), ne le possède pas (`Owns` → `false`), et `NameMatchResolver` le porte au niveau *baseline*. `IsComplete` passe à `false`, ce que l'élagage de la Task 11 doit lire. C'est la dégradation propre — jamais une résolution depuis une table de symboles trouée, qui n'échouerait pas à résoudre les appels mais les attribuerait au mauvais symbole.
+
+**Chemin futur possible** : un *hôte de générateurs en bac à sable*. C'est cela, et non un `CSharpGeneratorDriver` non gardé, qui lèverait la limitation.
+
+La limitation est épinglée par un test (`A_project_completed_by_a_source_generator_degrades_rather_than_resolving_from_a_hole`, sur une fixture dédiée plutôt que sur `OKF4net.Cli` lui-même) pour qu'elle ne change pas silencieusement dans un sens ou dans l'autre.
+
 **Et `MSBuildWorkspace` n'avait pas à être écarté aussi catégoriquement**, même si la question est désormais sans objet : [roslyn#80127](https://github.com/dotnet/roslyn/issues/80127) est toujours ouverte, mais la difficulté est conditionnée — un outil qui en dépend doit **livrer le BuildHost**, et depuis Roslyn 4.9 `MSBuildLocator` n'est en général plus nécessaire. La formulation « inutilisable pour un outil distribué sur nuget.org » était trop forte.
 
 ---

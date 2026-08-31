@@ -26,6 +26,14 @@ public enum RoslynProjectAvailability
     /// the wrong declaration, and a confident wrong edge is worse than an honest unresolved one (2.1).
     /// </summary>
     CompilationHadErrors,
+
+    /// <summary>
+    /// The project pins a <c>LangVersion</c> this build of <c>Microsoft.CodeAnalysis.CSharp</c> does
+    /// not recognise (correction 3). Its own status rather than a flavour of
+    /// <see cref="CompilationHadErrors"/>, because the remedy is entirely different: nothing is wrong
+    /// with the project, the pinned Roslyn package is behind the SDK.
+    /// </summary>
+    UnknownLanguageVersion,
 }
 
 /// <summary>

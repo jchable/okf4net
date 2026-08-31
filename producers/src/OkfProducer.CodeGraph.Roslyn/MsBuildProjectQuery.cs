@@ -393,12 +393,18 @@ public static class MsBuildProjectQuery
         properties.TryGetValue(name, out var value) && value.Length > 0 ? value : null;
 
     /// <summary>
-    /// Path de-duplication only, never semantic identity: Windows resolves <c>Foo.cs</c> and
-    /// <c>foo.cs</c> to the same file, so an ordinal comparison would let the same source through
-    /// twice under two spellings and turn a duplicate into a compile error.
+    /// <see cref="StringComparer.Ordinal"/>, one rule for every path comparison in this producer
+    /// (6.2), including this de-duplication of MSBuild's own item lists. Both spellings here come out
+    /// of a single MSBuild evaluation, which already de-duplicates its item lists, so this is a
+    /// belt-and-braces pass against handing Roslyn one file twice (CS0101 on every type it declares).
+    /// An ordinal comparison could in principle let one through under two casings on Windows -- and
+    /// that lands as a compilation error, reported and degraded cleanly, not as a silently wrong edge.
+    /// A case-insensitive one would instead drop a genuinely distinct file on a case-sensitive
+    /// filesystem, which is the worse of the two, and it would reintroduce the exact divergence
+    /// <c>FileEligibility</c> was deliberately moved off <see cref="StringComparer.OrdinalIgnoreCase"/>
+    /// to close.
     /// </summary>
-    private static StringComparer PathComparer =>
-        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    private static StringComparer PathComparer => StringComparer.Ordinal;
 
     private static string Truncate(string text, int max)
     {

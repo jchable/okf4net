@@ -18,6 +18,15 @@ namespace OkfProducer.Core.CodeGraph;
 /// this logic per extractor is therefore not a style preference; it is the drift that produces that
 /// bug. Both <c>TreeSitterExtractor</c> and <c>RoslynResolver</c> call this one method.
 /// </para>
+///
+/// <para>
+/// <b>Do not move this back into an extractor.</b> It reads like tree-sitter-specific file reading and
+/// it is not: the moment each extractor owns a copy, nothing keeps the two copies decoding the same
+/// bytes to the same string, and the failure that follows is silent misattribution rather than a test
+/// going red. Living in <c>Core</c> is also what lets the Roslyn resolver use it without referencing
+/// the tree-sitter project and its ~590 MB of native grammars -- the same reason
+/// <see cref="Utf8Offsets"/> lives here.
+/// </para>
 /// </summary>
 public static class SourceDecoder
 {

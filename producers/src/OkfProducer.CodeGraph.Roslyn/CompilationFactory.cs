@@ -8,6 +8,44 @@ using OkfProducer.Core.CodeGraph;
 namespace OkfProducer.CodeGraph.Roslyn;
 
 /// <summary>
+/// Thrown when a project pins a <c>LangVersion</c> this build of
+/// <c>Microsoft.CodeAnalysis.CSharp</c> does not recognise (correction 3).
+///
+/// <para>
+/// Derives from <see cref="InvalidOperationException"/> so the contract callers were given still
+/// holds, but is its own type so <see cref="RoslynResolver"/> can catch <i>this</i> rather than
+/// catching every <see cref="InvalidOperationException"/> a compilation might raise -- a broad catch
+/// there would quietly turn a genuine bug into a "project unavailable" line.
+/// </para>
+///
+/// <para>
+/// Loud, but scoped to one project. Falling back to <see cref="LanguageVersion.Preview"/> is the thing
+/// that must never happen, because it changes parse semantics on every file without saying so; taking
+/// the whole run down is a different failure, and a needless one -- the other projects can still be
+/// resolved exactly, and this one still gets the name-matching baseline.
+/// </para>
+/// </summary>
+public sealed class UnknownLanguageVersionException : InvalidOperationException
+{
+    /// <summary>Creates the exception for <paramref name="langVersion"/> as pinned by <paramref name="projectPath"/>.</summary>
+    public UnknownLanguageVersionException(string projectPath, string langVersion)
+        : base($"LangVersion '{langVersion}' (from {projectPath}) is not known to this build of "
+            + "Microsoft.CodeAnalysis.CSharp. Falling back to a preview language version would silently change "
+            + "parse semantics, so this project is not compiled at all. Pin a Microsoft.CodeAnalysis.CSharp "
+            + "version that knows the SDK's language version in OkfProducer.CodeGraph.Roslyn.csproj.")
+    {
+        ProjectPath = projectPath;
+        LangVersion = langVersion;
+    }
+
+    /// <summary>The project that pinned the unrecognised version.</summary>
+    public string ProjectPath { get; }
+
+    /// <summary>The <c>LangVersion</c> value that could not be parsed.</summary>
+    public string LangVersion { get; }
+}
+
+/// <summary>
 /// Turns one project's <see cref="ProjectInputs"/> into a <see cref="CSharpCompilation"/>, with no
 /// <c>MSBuildWorkspace</c> involved.
 /// </summary>
@@ -16,7 +54,7 @@ public static class CompilationFactory
     /// <summary>
     /// Builds the compilation for <paramref name="inputs"/> from files and reference assemblies alone.
     /// </summary>
-    /// <exception cref="InvalidOperationException">
+    /// <exception cref="UnknownLanguageVersionException">
     /// <paramref name="inputs"/>'s <c>LangVersion</c> is not one this Roslyn build knows.
     /// </exception>
     public static CSharpCompilation Create(ProjectInputs inputs) =>
@@ -51,14 +89,17 @@ public static class CompilationFactory
     /// Assembly paths MSBuild resolved that do not exist on disk and had no from-source substitute.
     /// Non-empty means the compilation is knowingly incomplete and must not be resolved from.
     /// </param>
-    /// <exception cref="InvalidOperationException">
-    /// <paramref name="inputs"/>'s <c>LangVersion</c> is not one this Roslyn build knows. This is
-    /// deliberately fatal and deliberately not a degradation path (correction 3): the spike found
+    /// <exception cref="UnknownLanguageVersionException">
+    /// <paramref name="inputs"/>'s <c>LangVersion</c> is not one this Roslyn build knows. Never
+    /// degraded into a preview language version (correction 3): the spike found
     /// <c>Microsoft.CodeAnalysis.CSharp</c> 4.14.0 unable to parse <c>LangVersion 14</c>, and a silent
     /// fallback to <see cref="LanguageVersion.Preview"/> changes parse semantics -- quietly, on every
     /// file, in whichever direction the preview grammar happens to differ. The fix is to pin a Roslyn
     /// package that knows the SDK's language version, which is why this project pins one; if the SDK
-    /// moves past it, this throw is the notice.
+    /// moves past it, this throw is the notice. It is scoped to this one project, though:
+    /// <see cref="RoslynResolver"/> catches it, reports the project unavailable, and carries on with
+    /// the rest -- refusing to guess at one project's language is no reason to give up the exact
+    /// resolution of every other.
     /// </exception>
     public static CSharpCompilation Create(
         ProjectInputs inputs,
@@ -132,11 +173,7 @@ public static class CompilationFactory
 
         if (!LanguageVersionFacts.TryParse(inputs.LangVersion, out var languageVersion))
         {
-            throw new InvalidOperationException(
-                $"LangVersion '{inputs.LangVersion}' (from {inputs.ProjectPath}) is not known to this build of "
-                + "Microsoft.CodeAnalysis.CSharp. Falling back to a preview language version would silently change "
-                + "parse semantics, so this fails instead. Pin a Microsoft.CodeAnalysis.CSharp version that knows "
-                + "the SDK's language version in OkfProducer.CodeGraph.Roslyn.csproj.");
+            throw new UnknownLanguageVersionException(inputs.ProjectPath, inputs.LangVersion);
         }
 
         return new CSharpParseOptions(languageVersion, DocumentationMode.Parse)

@@ -50,10 +50,47 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // spike fell back to Preview, which silently changes parse semantics. The producer must not.
         var inputs = FakeInputs with { LangVersion = "99" };
 
-        var ex = Assert.Throws<InvalidOperationException>(() => CompilationFactory.Create(inputs));
+        var ex = Assert.Throws<UnknownLanguageVersionException>(() => CompilationFactory.Create(inputs));
 
+        // Its own type so RoslynResolver can catch THIS rather than every InvalidOperationException a
+        // compilation might raise -- but still an InvalidOperationException, which is the contract
+        // callers were given.
+        Assert.IsAssignableFrom<InvalidOperationException>(ex);
+        Assert.Equal("99", ex.LangVersion);
         Assert.Contains("LangVersion", ex.Message, StringComparison.Ordinal);
         Assert.Contains("99", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unknown_language_version_costs_its_own_project_and_no_other()
+    {
+        // The loudness of the refusal must not become a loss of the whole run. Correction 3's hazard
+        // is a SILENT fallback to a preview language version; declining to compile the one project
+        // that pinned an unknown version answers that completely, and every other project in the
+        // repository can still be resolved exactly. So: unavailable, named, run continues.
+        using var repository = new UnknownLanguageVersionRepository();
+
+        var resolver = RoslynResolver.Create(repository.Root, [repository.StrandedProject, repository.SoundProject]);
+
+        var stranded = Assert.Single(resolver.Projects, p => p.ProjectPath == repository.StrandedProject);
+        Assert.Equal(RoslynProjectAvailability.UnknownLanguageVersion, stranded.Availability);
+        Assert.Contains("99", stranded.Detail, StringComparison.Ordinal);
+
+        // The run continued, and said honestly that it is partial.
+        Assert.True(resolver.IsAvailable, Describe(resolver));
+        Assert.False(resolver.IsComplete);
+
+        // The stranded project is left to the baseline; the sound one still resolves exactly.
+        Assert.False(resolver.Owns("stranded/Stranded.cs"));
+        Assert.True(resolver.Owns("sound/Sound.cs"), Describe(resolver));
+
+        using var extractor = new TreeSitterExtractor();
+        var extracted = extractor.Extract("sound/Sound.cs", repository.SoundSourceFile, CSharpProfile.Instance, ExtractionLimits.Default);
+        var site = Assert.Single(extracted.Sites, s => s.CalledName == "Inner");
+
+        var edge = Assert.Single(resolver.Resolve([site], extracted.Symbols));
+        Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
+        Assert.Equal("Sound.Caller", edge.TargetContainer);
     }
 
     [Fact]
@@ -349,7 +386,10 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject);
 
         var libraryReference = Assert.Single(applicationInputs.References, r => r.ProjectPath is not null);
-        Assert.Equal(repository.LibraryProject, libraryReference.ProjectPath, ignoreCase: true);
+        // Ordinal, not ignoreCase: the substitution below keys on this path, and the whole producer
+        // compares paths ordinally. If MSBuild's spelling of a project path ever stopped matching the
+        // one it was given, that is a finding about normalisation and this assertion should surface it.
+        Assert.Equal(repository.LibraryProject, libraryReference.ProjectPath);
 
         repository.DeleteLibraryOutput();
 
@@ -362,7 +402,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         var library = CompilationFactory.Create(libraryInputs);
         var application = CompilationFactory.Create(
             applicationInputs,
-            new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>(StringComparer.OrdinalIgnoreCase)
+            new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>(StringComparer.Ordinal)
             {
                 [repository.LibraryProject] = library,
             },
@@ -635,6 +675,62 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             {
                 public static string Run() => new Library.Greeter().Greet("world");
             }
+            """;
+    }
+
+    /// <summary>
+    /// A restored repository of two independent projects, one of which pins a <c>LangVersion</c> no
+    /// Roslyn build knows. They do not reference each other, so nothing but the resolver's own
+    /// per-project scoping keeps the sound one working.
+    /// </summary>
+    private sealed class UnknownLanguageVersionRepository : ScratchRepository
+    {
+        public UnknownLanguageVersionRepository()
+            : base("langversion")
+        {
+            StrandedProject = Write("stranded/Stranded.csproj", StrandedProjectFile);
+            Write("stranded/Stranded.cs", StrandedSource);
+            SoundProject = Write("sound/Sound.csproj", SoundProjectFile);
+            SoundSourceFile = Write("sound/Sound.cs", SoundSource);
+
+            Restore(StrandedProject);
+            Restore(SoundProject);
+        }
+
+        public string StrandedProject { get; }
+
+        public string SoundProject { get; }
+
+        public string SoundSourceFile { get; }
+
+        // MSBuild reports LangVersion as a plain property and never validates it here: the query runs
+        // ResolveReferences/GenerateGlobalUsings/GenerateAssemblyInfo, none of which invoke csc. So
+        // "99" survives all the way to LanguageVersionFacts.TryParse, which is the point.
+        private const string StrandedProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <LangVersion>99</LangVersion>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private const string SoundProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private const string StrandedSource = """
+            namespace Stranded;
+            public class Orphan { public int Leaf() => 1; public int Branch() => Leaf(); }
+            """;
+
+        private const string SoundSource = """
+            namespace Sound;
+            public class Caller { public int Inner() => 1; public int Outer() => Inner(); }
             """;
     }
 
