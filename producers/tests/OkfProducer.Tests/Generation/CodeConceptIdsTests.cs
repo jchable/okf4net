@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Generation;
+
+namespace OkfProducer.Tests.Generation;
+
+public class CodeConceptIdsTests
+{
+    [Fact]
+    public void A_type_and_its_member_nest_under_the_namespace_path()
+    {
+        Assert.Equal("code/csharp/okf4net/link-scanner",
+            CodeConceptIds.For(Type("OKF4net", "LinkScanner"), CSharp));
+        Assert.Equal("code/csharp/okf4net/link-scanner/scan",
+            CodeConceptIds.For(Member("OKF4net", "LinkScanner", "Scan"), CSharp));
+    }
+
+    [Fact]
+    public void A_nested_namespace_becomes_nested_segments()
+        => Assert.Equal("code/csharp/okf4net/yaml/yaml-value",
+            CodeConceptIds.For(Type("OKF4net.Yaml", "YamlValue"), CSharp));
+
+    [Fact]
+    public void Overloads_collapse_to_one_id()
+    {
+        // §3.2: one concept per (container, name). A numeric suffix would be
+        // order-dependent, so adding an overload would renumber its neighbours
+        // and churn concepts that did not change.
+        var a = CodeConceptIds.For(Member("N", "T", "Validate", "public void Validate()"), CSharp);
+        var b = CodeConceptIds.For(Member("N", "T", "Validate", "public void Validate(int x)"), CSharp);
+
+        Assert.Equal(a, b);
+    }
+
+    [Fact]
+    public void A_member_named_index_is_not_allowed_to_shadow_a_reserved_file()
+    {
+        // BundleConceptWriter rejects `index` and `log`; a property named Index
+        // is perfectly plausible.
+        var registry = new ConceptIdRegistry();
+
+        var id = registry.Register("code/csharp/n/t", "Index");
+
+        Assert.NotEqual("code/csharp/n/t/index", id.ToString());
+    }
+
+    [Fact]
+    public void A_case_only_collision_is_broken_by_ordinal_order_of_the_original_name()
+    {
+        // §3.3: ordinal on the NAME, not on (file, line), so the tie-break
+        // survives a file move or a line shift.
+        var registry = new ConceptIdRegistry();
+
+        var first = registry.Register("code/go/pkg", "Parse");
+        var second = registry.Register("code/go/pkg", "parse");
+
+        Assert.Equal("code/go/pkg/parse", first.ToString());
+        Assert.Equal("code/go/pkg/parse-2", second.ToString());
+    }
+
+    [Fact]
+    public void The_registry_sees_collisions_across_families()
+    {
+        // §3.4: usedIds must span overview, packages/, docs/ and code/ — one
+        // registry, not one per family.
+        var registry = new ConceptIdRegistry();
+
+        var a = registry.Register("packages", "my-lib");
+        var b = registry.Register("packages", "my.lib");
+
+        Assert.NotEqual(a.ToString(), b.ToString());
+    }
+
+    private static readonly LanguageProfile CSharp = new(
+        Language: "csharp",
+        GrammarName: "c_sharp",
+        DeclarationQuery: string.Empty,
+        CallQuery: string.Empty,
+        DocCommentPrefix: "///",
+        FileExtensions: [".cs"]);
+
+    private static SymbolFact Type(string container, string name) =>
+        new(
+            Kind: SymbolKind.Type,
+            Language: CSharp.Language,
+            Container: container,
+            Name: name,
+            Signature: $"class {name}",
+            Visibility: SymbolVisibility.Public,
+            RelativePath: "Fake.cs",
+            StartOffset: 0,
+            EndOffset: 0,
+            StartLine: 1,
+            EndLine: 1,
+            DocComment: null);
+
+    private static SymbolFact Member(string container, string typeName, string name, string? signature = null) =>
+        new(
+            Kind: SymbolKind.Member,
+            Language: CSharp.Language,
+            Container: $"{container}.{typeName}",
+            Name: name,
+            Signature: signature ?? $"public void {name}()",
+            Visibility: SymbolVisibility.Public,
+            RelativePath: "Fake.cs",
+            StartOffset: 0,
+            EndOffset: 0,
+            StartLine: 1,
+            EndLine: 1,
+            DocComment: null);
+}

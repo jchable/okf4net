@@ -91,7 +91,14 @@ public sealed class ConceptGenerator : IConceptGenerator
         return ConceptId.Parse($"{prefix}/{segment}");
     }
 
-    private static bool IsReservedSegment(string segment) =>
+    /// <summary>
+    /// True when <paramref name="segment"/> would collide with a concept id
+    /// <see cref="OKF4net.BundleConceptWriter"/> reserves for the bundle's own
+    /// <c>index.md</c>/<c>log.md</c>. Internal (not private) so <see cref="ConceptIdRegistry"/> --
+    /// the single registry spanning all four id families -- can reuse this rule instead of forking a
+    /// second copy of it.
+    /// </summary>
+    internal static bool IsReservedSegment(string segment) =>
         string.Equals(segment, "index", StringComparison.OrdinalIgnoreCase)
         || string.Equals(segment, "log", StringComparison.OrdinalIgnoreCase);
 
