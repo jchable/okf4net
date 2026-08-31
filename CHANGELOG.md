@@ -10,7 +10,7 @@ and this project adheres to
 
 ### Added
 
-- **`FixedClock`** — an `IOkfClock` pinned to one date, alongside `SystemClock`.
+- **`FixedClock`** — an `IOkfClock` pinned to one instant, alongside `SystemClock`.
   Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
   exists to make staleness (§5.5) reproducible; until now each caller wanting
   that had to write the same four-line type, and three copies of it had
@@ -36,6 +36,26 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking (0.x): staleness is compared on instants, not dates.**
+  `Lifecycle.StaleAfter` is now a `DateTimeOffset?` rather than a `DateOnly?`,
+  and `Lifecycle.IsStale` / `StalePolicy.Admits` take a `DateTimeOffset` — the
+  `DateOnly` overloads are **not** kept. Two comparison semantics for one
+  question is a footgun: a `DateOnly` caller silently gets midnight-UTC
+  semantics and can read a concept as fresh for up to ~24h after it went stale.
+  Callers thread a `DateTimeOffset` (typically `IOkfClock.Now`); code that
+  rendered `StaleAfter` as a date uses the new `Lifecycle.StaleAfterDate`.
+  `AuditReport.AsOf` stays a `DateOnly` — it is the report's display stamp, not
+  the comparison input — so `okf audit --json` is unaffected.
+- `IOkfClock` gains `Now` (a `DateTimeOffset`) as a **default interface member**
+  derived from `Today`, so existing implementers that define only `Today` keep
+  compiling and working. `FixedClock` gains a `DateTimeOffset` constructor
+  beside the `DateOnly` one; note that a target-typed `new FixedClock(new(y, m,
+  d))` is now ambiguous and must name the type (`new DateOnly(y, m, d)`).
+- **`Lifecycle` no longer accepts culture-shaped dates.** Zoneless datetimes are
+  read via an explicit ISO format list rather than `DateTime.TryParse`, which
+  would have accepted `01/02/2026` or a bare year — values the previous parser
+  correctly reported as malformed. Widening "malformed" into "legacy, assumed
+  UTC" would have started silently honouring garbage.
 - **`ConceptId.FromPath`'s "not under bundle root" error now names the root, and
   quotes both paths.** It previously reported only the offending path, leaving a
   caller deriving ids against several bundles to guess which root rejected it.
@@ -92,6 +112,18 @@ and this project adheres to
   `packaging/winget/README.md`.
 
 ### Fixed
+
+- **`stale_after` now reads the spec-conformant timestamp form.** OKF v0.2 §5
+  requires every timestamp-valued key to be an ISO 8601 datetime with an
+  explicit UTC offset (`2026-06-30T14:00:00Z`). `Lifecycle` previously parsed
+  `stale_after` only as a bare `YYYY-MM-DD`, so a conformant value was reported
+  as malformed and **staleness was never computed for it** — a concept past its
+  expiry silently read as fresh, in `okf audit`, `okf validate`, the agent
+  tools, the catalog resolvers and §10.6's attestation gate alike. The legacy
+  date-only form is still accepted and now raises a `LegacyDateOnlyTimestamp`
+  warning, matching how the §13.1 legacy fields are handled. The same warning
+  covers `generated.at` and `verified[].at`. A datetime with no offset is read
+  as UTC and flagged the same way.
 
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had
