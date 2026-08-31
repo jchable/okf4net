@@ -19,7 +19,7 @@ public class CodeGraphBuilderTests
     {
         public IReadOnlyList<CallSite> Sites { get; init; } = [];
 
-        public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile) =>
+        public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile, ExtractionLimits limits) =>
             new([.. symbols.Where(s => s.RelativePath == relativePath)],
                 [.. Sites.Where(s => s.RelativePath == relativePath)],
                 FileStatus.Extracted);
@@ -29,7 +29,7 @@ public class CodeGraphBuilderTests
     {
         public LanguageProfile? ReceivedProfile { get; private set; }
 
-        public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile)
+        public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile, ExtractionLimits limits)
         {
             ReceivedProfile = profile;
             return new ExtractionResult([], [], FileStatus.Extracted);

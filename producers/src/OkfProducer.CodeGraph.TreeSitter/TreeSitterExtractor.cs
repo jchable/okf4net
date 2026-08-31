@@ -64,10 +64,15 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private readonly Dictionary<string, Engine> _engines = new(StringComparer.Ordinal);
 
     /// <inheritdoc/>
-    public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile)
+    public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile, ExtractionLimits limits)
     {
+        var skipStatus = TryReadSource(relativePath, absolutePath, limits, out var source);
+        if (skipStatus is not null)
+        {
+            return new ExtractionResult([], [], skipStatus.Value);
+        }
+
         var engine = GetOrCreateEngine(profile);
-        var source = File.ReadAllText(absolutePath);
         using var tree = engine.Parser.Parse(source)!;
 
         var fileScopedNamespaceName = tree.RootNode.Children
@@ -77,8 +82,108 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         var symbols = ExtractSymbols(source, tree, engine.DeclarationQuery, profile, relativePath, fileScopedNamespaceName);
         var sites = ExtractCallSites(source, tree, engine.CallQuery, relativePath, fileScopedNamespaceName);
 
-        return new ExtractionResult(symbols, sites, FileStatus.Extracted);
+        // §2.3: code that fails to parse is not an error -- tree-sitter recovers around an ERROR
+        // node and keeps every declaration outside the malformed region, so the file still counts as
+        // (partially) extracted rather than skipped.
+        var status = tree.RootNode.HasError ? FileStatus.PartiallyExtracted : FileStatus.Extracted;
+
+        return new ExtractionResult(symbols, sites, status);
     }
+
+    /// <summary>
+    /// Applies §2.3's hostile-input guards before a single byte is parsed. A reparse point (symlink
+    /// or junction, detected via the public <see cref="FileSystemInfo.LinkTarget"/> rather than an
+    /// internal seam this project cannot reach) is never followed -- checked both for
+    /// <paramref name="absolutePath"/> itself and for every directory between it and the repository
+    /// root, via <see cref="IsUnderReparsePoint"/>: a plain file reached only because one of its
+    /// *ancestor* directories is a junction/symlink is exactly as unfollowed as a directly-symlinked
+    /// file, and <see cref="CodeGraphBuilder"/>'s own walk (<see cref="Directory.EnumerateFiles"/>)
+    /// does traverse through such a directory rather than stopping at it. A file over
+    /// <paramref name="limits"/>'s <see cref="ExtractionLimits.MaxFileBytes"/> is rejected by its
+    /// reported length alone -- it is never loaded into memory, let alone truncated to fit, since a
+    /// partial parse would produce spans that point at the wrong code, worse than no extraction at
+    /// all. What does get read is decoded strictly as UTF-8 (with or without a byte-order mark): any
+    /// byte sequence <see cref="UTF8Encoding"/> would otherwise silently replace with U+FFFD is
+    /// reported as <see cref="FileStatus.SkippedEncoding"/> instead of corrupting offsets silently.
+    /// Returns <see langword="null"/> and sets <paramref name="source"/> to the decoded text when
+    /// every guard passes; otherwise returns the <see cref="FileStatus"/> to report and sets
+    /// <paramref name="source"/> to <see cref="string.Empty"/>.
+    /// </summary>
+    private static FileStatus? TryReadSource(string relativePath, string absolutePath, ExtractionLimits limits, out string source)
+    {
+        source = string.Empty;
+
+        byte[] bytes;
+        try
+        {
+            var fileInfo = new FileInfo(absolutePath);
+            if (fileInfo.LinkTarget is not null || IsUnderReparsePoint(absolutePath, relativePath))
+            {
+                return FileStatus.SkippedSymlink;
+            }
+
+            if (!fileInfo.Exists)
+            {
+                return FileStatus.SkippedUnreadable;
+            }
+
+            if (fileInfo.Length > limits.MaxFileBytes)
+            {
+                return FileStatus.SkippedTooLarge;
+            }
+
+            bytes = File.ReadAllBytes(absolutePath);
+        }
+        catch (IOException)
+        {
+            return FileStatus.SkippedUnreadable;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return FileStatus.SkippedUnreadable;
+        }
+
+        var bomLength = HasUtf8Bom(bytes) ? 3 : 0;
+        try
+        {
+            source = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes, bomLength, bytes.Length - bomLength);
+            return null;
+        }
+        catch (DecoderFallbackException)
+        {
+            source = string.Empty;
+            return FileStatus.SkippedEncoding;
+        }
+    }
+
+    /// <summary>
+    /// Walks up from <paramref name="absolutePath"/>'s containing directory exactly as many levels as
+    /// <paramref name="relativePath"/> has directory segments -- i.e. no further than the repository
+    /// root this file was discovered under -- checking each level's own <see cref="FileSystemInfo.LinkTarget"/>.
+    /// Bounding the walk by <paramref name="relativePath"/>'s own segment count avoids needing the
+    /// repository root as a separate argument: it is exactly the number of directories between the
+    /// root and this file, no more.
+    /// </summary>
+    private static bool IsUnderReparsePoint(string absolutePath, string relativePath)
+    {
+        var depth = relativePath.Count(c => c == '/');
+        var directory = Path.GetDirectoryName(absolutePath);
+
+        for (var i = 0; i < depth && directory is not null; i++)
+        {
+            if (new DirectoryInfo(directory).LinkTarget is not null)
+            {
+                return true;
+            }
+
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return false;
+    }
+
+    private static bool HasUtf8Bom(byte[] bytes) =>
+        bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
 
     /// <inheritdoc/>
     public void Dispose()

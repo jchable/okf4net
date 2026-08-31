@@ -427,6 +427,6 @@ public class TreeSitterExtractorTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
         File.WriteAllText(absolutePath, source);
 
-        return _extractor.Extract(relativePath, absolutePath, CSharpProfile.Instance);
+        return _extractor.Extract(relativePath, absolutePath, CSharpProfile.Instance, ExtractionLimits.Default);
     }
 }

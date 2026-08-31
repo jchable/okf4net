@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Threading;
 using OkfProducer.Core.Scanning;
 
 namespace OkfProducer.Core.CodeGraph;
@@ -15,18 +16,24 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// <summary>
     /// Extracts every eligible file in <paramref name="snapshot"/>'s repository, concatenates and
     /// deterministically sorts the resulting symbols and edges, and aggregates a <see cref="RunStatus"/>.
-    /// A file whose extension matches none of <paramref name="profiles"/> is skipped entirely: it is
-    /// not extracted, not an error, and not a <see cref="FileStatus"/> skip reason -- it simply falls
-    /// outside what this run understands, so it cannot make the run incomplete. <paramref name="limits"/>
-    /// and <paramref name="scope"/> are threaded through for a later task's hostile-input and scoping
-    /// policy (§2.1); Task 1 does not act on either yet.
+    /// A file whose extension matches none of <paramref name="profiles"/>, or that
+    /// <see cref="FileEligibility.IsEligible"/> excludes under <paramref name="scope"/> (§5.4), is
+    /// skipped entirely: neither is an error or a <see cref="FileStatus"/> skip reason, since both
+    /// simply fall outside what this run is asked to cover, so neither can make the run incomplete.
+    /// A file this run does attempt is still subject to <paramref name="limits"/>'s hostile-input
+    /// guards (§2.3), enforced by <see cref="ILanguageExtractor.Extract"/> itself; a real skip from
+    /// one of those guards -- or the overall <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/>
+    /// elapsing before every file is attempted -- does make the run incomplete (§2.3's closing rule).
+    /// Extracted symbols are further filtered by <see cref="FileEligibility.IsInScope"/> before being
+    /// returned, so an out-of-scope member never reaches <see cref="CodeGraph.Symbols"/>.
     /// </summary>
     public CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits, ScopeOptions scope)
     {
-        _ = limits;
-        _ = scope;
+        using var timeoutSource = new CancellationTokenSource(limits.Timeout);
 
         var results = new List<(string RelativePath, ExtractionResult Result)>();
+        var timedOut = false;
+
         foreach (var relativePath in EnumerateFiles(snapshot.RepoPath))
         {
             var profile = SelectProfile(relativePath);
@@ -35,8 +42,29 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
                 continue;
             }
 
+            if (!FileEligibility.IsEligible(relativePath, snapshot, scope))
+            {
+                continue;
+            }
+
+            if (timeoutSource.IsCancellationRequested)
+            {
+                // §2.3: a run that hits its overall timeout before attempting every file is partial,
+                // not complete -- the files never attempted are silently absent rather than reported
+                // with a per-file FileStatus, but timedOut alone is enough to keep IsComplete false,
+                // which is the property Task 11's pruning actually keys off.
+                timedOut = true;
+                break;
+            }
+
+            if (ExceedsMaxDepth(relativePath, limits.MaxDepth))
+            {
+                results.Add((relativePath, new ExtractionResult([], [], FileStatus.SkippedDepth)));
+                continue;
+            }
+
             var absolutePath = Path.Combine(snapshot.RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile)));
+            results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile, limits)));
         }
 
         // Sort keys must fully disambiguate every tie a real repository can produce: two overloads
@@ -45,7 +73,9 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // input order, which is not a documented contract -- and Tasks 10/12 assert the generated
         // bundle byte-for-byte, so an unspecified tie order would surface there as an intermittent
         // failure.
-        var symbolList = results.SelectMany(r => r.Result.Symbols).ToList();
+        var symbolList = results.SelectMany(r => r.Result.Symbols)
+            .Where(s => FileEligibility.IsInScope(s, scope))
+            .ToList();
         var symbols = symbolList
             .OrderBy(s => s.Container, StringComparer.Ordinal)
             .ThenBy(s => s.Name, StringComparer.Ordinal)
@@ -93,10 +123,23 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             .Select(r => (r.RelativePath, r.Result.Status))
             .ToList();
 
-        var status = skipped.Count == 0 ? RunStatus.Complete : new RunStatus(false, skipped);
+        // A timed-out run is partial even when every file attempted before the timeout extracted
+        // cleanly -- the files never reached are indistinguishable from "not modified", exactly the
+        // ambiguity RunStatus.IsComplete exists to rule out (§2.3, §6.3).
+        var status = skipped.Count == 0 && !timedOut ? RunStatus.Complete : new RunStatus(false, skipped);
 
         return new CodeGraph(symbols, edges, status);
     }
+
+    /// <summary>
+    /// §2.3's pathological-nesting-depth guard: counts <paramref name="relativePath"/>'s directory
+    /// segments (its <c>/</c> separators) against <paramref name="maxDepth"/> before any file handle
+    /// is opened -- purely a path check, so it belongs in the walk rather than in
+    /// <see cref="ILanguageExtractor.Extract"/>, which never sees paths this shallow-checked walk has
+    /// already ruled pathological.
+    /// </summary>
+    private static bool ExceedsMaxDepth(string relativePath, int maxDepth) =>
+        relativePath.Count(c => c == '/') > maxDepth;
 
     private static IEnumerable<string> EnumerateFiles(string repoPath) =>
         Directory.Exists(repoPath)
