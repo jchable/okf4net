@@ -63,6 +63,21 @@ public class ScopeTests
         Assert.True(FileEligibility.IsEligible("lib/OkfProducer.Core/Foo.cs", snapshot, ScopeOptions.Default));
     }
 
+    [Fact]
+    public void Project_ownership_matching_is_case_sensitive()
+    {
+        // M-1: a case-sensitive filesystem can hold both src/Foo and src/foo as genuinely distinct
+        // directories. Every other path comparison in this codebase is Ordinal (§6.2's "never a
+        // culture-dependent comparison" rule) -- matching a file's owning project with
+        // OrdinalIgnoreCase instead could pick the wrong project for a file that only differs in
+        // case from that project's own directory.
+        var snapshot = SnapshotWithTestProject(projectDirectory: "src/Foo");
+
+        // "src/foo/Bar.cs" differs from the test project's own "src/Foo" only by case -- it must not
+        // be treated as owned by that project.
+        Assert.True(FileEligibility.IsEligible("src/foo/Bar.cs", snapshot, ScopeOptions.Default));
+    }
+
     [Theory]
     [InlineData("test")]
     [InlineData("tests")]

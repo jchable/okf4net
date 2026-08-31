@@ -190,7 +190,18 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private static bool HasUtf16Bom(byte[] bytes, bool bigEndian) =>
         bigEndian
             ? bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF
-            : bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE;
+            : bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE && !IsUtf32LeBom(bytes);
+
+    /// <summary>
+    /// <c>FF FE 00 00</c> is the UTF-32 LE BOM, and its first two bytes are byte-for-byte identical to
+    /// the UTF-16 LE BOM (<c>FF FE</c>) alone. Without this guard a UTF-32 LE file would be
+    /// misdetected as UTF-16 LE and decoded into NUL-interleaved garbage instead of correctly falling
+    /// through to (and being rejected by) the UTF-8 branch -- §2.3 accepts UTF-8 and UTF-16-with-BOM
+    /// only, never UTF-32. The UTF-32 BE BOM (<c>00 00 FE FF</c>) needs no equivalent guard: its first
+    /// two bytes never collide with the UTF-16 BE BOM (<c>FE FF</c>) in the first place.
+    /// </summary>
+    private static bool IsUtf32LeBom(byte[] bytes) =>
+        bytes.Length >= 4 && bytes[2] == 0x00 && bytes[3] == 0x00;
 
     /// <summary>
     /// Walks up from <paramref name="absolutePath"/>'s containing directory exactly as many levels as

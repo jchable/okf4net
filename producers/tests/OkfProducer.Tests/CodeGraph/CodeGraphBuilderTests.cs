@@ -11,9 +11,9 @@ public class CodeGraphBuilderTests
 
     private static readonly IReadOnlyList<LanguageProfile> CSharpProfiles = [CSharpProfile];
 
-    private static SymbolFact Member(string container, string name, string path = "A.cs") =>
+    private static SymbolFact Member(string container, string name, string path = "A.cs", SymbolVisibility visibility = SymbolVisibility.Public) =>
         new(SymbolKind.Member, "csharp", container, name, $"public void {name}()",
-            SymbolVisibility.Public, path, 0, 10, 1, 1, null);
+            visibility, path, 0, 10, 1, 1, null);
 
     private sealed class StubExtractor(params SymbolFact[] symbols) : ILanguageExtractor
     {
@@ -36,12 +36,12 @@ public class CodeGraphBuilderTests
         }
     }
 
-    private sealed class StubResolver(string owned, EdgeConfidence confidence) : ISymbolResolver
+    private sealed class StubResolver(string owned, EdgeConfidence confidence, string? targetContainer = null, string? targetName = null) : ISymbolResolver
     {
         public bool Owns(string relativePath) => relativePath == owned;
 
         public IReadOnlyList<ResolvedEdge> Resolve(IReadOnlyList<CallSite> sites, IReadOnlyList<SymbolFact> symbols) =>
-            [.. sites.Select(s => new ResolvedEdge(s, "T", s.CalledName, confidence))];
+            [.. sites.Select(s => new ResolvedEdge(s, targetContainer ?? "T", targetName ?? s.CalledName, confidence))];
     }
 
     [Fact]
@@ -49,10 +49,12 @@ public class CodeGraphBuilderTests
     {
         // §2.1: resolvers are chained, not exclusive. NameMatch gives a baseline
         // for every language; Roslyn overrides it for the files it owns, at
-        // identity of call site.
+        // identity of call site. "Callee" is a real symbol here (not just a name the resolver made
+        // up) so CodeGraph's own consistency invariant -- a resolved target absent from Symbols
+        // degrades to Unresolved -- does not itself interfere with what this test is pinning.
         var site = new CallSite("T", "Caller", "Callee", "A.cs", 42);
         var builder = new CodeGraphBuilder(
-            new StubExtractor(Member("T", "Caller")) { Sites = [site] },
+            new StubExtractor(Member("T", "Caller"), Member("T", "Callee")) { Sites = [site] },
             CSharpProfiles,
             [new StubResolver("A.cs", EdgeConfidence.ByName), new StubResolver("A.cs", EdgeConfidence.Exact)]);
 
@@ -67,13 +69,52 @@ public class CodeGraphBuilderTests
     {
         var site = new CallSite("T", "Caller", "Callee", "A.cs", 42);
         var builder = new CodeGraphBuilder(
-            new StubExtractor(Member("T", "Caller")) { Sites = [site] },
+            new StubExtractor(Member("T", "Caller"), Member("T", "Callee")) { Sites = [site] },
             CSharpProfiles,
             [new StubResolver("A.cs", EdgeConfidence.ByName), new StubResolver("Other.cs", EdgeConfidence.Exact)]);
 
         var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
 
         Assert.Equal(EdgeConfidence.ByName, Assert.Single(graph.Edges).Confidence);
+    }
+
+    [Fact]
+    public void An_edge_whose_caller_is_filtered_out_of_scope_is_dropped_entirely()
+    {
+        // §5.4 + CodeGraph's own consistency invariant: "Hidden" is Private, so it never reaches
+        // Symbols under the default scope -- there is no concept left for this edge to hang off, so
+        // it must not survive into Edges either, resolved or not.
+        var site = new CallSite("T", "Hidden", "Callee", "A.cs", 42);
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(Member("T", "Hidden", visibility: SymbolVisibility.Private)) { Sites = [site] },
+            CSharpProfiles, []);
+
+        var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.DoesNotContain(graph.Symbols, s => s.Name == "Hidden");
+        Assert.Empty(graph.Edges);
+    }
+
+    [Fact]
+    public void An_edge_whose_resolved_target_is_filtered_out_of_scope_degrades_to_unresolved()
+    {
+        // The caller ("Caller") is public and survives scope filtering; the resolver still resolves
+        // the call to a real symbol ("PrivateTarget") that is itself Private and gets filtered out.
+        // Pointing the edge at a concept that will never exist is worse than not resolving it at all
+        // -- §4.5 already renders an unresolved call as plain text, which is the correct fallback.
+        var site = new CallSite("T", "Caller", "Callee", "A.cs", 42);
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(Member("T", "Caller"), Member("T", "PrivateTarget", visibility: SymbolVisibility.Private)) { Sites = [site] },
+            CSharpProfiles,
+            [new StubResolver("A.cs", EdgeConfidence.Exact, targetContainer: "T", targetName: "PrivateTarget")]);
+
+        var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.DoesNotContain(graph.Symbols, s => s.Name == "PrivateTarget");
+        var edge = Assert.Single(graph.Edges);
+        Assert.Equal(EdgeConfidence.Unresolved, edge.Confidence);
+        Assert.Null(edge.TargetContainer);
+        Assert.Null(edge.TargetName);
     }
 
     [Fact]

@@ -136,6 +136,10 @@ public static class FileEligibility
         return ReferencesTestSdk(absoluteCsprojPath);
     }
 
+    // Ordinal, not OrdinalIgnoreCase: every other path comparison in this codebase (§6.2's "never a
+    // culture-dependent comparison" rule) is Ordinal, and a case-sensitive filesystem can genuinely
+    // hold both src/Foo and src/foo as distinct directories -- OrdinalIgnoreCase here could pick the
+    // wrong one as a file's owning project.
     private static bool IsAncestorOrSame(string[] directory, string[] descendant)
     {
         if (directory.Length > descendant.Length)
@@ -145,7 +149,7 @@ public static class FileEligibility
 
         for (var i = 0; i < directory.Length; i++)
         {
-            if (!string.Equals(directory[i], descendant[i], StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(directory[i], descendant[i], StringComparison.Ordinal))
             {
                 return false;
             }

@@ -84,6 +84,30 @@ public class HostileInputTests : IDisposable
         => Assert.True(BuildWith(("A.cs", FileStatus.Extracted)).Status.IsComplete);
 
     [Fact]
+    public void A_nonexistent_repository_root_reports_an_incomplete_run_not_an_empty_complete_one()
+    {
+        // C-1: RepositoryScanner.Scan performs no existence check on the path it is handed, so a
+        // typo'd or transiently-unmounted RepositorySnapshot.RepoPath is reachable from the public
+        // API. Before this fix, EnumerateFiles silently returned an empty sequence for a missing
+        // root, the per-file loop never ran, Skipped stayed empty, and Build returned
+        // RunStatus.Complete with zero symbols -- indistinguishable from a real, legitimately empty
+        // repository. Under Task 11's gate that prunes every concept absent from a complete run, that
+        // would have deleted every concept in the user's bundle. A missing root must degrade the run
+        // to incomplete instead, consistent with every other reason this task's walk can fail
+        // (timeout, cancellation, a circular reparse point) -- never throw, matching this codebase's
+        // established "parse failures are errors as data" philosophy (see CLAUDE.md's Bundle
+        // description) rather than adding the one API surface in this design that can throw.
+        var nonexistentRoot = Path.Combine(Path.GetTempPath(), "okfproducer-does-not-exist-" + Guid.NewGuid());
+        var snapshot = new RepositorySnapshot(nonexistentRoot, "test-repo", [], []);
+        var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.False(graph.Status.IsComplete);
+        Assert.Empty(graph.Symbols);
+    }
+
+    [Fact]
     public void A_file_over_the_size_cap_is_skipped_whole_never_truncated()
     {
         // Truncating would yield spans that point at the wrong code -- worse than not extracting the
@@ -170,12 +194,50 @@ public class HostileInputTests : IDisposable
     }
 
     [Fact]
+    public void Utf32_le_bom_is_not_mistaken_for_utf16_le()
+    {
+        using var tmp = new TempDir();
+        var path = Path.Combine(tmp.Path, "utf32.cs");
+        // FF FE 00 00 is the UTF-32 LE BOM -- its first two bytes are byte-for-byte identical to the
+        // UTF-16 LE BOM (FF FE) alone, so a two-byte-only check would misclassify this and decode
+        // NUL-interleaved garbage instead of correctly rejecting it. §2.3 accepts UTF-8 and
+        // UTF-16-with-BOM only, never UTF-32.
+        File.WriteAllBytes(path, [0xFF, 0xFE, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00]);
+
+        Assert.Equal(FileStatus.SkippedEncoding, Extract(path, ExtractionLimits.Default).Status);
+    }
+
+    [Fact]
     public void A_tree_with_error_nodes_keeps_what_parsed_and_reports_partial()
     {
         var result = ExtractSource("namespace N;\npublic class T { public void M() { @@@ } public void N2() { } }");
 
         Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
         Assert.Contains(result.Symbols, s => s.Name == "N2");
+    }
+
+    [Fact]
+    public void An_empty_collection_expression_used_as_an_argument_is_a_live_grammar_gap_not_a_theoretical_one()
+    {
+        // Measured against the real extractor (see task-4-report.md's fix-round-2 section for the
+        // full investigation): this is NOT hostile input -- it is ordinary, idiomatic C# 12 that this
+        // very repository writes constantly (every ExtractionResult([], [], status) construction,
+        // RunStatus.Complete's own `new(true, [])`). The vendored tree-sitter-c-sharp grammar cannot
+        // parse an EMPTY collection expression `[]` in ANY expression position (constructor argument,
+        // method argument, property initializer, return statement, `??` right-hand side -- all
+        // measured, all HasError=true; the same shape with one element, `[1]`, parses cleanly in
+        // every one of those positions). It is misparsed as an element_binding_expression (the
+        // null-conditional indexer rule, `a?[i]`) with HasError set on that node, but neither
+        // IsError nor IsMissing set anywhere in its subtree -- so a naive "search the tree for a
+        // literal ERROR or MISSING node" check finds nothing at all, only tree.RootNode.HasError
+        // catches it. Consequence: PartiallyExtracted -- and therefore RunStatus.IsComplete ==
+        // false -- is the ordinary outcome for nearly any substantial file in a modern C# 12+
+        // codebase written in this project's own style, not a rare edge case. Pinned here so a
+        // future grammar upgrade that fixes this is noticed (this test starts failing) rather than
+        // silently changing behaviour underneath Task 11's pruning gate.
+        var result = ExtractSource("namespace N;\npublic class T { public void M() { new System.Collections.Generic.List<int>([]); } }");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
     }
 
     [Fact]
@@ -307,12 +369,25 @@ public class HostileInputTests : IDisposable
                     // cannot create one (see TryCreateJunction).
         }
 
-        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
-        var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+        try
+        {
+            var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+            var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
 
-        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+            var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
 
-        Assert.False(graph.Status.IsComplete);
+            Assert.False(graph.Status.IsComplete);
+        }
+        finally
+        {
+            // Dispose()'s recursive Directory.Delete does not follow a junction into its target (a
+            // non-recursive delete on the junction path alone confirmed that, and leaves the target
+            // untouched) -- but a RECURSIVE delete rooted above the junction throws partway through
+            // instead of skipping cleanly over it, which Dispose()'s best-effort catch then silently
+            // swallows, leaking this whole temp directory. Unlinking the junction itself first (never
+            // recursive -- that would follow it into the target) avoids the leak entirely.
+            Directory.Delete(loop, recursive: false);
+        }
     }
 
     [Fact]

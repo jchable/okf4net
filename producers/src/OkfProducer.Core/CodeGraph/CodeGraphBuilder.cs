@@ -38,63 +38,81 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         var results = new List<(string RelativePath, ExtractionResult Result)>();
         var incomplete = false;
 
+        // The file list is materialised in its own try, separate from the per-file loop below: a
+        // failure here (a missing or unreadable repository root, or a circular reparse point -- see
+        // both catch clauses) means the walk itself could not produce a list, so nothing was ever
+        // attempted and the run is unconditionally incomplete. An IOException raised later, while
+        // extracting one specific file, must NOT be folded into this same catch: that would abort
+        // every remaining file over one file's failure and destroy the diagnosis -- RunStatus would
+        // stay honestly incomplete, but Skipped would come back empty with no indication which file
+        // was responsible. Every extractor already reports that kind of per-file failure as a
+        // FileStatus on its ExtractionResult instead of throwing (see ILanguageExtractor.Extract's
+        // own contract), so nothing inside the loop below is expected to throw at all in normal
+        // operation; if something still does, it is a genuine, unexpected bug, and is deliberately
+        // left to propagate rather than be silently absorbed here.
+        List<string> orderedRelativePaths;
         try
         {
-            foreach (var relativePath in EnumerateFiles(snapshot.RepoPath))
-            {
-                var profile = SelectProfile(relativePath);
-                if (profile is null)
-                {
-                    continue;
-                }
-
-                if (!FileEligibility.IsEligible(relativePath, snapshot, scope))
-                {
-                    continue;
-                }
-
-                if (linkedSource.IsCancellationRequested)
-                {
-                    // §2.3: a run that is cancelled -- by the timeout, or by a cancellationToken the
-                    // caller passed in -- before attempting every file is partial, not complete. The
-                    // files never attempted are silently absent rather than reported with a per-file
-                    // FileStatus, but `incomplete` alone is enough to keep IsComplete false, which is
-                    // the property Task 11's pruning actually keys off. Whatever was already added to
-                    // `results` for files attempted before the cancellation is still returned --
-                    // partial results, honestly labelled incomplete, not discarded.
-                    incomplete = true;
-                    break;
-                }
-
-                if (ExceedsMaxDepth(relativePath, limits.MaxDepth))
-                {
-                    results.Add((relativePath, new ExtractionResult([], [], FileStatus.SkippedDepth)));
-                    continue;
-                }
-
-                var absolutePath = Path.Combine(snapshot.RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
-                results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile, limits)));
-            }
+            orderedRelativePaths = EnumerateFiles(snapshot.RepoPath).ToList();
         }
         catch (IOException)
         {
-            // §2.3 names a symlink/junction as "never followed", but does not by itself defend the
-            // WALK against a circular one: EnumerateFiles below does not detect the cycle, it keeps
-            // recursing into it. Measured, not assumed -- a self-referential junction does not "spin
-            // until the timeout" the way a slow-but-finite walk would; Directory.EnumerateFiles keeps
-            // extending the accumulated path each time it re-enters the loop and throws
-            // PathTooLongException (a subclass of IOException) within a fraction of a second, almost
-            // always long before ExtractionLimits.Timeout could ever fire. Left uncaught, that
-            // exception would escape Build entirely and crash the whole run instead of reporting an
-            // honestly incomplete one -- worse than every other hostile-input case this task handles,
-            // since there would be no CodeGraph at all, not even a partial one. Caught here and folded
-            // into the same `incomplete` outcome as a timeout or an explicit cancellation: a
-            // pathological directory structure degrades the run, it does not crash the process.
+            // Covers, among other IOException subtypes: a missing repository root
+            // (DirectoryNotFoundException) -- reachable from the public API on nothing more than a
+            // typo'd or transiently-unmounted RepositorySnapshot.RepoPath, since neither
+            // RepositoryScanner.Scan nor this method checked existence before this fix -- and a
+            // circular reparse point (measured, not assumed: a junction pointing back at one of its
+            // own ancestors is not detected as a cycle by Directory.EnumerateFiles below; it keeps
+            // recursing into it, extending the accumulated path a level deeper on every re-entry, and
+            // throws PathTooLongException within a fraction of a second, nowhere near
+            // ExtractionLimits.Timeout). Both cases mean the walk produced no file list at all, so
+            // treating that the same as "zero files, nothing skipped" and returning RunStatus.Complete
+            // would silently look like an empty-but-valid repository -- exactly the ambiguity that
+            // would make Task 11's pruning gate delete every concept in the user's bundle on what was
+            // really a broken run, not an empty one.
+            orderedRelativePaths = [];
             incomplete = true;
         }
         catch (UnauthorizedAccessException)
         {
+            orderedRelativePaths = [];
             incomplete = true;
+        }
+
+        foreach (var relativePath in orderedRelativePaths)
+        {
+            var profile = SelectProfile(relativePath);
+            if (profile is null)
+            {
+                continue;
+            }
+
+            if (!FileEligibility.IsEligible(relativePath, snapshot, scope))
+            {
+                continue;
+            }
+
+            if (linkedSource.IsCancellationRequested)
+            {
+                // §2.3: a run that is cancelled -- by the timeout, or by a cancellationToken the
+                // caller passed in -- before attempting every file is partial, not complete. The
+                // files never attempted are silently absent rather than reported with a per-file
+                // FileStatus, but `incomplete` alone is enough to keep IsComplete false, which is
+                // the property Task 11's pruning actually keys off. Whatever was already added to
+                // `results` for files attempted before the cancellation is still returned --
+                // partial results, honestly labelled incomplete, not discarded.
+                incomplete = true;
+                break;
+            }
+
+            if (ExceedsMaxDepth(relativePath, limits.MaxDepth))
+            {
+                results.Add((relativePath, new ExtractionResult([], [], FileStatus.SkippedDepth)));
+                continue;
+            }
+
+            var absolutePath = Path.Combine(snapshot.RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile, limits)));
         }
 
         // Sort keys must fully disambiguate every tie a real repository can produce: two overloads
@@ -140,12 +158,32 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // on (CallerContainer, CallerName, CalledName) -- RelativePath then Offset (unique per call
         // site within a file) fully disambiguate, the same reasoning as the symbol sort above.
         var verdictList = verdicts.Values.ToList();
-        var edges = verdictList
+        var sortedEdges = verdictList
             .OrderBy(e => e.Site.CallerContainer, StringComparer.Ordinal)
             .ThenBy(e => e.Site.CallerName, StringComparer.Ordinal)
             .ThenBy(e => e.Site.CalledName, StringComparer.Ordinal)
             .ThenBy(e => e.Site.RelativePath, StringComparer.Ordinal)
             .ThenBy(e => e.Site.Offset)
+            .ToList();
+
+        // CodeGraph's own invariant (see its XML doc): no edge may reference a symbol -- as caller or
+        // as resolved target -- absent from `symbols`. `symbols` above is already IsInScope-filtered,
+        // but `sites`/`edges` are not (a call SITE is not a symbol, so scope never applies to it
+        // directly), so an edge whose caller was filtered out of scope (e.g. a private or excluded
+        // internal method) would otherwise survive into the output with no SymbolFact for Task 8 to
+        // hang a `## Calls` entry on. Preserving input order here (Where/Select over an already-sorted
+        // list) keeps the deterministic edge order established above.
+        var symbolKeys = new HashSet<(string Container, string Name)>(symbols.Select(s => (s.Container, s.Name)));
+        var edges = sortedEdges
+            .Where(e => symbolKeys.Contains((e.Site.CallerContainer, e.Site.CallerName)))
+            .Select(e => e.Confidence != EdgeConfidence.Unresolved
+                    && e.TargetContainer is not null && e.TargetName is not null
+                    && !symbolKeys.Contains((e.TargetContainer, e.TargetName))
+                // A resolved target absent from Symbols (filtered by scope, or never a real symbol at
+                // all) would otherwise point at a concept that will not exist; degrading to Unresolved
+                // renders it as plain text instead (§4.5 already prescribes that fallback).
+                ? e with { TargetContainer = null, TargetName = null, Confidence = EdgeConfidence.Unresolved }
+                : e)
             .ToList();
 
         var skipped = results
@@ -172,12 +210,18 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     private static bool ExceedsMaxDepth(string relativePath, int maxDepth) =>
         relativePath.Count(c => c == '/') > maxDepth;
 
+    /// <summary>
+    /// Deliberately does not pre-check <see cref="Directory.Exists"/>: letting
+    /// <see cref="Directory.EnumerateFiles(string, string, SearchOption)"/> throw
+    /// <see cref="DirectoryNotFoundException"/> (an <see cref="IOException"/> subtype) naturally for a
+    /// missing <paramref name="repoPath"/> is what lets <see cref="Build"/>'s enumeration-scoped
+    /// <c>catch</c> turn that into an incomplete run instead of this method silently returning an
+    /// empty sequence that would read as "zero files, nothing wrong" (C-1).
+    /// </summary>
     private static IEnumerable<string> EnumerateFiles(string repoPath) =>
-        Directory.Exists(repoPath)
-            ? Directory.EnumerateFiles(repoPath, "*", SearchOption.AllDirectories)
-                .Select(path => Path.GetRelativePath(repoPath, path).Replace(Path.DirectorySeparatorChar, '/'))
-                .OrderBy(path => path, StringComparer.Ordinal)
-            : [];
+        Directory.EnumerateFiles(repoPath, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(repoPath, path).Replace(Path.DirectorySeparatorChar, '/'))
+            .OrderBy(path => path, StringComparer.Ordinal);
 
     private LanguageProfile? SelectProfile(string relativePath)
     {
