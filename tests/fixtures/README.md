@@ -229,10 +229,13 @@ bare `YYYY-MM-DD`, and no fixture here should ever give one a time.
 Two goldens moved with that revision, both re-derived and inspected line by line
 rather than blanket-regenerated:
 
-- `golden/validate-computation.out` gains one `[warning]` line for
-  `computations/revenue.md`'s date-only `stale_after`, and its summary count
-  goes `3 warning(s)` → `4 warning(s)`. `validate-computation.exitcode` stays
-  `0`: the new diagnostic is a `Warning`, and §5 form sits outside the §11
+- `golden/validate-computation.out` now carries **two** `[warning]` lines for
+  `computations/revenue.md` — one for its date-only `stale_after` and one for
+  its date-only `sources[].last_modified` — and its summary reads
+  `5 warning(s)`, up from the pre-§5 `3 warning(s)`. Two lines rather than one
+  is deliberate: it proves the diagnostic's `Field` actually distinguishes the
+  §5 keys instead of collapsing them. `validate-computation.exitcode` stays
+  `0`: the diagnostic is a `Warning`, and §5 form sits outside the §11
   conformance floor.
 - `golden/audit-v02.json`'s `findings[0].staleAfter` goes `"2099-01-01"` →
   `"2099-01-01T00:00:00Z"`. That field is the **verbatim raw frontmatter

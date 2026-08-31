@@ -227,12 +227,14 @@ public static class ConceptAudit
     /// <param name="clock">Supplies "today" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static AuditReport Run(Bundle bundle, AuditQuery query = default, IOkfClock? clock = null)
     {
-        var resolvedClock = clock ?? new SystemClock();
-
         // Staleness is an instant comparison (§5/§5.5); AsOf stays a date
         // because it is the report's display stamp, not the comparison input.
-        var now = resolvedClock.Now;
-        var asOf = resolvedClock.Today;
+        // Both come from ONE read of the clock: reading Now and Today
+        // separately lets a run that crosses UTC midnight evaluate staleness
+        // at one date and report another, and lets an inconsistent custom
+        // clock disagree with itself.
+        var now = (clock ?? new SystemClock()).Now;
+        var asOf = DateOnly.FromDateTime(now.UtcDateTime);
 
         // Seeded from the vocabulary rather than from a hand-written list of
         // members: a tier or status added to the enum without a matching line

@@ -284,6 +284,28 @@ public class AuditTests
     }
 
     [Fact]
+    public void AsOf_is_derived_from_the_same_clock_read_as_staleness()
+    {
+        // Reading Now and Today separately lets a run crossing UTC midnight
+        // evaluate staleness at one date and report another. This clock makes
+        // that disagreement explicit: AsOf must follow Now, not Today.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n");
+
+        var report = ConceptAudit.Run(Load(tmp), default, new SkewedClock());
+
+        Assert.Equal(new DateOnly(2026, 8, 21), report.AsOf);
+    }
+
+    /// <summary>A clock whose <c>Today</c> contradicts its <c>Now</c>.</summary>
+    private sealed class SkewedClock : IOkfClock
+    {
+        public DateOnly Today => new(1999, 1, 1);
+
+        public DateTimeOffset Now => new(2026, 8, 21, 23, 59, 59, TimeSpan.Zero);
+    }
+
+    [Fact]
     public void Freshness_still_renders_a_bare_date_for_a_conformant_instant()
     {
         // Golden-locked format: tests/fixtures/golden/audit-v02.out captures

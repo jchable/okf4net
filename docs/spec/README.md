@@ -40,9 +40,13 @@ sha256sum docs/spec/SPEC.md
 
 ## Known drift between this spec and upstream's own sample bundles
 
-`bundles/acme_retail/` is likewise a verbatim upstream copy (see `NOTICE`), and
-it does **not** satisfy §5's timestamp rule: its six `stale_after` values use
-the bare `YYYY-MM-DD` form where §5.5 requires an absolute instant. That is
-drift in the reference content, not a defect in OKF4net — `okf validate
-bundles/acme_retail` correctly reports six `LegacyDateOnlyTimestamp` warnings.
-Both files stay verbatim; neither is "fixed" locally.
+`bundles/acme_retail/` is an upstream copy too (verbatim for every file carried
+over — one generated artifact, `viz.html`, was deliberately not carried; see
+`NOTICE` and `bundles/README.md`), and it does **not** satisfy §5's timestamp
+rule: its `stale_after` values, and its §5.1 `sources[].last_modified` and
+`usage_window` bounds, use the bare `YYYY-MM-DD` form where §5 requires an ISO
+8601 datetime with an explicit UTC offset. That is drift in the reference
+content, not a defect in OKF4net — `okf validate bundles/acme_retail` reports
+them as `LegacyDateOnlyTimestamp`. Both files stay as they are; neither is
+"fixed" locally. `bundles/README.md` carries the current warning breakdown —
+counts live there, not here, so they drift in one place only.
