@@ -119,4 +119,92 @@ public static class ConceptSearch
 
         return score;
     }
+
+    /// <summary>
+    /// Picks the top <paramref name="count"/> of an already-scored list while
+    /// spreading scarce slots across top-level id segments.
+    /// </summary>
+    /// <remarks>
+    /// Score order is absolute: a lower-scoring concept never overtakes a
+    /// higher-scoring one. Diversification applies only <em>within</em> a score
+    /// band, which is where it is needed. <see cref="Search"/> breaks ties with
+    /// <see cref="ConceptId"/> order, and that order is ordinal by segment, so
+    /// one whole family precedes every other at equal score — every
+    /// <c>code/…</c> concept before any <c>docs/…</c>, <c>overview</c> or
+    /// <c>packages/…</c>. Scores are presence-based and capped at 6 per term,
+    /// so ties are the common case rather than the exception, and a corpus
+    /// dominated by one family starves the others of every slot: measured on a
+    /// 395-concept bundle, the curated concepts took 1 of 55 top-5 slots.
+    ///
+    /// Within a band, segments are visited round-robin in order of first
+    /// appearance. Since the band arrives in ordinal order, that order — and so
+    /// the result — is fully deterministic.
+    /// </remarks>
+    /// <param name="scored">Results from <see cref="Search"/>, in descending score order.</param>
+    /// <param name="count">Maximum number of results to return.</param>
+    /// <returns>At most <paramref name="count"/> results, in the order they should be shown.</returns>
+    public static IReadOnlyList<ScoredConcept> TopDiversified(IReadOnlyList<ScoredConcept> scored, int count)
+    {
+        if (count <= 0 || scored.Count == 0)
+        {
+            return [];
+        }
+
+        var picked = new List<ScoredConcept>(Math.Min(count, scored.Count));
+
+        for (var i = 0; i < scored.Count && picked.Count < count;)
+        {
+            // One score band: [i, bandEnd).
+            var band = scored[i].Score;
+            var bandEnd = i;
+            while (bandEnd < scored.Count && scored[bandEnd].Score == band)
+            {
+                bandEnd++;
+            }
+
+            // Group the band by top-level id segment, keeping the order in which
+            // each segment first appears.
+            var queues = new List<Queue<ScoredConcept>>();
+            var bySegment = new Dictionary<string, Queue<ScoredConcept>>(StringComparer.Ordinal);
+            for (var k = i; k < bandEnd; k++)
+            {
+                var segments = scored[k].Concept.Id.Segments;
+                var segment = segments.Count > 0 ? segments[0] : string.Empty;
+                if (!bySegment.TryGetValue(segment, out var queue))
+                {
+                    queue = new Queue<ScoredConcept>();
+                    bySegment[segment] = queue;
+                    queues.Add(queue);
+                }
+
+                queue.Enqueue(scored[k]);
+            }
+
+            // Round-robin across segments until the band is drained or the
+            // budget is spent.
+            var drained = false;
+            while (!drained && picked.Count < count)
+            {
+                drained = true;
+                foreach (var queue in queues)
+                {
+                    if (queue.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    drained = false;
+                    picked.Add(queue.Dequeue());
+                    if (picked.Count == count)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            i = bandEnd;
+        }
+
+        return picked;
+    }
 }

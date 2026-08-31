@@ -6,7 +6,8 @@ namespace OKF4net.Tests;
 /// tag/description vs. body weighting, multi-term OR/additive scoring, tie
 /// ordering by ascending <see cref="ConceptId"/>, the tag filter, the
 /// empty-query no-op, and <see cref="ConceptSearch.Excerpt"/>'s
-/// first-matching-line behaviour. Mirrors the scoring cases already covered
+/// first-matching-line behaviour, plus <see cref="ConceptSearch.TopDiversified"/>'s
+/// within-band rotation across top-level id families. Mirrors the scoring cases already covered
 /// end-to-end (through <c>OkfBundleTools.Search</c>'s formatted output) by
 /// <c>OkfSearchTests</c>, but exercises <see cref="ConceptSearch"/> directly
 /// against in-memory <see cref="Concept"/> values, without a bundle on disk.
@@ -187,4 +188,89 @@ public class ConceptSearchTests
 
         Assert.Equal("Leading and trailing whitespace around orders.", ConceptSearch.Excerpt(body, "orders"));
     }
+
+    // ---- TopDiversified: scarce slots across top-level id families ---------
+
+    /// <summary>
+    /// Builds one score band without touching the filesystem: ids only, all at
+    /// the same score, in the order <see cref="ConceptSearch.Search"/> would
+    /// return them (ascending ordinal by id).
+    /// </summary>
+    private static IReadOnlyList<ScoredConcept> Band(int score, params string[] ids) =>
+        [.. ids.Select(id => new ScoredConcept(MakeConcept(id), score))];
+
+    [Fact]
+    public void TopDiversified_rotates_slots_across_top_level_segments_within_a_band()
+    {
+        var scored = Band(6,
+            "code/csharp/a", "code/csharp/b", "code/csharp/c", "code/csharp/d",
+            "docs/readme",
+            "overview",
+            "packages/okf4net");
+
+        var top = ConceptSearch.TopDiversified(scored, 4);
+
+        Assert.Equal(
+            ["code/csharp/a", "docs/readme", "overview", "packages/okf4net"],
+            top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_never_lets_a_lower_score_overtake_a_higher_one()
+    {
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "code/csharp/a", "code/csharp/b"));
+        scored.AddRange(Band(3, "docs/readme"));
+
+        var top = ConceptSearch.TopDiversified(scored, 2);
+
+        Assert.Equal(["code/csharp/a", "code/csharp/b"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_returns_everything_when_fewer_results_than_requested()
+        => Assert.Equal(2, ConceptSearch.TopDiversified(Band(6, "code/csharp/a", "docs/readme"), 20).Count);
+
+    [Fact]
+    public void TopDiversified_degrades_to_plain_score_order_for_a_single_family()
+    {
+        var scored = Band(6, "code/csharp/a", "code/csharp/b", "code/csharp/c");
+
+        var top = ConceptSearch.TopDiversified(scored, 2);
+
+        Assert.Equal(["code/csharp/a", "code/csharp/b"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_is_deterministic()
+    {
+        var scored = Band(6, "packages/x", "code/a", "docs/y", "code/b", "overview");
+
+        var first = ConceptSearch.TopDiversified(scored, 3).Select(s => s.Concept.Id.ToString()).ToList();
+        var second = ConceptSearch.TopDiversified(scored, 3).Select(s => s.Concept.Id.ToString()).ToList();
+
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void TopDiversified_drains_a_band_before_moving_to_the_next()
+    {
+        // Four slots, a two-entry band and a three-entry band: the whole first
+        // band must be taken before the second is touched.
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "code/a", "docs/b"));
+        scored.AddRange(Band(2, "code/c", "docs/d", "overview"));
+
+        var top = ConceptSearch.TopDiversified(scored, 4);
+
+        Assert.Equal(["code/a", "docs/b", "code/c", "docs/d"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_returns_empty_for_an_empty_input()
+        => Assert.Empty(ConceptSearch.TopDiversified([], 5));
+
+    [Fact]
+    public void TopDiversified_returns_empty_for_a_non_positive_count()
+        => Assert.Empty(ConceptSearch.TopDiversified(Band(6, "code/a"), 0));
 }
