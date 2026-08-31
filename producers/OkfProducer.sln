@@ -1,3 +1,4 @@
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -13,6 +14,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OkfProducer.Tests", "tests\OkfProducer.Tests\OkfProducer.Tests.csproj", "{E5F6A7B8-C9DA-4BFC-EDFD-B5C6D7E8F9A0}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OkfProducer.CodeGraph.TreeSitter", "src\OkfProducer.CodeGraph.TreeSitter\OkfProducer.CodeGraph.TreeSitter.csproj", "{77B3DF93-4AE1-47E1-89A6-CC343DAEC848}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OkfProducer.CodeGraph.Roslyn", "src\OkfProducer.CodeGraph.Roslyn\OkfProducer.CodeGraph.Roslyn.csproj", "{DFF0469B-6C82-4F12-B5B8-C9E29B597893}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -72,6 +75,18 @@ Global
 		{77B3DF93-4AE1-47E1-89A6-CC343DAEC848}.Release|x64.Build.0 = Release|Any CPU
 		{77B3DF93-4AE1-47E1-89A6-CC343DAEC848}.Release|x86.ActiveCfg = Release|Any CPU
 		{77B3DF93-4AE1-47E1-89A6-CC343DAEC848}.Release|x86.Build.0 = Release|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Debug|x64.Build.0 = Debug|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Debug|x86.Build.0 = Debug|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Release|x64.ActiveCfg = Release|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Release|x64.Build.0 = Release|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Release|x86.ActiveCfg = Release|Any CPU
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -81,5 +96,6 @@ Global
 		{C3D4E5F6-A7B8-49DA-CBEB-F3A4B5C6D7E8} = {A1B2C3D4-E5F6-47B8-A9C0-D1E2F3A4B5C6}
 		{E5F6A7B8-C9DA-4BFC-EDFD-B5C6D7E8F9A0} = {D4E5F6A7-B8C9-4AEB-DCFC-A4B5C6D7E8F9}
 		{77B3DF93-4AE1-47E1-89A6-CC343DAEC848} = {A1B2C3D4-E5F6-47B8-A9C0-D1E2F3A4B5C6}
+		{DFF0469B-6C82-4F12-B5B8-C9E29B597893} = {A1B2C3D4-E5F6-47B8-A9C0-D1E2F3A4B5C6}
 	EndGlobalSection
 EndGlobal

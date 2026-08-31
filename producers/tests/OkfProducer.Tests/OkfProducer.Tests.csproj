@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OkfProducer.Core\OkfProducer.Core.csproj" />
     <ProjectReference Include="..\..\src\OkfProducer.CodeGraph.TreeSitter\OkfProducer.CodeGraph.TreeSitter.csproj" />
+    <ProjectReference Include="..\..\src\OkfProducer.CodeGraph.Roslyn\OkfProducer.CodeGraph.Roslyn.csproj" />
   </ItemGroup>
 
 </Project>

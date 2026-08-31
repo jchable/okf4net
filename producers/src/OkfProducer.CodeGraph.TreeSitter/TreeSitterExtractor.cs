@@ -102,9 +102,12 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// <paramref name="limits"/>'s <see cref="ExtractionLimits.MaxFileBytes"/> is rejected by its
     /// reported length alone -- it is never loaded into memory, let alone truncated to fit, since a
     /// partial parse would produce spans that point at the wrong code, worse than no extraction at
-    /// all. What does get read is decoded strictly via <see cref="DecodeStrict"/>: a byte sequence
-    /// invalid in the selected encoding, which <see cref="UTF8Encoding"/>/<see cref="UnicodeEncoding"/>
-    /// would otherwise silently replace with U+FFFD, is reported as <see cref="FileStatus.SkippedEncoding"/>
+    /// all. What does get read is decoded strictly via <see cref="SourceDecoder.DecodeStrict"/> -- the
+    /// shared decoder in <c>OkfProducer.Core</c>, not a private copy, because the Roslyn resolver has
+    /// to decode the same file to exactly the same string for their offsets to be comparable at all
+    /// (see that type's own summary): a byte sequence invalid in the selected encoding, which
+    /// <see cref="UTF8Encoding"/>/<see cref="UnicodeEncoding"/> would otherwise silently replace with
+    /// U+FFFD, is reported as <see cref="FileStatus.SkippedEncoding"/>
     /// instead of corrupting offsets silently. Returns <see langword="null"/> and sets
     /// <paramref name="source"/> to the decoded text when every guard passes; otherwise returns the
     /// <see cref="FileStatus"/> to report and sets <paramref name="source"/> to <see cref="string.Empty"/>.
@@ -145,7 +148,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
         try
         {
-            source = DecodeStrict(bytes);
+            source = SourceDecoder.DecodeStrict(bytes);
             return null;
         }
         catch (DecoderFallbackException)
@@ -154,54 +157,6 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             return FileStatus.SkippedEncoding;
         }
     }
-
-    /// <summary>
-    /// §2.3's two accepted encodings, selected by byte-order mark: UTF-8 (with or without its 3-byte
-    /// BOM) and UTF-16, either byte order, but only *with* its 2-byte BOM -- raw UTF-16 with no BOM is
-    /// deliberately not guessed at, since nothing distinguishes it reliably from binary content or
-    /// from UTF-8, and §2.3 says "UTF-16 with BOM", not "UTF-16". Bytes with no recognized BOM are
-    /// decoded as UTF-8. Every branch enables <c>throwOnInvalidBytes</c> (confirmed, not assumed, to
-    /// throw <see cref="DecoderFallbackException"/> for both an odd trailing byte and an unpaired
-    /// surrogate under <see cref="UnicodeEncoding"/>, the same exception type <see cref="UTF8Encoding"/>
-    /// throws), so a byte sequence that is not valid in the selected encoding is reported as
-    /// <see cref="FileStatus.SkippedEncoding"/> by <see cref="TryReadSource"/>'s caller, never silently
-    /// repaired with a U+FFFD replacement character.
-    /// </summary>
-    private static string DecodeStrict(byte[] bytes)
-    {
-        if (HasUtf8Bom(bytes))
-        {
-            return new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes, 3, bytes.Length - 3);
-        }
-
-        if (HasUtf16Bom(bytes, bigEndian: false))
-        {
-            return new UnicodeEncoding(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true).GetString(bytes, 2, bytes.Length - 2);
-        }
-
-        if (HasUtf16Bom(bytes, bigEndian: true))
-        {
-            return new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true).GetString(bytes, 2, bytes.Length - 2);
-        }
-
-        return new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes, 0, bytes.Length);
-    }
-
-    private static bool HasUtf16Bom(byte[] bytes, bool bigEndian) =>
-        bigEndian
-            ? bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF
-            : bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE && !IsUtf32LeBom(bytes);
-
-    /// <summary>
-    /// <c>FF FE 00 00</c> is the UTF-32 LE BOM, and its first two bytes are byte-for-byte identical to
-    /// the UTF-16 LE BOM (<c>FF FE</c>) alone. Without this guard a UTF-32 LE file would be
-    /// misdetected as UTF-16 LE and decoded into NUL-interleaved garbage instead of correctly falling
-    /// through to (and being rejected by) the UTF-8 branch -- §2.3 accepts UTF-8 and UTF-16-with-BOM
-    /// only, never UTF-32. The UTF-32 BE BOM (<c>00 00 FE FF</c>) needs no equivalent guard: its first
-    /// two bytes never collide with the UTF-16 BE BOM (<c>FE FF</c>) in the first place.
-    /// </summary>
-    private static bool IsUtf32LeBom(byte[] bytes) =>
-        bytes.Length >= 4 && bytes[2] == 0x00 && bytes[3] == 0x00;
 
     /// <summary>
     /// Walks up from <paramref name="absolutePath"/>'s containing directory exactly as many levels as
@@ -228,9 +183,6 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
         return false;
     }
-
-    private static bool HasUtf8Bom(byte[] bytes) =>
-        bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
 
     /// <inheritdoc/>
     public void Dispose()
