@@ -11,7 +11,7 @@
 >
 > Deux audits indépendants (interne et externe, 2026-08-31) ont chacun trouvé des défauts porteurs. Les révisions rédactionnelles sont appliquées, et les deux blocages sont traités :
 >
-> 1. ~~**L'étage Roslyn n'est pas démontré**~~ → **LEVÉ le 2026-08-31.** Le prototype `producers/spikes/RoslynCompilationSpike/` atteint **zéro erreur de compilation** sur trois projets réels sans `MSBuildWorkspace`. Il corrige au passage trois hypothèses de §7.2 — dont la plus lourde : le dépôt doit être **construit**, pas seulement restauré.
+> 1. ~~**L'étage Roslyn n'est pas démontré**~~ → **LEVÉ le 2026-08-31.** Le prototype atteint **zéro erreur de compilation** sur trois projets réels sans `MSBuildWorkspace` (mesure et protocole en §7.2 ; code jetable, conservé dans l'historique au commit `0db6e9a`). Il corrige au passage trois hypothèses de §7.2 — dont la plus lourde : le dépôt doit être **construit**, pas seulement restauré.
 > 2. ~~**Le critère d'exploitabilité échoue**~~ → **LEVÉ le 2026-08-31.** `ConceptSearch.TopDiversified` fait tourner la sélection entre familles d'ids, branché dans `okf_search` et `OkfContextProvider`. Sur le même corpus, les places curatées dans le top 5 passent de **1/55 à 23/55**, et les requêtes sans aucun curaté dans le top 20 de **5/11 à 0/11** (§8.7).
 >
 > Reste à écrire : le plan d'implémentation du générateur lui-même, dont la séquence est donnée en fin de `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md`.
@@ -374,7 +374,9 @@ Pas de Native AOT : Roslyn, `System.CommandLine` et le Generic Host l'excluent, 
 
 ### 7.2 L'étage Roslyn — question rouverte
 
-> **✅ Section validée par mesure le 2026-08-31.** Le premier jet affirmait cette conclusion sur la foi d'une inférence non testée ; un audit l'a signalé ; le prototype a été écrit, commité et exécuté. Le verdict confirme la direction et **corrige trois hypothèses**. Prototype : `producers/spikes/RoslynCompilationSpike/` (commandes et résultats dans `producers/spikes/README.md`).
+> **✅ Section validée par mesure le 2026-08-31.** Le premier jet affirmait cette conclusion sur la foi d'une inférence non testée ; un audit l'a signalé ; le prototype a été écrit, exécuté, puis retiré de l'arbre de travail comme le jetable qu'il est.
+>
+> **Reproduire la mesure** : le prototype vit dans l'historique au commit `0db6e9a` (`producers/spikes/RoslynCompilationSpike/`). `git show 0db6e9a --stat` le liste ; `git checkout 0db6e9a -- producers/spikes` le restaure. Tout ce dont dépendent les conclusions ci-dessous — la commande MSBuild exacte, le protocole des trois projets, les compteurs d'erreurs — est reproduit dans cette section, de sorte qu'elle se lit sans lui.
 
 **Verdict : oui, une `CSharpCompilation` correcte se construit depuis les requêtes MSBuild, sans `MSBuildWorkspace`.** Zéro erreur sur les trois projets sondés, choisis par difficulté croissante :
 

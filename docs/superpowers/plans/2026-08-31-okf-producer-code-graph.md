@@ -596,7 +596,7 @@ git commit -m "feat(producer): add the language-agnostic name-match resolver"
 **Interfaces:**
 - Produces: `sealed class RoslynResolver : ISymbolResolver`; `record ProjectInputs(IReadOnlyList<string> CompileFiles, IReadOnlyList<string> References, string DefineConstants, string LangVersion, bool Nullable, bool AllowUnsafe, string OutputType)`; `static ProjectInputs MsBuildProjectQuery.Query(string projectPath)`.
 
-> **Start by reading `producers/spikes/RoslynCompilationSpike/Program.cs`.** It is the working prototype for this task and it reached zero errors on three real projects. This task productionises it; it does not re-derive it.
+> **Start by recovering the prototype:** `git checkout 0db6e9a -- producers/spikes`. It is throwaway code, deliberately not kept in the working tree, but it is the working answer for this task — it reached zero errors on three real projects. This task productionises it; it does not re-derive it. Delete the recovered directory again once Task 6 is done.
 
 - [ ] **Step 1: Write the failing tests**
 
