@@ -5,11 +5,25 @@ namespace OkfProducer.Core.CodeGraph;
 
 /// <summary>
 /// Converts between a .NET string index (UTF-16 code units) and a UTF-8 byte offset into the same
-/// text. tree-sitter reports positions as UTF-8 byte offsets; Roslyn reports them as UTF-16
-/// code-unit offsets; they diverge at the first non-ASCII character on a line (§2.1). Both engines
-/// only ever produce offsets that land on a codepoint boundary -- never inside a surrogate pair --
-/// and these conversions assume the same. Lives in <c>OkfProducer.Core</c>, not the tree-sitter
-/// project, so the Roslyn extractor can use it without pulling in ~590 MB of native grammars.
+/// text. Roslyn reports positions as UTF-16 code-unit offsets, so its extractor (Task 6) needs
+/// <see cref="ToUtf8(string, int)"/> to reach the shared UTF-8-byte identity. tree-sitter's native C
+/// API positions in UTF-8 bytes too -- but <c>TreeSitter.DotNet</c> 1.3.0's public .NET API does not
+/// expose that: when parsing a .NET <see cref="string"/> (the only input its <c>Parser.Parse</c>
+/// accepts; there is no <c>byte[]</c> overload), its <c>Node.StartIndex</c>/<c>EndIndex</c> and
+/// <c>Point.Column</c> come back as UTF-16 offsets into that same .NET string, not raw tree-sitter
+/// bytes. Measured directly against the package, not assumed or inherited from the native API's
+/// documented behaviour -- see <c>OkfProducer.CodeGraph.TreeSitter</c>'s <c>TreeSitterExtractor</c>
+/// and its task report for the café/emoji/CRLF evidence. So <c>TreeSitterExtractor</c> calls
+/// <see cref="ToUtf8(string, int)"/> too, on every offset it reads from a tree-sitter <c>Node</c> --
+/// this is <b>not</b> a redundant double conversion sitting alongside a tree-sitter offset that was
+/// already UTF-8. Do not remove it because the two engines currently agree once both are converted:
+/// that agreement is an artefact of how this particular binding is fed a .NET string rather than raw
+/// bytes, not a contract, and a binding upgrade or a future byte-based parse path could break it
+/// silently, in the wrong-attachment direction (§2.1) rather than a missing-attachment one. Both
+/// engines only ever produce offsets that land on a codepoint boundary -- never inside a surrogate
+/// pair -- and these conversions assume the same. Lives in <c>OkfProducer.Core</c>, not the
+/// tree-sitter project, so the Roslyn extractor can use it without pulling in ~590 MB of native
+/// grammars.
 /// </summary>
 public static class Utf8Offsets
 {

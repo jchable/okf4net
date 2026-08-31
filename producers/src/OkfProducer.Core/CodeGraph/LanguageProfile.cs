@@ -61,11 +61,14 @@ public sealed record LanguageProfile(
     /// <item><c>private</c> -&gt; <see cref="SymbolVisibility.Private"/>.</item>
     /// <item>No explicit access modifier: C#'s default depends on what is being declared -- a
     /// namespace-scoped <paramref name="kind"/> of <see cref="SymbolKind.Type"/> defaults to
-    /// <see cref="SymbolVisibility.Internal"/>; any other <paramref name="kind"/> (a type member)
-    /// defaults to <see cref="SymbolVisibility.Private"/>. A *nested* type with no modifier is
-    /// actually <c>private</c> in real C#, not <c>internal</c> -- this method does not special-case
-    /// nesting and applies the namespace-scoped default uniformly to every <see cref="SymbolKind.Type"/>,
-    /// which is the rule this method was specified against.</item>
+    /// <see cref="SymbolVisibility.Internal"/>; a <paramref name="kind"/> of
+    /// <see cref="SymbolKind.Member"/> (a type member) defaults to <see cref="SymbolVisibility.Private"/>.
+    /// <see cref="SymbolKind.Namespace"/> also falls into this second branch, since it is neither
+    /// <see cref="SymbolKind.Type"/> nor excluded otherwise, but no caller passes it here today (this
+    /// profile's <c>TreeSitterExtractor</c> never emits a <see cref="SymbolKind.Namespace"/> symbol).
+    /// A *nested* type with no modifier is actually <c>private</c> in real C#, not <c>internal</c> --
+    /// this method does not special-case nesting and applies the namespace-scoped default uniformly to
+    /// every <see cref="SymbolKind.Type"/>, which is the rule this method was specified against.</item>
     /// </list>
     ///
     /// Interface members carry no access modifier in C# source yet are implicitly <c>public</c>;

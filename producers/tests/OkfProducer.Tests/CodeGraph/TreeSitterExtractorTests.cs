@@ -8,8 +8,27 @@ namespace OkfProducer.Tests.CodeGraph;
 public class TreeSitterExtractorTests : IDisposable
 {
     private readonly TreeSitterExtractor _extractor = new();
+    private readonly List<string> _tempDirectories = [];
 
-    public void Dispose() => _extractor.Dispose();
+    public void Dispose()
+    {
+        _extractor.Dispose();
+
+        foreach (var directory in _tempDirectories)
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup; a locked file on the way out should not fail the test run.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
 
     [Fact]
     public void Offsets_survive_a_non_ascii_identifier_before_the_call()
@@ -147,6 +166,40 @@ public class TreeSitterExtractorTests : IDisposable
     }
 
     [Fact]
+    public void A_call_in_a_field_or_event_field_initializer_gets_its_declarator_as_the_caller()
+    {
+        var result = ExtractSource("""
+            namespace N;
+            public class T
+            {
+                public int F = Compute();
+                public event System.Action E = MakeHandler();
+            }
+            """);
+
+        var fieldSite = Assert.Single(result.Sites, s => s.CalledName == "Compute");
+        Assert.Equal("N.T", fieldSite.CallerContainer);
+        Assert.Equal("F", fieldSite.CallerName);
+
+        var eventSite = Assert.Single(result.Sites, s => s.CalledName == "MakeHandler");
+        Assert.Equal("N.T", eventSite.CallerContainer);
+        Assert.Equal("E", eventSite.CallerName);
+    }
+
+    [Fact]
+    public void A_call_in_a_multi_declarator_field_initializer_attributes_to_the_right_declarator()
+    {
+        var result = ExtractSource("namespace N;\npublic class T { public int a = Foo(), b = Bar(); }");
+
+        var fooSite = Assert.Single(result.Sites, s => s.CalledName == "Foo");
+        var barSite = Assert.Single(result.Sites, s => s.CalledName == "Bar");
+
+        Assert.Equal("a", fooSite.CallerName);
+        Assert.Equal("b", barSite.CallerName);
+        Assert.Equal(fooSite.CallerContainer, barSite.CallerContainer);
+    }
+
+    [Fact]
     public void A_type_with_no_modifier_defaults_to_internal_visibility()
     {
         var result = ExtractSource("namespace N;\nclass Plain {}");
@@ -241,6 +294,29 @@ public class TreeSitterExtractorTests : IDisposable
         Assert.Equal(a.EndOffset, b.EndOffset);
         Assert.Equal(SymbolVisibility.Public, a.Visibility);
         Assert.Equal(SymbolVisibility.Public, b.Visibility);
+    }
+
+    // A property has no `body` field at all -- `accessors` and/or `value` carry its accessor list,
+    // its arrow implementation, or its initializer, and all of them must be excluded from Signature
+    // the same way a method's block is (Task 8 emits this string into every member concept's
+    // `## Signatures` section). Covers block- and arrow-bodied methods (already correct before this
+    // fix), an auto-property, an arrow-bodied property, an auto-property with an initializer (where
+    // `accessors` and `value` are both present -- `accessors` must win, since it starts first), and a
+    // field (no body/accessors/value field at all -- the pre-existing, still-correct fallback).
+    [Theory]
+    [InlineData("namespace N;\npublic class T { public int M(int x) { return x; } }", "M", "public int M(int x)")]
+    [InlineData("namespace N;\npublic class T { public int M() => 42; }", "M", "public int M()")]
+    [InlineData("namespace N;\npublic class T { public int P { get; set; } }", "P", "public int P")]
+    [InlineData("namespace N;\npublic class T { public int Q => 42; }", "Q", "public int Q")]
+    [InlineData("namespace N;\npublic class T { public int R { get; set; } = 5; }", "R", "public int R")]
+    [InlineData("namespace N;\npublic class T { public int F; }", "F", "public int F")]
+    public void Signature_excludes_the_body_accessors_or_initializer_for_every_member_shape(
+        string source, string name, string expectedSignature)
+    {
+        var result = ExtractSource(source);
+
+        var member = Assert.Single(result.Symbols, s => s.Name == name);
+        Assert.Equal(expectedSignature, member.Signature);
     }
 
     [Fact]
@@ -346,6 +422,7 @@ public class TreeSitterExtractorTests : IDisposable
     private ExtractionResult ExtractSource(string source, string relativePath = "T.cs")
     {
         var directory = Directory.CreateTempSubdirectory("okfproducer-treesitter-").FullName;
+        _tempDirectories.Add(directory);
         var absolutePath = Path.Combine(directory, relativePath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
         File.WriteAllText(absolutePath, source);

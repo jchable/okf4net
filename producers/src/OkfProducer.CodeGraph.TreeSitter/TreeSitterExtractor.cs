@@ -28,6 +28,8 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private const string FileScopedNamespaceNodeType = "file_scoped_namespace_declaration";
     private const string NameFieldName = "name";
     private const string BodyFieldName = "body";
+    private const string AccessorsFieldName = "accessors";
+    private const string ValueFieldName = "value";
     private const string ModifierNodeType = "modifier";
 
     private static readonly string[] TypeDeclarationNodeTypes =
@@ -35,13 +37,31 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         "class_declaration", "interface_declaration", "struct_declaration", "record_declaration", "enum_declaration",
     ];
 
+    /// <summary>
+    /// Ancestor node types <see cref="ExtractCallSites"/> stops at when walking up from a call site to
+    /// find its caller. <c>field_declaration</c>/<c>event_field_declaration</c> (a call in a field or
+    /// event-field initializer, e.g. <c>private readonly Foo _x = new Bar();</c>) are included even
+    /// though neither has its own <c>name</c> field -- <see cref="ExtractCallSites"/> falls back to the
+    /// nearest <see cref="VariableDeclaratorNodeTypes"/> ancestor for the name in that case, so a call
+    /// in a multi-declarator statement (<c>public int a = Foo(), b = Bar();</c>) still attributes to
+    /// the right declarator, not to the statement as a whole.
+    /// </summary>
     private static readonly string[] CallerMemberAncestorNodeTypes =
     [
         "method_declaration", "constructor_declaration", "destructor_declaration", "property_declaration",
         "event_declaration", "delegate_declaration", "local_function_statement",
+        "field_declaration", "event_field_declaration",
     ];
 
-    private readonly Dictionary<LanguageProfile, Engine> _engines = [];
+    private static readonly string[] VariableDeclaratorNodeTypes = ["variable_declarator"];
+
+    // Keyed by LanguageProfile.Language (e.g. "csharp"), not by the LanguageProfile record itself:
+    // LanguageProfile's record equality is reference-based over FileExtensions (an IReadOnlyList<string>
+    // has no value equality), so two structurally identical profiles would miss the cache and each leak
+    // a fresh native Language/Parser/Query set. This assumes at most one LanguageProfile per Language
+    // string is ever passed to one TreeSitterExtractor instance -- true for how CodeGraphBuilder is
+    // documented to use it (a profile list built once, not per file); it is not re-validated here.
+    private readonly Dictionary<string, Engine> _engines = new(StringComparer.Ordinal);
 
     /// <inheritdoc/>
     public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile)
@@ -73,7 +93,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
     private Engine GetOrCreateEngine(LanguageProfile profile)
     {
-        if (_engines.TryGetValue(profile, out var existing))
+        if (_engines.TryGetValue(profile.Language, out var existing))
         {
             return existing;
         }
@@ -83,7 +103,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         var declarationQuery = language.CreateQuery(profile.DeclarationQuery);
         var callQuery = language.CreateQuery(profile.CallQuery);
         var engine = new Engine(language, parser, declarationQuery, callQuery);
-        _engines[profile] = engine;
+        _engines[profile.Language] = engine;
         return engine;
     }
 
@@ -141,7 +161,14 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             var callee = capture.Node;
             var callerMember = FindNearestAncestor(callee, CallerMemberAncestorNodeTypes);
             var callerContainer = callerMember is not null ? ComputeContainerPath(callerMember, fileScopedNamespaceName) : string.Empty;
-            var callerName = callerMember?.GetChildForField(NameFieldName)?.Text ?? string.Empty;
+
+            // A field/event-field declaration has no name field of its own (its declarators do), so
+            // fall back to the nearest enclosing variable_declarator -- the specific name a call inside
+            // that declarator's initializer should attribute to, correct even when the statement
+            // declares more than one name (public int a = Foo(), b = Bar();).
+            var callerName = callerMember?.GetChildForField(NameFieldName)?.Text
+                ?? FindNearestAncestor(callee, VariableDeclaratorNodeTypes)?.GetChildForField(NameFieldName)?.Text
+                ?? string.Empty;
 
             sites.Add(new CallSite(
                 callerContainer,
@@ -209,14 +236,23 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     }
 
     /// <summary>
-    /// A single-line header for <paramref name="decl"/>: everything up to its <c>body</c> field (a
-    /// block or arrow-expression clause) for members that have one, or the whole declaration with a
-    /// trailing <c>;</c> dropped for the ones that don't (fields, delegates, enum members).
+    /// A single-line header for <paramref name="decl"/>: everything up to the earliest of its
+    /// <c>body</c> field (a method's block or arrow-expression clause), its <c>accessors</c> field (a
+    /// property's <c>{ get; set; }</c> list), or its <c>value</c> field (an arrow-bodied property's
+    /// <c>=&gt; expr</c>, or a plain property/auto-property's own initializer). A property has no
+    /// <c>body</c> field at all -- it is <c>accessors</c> and/or <c>value</c> that carry its accessor
+    /// list, its arrow implementation, or its initializer, and all three must be excluded from the
+    /// signature the same way a method's block is. When an auto-property has both an accessor list
+    /// and an initializer (<c>public int P { get; set; } = Init();</c>), <c>accessors</c> always
+    /// starts first in source order, so truncating there drops both in one step. Declarations with
+    /// none of the three (fields, delegates) keep the whole text with a trailing <c>;</c> dropped.
     /// </summary>
     private static string ComputeSignature(Node decl)
     {
-        var body = decl.GetChildForField(BodyFieldName);
-        var headerLength = body is not null ? body.StartIndex - decl.StartIndex : decl.Text.Length;
+        var end = decl.GetChildForField(BodyFieldName)
+            ?? decl.GetChildForField(AccessorsFieldName)
+            ?? decl.GetChildForField(ValueFieldName);
+        var headerLength = end is not null ? end.StartIndex - decl.StartIndex : decl.Text.Length;
         var header = decl.Text[..headerLength].TrimEnd();
 
         if (header.EndsWith(';'))

@@ -30,9 +30,11 @@ public enum SymbolVisibility
 /// <summary>
 /// One declared symbol (a namespace, type, or member) extracted from source. <see cref="StartOffset"/>
 /// and <see cref="EndOffset"/> are UTF-8 byte offsets into <see cref="RelativePath"/>'s contents --
-/// the one identity both tree-sitter (whose <c>Point.column</c> counts bytes) and Roslyn (whose
-/// positions count UTF-16 units) can agree on; <see cref="StartLine"/>/<see cref="EndLine"/> are
-/// carried only for display. See <c>Utf8Offsets</c> for the conversion between the two.
+/// the one identity both extractors normalize to explicitly via <c>Utf8Offsets.ToUtf8</c>: Roslyn's
+/// own positions count UTF-16 units, and so, in practice, do the ones the <c>TreeSitter.DotNet</c>
+/// 1.3.0 binding hands back when parsing a .NET string (its public API exposes no raw tree-sitter
+/// byte offset -- see <c>Utf8Offsets</c>' summary for the measured evidence). <see cref="StartLine"/>/
+/// <see cref="EndLine"/> are carried only for display.
 /// </summary>
 public sealed record SymbolFact(
     SymbolKind Kind,
