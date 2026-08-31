@@ -381,22 +381,22 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "source entry is missing required `resource`", DiagnosticCode.SourceMissingResource, "sources.resource"));
                 }
 
-                if (src.LastModified is { } lastModified && !ChangeLog.IsIsoDate(lastModified))
+                if (src.LastModified is { } lastModified)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"source last_modified is not `YYYY-MM-DD`: {DebugQuote.Quote(lastModified)}", DiagnosticCode.SourceInvalidLastModified, "sources.last_modified"));
+                    CheckTemporal(diagnostics, concept, lastModified, "source last_modified", "sources.last_modified", DiagnosticCode.SourceInvalidLastModified);
                 }
             }
 
             if (fm.UsageWindow is { } uw)
             {
-                if (uw.From is { } uf && !ChangeLog.IsIsoDate(uf))
+                if (uw.From is { } uf)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"usage_window from is not `YYYY-MM-DD`: {DebugQuote.Quote(uf)}", DiagnosticCode.UsageWindowInvalidFrom, "usage_window.from"));
+                    CheckTemporal(diagnostics, concept, uf, "usage_window from", "usage_window.from", DiagnosticCode.UsageWindowInvalidFrom);
                 }
 
-                if (uw.To is { } ut && !ChangeLog.IsIsoDate(ut))
+                if (uw.To is { } ut)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"usage_window to is not `YYYY-MM-DD`: {DebugQuote.Quote(ut)}", DiagnosticCode.UsageWindowInvalidTo, "usage_window.to"));
+                    CheckTemporal(diagnostics, concept, ut, "usage_window to", "usage_window.to", DiagnosticCode.UsageWindowInvalidTo);
                 }
             }
 
@@ -654,12 +654,31 @@ public static class BundleValidator
     /// rather than spelling the rule a second time.
     /// </summary>
     /// <param name="s">The raw frontmatter value.</param>
-    public static bool IsConformantInstant(string s)
+    public static bool IsConformantInstant(string s) => OkfTimestamp.IsConformant(s);
+
+    /// <summary>
+    /// Checks one §5 timestamp-valued key: unreadable values get
+    /// <paramref name="invalidCode"/>, readable-but-legacy ones get
+    /// <see cref="DiagnosticCode.LegacyDateOnlyTimestamp"/>, and the §5 form is
+    /// silent. The three §5.1 keys share this so a value cannot be rejected in
+    /// one field and accepted in another.
+    /// </summary>
+    private static void CheckTemporal(
+        List<Diagnostic> diagnostics,
+        Concept concept,
+        string raw,
+        string label,
+        string field,
+        DiagnosticCode invalidCode)
     {
-        // Lifecycle owns the one parser for §5 timestamps; asking it about a
-        // stale_after-shaped value is how this check stays in step with it.
-        var parsed = Lifecycle.From(null, s);
-        return !parsed.StaleAfterMalformed && !parsed.StaleAfterIsLegacyDate;
+        if (!OkfTimestamp.TryParse(raw, out _, out var isLegacy))
+        {
+            diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} is not an ISO-8601 datetime: {DebugQuote.Quote(raw)}", invalidCode, field));
+        }
+        else if (isLegacy)
+        {
+            diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} {DebugQuote.Quote(raw)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, field));
+        }
     }
 
 }

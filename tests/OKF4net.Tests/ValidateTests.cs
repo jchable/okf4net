@@ -739,4 +739,92 @@ public class ValidateTests
     [InlineData("not-a-date", false)]
     public void IsConformantInstant_recognises_only_the_section_5_form(string raw, bool expected)
         => Assert.Equal(expected, BundleValidator.IsConformantInstant(raw));
+
+    // §5.1 makes `last_modified` a timestamp-valued key and `usage_window` a
+    // "{ from, to } datetime range", so §5's rule covers all three. They were
+    // checked against `YYYY-MM-DD`, which rejected the conformant form outright
+    // — a false positive on correct data, the mirror of the stale_after bug.
+
+    [Fact]
+    public void A_conformant_instant_last_modified_produces_no_warning()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: '2026-06-30T14:00:00Z'\n");
+
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.SourceInvalidLastModified);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void A_legacy_date_only_last_modified_warns_as_legacy_not_invalid()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: '2026-06-30'\n");
+
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.SourceInvalidLastModified);
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp && d.Field == "sources.last_modified");
+    }
+
+    [Fact]
+    public void A_malformed_last_modified_is_still_invalid_not_legacy()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: not-a-date\n");
+
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.SourceInvalidLastModified);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void A_conformant_instant_usage_window_produces_no_warning()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nusage_window: {from: '2026-06-01T00:00:00Z', to: '2026-06-30T00:00:00Z'}\n");
+
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidFrom);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidTo);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void A_legacy_date_only_usage_window_warns_once_per_bound()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nusage_window: {from: '2026-06-01', to: '2026-06-30'}\n");
+
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidFrom);
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp && d.Field == "usage_window.from");
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp && d.Field == "usage_window.to");
+    }
+
+    [Fact]
+    public void A_malformed_usage_window_bound_is_still_invalid_not_legacy()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nusage_window: {from: 'not-a-date', to: '2026-06-30T00:00:00Z'}\n");
+
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidFrom);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidTo);
+        Assert.DoesNotContain(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp && d.Field == "usage_window.from");
+    }
+
+    [Fact]
+    public void A_log_date_heading_stays_a_bare_date_not_an_instant()
+    {
+        // §9: "Date headings MUST use ISO 8601 `YYYY-MM-DD` form." The §5
+        // instant rule does NOT reach into the changelog, and ChangeLog.IsIsoDate
+        // is shared with it — this pins that the §5 fix left §9 alone.
+        using var tmp = new TempDir();
+        tmp.Write("c.md", "---\ntype: T\ntitle: X\ndescription: D\nresource: https://x\ntags: [a]\n---\nbody\n");
+        tmp.Write("log.md", "# Changelog\n\n## 2026-05-15\n\n* **Initialization**: Created structure.\n");
+
+        var r = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.LogDateInvalid);
+        Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
 }

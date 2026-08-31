@@ -212,12 +212,19 @@ way it handles the §13.1 legacy fields.
 These two fixtures deliberately cover both paths and **must not be made
 uniform** — making either match the other silently drops a covered path:
 
-- `okf_v02/metrics/dau.md` carries the **conformant** form
-  (`stale_after: 2099-01-01T00:00:00Z`). Revised on 2026-08-31 from the previous
-  date-only value, under the CLAUDE.md exception for a deliberate spec change,
-  citing §5.
+- `okf_v02/metrics/dau.md` carries the **conformant** form on every
+  timestamp-valued key it has — `stale_after`, `sources[].last_modified` and
+  both `usage_window` bounds. Revised on 2026-08-31 from the previous date-only
+  values, under the CLAUDE.md exception for a deliberate spec change, citing §5.
 - `okf_v02_computation/computations/revenue.md` keeps the **legacy** date-only
-  form on purpose, so `validate-computation.out` captures the fallback warning.
+  form on purpose, on both its `stale_after` and its `sources[].last_modified`,
+  so `validate-computation.out` captures the fallback warning for two different
+  fields — proving the diagnostic's `Field` actually distinguishes them.
+
+§5 reaches every timestamp-valued key, not just `stale_after`: §5.1 makes
+`usage_window` a "`{ from, to }` datetime range" and `last_modified` a recency
+timestamp. §9 is the deliberate exception — `log.md` date headings MUST stay
+bare `YYYY-MM-DD`, and no fixture here should ever give one a time.
 
 Two goldens moved with that revision, both re-derived and inspected line by line
 rather than blanket-regenerated:

@@ -124,6 +124,18 @@ and this project adheres to
   warning, matching how the §13.1 legacy fields are handled. The same warning
   covers `generated.at` and `verified[].at`. A datetime with no offset is read
   as UTC and flagged the same way.
+- **`sources[].last_modified` and `usage_window.from`/`.to` no longer reject the
+  conformant form.** §5.1 makes `last_modified` a timestamp-valued key and
+  `usage_window` a "`{ from, to }` datetime range", so §5's rule covers all
+  three — but they were checked against `YYYY-MM-DD`, so a spec-conformant
+  `2026-06-30T14:00:00Z` was reported *invalid*. This is the mirror of the
+  `stale_after` bug and the more damaging half: rather than missing a signal, it
+  told producers their correct data was wrong and pushed them toward the legacy
+  form. All three now accept the §5 form silently, warn
+  `LegacyDateOnlyTimestamp` on the date-only one, and keep their existing
+  `SourceInvalidLastModified` / `UsageWindowInvalid*` codes for values that are
+  not timestamps at all. §9 `log.md` date headings are **unchanged** — §9 pins
+  those to bare `YYYY-MM-DD`, and `ChangeLog.IsIsoDate` still backs them.
 
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had

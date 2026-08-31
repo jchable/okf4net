@@ -12,8 +12,8 @@ sources:
   - id: ga4
     resource: https://example.com/ga4
     usage_count: 5000
-    last_modified: 2026-06-30
-usage_window: { from: 2026-06-01, to: 2026-06-30 }
+    last_modified: 2026-06-30T00:00:00Z
+usage_window: { from: 2026-06-01T00:00:00Z, to: 2026-06-30T00:00:00Z }
 status: stable
 stale_after: 2099-01-01T00:00:00Z
 ---

@@ -1,7 +1,8 @@
+[warning] tests/fixtures/okf_v02_computation/computations/revenue.md: source last_modified "2026-07-15" is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset
 [warning] tests/fixtures/okf_v02_computation/computations/revenue.md: stale_after "2099-01-01" is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset
 [warning] tests/fixtures/okf_v02_computation/malformed/both.md: computation specified both inline and via 'computation:'
 [warning] tests/fixtures/okf_v02_computation/malformed/broken-exec.md: frontmatter path 'executor.resource' → 'does-not-exist.md' not found
 [warning] tests/fixtures/okf_v02_computation/malformed/no-runtime.md: attested computation missing required 'runtime'
 
-7 concept(s); 0 error(s), 4 warning(s), 0 info.
+7 concept(s); 0 error(s), 5 warning(s), 0 info.
 ✓ conformant with OKF v0.2
