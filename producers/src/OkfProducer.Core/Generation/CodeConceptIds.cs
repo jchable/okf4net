@@ -41,11 +41,27 @@ public static class CodeConceptIds
     }
 
     /// <summary>
-    /// Inserts a <c>-</c> at PascalCase/camelCase word boundaries -- before an uppercase letter that
-    /// follows a lowercase letter or digit (<c>LinkScanner</c> -&gt; <c>Link-Scanner</c>), and before
-    /// the last letter of an uppercase run that continues into a lowercase one (<c>HTTPServer</c> -&gt;
-    /// <c>HTTP-Server</c>) -- so <see cref="ConceptId.Slugify"/>'s character-level normalization has
-    /// word breaks to collapse onto <c>-</c> instead of running identifiers together.
+    /// Inserts a <c>-</c> at PascalCase/camelCase word boundaries, so <see cref="ConceptId.Slugify"/>
+    /// -- which runs on the result and does all character validation and case folding, but never
+    /// inserts a separator inside a run of letters -- has word breaks to collapse onto <c>-</c>
+    /// instead of running identifiers together. This id scheme is load-bearing for the bundle's
+    /// determinism (§3.1/§3.3): once a rule here changes, every affected concept id changes with it,
+    /// so the three rules are pinned exactly, not left to be inferred from examples:
+    ///
+    /// <list type="number">
+    /// <item>Split at a lower-&gt;upper transition: <c>YamlValue</c> -&gt; <c>Yaml-Value</c>,
+    /// <c>formatDate</c> -&gt; <c>format-Date</c>.</item>
+    /// <item>Split at the end of an acronym run that is followed by a word -- on
+    /// <c>UPPER UPPER lower</c>, split before the second upper: <c>HTMLParser</c> -&gt;
+    /// <c>HTML-Parser</c>, <c>IOkfClock</c> -&gt; <c>I-Okf-Clock</c>. A trailing acronym run with no
+    /// following word (e.g. plain <c>HTML</c>) never splits -- there is no lowercase letter after it
+    /// to anchor the boundary.</item>
+    /// <item>Never split on a digit boundary, in either direction: <c>OKF4net</c> stays one token
+    /// (<c>OKF4net</c>, not <c>OKF-4net</c> or <c>OKF4-net</c>). <see cref="char.IsUpper(char)"/> and
+    /// <see cref="char.IsLower(char)"/> both return <c>false</c> for a digit, so neither rule above
+    /// can fire across a letter/digit boundary -- this is enforced by construction, not by a
+    /// separate digit check.</item>
+    /// </list>
     /// </summary>
     private static string SplitWordBoundaries(string input)
     {
@@ -62,11 +78,14 @@ public static class CodeConceptIds
             var c = input[i];
             var prev = input[i - 1];
 
-            var isNewWord =
-                char.IsUpper(c) && (char.IsLower(prev) || char.IsDigit(prev))
-                || (char.IsUpper(c) && char.IsUpper(prev) && i + 1 < input.Length && char.IsLower(input[i + 1]));
+            // Rule 1: lower -> upper.
+            var lowerToUpper = char.IsUpper(c) && char.IsLower(prev);
 
-            if (isNewWord)
+            // Rule 2: end of an acronym run (UPPER UPPER lower -> split before the second UPPER).
+            var acronymBoundary =
+                char.IsUpper(c) && char.IsUpper(prev) && i + 1 < input.Length && char.IsLower(input[i + 1]);
+
+            if (lowerToUpper || acronymBoundary)
             {
                 builder.Append('-');
             }

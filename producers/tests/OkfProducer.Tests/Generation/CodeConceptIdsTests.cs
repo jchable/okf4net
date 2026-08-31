@@ -71,6 +71,27 @@ public class CodeConceptIdsTests
         Assert.NotEqual(a.ToString(), b.ToString());
     }
 
+    [Theory]
+    // Rule 3 (never split on a digit boundary) is the one most likely to regress: it's the reason
+    // this repository's own root namespace round-trips as one token instead of "okf-4net".
+    [InlineData("OKF4net", "okf4net")]
+    // Rule 2 (acronym run followed by a word splits before the last upper letter of the run).
+    [InlineData("IOkfClock", "i-okf-clock")]
+    // Rule 1 (plain lower -> upper transition).
+    [InlineData("LinkScanner", "link-scanner")]
+    [InlineData("YamlEmitter", "yaml-emitter")]
+    [InlineData("LfLines", "lf-lines")]
+    [InlineData("HtmlWriter", "html-writer")]
+    [InlineData("ConceptId", "concept-id")]
+    // Rule 1, camelCase entry point rather than PascalCase.
+    [InlineData("formatDate", "format-date")]
+    // A single all-caps token: an acronym run with no following word must not split.
+    [InlineData("HTML", "html")]
+    // Already lowercase: no spurious boundary.
+    [InlineData("scan", "scan")]
+    public void Word_boundaries_match_names_that_actually_occur_in_this_repository(string name, string expectedSlug)
+        => Assert.Equal($"code/csharp/n/{expectedSlug}", CodeConceptIds.For(Type("N", name), CSharp));
+
     private static readonly LanguageProfile CSharp = new(
         Language: "csharp",
         GrammarName: "c_sharp",
