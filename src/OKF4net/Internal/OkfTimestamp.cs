@@ -1,7 +1,29 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace OKF4net.Internal;
+
+/// <summary>
+/// The four ways a raw §5 timestamp value can classify. Reading stays
+/// permissive (§11: a readable value is never dropped) — this is a
+/// classification of a value already known to be readable, split from
+/// <see cref="TimestampForm.Unreadable"/> which covers the rest.
+/// </summary>
+internal enum TimestampForm
+{
+    /// <summary>Not a timestamp at all — <see cref="OkfTimestamp.Classify"/> could not read it.</summary>
+    Unreadable,
+
+    /// <summary>Matches the §5 grammar: ISO 8601 extended format with an explicit UTC offset.</summary>
+    Conformant,
+
+    /// <summary>A bare <c>YYYY-MM-DD</c> calendar date, or a datetime with no offset at all.</summary>
+    LegacyDateOnly,
+
+    /// <summary>Carries an explicit offset and parses, but the spelling is not ISO 8601.</summary>
+    NonIso8601,
+}
 
 /// <summary>
 /// The single §5 timestamp seam: both the UTC format this library emits and
@@ -50,6 +72,20 @@ internal static class OkfTimestamp
     ];
 
     /// <summary>
+    /// The exact §5 grammar: <c>YYYY-MM-DDThh:mm[:ss[.s+]]offset</c>, where
+    /// <c>offset</c> is <c>Z</c> or <c>±hh:mm</c>. Every component is
+    /// fixed-width, the designator is a literal uppercase <c>Z</c>, and the
+    /// offset — when not <c>Z</c> — is wholly extended (colon-separated), never
+    /// the basic form <c>+0200</c>. Deliberately checked against the raw text
+    /// rather than derived from a parsed value: <see cref="DateTimeOffset"/>
+    /// has no memory of how its source string was spelled, so the spelling
+    /// check has to run before parsing throws that information away.
+    /// </summary>
+    private static readonly Regex ConformantPattern = new(
+        @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$",
+        RegexOptions.Compiled);
+
+    /// <summary>
     /// Formats <paramref name="utc"/> as <c>yyyy-MM-ddTHH:mm:ssZ</c> under the
     /// invariant culture. The caller is responsible for passing a UTC instant;
     /// the trailing <c>Z</c> is a literal designator, not a computed offset.
@@ -58,10 +94,55 @@ internal static class OkfTimestamp
         utc.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
 
     /// <summary>
+    /// Classifies a §5 timestamp and, whenever it is readable at all, yields its
+    /// instant. Reading stays permissive per §11 (a readable value is never
+    /// dropped, whatever <see cref="TimestampForm"/> it lands in) — only the
+    /// classification is strict about the §5 grammar.
+    /// </summary>
+    /// <param name="raw">The raw frontmatter value.</param>
+    /// <param name="instant">
+    /// The parsed instant, normalized to UTC, for every form except
+    /// <see cref="TimestampForm.Unreadable"/> (where it is <c>default</c>).
+    /// </param>
+    internal static TimestampForm Classify(string raw, out DateTimeOffset instant)
+    {
+        // Carries an explicit offset and is readable at all: either the §5 form,
+        // or a readable value that is not spelled ISO 8601. The spelling check
+        // runs against the raw text, not the parsed value — DateTimeOffset does
+        // not remember whether its source used "Z" or "z", "+02:00" or "+0200".
+        if (HasExplicitOffset(raw)
+            && DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var withOffset))
+        {
+            instant = withOffset.ToUniversalTime();
+            return IsConformantSpelling(raw) ? TimestampForm.Conformant : TimestampForm.NonIso8601;
+        }
+
+        // Legacy: a bare YYYY-MM-DD calendar date, read as midnight UTC.
+        if (DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+        {
+            instant = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+            return TimestampForm.LegacyDateOnly;
+        }
+
+        // Legacy: a datetime with no offset, assumed UTC.
+        if (DateTime.TryParseExact(raw, ZonelessFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var naive))
+        {
+            instant = new DateTimeOffset(DateTime.SpecifyKind(naive, DateTimeKind.Utc), TimeSpan.Zero);
+            return TimestampForm.LegacyDateOnly;
+        }
+
+        instant = default;
+        return TimestampForm.Unreadable;
+    }
+
+    /// <summary>
     /// Parses a §5 timestamp. Reads the conformant form as-is, and — permissively,
-    /// per §11 — also a bare <c>YYYY-MM-DD</c> (as midnight UTC) and a zoneless
-    /// ISO datetime (as UTC), setting <paramref name="isLegacyForm"/> for both so
-    /// callers can warn without rejecting.
+    /// per §11 — also a bare <c>YYYY-MM-DD</c> (as midnight UTC), a zoneless
+    /// ISO datetime (as UTC), and an offset-bearing value that is not spelled
+    /// ISO 8601, setting <paramref name="isLegacyForm"/> for the first two so
+    /// callers can warn without rejecting. A thin wrapper over
+    /// <see cref="Classify"/>, kept for callers that only need the legacy/not
+    /// distinction rather than the full four-way form.
     /// </summary>
     /// <param name="raw">The raw frontmatter value.</param>
     /// <param name="instant">The parsed instant, normalized to UTC.</param>
@@ -69,43 +150,30 @@ internal static class OkfTimestamp
     /// <returns>False when <paramref name="raw"/> is not a timestamp at all.</returns>
     internal static bool TryParse(string raw, out DateTimeOffset instant, out bool isLegacyForm)
     {
-        // The §5 form: an ISO 8601 datetime carrying an explicit offset.
-        if (HasExplicitOffset(raw)
-            && DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var withOffset))
-        {
-            instant = withOffset.ToUniversalTime();
-            isLegacyForm = false;
-            return true;
-        }
-
-        // Legacy: a bare YYYY-MM-DD calendar date, read as midnight UTC.
-        if (DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
-        {
-            instant = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-            isLegacyForm = true;
-            return true;
-        }
-
-        // Legacy: a datetime with no offset, assumed UTC.
-        if (DateTime.TryParseExact(raw, ZonelessFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var naive))
-        {
-            instant = new DateTimeOffset(DateTime.SpecifyKind(naive, DateTimeKind.Utc), TimeSpan.Zero);
-            isLegacyForm = true;
-            return true;
-        }
-
-        instant = default;
-        isLegacyForm = false;
-        return false;
+        var form = Classify(raw, out instant);
+        isLegacyForm = form is TimestampForm.LegacyDateOnly;
+        return form is not TimestampForm.Unreadable;
     }
 
     /// <summary>
-    /// Whether <paramref name="raw"/> is a §5-conformant timestamp — it parses
-    /// <em>and</em> carries an explicit offset.
+    /// Whether <paramref name="raw"/> is a §5-conformant timestamp: an ISO 8601
+    /// datetime, wholly extended format, carrying an explicit UTC offset.
     /// </summary>
     /// <param name="raw">The raw frontmatter value.</param>
-    internal static bool IsConformant(string raw) =>
-        TryParse(raw, out _, out var legacy) && !legacy;
+    internal static bool IsConformant(string raw) => Classify(raw, out _) is TimestampForm.Conformant;
+
+    /// <summary>
+    /// Whether <paramref name="raw"/> matches the exact §5 grammar:
+    /// <c>YYYY-MM-DDThh:mm[:ss[.s+]]offset</c>, <c>offset</c> being <c>Z</c> or
+    /// an extended <c>±hh:mm</c>. Every component is fixed-width and the
+    /// designator's case is significant. Called only once the value is already
+    /// known to parse, so an out-of-range component (month 13, hour 25, …) has
+    /// already been turned away as <see cref="TimestampForm.Unreadable"/> by the
+    /// time this runs — this method's only job is rejecting a spelling that
+    /// parses but is not ISO 8601 (<c>2026-6-3T14:00:00Z</c>, a lowercase
+    /// designator, or a basic-format offset like <c>+0200</c>).
+    /// </summary>
+    private static bool IsConformantSpelling(string raw) => ConformantPattern.IsMatch(raw.AsSpan().Trim());
 
     /// <summary>
     /// Whether the raw value ends in an explicit zone designator (<c>Z</c>, or
