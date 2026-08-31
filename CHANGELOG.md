@@ -20,6 +20,40 @@ and this project adheres to
   `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by
   the new `ConceptAudit` in the core library and exposed to agents as the
   read-only `okf_audit` tool.
+- **`okf verify <bundle> <id>… --by <actor>`** — the verb that answers what
+  `okf audit` asks about trust: it records a review (§5.2) by adding, or
+  from the same actor replacing, a `{by, at}` entry in each named concept's
+  `verified` list, so — for a `human:` actor — the concept clears audit's
+  trust-filtered (`--trust unverified`/`unverified,machine-confirmed`)
+  selection. A `process:` or `<producer>/<version>` actor is accepted symmetrically (§7) but
+  only moves the concept from `unverified` to `machine-confirmed`, which
+  that same filter still selects. Verification only moves the trust
+  dimension (§5.3) — it never touches
+  `stale_after`, so a just-reviewed concept can still appear in `okf audit`'s
+  *default* worklist, which selects on staleness alone. `<id>…` also accepts
+  a single `-`, reading concept ids from standard input, so
+  `okf audit … --trust unverified | cut -d' ' -f1 | okf verify … --by
+  human:ada -` closes the loop in one line. An empty stream on that pipeline
+  is "nothing to do", not an error: `verify -` writes nothing and exits 0,
+  matching `audit`'s own empty-worklist exit, so the loop stays idempotent
+  and safe under `set -e` when the bundle needs no attention. Naming no
+  concept at all (`okf verify <bundle>`) is still an error. An actor carrying
+  a control character is refused by `RecordVerifications` itself, so a `--by`
+  value can never forge a line in the verb's own line-oriented output; reading
+  an actor out of an existing bundle (`Actor.Parse`, `Trust.DeriveTier`) stays
+  permissive, as it must. `--dry-run` shows what would be
+  recorded without writing; `--at <yyyy-MM-ddTHH:mm:ssZ>` overrides the
+  default of "now" (a bare date, an offset, or fractional seconds are
+  rejected). A batch is validated (existence, §11 conformance, no duplicate id) before the
+  first write, but writing several files cannot be atomic — a mid-batch I/O
+  failure still leaves the earlier concepts stamped, and is reported as
+  such. Backed by the new `BundleConceptWriter.RecordVerifications` in the
+  core library — the single governed writer of `verified` — and exposed to
+  agents as the `okf_verify` tool. **A `verified` stamp is a dated
+  declaration, not a proof**: it cannot and does not authenticate the
+  signer's identity, nor confirm anyone read the concept. Credibility comes
+  from where the stamp lands — a diff a human reviewed — never from
+  inferring one out of a PR approval.
 - **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
   HTML site from a bundle: one page per concept (frontmatter table + rendered
   body), a generated index, navigable cross-links with broken links flagged,
@@ -74,6 +108,27 @@ and this project adheres to
   are unaffected. The same rewrite also fixes a token consumed as a flag's value
   still counting as a flag: `okf audit b --type --stale` no longer sets the
   stale filter.
+- **`OkfCli.Run` gains a `TextReader stdin` parameter** (now
+  `Run(args, stdin, stdout, stderr)`), so `verify -` can read concept ids
+  from standard input without every other verb paying for a blocking read.
+  This is a breaking change to a public API signature, but it breaks no
+  external caller: `OKF4net.Cli` is the only project under `src/` with no
+  `PackageId`/`IsPackable` — it ships only as the `okf` binary, never
+  published as a library — and the sole call site outside `Program.cs` is
+  the test suite's `TestPaths.cs`, updated alongside it.
+- **`--` now keeps the positionals given before it, instead of discarding
+  them.** The separator used to let the token right after it take the single
+  positional slot outright, so `okf <verb> a -- b` resolved to `b`; verbs now
+  keep every positional in order, `--` included, so the same invocation
+  resolves to `a`. This is what makes `verify <bundle> <id>…`'s multiple
+  positionals possible — a single "the positional" slot could never have
+  held more than one concept id.
+- **A lone `-` is now a positional argument, not a flag.** The flag scan
+  previously matched any token starting with `-`, including the bare
+  character, so `-` was silently absorbed as a valueless, meaningless flag.
+  It now falls through to the positional list, which is what lets
+  `okf verify <bundle> -` mean "read concept ids from standard input" — the
+  POSIX convention — instead of being swallowed before `verify` ever sees it.
 - **`okf validate` gains `--as-of <YYYY-MM-DD>`**, pinning the date its §5.5
   staleness warning is evaluated against. `BundleValidator.Validate` already
   accepted a clock, but the verb exposed no way to set one, so its
@@ -93,6 +148,22 @@ and this project adheres to
 
 ### Fixed
 
+- **`YamlEmitter`'s nesting guard now throws `YamlEmitException`** (an
+  `OkfException`, like the parser's `YamlParseException`) instead of a bare
+  `InvalidOperationException`. The parser enforces its 1000-level cap with two
+  independent counters — one for block nesting, one for flow — while the
+  emitter has a single counter covering both, so a frontmatter mixing the two
+  can parse and then fail to re-emit. That exception matched no catch filter
+  in the library: it escaped `BundleConceptWriter`'s errors-as-data contract,
+  threw out of the `okf_verify` tool into its host, and killed the CLI with a
+  stack trace. Every existing filter already covers `OkfException`, so the
+  failure is now data on all three paths. Reconciling the two counters with
+  the one is a separate, read-path question and is left open.
+- **`okf` reports an unanticipated library failure as `error: <message>`,
+  exit 1**, instead of a stack trace and exit 127. `OkfCli.Run` caught only
+  its own internal `CliOperationException`; it now also catches
+  `OkfException`, the library's expected-error base. Applies to all nine
+  verbs. An unexpected BCL exception still crashes loudly, on purpose.
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had
   drifted: the 0.2.0 winget package shipped a binary printing

@@ -775,8 +775,6 @@ public class CliTests
     /// <summary>
     /// A `--` with nothing after it still ends the option scan, but it does not
     /// discard a positional that came before: `okf audit b --` resolves `b`.
-    /// This is the case that distinguishes "clear the positionals at the
-    /// separator" from "only override when the separator has a token after it".
     /// </summary>
     [Fact]
     public void Audit_a_trailing_separator_keeps_the_earlier_positional()
@@ -918,5 +916,484 @@ public class CliTests
 
         Assert.Equal("not-a-date", finding.GetProperty("staleAfter").GetString());
         Assert.False(finding.GetProperty("stale").GetBoolean());
+    }
+
+    /// <summary>
+    /// `--` ends option parsing; it does not discard the positionals that came
+    /// before it. With a single positional slot the old rule ("the token after
+    /// the separator wins") was indistinguishable from this one; with a verb
+    /// that takes several, it would silently drop the bundle.
+    /// </summary>
+    [Fact]
+    public void Separator_keeps_positionals_from_both_sides()
+    {
+        var r = Run("audit", V02BundlePath, "--", "--json");
+
+        // The bundle before `--` is still the positional; `--json` after it is
+        // an argument, not a flag, so the output is the text report.
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"bundle:     {V02BundlePath}", r.Out);
+        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+    }
+
+    private static string NewBundleWithTwoConcepts(TempDir tmp)
+    {
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\ntitle: DAU\n---\n\nbody\n");
+        tmp.Write("metrics/rev.md", "---\ntype: Metric\ntitle: Revenue\n---\n\nbody\n");
+        return tmp.Path;
+    }
+
+    [Fact]
+    public void Verify_records_a_stamp_on_each_named_concept()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/rev", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n"
+            + "recorded metrics/rev  human:ada  2026-08-28T09:14:00Z\n",
+            r.Out);
+        Assert.Contains("by: human:ada", File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Fact]
+    public void Verify_reports_the_timestamp_it_superseded()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/dau.md",
+            "---\ntype: Metric\nverified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n---\n\nbody\n");
+
+        var r = Run("verify", tmp.Path, "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z  (replaces 2026-01-01T00:00:00Z)\n",
+            r.Out);
+    }
+
+    /// <summary>The line that closes the loop: audit's ids piped into verify.</summary>
+    [Fact]
+    public void Verify_reads_ids_from_stdin_when_the_id_is_a_dash()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = TestPaths.RunWithStdin(
+            "metrics/dau\n\nmetrics/rev\n",
+            "verify", bundle, "-", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        // The blank line is ignored, both concepts are stamped, order preserved.
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n"
+            + "recorded metrics/rev  human:ada  2026-08-28T09:14:00Z\n",
+            r.Out);
+    }
+
+    /// <summary>
+    /// Ids arriving from a pipe carry whatever whitespace produced them — a
+    /// <c>cut</c> field, a CRLF-terminated line — so <c>ReadIdsFrom</c> trims
+    /// each one. Blank-line skipping is covered by the test above; the trim
+    /// was not, and dropping <c>line.Trim()</c> left the suite green while
+    /// every such id turned into "unknown concept".
+    /// </summary>
+    [Fact]
+    public void Verify_trims_each_id_read_from_standard_input()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = TestPaths.RunWithStdin(
+            "  metrics/dau\t\r\n\tmetrics/rev  \n",
+            "verify", bundle, "-", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n"
+            + "recorded metrics/rev  human:ada  2026-08-28T09:14:00Z\n",
+            r.Out);
+    }
+
+    /// <summary>
+    /// Fully validated first: every id is resolved before anything is written, so one
+    /// unknown id leaves the whole bundle untouched.
+    /// </summary>
+    [Fact]
+    public void Verify_writes_nothing_when_one_id_is_unknown()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/nope", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown concept \"metrics/nope\"\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// A document with no `type` loads into the bundle but is refused at
+    /// write time by <c>BundleConceptWriter.RecordVerifications</c> itself,
+    /// which validates every concept before writing any — so this pins that
+    /// the whole batch is still rejected, and via the CLI's own message
+    /// (naming the concept) rather than the writer's unattributed one.
+    /// </summary>
+    [Fact]
+    public void Verify_writes_nothing_when_one_concept_is_not_conformant()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        tmp.Write("metrics/broken.md", "---\ntitle: No type\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/broken", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept \"metrics/broken\" has no `type` and is not §11-conformant\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Fact]
+    public void Verify_refuses_a_concept_named_twice()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept 'metrics/dau' is named more than once\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Fact]
+    public void Verify_dry_run_writes_nothing()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z", "--dry-run");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("would record metrics/dau  human:ada  2026-08-28T09:14:00Z\n", r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// Without <c>--at</c> a dry run has no timestamp to report and prints the
+    /// literal <c>(now)</c> — the shape the website publishes as captured
+    /// output. Every other dry-run test passes <c>--at</c>, so that null
+    /// branch was unexercised: mutating <c>at ?? "(now)"</c> to any other
+    /// string left the whole suite green.
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_without_at_reports_now()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("would record metrics/dau  human:ada  (now)\n", r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// An actor carrying a newline could otherwise forge a whole <c>recorded
+    /// …</c> line — the renderer interpolates <c>by</c> into a line-oriented
+    /// result with no escaping — naming a concept the command never touched,
+    /// at exit 0. The refusal is the write gate's
+    /// (<c>BundleConceptWriter.RecordVerifications</c>, via the shared
+    /// <c>Actor.ContainsControlCharacter</c>); this pins that the CLI reports
+    /// it as a flag error and, crucially, that the message does NOT echo the
+    /// value — echoing it would put the refused newline into stderr instead.
+    /// </summary>
+    [Fact]
+    public void Verify_refuses_an_actor_carrying_a_control_character()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run(
+            "verify",
+            bundle,
+            "metrics/dau",
+            "--by",
+            "human:ada\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z",
+            "--at",
+            "2026-08-28T09:14:00Z");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: --by must not contain control characters\n", r.Err);
+        Assert.Equal(string.Empty, r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    [Theory]
+    [InlineData(new[] { "verify", "BUNDLE" }, "error: missing <concept-id>\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau" }, "error: verify requires --by <actor>\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:" }, "error: --by is not a well-formed §7 actor: \"human:\"\n")]
+    // Three shapes a permissive reader accepts and a writer must not: garbage,
+    // a bare date, and a non-UTC offset.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "hier" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"hier\"\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28\"\n")]
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00+02:00" }, "error: --at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"2026-08-28T09:14:00+02:00\"\n")]
+    // --by present but with nothing attached to it.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by" }, "error: --by requires a value\n")]
+    // An actor that is BOTH control-bearing and malformed: the control-character
+    // arm must win, because the well-formedness message echoes the value and
+    // would put the refused newline straight into stderr.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control characters\n")]
+    public void Verify_rejects_bad_invocations(string[] args, string expected)
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var resolved = args.Select(a => a == "BUNDLE" ? bundle : a).ToArray();
+
+        var r = Run(resolved);
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal(expected, r.Err);
+    }
+
+    /// <summary>
+    /// The documented pipeline (<c>okf audit … --trust unverified | cut … |
+    /// okf verify … -</c>) must be idempotent. <c>okf audit --trust
+    /// unverified</c> deliberately exits 0 with no output when nothing needs
+    /// attention, so <c>verify</c> on that empty stream is "nothing to do" —
+    /// exiting 1 there made the headline pipeline fail under <c>set -e</c>
+    /// exactly when the bundle was healthy, and the obvious operator
+    /// workaround (<c>|| true</c>) would also have swallowed a real
+    /// partial-write failure.
+    /// </summary>
+    [Fact]
+    public void Verify_exits_zero_when_standard_input_is_empty()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = TestPaths.RunWithStdin(string.Empty, "verify", bundle, "-", "--by", "human:ada");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(string.Empty, r.Out);
+        Assert.Equal(string.Empty, r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// An invocation already doomed by its own arguments must not drain the
+    /// pipe first: behind a slow producer that is a pointless wait, and on a
+    /// terminal it hangs until the user finds Ctrl-D. The reader here throws
+    /// if anything reads it, so this fails rather than merely being slow. The
+    /// message ordering the <c>[Theory]</c> above pins is unaffected — every
+    /// one of those errors is decided from the argument list alone.
+    /// </summary>
+    [Fact]
+    public void Verify_validates_the_flags_before_reading_standard_input()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = TestPaths.RunWithReader(new ThrowingReader(), "verify", bundle, "-");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: verify requires --by <actor>\n", r.Err);
+    }
+
+    [Fact]
+    public void Verify_refuses_to_mix_stdin_with_explicit_ids()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "-", "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: \"-\" (stdin) cannot be combined with explicit concept ids\n", r.Err);
+    }
+
+    /// <summary>
+    /// The write phase cannot be atomic across several files: RecordVerifications
+    /// writes "metrics/dau" first, THEN fails writing "metrics/rev" (made
+    /// unwritable below), so "dau" already landed on disk by the time the
+    /// batch fails. This pins the exact contract fixed twice already —  once
+    /// in the core (b25553b, moving <c>records.Add</c> out of the prepare
+    /// loop so <c>Records</c> means "written", not "prepared") and once here,
+    /// in the verb itself, which must print every landed record BEFORE
+    /// throwing on <c>!outcome.Recorded</c> rather than swallow it. A version
+    /// of <c>CmdVerify</c> that swapped that print loop and the throw would
+    /// print nothing and still exit 1 -- indistinguishable from this test's
+    /// perspective if it only checked the exit code, which is why stdout is
+    /// asserted here, not just <c>r.Code</c>.
+    ///
+    /// Deliberately does NOT use the internal
+    /// <see cref="BundleConceptWriter.BeforeLateReparseCheckForTest"/> hook
+    /// <see cref="RecordVerificationTests"/> uses for the same kind of
+    /// injected write-time failure: <see cref="CmdVerify"/> constructs its
+    /// own private <see cref="BundleConceptWriter"/> instance that a test has
+    /// no handle to, so that seam cannot be reached from here. Instead this
+    /// makes the SECOND file genuinely unwritable (read-only) before
+    /// invoking the verb at all -- a black-box failure any process,
+    /// including a real filesystem permission error, could produce.
+    /// </summary>
+    [Fact]
+    public void Verify_prints_the_records_that_landed_before_a_later_write_failure()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var revPath = Path.Combine(bundle, "metrics", "rev.md");
+        var originalRev = File.ReadAllText(revPath);
+        File.SetAttributes(revPath, File.GetAttributes(revPath) | FileAttributes.ReadOnly);
+
+        try
+        {
+            // Probe before asserting anything real depends on it: some
+            // environments (e.g. a CI job running as root on Linux) do not
+            // enforce the read-only bit at all, which would silently turn
+            // this into a false pass/fail rather than a skip. Restoring the
+            // original content afterward keeps the probe write itself inert.
+            try
+            {
+                File.WriteAllText(revPath, originalRev);
+                return; // read-only wasn't enforced on this platform/user -- skip.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Expected: read-only is enforced here, continue.
+            }
+
+            var r = Run("verify", bundle, "metrics/dau", "metrics/rev", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+            Assert.Equal(1, r.Code);
+            // The concept written BEFORE the failure must be reported, not
+            // swallowed -- this is the assertion a swapped print/throw order
+            // would fail.
+            Assert.Equal("recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n", r.Out);
+            Assert.StartsWith("error: ", r.Err);
+            Assert.DoesNotContain("recorded metrics/rev", r.Out);
+            // The write really landed on disk, not just in memory.
+            Assert.Contains("by: human:ada", File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+        }
+        finally
+        {
+            File.SetAttributes(revPath, File.GetAttributes(revPath) & ~FileAttributes.ReadOnly);
+        }
+    }
+
+    /// <summary>
+    /// A library failure no verb anticipated must still exit like every other
+    /// failure. A concept whose frontmatter parses and cannot be re-emitted
+    /// (see <see cref="DeepYamlDocument"/>) reached <c>YamlEmitter</c>'s
+    /// nesting guard, which threw a bare <c>InvalidOperationException</c>:
+    /// <c>OkfCli.Run</c> caught only <c>CliOperationException</c>, so the
+    /// process died with a stack trace. The emitter now raises an
+    /// <c>OkfException</c> and <c>Run</c> catches that base type, which is a
+    /// strict improvement for all nine verbs — no golden pinned a crash.
+    /// </summary>
+    [Fact]
+    public void A_document_that_cannot_be_re_emitted_exits_cleanly_rather_than_crashing()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+
+        var r = Run("verify", tmp.Path, "metrics/deep", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error: ", r.Err);
+        Assert.Contains("nesting depth limit exceeded", r.Err);
+        Assert.DoesNotContain("   at ", r.Err);
+    }
+
+    /// <summary>
+    /// The one path where the writer's own message reaches stderr: two
+    /// spellings of one concept ("metrics/dau" and "metrics//dau") differ as
+    /// strings, so the CLI's own duplicate check passes them, and both resolve
+    /// to the same file, so the writer's resolved-path check refuses the
+    /// batch. <c>CmdVerify</c> strips the writer's <c>Error: </c> prefix
+    /// before rethrowing, because the CLI adds its own <c>error: </c> —
+    /// dropping that <c>Replace</c> ships <c>error: Error: …</c>, and no test
+    /// asserted the stderr of a failed <c>okf verify</c> at all until this
+    /// one.
+    /// </summary>
+    [Fact]
+    public void Verify_reports_a_writer_failure_without_doubling_the_error_prefix()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept 'metrics//dau' is named more than once.\n", r.Err);
+        Assert.Equal(string.Empty, r.Out);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>The loop, end to end: audit lists it, verify clears it.</summary>
+    [Fact]
+    public void Audit_then_verify_removes_the_concept_from_the_unverified_worklist()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\n---\n\nbody\n");
+
+        var before = Run("audit", tmp.Path, "--trust", "unverified");
+        Assert.Contains("metrics/dau", before.Out);
+
+        Run("verify", tmp.Path, "metrics/dau", "--by", "human:ada");
+
+        var after = Run("audit", tmp.Path, "--trust", "unverified");
+        Assert.Equal("", after.Out);
+    }
+
+    [Fact]
+    public void Help_lists_verify_after_audit()
+    {
+        var r = Run("--help");
+
+        var lines = r.Out.Split('\n').Select(l => l.TrimStart()).ToList();
+        var auditIndex = lines.FindIndex(l => l.StartsWith("audit ", StringComparison.Ordinal));
+        var verifyIndex = lines.FindIndex(l => l.StartsWith("verify ", StringComparison.Ordinal));
+
+        Assert.True(auditIndex >= 0 && verifyIndex == auditIndex + 1);
+    }
+
+    /// <summary>
+    /// A verb that does not document reading standard input must never touch
+    /// it — otherwise `okf fmt file` inside a pipeline would block on a reader
+    /// nobody is feeding. A StringReader could not prove this (it records
+    /// nothing), so the reader here throws if anything reads it.
+    /// </summary>
+    [Fact]
+    public void A_verb_that_does_not_read_stdin_never_touches_it()
+    {
+        var r = TestPaths.RunWithReader(
+            new ThrowingReader(),
+            "fmt",
+            Path.Combine(BundlePath, "tables", "users.md"));
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("title: Users", r.Out);
+    }
+
+    /// <summary>A reader that fails the test if the CLI reads from it at all.</summary>
+    private sealed class ThrowingReader : TextReader
+    {
+        public override int Peek() => throw new InvalidOperationException("stdin was read");
+
+        public override int Read() => throw new InvalidOperationException("stdin was read");
+
+        public override string? ReadLine() => throw new InvalidOperationException("stdin was read");
     }
 }

@@ -41,6 +41,25 @@ internal static class TestPaths
     {
         var o = new StringWriter();
         var e = new StringWriter();
-        return (OkfCli.Run(args, o, e), o.ToString(), e.ToString());
+        return (OkfCli.Run(args, TextReader.Null, o, e), o.ToString(), e.ToString());
+    }
+
+    /// <summary>
+    /// Runs the CLI in-process like <see cref="Run"/>, with <paramref name="stdin"/>
+    /// as its standard input — for the verbs that read ids from a pipe.
+    /// </summary>
+    internal static (int Code, string Out, string Err) RunWithStdin(string stdin, params string[] args) =>
+        RunWithReader(new StringReader(stdin), args);
+
+    /// <summary>
+    /// Runs the CLI in-process with an arbitrary <paramref name="stdin"/> reader —
+    /// lets a test prove a verb never touches standard input by handing it one
+    /// that throws.
+    /// </summary>
+    internal static (int Code, string Out, string Err) RunWithReader(TextReader stdin, params string[] args)
+    {
+        var o = new StringWriter();
+        var e = new StringWriter();
+        return (OkfCli.Run(args, stdin, o, e), o.ToString(), e.ToString());
     }
 }

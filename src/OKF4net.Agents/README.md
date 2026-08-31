@@ -26,20 +26,35 @@ AIAgent agent = chatClient.AsAIAgent(
 var response = await agent.RunAsync("Summarize the concepts in this bundle.");
 ```
 
-## The eleven tools
+## The twelve tools
 
 `okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`, `okf_audit`,
-`okf_write_concept`, `okf_append_log`, `okf_regenerate_indexes`,
+`okf_write_concept`, `okf_verify`, `okf_append_log`, `okf_regenerate_indexes`,
 `okf_validate_bundle`, `okf_changes_since`, `okf_get_computation` — plus a
-twelfth, `okf_run_computation`, only when the tool set is constructed with an
+thirteenth, `okf_run_computation`, only when the tool set is constructed with an
 `OKF4net.Attestation` orchestrator wired in.
 
 All tools return agent-friendly markdown/plain text and never throw for
 expected errors (unknown ids, invalid paths, malformed input) — the agent
-receives an explanatory message instead. Write tools validate documents
-(producer-grade OKF rules) before touching disk, serialize their writes, and
-rely on the Agent Framework's tool-approval mechanism for gating. Bundle
-content is treated as untrusted and is never injected as a system message.
+receives an explanatory message instead. All four write tools
+(`okf_write_concept`, `okf_verify`, `okf_append_log`, `okf_regenerate_indexes`)
+serialize their writes and rely on the Agent Framework's tool-approval
+mechanism for gating. Their validation levels differ, though: only
+`okf_write_concept` checks a document against the stricter producer-grade
+OKF rules (non-empty `type`, `title`, `description`) before touching disk;
+`okf_verify` deliberately enforces only §11 conformance (a non-empty `type`)
+instead — recording a review is not producing content, and refusing a
+reviewer because a concept is missing a `description` would make precisely
+the concepts an audit surfaces unstampable. What `okf_verify` writes is a
+`{by, at}` review stamp (§5.2) — a dated declaration, not a proof; see the
+project README's `okf verify` section for what it does and doesn't
+guarantee. `okf_append_log` validates only
+its own `kind`/`text` arguments (non-empty, no embedded newline or null
+byte) and re-renders `log.md` through the §9 model — it does not touch
+concept documents at all. `okf_regenerate_indexes` performs no document
+validation whatsoever; it only rebuilds `index.md` listings from whatever is
+already on disk. Bundle content is treated as untrusted
+and is never injected as a system message.
 
 `OkfContextProvider` (an `AIContextProvider`, registered via
 `ChatClientAgentOptions.AIContextProviders`) layers on top of the same

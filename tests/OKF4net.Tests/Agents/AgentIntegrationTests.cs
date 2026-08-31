@@ -72,7 +72,7 @@ public class AgentIntegrationTests
         // THE key API decision: build a real ChatClientAgent over the raw
         // scripted IChatClient via the Microsoft.Agents.AI 1.14.0 AsAIAgent
         // extension (Microsoft.Extensions.AI.ChatClientExtensions.AsAIAgent),
-        // handing it the nine OkfBundleTools AIFunctions as its tool list.
+        // handing it the twelve OkfBundleTools AIFunctions as its tool list.
         // ChatClientAgent inserts its own FunctionInvokingChatClient in front
         // of the chat client when one isn't already present, so the real
         // function-invocation pipeline runs here -- no manual

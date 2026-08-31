@@ -113,6 +113,8 @@ export default function Spec() {
                   <code>Frontmatter.Sources</code>/<code>Generated</code>/<code>Verified</code>/
                   <code>TrustTier</code>/<code>Status</code>/<code>StaleAfter</code>, and the{' '}
                   <code>Actor</code>/<code>Trust</code>/<code>Provenance</code>/<code>Lifecycle</code> value types.
+                  §5.2's <code>verified</code> stamps are written by <code>BundleConceptWriter.RecordVerifications</code>,
+                  the single governed writer behind <code>okf verify</code> and <code>okf_verify</code>.
                 </>,
               ],
               [

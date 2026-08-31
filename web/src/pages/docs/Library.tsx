@@ -303,10 +303,11 @@ export default function Library() {
                 'BundleConceptWriter',
                 <>
                   Atomic, per-path-locked, reparse-guarded concept writes —{' '}
-                  <code>WriteConcept</code>/<code>AppendToConceptAtomic</code>, plus a <code>Frontmatter</code>-typed{' '}
-                  <code>WriteConcept</code> overload for a caller building a document programmatically (e.g. with{' '}
-                  <code>OkfDocumentBuilder</code>), no YAML text round trip. The primitive behind{' '}
-                  <code>okf_write_concept</code> and the scoped memory store; see{' '}
+                  <code>WriteConcept</code>/<code>AppendToConceptAtomic</code>/<code>RecordVerifications</code>,
+                  plus a <code>Frontmatter</code>-typed <code>WriteConcept</code> overload for a caller building a
+                  document programmatically (e.g. with <code>OkfDocumentBuilder</code>), no YAML text round trip.
+                  The primitive behind <code>okf_write_concept</code>, <code>okf_verify</code> and the scoped memory
+                  store — the single governed writer of the §5.2 <code>verified</code> field; see{' '}
                   <Link to="/docs/agents">docs/agents.md</Link>.
                 </>,
               ],
