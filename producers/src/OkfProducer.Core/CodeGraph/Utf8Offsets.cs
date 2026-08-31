@@ -35,6 +35,20 @@ public static class Utf8Offsets
     /// astral-plane character. <see cref="Encoding.GetByteCount(ReadOnlySpan{char})"/> encodes the
     /// prefix as a whole and does not have this bug.
     /// </summary>
+    /// <remarks>
+    /// The offset this returns is a byte position into the UTF-8 <i>encoding of <paramref name="text"/></i>
+    /// -- not a byte position in whatever file <paramref name="text"/> was read from. For an ordinary
+    /// UTF-8 source file the two coincide, but <c>TreeSitterExtractor</c> also accepts UTF-16-with-BOM
+    /// source (§2.3): once such a file is decoded to a .NET <see cref="string"/>, this method's output
+    /// is an offset into that *decoded* string re-encoded as UTF-8, which is nowhere close to that
+    /// character's actual byte position in the original UTF-16 file on disk. This is intentional, not
+    /// a gap: the offset's job is to be a shared join key between this producer's two extractors
+    /// (tree-sitter here, Roslyn in Task 6) -- both read the same decoded string and both call this
+    /// same conversion, so they agree with each other regardless of the source file's on-disk
+    /// encoding. It would only be wrong to treat this offset as a file seek position; nothing in this
+    /// producer does that today -- <c>resource</c> links in the generated bundle anchor by line
+    /// number, not by offset.
+    /// </remarks>
     public static int ToUtf8(string text, int utf16Offset)
     {
         ArgumentNullException.ThrowIfNull(text);

@@ -102,12 +102,12 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// <paramref name="limits"/>'s <see cref="ExtractionLimits.MaxFileBytes"/> is rejected by its
     /// reported length alone -- it is never loaded into memory, let alone truncated to fit, since a
     /// partial parse would produce spans that point at the wrong code, worse than no extraction at
-    /// all. What does get read is decoded strictly as UTF-8 (with or without a byte-order mark): any
-    /// byte sequence <see cref="UTF8Encoding"/> would otherwise silently replace with U+FFFD is
-    /// reported as <see cref="FileStatus.SkippedEncoding"/> instead of corrupting offsets silently.
-    /// Returns <see langword="null"/> and sets <paramref name="source"/> to the decoded text when
-    /// every guard passes; otherwise returns the <see cref="FileStatus"/> to report and sets
-    /// <paramref name="source"/> to <see cref="string.Empty"/>.
+    /// all. What does get read is decoded strictly via <see cref="DecodeStrict"/>: a byte sequence
+    /// invalid in the selected encoding, which <see cref="UTF8Encoding"/>/<see cref="UnicodeEncoding"/>
+    /// would otherwise silently replace with U+FFFD, is reported as <see cref="FileStatus.SkippedEncoding"/>
+    /// instead of corrupting offsets silently. Returns <see langword="null"/> and sets
+    /// <paramref name="source"/> to the decoded text when every guard passes; otherwise returns the
+    /// <see cref="FileStatus"/> to report and sets <paramref name="source"/> to <see cref="string.Empty"/>.
     /// </summary>
     private static FileStatus? TryReadSource(string relativePath, string absolutePath, ExtractionLimits limits, out string source)
     {
@@ -143,10 +143,9 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             return FileStatus.SkippedUnreadable;
         }
 
-        var bomLength = HasUtf8Bom(bytes) ? 3 : 0;
         try
         {
-            source = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes, bomLength, bytes.Length - bomLength);
+            source = DecodeStrict(bytes);
             return null;
         }
         catch (DecoderFallbackException)
@@ -155,6 +154,43 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             return FileStatus.SkippedEncoding;
         }
     }
+
+    /// <summary>
+    /// §2.3's two accepted encodings, selected by byte-order mark: UTF-8 (with or without its 3-byte
+    /// BOM) and UTF-16, either byte order, but only *with* its 2-byte BOM -- raw UTF-16 with no BOM is
+    /// deliberately not guessed at, since nothing distinguishes it reliably from binary content or
+    /// from UTF-8, and §2.3 says "UTF-16 with BOM", not "UTF-16". Bytes with no recognized BOM are
+    /// decoded as UTF-8. Every branch enables <c>throwOnInvalidBytes</c> (confirmed, not assumed, to
+    /// throw <see cref="DecoderFallbackException"/> for both an odd trailing byte and an unpaired
+    /// surrogate under <see cref="UnicodeEncoding"/>, the same exception type <see cref="UTF8Encoding"/>
+    /// throws), so a byte sequence that is not valid in the selected encoding is reported as
+    /// <see cref="FileStatus.SkippedEncoding"/> by <see cref="TryReadSource"/>'s caller, never silently
+    /// repaired with a U+FFFD replacement character.
+    /// </summary>
+    private static string DecodeStrict(byte[] bytes)
+    {
+        if (HasUtf8Bom(bytes))
+        {
+            return new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes, 3, bytes.Length - 3);
+        }
+
+        if (HasUtf16Bom(bytes, bigEndian: false))
+        {
+            return new UnicodeEncoding(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true).GetString(bytes, 2, bytes.Length - 2);
+        }
+
+        if (HasUtf16Bom(bytes, bigEndian: true))
+        {
+            return new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true).GetString(bytes, 2, bytes.Length - 2);
+        }
+
+        return new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes, 0, bytes.Length);
+    }
+
+    private static bool HasUtf16Bom(byte[] bytes, bool bigEndian) =>
+        bigEndian
+            ? bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF
+            : bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE;
 
     /// <summary>
     /// Walks up from <paramref name="absolutePath"/>'s containing directory exactly as many levels as

@@ -23,48 +23,78 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// A file this run does attempt is still subject to <paramref name="limits"/>'s hostile-input
     /// guards (§2.3), enforced by <see cref="ILanguageExtractor.Extract"/> itself; a real skip from
     /// one of those guards -- or the overall <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/>
-    /// elapsing before every file is attempted -- does make the run incomplete (§2.3's closing rule).
-    /// Extracted symbols are further filtered by <see cref="FileEligibility.IsInScope"/> before being
-    /// returned, so an out-of-scope member never reaches <see cref="CodeGraph.Symbols"/>.
+    /// elapsing, or <paramref name="cancellationToken"/> itself being cancelled, before every file is
+    /// attempted -- does make the run incomplete (§2.3's closing rule). <paramref name="cancellationToken"/>
+    /// defaults to <see langword="default"/> (never cancelled by the caller) and is linked internally
+    /// with the timeout, so a caller does not have to fabricate a timeout to test cancellation, or vice
+    /// versa. Extracted symbols are further filtered by <see cref="FileEligibility.IsInScope"/> before
+    /// being returned, so an out-of-scope member never reaches <see cref="CodeGraph.Symbols"/>.
     /// </summary>
-    public CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits, ScopeOptions scope)
+    public CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits, ScopeOptions scope, CancellationToken cancellationToken = default)
     {
         using var timeoutSource = new CancellationTokenSource(limits.Timeout);
+        using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(timeoutSource.Token, cancellationToken);
 
         var results = new List<(string RelativePath, ExtractionResult Result)>();
-        var timedOut = false;
+        var incomplete = false;
 
-        foreach (var relativePath in EnumerateFiles(snapshot.RepoPath))
+        try
         {
-            var profile = SelectProfile(relativePath);
-            if (profile is null)
+            foreach (var relativePath in EnumerateFiles(snapshot.RepoPath))
             {
-                continue;
-            }
+                var profile = SelectProfile(relativePath);
+                if (profile is null)
+                {
+                    continue;
+                }
 
-            if (!FileEligibility.IsEligible(relativePath, snapshot, scope))
-            {
-                continue;
-            }
+                if (!FileEligibility.IsEligible(relativePath, snapshot, scope))
+                {
+                    continue;
+                }
 
-            if (timeoutSource.IsCancellationRequested)
-            {
-                // §2.3: a run that hits its overall timeout before attempting every file is partial,
-                // not complete -- the files never attempted are silently absent rather than reported
-                // with a per-file FileStatus, but timedOut alone is enough to keep IsComplete false,
-                // which is the property Task 11's pruning actually keys off.
-                timedOut = true;
-                break;
-            }
+                if (linkedSource.IsCancellationRequested)
+                {
+                    // §2.3: a run that is cancelled -- by the timeout, or by a cancellationToken the
+                    // caller passed in -- before attempting every file is partial, not complete. The
+                    // files never attempted are silently absent rather than reported with a per-file
+                    // FileStatus, but `incomplete` alone is enough to keep IsComplete false, which is
+                    // the property Task 11's pruning actually keys off. Whatever was already added to
+                    // `results` for files attempted before the cancellation is still returned --
+                    // partial results, honestly labelled incomplete, not discarded.
+                    incomplete = true;
+                    break;
+                }
 
-            if (ExceedsMaxDepth(relativePath, limits.MaxDepth))
-            {
-                results.Add((relativePath, new ExtractionResult([], [], FileStatus.SkippedDepth)));
-                continue;
-            }
+                if (ExceedsMaxDepth(relativePath, limits.MaxDepth))
+                {
+                    results.Add((relativePath, new ExtractionResult([], [], FileStatus.SkippedDepth)));
+                    continue;
+                }
 
-            var absolutePath = Path.Combine(snapshot.RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile, limits)));
+                var absolutePath = Path.Combine(snapshot.RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+                results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile, limits)));
+            }
+        }
+        catch (IOException)
+        {
+            // §2.3 names a symlink/junction as "never followed", but does not by itself defend the
+            // WALK against a circular one: EnumerateFiles below does not detect the cycle, it keeps
+            // recursing into it. Measured, not assumed -- a self-referential junction does not "spin
+            // until the timeout" the way a slow-but-finite walk would; Directory.EnumerateFiles keeps
+            // extending the accumulated path each time it re-enters the loop and throws
+            // PathTooLongException (a subclass of IOException) within a fraction of a second, almost
+            // always long before ExtractionLimits.Timeout could ever fire. Left uncaught, that
+            // exception would escape Build entirely and crash the whole run instead of reporting an
+            // honestly incomplete one -- worse than every other hostile-input case this task handles,
+            // since there would be no CodeGraph at all, not even a partial one. Caught here and folded
+            // into the same `incomplete` outcome as a timeout or an explicit cancellation: a
+            // pathological directory structure degrades the run, it does not crash the process.
+            incomplete = true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            incomplete = true;
         }
 
         // Sort keys must fully disambiguate every tie a real repository can produce: two overloads
@@ -123,10 +153,11 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             .Select(r => (r.RelativePath, r.Result.Status))
             .ToList();
 
-        // A timed-out run is partial even when every file attempted before the timeout extracted
-        // cleanly -- the files never reached are indistinguishable from "not modified", exactly the
-        // ambiguity RunStatus.IsComplete exists to rule out (§2.3, §6.3).
-        var status = skipped.Count == 0 && !timedOut ? RunStatus.Complete : new RunStatus(false, skipped);
+        // A run cut short -- by timeout, explicit cancellation, or the walk itself failing -- is
+        // partial even when every file attempted before that point extracted cleanly: the files never
+        // reached are indistinguishable from "not modified", exactly the ambiguity RunStatus.IsComplete
+        // exists to rule out (§2.3, §6.3).
+        var status = skipped.Count == 0 && !incomplete ? RunStatus.Complete : new RunStatus(false, skipped);
 
         return new CodeGraph(symbols, edges, status);
     }

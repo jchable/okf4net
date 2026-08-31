@@ -8,9 +8,10 @@ public interface ILanguageExtractor
     /// Extracts every declaration and call site in the file at <paramref name="absolutePath"/>,
     /// enforcing <paramref name="limits"/>'s hostile-input guards (§2.3) itself: a file over
     /// <see cref="ExtractionLimits.MaxFileBytes"/> must never be loaded into memory, and its bytes
-    /// must be decoded strictly (invalid UTF-8 reported, not silently replaced). Any guard this call
-    /// cannot satisfy is reported through <see cref="ExtractionResult.Status"/>, never thrown --
-    /// hostile source is an expected input, not an exceptional one.
+    /// must be decoded strictly as UTF-8 or UTF-16-with-BOM (an invalid byte sequence in the selected
+    /// encoding reported, never silently replaced). Any guard this call cannot satisfy is reported
+    /// through <see cref="ExtractionResult.Status"/>, never thrown -- hostile source is an expected
+    /// input, not an exceptional one.
     /// </summary>
     /// <param name="relativePath">The file's path relative to the repository root -- carried onto every
     /// produced <see cref="SymbolFact"/> and <see cref="CallSite"/>.</param>

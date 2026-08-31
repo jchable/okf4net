@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Threading;
 using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
@@ -138,6 +139,36 @@ public class HostileInputTests : IDisposable
         Assert.Equal(13, type.StartOffset);
     }
 
+    [Theory]
+    [InlineData(false)] // FF FE -- little-endian
+    [InlineData(true)]  // FE FF -- big-endian
+    public void Utf16_with_a_bom_is_accepted(bool bigEndian)
+    {
+        using var tmp = new TempDir();
+        var path = Path.Combine(tmp.Path, "utf16.cs");
+        var encoding = new System.Text.UnicodeEncoding(bigEndian, byteOrderMark: true);
+        // UnicodeEncoding.GetBytes never includes the preamble (a common gotcha) -- it has to be
+        // prepended explicitly to actually put a BOM on disk.
+        File.WriteAllBytes(path, [.. encoding.GetPreamble(), .. encoding.GetBytes("namespace N;\npublic class T {}")]);
+
+        var result = Extract(path, ExtractionLimits.Default);
+
+        Assert.Equal(FileStatus.Extracted, result.Status);
+        Assert.Equal("T", Assert.Single(result.Symbols).Name);
+    }
+
+    [Fact]
+    public void Invalid_utf16_with_a_bom_is_skipped_not_replaced_with_substitution_characters()
+    {
+        using var tmp = new TempDir();
+        var path = Path.Combine(tmp.Path, "bad-utf16.cs");
+        // FF FE (UTF-16 LE BOM), then 00 D8 -- an unpaired high surrogate with no low surrogate to
+        // follow it, invalid regardless of what comes after.
+        File.WriteAllBytes(path, [0xFF, 0xFE, 0x00, 0xD8, 0x41, 0x00]);
+
+        Assert.Equal(FileStatus.SkippedEncoding, Extract(path, ExtractionLimits.Default).Status);
+    }
+
     [Fact]
     public void A_tree_with_error_nodes_keeps_what_parsed_and_reports_partial()
     {
@@ -253,6 +284,100 @@ public class HostileInputTests : IDisposable
         Assert.False(graph.Status.IsComplete);
         Assert.Contains(graph.Status.Skipped, s => s.Path == deepRelativePath && s.Status == FileStatus.SkippedDepth);
         Assert.Empty(graph.Symbols);
+    }
+
+    [Fact]
+    public void A_circular_reparse_point_degrades_the_run_to_incomplete_instead_of_crashing()
+    {
+        // Measured (see task-4-report.md's fix section): Directory.EnumerateFiles does not detect a
+        // junction pointing back at one of its own ancestors -- it keeps recursing into it, extending
+        // the accumulated path a level deeper on every re-entry, and throws PathTooLongException
+        // within a fraction of a second, nowhere near ExtractionLimits.Timeout. Left uncaught that
+        // would crash Build entirely instead of returning even a partial CodeGraph.
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-circular-").FullName;
+        _tempDirectories.Add(repoPath);
+        var sub = Path.Combine(repoPath, "a");
+        Directory.CreateDirectory(sub);
+        File.WriteAllText(Path.Combine(sub, "File.cs"), "namespace N;\npublic class T {}");
+        var loop = Path.Combine(sub, "loop");
+
+        if (!TryCreateJunction(loop, sub))
+        {
+            return; // Same graceful skip as the sibling reparse-point tests when this environment
+                    // cannot create one (see TryCreateJunction).
+        }
+
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+        var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.False(graph.Status.IsComplete);
+    }
+
+    [Fact]
+    public void A_pre_cancelled_token_never_reports_a_complete_run()
+    {
+        // The property that actually matters for Task 11's pruning gate is not "the timer fires at
+        // the right moment" -- it is "a cancelled run never reports itself complete". Testable without
+        // any clock: pass a token that is already cancelled before Build even starts, so not a single
+        // file is attempted, and the empty Skipped list alone must not read as success.
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-cancel-").FullName;
+        _tempDirectories.Add(repoPath);
+        File.WriteAllText(Path.Combine(repoPath, "A.cs"), "namespace N;\npublic class T {}");
+
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+        var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default, cts.Token);
+
+        Assert.False(graph.Status.IsComplete);
+        Assert.Empty(graph.Symbols);
+    }
+
+    [Fact]
+    public void A_token_cancelled_after_the_first_file_still_reports_incomplete_with_partial_results()
+    {
+        // The cheap seam the pre-cancelled case doesn't exercise: a run that gets partway through
+        // before being cancelled must still surface what it already extracted, honestly labelled
+        // incomplete rather than either discarding the partial results or claiming success.
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-cancel2-").FullName;
+        _tempDirectories.Add(repoPath);
+        File.WriteAllText(Path.Combine(repoPath, "A.cs"), "namespace N;\npublic class T {}");
+        File.WriteAllText(Path.Combine(repoPath, "B.cs"), "namespace N;\npublic class U {}");
+
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+        using var cts = new CancellationTokenSource();
+        var extractor = new CancelAfterFirstCallExtractor(_extractor, cts);
+        var builder = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], []);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default, cts.Token);
+
+        Assert.False(graph.Status.IsComplete);
+        // Files sort Ordinal ("A.cs" before "B.cs"), so the first file the walk reaches is A.cs --
+        // its symbol must still be present; B.cs must not have been attempted at all.
+        Assert.Single(graph.Symbols);
+        Assert.Equal("T", graph.Symbols[0].Name);
+    }
+
+    /// <summary>Wraps a real extractor and cancels <paramref name="cts"/> right after its first call.</summary>
+    private sealed class CancelAfterFirstCallExtractor(ILanguageExtractor inner, CancellationTokenSource cts) : ILanguageExtractor
+    {
+        private bool _called;
+
+        public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile, ExtractionLimits limits)
+        {
+            var result = inner.Extract(relativePath, absolutePath, profile, limits);
+            if (!_called)
+            {
+                _called = true;
+                cts.Cancel();
+            }
+
+            return result;
+        }
     }
 
     private ExtractionResult Extract(string absolutePath, ExtractionLimits limits) =>
