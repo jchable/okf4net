@@ -200,6 +200,44 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void A_nuget_description_never_manufactures_a_bundle_link()
+    {
+        // A `.csproj` <Description> is written by a human -- for NuGet, not for this bundle. Nobody
+        // writing one means a link relative to a bundle that did not exist yet, so from the bundle's
+        // point of view it is lifted text exactly as a doc comment is. `[docs](guide)` in one is
+        // ordinary, and rendered verbatim it is a broken link the author never wrote.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Foo.csproj", "Foo", "See [docs](guide) to get started.")],
+            []);
+
+        var concept = new ConceptGenerator().Generate(snapshot).Single(c => c.Id.ToString() == "packages/foo");
+
+        Assert.Equal("See [docs](guide) to get started.", concept.Document.Frontmatter.Description);
+        Assert.Empty(LinkScanner.ExtractLinks(concept.Document.Body));
+    }
+
+    [Fact]
+    public void A_readme_heading_that_is_itself_a_link_never_becomes_a_bundle_link()
+    {
+        // `# [Guide](docs/guide.md)` is an ordinary way to open a README, and the doc title is lifted
+        // straight out of that heading -- the one place a relative link reaches a body through a TITLE
+        // rather than through a description.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("README.md", "[Guide](docs/guide.md)")]);
+
+        var concept = new ConceptGenerator().Generate(snapshot).Single(c => c.Id.Segments[0] == "docs");
+
+        Assert.Empty(LinkScanner.ExtractLinks(concept.Document.Body));
+    }
+
+    [Fact]
+    public void The_overview_body_does_not_manufacture_a_link_from_a_repository_name()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "[odd](name)", [], []);
+
+        Assert.Empty(LinkScanner.ExtractLinks(new ConceptGenerator().Generate(snapshot)[0].Document.Body));
+    }
+
+    [Fact]
     public void Generate_every_concept_passes_strict_Validate()
     {
         var snapshot = new RepositorySnapshot("/repo", "my-repo",

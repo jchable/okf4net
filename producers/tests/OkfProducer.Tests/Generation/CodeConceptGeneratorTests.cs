@@ -505,6 +505,24 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void A_tagged_link_is_unwrapped_first_and_then_neutralized()
+    {
+        // The two fixes meeting, in the exact shape that produced the original defect: LinkScanner's own
+        // summary contains the literal `<c>[text](dest)</c>`. Unwrapping runs first and EXPOSES link
+        // syntax that was hidden inside a tag, so the order matters -- the exposed syntax has to reach
+        // the guard rather than slip past it. The reader ends up seeing `[text](dest)`, tags gone, and
+        // the scanner sees no link.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()",
+            doc: "Scanner for inline <c>[text](dest)</c> links."));
+
+        var concept = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc");
+
+        Assert.Equal("Scanner for inline [text](dest) links.", concept.Document.Frontmatter.Description);
+        Assert.Contains("Scanner for inline [text\\](dest) links.", concept.Document.Body, StringComparison.Ordinal);
+        Assert.Empty(LinkScanner.ExtractLinks(concept.Document.Body));
+    }
+
+    [Fact]
     public void Neutralizing_never_doubles_an_escape_the_author_already_wrote()
     {
         // An already-escaped bracket must be copied through, not escaped again: `\\]` renders a visible

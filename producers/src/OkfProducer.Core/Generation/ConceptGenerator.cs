@@ -236,7 +236,8 @@ public sealed class ConceptGenerator : IConceptGenerator
         };
 
         var body = new StringBuilder();
-        body.Append("# ").Append(snapshot.RepoName).Append("\n\n").Append(description).Append('\n');
+        body.Append("# ").Append(LiftedBodyText(snapshot.RepoName)).Append("\n\n")
+            .Append(LiftedBodyText(description)).Append('\n');
         AppendContains(body, children);
 
         return OkfDocumentBuilder
@@ -253,7 +254,8 @@ public sealed class ConceptGenerator : IConceptGenerator
         var description = package.Description ?? $"{package.Ecosystem} package {package.Name}.";
 
         var body = new StringBuilder();
-        body.Append("# ").Append(package.Name).Append("\n\n").Append(description).Append('\n');
+        body.Append("# ").Append(LiftedBodyText(package.Name)).Append("\n\n")
+            .Append(LiftedBodyText(description)).Append('\n');
         AppendContains(body, children);
 
         return OkfDocumentBuilder
@@ -269,14 +271,19 @@ public sealed class ConceptGenerator : IConceptGenerator
 
     private static OkfDocument BuildDocConcept(DocFile doc)
     {
+        var description = $"Repository documentation file {doc.RelativePath}.";
+
         return OkfDocumentBuilder
             .ForType("Documentation")
             .Title(doc.Title)
-            .Description($"Repository documentation file {doc.RelativePath}.")
+            .Description(description)
             .Tags("documentation")
             .Resource(doc.RelativePath)
             .AddSource(resource: doc.RelativePath)
-            .Body($"# {doc.Title}\n\nSee `{doc.RelativePath}` in the repository.\n")
+            // The title is lifted straight out of the README's own `# ` heading, where
+            // `# [Guide](docs/guide.md)` is an ordinary thing to write -- and a bundle-relative link
+            // nobody meant. `See \`path\`` needs no such care: a code span is blanked by the scanner.
+            .Body($"# {LiftedBodyText(doc.Title)}\n\nSee `{doc.RelativePath}` in the repository.\n")
             .Build();
     }
 
@@ -889,7 +896,7 @@ public sealed class ConceptGenerator : IConceptGenerator
         NodeExtras extras)
     {
         var body = new StringBuilder();
-        body.Append("# ").Append(title).Append("\n\n");
+        body.Append("# ").Append(LiftedBodyText(title)).Append("\n\n");
         body.Append(description.TrimEnd()).Append('\n');
 
         // §3.2: one concept per (container, name), so an overload set is one concept listing every
@@ -968,7 +975,7 @@ public sealed class ConceptGenerator : IConceptGenerator
             ContainerDescriptions.Resolve(ContainerFact(segments), options.ExistingFrontmatter?.Invoke(id));
 
         var body = new StringBuilder();
-        body.Append("# ").Append(title).Append("\n\n");
+        body.Append("# ").Append(LiftedBodyText(title)).Append("\n\n");
         body.Append(BodyDescription(description, descriptionSource).TrimEnd()).Append('\n');
         AppendContains(body, extras.Children);
         AppendAlsoCompiledBy(body, extras.AlsoCompiledBy);
@@ -1031,17 +1038,36 @@ public sealed class ConceptGenerator : IConceptGenerator
         DocComment: null);
 
     /// <summary>
-    /// A <c>description</c> as it is rendered <b>into a body</b>: markdown link syntax neutralized when
-    /// this producer derived the description itself, and left exactly as the author wrote it when a
-    /// human or a model did.
+    /// Any text this producer <b>lifted from outside the bundle</b> and renders into a body -- a
+    /// repository or package name, a README's own <c>#</c> heading, a <c>.csproj</c>
+    /// <c>&lt;Description&gt;</c>, a doc comment -- with its markdown link syntax neutralized.
+    ///
+    /// <para><b>The test is where the text was authored FOR, not who typed it.</b> A NuGet
+    /// <c>&lt;Description&gt;</c> and a README heading are written by humans, but for NuGet and for
+    /// GitHub; nobody writing either means a link relative to a bundle that did not exist yet. So from
+    /// the bundle's point of view they are derived, exactly as a doc comment is, and rendering
+    /// <c>[docs](guide)</c> or <c>[Guide](docs/guide.md)</c> from one of them verbatim manufactures a
+    /// link the author never wrote. Only text authored <i>in</i> the bundle is exempt, and
+    /// <c>description_source</c> is what says so -- see <see cref="BodyDescription"/>.</para>
+    ///
+    /// <para>A no-op for text that cannot contain the syntax, which is most of it: a C# identifier, a
+    /// dotted type name. Applied uniformly all the same, because a per-family exception is exactly how
+    /// two concepts with identical text end up behaving differently.</para>
+    /// </summary>
+    private static string LiftedBodyText(string text) => NeutralizeMarkdownLinks(text);
+
+    /// <summary>
+    /// A <c>description</c> as it is rendered <b>into a body</b>: neutralized as
+    /// <see cref="LiftedBodyText"/> when this producer derived it, and left exactly as the author wrote
+    /// it when the author wrote it in the bundle.
     ///
     /// <para><b>The asymmetry is the whole rule.</b> A <c>[text](dest)</c> inside a C# doc comment is
     /// doc syntax that merely looks like markdown -- <c>LinkScanner</c>'s own summary in this repository
     /// contains the literal <c>&lt;c&gt;[text](dest)&lt;/c&gt;</c> -- and the author never meant a
     /// bundle link. Rendered verbatim it becomes one: measured, that single doc comment was the only
-    /// broken link in a 648-concept bundle generated from this repository. The same syntax in a
-    /// <c>manual</c> or <c>llm</c> description is a link the author meant, and rewriting it would be
-    /// editing a human's text.</para>
+    /// broken link in a 649-concept bundle generated from this repository. The same syntax in a
+    /// <c>manual</c> or <c>llm</c> description is a link the author meant <i>for this bundle</i>, and
+    /// rewriting it would be editing a human's text.</para>
     ///
     /// <para><b>Keyed on <c>description_source</c>, which makes it consistent with §4.2's preservation
     /// table by construction rather than by coincidence:</b> the set neutralized here --
@@ -1052,10 +1078,14 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// mismatch: this value is not read off disk, it is whatever <see cref="DescriptionResolver.Resolve"/>
     /// just returned, and a spelling variant of a derived label can only reach that return as a
     /// <i>preserved</i> value -- which must not be touched, and is not.</para>
+    ///
+    /// <para>The families with no <c>description_source</c> at all -- <c>packages/*</c>, <c>docs/*</c>,
+    /// <c>overview</c> -- never reach this method: nothing in them is bundle-authored, so they go
+    /// straight through <see cref="LiftedBodyText"/>.</para>
     /// </summary>
     private static string BodyDescription(string description, string descriptionSource) =>
         descriptionSource is DocCommentSource.SourceLabel or SignatureSource.SourceLabel
-            ? NeutralizeMarkdownLinks(description)
+            ? LiftedBodyText(description)
             : description;
 
     /// <summary>

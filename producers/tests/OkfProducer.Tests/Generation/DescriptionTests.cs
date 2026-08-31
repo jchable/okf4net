@@ -148,6 +148,49 @@ public class DescriptionTests
         Assert.Equal(first, second);
     }
 
+    // -- inline XML doc tags ----------------------------------------------------------------------
+    //
+    // A `description` is prose a reader sees, and ConceptSearch weights it above the body -- so raw
+    // `<c>`/`<see>` markup is both ugly and slightly harmful. This repository enforces XML docs, so it
+    // is the norm rather than an edge case. Unwrap, never strip: the tag's content is usually the
+    // subject of the sentence around it.
+
+    [Theory]
+    [InlineData("Scans a <c>body</c> for links.", "Scans a body for links.")]
+    [InlineData("See <see cref=\"T:OKF4net.LinkScanner\"/> for details.", "See OKF4net.LinkScanner for details.")]
+    [InlineData("See <see cref=\"M:Foo.Bar(System.String)\"/>.", "See Foo.Bar(System.String).")]
+    [InlineData("A <see cref=\"System.Uri\"/> with no doc-id prefix.", "A System.Uri with no doc-id prefix.")]
+    [InlineData("Whether <paramref name=\"path\"/> exists.", "Whether path exists.")]
+    [InlineData("Of <typeparamref name=\"T\"/>.", "Of T.")]
+    [InlineData("Returns <see langword=\"null\"/> when absent.", "Returns null when absent.")]
+    [InlineData("See <see cref=\"Foo\">the helper</see> instead.", "See the helper instead.")]
+    [InlineData("An <unknown>inner</unknown> tag keeps its text.", "An inner tag keeps its text.")]
+    public void Inline_xml_doc_tags_are_unwrapped_to_the_text_they_stand_for(string doc, string expected)
+        => Assert.Equal(expected, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+
+    [Theory]
+    [InlineData("A value where a < b holds.")]
+    [InlineData("An unterminated <tag that never closes")]
+    [InlineData("Compares with <= and >= operators.")]
+    public void Text_that_merely_looks_like_markup_is_left_alone(string doc)
+        => Assert.Equal(doc, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+
+    [Fact]
+    public void A_doc_comment_that_is_nothing_but_tags_falls_through_to_the_next_source()
+    {
+        // `<inheritdoc/>` alone unwraps to nothing, and an empty description is not a description --
+        // returning one would put an empty required field into the bundle. Fall through as a missing
+        // doc comment does.
+        var (text, source) = Resolver.Resolve(Member("Scanner", "Scan", doc: "<inheritdoc/>"), existing: null);
+
+        Assert.Equal("generated", source);
+        Assert.Contains("Scan", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unwrapping_a_tag_does_not_leave_a_double_space_behind()
+        => Assert.Equal("Scans a body.", Resolver.Resolve(Member("T", "Scan", "Scans a <para></para> body."), existing: null).Text);
+
     private static SymbolFact Member(string container, string name, string? doc = null, string path = "A.cs") =>
         new(SymbolKind.Member, "csharp", container, name, $"public void {name}()",
             SymbolVisibility.Public, path, 0, 10, 1, 1, doc);
