@@ -20,6 +20,7 @@
 - **Determinism rules apply to every task that writes output** (§6.2): sort `Ordinal` everywhere, never iterate a `Dictionary`/`HashSet` into output, normalize path separators to `/`, no absolute paths, no culture-dependent casing.
 - **Call-site identity is a UTF-8 byte offset**, never `(file, line, column)` — tree-sitter columns are byte counts, Roslyn positions are UTF-16 (§2.1).
 - Verification: `dotnet build producers/OkfProducer.sln`, `dotnet test producers/OkfProducer.sln`, `dotnet format producers/OkfProducer.sln --verify-no-changes`.
+- **Test helpers are yours to write.** Every task's test code calls small local factories and fixtures — `Member(...)`, `Site(...)`, `Generate(...)`, `Single(...)`, `ExtractSource(...)`, `RunCheck(...)` and the like. They are deliberately not spelled out: they are one-liners over the types the task's **Interfaces → Produces** block defines, and writing them is how you check that block is coherent. Two rules: put them at the bottom of the test file that uses them, and **never invent a production API to make one work** — if a helper needs something the plan does not define, that is a defect in the plan, so stop and say so rather than widening the surface.
 
 ### Three corrections the Roslyn prototype forced, which Task 6 must honour
 
@@ -64,7 +65,7 @@ Measured 2026-08-31, `producers/spikes/RoslynCompilationSpike/`:
 ### Task 1: Core contracts and data types
 
 **Files:**
-- Create: `producers/src/OkfProducer.Core/CodeGraph/SymbolFact.cs`, `CallSite.cs`, `CodeGraph.cs`, `ILanguageExtractor.cs`, `LanguageProfile.cs`, `ISymbolResolver.cs`, `ResolvedEdge.cs`, `CodeGraphBuilder.cs`
+- Create: `producers/src/OkfProducer.Core/CodeGraph/SymbolFact.cs`, `CallSite.cs`, `CodeGraph.cs`, `ExtractionResult.cs`, `FileStatus.cs`, `RunStatus.cs`, `ExtractionLimits.cs`, `ILanguageExtractor.cs`, `LanguageProfile.cs`, `ISymbolResolver.cs`, `ResolvedEdge.cs`, `CodeGraphBuilder.cs`
 - Test: `producers/tests/OkfProducer.Tests/CodeGraph/CodeGraphBuilderTests.cs`
 
 **Interfaces:**
@@ -76,7 +77,14 @@ Measured 2026-08-31, `producers/spikes/RoslynCompilationSpike/`:
   - `record CallSite(string CallerContainer, string CallerName, string CalledName, string RelativePath, int Offset)`
   - `record ResolvedEdge(CallSite Site, string? TargetContainer, string? TargetName, EdgeConfidence Confidence)` with `enum EdgeConfidence { Unresolved, ByName, Exact }`
   - `record CodeGraph(IReadOnlyList<SymbolFact> Symbols, IReadOnlyList<ResolvedEdge> Edges, RunStatus Status)`
+  - `record ExtractionResult(IReadOnlyList<SymbolFact> Symbols, IReadOnlyList<CallSite> Sites, FileStatus Status)`
+  - `enum FileStatus { Extracted, PartiallyExtracted, SkippedTooLarge, SkippedEncoding, SkippedDepth, SkippedUnreadable, SkippedSymlink }`
+  - `record RunStatus(bool IsComplete, IReadOnlyList<(string Path, FileStatus Status)> Skipped)` with `static RunStatus Complete { get; }` = `new(true, [])`
+  - `record ExtractionLimits(long MaxFileBytes, int MaxDepth, TimeSpan Timeout)` with `static ExtractionLimits Default` = 2 MB, depth 512, 10 minutes
+  - `record LanguageProfile(string Language, string GrammarName, string DeclarationQuery, string CallQuery, string DocCommentPrefix)` with two behaviours the later tasks call: `IReadOnlyList<string> SplitContainer(string container)` (`.` for C#/Java namespaces, `/` for a TS/JS module path) and `SymbolVisibility VisibilityOf(string modifiers)`
   - `interface ILanguageExtractor { ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile); }`
+
+> **These five carrier types are defined here, in Task 1, even though only Task 4 gives `FileStatus` and `ExtractionLimits` their behaviour, and only Task 3 fills a real `LanguageProfile`.** Task 1's own tests construct `ExtractionResult` and `CodeGraph`, so deferring the types would leave this task unable to compile — and an executor working Task 1 in isolation, which is the point, would be stuck. Task 4 adds the *policy* that produces these statuses; it does not create the types.
   - `interface ISymbolResolver { bool Owns(string relativePath); IReadOnlyList<ResolvedEdge> Resolve(IReadOnlyList<CallSite> sites, IReadOnlyList<SymbolFact> symbols); }`
   - `sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList<ISymbolResolver> resolvers)` with `CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits)`
 
@@ -183,7 +191,7 @@ Expected: compile errors — none of the types exist yet.
 
 - [ ] **Step 3: Write the contracts**
 
-Create each file with the records and interfaces listed under **Produces** above, plus:
+Create each file with the records, enums and interfaces listed under **Produces** above. Two of them carry a doc comment worth writing now, because a later task depends on reading it correctly:
 
 ```csharp
 // ExtractionResult.cs
@@ -192,6 +200,19 @@ public sealed record ExtractionResult(
     IReadOnlyList<SymbolFact> Symbols,
     IReadOnlyList<CallSite> Sites,
     FileStatus Status);
+
+// RunStatus.cs
+/// <summary>
+/// Whether a whole extraction run succeeded, and what it could not read.
+/// <see cref="IsComplete"/> is the gate Task 11's pruning keys off: "absent
+/// from this run" has two indistinguishable causes — the symbol is gone, or
+/// the file could not be read — so only a complete run may delete anything.
+/// </summary>
+public sealed record RunStatus(bool IsComplete, IReadOnlyList<(string Path, FileStatus Status)> Skipped)
+{
+    /// <summary>A run in which every eligible file extracted cleanly.</summary>
+    public static RunStatus Complete { get; } = new(true, []);
+}
 ```
 
 `CodeGraphBuilder.Build` does exactly this, and nothing more:
@@ -201,7 +222,7 @@ public sealed record ExtractionResult(
 3. Seed every call site as `EdgeConfidence.Unresolved`.
 4. For each resolver in order, replace the verdict of any site whose `RelativePath` that resolver `Owns`, matching on `(RelativePath, Offset)`.
 5. Sort edges `Ordinal` by `(CallerContainer, CallerName, CalledName)`.
-6. Return the graph with an aggregate `RunStatus` (Task 4 defines it; for now `RunStatus.Complete`).
+6. Return the graph with an aggregate `RunStatus`: `RunStatus.Complete` when every `ExtractionResult.Status` is `FileStatus.Extracted`, otherwise a `RunStatus` listing each non-`Extracted` file. Task 4 is what makes the extractor ever report anything but `Extracted`; the aggregation belongs here.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -450,18 +471,19 @@ git commit -m "feat(producer): extract C# symbols and call sites with tree-sitte
 
 ---
 
-### Task 4: Hostile-input policy and run status
+### Task 4: Scope rule, hostile-input policy and run status
 
 **Files:**
-- Create: `producers/src/OkfProducer.Core/CodeGraph/ExtractionLimits.cs`, `FileStatus.cs`, `RunStatus.cs`
+- Create: `producers/src/OkfProducer.Core/CodeGraph/FileEligibility.cs`
 - Modify: `producers/src/OkfProducer.Core/CodeGraph/CodeGraphBuilder.cs`, `producers/src/OkfProducer.CodeGraph.TreeSitter/TreeSitterExtractor.cs`
-- Test: `producers/tests/OkfProducer.Tests/CodeGraph/HostileInputTests.cs`
+- Test: `producers/tests/OkfProducer.Tests/CodeGraph/HostileInputTests.cs`, `ScopeTests.cs`
 
 **Interfaces:**
+- Consumes: `ExtractionLimits`, `FileStatus`, `RunStatus` — **defined in Task 1**; this task gives them their behaviour.
 - Produces:
-  - `record ExtractionLimits(long MaxFileBytes, int MaxDepth, TimeSpan Timeout)` with `static ExtractionLimits Default` = 2 MB, depth 512, 10 minutes
-  - `enum FileStatus { Extracted, PartiallyExtracted, SkippedTooLarge, SkippedEncoding, SkippedDepth, SkippedUnreadable, SkippedSymlink }`
-  - `record RunStatus(bool IsComplete, IReadOnlyList<(string Path, FileStatus Status)> Skipped)`
+  - `record ScopeOptions(bool IncludeTests, bool IncludeInternal)` with `static ScopeOptions Default` = both false
+  - `static bool FileEligibility.IsEligible(string relativePath, RepositorySnapshot snapshot, ScopeOptions scope)`
+  - `static bool FileEligibility.IsInScope(SymbolFact fact, ScopeOptions scope)`
 
 > **This task is what makes pruning safe.** §6.3's transactional rule keys off `RunStatus.IsComplete`; without an honest per-file status, a parse failure is indistinguishable from a deleted symbol and Task 11 would delete valid concepts.
 
@@ -518,11 +540,50 @@ git commit -m "feat(producer): extract C# symbols and call sites with tree-sitte
         => Assert.True(BuildWith(("A.cs", FileStatus.Extracted)).Status.IsComplete);
 ```
 
+And the scope rule (§5.4), in `ScopeTests.cs` — without it the bundle triples in size for no gain:
+
+```csharp
+    [Theory]
+    [InlineData("bin/Debug/net10.0/Gen.cs")]
+    [InlineData("obj/Debug/net10.0/Gen.cs")]
+    [InlineData("node_modules/pkg/index.cs")]
+    [InlineData(".git/hooks/x.cs")]
+    public void Build_output_and_vendored_directories_are_never_scanned(string path)
+        => Assert.False(FileEligibility.IsEligible(path, Snapshot, ScopeOptions.Default));
+
+    [Fact]
+    public void A_project_referencing_a_test_SDK_is_excluded_by_default()
+    {
+        // §5.4: on this repo that removes ~900 methods of OKF4net.Tests. Scoping
+        // on `src/` instead would hard-code a convention that is only ours.
+        Assert.False(FileEligibility.IsEligible("tests/OKF4net.Tests/AuditTests.cs", SnapshotWithTestProject, ScopeOptions.Default));
+        Assert.True(FileEligibility.IsEligible("tests/OKF4net.Tests/AuditTests.cs", SnapshotWithTestProject, ScopeOptions.Default with { IncludeTests = true }));
+    }
+
+    [Theory]
+    [InlineData("test")]
+    [InlineData("tests")]
+    [InlineData("spec")]
+    public void A_conventionally_named_directory_is_excluded_even_without_a_test_SDK(string dir)
+        => Assert.False(FileEligibility.IsEligible($"{dir}/Thing.cs", Snapshot, ScopeOptions.Default));
+
+    [Fact]
+    public void Visibility_and_not_a_path_prefix_does_the_filtering()
+    {
+        Assert.False(FileEligibility.IsInScope(Member("T", "Hidden", SymbolVisibility.Private), ScopeOptions.Default));
+        Assert.False(FileEligibility.IsInScope(Member("T", "Internal", SymbolVisibility.Internal), ScopeOptions.Default));
+        Assert.True(FileEligibility.IsInScope(Member("T", "Internal", SymbolVisibility.Internal), ScopeOptions.Default with { IncludeInternal = true }));
+        Assert.True(FileEligibility.IsInScope(Member("T", "Public", SymbolVisibility.Public), ScopeOptions.Default));
+    }
+```
+
 - [ ] **Step 2: Run to verify failure.**
 
 - [ ] **Step 3: Implement**
 
-Read files as bytes and decode with `new UTF8Encoding(false, throwOnInvalidBytes: true)` inside a `try` — a `DecoderFallbackException` is `SkippedEncoding`. Check length before reading. Reject reparse points using `OKF4net`'s internal detection through the seam `OKF4net.Catalog` already uses, or `FileSystemInfo.LinkTarget` if that seam is not reachable from `producers/`. Thread a `CancellationToken` from the timeout through `CodeGraphBuilder.Build`.
+**The scope rule first**, since it decides which files the rest even sees. `FileEligibility.IsEligible` rejects `bin`, `obj`, `node_modules` and `.git` outright; rejects a file whose owning project references a test SDK (`Microsoft.NET.Test.Sdk`, visible in the `RepositorySnapshot`'s `.csproj` data) unless `IncludeTests`; and rejects a `test`/`tests`/`spec` directory by convention. `IsInScope` filters symbols by visibility, not by path — that is the §5.4 rule, and hard-coding `src/` instead would bake in a convention that is only this repo's.
+
+**Then the hostile-input policy.** Read files as bytes and decode with `new UTF8Encoding(false, throwOnInvalidBytes: true)` inside a `try` — a `DecoderFallbackException` is `SkippedEncoding`. Check length before reading. Reject reparse points using `OKF4net`'s internal detection through the seam `OKF4net.Catalog` already uses, or `FileSystemInfo.LinkTarget` if that seam is not reachable from `producers/`. Thread a `CancellationToken` from the timeout through `CodeGraphBuilder.Build`.
 
 - [ ] **Step 4: Run to verify PASS.**
 
