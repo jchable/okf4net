@@ -522,6 +522,44 @@ public class CodeConceptGeneratorTests
         Assert.Empty(LinkScanner.ExtractLinks(concept.Document.Body));
     }
 
+    [Theory]
+    [InlineData("# Citations are the point.", "\\# Citations are the point.")]
+    [InlineData("- a dashed opening.", "\\- a dashed opening.")]
+    [InlineData("* a starred opening.", "\\* a starred opening.")]
+    [InlineData("+ a plus opening.", "\\+ a plus opening.")]
+    [InlineData("> a quoted opening.", "\\> a quoted opening.")]
+    [InlineData("1. an ordered opening.", "1\\. an ordered opening.")]
+    [InlineData("12) another ordered opening.", "12\\) another ordered opening.")]
+    public void A_description_that_would_open_a_block_is_escaped_at_that_one_character(string doc, string expected)
+    {
+        // A description is rendered as a paragraph; its first non-space character is the only thing that
+        // can change that. `\#` renders as `#`, so the reader is unaffected -- and for an ordered list it
+        // is the DELIMITER that is escaped, since `\1.` would render a literal backslash.
+        //
+        // A text assertion, and stated as one: nothing in OKF4net parses block structure, so unlike the
+        // link and citation cases there is no consumer to assert through. See the report for why the
+        // `# Citations` case is a rendering fault today rather than a LegacyCitations warning.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: doc));
+
+        var concept = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc");
+
+        Assert.Equal(doc, concept.Document.Frontmatter.Description);
+        Assert.Contains("\n\n" + expected + "\n", concept.Document.Body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("A normal opening.")]
+    [InlineData("2026 was the year.")]
+    [InlineData("v1.0 shipped.")]
+    public void A_description_that_opens_no_block_is_left_alone(string doc)
+    {
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: doc));
+
+        Assert.Contains("\n\n" + doc + "\n",
+            Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body,
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Neutralizing_never_doubles_an_escape_the_author_already_wrote()
     {

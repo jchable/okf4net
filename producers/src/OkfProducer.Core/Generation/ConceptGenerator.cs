@@ -237,7 +237,7 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         var body = new StringBuilder();
         body.Append("# ").Append(LiftedBodyText(snapshot.RepoName)).Append("\n\n")
-            .Append(LiftedBodyText(description)).Append('\n');
+            .Append(LiftedBodyParagraph(description)).Append('\n');
         AppendContains(body, children);
 
         return OkfDocumentBuilder
@@ -255,7 +255,7 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         var body = new StringBuilder();
         body.Append("# ").Append(LiftedBodyText(package.Name)).Append("\n\n")
-            .Append(LiftedBodyText(description)).Append('\n');
+            .Append(LiftedBodyParagraph(description)).Append('\n');
         AppendContains(body, children);
 
         return OkfDocumentBuilder
@@ -1057,6 +1057,68 @@ public sealed class ConceptGenerator : IConceptGenerator
     private static string LiftedBodyText(string text) => NeutralizeMarkdownLinks(text);
 
     /// <summary>
+    /// <see cref="LiftedBodyText"/> for lifted text that <b>begins a paragraph</b> in the body: it
+    /// additionally escapes a leading block-construct marker, so a description cannot silently stop
+    /// being a paragraph and start being a heading, a list item or a block quote.
+    ///
+    /// <para><b>Bounded on purpose: one character, at one position.</b> The text is rendered as a
+    /// paragraph, so the only thing that can change its block type is the first non-space character --
+    /// <c>#</c>, <c>-</c>, <c>*</c>, <c>+</c>, <c>&gt;</c>, or a run of digits followed by <c>.</c> or
+    /// <c>)</c>. This is deliberately not a general markdown escaper: everything further into the line
+    /// is inline markup, which renders as the author's own emphasis and is none of this producer's
+    /// business. CommonMark renders <c>\#</c> as <c>#</c>, so the reader sees exactly what was
+    /// written.</para>
+    ///
+    /// <para><b>For an ordered-list marker the delimiter is escaped, not the digit</b>, and the two are
+    /// not interchangeable: <c>\1.</c> renders a literal backslash, because a backslash escape is only
+    /// defined for ASCII punctuation, while <c>1\.</c> renders <c>1.</c> and forms no list.</para>
+    ///
+    /// <para>The sharpest case is <c>#</c>. A description that opens a heading is a rendering fault on
+    /// its own, and <c>LinkScanner.ExtractCitations</c> reads a heading whose title is exactly
+    /// <c>Citations</c> as §13.1's legacy citations marker -- a structural claim about the concept,
+    /// made by text its author wrote for a compiler.</para>
+    /// </summary>
+    private static string LiftedBodyParagraph(string text) => EscapeLeadingBlockMarker(LiftedBodyText(text));
+
+    /// <summary>
+    /// Escapes the one character that would make <paramref name="text"/> open a markdown block, or
+    /// returns it unchanged when it opens none. See <see cref="LiftedBodyParagraph"/> for the bound.
+    /// </summary>
+    private static string EscapeLeadingBlockMarker(string text)
+    {
+        var start = 0;
+        while (start < text.Length && char.IsWhiteSpace(text[start]))
+        {
+            start++;
+        }
+
+        if (start >= text.Length)
+        {
+            return text;
+        }
+
+        if (text[start] is '#' or '-' or '*' or '+' or '>')
+        {
+            return text.Insert(start, "\\");
+        }
+
+        if (!char.IsAsciiDigit(text[start]))
+        {
+            return text;
+        }
+
+        var delimiter = start;
+        while (delimiter < text.Length && char.IsAsciiDigit(text[delimiter]))
+        {
+            delimiter++;
+        }
+
+        return delimiter < text.Length && text[delimiter] is '.' or ')'
+            ? text.Insert(delimiter, "\\")
+            : text;
+    }
+
+    /// <summary>
     /// A <c>description</c> as it is rendered <b>into a body</b>: neutralized as
     /// <see cref="LiftedBodyText"/> when this producer derived it, and left exactly as the author wrote
     /// it when the author wrote it in the bundle.
@@ -1085,7 +1147,7 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// </summary>
     private static string BodyDescription(string description, string descriptionSource) =>
         descriptionSource is DocCommentSource.SourceLabel or SignatureSource.SourceLabel
-            ? LiftedBodyText(description)
+            ? LiftedBodyParagraph(description)
             : description;
 
     /// <summary>

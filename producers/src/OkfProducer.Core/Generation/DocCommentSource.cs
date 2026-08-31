@@ -41,7 +41,11 @@ public sealed class DocCommentSource : IDescriptionSource
             return null;
         }
 
-        var text = UnwrapXmlDocTags(fact.DocComment).Trim();
+        // Unwrap, THEN decode -- the reverse order is the natural-looking mistake and it is wrong.
+        // Decoding first would turn an author's `&lt;c&gt;` (an escaped literal they wrote deliberately,
+        // meaning the characters `<c>`) into something the unwrapper would then eat as a tag. In this
+        // order a decoded `<` is only ever a character: every tag is already gone.
+        var text = DecodeXmlEntities(UnwrapXmlDocTags(fact.DocComment)).Trim();
 
         // Unwrapping can empty a comment that was nothing but tags (`<inheritdoc/>` alone is the real
         // case). An empty description is not a description: fall through to the next source in the
@@ -113,6 +117,84 @@ public sealed class DocCommentSource : IDescriptionSource
 
         return CollapseWhitespaceRuns(result.ToString());
     }
+
+    /// <summary>
+    /// Decodes the five XML predefined entities, in one left-to-right pass. Run <b>after</b>
+    /// <see cref="UnwrapXmlDocTags"/>: an <c>&amp;lt;</c> is not markup, it is the author's way of
+    /// writing the literal character <c>&lt;</c>, and leaving it encoded means shipping
+    /// <c>List&amp;lt;T&amp;gt;</c> in prose a human reads and that <c>ConceptSearch</c> indexes at
+    /// twice the body's weight. Generic type names in a summary are ordinary in a repository that
+    /// enforces XML docs.
+    ///
+    /// <para>A single pass, never a repeated one, which is what makes <c>&amp;amp;lt;</c> decode to
+    /// <c>&amp;lt;</c> and stop there: the author escaped the ampersand, so the text they meant is
+    /// <c>&amp;lt;</c>, and a second pass would silently turn their escaped text into the character it
+    /// describes.</para>
+    ///
+    /// <para><b>No HTML guard here, deliberately.</b> A decoded <c>&lt;div&gt;</c> is raw HTML in a
+    /// body, and this repository has already decided where that defense lives: the viewer sanitises the
+    /// parsed DOM, and <c>CLAUDE.md</c> records that sanitiser as <i>the whole</i> defense rather than
+    /// one layer, having measured and rejected upstream neutralisation as "defense in depth" -- it
+    /// stopped nothing the sanitiser did not already stop, while silently deleting benign content. A
+    /// second, weaker guard here would contradict a decision that was made with evidence.</para>
+    /// </summary>
+    private static string DecodeXmlEntities(string text)
+    {
+        if (!text.Contains('&', StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var result = new StringBuilder(text.Length);
+        var i = 0;
+
+        while (i < text.Length)
+        {
+            if (text[i] == '&' && MatchEntity(text, i) is var (character, length))
+            {
+                result.Append(character);
+                i += length;
+                continue;
+            }
+
+            result.Append(text[i]);
+            i++;
+        }
+
+        return result.ToString();
+    }
+
+    /// <summary>
+    /// The character one of the five predefined entities at <paramref name="index"/> stands for and the
+    /// length of its markup, or <see langword="null"/> for a bare <c>&amp;</c> that begins none of them
+    /// (including a numeric entity, deliberately left alone).
+    /// </summary>
+    private static (char Character, int Length)? MatchEntity(string text, int index)
+    {
+        foreach (var (entity, character) in Entities)
+        {
+            if (string.CompareOrdinal(text, index, entity, 0, entity.Length) == 0)
+            {
+                return (character, entity.Length);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The five XML predefined entities. <c>&amp;amp;</c> is listed first so it wins the prefix race
+    /// against nothing at all -- the others share no prefix with it -- and the order is fixed rather
+    /// than incidental because a longest-match rule is what keeps <c>&amp;amp;lt;</c> from decoding twice.
+    /// </summary>
+    private static readonly (string Entity, char Character)[] Entities =
+    [
+        ("&amp;", '&'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&quot;", '"'),
+        ("&apos;", '\''),
+    ];
 
     /// <summary>
     /// Whether the <c>&lt;</c> at <paramref name="index"/> opens something tag-shaped: a name, or a

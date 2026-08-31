@@ -187,6 +187,29 @@ public class DescriptionTests
         Assert.Contains("Scan", text, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("Returns a <c>List&lt;T&gt;</c> of results.", "Returns a List<T> of results.")]
+    [InlineData("Splits on &quot;,&quot; only.", "Splits on \",\" only.")]
+    [InlineData("Reads A &amp; B.", "Reads A & B.")]
+    [InlineData("The &apos;name&apos; field.", "The 'name' field.")]
+    public void Xml_entities_are_decoded_once_the_tags_are_gone(string doc, string expected)
+        => Assert.Equal(expected, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+
+    [Fact]
+    public void An_escaped_ampersand_is_decoded_once_and_not_twice()
+    {
+        // The author escaped the ampersand, so the text they meant is the six characters `&lt;`, not the
+        // character it names. One left-to-right pass gives that; a repeated pass would silently rewrite
+        // their escaped text into `<`.
+        Assert.Equal("Write &lt; for a less-than.",
+            Resolver.Resolve(Member("T", "Scan", "Write &amp;lt; for a less-than."), existing: null).Text);
+    }
+
+    [Fact]
+    public void A_numeric_entity_is_left_alone()
+        => Assert.Equal("Code point &#60; here.",
+            Resolver.Resolve(Member("T", "Scan", "Code point &#60; here."), existing: null).Text);
+
     [Fact]
     public void Unwrapping_a_tag_does_not_leave_a_double_space_behind()
         => Assert.Equal("Scans a body.", Resolver.Resolve(Member("T", "Scan", "Scans a <para></para> body."), existing: null).Text);
