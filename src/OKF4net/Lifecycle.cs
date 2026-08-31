@@ -20,14 +20,21 @@ public enum ConceptStatus
 /// A concept's lifecycle fields (§5.4/§5.5): <c>status</c> and <c>stale_after</c>.
 /// Parsing is lenient — an unknown status resolves to <see cref="ConceptStatus.Stable"/> with
 /// <see cref="StatusIsKnown"/> false, and a malformed <c>stale_after</c> leaves
-/// <see cref="StaleAfter"/> null with <see cref="StaleAfterMalformed"/> true. The validator warns on both.
+/// <see cref="StaleAfter"/> null with <see cref="StaleAfterMalformed"/> true.
+/// The validator does not read either flag: it classifies <see cref="StaleAfterRaw"/>
+/// directly through the shared §5 seam (<see cref="OkfTimestamp.Classify"/>),
+/// the same way it does for the other five §5 timestamp keys.
+/// <see cref="StaleAfterMalformed"/> and <see cref="StaleAfterIsLegacyDate"/>
+/// remain public API for consumers wanting that specific distinction, with no
+/// internal caller -- the same standing as <see cref="BundleValidator.IsIso8601DateTime"/>.
 /// </summary>
 /// <remarks>
 /// §5 requires every timestamp-valued key to be an ISO 8601 datetime with an
 /// explicit UTC offset (<c>2026-06-30T14:00:00Z</c>). A bare <c>YYYY-MM-DD</c>,
 /// or a datetime with no offset, is still read — normalized to midnight UTC and
-/// to UTC respectively — but sets <see cref="StaleAfterIsLegacyDate"/> so the
-/// validator can warn, in the same way the §13.1 legacy fields do.
+/// to UTC respectively — and sets <see cref="StaleAfterIsLegacyDate"/> for
+/// callers that want to distinguish it, in the same way the §13.1 legacy
+/// fields are tracked.
 /// </remarks>
 public readonly record struct Lifecycle(ConceptStatus Status, bool StatusIsKnown, string? StaleAfterRaw, DateTimeOffset? StaleAfter)
 {
@@ -35,8 +42,12 @@ public readonly record struct Lifecycle(ConceptStatus Status, bool StatusIsKnown
     public bool StaleAfterMalformed => StaleAfterRaw is not null && StaleAfter is null;
 
     /// <summary>
-    /// True when <c>stale_after</c> parsed but not in the §5 form — a bare
-    /// <c>YYYY-MM-DD</c>, or a datetime carrying no explicit offset.
+    /// True when <c>stale_after</c> parsed as a bare <c>YYYY-MM-DD</c> calendar
+    /// date, or as a datetime carrying no explicit offset at all. False for a
+    /// value that carries an explicit offset but is spelled some other way
+    /// (e.g. <c>2026-6-3T14:00:00Z</c>) -- that is a different, non-legacy
+    /// form of not being §5-conformant, and conflating the two here would
+    /// repeat the mislabelling fixed by the commit that split them apart.
     /// </summary>
     public bool StaleAfterIsLegacyDate { get; private init; }
 
