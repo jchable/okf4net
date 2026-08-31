@@ -1,45 +1,103 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
+using System.Text;
 using OKF4net;
+using OKF4net.Yaml;
+using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Scanning;
+
+// In any namespace with a sibling `CodeGraph` NAMESPACE in scope -- OkfProducer.Core.Generation has
+// OkfProducer.Core.CodeGraph, and OkfProducer.Tests.Generation has OkfProducer.Tests.CodeGraph -- the
+// bare name binds to that namespace before it can bind to the type of the same name a `using` brought
+// in (CS0118), so the type needs an alias. Not a workaround for a naming mistake here: the type is
+// named after what it is, and its namespace after what it holds.
+using CodeGraphModel = OkfProducer.Core.CodeGraph.CodeGraph;
 
 namespace OkfProducer.Core.Generation;
 
 /// <summary>
-/// Maps a <see cref="RepositorySnapshot"/> to concepts via <see cref="OkfDocumentBuilder"/>: one
-/// repository overview (fixed id <c>overview</c>), one <c>packages/&lt;slug&gt;</c> concept per
-/// detected package, and one <c>docs/&lt;slug&gt;</c> concept per detected doc. A concept id
-/// collision (two names slugifying to the same segment) is disambiguated with a numeric suffix
-/// (<c>-2</c>, <c>-3</c>, ...) -- <see cref="ConceptId.Slugify"/> itself never deduplicates, that
-/// responsibility belongs to its caller (this class).
+/// Maps a <see cref="RepositorySnapshot"/> -- and, on the code path, a
+/// <see cref="OkfProducer.Core.CodeGraph.CodeGraph"/> -- to concepts via <see cref="OkfDocumentBuilder"/>:
+/// one repository overview (fixed id <c>overview</c>), one <c>packages/&lt;slug&gt;</c> concept per
+/// detected package, one <c>docs/&lt;slug&gt;</c> concept per detected doc, and one
+/// <c>code/&lt;language&gt;/&lt;container...&gt;/&lt;name&gt;</c> concept per extracted symbol (§3.1).
+///
+/// Every id, in all four families, is allocated through a single <see cref="ConceptIdRegistry"/>
+/// (§3.4), so a collision between families is seen rather than silently producing two concepts that
+/// want the same file. A collision is disambiguated with a numeric suffix (<c>-2</c>, <c>-3</c>, ...)
+/// -- <see cref="ConceptId.Slugify"/> itself never deduplicates, that responsibility belongs to its
+/// caller (this class).
 /// </summary>
 public sealed class ConceptGenerator : IConceptGenerator
 {
+    /// <summary>
+    /// The §7 actor this producer writes into every generated concept's <c>generated.by</c>. Derived
+    /// from the assembly version rather than hard-coded so it cannot drift from the version the tool
+    /// actually ships as; the informational version (which can carry a git hash) is deliberately not
+    /// used, because it would churn every concept on every build.
+    /// </summary>
+    public static string ProducerActor { get; } =
+        $"okfgen/{typeof(ConceptGenerator).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"}";
+
+    /// <summary>
+    /// §4.2's chain, in order: a doc comment wins outright (the code stays the source of truth), and
+    /// <see cref="SignatureSource"/> is the terminal fallback that always produces something. A future
+    /// LLM enrichment step is one more <see cref="IDescriptionSource"/> appended here and nothing else.
+    /// </summary>
+    private static readonly DescriptionResolver Descriptions = new([new DocCommentSource(), new SignatureSource()]);
+
     /// <inheritdoc/>
-    public IReadOnlyList<GeneratedConcept> Generate(RepositorySnapshot snapshot)
+    public IReadOnlyList<GeneratedConcept> Generate(RepositorySnapshot snapshot) =>
+        Generate(snapshot, codeGraph: null, GenerateOptions.Default);
+
+    /// <summary>
+    /// Generates every concept for <paramref name="snapshot"/>, each paired with its concept id. When
+    /// <paramref name="codeGraph"/> is non-null, the <c>code/</c> family is generated too, from its
+    /// symbols and resolved edges; when it is <see langword="null"/> (the <c>--no-code</c> path, and
+    /// what <see cref="Generate(RepositorySnapshot)"/> calls) the output is exactly what it always was.
+    ///
+    /// Relies on -- and does not re-check -- <see cref="OkfProducer.Core.CodeGraph.CodeGraph"/>'s own
+    /// invariant that no edge references a symbol absent from
+    /// <see cref="OkfProducer.Core.CodeGraph.CodeGraph.Symbols"/>: an edge whose caller was
+    /// scope-filtered is already dropped, and one whose target was filtered is already degraded to
+    /// <see cref="EdgeConfidence.Unresolved"/>.
+    /// </summary>
+    public IReadOnlyList<GeneratedConcept> Generate(RepositorySnapshot snapshot, CodeGraphModel? codeGraph, GenerateOptions options)
     {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(options);
+
+        // §3.4: one registry for all four families. `overview` goes through it like everything else --
+        // an empty prefix, so the registered key is the bare id -- rather than being seeded as a magic
+        // string, so a package or doc that slugified to "overview" would be seen as the collision it is.
+        var registry = new ConceptIdRegistry();
+
         var results = new List<GeneratedConcept>
         {
-            new(ConceptId.Parse("overview"), BuildOverview(snapshot)),
+            new(registry.Register(string.Empty, "overview"), BuildOverview(snapshot)),
         };
-
-        var usedIds = new HashSet<string>(StringComparer.Ordinal) { "overview" };
 
         foreach (var package in snapshot.Packages)
         {
-            var id = UniqueConceptId("packages", package.Name, usedIds);
+            var id = UniqueConceptId("packages", package.Name, registry);
             results.Add(new GeneratedConcept(id, BuildPackageConcept(package)));
         }
 
         foreach (var doc in snapshot.Docs)
         {
-            var id = UniqueConceptId("docs", doc.Title, usedIds);
+            var id = UniqueConceptId("docs", doc.Title, registry);
             results.Add(new GeneratedConcept(id, BuildDocConcept(doc)));
+        }
+
+        if (codeGraph is not null)
+        {
+            results.AddRange(BuildCodeConcepts(codeGraph, registry, options));
         }
 
         return results;
     }
 
-    private static ConceptId UniqueConceptId(string prefix, string name, HashSet<string> usedIds)
+    private static ConceptId UniqueConceptId(string prefix, string name, ConceptIdRegistry registry)
     {
         string baseSlug;
         try
@@ -49,7 +107,7 @@ public sealed class ConceptGenerator : IConceptGenerator
         catch (ConceptIdException)
         {
             // `name` normalized to nothing (e.g. entirely non-ASCII, or empty) -- fall back to a
-            // generic slug derived from the prefix; the collision loop below still disambiguates
+            // generic slug derived from the prefix; the registry's collision loop still disambiguates
             // multiple equally-unnameable entries under the same prefix with a numeric suffix.
             baseSlug = prefix switch
             {
@@ -76,19 +134,7 @@ public sealed class ConceptGenerator : IConceptGenerator
             baseSlug = baseSlug[..^".md".Length];
         }
 
-        // "index"/"log" are reserved concept ids (BundleConceptWriter.WriteConcept rejects them --
-        // they'd collide with the bundle's own index.md/log.md). Treat a name that slugifies to one of
-        // these the same as an ordinary collision: fall through to the numeric-suffix loop below
-        // instead of producing an id that write time would reject.
-        var segment = baseSlug;
-        var suffix = 2;
-        while (IsReservedSegment(segment) || !usedIds.Add($"{prefix}/{segment}"))
-        {
-            segment = $"{baseSlug}-{suffix}";
-            suffix++;
-        }
-
-        return ConceptId.Parse($"{prefix}/{segment}");
+        return registry.Register(prefix, baseSlug);
     }
 
     /// <summary>
@@ -108,7 +154,7 @@ public sealed class ConceptGenerator : IConceptGenerator
         {
             0 => $"Repository {snapshot.RepoName}.",
             1 => $"Repository {snapshot.RepoName}, containing 1 detected package.",
-            var n => $"Repository {snapshot.RepoName}, containing {n} detected packages.",
+            var n => $"Repository {snapshot.RepoName}, containing {n.ToString(CultureInfo.InvariantCulture)} detected packages.",
         };
 
         return OkfDocumentBuilder
@@ -147,4 +193,438 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Body($"# {doc.Title}\n\nSee `{doc.RelativePath}` in the repository.\n")
             .Build();
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // §4: the code family.
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>The key one code concept is built from: overloads collapse onto it (§3.2).</summary>
+    private readonly record struct SymbolKey(string Language, string Container, string Name);
+
+    /// <summary>
+    /// Builds the <c>code/</c> family in two passes, and the order matters: every id must be allocated
+    /// before any body is written, because a body links to <i>other</i> concepts' ids and those ids
+    /// are only final once the registry has resolved every collision (§3.3).
+    /// </summary>
+    private static List<GeneratedConcept> BuildCodeConcepts(CodeGraphModel graph, ConceptIdRegistry registry, GenerateOptions options)
+    {
+        var profiles = new Dictionary<string, LanguageProfile>(StringComparer.Ordinal);
+
+        // Sorted, never grouped-and-iterated: a Dictionary/HashSet enumeration order must never reach
+        // the output (§6.2). CodeGraphBuilder already sorts its symbols, but sorting again here is what
+        // makes this method deterministic on its own, for any CodeGraph a caller hands it.
+        var groups = graph.Symbols
+            .GroupBy(s => new SymbolKey(s.Language, s.Container, s.Name))
+            .Select(g => (
+                Key: g.Key,
+                Declarations: (IReadOnlyList<SymbolFact>)g
+                    .OrderBy(s => s.RelativePath, StringComparer.Ordinal)
+                    .ThenBy(s => s.StartOffset)
+                    .ThenBy(s => s.Signature, StringComparer.Ordinal)
+                    .ToList()))
+            .OrderBy(g => g.Key.Language, StringComparer.Ordinal)
+            .ThenBy(g => g.Key.Container, StringComparer.Ordinal)
+            .ThenBy(g => g.Key.Name, StringComparer.Ordinal)
+            .ToList();
+
+        // Pass 1 -- ids. Registered in the sorted order above so §3.3's numeric tie-break is decided by
+        // the Ordinal order of the symbols' own names, not by which file the scanner happened to reach
+        // first: a file move or a line shift must not renumber anything.
+        var ids = new Dictionary<SymbolKey, ConceptId>();
+        var idsByName = new Dictionary<(string Container, string Name), ConceptId>();
+        var primaryByName = new Dictionary<(string Container, string Name), SymbolFact>();
+
+        foreach (var (key, declarations) in groups)
+        {
+            var profile = ProfileFor(key.Language, options, profiles);
+            var id = RegisterCodeId(declarations[0], profile, registry);
+            ids[key] = id;
+
+            // Edges name their target as (container, name) only -- no language. With a single profile
+            // in v1 that is unambiguous; if two languages ever declare the same container and name, the
+            // first in the sorted order above wins the link target, deterministically.
+            idsByName.TryAdd((key.Container, key.Name), id);
+            primaryByName.TryAdd((key.Container, key.Name), declarations[0]);
+        }
+
+        // Calls are hung off the CALLER's concept (§4.5 rules out the reverse direction), so index the
+        // edges by caller once rather than rescanning the edge list per concept.
+        var callsByCaller = new Dictionary<(string Container, string Name), List<ResolvedEdge>>();
+        foreach (var edge in graph.Edges
+            .OrderBy(e => e.Site.CallerContainer, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.CallerName, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.CalledName, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.RelativePath, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.Offset))
+        {
+            var callerKey = (edge.Site.CallerContainer, edge.Site.CallerName);
+            if (!callsByCaller.TryGetValue(callerKey, out var list))
+            {
+                list = [];
+                callsByCaller[callerKey] = list;
+            }
+
+            list.Add(edge);
+        }
+
+        // Pass 2 -- documents.
+        var concepts = new List<GeneratedConcept>(groups.Count);
+        foreach (var (key, declarations) in groups)
+        {
+            var id = ids[key];
+            var profile = ProfileFor(key.Language, options, profiles);
+            callsByCaller.TryGetValue((key.Container, key.Name), out var edges);
+
+            concepts.Add(new GeneratedConcept(id, BuildCodeConcept(
+                id, declarations, profile, edges ?? [], idsByName, primaryByName, options)));
+        }
+
+        return concepts;
+    }
+
+    private static OkfDocument BuildCodeConcept(
+        ConceptId id,
+        IReadOnlyList<SymbolFact> declarations,
+        LanguageProfile profile,
+        IReadOnlyList<ResolvedEdge> edges,
+        IReadOnlyDictionary<(string Container, string Name), ConceptId> idsByName,
+        IReadOnlyDictionary<(string Container, string Name), SymbolFact> primaryByName,
+        GenerateOptions options)
+    {
+        var primary = declarations[0];
+        var title = QualifiedTitle(primary, profile);
+        var (description, descriptionSource) = Descriptions.Resolve(primary, options.ExistingFrontmatter?.Invoke(id));
+
+        var builder = OkfDocumentBuilder
+            .ForType(ConceptTypeName(primary))
+            .Title(title)
+            .Description(description)
+            .Tags(ConceptTags(primary))
+            .Body(BuildCodeBody(title, description, declarations, edges, idsByName, primaryByName, profile));
+
+        // §4.3: a URL short-circuits the validator's path classifier, so it is the only shape of
+        // `resource` a code concept can carry without earning a warning. No URL => no field.
+        if (ResourceUrl(primary, options) is { } resource)
+        {
+            builder = builder.Resource(resource);
+        }
+
+        // §4.5: no `sources` block -- it would duplicate `resource` on every one of ~470 concepts.
+        builder = builder.Extension(DescriptionResolver.DescriptionSourceKey, new YamlString(descriptionSource));
+
+        // §4.4: `by` and never `at`. All ~470 concepts are generated in one pass, so a per-concept
+        // timestamp would store a single fact 470 times AND rewrite all 470 files on every
+        // regeneration -- the bundle's `git diff` would show 470 timestamps instead of what changed in
+        // the code. `at` (and `revision`) belong to `overview` alone.
+        var generated = new YamlMapping();
+        generated.Insert("by", new YamlString(ProducerActor));
+        builder = builder.Extension("generated", generated);
+
+        return builder.Build();
+    }
+
+    private static string BuildCodeBody(
+        string title,
+        string description,
+        IReadOnlyList<SymbolFact> declarations,
+        IReadOnlyList<ResolvedEdge> edges,
+        IReadOnlyDictionary<(string Container, string Name), ConceptId> idsByName,
+        IReadOnlyDictionary<(string Container, string Name), SymbolFact> primaryByName,
+        LanguageProfile profile)
+    {
+        var body = new StringBuilder();
+        body.Append("# ").Append(title).Append("\n\n");
+        body.Append(description.TrimEnd()).Append('\n');
+
+        // §3.2: one concept per (container, name), so an overload set is one concept listing every
+        // signature with its own span, rather than `validate-2`/`validate-3` ids that renumber their
+        // neighbours whenever an overload is added.
+        body.Append("\n## Signatures\n\n");
+        foreach (var declaration in declarations)
+        {
+            body.Append("- ").Append(CodeSpan(declaration.Signature))
+                .Append(" — ").Append(CodeSpan(SpanLabel(declaration))).Append('\n');
+        }
+
+        // Both Exact and ByName become links; only Unresolved stays text. Measured: 54-58% of call
+        // sites have no declaration anywhere in the repository (they are BCL or NuGet), so linking
+        // them would emit that many BrokenLink diagnostics and drown `okf validate`. In a code span
+        // they stay readable and greppable without polluting the graph (§4.5).
+        var links = new List<string>();
+        var unresolved = new List<string>();
+
+        foreach (var edge in edges)
+        {
+            if (edge.Confidence != EdgeConfidence.Unresolved
+                && edge.TargetContainer is { } targetContainer
+                && edge.TargetName is { } targetName
+                && idsByName.TryGetValue((targetContainer, targetName), out var targetId))
+            {
+                var targetTitle = primaryByName.TryGetValue((targetContainer, targetName), out var targetFact)
+                    ? QualifiedTitle(targetFact, profile)
+                    : targetName;
+
+                // Absolute (§6.1's recommended form): the generator never does relative-path
+                // arithmetic, and `okf graph` resolves the link from the id alone.
+                links.Add($"- [{LinkText(targetTitle)}](/{targetId})");
+            }
+            else
+            {
+                // Defensive: CodeGraph guarantees a resolved target exists in Symbols, so the lookup
+                // above cannot miss. If it ever did, rendering text is the safe direction -- a link to
+                // a concept that was never generated is a broken link in the user's bundle.
+                unresolved.Add($"- {CodeSpan(edge.Site.CalledName)}");
+            }
+        }
+
+        AppendSection(body, "## Calls", links);
+        AppendSection(body, "## Calls (unresolved)", unresolved);
+
+        // §4.5: no `## Called by`. Bundle.Backlinks(id) is public and computed at load, so
+        // materialising reverse links would duplicate derivable information and double the churn --
+        // adding one call would rewrite the callee's concept too.
+        return body.ToString();
+    }
+
+    /// <summary>
+    /// Appends one bullet section, deduplicated and sorted <see cref="StringComparer.Ordinal"/>, or
+    /// nothing at all when there is nothing to list. The distinct/sort is on the fully rendered line,
+    /// so two call sites from the same caller to the same target collapse to one bullet.
+    /// </summary>
+    private static void AppendSection(StringBuilder body, string heading, List<string> lines)
+    {
+        var rendered = lines.Distinct(StringComparer.Ordinal).OrderBy(l => l, StringComparer.Ordinal).ToList();
+        if (rendered.Count == 0)
+        {
+            return;
+        }
+
+        body.Append('\n').Append(heading).Append("\n\n");
+        foreach (var line in rendered)
+        {
+            body.Append(line).Append('\n');
+        }
+    }
+
+    /// <summary>
+    /// Allocates this symbol's concept id, falling back rather than throwing when a name cannot form
+    /// a concept id segment at all. That is not hypothetical: a C# identifier may legally be entirely
+    /// non-ASCII (<c>public void 概要()</c>), and <see cref="ConceptId.Slugify"/> maps every such
+    /// character to <c>-</c> and then rejects the empty result. §2.3's policy is that hostile or merely
+    /// unusual input degrades the output, never aborts the run, so the candidates below are tried in
+    /// order and keep as much of the real path as each failure allows: the symbol's own name replaced
+    /// by its kind, then the container dropped, then both. The registry disambiguates whatever lands.
+    /// </summary>
+    private static ConceptId RegisterCodeId(SymbolFact fact, LanguageProfile profile, ConceptIdRegistry registry)
+    {
+        var token = KindTag(fact.Kind);
+
+        SymbolFact[] candidates =
+        [
+            fact,
+            fact with { Name = token },
+            fact with { Container = string.Empty },
+            fact with { Container = string.Empty, Name = token },
+        ];
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var path = CodeConceptIds.For(candidate, profile);
+                var slash = path.LastIndexOf('/');
+
+                // The last segment is already slugified by CodeConceptIds; Register slugifies again,
+                // which is idempotent, and runs the reserved-segment and collision rules (§3.3).
+                return slash < 0
+                    ? registry.Register(string.Empty, path)
+                    : registry.Register(path[..slash], path[(slash + 1)..]);
+            }
+            catch (ConceptIdException)
+            {
+                // Either the name/container could not be slugified, or -- since CodeConceptIds does not
+                // validate them -- the "code"/language segments could not form a concept id.
+            }
+        }
+
+        // Reachable only when the language token itself is not a usable segment; "code" and the kind
+        // token both always are, so this cannot throw.
+        return registry.Register("code", token);
+    }
+
+    /// <summary>
+    /// The profile to cut <paramref name="language"/>'s containers with. Falls back to a
+    /// container-only profile rather than skipping the symbol: only
+    /// <see cref="LanguageProfile.SplitContainer"/> is consulted here and it is a pure function of
+    /// <see cref="LanguageProfile.Language"/>, so a caller that omitted its profiles still gets the
+    /// same ids it would have got with them.
+    /// </summary>
+    private static LanguageProfile ProfileFor(string language, GenerateOptions options, Dictionary<string, LanguageProfile> cache)
+    {
+        if (cache.TryGetValue(language, out var cached))
+        {
+            return cached;
+        }
+
+        var profile = options.Profiles.FirstOrDefault(p => string.Equals(p.Language, language, StringComparison.Ordinal))
+            ?? new LanguageProfile(
+                Language: language,
+                GrammarName: string.Empty,
+                DeclarationQuery: string.Empty,
+                CallQuery: string.Empty,
+                DocCommentPrefix: string.Empty,
+                FileExtensions: []);
+
+        cache[language] = profile;
+        return profile;
+    }
+
+    /// <summary>
+    /// The concept's <c>title</c>: the symbol qualified by its <i>immediate</i> owner
+    /// (<c>Scanner.Scan</c>, <c>OKF4net.LinkScanner</c>), which is §4.1's shape. The full dotted
+    /// container is deliberately not repeated -- the concept id already carries the whole hierarchy,
+    /// and a title is what a reader and <c>ConceptSearch</c>'s title weighting see.
+    /// </summary>
+    private static string QualifiedTitle(SymbolFact fact, LanguageProfile profile)
+    {
+        var segments = profile.SplitContainer(fact.Container);
+        return segments.Count == 0 ? fact.Name : $"{segments[^1]}.{fact.Name}";
+    }
+
+    /// <summary>The <c>type</c> field: e.g. <c>C# Member</c>, <c>C# Type</c>.</summary>
+    private static string ConceptTypeName(SymbolFact fact) =>
+        $"{LanguageDisplayName(fact.Language)} {KindNoun(fact.Kind)}";
+
+    private static string LanguageDisplayName(string language) => language switch
+    {
+        "csharp" => "C#",
+        "" => "Code",
+        // Invariant, never culture-aware: a Turkish-locale build must not title a "typescript" symbol
+        // "Typescript" with a dotless capital I lurking anywhere in the pipeline (§6.2).
+        _ => char.ToUpperInvariant(language[0]) + language[1..],
+    };
+
+    private static string KindNoun(SymbolKind kind) => kind switch
+    {
+        SymbolKind.Type => "Type",
+        SymbolKind.Namespace => "Namespace",
+        _ => "Member",
+    };
+
+    private static string KindTag(SymbolKind kind) => kind switch
+    {
+        SymbolKind.Type => "type",
+        SymbolKind.Namespace => "namespace",
+        _ => "member",
+    };
+
+    private static string VisibilityTag(SymbolVisibility visibility) => visibility switch
+    {
+        SymbolVisibility.Public => "public",
+        SymbolVisibility.Internal => "internal",
+        _ => "private",
+    };
+
+    private static string[] ConceptTags(SymbolFact fact) =>
+        fact.Language.Length == 0
+            ? [KindTag(fact.Kind), VisibilityTag(fact.Visibility)]
+            : [fact.Language, KindTag(fact.Kind), VisibilityTag(fact.Visibility)];
+
+    /// <summary>
+    /// The forge permalink for one declaration, or <see langword="null"/> when this run has nothing to
+    /// build one from. See <see cref="GenerateOptions.RepoUrl"/> for why the alternative is no field
+    /// at all rather than a repo-relative path. Built segment by segment with escaping, never by raw
+    /// concatenation (§4.3), and the ref keeps its own <c>/</c> separators so <c>feature/x</c> still
+    /// addresses a blob.
+    /// </summary>
+    private static string? ResourceUrl(SymbolFact declaration, GenerateOptions options)
+    {
+        if (options.RepoUrl is not { Length: > 0 } repoUrl || options.Rev is not { Length: > 0 } rev)
+        {
+            return null;
+        }
+
+        // A value that is not an absolute http(s) URL would not be classified as
+        // FrontmatterResourceKind.Url by the validator, and would then be resolved as a path against
+        // the concept's own directory -- the exact warning-per-concept outcome §4.3 exists to avoid.
+        if (!Uri.TryCreate(repoUrl, UriKind.Absolute, out var parsed)
+            || parsed.Scheme is not ("http" or "https"))
+        {
+            return null;
+        }
+
+        var basePart = repoUrl.TrimEnd('/');
+        var revPart = EscapePath(rev);
+        var pathPart = EscapePath(NormalizeSeparators(declaration.RelativePath));
+
+        return $"{basePart}/blob/{revPart}/{pathPart}{LineSpan(declaration)}";
+    }
+
+    private static string EscapePath(string path) =>
+        string.Join('/', path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.EscapeDataString));
+
+    private static string NormalizeSeparators(string path) => path.Replace('\\', '/');
+
+    private static string LineSpan(SymbolFact declaration) =>
+        declaration.StartLine == declaration.EndLine
+            ? $"#L{declaration.StartLine.ToString(CultureInfo.InvariantCulture)}"
+            : $"#L{declaration.StartLine.ToString(CultureInfo.InvariantCulture)}-L{declaration.EndLine.ToString(CultureInfo.InvariantCulture)}";
+
+    /// <summary>The <c>path#Lstart-Lend</c> label shown next to a signature in the body.</summary>
+    private static string SpanLabel(SymbolFact declaration) =>
+        NormalizeSeparators(declaration.RelativePath) + LineSpan(declaration);
+
+    /// <summary>
+    /// Wraps <paramref name="text"/> in a markdown code span that survives the text itself: the fence
+    /// is one backtick longer than the longest backtick run inside, padded with spaces when the content
+    /// starts or ends with a backtick, and control characters (a code span cannot contain a newline)
+    /// are flattened to spaces. Signatures and called names come out of source files, which §2.3 treats
+    /// as untrusted input -- a naive <c>$"`{text}`"</c> would let one of them close the span early and
+    /// corrupt the rest of the document.
+    /// </summary>
+    private static string CodeSpan(string text)
+    {
+        var flat = Flatten(text);
+        var fence = new string('`', LongestBacktickRun(flat) + 1);
+        var pad = flat.Length == 0 || flat[0] == '`' || flat[^1] == '`' ? " " : string.Empty;
+
+        return fence + pad + flat + pad + fence;
+    }
+
+    private static string Flatten(string text)
+    {
+        var chars = text.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsControl(chars[i]))
+            {
+                chars[i] = ' ';
+            }
+        }
+
+        return new string(chars).Trim();
+    }
+
+    private static int LongestBacktickRun(string text)
+    {
+        var longest = 0;
+        var current = 0;
+        foreach (var c in text)
+        {
+            current = c == '`' ? current + 1 : 0;
+            longest = Math.Max(longest, current);
+        }
+
+        return longest;
+    }
+
+    /// <summary>
+    /// Escapes the display half of a markdown link. Symbol names are identifiers in practice, but they
+    /// reach here from untrusted source text (§2.3), and a stray <c>]</c> would end the link text early
+    /// and turn the rest of the line into prose.
+    /// </summary>
+    private static string LinkText(string text) =>
+        Flatten(text).Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("[", "\\[", StringComparison.Ordinal)
+            .Replace("]", "\\]", StringComparison.Ordinal);
 }
