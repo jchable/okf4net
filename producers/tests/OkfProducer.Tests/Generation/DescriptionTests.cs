@@ -57,17 +57,61 @@ public class DescriptionTests
         => Assert.Equal("From a model.",
             Resolver.Resolve(Member("T", "Scan", doc: "d"), FrontmatterWith("From a model.", "llm")).Text);
 
+    [Theory]
+    [InlineData("Manual")]
+    [InlineData("MANUAL")]
+    [InlineData(" manual")]
+    [InlineData("hand-edited")]
+    public void An_unrecognized_or_differently_cased_description_source_is_still_preserved(string descriptionSource)
+    {
+        // §4.2, inverted default: only the two labels this producer writes for a *derived*
+        // description (doc-comment, generated) -- or an absent key -- are re-derived. Everything
+        // else is protected, however it is spelled or cased: guessing wrong must cost a stale
+        // description, never a deleted one. "manual"/"llm" are the documented canonical spellings,
+        // but the check does not special-case them -- a human's own convention ("hand-edited") is
+        // preserved exactly the same way a case or whitespace variant of "manual" is.
+        var existing = FrontmatterWith(description: "Hand written.", descriptionSource: descriptionSource);
+
+        var (text, _) = Resolver.Resolve(Member("T", "Scan", doc: "Scans a body."), existing);
+
+        Assert.Equal("Hand written.", text);
+    }
+
     [Fact]
-    public void A_signature_derived_sentence_mentions_the_container_and_the_file_not_just_the_name()
+    public void An_empty_chain_with_nothing_preserved_throws_the_documented_exception()
+    {
+        var emptyResolver = new DescriptionResolver([]);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            emptyResolver.Resolve(Member("T", "Scan", doc: "Scans a body."), existing: null));
+    }
+
+    [Fact]
+    public void A_signature_derived_sentence_mentions_the_container_not_just_the_name()
     {
         // A restatement of the identifier alone ("Scan is a member.") gives a reader nothing they
         // didn't already know from the concept's title -- the mechanical fallback must do better.
-        var fact = Member("Scanner", "Scan", doc: null, path: "src/Scanner.cs");
+        var fact = Member("Scanner", "Scan", doc: null);
 
         var (text, _) = Resolver.Resolve(fact, existing: null);
 
         Assert.Contains("Scanner", text, StringComparison.Ordinal);
-        Assert.Contains("src/Scanner.cs", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_signature_derived_sentence_omits_the_file_path_so_a_rename_does_not_churn_it()
+    {
+        // This result is labelled "generated" and re-derived on every run. If it named the file,
+        // renaming or moving that file with zero code changes would rewrite the description of every
+        // symbol it declares -- exactly the churn Tasks 10/12 exist to bound for concepts whose code
+        // did not change. The path is also already recorded structurally via Resource/AddSource once
+        // a code concept is wired through OkfDocumentBuilder (Task 8), so restating it here would
+        // only duplicate that field in unstructured, churn-prone form.
+        var fact = Member("Scanner", "Scan", doc: null, path: "src/very/specific/Scanner.cs");
+
+        var (text, _) = Resolver.Resolve(fact, existing: null);
+
+        Assert.DoesNotContain("very/specific/Scanner.cs", text, StringComparison.Ordinal);
     }
 
     [Fact]

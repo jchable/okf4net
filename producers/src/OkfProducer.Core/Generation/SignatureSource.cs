@@ -14,8 +14,16 @@ namespace OkfProducer.Core.Generation;
 /// <see cref="SymbolFact.Signature"/>: trustworthy for every C# member shape, properties included
 /// (fixed and pinned by tests in Task 3), so it can be folded into prose verbatim instead of being
 /// re-parsed for a return type or parameter list. The result reads, e.g., "public int Scan(string
-/// path), a member of Scanner, declared in Scanner.cs." -- visibility, shape, and location a reader
-/// gains something from, not a restatement of the identifier.
+/// path), a member of Scanner." -- visibility, shape, and container a reader gains something from,
+/// not a restatement of the identifier.
+///
+/// Deliberately does not mention <see cref="SymbolFact.RelativePath"/>: this result is labelled
+/// <c>generated</c> and re-derived on every run, so a file path here would mean renaming or moving a
+/// file with zero code changes rewrites the description of every symbol it declares -- exactly the
+/// churn Tasks 10 and 12 exist to bound for concepts whose code did not change. The path is also
+/// already recorded structurally, via <c>Resource</c>/<c>AddSource</c>, once a code concept is wired
+/// through <c>OkfDocumentBuilder</c> -- restating it here in unstructured, churn-prone prose would
+/// only duplicate that field.
 ///
 /// Labels its result <c>generated</c>: the slot a later LLM enrichment step is meant to fill instead
 /// (§4.2). Until that step exists, this source is what re-derives that slot on every run.
@@ -48,6 +56,6 @@ public sealed class SignatureSource : IDescriptionSource
         var preposition = fact.Kind == SymbolKind.Member ? "of" : "in";
         var owner = string.IsNullOrEmpty(fact.Container) ? string.Empty : $" {preposition} {fact.Container}";
 
-        return ($"{subject}, a {kindNoun}{owner}, declared in {fact.RelativePath}.", SourceLabel);
+        return ($"{subject}, a {kindNoun}{owner}.", SourceLabel);
     }
 }
