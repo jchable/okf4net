@@ -67,9 +67,15 @@ public sealed class ConceptGenerator : IConceptGenerator
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(options);
 
-        // §3.4: one registry for all four families. `overview` goes through it like everything else --
-        // an empty prefix, so the registered key is the bare id -- rather than being seeded as a magic
-        // string, so a package or doc that slugified to "overview" would be seen as the collision it is.
+        // §3.4: one registry for all four families -- one allocation record for the whole run, keyed on
+        // the full `prefix/segment`. Being precise about what that does and does not buy, because the
+        // obvious claim is false: today's four families sit under disjoint prefixes, so a doc that
+        // slugifies to "overview" lands on `docs/overview` and CANNOT collide with the bare `overview`
+        // id -- the two coexist, and a test says so. What the single registry actually buys is that the
+        // `code/` family, which the old `Generate`-local `usedIds` never covered at all, now shares one
+        // record with the other three; that `overview` is allocated rather than assumed, so it is not a
+        // magic string that could drift out of sync with the set; and that a family added later under an
+        // existing prefix is checked by construction instead of needing a second mechanism.
         var registry = new ConceptIdRegistry();
 
         var results = new List<GeneratedConcept>
@@ -212,17 +218,32 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         // Sorted, never grouped-and-iterated: a Dictionary/HashSet enumeration order must never reach
         // the output (§6.2). CodeGraphBuilder already sorts its symbols, but sorting again here is what
-        // makes this method deterministic on its own, for any CodeGraph a caller hands it.
-        var groups = graph.Symbols
-            .GroupBy(s => new SymbolKey(s.Language, s.Container, s.Name))
-            .Select(g => (
-                Key: g.Key,
-                Declarations: (IReadOnlyList<SymbolFact>)g
-                    .OrderBy(s => s.RelativePath, StringComparer.Ordinal)
-                    .ThenBy(s => s.StartOffset)
-                    .ThenBy(s => s.Signature, StringComparer.Ordinal)
-                    .ToList()))
-            .OrderBy(g => g.Key.Language, StringComparer.Ordinal)
+        // makes this method deterministic on its own, for any CodeGraph a caller hands it. Both sorts
+        // below are load-bearing and pinned by tests whose fixtures put the input in a DIFFERENT order
+        // from the sorted one, so deleting either chain turns a test red rather than passing by luck.
+        var unsorted = new List<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)>();
+        foreach (var group in graph.Symbols.GroupBy(s => new SymbolKey(s.Language, s.Container, s.Name)))
+        {
+            // Within one concept, the declaration order decides which span `resource` points at and the
+            // order of the `## Signatures` bullets.
+            var declarations = (IReadOnlyList<SymbolFact>)group
+                .OrderBy(s => s.RelativePath, StringComparer.Ordinal)
+                .ThenBy(s => s.StartOffset)
+                .ThenBy(s => s.Signature, StringComparer.Ordinal)
+                .ToList();
+
+            var profile = ProfileFor(group.Key.Language, options, profiles);
+            unsorted.Add((group.Key, declarations, RawSegments(declarations[0], profile)));
+        }
+
+        // Shallowest first, so a symbol's parent is always registered before the symbol itself -- see
+        // RegisterCodeId for why that matters. Ordering by depth first does not weaken §3.3's Ordinal
+        // tie-break: two symbols can only compete for one id if they share a parent path, and sharing a
+        // parent path means sharing a depth, so the tie-break still runs on Ordinal name order within
+        // every group that could actually collide.
+        var groups = unsorted
+            .OrderBy(g => g.RawSegments.Length)
+            .ThenBy(g => g.Key.Language, StringComparer.Ordinal)
             .ThenBy(g => g.Key.Container, StringComparer.Ordinal)
             .ThenBy(g => g.Key.Name, StringComparer.Ordinal)
             .ToList();
@@ -260,12 +281,14 @@ public sealed class ConceptGenerator : IConceptGenerator
         var ids = new Dictionary<SymbolKey, ConceptId>();
         var idsByName = new Dictionary<(string Container, string Name), ConceptId>();
         var primaryByName = new Dictionary<(string Container, string Name), SymbolFact>();
+        var registeredByRawPath = new Dictionary<string, ConceptId>(StringComparer.Ordinal);
 
-        foreach (var (key, declarations) in groups)
+        foreach (var (key, declarations, rawSegments) in groups)
         {
             var profile = ProfileFor(key.Language, options, profiles);
-            var id = RegisterCodeId(declarations[0], profile, registry);
+            var id = RegisterCodeId(declarations[0], profile, registry, rawSegments, registeredByRawPath);
             ids[key] = id;
+            registeredByRawPath.TryAdd(RawKey(rawSegments), id);
 
             // Link targets, keyed the way an edge names them: (container, name), no language. The guard
             // above is what makes that key unambiguous rather than merely lucky; TryAdd's first-wins is
@@ -296,7 +319,7 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         // Pass 2 -- documents.
         var concepts = new List<GeneratedConcept>(groups.Count);
-        foreach (var (key, declarations) in groups)
+        foreach (var (key, declarations, _) in groups)
         {
             var id = ids[key];
             var profile = ProfileFor(key.Language, options, profiles);
@@ -434,17 +457,53 @@ public sealed class ConceptGenerator : IConceptGenerator
     }
 
     /// <summary>
-    /// Allocates this symbol's concept id, falling back rather than throwing when a name cannot form
-    /// a concept id segment at all. That is not hypothetical: a C# identifier may legally be entirely
-    /// non-ASCII (<c>public void 概要()</c>), and <see cref="ConceptId.Slugify"/> maps every such
-    /// character to <c>-</c> and then rejects the empty result. §2.3's policy is that hostile or merely
-    /// unusual input degrades the output, never aborts the run, so the candidates below are tried in
-    /// order and keep as much of the real path as each failure allows: the symbol's own name replaced
-    /// by its kind, then the container dropped, then both. The registry disambiguates whatever lands.
+    /// Allocates this symbol's concept id.
+    ///
+    /// <para><b>Preferred path: hang the symbol under its parent's REGISTERED id, not under its parent's
+    /// raw name.</b> The two differ whenever the parent's own segment had to be escaped, and a type
+    /// named <c>Log</c> or <c>Index</c> is enough to trigger it -- <c>System.Index</c> ships in the BCL.
+    /// Deriving from the raw name there would register the type at <c>code/csharp/n/log-2</c> while its
+    /// members kept the untouched container segment and landed in <c>code/csharp/n/log/</c>: a concept
+    /// file sitting beside a directory that is not its own. That breaks §3.3's invariant that a type
+    /// becomes both <c>log.md</c> AND <c>log/</c> -- the correspondence Task 9's containment spine is
+    /// built on -- and <c>IndexGenerator</c> would list the orphaned directory as a child of the
+    /// namespace rather than of the type. Groups are registered shallowest-first precisely so the
+    /// parent's id is already known here.</para>
+    ///
+    /// <para><b>Fallback path.</b> With no registered parent (a member whose type was not extracted, or
+    /// a type whose namespace has no concept until Task 9), the id is built from the raw names by
+    /// <see cref="CodeConceptIds.For"/>. That call can fail outright, and not hypothetically: a C#
+    /// identifier may legally be entirely non-ASCII (<c>public void 概要()</c>), and
+    /// <see cref="ConceptId.Slugify"/> maps every such character to <c>-</c> and then rejects the empty
+    /// result. §2.3's policy is that hostile or merely unusual input degrades the output and never
+    /// aborts the run, so the candidates are tried in order, each keeping as much of the real path as
+    /// the previous failure allows: the symbol's own name replaced by its kind, then the container
+    /// dropped, then both. The registry disambiguates whatever lands.</para>
     /// </summary>
-    private static ConceptId RegisterCodeId(SymbolFact fact, LanguageProfile profile, ConceptIdRegistry registry)
+    private static ConceptId RegisterCodeId(
+        SymbolFact fact,
+        LanguageProfile profile,
+        ConceptIdRegistry registry,
+        IReadOnlyList<string> rawSegments,
+        IReadOnlyDictionary<string, ConceptId> registeredByRawPath)
     {
         var token = KindTag(fact.Kind);
+
+        if (registeredByRawPath.TryGetValue(RawKey(rawSegments.Take(rawSegments.Count - 1)), out var parentId))
+        {
+            // Only the leaf can fail here -- the parent id is already a registered, valid ConceptId --
+            // so the ladder collapses to two rungs: the symbol's own name, then its kind.
+            foreach (var candidateName in new[] { fact.Name, token })
+            {
+                try
+                {
+                    return registry.Register(parentId.ToString(), LeafSegment(fact with { Name = candidateName }, profile));
+                }
+                catch (ConceptIdException)
+                {
+                }
+            }
+        }
 
         SymbolFact[] candidates =
         [
@@ -477,6 +536,44 @@ public sealed class ConceptGenerator : IConceptGenerator
         // Reachable only when the language token itself is not a usable segment; "code" and the kind
         // token both always are, so this cannot throw.
         return registry.Register("code", token);
+    }
+
+    /// <summary>
+    /// The symbol's id path in <b>unslugified</b> form: <c>code</c>, the language, the container's own
+    /// segments, then the name. Two uses, both keyed on the fact that a parent's raw segments are
+    /// exactly its child's minus the last one -- a member of <c>N.Log</c> splits to
+    /// <c>[code, csharp, N, Log]</c>, which is precisely the type <c>N.Log</c>'s own raw path. That is
+    /// what lets <see cref="RegisterCodeId"/> find a parent without reconstructing a dotted name (which
+    /// would have to guess the language's join separator, and <see cref="LanguageProfile"/> only offers
+    /// the split direction). Its length also gives the depth the groups are sorted by.
+    /// </summary>
+    private static string[] RawSegments(SymbolFact fact, LanguageProfile profile)
+    {
+        var segments = new List<string>(4) { "code", fact.Language };
+        segments.AddRange(profile.SplitContainer(fact.Container));
+        segments.Add(fact.Name);
+        return [.. segments];
+    }
+
+    /// <summary>
+    /// Joins raw segments into one lookup key with <c>NUL</c>, which no identifier or namespace segment
+    /// in any supported language can contain -- so the key is unambiguous where a <c>.</c> or <c>/</c>
+    /// join would merge <c>[A.B]</c> and <c>[A, B]</c> into the same string.
+    /// </summary>
+    private static string RawKey(IEnumerable<string> segments) => string.Join(char.MinValue, segments);
+
+    /// <summary>
+    /// The final id segment for this symbol's own name, taken from <see cref="CodeConceptIds.For"/> on
+    /// a container-less copy rather than reimplemented: that method owns the word-boundary tokenizer
+    /// (§3.1), and it appends the name segment identically whether or not there is a container, so this
+    /// reads the real rule instead of forking a second copy of it that could drift.
+    /// </summary>
+    /// <exception cref="ConceptIdException">The name (or the language) cannot form an id segment.</exception>
+    private static string LeafSegment(SymbolFact fact, LanguageProfile profile)
+    {
+        var path = CodeConceptIds.For(fact with { Container = string.Empty }, profile);
+        var slash = path.LastIndexOf('/');
+        return slash < 0 ? path : path[(slash + 1)..];
     }
 
     /// <summary>
@@ -588,7 +685,12 @@ public sealed class ConceptGenerator : IConceptGenerator
             return null;
         }
 
-        var basePart = repoUrl.TrimEnd('/');
+        // From the PARSED uri, never the raw string: `https://github.com/o/r?x=1` trimmed as text yields
+        // `https://github.com/o/r?x=1/blob/main/...`, which the validator still classifies as a Url and
+        // still passes with no warning -- a silently wrong link, the worst of the available outcomes.
+        // GetLeftPart(UriPartial.Path) drops the query and the fragment and keeps scheme, authority and
+        // path, which is exactly the base a blob URL is built on.
+        var basePart = parsed.GetLeftPart(UriPartial.Path).TrimEnd('/');
         var revPart = EscapePath(rev);
         var pathPart = EscapePath(NormalizeSeparators(declaration.RelativePath));
 

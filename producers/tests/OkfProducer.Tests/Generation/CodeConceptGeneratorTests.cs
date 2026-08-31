@@ -199,29 +199,114 @@ public class CodeConceptGeneratorTests
     [Fact]
     public void A_case_only_collision_is_broken_by_ordinal_order_of_the_original_name()
     {
-        // §3.3: the tie-break keys off the Ordinal order of the symbols' own names, so it survives a
+        // §3.3: the tie-break keys off the Ordinal order of the symbols' own NAMES, so it survives a
         // file move or a line shift rather than depending on which file the scanner reached first.
+        //
+        // Asserting that both ids merely EXIST would not test that: input order, path order and name
+        // order all produce the same two-id set. So the fixture makes all three orders disagree --
+        // lowercase `parse` comes first in input order and first in path order (src/a.cs), while
+        // Ordinal name order puts `Parse` first ('P' is 0x50, 'p' is 0x70) -- and the assertion is on
+        // WHICH declaration ended up under the unsuffixed id.
         var graph = GraphOf(
-            Member("N.Scanner", "parse", "public void parse()", path: "src/z.cs"),
-            Member("N.Scanner", "Parse", "public void Parse()", path: "src/a.cs"));
+            Member("N.Scanner", "parse", "public void parse()", path: "src/a.cs"),
+            Member("N.Scanner", "Parse", "public void Parse()", path: "src/z.cs"));
 
-        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
 
-        Assert.Contains("code/csharp/n/scanner/parse", ids);
-        Assert.Contains("code/csharp/n/scanner/parse-2", ids);
+        Assert.Contains("public void Parse()", Single(concepts, "code/csharp/n/scanner/parse").Document.Body, StringComparison.Ordinal);
+        Assert.Contains("public void parse()", Single(concepts, "code/csharp/n/scanner/parse-2").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Code_concepts_come_out_in_a_pinned_order_shallowest_first_then_ordinal()
+    {
+        // The group sort decides registration order (which is what §3.3's tie-break rides on) and the
+        // order concepts leave this method in. The fixture's symbols are deliberately NOT in this
+        // order, so deleting the sort chain changes this sequence rather than passing by luck.
+        var ids = Ids(Generate()).Where(id => id.StartsWith("code/", StringComparison.Ordinal)).ToList();
+
+        Assert.Equal(
+            [
+                "code/csharp/n/other",
+                "code/csharp/n/scanner",
+                "code/csharp/n/t",
+                "code/csharp/n/other/callee",
+                "code/csharp/n/other/helper",
+                "code/csharp/n/scanner/scan",
+                "code/csharp/n/t/validate",
+            ],
+            ids);
+    }
+
+    [Fact]
+    public void Signature_bullets_are_ordered_by_declaration_site_not_by_input_order()
+    {
+        // The within-group sort, pinned on the body rather than only through `resource`: the fixture
+        // lists the offset-20 overload first, so input order would put `Validate(int x)` first.
+        var body = Single(Generate(), "code/csharp/n/t/validate").Document.Body;
+
+        Assert.True(
+            body.IndexOf("public void Validate()", StringComparison.Ordinal)
+            < body.IndexOf("public void Validate(int x)", StringComparison.Ordinal),
+            body);
     }
 
     [Fact]
     public void The_registry_spans_the_code_family_as_well_as_packages_and_docs()
     {
-        // §3.4: one registry for all four families. A doc whose title slugifies to "overview" must not
-        // be able to take the reserved-in-practice `overview` id, and neither must anything under code/.
+        // §3.4: one registry, one allocation record for the whole run. Being exact about what that
+        // means, because the tempting claim is false: the four families use disjoint prefixes, so a doc
+        // titled "overview" lands on `docs/overview` and CANNOT collide with the bare `overview` id --
+        // they coexist, which is what this asserts. What the shared registry buys is that `code/` is in
+        // the same record as the rest (the old Generate-local usedIds never covered it) and that
+        // `overview` is allocated rather than assumed.
         var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("O.md", "overview")]);
 
         var ids = Ids(new ConceptGenerator().Generate(snapshot, GraphOf(), Options()));
 
         Assert.Equal("overview", ids[0]);
         Assert.Contains("docs/overview", ids);
+    }
+
+    [Fact]
+    public void A_type_whose_name_is_reserved_keeps_its_members_underneath_it()
+    {
+        // §3.3's invariant is that a type becomes BOTH `log.md` AND `log/`, and Task 9's containment
+        // spine is built on that correspondence. Applying the reserved-segment escape to the leaf only
+        // would register the type at `log-2` while its members kept the raw container segment and
+        // landed under `log/` -- a concept file beside a directory that is not its own, which
+        // IndexGenerator would then list as a child of the namespace. Both names are ordinary: Index
+        // ships in the BCL as System.Index.
+        var graph = GraphOf(
+            Type("N", "Log", path: "src/Log.cs"),
+            Member("N.Log", "Write", "public void Write()", path: "src/Log.cs"),
+            Type("N", "Index", path: "src/Index.cs"),
+            Member("N.Index", "Read", "public void Read()", path: "src/Index.cs"));
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Contains("code/csharp/n/log-2", ids);
+        Assert.Contains("code/csharp/n/log-2/write", ids);
+        Assert.Contains("code/csharp/n/index-2", ids);
+        Assert.Contains("code/csharp/n/index-2/read", ids);
+        Assert.DoesNotContain("code/csharp/n/log/write", ids);
+        Assert.DoesNotContain("code/csharp/n/index/read", ids);
+    }
+
+    [Fact]
+    public void A_member_hangs_off_its_type_s_registered_id_even_when_that_id_was_disambiguated()
+    {
+        // The same rule as above, reached through §3.3's numeric tie-break rather than the reserved
+        // list: whatever made the parent's id differ from its raw name, the child follows the id.
+        var graph = GraphOf(
+            Type("N", "Thing", path: "src/a.cs"),
+            Type("N", "thing", path: "src/b.cs"),
+            Member("N.thing", "Go", "public void Go()", path: "src/b.cs"));
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Contains("code/csharp/n/thing-2/go", ids);
+        Assert.DoesNotContain("code/csharp/n/thing/go", ids);
     }
 
     [Fact]
@@ -234,6 +319,56 @@ public class CodeConceptGeneratorTests
         var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
 
         Assert.Contains("code/csharp/n/scanner/member", ids);
+    }
+
+    [Fact]
+    public void A_language_tag_that_is_not_a_valid_id_segment_is_slugified_not_collapsed()
+    {
+        // Unreachable with the shipped csharp profile, and owned by whoever writes the next one:
+        // `c++` and `f#` carry characters ValidateSegment rejects. Left raw, every id built from them
+        // would fail to parse, all four fallback rungs would throw, and every symbol of that language
+        // would pile into one generic bucket.
+        //
+        // Containers are deliberately dot-free here. SplitContainer cuts on `.` only for csharp/java
+        // and on `/` for everything else, so a dotted container under a `c++` profile stays one
+        // segment -- that is SplitContainer's documented rule, not a defect, and mixing it into this
+        // test would only obscure the one thing being pinned: the language segment itself.
+        var graph = GraphOf(
+            Type("N", "Scanner", path: "a.cpp") with { Language = "c++" },
+            Member("Scanner", "Scan", "void Scan()", path: "a.cpp") with { Language = "c++" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Contains("code/c-/n/scanner", ids);
+        Assert.Contains("code/c-/scanner/scan", ids);
+    }
+
+    [Fact]
+    public void An_empty_language_cannot_desync_the_registry_key_from_the_id_it_returns()
+    {
+        // The correctness hole behind slugifying the language segment: an empty language yields
+        // `code//name`, which the registry stores as the key `code//name` while ConceptId.Parse drops
+        // the empty segment and hands back `code/name`. The uniqueness key would stop equalling the id,
+        // so a second symbol could be handed a duplicate id the registry believed was free. Two
+        // symbols, two distinct ids, is exactly what that hole would break.
+        var graph = GraphOf(
+            Member("N.Scanner", "Scan", "void Scan()", path: "a.x") with { Language = "" },
+            Member("N.Other", "Scan", "void Scan()", path: "b.x") with { Language = "" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Equal(ids.Count, ids.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public void A_repo_url_carrying_a_query_or_fragment_does_not_leak_it_into_the_middle_of_the_link()
+    {
+        // Trimming the raw string yields `https://github.com/o/r?x=1/blob/main/...`, which the
+        // validator still classifies as a Url and still passes with no warning -- a silently wrong
+        // link. The parsed Uri is already at hand, so use it.
+        var fm = Single(Generate(repoUrl: "https://github.com/o/r?x=1#frag"), "code/csharp/n/scanner/scan").Document.Frontmatter;
+
+        Assert.Equal("https://github.com/o/r/blob/main/src/Scanner.cs#L10-L20", fm.Resource);
     }
 
     [Fact]
@@ -371,8 +506,11 @@ public class CodeConceptGeneratorTests
             Member("N.Other", "Callee", "public void Callee()", path: "src/Other.cs"),
             Member("N.Other", "Helper", "public void Helper()", path: "src/Other.cs"),
             Type("N", "T", path: "src/T.cs"),
-            Member("N.T", "Validate", "public void Validate()", path: "src/T.cs", startLine: 5, endLine: 6, offset: 10),
+            // Deliberately listed later-offset-first, so input order and sorted order DISAGREE: every
+            // assertion about which overload comes first would pass by luck if this pair were already
+            // in order, since GroupBy preserves input order when the sort is removed.
             Member("N.T", "Validate", "public void Validate(int x)", path: "src/T.cs", startLine: 8, endLine: 9, offset: 20),
+            Member("N.T", "Validate", "public void Validate()", path: "src/T.cs", startLine: 5, endLine: 6, offset: 10),
         ],
         [
             new ResolvedEdge(new CallSite("N.Scanner", "Scan", "Other.Callee", "src/Scanner.cs", 100),

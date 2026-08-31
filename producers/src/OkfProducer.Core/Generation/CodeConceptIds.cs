@@ -26,9 +26,24 @@ public static class CodeConceptIds
     /// disambiguated by a numeric suffix that would be order-dependent and would renumber unrelated
     /// overloads whenever one was added or removed.
     /// </summary>
+    /// <remarks>
+    /// The <c>code</c> and <c>&lt;language&gt;</c> segments are slugified too, not passed through raw.
+    /// Both are unreachable holes with the shipped <c>csharp</c> profile and both belong to whoever
+    /// writes the next one. A <see cref="SymbolFact.Language"/> such as <c>c++</c> or <c>f#</c> carries
+    /// characters <see cref="ConceptId.ValidateSegment"/> rejects, so every id built from it would fail
+    /// to parse and every symbol of that language would collapse into one generic fallback bucket. The
+    /// empty language is worse than cosmetic: it yields <c>code//name</c>, which a
+    /// <see cref="ConceptIdRegistry"/> stores as the key <c>code//name</c> while
+    /// <see cref="ConceptId.Parse"/> collapses the empty segment away and hands back <c>code/name</c> --
+    /// the registry's uniqueness key would stop equalling the id it returns, and a duplicate id could
+    /// escape it. Slugifying closes both. Unlike the container and name segments these are not source
+    /// identifiers, so they get <see cref="ConceptId.Slugify"/> alone, with no word-boundary splitting:
+    /// a language tag is already a lowercase token, and splitting it would be inventing structure that
+    /// is not there.
+    /// </remarks>
     public static string For(SymbolFact fact, LanguageProfile profile)
     {
-        var segments = new List<string>(4) { "code", fact.Language };
+        var segments = new List<string>(4) { ConceptId.Slugify("code"), ConceptId.Slugify(fact.Language) };
 
         foreach (var part in profile.SplitContainer(fact.Container))
         {
