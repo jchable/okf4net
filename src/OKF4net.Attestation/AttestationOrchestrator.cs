@@ -193,9 +193,16 @@ public sealed class AttestationOrchestrator
     private static StaleState ComputeStale(Lifecycle lifecycle, DateTimeOffset now)
     {
         // A stale_after that is absent *or unparseable* is Unknown, never
-        // Fresh: IsStale alone returns false for both, and reporting a
-        // malformed stamp as Fresh would let §10.6's gate pass on data it
-        // could not read.
+        // Fresh: IsStale alone returns false for both, so Fresh would assert a
+        // freshness nothing established. This is reporting, not gating -- the
+        // gate admits the concept either way (StalePolicy.Admits returns true
+        // when StaleAfter is null, under every mode, which
+        // StalePolicyTests.A_malformed_stale_after_is_admitted_by_every_mode
+        // pins as deliberate: the validator owns that diagnostic, and a policy
+        // must not silently drop a concept over an unreadable stamp). What
+        // Unknown buys is that a caller inspecting Outcome.Stale can tell "we
+        // checked, it is current" from "we could not check", instead of being
+        // told the second is the first.
         if (lifecycle.StaleAfter is null)
         {
             return StaleState.Unknown;

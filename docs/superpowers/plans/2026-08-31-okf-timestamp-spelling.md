@@ -47,16 +47,25 @@ internal static TimestampForm Classify(string raw, out DateTimeOffset instant);
 - `NonIso8601` — carries an explicit offset, but the spelling is not ISO 8601.
 - `Unreadable` — not a timestamp at all.
 
-**The grammar** (ISO 8601 extended format with an explicit UTC offset):
+**The grammar** (ISO 8601 extended format with an explicit UTC offset), as
+shipped — implementation widened the first draft twice and narrowed it once; see
+the design doc's §4 for each delta and its ISO 8601 citation:
 
 ```
-YYYY "-" MM "-" DD "T" hh ":" mm [ ":" ss [ "." s+ ] ] offset
-offset = "Z" | ("+" | "-") hh ":" mm
+YYYY "-" MM "-" DD "T" hh ":" mm [ ":" ss [ ("." | ",") s+ ] ] offset
+offset = "Z" | ("+" | "-") hh [ ":" mm ]
+       , except that a negative zero offset ("-00" / "-00:00") is NOT conformant
 ```
 
 Every component is fixed-width. The designator is the uppercase `Z`. Seconds may
-be omitted (ISO 8601 reduced precision) and may carry a fraction. The
-representation is wholly extended, so `+02:00` is in and `+0200` is out.
+be omitted (ISO 8601 reduced precision) and may carry a fraction, whose decimal
+sign may be `.` or `,` (§4.2.2.4 names the comma the *preferred* one). The
+representation is wholly extended, so `+02:00` is in and `+0200` is out — but a
+reduced-precision `+02`, having no minutes to separate, is not basic/extended
+mixing and is in. A negative zero offset is out (ISO 8601:2004 §4.2.5.2 / 2019
+§4.3.13: a zero difference from UTC takes a plus sign; only RFC 3339 permits
+`-00:00`, and `SPEC.md` cites no RFC). `+00:00` stays in — it is the spelling of
+one of the spec's own 18 literals.
 
 Keep `TryParse` working (`isLegacyForm` becomes `form is LegacyDateOnly`) and
 keep `IsConformant` (`form is Conformant`) — Task 2 re-points their callers.
@@ -87,16 +96,25 @@ Then a table-driven battery, each rejection reason separately:
 | `2026-05-28T22:53:05+00:00` | `Conformant` |
 | `2026-06-30T14:00:00.123Z` | `Conformant` |
 | `2026-06-30T14:00Z` | `Conformant` |
+| `2026-06-30T14:00:00,123Z` | `Conformant` |
+| `2026-06-30T14:00:00+02` | `Conformant` |
 | `2026-6-3T14:00:00Z` | `NonIso8601` |
 | `2026-06-3T14:00:00Z` | `NonIso8601` |
-| `2026-06-30T4:00:00Z` | `NonIso8601` |
+| `2026-06-30T4:00:00Z` | `Unreadable` ¹ |
 | `2026-06-30T14:00:00z` | `NonIso8601` |
 | `2026-06-30T14:00:00+0200` | `NonIso8601` |
+| `2026-06-30T14:00:00-00:00` | `NonIso8601` |
+| `2026-06-30T14:00:00-00` | `NonIso8601` |
 | `2026-07-01` | `LegacyDateOnly` |
 | `2026-07-01T12:00:00` | `LegacyDateOnly` |
 | `2026-07-01 12:00:00` | `LegacyDateOnly` |
 | `""` / `not-a-date` / `2026-13-01T00:00:00Z` / `2026-01-01T25:00:00Z` | `Unreadable` |
 | `01/02/2026` / `2026` / `July 1, 2026` | `Unreadable` |
+
+¹ Corrected after execution: the readability gate — `DateTimeOffset.TryParse`,
+deliberately unchanged — accepts an unpadded month or day but rejects an
+unpadded *hour* outright, so `2026-06-30T4:00:00Z` never reaches the spelling
+check at all. That asymmetry is the BCL's, not the grammar's.
 
 Plus: a `NonIso8601` value still yields its instant (`2026-6-3T14:00:00Z` →
 2026-06-03T14:00:00Z), because §11 forbids dropping a readable value.

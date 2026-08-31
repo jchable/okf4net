@@ -48,7 +48,13 @@ public readonly record struct AuditQuery(
 /// <param name="Title">The frontmatter <c>title</c>, or null when absent.</param>
 /// <param name="Trust">The derived trust tier (§5.3).</param>
 /// <param name="Lifecycle">The lifecycle fields (§5.4/§5.5).</param>
-/// <param name="IsStale">Whether the concept is stale as of the report's <see cref="AuditReport.AsOf"/>.</param>
+/// <param name="IsStale">
+/// Whether the concept is stale at the instant the report was run (§5.5:
+/// <c>now &gt;= stale_after</c>). Not derived from <see cref="AuditReport.AsOf"/>,
+/// which is that instant's date only: two concepts under one <c>AsOf</c> can
+/// differ here, because a <c>stale_after</c> falling later the same day is still
+/// in the future.
+/// </param>
 public readonly record struct AuditFinding(
     ConceptId Id,
     string Path,
@@ -206,7 +212,12 @@ public static class AuditVocabulary
     /// literals outside this method.
     /// </summary>
     /// <param name="lifecycle">The concept's lifecycle fields.</param>
-    /// <param name="isStale">Whether the concept is stale as of the report's <c>AsOf</c> date.</param>
+    /// <param name="isStale">
+    /// Whether the concept is stale at the instant the report was run -- an
+    /// instant comparison, not a comparison against the report's <c>AsOf</c>
+    /// date. Pass <see cref="AuditFinding.IsStale"/> through rather than
+    /// recomputing it.
+    /// </param>
     public static string Freshness(Lifecycle lifecycle, bool isStale) =>
         lifecycle.StaleAfterDate is { } date
             ? (isStale ? "stale " : "fresh ") + date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)

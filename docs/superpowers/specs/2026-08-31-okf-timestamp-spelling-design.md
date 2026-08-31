@@ -1,6 +1,11 @@
 # §5 Timestamp Spelling — Design
 
-**Status:** proposed, awaiting implementation
+**Status:** implemented on `fix/temporal-conformance` (`52801f2`, `787f237`,
+`538d949`). §4 and §6 below have been brought back in line with what actually
+shipped after two rounds of review — the grammar widened twice and narrowed once
+during implementation, and this document is only useful if it describes the code
+rather than the first draft of it. §7's predictions held: no fixture and no
+golden moved for this work.
 **Date:** 2026-08-31
 **Branch:** `fix/temporal-conformance`
 **Normative source:** `docs/spec/SPEC.md` (OKF v0.2, vendored verbatim at upstream
@@ -75,11 +80,13 @@ in particular not the author's sense of what looks tolerable.
 
 ## 4. The grammar, and the oracle that checks it
 
-**Grammar (ISO 8601 extended format with an explicit UTC offset):**
+**Grammar (ISO 8601 extended format with an explicit UTC offset)** — as shipped,
+after implementation widened the first draft twice and narrowed it once:
 
 ```
-YYYY "-" MM "-" DD "T" hh ":" mm [ ":" ss [ "." s+ ] ] offset
-offset = "Z" | ("+" | "-") hh ":" mm
+YYYY "-" MM "-" DD "T" hh ":" mm [ ":" ss [ ("." | ",") s+ ] ] offset
+offset = "Z" | ("+" | "-") hh [ ":" mm ]
+       , except that a negative zero offset ("-00" / "-00:00") is NOT conformant
 ```
 
 Every component is fixed-width. The UTC designator is the uppercase `Z`.
@@ -87,6 +94,27 @@ Seconds may be omitted (ISO 8601 reduced precision) and may carry a fraction.
 The representation is wholly *extended*: ISO 8601 does not permit an extended
 date and time to carry a basic-format offset, so `+02:00` is in and `+0200` is
 out.
+
+Three deltas from this document's first draft, each found by implementing it and
+each a case where the draft was stricter than ISO 8601 itself — the very defect
+class the branch exists to fix:
+
+- **The comma decimal sign.** ISO 8601 §4.2.2.4 names the comma the *preferred*
+  sign and the full stop the alternative, so `…T14:00:00,123Z` is conformant.
+  The draft's `"." s+` would have flagged the preferred spelling.
+- **The reduced-precision `±hh` offset.** An offset with no minutes has nothing
+  to separate, so it is not basic/extended mixing: `+02` is in, while `+0200`
+  (minutes, unseparated) stays out. The draft's mandatory `":" mm` would have
+  flagged `+02`.
+- **The negative zero offset, narrowing the other way.** `-00:00` and its
+  reduced form `-00` parse and match the component shape, but ISO 8601 forbids
+  them (2004 §4.2.5.2, 2019 §4.3.13): a zero difference from UTC takes a plus
+  sign, so `Z` and `+00:00` spell it. Only RFC 3339 §4.3 permits `-00:00`, with
+  its own "offset unknown" meaning — and `SPEC.md` cites no RFC, so that licence
+  does not reach here. They classify `NonIso8601` and are still read as the
+  instant they denote. `+00:00` stays conformant: it is the spelling of one of
+  the spec's own 18 literals, so the sign of the zero is what decides, not the
+  zero. A negative *non*-zero offset (`-05:00`, `-05`) is conformant.
 
 **The oracle.** A grammar derived by reasoning is exactly what produced the two
 defects this branch has already fixed. So it is checked against evidence the
@@ -105,10 +133,19 @@ If the grammar ever rejects a spelling the spec itself uses, the grammar is
 wrong — not the spec. This test is the reason the grammar is not merely an
 opinion.
 
-**Consequences, stated plainly.** `2026-6-3T…`, `…T14:00:00z` and `…+0200`
-become flagged. Not because they are disliked: because ISO 8601 fixes component
-widths, fixes the designator's case, and forbids mixing basic and extended
-forms. Each is still **read** — §11 forbids dropping it.
+**Consequences, stated plainly.** `2026-6-3T…`, `…T14:00:00z`, `…+0200` and
+`…-00:00` become flagged. Not because they are disliked: because ISO 8601 fixes
+component widths, fixes the designator's case, forbids mixing basic and extended
+forms, and forbids a negative zero offset. Each is still **read** — §11 forbids
+dropping it.
+
+One spelling in the same family is **not** flagged as `NonIso8601`, because it
+is not readable at all: `2026-06-30T4:00:00Z`, with an unpadded hour.
+`DateTimeOffset.TryParse` — the readability gate ahead of the spelling check,
+deliberately left as it was — accepts an unpadded month or day but rejects an
+unpadded hour outright. So it classifies `Unreadable`, not `NonIso8601`. That
+asymmetry lives in the BCL's permissive parser, not in this grammar; it was
+settled by executing it, not by reading. See §6 for the wider consequence.
 
 ## 5. Model
 
@@ -170,6 +207,32 @@ conformant in one field and not another.
 
 ## 6. Out of scope, with the reason
 
+- **ISO 8601 spellings `DateTimeOffset.TryParse` cannot read.** The readability
+  gate is the BCL parser, unchanged by this work, and it refuses several
+  spellings that *are* genuine ISO 8601 datetimes with an explicit UTC offset —
+  verified by execution, not assumed: end-of-day `2020-06-30T24:00:00Z`
+  (§4.2.3), the wholly-basic `20200630T140000Z`, a leap second
+  `…T23:59:60Z`, a week date `2026-W27-1T14:00:00Z`, an ordinal date
+  `2026-181T14:00:00Z`. All classify `Unreadable`: they yield **no instant**, so
+  a `stale_after` written that way is never evaluated for staleness, and its key
+  gets the field's `*Invalid*` code. Reading them is a parser rewrite, not a
+  spelling change, and no literal in `SPEC.md` uses any of these forms — so the
+  cost is real and the benefit is hypothetical. What this *does* require is that
+  the validator stop claiming they are not ISO 8601, which would be false of
+  every one of them: the `Unreadable` message says only that the value could not
+  be read as a timestamp. Pinned by
+  `OkfTimestampTests.Iso8601_forms_the_bcl_parser_cannot_read_are_Unreadable`
+  and `ValidateTests.An_unreadable_value_is_not_told_it_is_not_iso8601`.
+- **The BCL's digit-grouped offset, `2026-06-30T14:00:00+002`.** Recorded as a
+  real behaviour change, not a non-event. It matches no ISO 8601 offset form, so
+  it warns `NonIso8601` — but it is now *readable*: `DateTimeOffset.TryParse`
+  groups the digits as `+00:2` and yields an offset of **+00:02**, two minutes
+  away from what a reader would guess. At `ccacfc5`, `stale_after` produced no
+  instant at all for it, so nothing was computed from the wrong value.
+  Deliberately kept readable anyway: §11 forbids dropping a value that parses,
+  the warning names the spelling as wrong in the same breath, and two minutes of
+  skew on a value the producer is being told to fix is a smaller harm than
+  silently ignoring a staleness deadline. Worth knowing it moved.
 - **§9 log date headings.** Line 550 pins them to bare `YYYY-MM-DD`.
   `ChangeLog.IsIsoDate` stays untouched; a test already pins the boundary.
 - **The legacy `timestamp` field (§13.1).** Its *presence* already warns

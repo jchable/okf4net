@@ -116,7 +116,11 @@ them a re-capture from the (removed) Rust binary:
     `attester` resources resolving to real files under
     `computations/references/`, `generated`/`verified`/`sources`, and a
     future `stale_after`), plus its `# Computation` fenced SQL block.
-    Contributes zero diagnostics.
+    Contributes exactly two diagnostics, both deliberate: its `stale_after`
+    and its `sources[].last_modified` keep the legacy date-only form on
+    purpose, so each raises a `LegacyDateOnlyTimestamp` warning — see
+    "Temporal form (§5)" below, which is where that choice is explained.
+    It contributed none before the §5 work of 2026-08-31.
   - `computations/revenue-file.md` — the **file-based** variant
     (`computation: references/computations/revenue.sql`, no fence).
     Contributes zero diagnostics.
@@ -218,8 +222,13 @@ uniform** — making either match the other silently drops a covered path:
   values, under the CLAUDE.md exception for a deliberate spec change, citing §5.
 - `okf_v02_computation/computations/revenue.md` keeps the **legacy** date-only
   form on purpose, on both its `stale_after` and its `sources[].last_modified`,
-  so `validate-computation.out` captures the fallback warning for two different
-  fields — proving the diagnostic's `Field` actually distinguishes them.
+  so `validate-computation.out` captures the fallback warning reaching two
+  different keys rather than only the one everybody thinks of (`stale_after`).
+  The golden pins the rendered text, which is all `Diagnostic.ToString()` emits
+  — severity, path and message. The typed `Field` that tells the two apart is
+  pinned by `ValidateTests.A_legacy_date_only_usage_window_warns_once_per_bound`
+  (and its `last_modified` / `stale_after` neighbours), which assert on `.Field`
+  and `.Code` directly; no golden can, since neither reaches the rendered line.
 
 §5 reaches every timestamp-valued key, not just `stale_after`: §5.1 makes
 `usage_window` a "`{ from, to }` datetime range" and `last_modified` a recency
@@ -233,8 +242,12 @@ rather than blanket-regenerated:
   `computations/revenue.md` — one for its date-only `stale_after` and one for
   its date-only `sources[].last_modified` — and its summary reads
   `5 warning(s)`, up from the pre-§5 `3 warning(s)`. Two lines rather than one
-  is deliberate: it proves the diagnostic's `Field` actually distinguishes the
-  §5 keys instead of collapsing them. `validate-computation.exitcode` stays
+  is deliberate: it shows the §5 check reaching both keys on one concept, and
+  each line naming the key it is about. It does **not** show the diagnostic's
+  `Field`: `Diagnostic.ToString()` renders severity, path and message only, so
+  neither `Field` nor `Code` ever reaches a golden. Those are asserted directly
+  in `tests/OKF4net.Tests/ValidateTests.cs` (the `A_legacy_date_only_*` tests).
+  `validate-computation.exitcode` stays
   `0`: the diagnostic is a `Warning`, and §5 form sits outside the §11
   conformance floor.
 - `golden/audit-v02.json`'s `findings[0].staleAfter` goes `"2099-01-01"` →

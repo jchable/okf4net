@@ -453,9 +453,14 @@ public static class OkfCli
             return null;
         }
 
-        // DateOnly has no (s, format, provider, out) overload -- the five-argument
-        // form is the only one that takes a culture, and it is the same contract
-        // Lifecycle.From uses for stale_after.
+        // --as-of accepts exactly one spelling, a bare YYYY-MM-DD, which is what
+        // the flag's own help text and error message promise. It is NOT the §5
+        // timestamp grammar: `stale_after` and the other five §5 keys go through
+        // OkfTimestamp, which also reads a datetime with an offset. Deliberately
+        // narrower -- this is a CLI argument pinning the report's date stamp, not
+        // bundle data being read back, so there is nothing here to stay
+        // bug-compatible with. (DateOnly has no (s, format, provider, out)
+        // overload; the five-argument form is the only one that takes a culture.)
         if (!DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var asOf))
         {
             throw new CliOperationException($"--as-of is not a valid YYYY-MM-DD date: \"{raw}\"");
