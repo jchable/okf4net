@@ -72,9 +72,15 @@ public class CodeConceptIdsTests
     }
 
     [Theory]
-    // Rule 3 (never split on a digit boundary) is the one most likely to regress: it's the reason
-    // this repository's own root namespace round-trips as one token instead of "okf-4net".
+    // Rule 3, digit -> upper is NOT a boundary: a mid-word digit (this repository's own root
+    // namespace) does not split. On its own this case does not distinguish rule 3 from "never split
+    // on any digit boundary" -- Utf8Offsets below is the case that does.
     [InlineData("OKF4net", "okf4net")]
+    // Rule 3, digit -> upper IS a boundary: two words that happen to meet at a digit do split, unlike
+    // OKF4net above where the digit sits mid-word. This is the case that actually pins the direction
+    // of the digit rule -- without it, a tokenizer that never splits on any digit boundary would still
+    // pass every other case in this table.
+    [InlineData("Utf8Offsets", "utf8-offsets")]
     // Rule 2 (acronym run followed by a word splits before the last upper letter of the run).
     [InlineData("IOkfClock", "i-okf-clock")]
     // Rule 1 (plain lower -> upper transition).

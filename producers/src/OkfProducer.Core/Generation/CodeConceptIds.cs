@@ -56,11 +56,15 @@ public static class CodeConceptIds
     /// <c>HTML-Parser</c>, <c>IOkfClock</c> -&gt; <c>I-Okf-Clock</c>. A trailing acronym run with no
     /// following word (e.g. plain <c>HTML</c>) never splits -- there is no lowercase letter after it
     /// to anchor the boundary.</item>
-    /// <item>Never split on a digit boundary, in either direction: <c>OKF4net</c> stays one token
-    /// (<c>OKF4net</c>, not <c>OKF-4net</c> or <c>OKF4-net</c>). <see cref="char.IsUpper(char)"/> and
-    /// <see cref="char.IsLower(char)"/> both return <c>false</c> for a digit, so neither rule above
-    /// can fire across a letter/digit boundary -- this is enforced by construction, not by a
-    /// separate digit check.</item>
+    /// <item>A digit never begins a token on its own: <c>upper-&gt;digit</c>, <c>lower-&gt;digit</c>,
+    /// and <c>digit-&gt;lower</c> are never boundaries, which is what keeps <c>OKF4net</c> whole (the
+    /// mid-word <c>F-&gt;4</c> and <c>4-&gt;n</c> transitions both stay joined). But
+    /// <c>digit-&gt;upper</c> IS a boundary, because a digit followed by a capital marks the start of
+    /// the next word: <c>Utf8Offsets</c> -&gt; <c>Utf8-Offsets</c> (the <c>8-&gt;O</c> transition
+    /// splits; the earlier <c>f-&gt;8</c> one does not). The two cases are genuinely different --
+    /// <c>OKF4net</c> is one word that happens to contain a digit, while <c>Utf8Offsets</c> is two
+    /// words that happen to meet at one -- and only the direction of the digit/letter transition
+    /// tells them apart.</item>
     /// </list>
     /// </summary>
     private static string SplitWordBoundaries(string input)
@@ -85,7 +89,11 @@ public static class CodeConceptIds
             var acronymBoundary =
                 char.IsUpper(c) && char.IsUpper(prev) && i + 1 < input.Length && char.IsLower(input[i + 1]);
 
-            if (lowerToUpper || acronymBoundary)
+            // Rule 3: digit -> upper marks the start of the next word (Utf8Offsets -> Utf8-Offsets).
+            // upper -> digit and lower -> digit are deliberately NOT boundaries (OKF4net stays whole).
+            var digitToUpper = char.IsUpper(c) && char.IsDigit(prev);
+
+            if (lowerToUpper || acronymBoundary || digitToUpper)
             {
                 builder.Append('-');
             }
