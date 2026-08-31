@@ -101,9 +101,49 @@ public class TreeSitterExtractorTests : IDisposable
         var result = ExtractSource("namespace N;\npublic class T { public void M() { Other(); } }");
 
         var site = Assert.Single(result.Sites);
-        Assert.Equal("T", site.CallerContainer);
+        // CallerContainer is the fully-qualified path (matching M's own SymbolFact.Container),
+        // not the bare type name "T": Task 8 joins a call site back to its caller's own concept
+        // by (Container, Name), and a bare type name is ambiguous the moment two namespaces each
+        // hold a type named T -- see CallerContainer_joins_exactly_to_its_caller_symbol_even_with_
+        // same_named_types_across_namespaces below, which pins the join itself.
+        Assert.Equal("N.T", site.CallerContainer);
         Assert.Equal("M", site.CallerName);
         Assert.Equal("Other", site.CalledName);
+    }
+
+    [Fact]
+    public void CallerContainer_joins_exactly_to_its_caller_symbol_even_with_same_named_types_across_namespaces()
+    {
+        var result = ExtractSource("""
+            namespace N1
+            {
+                public class T
+                {
+                    public void M() { Foo(); }
+                }
+            }
+            namespace N2
+            {
+                public class T
+                {
+                    public void M() { Bar(); }
+                }
+            }
+            """);
+
+        var fooSite = Assert.Single(result.Sites, s => s.CalledName == "Foo");
+        var barSite = Assert.Single(result.Sites, s => s.CalledName == "Bar");
+
+        Assert.Equal("N1.T", fooSite.CallerContainer);
+        Assert.Equal("N2.T", barSite.CallerContainer);
+
+        // The actual join Task 8 performs: match (Container, Name) against every SymbolFact.
+        // Each call site must resolve to exactly one caller, and it must be the right one.
+        var fooCaller = Assert.Single(result.Symbols, s => s.Container == fooSite.CallerContainer && s.Name == fooSite.CallerName);
+        var barCaller = Assert.Single(result.Symbols, s => s.Container == barSite.CallerContainer && s.Name == barSite.CallerName);
+
+        Assert.Equal("N1.T", fooCaller.Container);
+        Assert.Equal("N2.T", barCaller.Container);
     }
 
     [Fact]
@@ -174,6 +214,20 @@ public class TreeSitterExtractorTests : IDisposable
 
         var local = Assert.Single(result.Symbols, s => s.Name == "Inner");
         Assert.Equal("N.T.M", local.Container);
+    }
+
+    [Fact]
+    public void An_enum_yields_its_type_symbol_but_no_member_symbols()
+    {
+        // Enum members are public API with no modifier syntax to hang a visibility default off of;
+        // rather than invent one, the enum type is the concept and its members are not extracted as
+        // symbols in their own right (a later task lists them in the enum concept's own body).
+        var result = ExtractSource("namespace N;\npublic enum EThing { A, B, C }");
+
+        var type = Assert.Single(result.Symbols);
+        Assert.Equal(SymbolKind.Type, type.Kind);
+        Assert.Equal("EThing", type.Name);
+        Assert.DoesNotContain(result.Symbols, s => s.Kind == SymbolKind.Member);
     }
 
     [Fact]

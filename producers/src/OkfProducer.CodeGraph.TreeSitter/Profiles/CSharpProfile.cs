@@ -13,15 +13,30 @@ public static class CSharpProfile
     /// <summary>
     /// Every declaration this producer extracts from C# source: the five type kinds (class,
     /// interface, struct, record, enum), the member kinds that carry their own <c>name</c> field
-    /// (method, constructor, destructor, property, event, delegate, enum member, and -- the spike's
-    /// remaining attachment gap -- <c>local_function_statement</c>), and fields (including
-    /// <c>event</c> fields), whose <c>variable_declarator</c> children each produce one match sharing
-    /// their enclosing <c>field_declaration</c>'s span (so <c>public int a, b;</c> yields two
-    /// symbols with the same signature and offsets, one named <c>a</c> and one named <c>b</c>).
-    /// Deliberately does not cover indexers, operator overloads, or conversion operators: none of
-    /// them has a <c>name</c> field in this grammar (an indexer is written <c>this[...]</c>; an
-    /// operator's symbol, e.g. <c>+</c>, is an anonymous child after the <c>operator</c> keyword), so
-    /// naming them requires bespoke logic this profile does not attempt.
+    /// (method, constructor, destructor, property, event, delegate, and -- the spike's remaining
+    /// attachment gap -- <c>local_function_statement</c>), and fields (including <c>event</c>
+    /// fields), whose <c>variable_declarator</c> children each produce one match sharing their
+    /// enclosing <c>field_declaration</c>'s span (so <c>public int a, b;</c> yields two symbols with
+    /// the same signature and offsets, one named <c>a</c> and one named <c>b</c>).
+    ///
+    /// Two things are deliberately, permanently out of scope for this query, not oversights:
+    ///
+    /// <list type="bullet">
+    /// <item><b>Enum members are not emitted as their own symbols.</b> An <c>enum_member_declaration</c>
+    /// is public API and a filter-by-visibility policy would otherwise wrongly drop it if it defaulted
+    /// to <see cref="SymbolVisibility.Private"/> (it has no modifier syntax in C# at all, so there is
+    /// no explicit-modifier signal <see cref="LanguageProfile.VisibilityOf"/> could read). Rather than
+    /// invent a visibility default for a declaration kind that never carries one, the enum
+    /// *type* is the concept; a later task lists its members inside that concept's own body instead
+    /// of emitting one symbol per member.</item>
+    /// <item><b>Indexers, operator overloads, and conversion operators are not extracted at all.</b>
+    /// None of them has a <c>name</c> field in this grammar -- an indexer is written <c>this[...]</c>
+    /// with no name field whatsoever; an operator's symbol, e.g. <c>+</c>, is an anonymous child
+    /// immediately after the anonymous <c>operator</c> keyword node, not a field. Naming either
+    /// requires bespoke, untested-by-any-brief-requirement logic (walk to the child after the
+    /// keyword; synthesize something like <c>this[]</c>), so this profile accepts the coverage gap
+    /// rather than add unverified naming rules.</item>
+    /// </list>
     /// </summary>
     public const string DeclarationQuery = """
         (class_declaration name: (identifier) @name) @decl
@@ -35,7 +50,6 @@ public static class CSharpProfile
         (property_declaration name: (identifier) @name) @decl
         (event_declaration name: (identifier) @name) @decl
         (delegate_declaration name: (identifier) @name) @decl
-        (enum_member_declaration name: (identifier) @name) @decl
         (local_function_statement name: (identifier) @name) @decl
         (field_declaration (variable_declaration (variable_declarator name: (identifier) @name))) @decl
         (event_field_declaration (variable_declaration (variable_declarator name: (identifier) @name))) @decl

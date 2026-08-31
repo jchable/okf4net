@@ -38,7 +38,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private static readonly string[] CallerMemberAncestorNodeTypes =
     [
         "method_declaration", "constructor_declaration", "destructor_declaration", "property_declaration",
-        "event_declaration", "delegate_declaration", "enum_member_declaration", "local_function_statement",
+        "event_declaration", "delegate_declaration", "local_function_statement",
     ];
 
     private readonly Dictionary<LanguageProfile, Engine> _engines = [];
@@ -55,7 +55,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             ?.GetChildForField(NameFieldName)?.Text;
 
         var symbols = ExtractSymbols(source, tree, engine.DeclarationQuery, profile, relativePath, fileScopedNamespaceName);
-        var sites = ExtractCallSites(source, tree, engine.CallQuery, relativePath);
+        var sites = ExtractCallSites(source, tree, engine.CallQuery, relativePath, fileScopedNamespaceName);
 
         return new ExtractionResult(symbols, sites, FileStatus.Extracted);
     }
@@ -122,17 +122,26 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         return symbols;
     }
 
-    private static List<CallSite> ExtractCallSites(string source, Tree tree, Query callQuery, string relativePath)
+    /// <summary>
+    /// <see cref="CallSite.CallerContainer"/> is deliberately computed with the *same*
+    /// <see cref="ComputeContainerPath"/> call a caller's own <see cref="SymbolFact.Container"/> uses
+    /// (rooted at the same nearest-enclosing-member node <see cref="CallSite.CallerName"/> is read
+    /// from), not a shallower "just the type's bare name" walk: Task 8 joins a call site back to its
+    /// caller's own concept by matching <c>(Container, Name)</c> against every <see cref="SymbolFact"/>,
+    /// and a fully-qualified path is the only one guaranteed to match exactly one symbol -- a bare
+    /// type name like <c>"T"</c> collides the moment two namespaces each hold a type named <c>T</c>,
+    /// which is ordinary in a real repository.
+    /// </summary>
+    private static List<CallSite> ExtractCallSites(string source, Tree tree, Query callQuery, string relativePath, string? fileScopedNamespaceName)
     {
         var sites = new List<CallSite>();
 
         foreach (var capture in callQuery.Execute(tree.RootNode).Captures)
         {
             var callee = capture.Node;
-            var callerContainer = FindNearestAncestor(callee, TypeDeclarationNodeTypes)?.GetChildForField(NameFieldName)?.Text
-                ?? string.Empty;
-            var callerName = FindNearestAncestor(callee, CallerMemberAncestorNodeTypes)?.GetChildForField(NameFieldName)?.Text
-                ?? string.Empty;
+            var callerMember = FindNearestAncestor(callee, CallerMemberAncestorNodeTypes);
+            var callerContainer = callerMember is not null ? ComputeContainerPath(callerMember, fileScopedNamespaceName) : string.Empty;
+            var callerName = callerMember?.GetChildForField(NameFieldName)?.Text ?? string.Empty;
 
             sites.Add(new CallSite(
                 callerContainer,
