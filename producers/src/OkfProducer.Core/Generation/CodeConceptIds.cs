@@ -53,19 +53,54 @@ public static class CodeConceptIds
     /// </remarks>
     public static string For(SymbolFact fact, LanguageProfile profile)
     {
-        var segments = new List<string>(4) { ConceptId.Slugify("code") };
+        ArgumentNullException.ThrowIfNull(fact);
+        ArgumentNullException.ThrowIfNull(profile);
 
-        if (TrySlugify(fact.Language, out var languageSegment))
+        var parts = new List<string>(profile.SplitContainer(fact.Container)) { fact.Name };
+        return Compose(fact.Language, parts);
+    }
+
+    /// <summary>
+    /// The concept id path for a <b>container</b> -- a namespace or module -- named by
+    /// <paramref name="containerSegments"/>, the already-split raw segments of its own path
+    /// (<c>["N", "Sub"]</c> for <c>N.Sub</c>). Same rules as <see cref="For"/>, deliberately reached
+    /// through the same private composer rather than reimplemented: a container concept and the symbol
+    /// concepts nested under it must agree segment for segment, or a namespace's file would sit beside
+    /// a directory that is not its own (§3.3).
+    ///
+    /// Takes raw segments rather than a container string because there is no way back:
+    /// <see cref="LanguageProfile.SplitContainer"/> exposes the split direction only, so rejoining
+    /// <c>["N", "Sub"]</c> into a container string would mean guessing the language's separator.
+    /// </summary>
+    /// <exception cref="ConceptIdException">
+    /// One of <paramref name="containerSegments"/> normalizes to an empty slug (see
+    /// <see cref="ConceptId.Slugify"/>).
+    /// </exception>
+    public static string ForContainer(string language, IReadOnlyList<string> containerSegments)
+    {
+        ArgumentNullException.ThrowIfNull(containerSegments);
+
+        return Compose(language, containerSegments);
+    }
+
+    /// <summary>
+    /// The shared composer behind <see cref="For"/> and <see cref="ForContainer"/>: <c>code</c>, the
+    /// language (slugified, or skipped when it yields no segment at all -- see <see cref="For"/>'s
+    /// remarks), then every part slugified after word-boundary splitting.
+    /// </summary>
+    private static string Compose(string language, IReadOnlyList<string> parts)
+    {
+        var segments = new List<string>(parts.Count + 2) { ConceptId.Slugify("code") };
+
+        if (TrySlugify(language, out var languageSegment))
         {
             segments.Add(languageSegment);
         }
 
-        foreach (var part in profile.SplitContainer(fact.Container))
+        foreach (var part in parts)
         {
             segments.Add(ConceptId.Slugify(SplitWordBoundaries(part)));
         }
-
-        segments.Add(ConceptId.Slugify(SplitWordBoundaries(fact.Name)));
 
         return string.Join("/", segments);
     }

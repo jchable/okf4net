@@ -223,10 +223,15 @@ public class CodeConceptGeneratorTests
         // The group sort decides registration order (which is what §3.3's tie-break rides on) and the
         // order concepts leave this method in. The fixture's symbols are deliberately NOT in this
         // order, so deleting the sort chain changes this sequence rather than passing by luck.
+        //
+        // `code/csharp/n` leads because Task 9's containment spine gives every namespace a concept of
+        // its own (§5.1) and emits it at its own depth: the sequence is still depth-first-then-Ordinal,
+        // with the synthesized containers of a level following that level's real declarations.
         var ids = Ids(Generate()).Where(id => id.StartsWith("code/", StringComparison.Ordinal)).ToList();
 
         Assert.Equal(
             [
+                "code/csharp/n",
                 "code/csharp/n/other",
                 "code/csharp/n/scanner",
                 "code/csharp/n/t",

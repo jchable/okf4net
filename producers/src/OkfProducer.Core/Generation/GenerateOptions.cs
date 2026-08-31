@@ -15,8 +15,9 @@ public sealed record GenerateOptions
 {
     /// <summary>
     /// The options a run uses when the caller supplies none: no repository URL (so no
-    /// <c>resource</c> is emitted at all -- see <see cref="RepoUrl"/>), no language profiles, and no
-    /// existing bundle to preserve descriptions from.
+    /// <c>resource</c> is emitted at all -- see <see cref="RepoUrl"/>), no language profiles, no
+    /// existing bundle to preserve descriptions from, and no source-ownership map (so no
+    /// package -> namespace containment link -- see <see cref="SourceOwnership"/>).
     /// </summary>
     public static GenerateOptions Default { get; } = new();
 
@@ -64,4 +65,34 @@ public sealed record GenerateOptions
     /// correct for a fresh bundle, and the reason a caller writing into an existing one must supply it.
     /// </summary>
     public Func<ConceptId, Frontmatter?>? ExistingFrontmatter { get; init; }
+
+    /// <summary>
+    /// Which project compiles which source file, as MSBuild evaluated it -- the seam §5.1's
+    /// package -> namespace containment link is attributed through. Supplied by the composition root
+    /// (the CLI, which references every project) rather than read here, because the query that
+    /// produces it, <c>MsBuildProjectQuery</c>, lives in <c>OkfProducer.CodeGraph.Roslyn</c>, which
+    /// references this project and not the reverse.
+    ///
+    /// <para><see langword="null"/> -- no MSBuild available, a repository that was never restored, or
+    /// simply a caller that supplied none -- means <b>no package -> namespace link is emitted at all</b>,
+    /// and the run says so through <see cref="Note"/>. Deliberately not a fall back to directory
+    /// containment: a missing link leaves the spine incomplete, which is visible and harmless, while a
+    /// link derived from the directory tree attributes a namespace to the wrong package whenever a
+    /// project adds, removes or links sources across directories -- a confident lie, which is what
+    /// §5.1 rules out.</para>
+    /// </summary>
+    public SourceOwnershipMap? SourceOwnership { get; init; }
+
+    /// <summary>
+    /// Where the run reports what it could not do: a note is one plain sentence, with no severity
+    /// prefix, so the caller decides how to render it (the CLI prefixes <c>note: </c> and writes to
+    /// stderr). Left <see langword="null"/>, notes are dropped -- generation itself never depends on
+    /// this sink, and never fails because of it.
+    ///
+    /// <para>Its one guarantee is that a run that silently produced <i>less</i> than it was asked for
+    /// -- the whole package -> namespace level of the containment spine missing for want of a
+    /// <see cref="SourceOwnership"/> map -- has somewhere to say so, instead of the operator having to
+    /// notice the absence by reading the bundle.</para>
+    /// </summary>
+    public Action<string>? Note { get; init; }
 }
