@@ -39,11 +39,18 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile)));
         }
 
-        var symbols = results
-            .SelectMany(r => r.Result.Symbols)
+        // Sort keys must fully disambiguate every tie a real repository can produce: two overloads
+        // of the same member in the same file tie on (Container, Name, RelativePath), so
+        // StartOffset breaks that tie. Without a final key, LINQ's stable OrderBy would fall back to
+        // input order, which is not a documented contract -- and Tasks 10/12 assert the generated
+        // bundle byte-for-byte, so an unspecified tie order would surface there as an intermittent
+        // failure.
+        var symbolList = results.SelectMany(r => r.Result.Symbols).ToList();
+        var symbols = symbolList
             .OrderBy(s => s.Container, StringComparer.Ordinal)
             .ThenBy(s => s.Name, StringComparer.Ordinal)
             .ThenBy(s => s.RelativePath, StringComparer.Ordinal)
+            .ThenBy(s => s.StartOffset)
             .ToList();
 
         var sites = results.SelectMany(r => r.Result.Sites).ToList();
@@ -68,10 +75,17 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             }
         }
 
-        var edges = verdicts.Values
+        // Never sort by iterating the dictionary directly: materialise its values into a list first,
+        // then sort that list explicitly. Two call sites to the same method from the same caller tie
+        // on (CallerContainer, CallerName, CalledName) -- RelativePath then Offset (unique per call
+        // site within a file) fully disambiguate, the same reasoning as the symbol sort above.
+        var verdictList = verdicts.Values.ToList();
+        var edges = verdictList
             .OrderBy(e => e.Site.CallerContainer, StringComparer.Ordinal)
             .ThenBy(e => e.Site.CallerName, StringComparer.Ordinal)
             .ThenBy(e => e.Site.CalledName, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.RelativePath, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.Offset)
             .ToList();
 
         var skipped = results

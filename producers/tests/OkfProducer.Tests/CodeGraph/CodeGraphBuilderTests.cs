@@ -130,6 +130,28 @@ public class CodeGraphBuilderTests
         Assert.Same(profile, extractor.ReceivedProfile);
     }
 
+    [Fact]
+    public void Edges_tying_on_caller_and_callee_break_the_tie_by_offset_and_stay_stable_across_builds()
+    {
+        // Two call sites to the same method from the same caller tie on
+        // (CallerContainer, CallerName, CalledName) -- constructed out of ascending order (the later
+        // offset first) so a correct implementation must actively sort by offset rather than happen
+        // to preserve dictionary/insertion order.
+        var lateSite = new CallSite("T", "Caller", "Callee", "A.cs", 50);
+        var earlySite = new CallSite("T", "Caller", "Callee", "A.cs", 10);
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(Member("T", "Caller")) { Sites = [lateSite, earlySite] }, CSharpProfiles, []);
+        var snapshot = SnapshotWith("A.cs");
+
+        var firstBuild = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+        var secondBuild = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.Equal([10, 50], firstBuild.Edges.Select(e => e.Site.Offset));
+        Assert.Equal(
+            firstBuild.Edges.Select(e => e.Site.Offset),
+            secondBuild.Edges.Select(e => e.Site.Offset));
+    }
+
     /// <summary>
     /// Builds the <see cref="RepositorySnapshot"/> <see cref="RepositoryScanner"/> would produce for
     /// a repo containing an empty file at each of <paramref name="relativePaths"/>. Real files on
