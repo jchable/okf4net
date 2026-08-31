@@ -227,6 +227,33 @@ public sealed class ConceptGenerator : IConceptGenerator
             .ThenBy(g => g.Key.Name, StringComparer.Ordinal)
             .ToList();
 
+        // A call site names its caller as (container, name) and its target as (container, name) -- and
+        // CallSite carries no language at all. Both joins below are therefore language-agnostic, which is
+        // unambiguous today only because v1 ships exactly one profile. It stops being true the moment a
+        // second one lands: two languages declaring the same container and name would attribute the same
+        // call to BOTH concepts, and nothing anywhere would say so. A wrong edge in a knowledge bundle is
+        // worse than a missing one -- an agent reading it gets a confidently false answer -- so the
+        // assumption fails loudly here rather than sitting in a comment for someone to not read. This
+        // throw is the specification of what to fix: give both joins a language component, which means
+        // CallSite gaining a Language field, since the resolvers are what would have to supply it.
+        var languages = groups
+            .Select(g => g.Key.Language)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(l => l, StringComparer.Ordinal)
+            .ToList();
+
+        if (languages.Count > 1)
+        {
+            throw new InvalidOperationException(
+                "ConceptGenerator: this code graph carries symbols in more than one language ("
+                + string.Join(", ", languages)
+                + "), but call edges are joined to their caller and to their target on (container, name) alone"
+                + " -- CallSite carries no language -- so two languages declaring the same container and name"
+                + " would attribute the same call to both concepts. Give both joins in"
+                + " ConceptGenerator.BuildCodeConcepts a language component (CallSite needs a Language field)"
+                + " before generating a multi-language bundle.");
+        }
+
         // Pass 1 -- ids. Registered in the sorted order above so §3.3's numeric tie-break is decided by
         // the Ordinal order of the symbols' own names, not by which file the scanner happened to reach
         // first: a file move or a line shift must not renumber anything.
@@ -240,9 +267,9 @@ public sealed class ConceptGenerator : IConceptGenerator
             var id = RegisterCodeId(declarations[0], profile, registry);
             ids[key] = id;
 
-            // Edges name their target as (container, name) only -- no language. With a single profile
-            // in v1 that is unambiguous; if two languages ever declare the same container and name, the
-            // first in the sorted order above wins the link target, deterministically.
+            // Link targets, keyed the way an edge names them: (container, name), no language. The guard
+            // above is what makes that key unambiguous rather than merely lucky; TryAdd's first-wins is
+            // then only a same-language duplicate guard, which the group key already rules out.
             idsByName.TryAdd((key.Container, key.Name), id);
             primaryByName.TryAdd((key.Container, key.Name), declarations[0]);
         }
@@ -453,11 +480,19 @@ public sealed class ConceptGenerator : IConceptGenerator
     }
 
     /// <summary>
-    /// The profile to cut <paramref name="language"/>'s containers with. Falls back to a
-    /// container-only profile rather than skipping the symbol: only
-    /// <see cref="LanguageProfile.SplitContainer"/> is consulted here and it is a pure function of
-    /// <see cref="LanguageProfile.Language"/>, so a caller that omitted its profiles still gets the
-    /// same ids it would have got with them.
+    /// The profile to cut <paramref name="language"/>'s containers with. A symbol whose language matches
+    /// none of <see cref="GenerateOptions.Profiles"/> is <b>not</b> skipped: this synthesizes a
+    /// throwaway profile carrying only that language, so the symbol still gets a concept and gets the
+    /// same id the real profile would have given it.
+    ///
+    /// <b>That substitution is valid under exactly one condition</b>, and it is stated at the other end
+    /// too, on <see cref="LanguageProfile.SplitContainer"/> itself (neither note is complete alone --
+    /// whoever changes that method will read its own doc, not this one): container splitting must stay a
+    /// pure function of <see cref="LanguageProfile.Language"/>. Every other field synthesized here is
+    /// empty, so the moment <see cref="LanguageProfile.SplitContainer"/> consults one of them, this
+    /// profile stops standing in for the real one and starts silently producing different concept ids --
+    /// which is an id churn, not a cosmetic difference. If that day comes, this method must become a
+    /// hard requirement instead: no profile for the language, no concept.
     /// </summary>
     private static LanguageProfile ProfileFor(string language, GenerateOptions options, Dictionary<string, LanguageProfile> cache)
     {

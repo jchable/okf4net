@@ -28,6 +28,18 @@ public sealed record LanguageProfile(
     /// every <see cref="SymbolFact"/> and <c>CallSite</c> it emits. The <c>/</c> branch for
     /// TypeScript/JavaScript-style module paths remains unexercised until a profile for those
     /// languages is built.
+    ///
+    /// <para><b>This method must remain a pure function of <see cref="Language"/>.</b> It reads no other
+    /// field of this record today, and something depends on that: when <c>ConceptGenerator</c> is handed
+    /// a symbol whose language matches none of the profiles its caller supplied, it synthesizes a
+    /// throwaway profile carrying only that language and calls this method on it, rather than dropping
+    /// the symbol's concept. That synthesis produces the same concept ids the real profile would have
+    /// produced only for as long as this sentence stays true. If container splitting ever has to consult
+    /// another field -- a per-profile separator, a module-root prefix, anything -- then this method stops
+    /// being reconstructible from a language name alone, and the fallback in
+    /// <c>ConceptGenerator.ProfileFor</c> must become a hard requirement (no profile, no concept) in the
+    /// same change. Silently leaving it in place would mis-slug every affected concept id, and a churn
+    /// of concept ids is the one failure this design treats as unrecoverable (§3.1).</para>
     /// </remarks>
     public IReadOnlyList<string> SplitContainer(string container)
     {

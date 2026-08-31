@@ -267,6 +267,37 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void A_second_language_fails_loudly_because_the_call_join_carries_no_language()
+    {
+        // CallSite names its caller and its target as (container, name) with no language, so both joins
+        // are language-agnostic -- unambiguous only while v1 ships one profile. Left as a comment, the
+        // day a second profile lands two languages sharing a container and name would attribute the same
+        // call to BOTH concepts, silently: a confidently wrong edge, which is worse than a missing one.
+        // The guard is the specification of what to fix, so it must name the languages and the join.
+        var graph = GraphOf(
+            Member("N.Scanner", "Scan", "public void Scan()"),
+            new SymbolFact(SymbolKind.Member, "typescript", "src/lib/scanner", "scan", "function scan()",
+                SymbolVisibility.Public, "src/lib/scanner.ts", 0, 1, 1, 2, null));
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Contains("csharp", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("typescript", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("CallSite", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("BuildCodeConcepts", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void One_language_and_no_language_at_all_both_generate_without_the_guard_firing()
+    {
+        // The guard must key off "more than one", not "not exactly one": an empty graph is the ordinary
+        // no-code-found case and must still produce the non-code families.
+        Assert.Contains("code/csharp/n/scanner/scan", Ids(Generate()));
+        Assert.Equal(["overview"], Ids(new ConceptGenerator().Generate(Snapshot(), GraphOf(), Options())));
+    }
+
+    [Fact]
     public void Every_generated_concept_passes_the_strict_producer_validation()
     {
         foreach (var concept in Generate())
