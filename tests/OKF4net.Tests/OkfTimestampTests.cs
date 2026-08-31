@@ -143,6 +143,17 @@ public class OkfTimestampTests
     [InlineData("2026-06-30T14:00:00+02", nameof(TimestampForm.Conformant))]
     [InlineData("2026-06-30T14:00:00-05", nameof(TimestampForm.Conformant))]
     // Readable, offset-bearing, wrong spelling.
+    // Fix round 2: the negative zero offset. ISO 8601 forbids it (2004
+    // §4.2.5.2 / 2019 §4.3.13) — a zero difference from UTC takes a plus sign,
+    // so "Z" and "+00:00" spell it and "-00:00" does not. Only RFC 3339 §4.3
+    // permits it, and SPEC.md cites no RFC. Both precisions are covered
+    // because the grammar accepts both. "+00:00" sits above as Conformant on
+    // purpose: it is the spelling of one of the spec's own 18 literals
+    // (2026-05-28T22:53:05+00:00), so the sign is what decides here, not the
+    // zero. A negative *non*-zero offset stays Conformant ("-05:00" / "-05"
+    // above): the rule is about the sign of zero, not about minus signs.
+    [InlineData("2026-06-30T14:00:00-00:00", nameof(TimestampForm.NonIso8601))]
+    [InlineData("2026-06-30T14:00:00-00", nameof(TimestampForm.NonIso8601))]
     [InlineData("2026-6-3T14:00:00Z", nameof(TimestampForm.NonIso8601))]
     [InlineData("2026-06-3T14:00:00Z", nameof(TimestampForm.NonIso8601))]
     [InlineData("2026-06-30T14:00:00z", nameof(TimestampForm.NonIso8601))]
@@ -203,5 +214,41 @@ public class OkfTimestampTests
 
         Assert.Equal(TimestampForm.Conformant, form);
         Assert.Equal(new DateTimeOffset(2026, 6, 30, 14, 0, 0, 123, TimeSpan.Zero), instant);
+    }
+
+    [Fact]
+    public void A_negative_zero_offset_is_flagged_but_still_yields_its_instant()
+    {
+        // §11 forbids dropping a readable value: -00:00 is unambiguous (the BCL
+        // reads it as +00:00), so the instant is still read — only the spelling
+        // is flagged.
+        var form = OkfTimestamp.Classify("2026-06-30T14:00:00-00:00", out var instant);
+
+        Assert.Equal(TimestampForm.NonIso8601, form);
+        Assert.Equal(Utc(2026, 6, 30, 14, 0, 0), instant);
+    }
+
+    /// <summary>
+    /// The known, deliberate limit of the readability gate, pinned so it cannot
+    /// drift into a silent surprise: these are all genuine ISO 8601 datetimes
+    /// with an explicit UTC offset, and <see cref="DateTimeOffset.TryParse(string, IFormatProvider, System.Globalization.DateTimeStyles, out DateTimeOffset)"/>
+    /// reads none of them (verified by execution, not by reading the BCL docs).
+    /// They therefore classify <see cref="TimestampForm.Unreadable"/> and yield
+    /// no instant, so they are never evaluated for staleness. Adding them would
+    /// be a parser rewrite, and no literal in <c>docs/spec/SPEC.md</c> uses any
+    /// of these forms — see the design doc's "Out of scope" section. The
+    /// validator's message for this bucket says only that the value could not be
+    /// read, deliberately never that it is not ISO 8601, because of these rows.
+    /// </summary>
+    [Theory]
+    [InlineData("2020-06-30T24:00:00Z")]      // end-of-day 24:00 (ISO 8601 §4.2.3)
+    [InlineData("20200630T140000Z")]          // wholly basic format
+    [InlineData("2026-06-30T23:59:60Z")]      // leap second
+    [InlineData("2026-W27-1T14:00:00Z")]      // week date
+    [InlineData("2026-181T14:00:00Z")]        // ordinal date
+    public void Iso8601_forms_the_bcl_parser_cannot_read_are_Unreadable(string raw)
+    {
+        Assert.Equal(TimestampForm.Unreadable, OkfTimestamp.Classify(raw, out var instant));
+        Assert.Equal(default, instant);
     }
 }

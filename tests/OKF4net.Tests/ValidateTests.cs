@@ -453,7 +453,7 @@ public class ValidateTests
     {
         var r = ValidateConcept(
             "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: not-a-date\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("source last_modified is not") && d.Code == DiagnosticCode.SourceInvalidLastModified && d.Field == "sources.last_modified");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("source last_modified could not be read as a timestamp") && d.Code == DiagnosticCode.SourceInvalidLastModified && d.Field == "sources.last_modified");
         Assert.True(r.IsConformant);
     }
 
@@ -470,7 +470,7 @@ public class ValidateTests
         Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("status is not a scalar"));
         Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("source entry is not a mapping"));
         Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("sources must be a list"));
-        Assert.DoesNotContain(r.Diagnostics, d => d.Message.Contains("source last_modified is not"));
+        Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.SourceInvalidLastModified);
         Assert.True(r.IsConformant);
     }
 
@@ -605,7 +605,7 @@ public class ValidateTests
     public void Generated_invalid_date_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated: {by: 'human:bob', at: 'not-a-date'}\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated.at is not an ISO-8601 datetime") && d.Code == DiagnosticCode.GeneratedInvalidDate && d.Field == "generated.at");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("generated.at could not be read as a timestamp") && d.Code == DiagnosticCode.GeneratedInvalidDate && d.Field == "generated.at");
     }
 
     [Fact]
@@ -619,7 +619,7 @@ public class ValidateTests
     public void Verified_invalid_date_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nverified:\n  - by: 'human:bob'\n    at: 'not-a-date'\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified.at is not an ISO-8601 datetime") && d.Code == DiagnosticCode.VerifiedInvalidDate && d.Field == "verified.at");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("verified.at could not be read as a timestamp") && d.Code == DiagnosticCode.VerifiedInvalidDate && d.Field == "verified.at");
     }
 
     [Fact]
@@ -633,14 +633,14 @@ public class ValidateTests
     public void Usage_window_invalid_from_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nusage_window: {from: 'not-a-date', to: '2026-07-27'}\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("usage_window from is not") && d.Code == DiagnosticCode.UsageWindowInvalidFrom && d.Field == "usage_window.from");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("usage_window from could not be read as a timestamp") && d.Code == DiagnosticCode.UsageWindowInvalidFrom && d.Field == "usage_window.from");
     }
 
     [Fact]
     public void Usage_window_invalid_to_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nusage_window: {from: '2026-07-27', to: 'not-a-date'}\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("usage_window to is not") && d.Code == DiagnosticCode.UsageWindowInvalidTo && d.Field == "usage_window.to");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("usage_window to could not be read as a timestamp") && d.Code == DiagnosticCode.UsageWindowInvalidTo && d.Field == "usage_window.to");
     }
 
     [Fact]
@@ -656,7 +656,7 @@ public class ValidateTests
     public void Stale_after_invalid_date_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: 'not-a-date'\n");
-        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("stale_after is not") && d.Code == DiagnosticCode.StaleAfterInvalid && d.Field == "stale_after");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Message.Contains("stale_after could not be read as a timestamp") && d.Code == DiagnosticCode.StaleAfterInvalid && d.Field == "stale_after");
     }
 
     [Fact]
@@ -892,6 +892,25 @@ public class ValidateTests
 
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '2026-6-3T14:00:00Z'\n");
         Assert.Contains(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.NonIso8601Timestamp && d.Field == "stale_after");
+    }
+
+    [Fact]
+    public void An_unreadable_value_is_not_told_it_is_not_iso8601()
+    {
+        // The Unreadable bucket is defined by what DateTimeOffset.TryParse can
+        // read, not by what ISO 8601 permits: end-of-day 24:00 (used here),
+        // wholly-basic 20260630T140000Z, leap seconds, week dates and ordinal
+        // dates are all genuine ISO 8601 datetimes with an explicit UTC offset
+        // that the BCL parser refuses (pinned in
+        // OkfTimestampTests.Iso8601_forms_the_bcl_parser_cannot_read_are_Unreadable).
+        // Reporting them as "not an ISO-8601 datetime" would be false, so the
+        // message states only that the value could not be read. The code is
+        // unchanged; only the wording is constrained.
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '2020-06-30T24:00:00Z'\n");
+
+        var d = Assert.Single(r.Of(Severity.Warning), x => x.Code == DiagnosticCode.StaleAfterInvalid);
+        Assert.Equal("stale_after could not be read as a timestamp: \"2020-06-30T24:00:00Z\"", d.Message);
+        Assert.DoesNotContain("ISO", d.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

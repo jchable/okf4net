@@ -82,7 +82,10 @@ internal static class OkfTimestamp
     /// accepted. The fraction's decimal sign may be <c>.</c> or <c>,</c> — ISO
     /// 8601 §4.2.2.4 names the comma the <em>preferred</em> sign, so rejecting
     /// it would make this grammar stricter than the spec it exists to enforce,
-    /// exactly the defect class this seam exists to catch. <c>[0-9]</c> rather
+    /// exactly the defect class this seam exists to catch. The negative zero
+    /// offset (<c>-00:00</c> / <c>-00</c>) is <b>not</b> excluded by this
+    /// pattern — <see cref="IsNegativeZeroOffset"/> turns it away separately,
+    /// see there for why. <c>[0-9]</c> rather
     /// than <c>\d</c> throughout: <c>\d</c> is Unicode-aware in .NET and would
     /// otherwise match non-ASCII decimal digits, which this method — the
     /// strict authority on spelling — should reject on its own terms rather
@@ -176,8 +179,9 @@ internal static class OkfTimestamp
     /// <summary>
     /// Whether <paramref name="raw"/> matches the exact §5 grammar:
     /// <c>YYYY-MM-DDThh:mm[:ss[(.|,)s+]]offset</c>, <c>offset</c> being <c>Z</c>,
-    /// a reduced-precision <c>±hh</c>, or an extended <c>±hh:mm</c>. Every
-    /// component is fixed-width and the designator's case is significant.
+    /// a reduced-precision <c>±hh</c>, or an extended <c>±hh:mm</c> — the
+    /// negative zero offset excepted (see <see cref="IsNegativeZeroOffset"/>).
+    /// Every component is fixed-width and the designator's case is significant.
     /// Leading/trailing whitespace is trimmed before the check, deliberately:
     /// it matches <see cref="HasExplicitOffset"/>'s own trim, and is harmless
     /// in practice since a plain YAML scalar is already trimmed by the parser
@@ -188,7 +192,29 @@ internal static class OkfTimestamp
     /// parses but is not ISO 8601 (<c>2026-6-3T14:00:00Z</c>, a lowercase
     /// designator, or a basic-format offset like <c>+0200</c>).
     /// </summary>
-    private static bool IsConformantSpelling(string raw) => ConformantPattern.IsMatch(raw.AsSpan().Trim());
+    private static bool IsConformantSpelling(string raw)
+    {
+        var s = raw.AsSpan().Trim();
+        return ConformantPattern.IsMatch(s) && !IsNegativeZeroOffset(s);
+    }
+
+    /// <summary>
+    /// Whether the value's offset is a negative zero (<c>-00:00</c> or its
+    /// reduced-precision <c>-00</c>). ISO 8601 forbids it — a zero difference
+    /// from UTC carries a plus sign (ISO 8601:2004 §4.2.5.2, 2019 §4.3.13), so
+    /// <c>Z</c> and <c>+00:00</c> are the conformant spellings and <c>-00:00</c>
+    /// is not. RFC 3339 §4.3 does permit it, with its own "offset unknown"
+    /// meaning — but <c>docs/spec/SPEC.md</c> cites no RFC (<c>grep -c RFC</c> →
+    /// 0) and delegates to ISO 8601 itself, so the RFC's licence does not reach
+    /// this grammar. Kept out of <see cref="ConformantPattern"/> rather than
+    /// folded into it as a lookahead: the pattern's job is component shape, and
+    /// a sign/zero interaction expressed as a negated group is far easier to
+    /// misread than to state. Safe to test by suffix because it runs only on a
+    /// value that already matched the pattern, whose last characters are
+    /// therefore the offset.
+    /// </summary>
+    private static bool IsNegativeZeroOffset(ReadOnlySpan<char> s) =>
+        s.EndsWith("-00:00", StringComparison.Ordinal) || s.EndsWith("-00", StringComparison.Ordinal);
 
     /// <summary>
     /// Whether the raw value ends in an explicit zone designator (<c>Z</c>, or

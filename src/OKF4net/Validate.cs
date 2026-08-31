@@ -57,7 +57,7 @@ public enum DiagnosticCode
     /// <summary><c>generated.by</c> is not a well-formed §7 actor.</summary>
     GeneratedInvalidActor,
 
-    /// <summary><c>generated.at</c> is not ISO-8601.</summary>
+    /// <summary><c>generated.at</c> could not be read as a timestamp at all.</summary>
     GeneratedInvalidDate,
 
     /// <summary>A <c>verified</c> entry is missing its required <c>by</c>.</summary>
@@ -66,7 +66,7 @@ public enum DiagnosticCode
     /// <summary><c>verified.by</c> is not a well-formed §7 actor.</summary>
     VerifiedInvalidActor,
 
-    /// <summary><c>verified.at</c> is not ISO-8601.</summary>
+    /// <summary><c>verified.at</c> could not be read as a timestamp at all.</summary>
     VerifiedInvalidDate,
 
     /// <summary>A <c>verified</c> list entry is not a <c>{by, at}</c> mapping.</summary>
@@ -84,13 +84,25 @@ public enum DiagnosticCode
     /// <summary>A <c>sources</c> entry is missing its required <c>resource</c>.</summary>
     SourceMissingResource,
 
-    /// <summary>A <c>sources</c> entry's <c>last_modified</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary>
+    /// A <c>sources</c> entry's <c>last_modified</c> could not be read as a
+    /// timestamp at all. The legacy <c>YYYY-MM-DD</c> form is read, and warns
+    /// as <see cref="LegacyDateOnlyTimestamp"/> instead.
+    /// </summary>
     SourceInvalidLastModified,
 
-    /// <summary><c>usage_window.from</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary>
+    /// <c>usage_window.from</c> could not be read as a timestamp at all. The
+    /// legacy <c>YYYY-MM-DD</c> form is read, and warns as
+    /// <see cref="LegacyDateOnlyTimestamp"/> instead.
+    /// </summary>
     UsageWindowInvalidFrom,
 
-    /// <summary><c>usage_window.to</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary>
+    /// <c>usage_window.to</c> could not be read as a timestamp at all. The
+    /// legacy <c>YYYY-MM-DD</c> form is read, and warns as
+    /// <see cref="LegacyDateOnlyTimestamp"/> instead.
+    /// </summary>
     UsageWindowInvalidTo,
 
     /// <summary><c>status</c> is present but not a scalar.</summary>
@@ -99,7 +111,7 @@ public enum DiagnosticCode
     /// <summary><c>status</c> is a scalar but not one of <c>draft</c>/<c>stable</c>/<c>deprecated</c>.</summary>
     StatusUnknown,
 
-    /// <summary><c>stale_after</c> is not an ISO-8601 datetime.</summary>
+    /// <summary><c>stale_after</c> could not be read as a timestamp at all.</summary>
     StaleAfterInvalid,
 
     /// <summary>
@@ -634,8 +646,8 @@ public static class BundleValidator
     /// <remarks>
     /// It validates the <em>date part only</em>, so it accepts a broken time
     /// (<c>2026-01-01T25:00:00Z</c>). That is why the validator no longer uses
-    /// it for §5 timestamp keys: those go through <see cref="IsConformantInstant"/>
-    /// and the shared parser behind it, which reads the whole value. Retained as
+    /// it for §5 timestamp keys: those go through the shared internal
+    /// <c>OkfTimestamp</c> classifier, which reads the whole value. Retained as
     /// public API for consumers that want the loose shape check.
     /// </remarks>
     /// <param name="s">The value to check.</param>
@@ -651,9 +663,17 @@ public static class BundleValidator
     /// datetime carrying an explicit UTC offset (<c>2026-06-30T14:00:00Z</c>).
     /// A bare date or a zoneless datetime is readable but not conformant --
     /// <see cref="IsIso8601DateTime"/> stays the permissive check, this one is
-    /// the conformance check. Both the producer and other consumers reuse this
-    /// rather than spelling the rule a second time.
+    /// the conformance check.
     /// </summary>
+    /// <remarks>
+    /// Exposed for callers outside this assembly -- producers deciding whether
+    /// a value they are about to write is already §5-conformant, and consumers
+    /// wanting the same verdict the validator reaches -- so the rule is not
+    /// spelled a second time elsewhere. It has no caller inside this repository:
+    /// the validator reads the richer four-way form from the internal
+    /// <c>OkfTimestamp.Classify</c> directly, since it must tell "legacy" from
+    /// "misspelled" from "unreadable", which a bool cannot carry.
+    /// </remarks>
     /// <param name="s">The raw frontmatter value.</param>
     public static bool IsConformantInstant(string s) => OkfTimestamp.IsConformant(s);
 
@@ -680,7 +700,14 @@ public static class BundleValidator
         switch (form)
         {
             case TimestampForm.Unreadable:
-                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} is not an ISO-8601 datetime: {DebugQuote.Quote(raw)}", invalidCode, field));
+                // Deliberately says only that the value could not be read, not
+                // that it is not ISO 8601: the readability gate is
+                // DateTimeOffset.TryParse, which cannot read several genuine
+                // ISO 8601 spellings (end-of-day 24:00, wholly-basic
+                // 20260630T140000Z, leap seconds, week and ordinal dates). They
+                // land here, and calling them "not an ISO-8601 datetime" would
+                // be false of every one of them.
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} could not be read as a timestamp: {DebugQuote.Quote(raw)}", invalidCode, field));
                 break;
             case TimestampForm.LegacyDateOnly:
                 diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} {DebugQuote.Quote(raw)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, field));
