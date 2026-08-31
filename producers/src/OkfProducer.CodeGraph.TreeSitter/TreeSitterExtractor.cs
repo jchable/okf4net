@@ -1,0 +1,331 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text;
+using OkfProducer.Core.CodeGraph;
+using TreeSitter;
+
+namespace OkfProducer.CodeGraph.TreeSitter;
+
+/// <summary>
+/// The single <see cref="ILanguageExtractor"/> implementation, driven entirely by a
+/// <see cref="LanguageProfile"/>: it loads the profile's grammar, runs its declaration and call
+/// queries, and turns every match into a <see cref="SymbolFact"/> or <see cref="CallSite"/>.
+/// Adding a language to the producer means adding a profile (grammar name, two query strings, a
+/// doc-comment prefix) -- not a new extractor class (§2's "one seam, one implementation" design).
+/// </summary>
+/// <remarks>
+/// Not every piece of this class is language-neutral yet: attaching a doc comment (walking
+/// <see cref="Node.PreviousSibling"/> for a leading run of <c>comment</c>-typed nodes) and reading a
+/// container from a <c>name</c> field are conventions shared by nearly every tree-sitter grammar, but
+/// C#'s file-scoped namespace form (<c>namespace N;</c>, a sibling of the declarations it covers
+/// rather than their syntactic parent) and the caller-resolution walk's fixed lists of "type" and
+/// "member" node-type names are C#-specific. <see cref="LanguageProfile"/>'s six fields (as shipped)
+/// have no hook for a second language to override these; a Java/TypeScript/JavaScript profile would
+/// need this class extended, not just a new <see cref="LanguageProfile"/> value.
+/// </remarks>
+public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
+{
+    private const string CommentNodeType = "comment";
+    private const string FileScopedNamespaceNodeType = "file_scoped_namespace_declaration";
+    private const string NameFieldName = "name";
+    private const string BodyFieldName = "body";
+    private const string ModifierNodeType = "modifier";
+
+    private static readonly string[] TypeDeclarationNodeTypes =
+    [
+        "class_declaration", "interface_declaration", "struct_declaration", "record_declaration", "enum_declaration",
+    ];
+
+    private static readonly string[] CallerMemberAncestorNodeTypes =
+    [
+        "method_declaration", "constructor_declaration", "destructor_declaration", "property_declaration",
+        "event_declaration", "delegate_declaration", "enum_member_declaration", "local_function_statement",
+    ];
+
+    private readonly Dictionary<LanguageProfile, Engine> _engines = [];
+
+    /// <inheritdoc/>
+    public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile)
+    {
+        var engine = GetOrCreateEngine(profile);
+        var source = File.ReadAllText(absolutePath);
+        using var tree = engine.Parser.Parse(source)!;
+
+        var fileScopedNamespaceName = tree.RootNode.Children
+            .FirstOrDefault(c => c.Type == FileScopedNamespaceNodeType)
+            ?.GetChildForField(NameFieldName)?.Text;
+
+        var symbols = ExtractSymbols(source, tree, engine.DeclarationQuery, profile, relativePath, fileScopedNamespaceName);
+        var sites = ExtractCallSites(source, tree, engine.CallQuery, relativePath);
+
+        return new ExtractionResult(symbols, sites, FileStatus.Extracted);
+    }
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        foreach (var engine in _engines.Values)
+        {
+            engine.Dispose();
+        }
+
+        _engines.Clear();
+    }
+
+    private Engine GetOrCreateEngine(LanguageProfile profile)
+    {
+        if (_engines.TryGetValue(profile, out var existing))
+        {
+            return existing;
+        }
+
+        var language = new Language(profile.GrammarName);
+        var parser = new Parser(language);
+        var declarationQuery = language.CreateQuery(profile.DeclarationQuery);
+        var callQuery = language.CreateQuery(profile.CallQuery);
+        var engine = new Engine(language, parser, declarationQuery, callQuery);
+        _engines[profile] = engine;
+        return engine;
+    }
+
+    private static List<SymbolFact> ExtractSymbols(
+        string source, Tree tree, Query declarationQuery, LanguageProfile profile, string relativePath, string? fileScopedNamespaceName)
+    {
+        var symbols = new List<SymbolFact>();
+
+        foreach (var match in declarationQuery.Execute(tree.RootNode).Matches)
+        {
+            var decl = match.Captures.First(c => c.Name == "decl").Node;
+            var name = match.Captures.First(c => c.Name == "name").Node.Text;
+
+            var kind = IsTypeDeclaration(decl.Type) ? SymbolKind.Type : SymbolKind.Member;
+            var container = ComputeContainerPath(decl, fileScopedNamespaceName);
+            var modifiersText = ComputeModifiersText(decl, kind);
+            var visibility = profile.VisibilityOf(modifiersText, kind);
+            var docComment = ExtractDocComment(decl, profile.DocCommentPrefix);
+            var signature = ComputeSignature(decl);
+
+            symbols.Add(new SymbolFact(
+                kind,
+                profile.Language,
+                container,
+                name,
+                signature,
+                visibility,
+                relativePath,
+                Utf8Offsets.ToUtf8(source, decl.StartIndex),
+                Utf8Offsets.ToUtf8(source, decl.EndIndex),
+                decl.StartPosition.Row + 1,
+                decl.EndPosition.Row + 1,
+                docComment));
+        }
+
+        return symbols;
+    }
+
+    private static List<CallSite> ExtractCallSites(string source, Tree tree, Query callQuery, string relativePath)
+    {
+        var sites = new List<CallSite>();
+
+        foreach (var capture in callQuery.Execute(tree.RootNode).Captures)
+        {
+            var callee = capture.Node;
+            var callerContainer = FindNearestAncestor(callee, TypeDeclarationNodeTypes)?.GetChildForField(NameFieldName)?.Text
+                ?? string.Empty;
+            var callerName = FindNearestAncestor(callee, CallerMemberAncestorNodeTypes)?.GetChildForField(NameFieldName)?.Text
+                ?? string.Empty;
+
+            sites.Add(new CallSite(
+                callerContainer,
+                callerName,
+                callee.Text,
+                relativePath,
+                Utf8Offsets.ToUtf8(source, callee.StartIndex)));
+        }
+
+        return sites;
+    }
+
+    private static bool IsTypeDeclaration(string nodeType) =>
+        Array.IndexOf(TypeDeclarationNodeTypes, nodeType) >= 0;
+
+    /// <summary>
+    /// Builds the dotted <c>N.Outer.Inner</c> path above <paramref name="decl"/>: every ancestor
+    /// that exposes a <c>name</c> field (a namespace, a type, or -- for a local function -- the
+    /// method it's nested in) contributes one segment, outermost first. A C# file-scoped namespace
+    /// (<c>namespace N;</c>) is a *sibling* of the declarations it covers, not their syntactic
+    /// parent, so it never surfaces from the ancestor walk and must be prepended separately.
+    /// </summary>
+    private static string ComputeContainerPath(Node decl, string? fileScopedNamespaceName)
+    {
+        var segments = new List<string>();
+        var current = decl.Parent;
+        while (current is not null)
+        {
+            var nameField = current.GetChildForField(NameFieldName);
+            if (nameField is not null)
+            {
+                segments.Insert(0, nameField.Text);
+            }
+
+            current = current.Parent;
+        }
+
+        if (fileScopedNamespaceName is not null)
+        {
+            segments.Insert(0, fileScopedNamespaceName);
+        }
+
+        return string.Join(".", segments);
+    }
+
+    /// <summary>
+    /// Joins <paramref name="decl"/>'s direct <c>modifier</c> children into the space-separated text
+    /// <see cref="LanguageProfile.VisibilityOf"/> expects. A member with no explicit access modifier
+    /// declared directly inside an <c>interface</c> is implicitly <c>public</c> in C# -- a default
+    /// <see cref="LanguageProfile.VisibilityOf"/> cannot apply on its own because it never sees the
+    /// declaring type, so it is synthesized into the modifier text here.
+    /// </summary>
+    private static string ComputeModifiersText(Node decl, SymbolKind kind)
+    {
+        var modifiers = decl.Children.Where(c => c.Type == ModifierNodeType).Select(c => c.Text).ToList();
+
+        if (kind == SymbolKind.Member
+            && !modifiers.Any(m => m is "public" or "internal" or "protected" or "private")
+            && FindNearestAncestor(decl, TypeDeclarationNodeTypes)?.Type == "interface_declaration")
+        {
+            modifiers.Insert(0, "public");
+        }
+
+        return string.Join(" ", modifiers);
+    }
+
+    /// <summary>
+    /// A single-line header for <paramref name="decl"/>: everything up to its <c>body</c> field (a
+    /// block or arrow-expression clause) for members that have one, or the whole declaration with a
+    /// trailing <c>;</c> dropped for the ones that don't (fields, delegates, enum members).
+    /// </summary>
+    private static string ComputeSignature(Node decl)
+    {
+        var body = decl.GetChildForField(BodyFieldName);
+        var headerLength = body is not null ? body.StartIndex - decl.StartIndex : decl.Text.Length;
+        var header = decl.Text[..headerLength].TrimEnd();
+
+        if (header.EndsWith(';'))
+        {
+            header = header[..^1].TrimEnd();
+        }
+
+        return CollapseWhitespace(header).Trim();
+    }
+
+    /// <summary>
+    /// Collects a contiguous run of <paramref name="prefix"/>-prefixed <c>comment</c> siblings
+    /// immediately preceding <paramref name="decl"/> (each <c>///</c> line is its own sibling node in
+    /// this grammar, so a multi-line doc comment is several nodes, not one), strips the prefix from
+    /// each, and returns the <c>&lt;summary&gt;</c> element's content if present, or the joined text
+    /// otherwise. A plain <c>//</c> comment (or a <c>////</c> divider, which C# does not treat as a
+    /// doc comment despite starting with <paramref name="prefix"/>) stops the walk rather than being
+    /// folded in.
+    /// </summary>
+    private static string? ExtractDocComment(Node decl, string prefix)
+    {
+        var lines = new List<string>();
+        var sibling = decl.PreviousSibling;
+        while (sibling is not null && sibling.Type == CommentNodeType && IsDocCommentLine(sibling.Text, prefix))
+        {
+            lines.Insert(0, StripDocCommentPrefix(sibling.Text, prefix));
+            sibling = sibling.PreviousSibling;
+        }
+
+        if (lines.Count == 0)
+        {
+            return null;
+        }
+
+        var joined = CollapseWhitespace(string.Join(" ", lines)).Trim();
+        if (joined.Length == 0)
+        {
+            return null;
+        }
+
+        return ExtractXmlElement(joined, "summary") ?? joined;
+    }
+
+    private static bool IsDocCommentLine(string text, string prefix) =>
+        text.StartsWith(prefix, StringComparison.Ordinal) && (text.Length == prefix.Length || text[prefix.Length] != '/');
+
+    private static string StripDocCommentPrefix(string text, string prefix)
+    {
+        var rest = text[prefix.Length..];
+        return rest.StartsWith(' ') ? rest[1..] : rest;
+    }
+
+    private static string? ExtractXmlElement(string text, string elementName)
+    {
+        var openTag = $"<{elementName}>";
+        var closeTag = $"</{elementName}>";
+
+        var contentStart = text.IndexOf(openTag, StringComparison.Ordinal);
+        if (contentStart < 0)
+        {
+            return null;
+        }
+
+        contentStart += openTag.Length;
+        var contentEnd = text.IndexOf(closeTag, contentStart, StringComparison.Ordinal);
+        return contentEnd < 0 ? null : text[contentStart..contentEnd].Trim();
+    }
+
+    private static string CollapseWhitespace(string text)
+    {
+        var builder = new StringBuilder(text.Length);
+        var lastWasWhitespace = false;
+        foreach (var c in text)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!lastWasWhitespace)
+                {
+                    builder.Append(' ');
+                }
+
+                lastWasWhitespace = true;
+            }
+            else
+            {
+                builder.Append(c);
+                lastWasWhitespace = false;
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static Node? FindNearestAncestor(Node node, IReadOnlyList<string> nodeTypes)
+    {
+        var current = node.Parent;
+        while (current is not null)
+        {
+            if (nodeTypes.Contains(current.Type, StringComparer.Ordinal))
+            {
+                return current;
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
+    }
+
+    /// <summary>The cached grammar, parser, and compiled queries for one <see cref="LanguageProfile"/>.</summary>
+    private sealed record Engine(Language Language, Parser Parser, Query DeclarationQuery, Query CallQuery) : IDisposable
+    {
+        public void Dispose()
+        {
+            DeclarationQuery.Dispose();
+            CallQuery.Dispose();
+            Parser.Dispose();
+            Language.Dispose();
+        }
+    }
+}
