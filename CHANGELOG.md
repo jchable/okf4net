@@ -136,6 +136,21 @@ and this project adheres to
   `SourceInvalidLastModified` / `UsageWindowInvalid*` codes for values that are
   not timestamps at all. §9 `log.md` date headings are **unchanged** — §9 pins
   those to bare `YYYY-MM-DD`, and `ChangeLog.IsIsoDate` still backs them.
+- **A §5 timestamp that carries an explicit UTC offset but is not spelled ISO
+  8601 now warns.** Conformance was decided by a permissive parser
+  (`DateTimeOffset.TryParse`), so `2026-6-3T14:00:00Z` (unpadded month/day),
+  a lowercase `z` designator, and a basic-format offset (`+0200` instead of
+  `+02:00`) all parsed successfully and passed with no diagnostic at all,
+  across all six §5 keys (`generated.at`, `verified[].at`,
+  `sources[].last_modified`, `usage_window.from`/`.to`, `stale_after`). The
+  grammar is now checked against the exact spelling ISO 8601 requires — fixed
+  component widths, an uppercase `Z`, no mixing of basic and extended offset
+  forms — verified against every timestamp literal `docs/spec/SPEC.md` itself
+  writes, so it cannot reject a spelling the spec uses. Still read as the
+  parsed instant either way (§11); only the spelling now raises a new
+  `NonIso8601Timestamp` warning. `stale_after` now shares the same
+  `CheckTemporal` check as the other five keys rather than a separate path,
+  so a spelling cannot be conformant in one field and not another.
 
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had

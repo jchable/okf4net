@@ -835,6 +835,65 @@ public class ValidateTests
         Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
     }
 
+    // A value that carries an explicit UTC offset and parses, but is not
+    // spelled ISO 8601 (unpadded month/day, a lowercase designator, a
+    // basic-format offset, ...), used to pass every one of these fields
+    // silently -- neither malformed nor legacy. It now gets its own code,
+    // distinct from both, across all six §5 keys.
+
+    [Fact]
+    public void A_non_iso8601_spelling_stale_after_warns_not_legacy_not_invalid()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '2026-6-3T14:00:00Z'\n");
+
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Message.Contains("stale_after \"2026-6-3T14:00:00Z\" is not an ISO-8601 spelling")
+                 && d.Code == DiagnosticCode.NonIso8601Timestamp && d.Field == "stale_after");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.StaleAfterInvalid);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void A_non_iso8601_spelling_generated_at_warns_not_legacy_not_invalid()
+    {
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\ngenerated:\n  by: tool:okfgen\n  at: '2026-06-30T14:00:00z'\n");
+
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Message.Contains("generated.at \"2026-06-30T14:00:00z\" is not an ISO-8601 spelling")
+                 && d.Code == DiagnosticCode.NonIso8601Timestamp && d.Field == "generated.at");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.GeneratedInvalidDate);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void A_non_iso8601_spelling_last_modified_warns_not_legacy_not_invalid()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - resource: https://x\n    last_modified: '2026-06-30T14:00:00+0200'\n");
+
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Message.Contains("source last_modified \"2026-06-30T14:00:00+0200\" is not an ISO-8601 spelling")
+                 && d.Code == DiagnosticCode.NonIso8601Timestamp && d.Field == "sources.last_modified");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.SourceInvalidLastModified);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void StaleAfterIsLegacyDate_is_false_for_a_non_iso8601_spelling_while_the_validator_still_warns()
+    {
+        // Public API: StaleAfterIsLegacyDate documents exactly "bare date, or
+        // datetime with no offset" -- 2026-6-3T14:00:00Z is neither (it carries
+        // an explicit Z offset, just spelled with an unpadded month/day), so
+        // widening it to also cover NonIso8601 would repeat the mislabelling
+        // fixed in 65b7d9b. The validator still warns, just under a different code.
+        var lc = Lifecycle.From(null, "2026-6-3T14:00:00Z");
+        Assert.False(lc.StaleAfterIsLegacyDate);
+        Assert.False(lc.StaleAfterMalformed);
+
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '2026-6-3T14:00:00Z'\n");
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.NonIso8601Timestamp && d.Field == "stale_after");
+    }
+
     [Fact]
     public void A_log_date_heading_stays_a_bare_date_not_an_instant()
     {

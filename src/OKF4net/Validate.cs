@@ -109,6 +109,14 @@ public enum DiagnosticCode
     /// </summary>
     LegacyDateOnlyTimestamp,
 
+    /// <summary>
+    /// A timestamp-valued key carries an explicit UTC offset and parses, but
+    /// its spelling is not ISO 8601 (§5: "Every timestamp-valued key in OKF
+    /// is an ISO 8601 datetime with an explicit UTC offset"). Still read as
+    /// the parsed instant (§11); only the spelling is flagged.
+    /// </summary>
+    NonIso8601Timestamp,
+
     /// <summary>The concept is past its <c>stale_after</c> date.</summary>
     ConceptStale,
 
@@ -404,21 +412,14 @@ public static class BundleValidator
                 diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"unknown status {DebugQuote.Quote(fm.Get("status")!.AsDisplayString() ?? string.Empty)}; treated as stable", DiagnosticCode.StatusUnknown, "status"));
             }
 
-            if (lc.StaleAfterMalformed)
+            if (lc.StaleAfterRaw is { } staleAfterRaw)
             {
-                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after is not an ISO-8601 datetime: {DebugQuote.Quote(lc.StaleAfterRaw!)}", DiagnosticCode.StaleAfterInvalid, "stale_after"));
+                CheckTemporal(diagnostics, concept, staleAfterRaw, "stale_after", "stale_after", DiagnosticCode.StaleAfterInvalid);
             }
-            else
-            {
-                if (lc.StaleAfterIsLegacyDate)
-                {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after {DebugQuote.Quote(lc.StaleAfterRaw!)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, "stale_after"));
-                }
 
-                if (lc.IsStale(now))
-                {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"concept is stale (stale_after {lc.StaleAfterRaw})", DiagnosticCode.ConceptStale, "stale_after"));
-                }
+            if (lc.IsStale(now))
+            {
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"concept is stale (stale_after {lc.StaleAfterRaw})", DiagnosticCode.ConceptStale, "stale_after"));
             }
 
             if (concept.Document.UsesLegacyCitations())
@@ -659,12 +660,13 @@ public static class BundleValidator
     /// <summary>
     /// Checks one §5 timestamp-valued key: unreadable values get
     /// <paramref name="invalidCode"/>, readable-but-legacy ones get
-    /// <see cref="DiagnosticCode.LegacyDateOnlyTimestamp"/>, and the §5 form is
-    /// silent. All six §5 timestamp keys go through here — <c>stale_after</c>
+    /// <see cref="DiagnosticCode.LegacyDateOnlyTimestamp"/>, readable-but-not-ISO-8601
+    /// ones get <see cref="DiagnosticCode.NonIso8601Timestamp"/>, and the §5 form
+    /// is silent. All six §5 timestamp keys go through here — <c>stale_after</c>
     /// via <see cref="Lifecycle"/>, plus <c>generated.at</c>, <c>verified[].at</c>,
     /// <c>sources[].last_modified</c> and both <c>usage_window</c> bounds — so a
-    /// value cannot be rejected in one field and accepted in another, and
-    /// "malformed" and "legacy" cannot swap places between fields.
+    /// value cannot be rejected in one field and accepted in another, and the
+    /// four forms cannot swap places between fields.
     /// </summary>
     private static void CheckTemporal(
         List<Diagnostic> diagnostics,
@@ -674,13 +676,21 @@ public static class BundleValidator
         string field,
         DiagnosticCode invalidCode)
     {
-        if (!OkfTimestamp.TryParse(raw, out _, out var isLegacy))
+        var form = OkfTimestamp.Classify(raw, out _);
+        switch (form)
         {
-            diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} is not an ISO-8601 datetime: {DebugQuote.Quote(raw)}", invalidCode, field));
-        }
-        else if (isLegacy)
-        {
-            diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} {DebugQuote.Quote(raw)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, field));
+            case TimestampForm.Unreadable:
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} is not an ISO-8601 datetime: {DebugQuote.Quote(raw)}", invalidCode, field));
+                break;
+            case TimestampForm.LegacyDateOnly:
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} {DebugQuote.Quote(raw)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, field));
+                break;
+            case TimestampForm.NonIso8601:
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} {DebugQuote.Quote(raw)} is not an ISO-8601 spelling; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.NonIso8601Timestamp, field));
+                break;
+            case TimestampForm.Conformant:
+            default:
+                break;
         }
     }
 
