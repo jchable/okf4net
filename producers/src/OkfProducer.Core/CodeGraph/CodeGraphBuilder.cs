@@ -10,19 +10,16 @@ namespace OkfProducer.Core.CodeGraph;
 /// site's relative path and offset), so a missing or non-owning resolver degrades precision, never
 /// the shape of the output (§2.1).
 /// </summary>
-public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList<ISymbolResolver> resolvers)
+public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList<LanguageProfile> profiles, IReadOnlyList<ISymbolResolver> resolvers)
 {
-    // Task 1 has no real LanguageProfile to select per file (that wiring -- e.g. routing by file
-    // extension -- belongs to whatever later task composes a multi-language ILanguageExtractor).
-    // This placeholder is what's passed until then; the single extractor Task 1's tests exercise
-    // never reads it.
-    private static readonly LanguageProfile PlaceholderProfile = new(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
-
     /// <summary>
     /// Extracts every eligible file in <paramref name="snapshot"/>'s repository, concatenates and
     /// deterministically sorts the resulting symbols and edges, and aggregates a <see cref="RunStatus"/>.
-    /// <paramref name="limits"/> and <paramref name="scope"/> are threaded through for a later task's
-    /// hostile-input and scoping policy (§2.1); Task 1 does not act on either yet.
+    /// A file whose extension matches none of <paramref name="profiles"/> is skipped entirely: it is
+    /// not extracted, not an error, and not a <see cref="FileStatus"/> skip reason -- it simply falls
+    /// outside what this run understands, so it cannot make the run incomplete. <paramref name="limits"/>
+    /// and <paramref name="scope"/> are threaded through for a later task's hostile-input and scoping
+    /// policy (§2.1); Task 1 does not act on either yet.
     /// </summary>
     public CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits, ScopeOptions scope)
     {
@@ -32,8 +29,14 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         var results = new List<(string RelativePath, ExtractionResult Result)>();
         foreach (var relativePath in EnumerateFiles(snapshot.RepoPath))
         {
+            var profile = SelectProfile(relativePath);
+            if (profile is null)
+            {
+                continue;
+            }
+
             var absolutePath = Path.Combine(snapshot.RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            results.Add((relativePath, extractor.Extract(relativePath, absolutePath, PlaceholderProfile)));
+            results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile)));
         }
 
         var symbols = results
@@ -87,4 +90,26 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
                 .Select(path => Path.GetRelativePath(repoPath, path).Replace(Path.DirectorySeparatorChar, '/'))
                 .OrderBy(path => path, StringComparer.Ordinal)
             : [];
+
+    private LanguageProfile? SelectProfile(string relativePath)
+    {
+        var extension = Path.GetExtension(relativePath);
+        if (extension.Length == 0)
+        {
+            return null;
+        }
+
+        foreach (var profile in profiles)
+        {
+            foreach (var candidate in profile.FileExtensions)
+            {
+                if (string.Equals(candidate, extension, StringComparison.OrdinalIgnoreCase))
+                {
+                    return profile;
+                }
+            }
+        }
+
+        return null;
+    }
 }

@@ -6,6 +6,11 @@ namespace OkfProducer.Tests.CodeGraph;
 
 public class CodeGraphBuilderTests
 {
+    private static readonly LanguageProfile CSharpProfile =
+        new("csharp", "tree-sitter-c-sharp", "", "", "///", [".cs"]);
+
+    private static readonly IReadOnlyList<LanguageProfile> CSharpProfiles = [CSharpProfile];
+
     private static SymbolFact Member(string container, string name, string path = "A.cs") =>
         new(SymbolKind.Member, "csharp", container, name, $"public void {name}()",
             SymbolVisibility.Public, path, 0, 10, 1, 1, null);
@@ -18,6 +23,17 @@ public class CodeGraphBuilderTests
             new([.. symbols.Where(s => s.RelativePath == relativePath)],
                 [.. Sites.Where(s => s.RelativePath == relativePath)],
                 FileStatus.Extracted);
+    }
+
+    private sealed class CapturingExtractor : ILanguageExtractor
+    {
+        public LanguageProfile? ReceivedProfile { get; private set; }
+
+        public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile)
+        {
+            ReceivedProfile = profile;
+            return new ExtractionResult([], [], FileStatus.Extracted);
+        }
     }
 
     private sealed class StubResolver(string owned, EdgeConfidence confidence) : ISymbolResolver
@@ -37,6 +53,7 @@ public class CodeGraphBuilderTests
         var site = new CallSite("T", "Caller", "Callee", "A.cs", 42);
         var builder = new CodeGraphBuilder(
             new StubExtractor(Member("T", "Caller")) { Sites = [site] },
+            CSharpProfiles,
             [new StubResolver("A.cs", EdgeConfidence.ByName), new StubResolver("A.cs", EdgeConfidence.Exact)]);
 
         var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
@@ -51,6 +68,7 @@ public class CodeGraphBuilderTests
         var site = new CallSite("T", "Caller", "Callee", "A.cs", 42);
         var builder = new CodeGraphBuilder(
             new StubExtractor(Member("T", "Caller")) { Sites = [site] },
+            CSharpProfiles,
             [new StubResolver("A.cs", EdgeConfidence.ByName), new StubResolver("Other.cs", EdgeConfidence.Exact)]);
 
         var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
@@ -65,7 +83,7 @@ public class CodeGraphBuilderTests
         // resolver degrades precision, never the shape.
         var site = new CallSite("T", "Caller", "Callee", "A.cs", 42);
         var builder = new CodeGraphBuilder(
-            new StubExtractor(Member("T", "Caller")) { Sites = [site] }, []);
+            new StubExtractor(Member("T", "Caller")) { Sites = [site] }, CSharpProfiles, []);
 
         var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
 
@@ -77,11 +95,39 @@ public class CodeGraphBuilderTests
     public void Symbols_and_edges_come_out_in_a_deterministic_order()
     {
         var builder = new CodeGraphBuilder(
-            new StubExtractor(Member("T", "b", "B.cs"), Member("T", "a", "A.cs")), []);
+            new StubExtractor(Member("T", "b", "B.cs"), Member("T", "a", "A.cs")), CSharpProfiles, []);
 
         var graph = builder.Build(SnapshotWith("B.cs", "A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
 
         Assert.Equal(["a", "b"], graph.Symbols.Select(s => s.Name));
+    }
+
+    [Fact]
+    public void A_file_matching_no_profile_is_skipped_without_affecting_completeness()
+    {
+        // The extractor is configured to return a symbol for "A.txt" if it's ever asked to extract
+        // that file, but no registered profile claims the ".txt" extension -- proving the file
+        // never reaches the extractor at all, and that skipping it this way is not the same as a
+        // FileStatus skip reason (it must not flip RunStatus.IsComplete to false).
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(Member("T", "Caller", "A.txt")), CSharpProfiles, []);
+
+        var graph = builder.Build(SnapshotWith("A.txt"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.Empty(graph.Symbols);
+        Assert.True(graph.Status.IsComplete);
+    }
+
+    [Fact]
+    public void A_file_matching_a_profile_reaches_the_extractor_with_that_profile()
+    {
+        var profile = new LanguageProfile("csharp", "tree-sitter-c-sharp", "decl-query", "call-query", "///", [".cs"]);
+        var extractor = new CapturingExtractor();
+        var builder = new CodeGraphBuilder(extractor, [profile], []);
+
+        builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.Same(profile, extractor.ReceivedProfile);
     }
 
     /// <summary>
