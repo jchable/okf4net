@@ -71,6 +71,23 @@ public class CodeConceptIdsTests
         Assert.NotEqual(a.ToString(), b.ToString());
     }
 
+    [Fact]
+    public void The_registry_keys_on_the_id_it_returns_not_on_the_string_it_composed()
+    {
+        // "The key equals the id, by construction, on every path" is the registry's invariant, and the
+        // composed string is not always that id: ConceptId.Parse drops empty segments, so an empty
+        // prefix composes "/overview" and a prefix spelled "/" composes "//overview" -- two keys, one
+        // id. Keyed on the composed string the registry hands the same id out twice while believing the
+        // second was free, which is a duplicate concept id: two concepts racing for one file.
+        var registry = new ConceptIdRegistry();
+
+        var first = registry.Register(string.Empty, "overview");
+        var second = registry.Register("/", "overview");
+
+        Assert.Equal("overview", first.ToString());
+        Assert.NotEqual(first.ToString(), second.ToString());
+    }
+
     [Theory]
     // Rule 3, digit -> upper is NOT a boundary: a mid-word digit (this repository's own root
     // namespace) does not split. On its own this case does not distinguish rule 3 from "never split

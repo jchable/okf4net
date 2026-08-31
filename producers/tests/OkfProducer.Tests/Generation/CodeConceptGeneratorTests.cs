@@ -310,6 +310,31 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void A_parent_is_registered_before_its_child_even_when_container_order_says_otherwise()
+    {
+        // Pins the depth key in the group sort, which was otherwise unobservable -- the exact defect
+        // fix round 2 closed one level up, one level down.
+        //
+        // In the canonical case the ThenBy on Container already orders parents first for free: a
+        // child's container is its parent's container with the parent's name appended, so the parent's
+        // container is a proper Ordinal prefix of the child's and sorts ahead of it. Deleting the depth
+        // key therefore changes nothing -- until two container spellings denote the same structural
+        // path. SplitContainer drops empty entries, so `.N.Log` and `N.Log` split identically, and
+        // `.N.Log` sorts BEFORE the parent's plain `N` ('.' is 0x2E, 'N' is 0x4E). Without the depth
+        // key the member registers first, finds no parent, falls back to its raw container, and lands
+        // in `n/log/` while the type -- registered afterwards, and escaped because `log` is reserved --
+        // takes `n/log-2`: the severed-member defect all over again.
+        var graph = GraphOf(
+            Type("N", "Log", path: "src/Log.cs"),
+            Member(".N.Log", "Write", "public void Write()", path: "src/Log.cs"));
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Contains("code/csharp/n/log-2/write", ids);
+        Assert.DoesNotContain("code/csharp/n/log/write", ids);
+    }
+
+    [Fact]
     public void A_symbol_whose_name_cannot_form_an_id_still_gets_a_concept()
     {
         // A C# identifier may legally be entirely non-ASCII, and ConceptId.Slugify rejects the empty
@@ -344,20 +369,26 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void An_empty_language_cannot_desync_the_registry_key_from_the_id_it_returns()
+    public void A_language_that_yields_no_segment_is_skipped_not_collapsed_into_the_fallback_bucket()
     {
-        // The correctness hole behind slugifying the language segment: an empty language yields
-        // `code//name`, which the registry stores as the key `code//name` while ConceptId.Parse drops
-        // the empty segment and hands back `code/name`. The uniqueness key would stop equalling the id,
-        // so a second symbol could be handed a duplicate id the registry believed was free. Two
-        // symbols, two distinct ids, is exactly what that hole would break.
+        // The honest scope of this test, because its previous name claimed more than it could observe:
+        // it pins that an unusable language segment is SKIPPED. Slugifying it instead throws, which
+        // sends the fallback ladder to its generic bucket and piles every symbol of that language into
+        // `code/member`, `code/member-2` -- trading the desync for the very collapse the c++ case above
+        // condemns. Leaving it raw yields `code//n.scanner/scan`, whose registry key would not equal
+        // the id ConceptId.Parse returns; that desync is NOT observable from here, because the
+        // single-language guard makes the language segment uniform across a run, so no two ids can
+        // collide through it. It is pinned where it lives instead, on the registry itself, by
+        // CodeConceptIdsTests.The_registry_keys_on_the_id_it_returns_not_on_the_string_it_composed.
         var graph = GraphOf(
             Member("N.Scanner", "Scan", "void Scan()", path: "a.x") with { Language = "" },
             Member("N.Other", "Scan", "void Scan()", path: "b.x") with { Language = "" });
 
         var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
 
-        Assert.Equal(ids.Count, ids.Distinct(StringComparer.Ordinal).Count());
+        Assert.Contains("code/n.scanner/scan", ids);
+        Assert.Contains("code/n.other/scan", ids);
+        Assert.DoesNotContain(ids, id => id.StartsWith("code/member", StringComparison.Ordinal));
     }
 
     [Fact]

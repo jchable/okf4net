@@ -241,6 +241,17 @@ public sealed class ConceptGenerator : IConceptGenerator
         // tie-break: two symbols can only compete for one id if they share a parent path, and sharing a
         // parent path means sharing a depth, so the tie-break still runs on Ordinal name order within
         // every group that could actually collide.
+        //
+        // The depth key is doing real work even though the ThenBy on Container usually reaches the same
+        // answer on its own. In the canonical case a child's container is its parent's container with
+        // the parent's name appended, which makes the parent's container a proper Ordinal PREFIX of the
+        // child's, and a prefix sorts first -- so Container order already puts parents ahead of
+        // children, and deleting this key would look free. It is not: SplitContainer drops empty
+        // entries, so more than one container spelling denotes the same structural path, and the moment
+        // two spellings differ textually (`.N.Log` and `N.Log` split identically, but `.` is 0x2E and
+        // `N` is 0x4E) the textual order stops tracking the structural one and a child sorts ahead of
+        // its own parent. That is what CodeConceptGeneratorTests pins, so this key cannot be removed as
+        // dead code on the grounds that nothing observes it.
         var groups = unsorted
             .OrderBy(g => g.RawSegments.Length)
             .ThenBy(g => g.Key.Language, StringComparer.Ordinal)
