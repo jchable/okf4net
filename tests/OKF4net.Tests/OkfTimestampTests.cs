@@ -132,6 +132,16 @@ public class OkfTimestampTests
     // many-digit fraction are both grammar-legal and not covered above.
     [InlineData("2026-06-30T14:00:00-05:00", nameof(TimestampForm.Conformant))]
     [InlineData("2026-06-30T14:00:00.123456789Z", nameof(TimestampForm.Conformant))]
+    // Fix round 1, finding 1: the comma decimal sign (ISO 8601 §4.2.2.4 names
+    // it the *preferred* one) and the reduced-precision ±hh offset (no
+    // minutes at all, so nothing to separate — not basic/extended mixing,
+    // which is why +0200 below stays rejected) are both grammar-legal. The
+    // original regex rejected both, which was stricter than ISO 8601 itself
+    // — the same defect class ("false positive on conformant data") this
+    // branch exists to fix.
+    [InlineData("2026-06-30T14:00:00,123Z", nameof(TimestampForm.Conformant))]
+    [InlineData("2026-06-30T14:00:00+02", nameof(TimestampForm.Conformant))]
+    [InlineData("2026-06-30T14:00:00-05", nameof(TimestampForm.Conformant))]
     // Readable, offset-bearing, wrong spelling.
     [InlineData("2026-6-3T14:00:00Z", nameof(TimestampForm.NonIso8601))]
     [InlineData("2026-06-3T14:00:00Z", nameof(TimestampForm.NonIso8601))]
@@ -148,7 +158,7 @@ public class OkfTimestampTests
     [InlineData("2026-06-30T4:00:00Z", nameof(TimestampForm.Unreadable))]
     // Discovered while writing the battery: the date/time separator's case
     // matters too (ISO 8601 fixes it as literal "T"), and a space in its
-    // place is the RFC 3339 spelling, not the ISO 8601 one §5 requires.
+    // place is a different spelling that §5 does not accept as an alternative.
     [InlineData("2026-06-30t14:00:00Z", nameof(TimestampForm.NonIso8601))]
     [InlineData("2026-06-30 14:00:00Z", nameof(TimestampForm.NonIso8601))]
     // Legacy: readable, but no offset at all.
@@ -177,5 +187,21 @@ public class OkfTimestampTests
 
         Assert.Equal(TimestampForm.NonIso8601, form);
         Assert.Equal(Utc(2026, 6, 3, 14, 0, 0), instant);
+    }
+
+    [Fact]
+    public void A_comma_decimal_sign_is_conformant_and_yields_the_right_instant()
+    {
+        // Fix round 1, finding 1: settled by execution, not assumption —
+        // DateTimeOffset.TryParse already accepts "," as a fraction separator
+        // under InvariantCulture/RoundtripKind (verified with a throwaway
+        // probe before this test was written), so no normalization step is
+        // needed to make the value both Conformant and readable; the raw
+        // string with its comma is exactly what both the readability parse
+        // and IsConformantSpelling see.
+        var form = OkfTimestamp.Classify("2026-06-30T14:00:00,123Z", out var instant);
+
+        Assert.Equal(TimestampForm.Conformant, form);
+        Assert.Equal(new DateTimeOffset(2026, 6, 30, 14, 0, 0, 123, TimeSpan.Zero), instant);
     }
 }

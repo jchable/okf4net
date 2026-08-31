@@ -72,17 +72,28 @@ internal static class OkfTimestamp
     ];
 
     /// <summary>
-    /// The exact §5 grammar: <c>YYYY-MM-DDThh:mm[:ss[.s+]]offset</c>, where
-    /// <c>offset</c> is <c>Z</c> or <c>±hh:mm</c>. Every component is
-    /// fixed-width, the designator is a literal uppercase <c>Z</c>, and the
-    /// offset — when not <c>Z</c> — is wholly extended (colon-separated), never
-    /// the basic form <c>+0200</c>. Deliberately checked against the raw text
-    /// rather than derived from a parsed value: <see cref="DateTimeOffset"/>
-    /// has no memory of how its source string was spelled, so the spelling
-    /// check has to run before parsing throws that information away.
+    /// The exact §5 grammar: <c>YYYY-MM-DDThh:mm[:ss[(.|,)s+]]offset</c>, where
+    /// <c>offset</c> is <c>Z</c>, a reduced-precision <c>±hh</c>, or an extended
+    /// <c>±hh:mm</c>. Every component is fixed-width, the designator is a
+    /// literal uppercase <c>Z</c>, and a minutes-bearing offset must be
+    /// colon-separated — ISO 8601 forbids mixing basic and extended forms, so
+    /// <c>+0200</c> (minutes with no separator) is rejected while <c>+02</c>
+    /// (no minutes at all, so nothing to separate) and <c>+02:00</c> are both
+    /// accepted. The fraction's decimal sign may be <c>.</c> or <c>,</c> — ISO
+    /// 8601 §4.2.2.4 names the comma the <em>preferred</em> sign, so rejecting
+    /// it would make this grammar stricter than the spec it exists to enforce,
+    /// exactly the defect class this seam exists to catch. <c>[0-9]</c> rather
+    /// than <c>\d</c> throughout: <c>\d</c> is Unicode-aware in .NET and would
+    /// otherwise match non-ASCII decimal digits, which this method — the
+    /// strict authority on spelling — should reject on its own terms rather
+    /// than relying on the readability gate ahead of it to have already done
+    /// so. Deliberately checked against the raw text rather than derived from
+    /// a parsed value: <see cref="DateTimeOffset"/> has no memory of how its
+    /// source string was spelled, so the spelling check has to run before
+    /// parsing throws that information away.
     /// </summary>
     private static readonly Regex ConformantPattern = new(
-        @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$",
+        @"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.,][0-9]+)?)?(Z|[+-][0-9]{2}(:[0-9]{2})?)$",
         RegexOptions.Compiled);
 
     /// <summary>
@@ -164,9 +175,13 @@ internal static class OkfTimestamp
 
     /// <summary>
     /// Whether <paramref name="raw"/> matches the exact §5 grammar:
-    /// <c>YYYY-MM-DDThh:mm[:ss[.s+]]offset</c>, <c>offset</c> being <c>Z</c> or
-    /// an extended <c>±hh:mm</c>. Every component is fixed-width and the
-    /// designator's case is significant. Called only once the value is already
+    /// <c>YYYY-MM-DDThh:mm[:ss[(.|,)s+]]offset</c>, <c>offset</c> being <c>Z</c>,
+    /// a reduced-precision <c>±hh</c>, or an extended <c>±hh:mm</c>. Every
+    /// component is fixed-width and the designator's case is significant.
+    /// Leading/trailing whitespace is trimmed before the check, deliberately:
+    /// it matches <see cref="HasExplicitOffset"/>'s own trim, and is harmless
+    /// in practice since a plain YAML scalar is already trimmed by the parser
+    /// by the time it reaches here. Called only once the value is already
     /// known to parse, so an out-of-range component (month 13, hour 25, …) has
     /// already been turned away as <see cref="TimestampForm.Unreadable"/> by the
     /// time this runs — this method's only job is rejecting a spelling that
