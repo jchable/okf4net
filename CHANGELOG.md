@@ -10,6 +10,25 @@ and this project adheres to
 
 ### Added
 
+- **`ConceptSearch.TopDiversified`** — picks the top N of a scored result set
+  while rotating across top-level id families, so one family cannot take every
+  slot in a truncated window. `ConceptSearch.Search` is unchanged; this is an
+  added selection step, not a second scorer.
+
+### Changed
+
+- **`okf_search` and the agent context provider now return diversified results.**
+  Scores are presence-based and capped at 6 per term, so ties are the common
+  case, and ties were broken by `ConceptId` order — which is ordinal by segment.
+  On a bundle whose concepts are dominated by one id family, that family took
+  every slot in the 20-result search window and the 5-concept injection window.
+  Measured on a 396-concept bundle: curated concepts held 1 of 55 top-5 slots,
+  and 5 of 11 broad queries returned none at all in the top 20; after the change,
+  23 of 55 and 0 of 11. The trade is deliberate — a higher-scoring concept can
+  now be displaced by a lower-scoring one from a family that would otherwise be
+  absent. Small bundles, where every family already fits in the window, are
+  unaffected.
+
 - **`FixedClock`** — an `IOkfClock` pinned to one date, alongside `SystemClock`.
   Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
   exists to make staleness (§5.5) reproducible; until now each caller wanting
