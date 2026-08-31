@@ -15,7 +15,7 @@ sources:
     last_modified: 2026-06-30
 usage_window: { from: 2026-06-01, to: 2026-06-30 }
 status: stable
-stale_after: 2099-01-01
+stale_after: 2099-01-01T00:00:00Z
 ---
 
 Daily active users.

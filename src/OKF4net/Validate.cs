@@ -99,8 +99,15 @@ public enum DiagnosticCode
     /// <summary><c>status</c> is a scalar but not one of <c>draft</c>/<c>stable</c>/<c>deprecated</c>.</summary>
     StatusUnknown,
 
-    /// <summary><c>stale_after</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary><c>stale_after</c> is not an ISO-8601 datetime.</summary>
     StaleAfterInvalid,
+
+    /// <summary>
+    /// A timestamp-valued key uses the legacy date-only form (or a datetime
+    /// with no explicit offset) instead of the §5 ISO 8601 datetime with an
+    /// explicit UTC offset. Read as a fallback, like the §13.1 legacy fields.
+    /// </summary>
+    LegacyDateOnlyTimestamp,
 
     /// <summary>The concept is past its <c>stale_after</c> date.</summary>
     ConceptStale,
@@ -308,6 +315,10 @@ public static class BundleValidator
                 {
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.at is not ISO-8601: {DebugQuote.Quote(gat)}", DiagnosticCode.GeneratedInvalidDate, "generated.at"));
                 }
+                else if (g.At is { } gatConformance && !IsConformantInstant(gatConformance))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.at {DebugQuote.Quote(gatConformance)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, "generated.at"));
+                }
             }
 
             foreach (var stamp in fm.Verified)
@@ -324,6 +335,10 @@ public static class BundleValidator
                 if (stamp.At is { } vat && !IsIso8601DateTime(vat))
                 {
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.at is not ISO-8601: {DebugQuote.Quote(vat)}", DiagnosticCode.VerifiedInvalidDate, "verified.at"));
+                }
+                else if (stamp.At is { } vatConformance && !IsConformantInstant(vatConformance))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.at {DebugQuote.Quote(vatConformance)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, "verified.at"));
                 }
             }
 
@@ -399,11 +414,19 @@ public static class BundleValidator
 
             if (lc.StaleAfterMalformed)
             {
-                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after is not `YYYY-MM-DD`: {DebugQuote.Quote(lc.StaleAfterRaw!)}", DiagnosticCode.StaleAfterInvalid, "stale_after"));
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after is not an ISO-8601 datetime: {DebugQuote.Quote(lc.StaleAfterRaw!)}", DiagnosticCode.StaleAfterInvalid, "stale_after"));
             }
-            else if (lc.IsStale(now))
+            else
             {
-                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"concept is stale (stale_after {lc.StaleAfterRaw})", DiagnosticCode.ConceptStale, "stale_after"));
+                if (lc.StaleAfterIsLegacyDate)
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after {DebugQuote.Quote(lc.StaleAfterRaw!)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, "stale_after"));
+                }
+
+                if (lc.IsStale(now))
+                {
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"concept is stale (stale_after {lc.StaleAfterRaw})", DiagnosticCode.ConceptStale, "stale_after"));
+                }
             }
 
             if (concept.Document.UsesLegacyCitations())
@@ -620,6 +643,23 @@ public static class BundleValidator
         var sepIndex = s.IndexOfAny(['T', ' ']);
         var datePart = sepIndex >= 0 ? s[..sepIndex] : s;
         return ChangeLog.IsIsoDate(datePart);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="s"/> is a §5-conformant timestamp: an ISO 8601
+    /// datetime carrying an explicit UTC offset (<c>2026-06-30T14:00:00Z</c>).
+    /// A bare date or a zoneless datetime is readable but not conformant --
+    /// <see cref="IsIso8601DateTime"/> stays the permissive check, this one is
+    /// the conformance check. Both the producer and other consumers reuse this
+    /// rather than spelling the rule a second time.
+    /// </summary>
+    /// <param name="s">The raw frontmatter value.</param>
+    public static bool IsConformantInstant(string s)
+    {
+        // Lifecycle owns the one parser for §5 timestamps; asking it about a
+        // stale_after-shaped value is how this check stays in step with it.
+        var parsed = Lifecycle.From(null, s);
+        return !parsed.StaleAfterMalformed && !parsed.StaleAfterIsLegacyDate;
     }
 
 }

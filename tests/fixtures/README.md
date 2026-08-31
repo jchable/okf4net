@@ -201,3 +201,39 @@ them a re-capture from the (removed) Rust binary:
   §5.4 statuses, §5.5 staleness) rather than captured from the reference CLI:
   `audit` is an OKF4net verb with no upstream counterpart. The `--as-of` date
   is pinned so the output cannot drift with the calendar.
+
+## Temporal form (§5) (2026-08-31)
+
+OKF v0.2 §5 requires every timestamp-valued key to be an ISO 8601 datetime with
+an explicit UTC offset (`2026-06-30T14:00:00Z`). OKF4net reads the legacy
+date-only form as a fallback and warns (`LegacyDateOnlyTimestamp`), in the same
+way it handles the §13.1 legacy fields.
+
+These two fixtures deliberately cover both paths and **must not be made
+uniform** — making either match the other silently drops a covered path:
+
+- `okf_v02/metrics/dau.md` carries the **conformant** form
+  (`stale_after: 2099-01-01T00:00:00Z`). Revised on 2026-08-31 from the previous
+  date-only value, under the CLAUDE.md exception for a deliberate spec change,
+  citing §5.
+- `okf_v02_computation/computations/revenue.md` keeps the **legacy** date-only
+  form on purpose, so `validate-computation.out` captures the fallback warning.
+
+Two goldens moved with that revision, both re-derived and inspected line by line
+rather than blanket-regenerated:
+
+- `golden/validate-computation.out` gains one `[warning]` line for
+  `computations/revenue.md`'s date-only `stale_after`, and its summary count
+  goes `3 warning(s)` → `4 warning(s)`. `validate-computation.exitcode` stays
+  `0`: the new diagnostic is a `Warning`, and §5 form sits outside the §11
+  conformance floor.
+- `golden/audit-v02.json`'s `findings[0].staleAfter` goes `"2099-01-01"` →
+  `"2099-01-01T00:00:00Z"`. That field is the **verbatim raw frontmatter
+  value** (`Lifecycle.StaleAfterRaw`), so it echoes the fixture edit directly.
+  Nothing else in the JSON moved — `staleCount`, `stale` and `asOf` are
+  unchanged, i.e. `okf audit` reaches the same verdict.
+
+`golden/audit-v02.out` (the text form) is deliberately **unchanged**:
+`AuditVocabulary.Freshness` renders the *parsed* date as `yyyy-MM-dd`, so it
+still reads `stale 2099-01-01` for the now-conformant value. That is the
+invariant to preserve if this rendering is ever revisited.

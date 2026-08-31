@@ -889,7 +889,9 @@ public class CliTests
         Assert.Equal("Metric", finding.GetProperty("type").GetString());
         Assert.Equal("Daily Active Users", finding.GetProperty("title").GetString());
         Assert.Equal("human-reviewed", finding.GetProperty("trust").GetString());
-        Assert.Equal("2099-01-01", finding.GetProperty("staleAfter").GetString());
+        // Verbatim raw frontmatter, not the parsed instant: the fixture carries
+        // the §5 conformant form, so the JSON echoes it unchanged.
+        Assert.Equal("2099-01-01T00:00:00Z", finding.GetProperty("staleAfter").GetString());
         Assert.True(finding.GetProperty("stale").GetBoolean());
     }
 
