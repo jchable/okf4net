@@ -276,10 +276,20 @@ public static class OkfgenCli
     ///
     /// <para><b>Both callers go through here, and that is the point.</b> The two paths used to forward
     /// separately, and <c>--check</c> forgot: it took only the concept count off the run and dropped
-    /// the reconciliation notes -- exactly the sentences saying a clean check was weakened, e.g. a
-    /// source file over <c>--max-file-size</c> whose stale <c>code/</c> concepts were held back in the
-    /// copy, matched the bundle byte for byte, and printed "No drift" with no signal at all. One
-    /// funnel, so a third caller cannot reintroduce it.</para>
+    /// the reconciliation notes -- exactly the sentences saying a clean check was weakened.
+    ///
+    /// <para>The case where a note is the <i>only</i> signal that exists is a hand-written concept under
+    /// the owned prefix that no manifest claims. Pruning only considers ids a previous manifest claimed,
+    /// and staging only overwrites files the generator produced, so such a file is copied forward
+    /// untouched and never regenerated: it <i>cannot</i> differ. <c>--check</c> exits 0 and reports no
+    /// drift for ever, while the bundle carries a concept this producer will never prune.</para>
+    ///
+    /// <para>A degraded run is <i>not</i> that case, and this doc comment used to say it was. A source
+    /// file over <c>--max-file-size</c> does leave its stale <c>code/</c> concepts held back rather than
+    /// pruned, but the file also drops out of the manifest's extracted-file list, so
+    /// <c>.okfgen-manifest.json</c> differs and <c>--check</c> exits 1 naming it. There the notes say
+    /// <i>why</i> the run was degraded, not <i>whether</i> anything is wrong. One funnel, so a third
+    /// caller cannot reintroduce the drop.</para>
     /// </summary>
     private static WriteResult ExecuteAndReport(GenerateRequest request, ProducerServices services, Action<string> note)
     {

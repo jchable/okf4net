@@ -73,11 +73,17 @@ stdout. A note never changes the exit code. The ones worth knowing:
   from and a sha is refused as a default;
 - `--rev` supplied without `--repo-url`, which does nothing.
 
-`--check` forwards these too, including the writer's reconciliation notes. That matters
-more there than anywhere else: a source file over `--max-file-size`, or a traversal that
-timed out, leaves stale `code/` concepts *held back* rather than pruned in the
-regenerated copy — the copy then matches the bundle byte for byte and `--check` prints
-`No drift`. The notes are the only thing that says the clean result was weakened.
+`--check` forwards these too, including the writer's reconciliation notes. For one case
+they are the only signal that exists: a hand-written concept under the owned prefix that
+no manifest claims is copied forward untouched and never regenerated, so it *cannot*
+differ. `--check` exits 0 and prints `No drift` for ever, while the bundle carries a
+concept this producer will never prune.
+
+A degraded run is the milder case, not that one. A source file over `--max-file-size`, or
+a traversal that timed out, does leave stale `code/` concepts *held back* rather than
+pruned — but the file also drops out of the manifest's extracted-file list, so
+`.okfgen-manifest.json` differs and `--check` exits 1 with a drift line naming it. There
+the notes explain *why* the run was degraded rather than *whether* anything is wrong.
 
 A **malformed** `--repo-url` is not a note but an error: anything that is not an absolute
 `http`/`https` URL (`github.com/o/r`, `git@github.com:o/r` — the two forms a forge shows
