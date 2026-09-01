@@ -162,11 +162,19 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // Guards the test below from silently becoming a no-op: if the source ever loses its
         // non-ASCII text, the UTF-8 and UTF-16 offsets coincide and "attachment survives" proves
         // nothing at all.
+        // Against the text the fixture actually WROTE, not against the literal. ScratchRepo normalizes
+        // line endings to \n on write (see Sources below) while this constant carries whatever the .cs
+        // file on disk carries -- and with core.autocrlf=true that is \r\n on a fresh checkout, four
+        // extra bytes ahead of the call, which shifted every offset here and failed this test on any
+        // clone that had not been hand-edited to LF. Found while implementing Task 11; the normalize
+        // now happens on both sides of the comparison, so the test no longer depends on how git
+        // materialised its own source file.
+        var written = NonAsciiSource.ReplaceLineEndings("\n");
         var site = Assert.Single(_scratch.SitesIn("NonAscii.cs"), s => s.CalledName == "Accented" && s.CallerName == "Run");
-        var utf16 = NonAsciiSource.LastIndexOf("Accented", StringComparison.Ordinal);
+        var utf16 = written.LastIndexOf("Accented", StringComparison.Ordinal);
 
         Assert.NotEqual(utf16, site.Offset);
-        Assert.Equal(Utf8Offsets.ToUtf8(NonAsciiSource, utf16), site.Offset);
+        Assert.Equal(Utf8Offsets.ToUtf8(written, utf16), site.Offset);
     }
 
     [Fact]
@@ -289,10 +297,17 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     [Fact]
     public void A_resolver_with_no_projects_at_all_is_not_complete()
     {
-        // The one input where a vacuous answer is the DANGEROUS answer: Projects.All(...) over an
-        // empty list is true, so without the Count > 0 clause a resolver that resolved absolutely
-        // nothing would report itself complete and green-light Task 11's pruning. Reachable in
-        // practice -- finding no .csproj in a C# repository yields an empty list, not an error.
+        // The one input where a vacuous answer is the WRONG answer: Projects.All(...) over an empty
+        // list is true, so without the Count > 0 clause a resolver that resolved absolutely nothing --
+        // every call in the repository fell back to name matching -- would report itself complete.
+        // Reachable in practice: finding no .csproj in a C# repository yields an empty list, not an
+        // error.
+        //
+        // What that wrong answer costs is a SILENT report, not a deletion. Task 11 settled that this
+        // property is not the pruning gate and cannot be one: no resolver contributes a symbol to
+        // CodeGraph.Symbols, so a degraded resolver can turn a call link into a code span but never
+        // make a concept absent, and pruning acts on absence. See RoslynResolver.IsComplete's own doc
+        // comment; pruning gates on RunStatus.TraversalComplete plus the per-file FileStatus.
         var resolver = RoslynResolver.Create(RepoRoot(), []);
 
         Assert.False(resolver.IsComplete);

@@ -204,9 +204,11 @@ public sealed record ExtractionResult(
 // RunStatus.cs
 /// <summary>
 /// Whether a whole extraction run succeeded, and what it could not read.
-/// <see cref="IsComplete"/> is the gate Task 11's pruning keys off: "absent
-/// from this run" has two indistinguishable causes — the symbol is gone, or
-/// the file could not be read — so only a complete run may delete anything.
+/// "Absent from this run" has two indistinguishable causes — the symbol is
+/// gone, or the file could not be read — so Task 11's pruning keys off this
+/// type. SHIPPED SHAPE (ruling R21, see the note under Task 4): the gate is
+/// TraversalComplete, a separate stored fact, and IsComplete is derived from
+/// it plus the per-file statuses. Gating on IsComplete would be dead code.
 /// </summary>
 public sealed record RunStatus(bool IsComplete, IReadOnlyList<(string Path, FileStatus Status)> Skipped)
 {
@@ -485,7 +487,9 @@ git commit -m "feat(producer): extract C# symbols and call sites with tree-sitte
   - `static bool FileEligibility.IsEligible(string relativePath, RepositorySnapshot snapshot, ScopeOptions scope)`
   - `static bool FileEligibility.IsInScope(SymbolFact fact, ScopeOptions scope)`
 
-> **This task is what makes pruning safe.** §6.3's transactional rule keys off `RunStatus.IsComplete`; without an honest per-file status, a parse failure is indistinguishable from a deleted symbol and Task 11 would delete valid concepts.
+> **This task is what makes pruning safe.** §6.3's transactional rule keys off `RunStatus`; without an honest per-file status, a parse failure is indistinguishable from a deleted symbol and Task 11 would delete valid concepts.
+>
+> **Corrected while implementing Task 11 (ruling R21):** the gate is `RunStatus.TraversalComplete`, **not** `IsComplete`. `IsComplete` additionally requires every file to have parsed cleanly, and the vendored grammar mis-parses an empty collection expression `[]` — ordinary modern C#, this repository's own idiom — so gating on it makes pruning dead code. Per-file quality is applied one candidate at a time instead: only ids owned entirely by `FileStatus.Extracted` files may be deleted.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -753,7 +757,7 @@ dotnet msbuild <proj> -t:ResolveReferences -t:GenerateGlobalUsings -t:GenerateAs
 Correction 2 is not optional. `ProjectReference`s resolve to `bin/<config>/<tfm>/*.dll`, which exists only after a build; without them `OKF4net.Mcp` produced 4 errors. Implement it this way:
 
 - Compile every repo project from source and cross-reference them as `CompilationReference`, so a merely-restored repo still works.
-- If a `ProjectReference` can be satisfied neither from source nor from `bin/`, the resolver reports itself unavailable for that project. `CodeGraphBuilder` then falls back to `NameMatchResolver` alone **and marks the run incomplete**, which disables pruning in Task 11.
+- If a `ProjectReference` can be satisfied neither from source nor from `bin/`, the resolver reports itself unavailable for that project and `NameMatchResolver`'s baseline stands for its files. ~~`CodeGraphBuilder` then marks the run incomplete, which disables pruning in Task 11.~~ **Both halves of that were wrong, corrected while implementing Task 11:** `RunStatus` records traversal and per-file extraction only — no resolver ever touches it — and resolver availability does not gate pruning, because no resolver contributes a symbol to `CodeGraph.Symbols`, so a degraded one can turn a call link into a code span but never make a concept *absent*, which is what pruning acts on. Gating on it would also make pruning dead on this repository, whose CLI project does not compile without its source generator. Pruning gates on `RunStatus.TraversalComplete` plus the per-file `FileStatus`; `RoslynResolver.IsComplete` is reported to the operator instead. See §7.2 of the design spec and `RoslynResolver.IsComplete`'s doc comment.
 - Never build a compilation with errors and resolve from it anyway: an incomplete symbol table mis-attributes calls.
 
 - [ ] **Step 5: Run to verify PASS** — including the attachment-rate test.
@@ -1141,7 +1145,7 @@ git commit -m "feat(producer): make output deterministic and stamp the HEAD comm
     }
 ```
 
-- [ ] **Steps 2-4:** red; implement staging (write to a sibling temp directory, then move), the manifest (a JSON file under the bundle, e.g. `.okfgen-manifest.json`, excluded from concept discovery because it is not `*.md`), and pruning restricted to `previousManifest.ConceptIds` minus this run's ids, only when `status.IsComplete`; green.
+- [ ] **Steps 2-4:** red; implement staging (write to a sibling temp directory, then move), the manifest (a JSON file under the bundle, e.g. `.okfgen-manifest.json`, excluded from concept discovery because it is not `*.md`), and pruning restricted to `previousManifest.ConceptIds` minus this run's ids, ~~only when `status.IsComplete`~~ **only when `status.TraversalComplete` (ruling R21 — `IsComplete` is false on ordinary modern C# and would make pruning dead code), and per candidate only when every source file it was derived from is `FileStatus.Extracted`**; green.
 
 - [ ] **Step 5: Commit**
 

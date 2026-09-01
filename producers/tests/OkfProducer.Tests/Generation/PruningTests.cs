@@ -412,6 +412,29 @@ public class PruningTests
     }
 
     [Fact]
+    public void The_manifest_is_written_after_the_concepts_it_describes()
+    {
+        // Ordering, pinned rather than assumed: the manifest is the record of what the bundle holds,
+        // so writing it before the staged files are in place would leave, on any failure during the
+        // commit, a manifest describing a state the bundle never reached -- and that manifest is the
+        // licence the NEXT run deletes by. Written last, an interrupted commit leaves the PREVIOUS
+        // manifest: conservative, and self-healing on the next run.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A], complete: true);
+        var before = File.ReadAllBytes(Path.Combine(tmp.Path, GenerationManifest.FileName));
+
+        // A directory sitting exactly where a concept file must land. The move that commits staging
+        // cannot overwrite it, so the failure lands in the one window that distinguishes the two
+        // orderings: after staging succeeded, before the manifest would be written.
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "code", "csharp", "n", "t", "b.md"));
+
+        Assert.ThrowsAny<SystemException>(() => WriteRun(tmp, [A, B], complete: true));
+
+        Assert.Equal(before, File.ReadAllBytes(Path.Combine(tmp.Path, GenerationManifest.FileName)));
+        Assert.Empty(Directory.EnumerateDirectories(tmp.Root, ".okfgen-staging-*"));
+    }
+
+    [Fact]
     public void A_bundle_carrying_the_manifest_still_validates()
     {
         // The manifest lives inside the bundle, so "it is not a concept" is only half the claim; the

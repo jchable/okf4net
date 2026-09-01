@@ -97,7 +97,13 @@ L'extracteur ingère du **code source arbitraire**, y compris d'un dépôt qu'on
 | Code qui ne compile pas | normal, pas une erreur : tree-sitter reste tolérant, Roslyn dégrade vers `NameMatchResolver` |
 | Run trop long | timeout global et `CancellationToken` ; une annulation rend le run **partiel** |
 
-**La règle qui relie ce tableau au reste du design** : tout fichier ignoré, partiellement analysé ou annulé rend le run **partiel**, et un run partiel **n'élague rien** (§6.3). Le rapport de sortie liste les fichiers non analysés avec leur cause — c'est ce qui distingue « symbole supprimé » de « fichier non lu ».
+**La règle qui relie ce tableau au reste du design** : tout fichier ignoré, partiellement analysé ou annulé est **enregistré avec sa cause**, et restreint l'élagage en conséquence (§6.3). Le rapport de sortie liste les fichiers non analysés avec leur cause — c'est ce qui distingue « symbole supprimé » de « fichier non lu ».
+
+> **Corrigé à l'implémentation (mesure de la Task 4, ruling R21, appliqué en Task 11).** Le premier jet écrivait ici « un run partiel **n'élague rien** », et c'est trop grossier : cette formulation annule la règle 3 de §6.3 et rend l'élagage inatteignable.
+>
+> Mesuré : la grammaire tree-sitter vendorisée ne parse pas une expression de collection **vide** `[]` en position d'expression — idiome ordinaire du C# 12+, présent dans les sources de ce producer même — et 3 fichiers réels sur 6 échantillonnés reviennent `PartiallyExtracted` pour cette seule raison. `PartiallyExtracted` est donc l'**état normal** d'un dépôt C# moderne, pas un cas rare : la règle grossière aurait désactivé l'élagage pour toujours.
+>
+> La règle exacte sépare deux formes d'échec que ce paragraphe confondait. Une **traversée tronquée** (racine absente ou illisible, échec d'énumération, annulation ou timeout — `RunStatus.TraversalComplete` faux) interdit tout élagage, pour une raison sans rapport avec la qualité du parse : un symbole a pu se **déplacer** vers un fichier jamais visité, et supprimer son ancien concept le perdrait sans remplacement. Une traversée **complète** dont certains fichiers se sont mal extraits est au contraire exactement connue : chaque fichier visité a un `FileStatus` enregistré, donc l'élagage est sûr pour les ids possédés par les fichiers `Extracted` et interdit pour ceux des autres — c'est la règle 3 de §6.3, et rien de plus.
 
 ---
 
@@ -341,6 +347,8 @@ Correction : **le générateur possède le sous-arbre `code/`** et le réconcili
 Trois règles, qui tiennent ensemble :
 
 1. **Transactionnel.** La génération va d'abord dans un staging ; le commit vers le bundle et l'élagage n'ont lieu qu'**après un run intégralement réussi**. Un run partiel ou dégradé écrit ses concepts mais **ne supprime rien** et le signale en sortie.
+
+   > **Précision apportée à l'implémentation (Task 11).** « Intégralement réussi » se lit au niveau de la *porte* du run — traversée complète, au moins un fichier tenté, aucun concept en échec d'écriture, dépôt présent — et **pas** « chaque fichier parfaitement extrait » (voir la correction en §2.3 : ce serait `RunStatus.IsComplete`, faux sur du C# ordinaire). La qualité par fichier s'applique candidat par candidat, à la règle 3. Deux points que le texte ne disait pas et que l'implémentation fixe : le manifeste est écrit **en dernier**, après le déplacement du dernier fichier stagé, pour qu'une interruption laisse le manifeste *précédent* plutôt qu'un manifeste décrivant un état jamais atteint ; et le commit déplace les fichiers **un par un** au lieu de renommer le staging par-dessus le bundle, parce que ce renommage exige de supprimer le bundle vivant d'abord — un crash à cet instant détruit aussi les concepts écrits à la main hors du préfixe possédé, ce qu'aucun run suivant ne répare.
 2. **Un manifeste, pas un préfixe.** Le run précédent laisse un manifeste des ids qu'il a produits (et des fichiers analysés). L'élagage ne porte **que sur les ids de ce manifeste** — jamais sur un fichier inconnu. Un concept écrit à la main sous `code/` n'est donc pas effacé, il est laissé en place, et un avertissement signale qu'il n'est pas possédé.
 3. **Périmètre restreint aux propriétaires ayant réussi.** Si l'extraction a échoué sur un fichier, les ids que ce fichier possédait sont exclus de l'élagage de ce run, même si le reste a réussi.
 
@@ -410,7 +418,7 @@ dotnet msbuild <proj> \
 
 **Correction 2 — « restauré » ne suffit pas, il faut **construit**.** C'est la correction la plus importante, et elle contredit ce que cette section affirmait. Les `ProjectReference` se résolvent vers `bin/<config>/<tfm>/*.dll`, qui n'existe qu'après une build. Mesuré en simulant un dépôt restauré-mais-non-construit (`--drop-project-refs`) : `OKF4net.Mcp` passe de 0 à **4 erreurs** — `CS0234` sur le namespace `OKF4net.Agents`, `CS0246`/`CS0103` sur `OkfBundleTools`. Les symboles du projet référencé disparaissent entièrement.
 
-Conséquence pour le design : la voie `CompilationReference` — compiler nous-mêmes les projets du dépôt et les lier entre eux depuis les sources — n'est plus une préférence, elle devient **obligatoire** si l'on veut fonctionner sur un dépôt seulement restauré. À défaut, dégradation propre vers `NameMatchResolver` seul, **et l'élagage est désactivé** pour ce run (§6.3).
+Conséquence pour le design : la voie `CompilationReference` — compiler nous-mêmes les projets du dépôt et les lier entre eux depuis les sources — n'est plus une préférence, elle devient **obligatoire** si l'on veut fonctionner sur un dépôt seulement restauré. À défaut, dégradation propre vers `NameMatchResolver` seul. ~~Et l'élagage est désactivé pour ce run (§6.3).~~ **Faux, corrigé à l'implémentation — voir l'encadré en fin de §7.2 : la disponibilité du resolver ne conditionne pas l'élagage.**
 
 **Correction 3 — le paquet Roslyn doit suivre la version de langage du SDK.** `Microsoft.CodeAnalysis.CSharp` 4.14.0 ne connaît pas `LangVersion 14` : `LanguageVersionFacts.TryParse("14", …)` échoue. Le prototype se rabat sur `Preview` et atteint quand même zéro erreur, mais ce repli **change silencieusement la sémantique d'analyse**. Le producer doit soit épingler un Roslyn qui connaît la version du SDK, soit échouer bruyamment — jamais dégrader en silence.
 
@@ -431,7 +439,15 @@ La correction 1 récupère bien les fichiers générés **par le SDK** (`*.Globa
 
 **Décision : ne pas exécuter les générateurs.** Ce n'est pas un oubli ni un bug à corriger au passage. Les exécuter signifie charger et exécuter des assemblys d'analyseurs **choisis par le dépôt analysé** : du code arbitraire, issu exactement de l'entrée que §2.3 traite comme hostile, à l'intérieur d'un outil dont le métier est de lire des sources non fiables. Échanger la posture de sécurité du producer contre une meilleure résolution sur certains projets n'est pas un arbitrage à faire en silence.
 
-**Conséquence, assumée et visible plutôt que découverte** : tout projet utilisant un générateur de source (`System.Text.Json`, `GeneratedRegex`, `LoggerMessage`, l'essentiel d'ASP.NET) a une compilation en erreur, `RoslynResolver` se déclare indisponible pour lui (`CompilationHadErrors`), ne le possède pas (`Owns` → `false`), et `NameMatchResolver` le porte au niveau *baseline*. `IsComplete` passe à `false`, ce que l'élagage de la Task 11 doit lire. C'est la dégradation propre — jamais une résolution depuis une table de symboles trouée, qui n'échouerait pas à résoudre les appels mais les attribuerait au mauvais symbole.
+**Conséquence, assumée et visible plutôt que découverte** : tout projet utilisant un générateur de source (`System.Text.Json`, `GeneratedRegex`, `LoggerMessage`, l'essentiel d'ASP.NET) a une compilation en erreur, `RoslynResolver` se déclare indisponible pour lui (`CompilationHadErrors`), ne le possède pas (`Owns` → `false`), et `NameMatchResolver` le porte au niveau *baseline*. `IsComplete` passe à `false`, ce que le **rapport de sortie** doit dire à l'opérateur. C'est la dégradation propre — jamais une résolution depuis une table de symboles trouée, qui n'échouerait pas à résoudre les appels mais les attribuerait au mauvais symbole.
+
+> **Correction apportée à l'implémentation (Task 11) : `RoslynResolver.IsComplete` ne conditionne pas l'élagage, et ce document affirmait le contraire à deux endroits (§7.2 correction 2, et cette phrase même).**
+>
+> L'élagage agit sur une **absence** : un id que le manifeste précédent revendique et que ce run n'a pas produit. Or aucun resolver ne contribue de symbole à `CodeGraph.Symbols` — `CodeGraphBuilder` les construit depuis `ILanguageExtractor` filtré par `FileEligibility.IsInScope`, et un resolver ne décide que du rendu d'un site d'appel (lien `## Calls` ou span de code `## Calls (unresolved)`). Un resolver dégradé ne peut donc **pas** rendre un concept absent, donc pas provoquer une suppression fautive.
+>
+> Et le conditionner dessus rendrait l'élagage **mort sur ce dépôt même** : `src/OKF4net.Cli` utilise un générateur de source et ne compile pas ici, donc `IsComplete` est faux sur un checkout ordinaire. C'est exactement le piège que `RunStatus.IsComplete` tend une propriété plus loin (voir la correction en §2.3), pour la même raison de forme.
+>
+> Ce qui conditionne l'élagage : `RunStatus.TraversalComplete` (porte du run) plus le `FileStatus` par fichier (périmètre, règle 3 de §6.3). `IsComplete` du resolver reste ce qu'il a toujours été utilement : la distinction « a tourné et n'a rien résolu » / « n'a pas pu tourner », rapportée à l'opérateur.
 
 **Rayon d'impact — il déborde du projet en échec.** C'est le point le moins intuitif et il doit être écrit noir sur blanc. Un projet qui ne compile pas ne coûte pas seulement la précision *sur ses propres fichiers* :
 

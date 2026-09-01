@@ -97,6 +97,14 @@ public sealed class BundleWriter : IBundleWriter
 
         if (manifest is not null)
         {
+            // WRITTEN LAST, after the final staged file has been moved and after the prune -- the
+            // ordering is load-bearing, not incidental. This file is the licence the NEXT run deletes
+            // by, so a manifest describing a state the bundle never reached is worse than no manifest
+            // at all. Written first, a failure during the commit (a directory sitting where a concept
+            // file must land, a permission change, a full disk) would leave exactly that. Written
+            // last, the same failure leaves the PREVIOUS manifest: conservative, and self-healing on
+            // the next run. Pinned by PruningTests.The_manifest_is_written_after_the_concepts_it_describes.
+            //
             // The new manifest is this run's ids PLUS every previous id that survived: a degraded run
             // that could not confirm an id gone must not drop it from the record, or the next complete
             // run would have no mandate to delete it and the concept would be orphaned for ever.
