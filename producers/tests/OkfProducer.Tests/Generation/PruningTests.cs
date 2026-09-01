@@ -379,16 +379,18 @@ public class PruningTests
     [InlineData("code/../../victim")]
     public void A_manifest_id_that_is_not_this_producers_own_spelling_of_it_resolves_to_nothing(string hostile)
     {
+        // No `victim.md` outside the bundle any more, and no assertion that it survived. It was
+        // inert for every row: the two discriminating rows resolve to `a.md` INSIDE the bundle and
+        // can never reach it, and the `..` row is refused by ConceptId.Parse inside src/OKF4net
+        // before this producer sees it. No production edit could turn that assertion red, so it read
+        // as coverage the table did not have. The assertion below is the whole of this test's power.
         using var tmp = new TempDir();
-        var victim = Path.Combine(tmp.Root, "victim.md");
-        File.WriteAllText(victim, "not the bundle's to delete");
 
         WriteRun(tmp, [A], complete: true);
         PlantManifestIds(tmp, Prefix, [A, hostile]);
 
         var result = WriteRun(tmp, [A], complete: true);
 
-        Assert.True(File.Exists(victim), "a manifest id reached a file outside the bundle.");
         Assert.True(
             File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")),
             "a manifest id spelled differently from the concept it names deleted that concept.");
@@ -464,14 +466,98 @@ public class PruningTests
         // each is load-bearing on its own. A refused id must never be claimed as owned -- a manifest
         // entry is a standing licence to delete whatever later appears at that path -- and a run that
         // could not commit everything must not go on to prune.
-        Assert.Contains(result.Failures, f => f.Id.ToString() == "code/x/report");
+        var failure = Assert.Single(result.Failures, f => f.Id.ToString() == "code/x/report");
+        Assert.Contains("symbolic link", failure.Error, StringComparison.Ordinal);
+        Assert.Contains("code/x/report.md", failure.Error, StringComparison.Ordinal);
         Assert.DoesNotContain("code/x/report", GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
-        Assert.Contains(result.Notes, n => n.Contains("symbolic link", StringComparison.Ordinal)
-            && n.Contains("code/x/report.md", StringComparison.Ordinal));
+
+        // ONCE, not twice. The refusal used to be added to the notes AND recorded as a failure, so
+        // OkfgenCli printed the same sentence under two prefixes -- "note: Error: refused to write ..."
+        // and "error: code/x/report: Error: refused to write ..." -- which reads as two problems.
+        Assert.DoesNotContain(result.Notes, n => n.Contains("refused to write", StringComparison.Ordinal));
+
+        // AND NOT THE OPPOSITE NOTE. ReportClaimedFiles builds this same destination by string join
+        // and probes it with File.Exists, which follows the junction and answers for the file at the
+        // far end -- so the run announced that it "has taken ownership of that id and overwritten the
+        // file ... its previous body, description and any keys this producer does not write are gone",
+        // about a file outside the bundle that it then refused to write. The refusal assertion above
+        // was green throughout: only this one catches it.
+        Assert.DoesNotContain(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
 
         // The other direction: the concept that had nothing to do with the link was still written, so
         // this is a refusal of one destination and not a writer that gave up on the run.
         Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
+    }
+
+    [Fact]
+    public void A_file_the_bundle_reaches_only_through_a_link_is_not_reported_as_an_unowned_concept()
+    {
+        // The READ side of the same hole, and the last place in this writer that reached outside the
+        // bundle. ReportUnownedFiles lists the owned prefix with
+        // Directory.EnumerateFiles(SearchOption.AllDirectories), whose default EnumerationOptions skip
+        // Hidden and System entries -- and a junction is neither, so the walk descends it. Measured
+        // before it was fixed: the run announced "'code/x/report' sits under the owned prefix 'code'
+        // but no manifest claims it; it was left in place and will never be pruned" about a file that
+        // is not in the bundle, has no concept id, and was never this producer's to describe.
+        using var tmp = new TempDir();
+
+        var outside = Path.Combine(tmp.Root, "notes");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "report.md"), "---\ntype: Note\ntitle: Mine\n---\n\nsomeone's notes\n");
+
+        WriteRun(tmp, [A], complete: true);
+
+        var link = Path.Combine(tmp.Path, "code", "x");
+        CreateDirectoryLink(link, outside);
+        Assert.True(File.Exists(Path.Combine(link, "report.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        Assert.DoesNotContain(result.Notes, n => n.Contains("code/x/report", StringComparison.Ordinal));
+
+        // The report is silenced for the linked-to file only, not switched off. A genuine unowned file
+        // inside the bundle is still named -- without this, "return early and say nothing" passes.
+        File.WriteAllText(Path.Combine(tmp.Path, "code", "csharp", "n", "t", "human.md"), "---\ntype: Note\n---\nMine.\n");
+        var third = WriteRun(tmp, [A], complete: true);
+        Assert.Contains(third.Notes, n => n.Contains("code/csharp/n/t/human", StringComparison.Ordinal)
+            && n.Contains("no manifest claims it", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_bundle_root_that_is_itself_a_link_is_written_through_normally()
+    {
+        // NOT a mutation witness for the fix it accompanies, and labelled so rather than left to look
+        // like one. CommitStaging used to build its destination from the caller's `--out` while
+        // resolving `root` from it, breaking the precondition ResolveInsideRoot depends on: with a
+        // linked `--out`, Path.GetRelativePath(root, destination) comes back ABSOLUTE (cross-volume)
+        // or `..`-prefixed (same volume), and the component walk restarts from the drive and climbs
+        // the whole path. Measured on this host: it still lands inside, because it meets the same link
+        // again on the way down, so no run was ever refused for it -- the cost was that containment
+        // was being decided by resolving directories that have nothing to do with the bundle.
+        //
+        // What this test does guard is the direction a careless repair breaks: a gate that refused
+        // whenever the candidate is not lexically under the resolved root would reject every file of
+        // every run whose bundle is a symlink or junction -- a normal setup (a symlinked project
+        // directory, a container or WSL bind mount).
+        using var tmp = new TempDir();
+
+        var real = Path.Combine(tmp.Root, "real-bundle");
+        Directory.CreateDirectory(real);
+        var linked = Path.Combine(tmp.Root, "linked-bundle");
+        CreateDirectoryLink(linked, real);
+
+        var concepts = new[] { Concept(A, [SharedSource]) };
+        var status = new RunStatus(true, [(SharedSource, FileStatus.Extracted)]);
+        var manifest = GenerationManifest.ForRun(Prefix, concepts, status, ScopeOptions.Default);
+
+        var result = new BundleWriter().Write(linked, concepts, WritePolicy.Update, tmp.RepoPath, manifest, status);
+
+        Assert.Empty(result.Failures);
+        Assert.Equal(1, result.Written);
+
+        // Landed in the REAL directory, not merely "somewhere the link can see": a writer that
+        // silently created a second tree beside the link would satisfy a check through `linked`.
+        Assert.True(File.Exists(Path.Combine(real, "code", "csharp", "n", "t", "a.md")));
     }
 
     [Fact]
@@ -562,6 +648,32 @@ public class PruningTests
     }
 
     [Fact]
+    public void An_unreadable_manifest_over_a_run_that_overwrote_nothing_does_not_say_it_overwrote_zero_files()
+    {
+        // The note is emitted whenever a manifest is present and unread, including on a run with
+        // nothing to overwrite -- where it rendered "it cannot say which of the 0 file(s) it
+        // overwrote under the owned prefix 'code' it had written before; if a concept under that
+        // prefix was hand-written, check it against version control now". That is an instruction to
+        // go looking for files that do not exist, attached to the one note whose entire purpose is to
+        // tell an operator whether they need to look.
+        using var tmp = new TempDir();
+
+        // An unread manifest in a bundle holding no concept under the owned prefix, so the run
+        // overwrites nothing at all -- the fact still has to be reported, just not with a count.
+        File.WriteAllText(Path.Combine(tmp.Path, GenerationManifest.FileName), "{ this is not json");
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        var note = Assert.Single(result.Notes, n => n.Contains("could not read it", StringComparison.Ordinal));
+        Assert.DoesNotContain("0 file(s)", note, StringComparison.Ordinal);
+
+        // Still reported, and still says why nothing was pruned -- "stop emitting the note when the
+        // count is zero" would lose the half of it that is always worth saying.
+        Assert.Contains("pruned no concept", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("check it against version control", note, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_bundle_with_no_manifest_at_all_still_names_every_file_it_took_over()
     {
         // The other side of the distinction, without which the fix above could be "stop reporting
@@ -585,12 +697,15 @@ public class PruningTests
     }
 
     [Fact]
-    public void The_overwrite_note_does_not_claim_a_description_is_gone_that_section_4_2_just_kept()
+    public void The_overwrite_note_calls_a_description_lost_when_the_file_really_loses_it()
     {
-        // One sentence used to assert both that the file's `description_source` was `manual` and that
-        // its description was gone. DescriptionResolver preserves a description on exactly that value,
-        // so the note was false for the one class of file whose author most needs to trust it -- a
-        // concept somebody deliberately marked as hand-written.
+        // THE COUNTER-EXAMPLE, promoted to a test. The note's preservation branch used to fire on
+        // DescriptionResolver.PreservesDescription -- true of exactly this file, whose author marked
+        // it `manual` -- and say "§4.2 kept that description, so it is the one thing the overwrite did
+        // not destroy". §4.2 is applied by the GENERATOR, and only when the caller supplies
+        // GenerateOptions.ExistingFrontmatter; this caller does not, so the description did NOT
+        // survive and the note said it had. Every assertion below is about the bytes on disk after the
+        // run, which is the thing the previous version of this test never looked at.
         using var tmp = new TempDir();
 
         var path = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
@@ -601,33 +716,52 @@ public class PruningTests
 
         var result = WriteRun(tmp, [A], complete: true);
 
-        var note = Assert.Single(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
-        Assert.Contains($"`{DescriptionResolver.ManualLabel}`", note, StringComparison.Ordinal);
-        Assert.Contains("§4.2 kept that description", note, StringComparison.Ordinal);
-        Assert.DoesNotContain("body, description and any keys", note, StringComparison.Ordinal);
-
-        // The note is right about the file and not merely differently worded. §4.2 is applied by the
-        // GENERATOR, not by this writer -- the fixture here hands the writer a document that was never
-        // put through the resolver -- so the claim is checked against the one definition of the rule,
-        // which is also the definition the note consults. DescriptionTests.A_manual_description_is_
-        // never_overwritten is the end of that chain: it runs the resolver and watches the text survive.
+        // The outcome first, so the note is measured against it rather than against a rule.
         Assert.True(OkfDocument.TryParse(File.ReadAllText(path), out var rewritten, out _));
+        Assert.DoesNotContain("Written by a person.", rewritten.Frontmatter.Description ?? string.Empty, StringComparison.Ordinal);
         Assert.DoesNotContain("My notes.", rewritten.Body, StringComparison.Ordinal);
 
-        Assert.True(OkfDocument.TryParse(
-            $"---\ntype: Note\ndescription: Written by a person.\n{DescriptionResolver.DescriptionSourceKey}: {DescriptionResolver.ManualLabel}\n---\n",
-            out var claimed,
-            out _));
-        Assert.True(DescriptionResolver.PreservesDescription(claimed.Frontmatter));
+        var note = Assert.Single(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
+        Assert.Contains($"`{DescriptionResolver.ManualLabel}`", note, StringComparison.Ordinal);
+        Assert.Contains("body, description and any keys", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("its description is not", note, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_overwrite_note_spares_a_description_only_when_the_run_writes_the_same_text_back()
+    {
+        // The other direction, and the only condition this writer can actually establish: the text
+        // already on disk is the text the staged document carries, so the overwrite changes no
+        // description -- whoever arranged that, and whether §4.2 was consulted at all. The fixture
+        // description is the one Concept() generates, which is what makes the two equal here; in the
+        // shipped CLI it is GenerateRun's ExistingFrontmatter wiring that makes them equal.
+        using var tmp = new TempDir();
+
+        var path = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(
+            path,
+            $"---\ntype: Note\ntitle: Mine\ndescription: d\n{DescriptionResolver.DescriptionSourceKey}: {DescriptionResolver.ManualLabel}\n---\n\nMy notes.\n");
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        // The description really is still there, and the body really is gone -- the note claims both.
+        Assert.True(OkfDocument.TryParse(File.ReadAllText(path), out var rewritten, out _));
+        Assert.Equal("d", rewritten.Frontmatter.Description);
+        Assert.DoesNotContain("My notes.", rewritten.Body, StringComparison.Ordinal);
+
+        var note = Assert.Single(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
+        Assert.Contains("its description is not", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("body, description and any keys", note, StringComparison.Ordinal);
     }
 
     [Fact]
     public void The_overwrite_note_still_says_a_derived_description_is_gone()
     {
-        // The negative direction of the pair above. A `description_source` this producer DOES derive
-        // is re-derived, so the honest sentence there is the original one -- and a fix that simply
-        // softened the wording for every file carrying the key would say the description survived when
-        // it did not.
+        // A `description_source` this producer DOES derive, carrying text the run does not write back.
+        // Kept from the previous round because it guards the other blanket failure: a fix that softens
+        // the wording for every file carrying the key would say the description survived when it did
+        // not. The assertion on the file is what makes that non-vacuous.
         using var tmp = new TempDir();
 
         var path = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
@@ -638,10 +772,13 @@ public class PruningTests
 
         var result = WriteRun(tmp, [A], complete: true);
 
+        Assert.True(OkfDocument.TryParse(File.ReadAllText(path), out var rewritten, out _));
+        Assert.NotEqual("Derived once.", rewritten.Frontmatter.Description);
+
         var note = Assert.Single(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
         Assert.Contains($"`{SignatureSource.SourceLabel}`", note, StringComparison.Ordinal);
         Assert.Contains("body, description and any keys", note, StringComparison.Ordinal);
-        Assert.DoesNotContain("§4.2 kept that description", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("its description is not", note, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -992,7 +1129,18 @@ public class PruningTests
 
         Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
         Assert.Empty(result.Pruned);
-        Assert.Contains(result.Notes, n => n.Contains("records no extraction scope", StringComparison.Ordinal));
+
+        var note = Assert.Single(result.Notes, n => n.Contains("records no extraction scope", StringComparison.Ordinal));
+
+        // The refusal is STICKY, and the note has to name the way out. MergedScope writes a null
+        // scope forward for as long as anything is carried, so this bundle refuses on this branch on
+        // every subsequent run -- asserted below rather than argued -- and an operator reading only
+        // "records no extraction scope" is told a fact about the file with no move attached.
+        Assert.Contains("--reset", note, StringComparison.Ordinal);
+
+        var second = WriteRun(tmp, [A], complete: true);
+        Assert.Contains(second.Notes, n => n.Contains("records no extraction scope", StringComparison.Ordinal));
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
     }
 
     [Fact]

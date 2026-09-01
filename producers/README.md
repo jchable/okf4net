@@ -130,19 +130,29 @@ and `Directory.Delete` all **follow** a symbolic link or a junction — while
 bundle that carries `code/x -> ~/notes` therefore used to reach outside itself, and a
 bundle committed beside a repository is content a clone brings with it.
 
-Three of the four places that touch the filesystem now resolve the path component by
-component, following every link they meet, and refuse anything landing outside the bundle:
-deleting a pruned concept, removing an emptied directory, and committing a staged file. A
-refused write is reported as a write failure, which also keeps the id out of the manifest
-and disqualifies the run from pruning.
+Every place `okfgen` reaches the filesystem under the bundle root now resolves the path
+component by component, following every link it meets, and refuses anything landing
+outside the bundle. There are five:
 
-**The fourth is not gated, and you should know where it is.** Index regeneration is
-`OKF4net`'s `IndexGenerator`, shipped library API this producer only calls, and it walks
-the bundle with `Directory.EnumerateDirectories` — which reports a junction as an ordinary
-directory. So a `generate` over a bundle containing `code/x -> ~/notes` still writes an
-`index.md` into `~/notes`. What escapes is one generated index file in a directory the
-bundle points at; no concept is written or deleted there. If you do not control the
-contents of a bundle, check it for reparse points before generating into it.
+| What it does | On a path that leaves the bundle |
+|---|---|
+| Commits a staged concept (`File.Move`) | Refused, and recorded as a **write failure** — which also keeps the id out of the manifest and disqualifies the run from pruning |
+| Deletes a pruned concept (`File.Delete`) | Refused; the concept is kept and a note names it |
+| Removes a directory a prune emptied (`Directory.Delete`) | The climb stops at the link; the link is not this producer's to remove |
+| Reads a file it is about to overwrite, to say what wrote it | Skipped, so no note is emitted about a file the run then refuses to touch |
+| Lists the owned prefix to find files no manifest claims | Skipped, so a file behind a link is never reported under a bundle concept id |
+
+A previous version of this section named a **sixth** place — index regeneration — as an
+ungated hole that "still writes an `index.md` into `~/notes`". **That was wrong**, and it
+is corrected here rather than quietly dropped. `OKF4net`'s `IndexGenerator` gates itself:
+it collects markdown with `Directory.GetFileSystemEntries` and tests for a reparse point
+*before* it recurses, so nothing under a linked directory is collected; it applies the same
+skip when listing a directory's children; and immediately before each write it re-checks
+both the directory's ancestor chain and the `index.md` node itself. Junctions and symbolic
+links are both covered.
+
+None of this makes an untrusted bundle safe to generate into in general — it makes the
+paths *this producer* builds from concept ids land inside the bundle or not at all.
 
 ### Why `--repo-url` is all-or-nothing
 
