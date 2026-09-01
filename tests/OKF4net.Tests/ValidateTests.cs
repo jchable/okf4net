@@ -865,6 +865,13 @@ public class ValidateTests
 
         Assert.Contains(r.Of(Severity.Warning),
             d => d.Code == DiagnosticCode.UsageWindowInvalidFrom && d.Field == "sources.usage_window.from");
+        // The message label is the third hand-copied literal at the call site
+        // and the only one no other assertion pins. Asserted in FULL, not by
+        // Contains: the shared position's message
+        // ("usage_window from could not be read…") is a suffix of this one, so
+        // a substring check would pass with either label.
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Message == "source usage_window from could not be read as a timestamp: \"not-a-date\"");
         Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
     }
 
@@ -884,6 +891,13 @@ public class ValidateTests
 
         Assert.Contains(r.Of(Severity.Warning),
             d => d.Code == DiagnosticCode.UsageWindowInvalidTo && d.Field == "sources.usage_window.to");
+        // Pins the label too, in FULL (see the `from` case above for why a
+        // Contains would not discriminate): with Code and Field asserted but
+        // not the label, swapping this call site's "source usage_window to"
+        // for the `from` wording leaves the whole suite green, and a bad `to`
+        // bound then reports a message naming `from`.
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Message == "source usage_window to could not be read as a timestamp: \"not-a-date\"");
         Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
     }
 

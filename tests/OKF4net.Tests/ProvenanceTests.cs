@@ -101,6 +101,22 @@ public class ProvenanceTests
     }
 
     [Fact]
+    public void ParseSources_entry_usage_window_with_only_to_leaves_from_null()
+    {
+        // The mirror of the `only from` case above: neither bound is required
+        // by §5.1, and the two are read by separate `m.Get` calls, so a
+        // one-bound window must survive in either direction.
+        var s = Provenance.ParseSources(Yaml(
+            "- resource: r\n" +
+            "  usage_window:\n" +
+            "    to: '2026-01-31T00:00:00Z'\n"));
+        Assert.Single(s);
+        Assert.NotNull(s[0].UsageWindow);
+        Assert.Null(s[0].UsageWindow!.Value.From);
+        Assert.Equal("2026-01-31T00:00:00Z", s[0].UsageWindow!.Value.To);
+    }
+
+    [Fact]
     public void ToYaml_writes_a_present_usage_window_after_last_modified()
     {
         var yaml = Provenance.ToYaml([

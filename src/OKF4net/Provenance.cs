@@ -13,7 +13,14 @@ namespace OKF4net;
 /// </summary>
 public readonly record struct Source(string? Id, string Resource, string? Title, Actor? Author, long? UsageCount, string? LastModified, UsageWindow? UsageWindow = null);
 
-/// <summary>The <c>usage_window</c> that frames every <c>usage_count</c> (§5.1); a top-level sibling of <c>sources</c>.</summary>
+/// <summary>
+/// A §5.1 <c>{ from, to }</c> datetime range framing <c>usage_count</c>. It occupies two positions:
+/// the shared, top-level sibling of <c>sources</c> (<see cref="Frontmatter.UsageWindow"/>), and a
+/// single entry's own override of it (<see cref="Source.UsageWindow"/>) — so one instance no longer
+/// frames <em>every</em> <c>usage_count</c> in a document. Use
+/// <see cref="Frontmatter.EffectiveUsageWindow"/> to get the window that actually applies to a given
+/// entry rather than reading either position alone.
+/// </summary>
 public readonly record struct UsageWindow(string? From, string? To);
 
 /// <summary>Parses the §5.1 provenance frontmatter. Lenient: non-conforming shapes yield empty/default rather than throwing.</summary>

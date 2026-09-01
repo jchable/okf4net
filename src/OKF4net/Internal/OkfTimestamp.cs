@@ -34,8 +34,10 @@ internal enum TimestampForm
 /// §5: "Every timestamp-valued key in OKF is an ISO 8601 datetime with an
 /// explicit UTC offset, for example <c>2026-06-30T14:00:00Z</c>." That covers
 /// <c>stale_after</c> (§5.5), <c>generated.at</c> and <c>verified[].at</c>
-/// (§5.2), and <c>sources[].last_modified</c> / <c>usage_window.from</c> /
-/// <c>usage_window.to</c> (§5.1). All of them come through
+/// (§5.2), and <c>sources[].last_modified</c> plus both <c>usage_window</c>
+/// bounds in either position — the shared, top-level sibling
+/// (<c>usage_window.from</c> / <c>usage_window.to</c>) and a per-entry
+/// <c>sources[].usage_window</c> override (§5.1). All of them come through
 /// <see cref="TryParse"/>, so the rule is spelled once rather than re-derived
 /// per field.
 /// </para>

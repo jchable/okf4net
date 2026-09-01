@@ -111,6 +111,58 @@ public class OkfDocumentBuilderTests
     }
 
     [Fact]
+    public void AddSource_usage_window_survives_serialization_to_text_and_back()
+    {
+        // The in-memory round trip above stops at the YamlMapping. This one
+        // goes all the way out to markdown and back in through the real
+        // parser, which is the path a producer actually writes: builder ->
+        // Serialize() -> file -> OkfDocument.Parse. Nothing else covers the
+        // emitter/scanner leg for a nested mapping inside a `sources` entry.
+        var window = new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z");
+        var text = OkfDocumentBuilder.ForType("t")
+            .AddSource(resource: "README.md", usageWindow: window)
+            .Body("")
+            .Build()
+            .Serialize();
+
+        var reparsed = OkfDocument.Parse(text);
+
+        Assert.Equal(window, reparsed.Frontmatter.Sources[0].UsageWindow);
+    }
+
+    [Fact]
+    public void AddSource_present_but_empty_usage_window_survives_serialization_as_present_not_null()
+    {
+        // The case a text round trip is most likely to lose: an override that
+        // is present with no bounds serializes to `usage_window: {}`, which a
+        // parser could plausibly read back as absent (null) rather than as a
+        // present-but-empty mapping. §5.1's override is whole-object, so the
+        // difference is semantic -- an empty override still overrides, and
+        // yields a window with no bounds instead of falling back to the shared
+        // sibling. A shared window is written alongside it (through
+        // `Extension`, the only way the builder can emit one today) so that a
+        // fallback would be visible rather than indistinguishable from null.
+        var shared = new YamlMapping();
+        shared.Insert("from", new YamlString("2020-01-01T00:00:00Z"));
+        shared.Insert("to", new YamlString("2020-12-31T00:00:00Z"));
+
+        var text = OkfDocumentBuilder.ForType("t")
+            .AddSource(resource: "README.md", usageWindow: new UsageWindow(null, null))
+            .Extension("usage_window", shared)
+            .Body("")
+            .Build()
+            .Serialize();
+
+        var reparsed = OkfDocument.Parse(text);
+
+        var roundTripped = reparsed.Frontmatter.Sources[0].UsageWindow;
+        Assert.NotNull(roundTripped);
+        Assert.Null(roundTripped!.Value.From);
+        Assert.Null(roundTripped.Value.To);
+        Assert.Equal(roundTripped, reparsed.Frontmatter.EffectiveUsageWindow(reparsed.Frontmatter.Sources[0]));
+    }
+
+    [Fact]
     public void Extension_targeting_a_well_known_key_wins_over_the_typed_setter_regardless_of_call_order()
     {
         var doc = OkfDocumentBuilder.ForType("t")
