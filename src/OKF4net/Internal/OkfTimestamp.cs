@@ -217,10 +217,17 @@ internal static class OkfTimestamp
         s.EndsWith("-00:00", StringComparison.Ordinal) || s.EndsWith("-00", StringComparison.Ordinal);
 
     /// <summary>
-    /// Whether the raw value ends in an explicit zone designator (<c>Z</c>, or
-    /// <c>±hh:mm</c>). <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
+    /// Whether the raw value carries an explicit zone designator at all: a
+    /// trailing <c>Z</c> (either case), or a sign anywhere past the date part —
+    /// <c>±hh</c>, <c>±hh:mm</c> and the basic <c>±hhmm</c> alike.
+    /// <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
     /// happily supplies the local offset for a zoneless value, so the raw text
-    /// is the only reliable way to tell the two apart.
+    /// is the only reliable way to tell the two apart. Deliberately looser than
+    /// the §5 grammar: this only routes a value to the offset-bearing parse
+    /// branch, and <see cref="IsConformantSpelling"/> stays the sole authority
+    /// on the spelling — a lowercase <c>z</c> or a basic-format <c>+0200</c>
+    /// passes here and is classified <see cref="TimestampForm.NonIso8601"/>
+    /// there.
     /// </summary>
     private static bool HasExplicitOffset(string raw)
     {
@@ -235,8 +242,8 @@ internal static class OkfTimestamp
             return true;
         }
 
-        // ±hh:mm — look only past the date part, so the date's own hyphens
-        // are never mistaken for a negative offset.
+        // Any signed offset (±hh, ±hh:mm, ±hhmm) — look only past the date
+        // part, so the date's own hyphens are never mistaken for one.
         for (var i = 10; i < s.Length; i++)
         {
             if (s[i] is '+' or '-')
