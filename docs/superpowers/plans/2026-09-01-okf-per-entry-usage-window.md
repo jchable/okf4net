@@ -23,6 +23,53 @@ This plan holds only the work.
 - **Severity is `Warning`, never `Error`** (§11: timestamp form is not one of
   the three conformance conditions), and a readable value is never dropped.
 
+## Working environment and baseline
+
+Established by running it, so no one has to discover it:
+
+- **Worktree:** `E:\Sources\okf\.claude\worktrees\okf-usage-window-override`,
+  branch `fix/usage-window-override`, cut from `dev` at `d6b778d`. Run everything
+  from there; never `cd` to the parent repo.
+- **Debug works here.** `dotnet test OKF4net.sln` runs clean in this worktree —
+  **1157 passed, 0 failed** is the baseline. (A previous worktree had an external
+  process holding `bin/Debug/…/OKF4net.dll`, forcing a Release fallback; that does
+  not apply here. If you nonetheless hit MSB3021/MSB3027, say so explicitly and
+  use `-c Release`, but do not substitute silently.)
+- Any change in that 1157 must be accounted for in your report: which tests you
+  added, and — if the number moves for any other reason — stop and report.
+- `okf validate bundles/ga4` reports **0 warnings** today; `bundles/acme_retail`
+  reports **36**. Both are verbatim upstream copies and must not be edited.
+
+## Test idioms you will need (do not invent your own)
+
+```csharp
+// ProvenanceTests.cs — a private helper already in the file:
+private static YamlValue Yaml(string s) => YamlValue.Parse(s);
+var sources = Provenance.ParseSources(Yaml("- id: x\n  resource: https://y\n"));
+
+// FrontmatterTests.cs:
+var fm = Frontmatter.FromMapping(YamlValue.Parse("type: Metric\nsources:\n  - …\n").AsMapping()!);
+
+// ValidateTests.cs — a private helper already in the file:
+var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n…");
+```
+
+`Source` is constructed with **named** arguments everywhere in the tests
+(`new Source(Id: null, Resource: "r", …)`); match that.
+
+## Leave unchanged — verify, do not "improve"
+
+- `Provenance.ParseUsageWindow` — both positions must go through it, unmodified,
+  so they cannot drift in how they parse.
+- `Frontmatter`'s `KnownKeys` list — it governs **top-level** keys only; a nested
+  `usage_window` inside a `sources` entry is not matched against it (spec C4).
+- `OkfDocument.cs:212` — builds `Source`s from legacy §13.1 citations with named
+  arguments and no window. It compiles unchanged and must stay that way: a
+  citation has no usage window.
+- The shared position's diagnostics: label `"usage_window from"`, `Field`
+  `usage_window.from`. Only the per-entry position is new.
+- The §5 timestamp grammar in `OkfTimestamp` — untouched by this work.
+
 ## The two decisions this plan encodes
 
 Both are ours, because §5.1 says "override" and stops. Do not re-litigate them;
@@ -43,7 +90,13 @@ do pin each with a test.
 **Files:** `src/OKF4net/Provenance.cs`, `src/OKF4net/OkfDocumentBuilder.cs`
 **Test file:** `tests/OKF4net.Tests/ProvenanceTests.cs`
 
-**Produces (consumed by Task 2):** `Source.UsageWindow`.
+**Interfaces**
+- *Consumes:* nothing — first task.
+- *Produces, for Task 2:*
+  - `UsageWindow? Source.UsageWindow { get; }` (seventh positional member,
+    defaulted to `null`)
+  - `OkfDocumentBuilder.AddSource(…, UsageWindow? usageWindow = null)`
+  - No change to `ParseUsageWindow`'s signature or behaviour.
 
 1. **The record.** `Source` gains a seventh positional member with a default:
 
@@ -74,6 +127,27 @@ do pin each with a test.
      plan by running `okf fmt` on a document carrying `usage_window: {}`, which
      re-emits it verbatim. So write an empty `YamlMapping` in that case rather
      than dropping the key, and pin it with a test.
+
+   The shape, matching the method's existing style (a local `map`, `Insert` per
+   key, nulls omitted):
+
+   ```csharp
+   if (source.UsageWindow is { } window)
+   {
+       var windowMap = new YamlMapping();
+       if (window.From is not null)
+       {
+           windowMap.Insert("from", new YamlString(window.From));
+       }
+
+       if (window.To is not null)
+       {
+           windowMap.Insert("to", new YamlString(window.To));
+       }
+
+       map.Insert("usage_window", windowMap);
+   }
+   ```
 
 4. **`OkfDocumentBuilder.AddSource`** gains a trailing optional parameter
    `UsageWindow? usageWindow = null`, passed through to the `Source`. Without it
@@ -106,7 +180,10 @@ writing a rival test beside it.
 **Files:** `src/OKF4net/Frontmatter.cs`, `src/OKF4net/Validate.cs`
 **Test files:** `tests/OKF4net.Tests/FrontmatterTests.cs`, `tests/OKF4net.Tests/ValidateTests.cs`
 
-**Consumes from Task 1:** `Source.UsageWindow`.
+**Interfaces**
+- *Consumes from Task 1:* `Source.UsageWindow`.
+- *Produces:* `UsageWindow? Frontmatter.EffectiveUsageWindow(Source source)`.
+  No new `DiagnosticCode` member, no change to `CheckTemporal`'s signature.
 
 1. **The resolution accessor**, on `Frontmatter`:
 
@@ -123,6 +200,15 @@ writing a rival test beside it.
    and the bare form reads as ambiguous even where it compiles. The XML doc must
    state that the override is whole-object (decision 1), so a reader does not
    assume a merge.
+
+   **One caveat the doc must carry**, because the signature invites the mistake:
+   nothing ties `source` to *this* frontmatter. A caller can pass a `Source` read
+   from another document and get this document's shared window as the fallback,
+   silently. That is inherent to `Source` being a standalone value type, and the
+   alternative — returning pre-resolved pairs from `Sources`, or making the
+   method take an index — is a larger API change than this work warrants. State
+   the expectation ("pass a `Source` obtained from this frontmatter's
+   `Sources`"), do not try to enforce it.
 
 2. **Validation.** Inside the existing `foreach (var src in fm.Sources)` loop in
    `Validate.cs` (immediately after the `LastModified` check, around line 396),
