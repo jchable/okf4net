@@ -70,7 +70,7 @@ and this project adheres to
   in-repo construction site (positional or named) still compiles unchanged —
   but the shape is not binary-compatible for anything built against the
   previous six-member `Source`. Consistent with this release's other 0.x
-  breaks (see `Lifecycle.StaleAfter` above).
+  breaks (see `Lifecycle.StaleAfter` below).
 
 - **Breaking (0.x): staleness is compared on instants, not dates.**
   `Lifecycle.StaleAfter` is now a `DateTimeOffset?` rather than a `DateOnly?`,
