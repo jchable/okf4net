@@ -133,6 +133,23 @@ If the grammar ever rejects a spelling the spec itself uses, the grammar is
 wrong — not the spec. This test is the reason the grammar is not merely an
 opinion.
 
+**The oracle's reach, and the guard that keeps it honest.** That extraction is
+modelled on the §5 grammar it validates, so on its own it is blind to exactly
+the forms the grammar does not describe: a wholly-basic `20260630T140000Z`, a
+week date, an ordinal date, a lowercase `z`, a comma fraction. The vendored spec
+contains none of them today — verified, not assumed — so the 18 really are every
+timestamp literal it writes. But that is a fact about *this* spec revision, not a
+property of the test: a future vendored spec could add one, still yield 18
+matches, and the new form would go unvalidated while the test stayed green. The
+oracle would quietly stop being an oracle.
+
+So the test carries a second, **shape-agnostic** scan — any token with a time and
+a zone designator, in any ISO 8601 form — and asserts everything it finds is
+already covered by the strict extraction. Proven to bite by mutation: appending
+`20260630T140000Z` to a throwaway copy of the spec fails the test with
+*"The spec now writes 1 timestamp literal(s) the §5 extraction cannot see"*. The
+universal claim above is therefore the test's claim too, not a stronger one.
+
 **Consequences, stated plainly.** `2026-6-3T…`, `…T14:00:00z`, `…+0200` and
 `…-00:00` become flagged. Not because they are disliked: because ISO 8601 fixes
 component widths, fixes the designator's case, forbids mixing basic and extended

@@ -112,6 +112,32 @@ public class OkfTimestampTests
             var form = OkfTimestamp.Classify(literal, out _);
             Assert.True(form is TimestampForm.Conformant, $"{literal} classified {form}, expected Conformant");
         }
+
+        // Completeness guard. The extraction above is modelled on the §5 grammar
+        // it validates, so it structurally cannot see a wholly-basic
+        // (20260630T140000Z), week-date, ordinal-date, lowercase-z or
+        // comma-fraction literal -- all of which ISO 8601 permits. Without this,
+        // a future vendored spec could add one, keep 18 matching values, and the
+        // new form would go unvalidated while the test stayed green: the oracle
+        // would silently stop being an oracle.
+        //
+        // This scan is deliberately shape-agnostic -- any token carrying a time
+        // and a zone designator, in any ISO 8601 form. Everything it finds must
+        // already be covered above. The spec contains none of these today, which
+        // is why the assertion is "empty" rather than a second expected list.
+        var everyShape = Regex.Matches(
+                spec,
+                @"\b[0-9][0-9A-Za-z:,.\-]*[Tt][0-9][0-9:,.]*(?:[Zz]|[+-][0-9]{2}(?::?[0-9]{2})?)")
+            .Select(m => m.Value)
+            .Distinct()
+            .ToList();
+
+        var unseen = everyShape.Except(literals).ToList();
+        Assert.True(
+            unseen.Count == 0,
+            $"The spec now writes {unseen.Count} timestamp literal(s) the §5 extraction cannot see, so they are "
+            + $"not being validated: {string.Join(", ", unseen)}. Widen the extraction, or state plainly in the "
+            + "design doc that the oracle no longer covers every literal the spec writes.");
     }
 
     // xunit [Theory] data must be public, but TimestampForm is internal (see
