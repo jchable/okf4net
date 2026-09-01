@@ -129,7 +129,7 @@ public enum DiagnosticCode
     /// </summary>
     NonIso8601Timestamp,
 
-    /// <summary>The concept is past its <c>stale_after</c> date.</summary>
+    /// <summary>The concept is past its <c>stale_after</c> instant.</summary>
     ConceptStale,
 
     /// <summary>The body uses the legacy <c># Citations</c> heading instead of the <c>sources</c> frontmatter field (§13.1).</summary>

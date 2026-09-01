@@ -14,7 +14,7 @@ namespace OKF4net;
 /// not use an <see cref="AuditQuery"/> as a dictionary key: the record struct is
 /// for <c>with</c> and <c>ToString</c>, not for its equality.
 /// </remarks>
-/// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> date.</param>
+/// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> instant.</param>
 /// <param name="Trust">Keep only concepts whose derived tier is in this set; null keeps every tier.</param>
 /// <param name="Status">Keep only concepts with this lifecycle status; null keeps every status.</param>
 /// <param name="Type">
@@ -87,7 +87,11 @@ public sealed class AuditReport
         Findings = findings;
     }
 
-    /// <summary>The observation date staleness was evaluated against.</summary>
+    /// <summary>
+    /// The UTC date of the instant the report was run at -- a display stamp,
+    /// not the comparison input: staleness itself is evaluated against that
+    /// instant, see <see cref="AuditFinding.IsStale"/>.
+    /// </summary>
     public DateOnly AsOf { get; }
 
     /// <summary>The number of concepts in the bundle (not in the selection).</summary>
@@ -235,7 +239,7 @@ public static class ConceptAudit
     /// <summary>Runs <paramref name="query"/> over <paramref name="bundle"/>.</summary>
     /// <param name="bundle">The loaded bundle.</param>
     /// <param name="query">The selection predicates; <c>default</c> selects everything.</param>
-    /// <param name="clock">Supplies "today" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
+    /// <param name="clock">Supplies "now" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static AuditReport Run(Bundle bundle, AuditQuery query = default, IOkfClock? clock = null)
     {
         // Staleness is an instant comparison (§5/§5.5); AsOf stays a date

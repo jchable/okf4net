@@ -47,7 +47,7 @@ public class AuditTests
     }
 
     [Theory]
-    [InlineData("2026-08-21", true)]   // §5.5: today >= stale_after -- the exact boundary IS stale.
+    [InlineData("2026-08-21", true)]   // §5.5: now >= stale_after -- the exact boundary IS stale.
     [InlineData("2026-08-22", false)]
     public void Staleness_boundary_follows_section_5_5(string staleAfter, bool expectedStale)
     {

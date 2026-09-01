@@ -107,10 +107,10 @@ internal static class JsonOutput
     /// <param name="stdout">Where the document is written.</param>
     /// <param name="bundlePath">The bundle path, echoed as given on the command line.</param>
     /// <param name="asOf">
-    /// The date staleness (§5.5) was evaluated against — the whole point of
-    /// <c>--as-of</c>. Without it in the document, an archived report cannot be
-    /// told apart from an unpinned run, so the reproducibility the flag buys is
-    /// not visible in the artefact itself.
+    /// The date of the instant staleness (§5.5) was evaluated at — the whole
+    /// point of <c>--as-of</c>. Without it in the document, an archived report
+    /// cannot be told apart from an unpinned run, so the reproducibility the
+    /// flag buys is not visible in the artefact itself.
     /// </param>
     /// <param name="bundle">The validated bundle.</param>
     /// <param name="report">The validator's findings.</param>
