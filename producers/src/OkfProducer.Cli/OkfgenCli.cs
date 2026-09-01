@@ -344,6 +344,24 @@ public static class OkfgenCli
         // direction that reads as clean: if the bundle is missing the same concept, neither side has
         // it, no difference is found, and the run exits 0 over a regeneration that did not work.
         // Reported, and counted into the exit code, for the same reason ConceptsRegenerated is.
+        //
+        // KEPT although nothing in this suite turns it red -- verified by deleting both the rendering
+        // below and the `failures.Count` term of the exit code and watching all 519 tests stay green.
+        // The argument that offered to drop it as untested plumbing was nevertheless wrong on the fact
+        // it rested on. That argument said `failures` is provably empty
+        // for every reachable --check: it is not. WriteResult.Failures is fed (BundleWriter.Write)
+        // from BundleConceptWriter.WriteConcept, whose RunTool converts OkfException, ArgumentException,
+        // IOException, UnauthorizedAccessException and DecoderFallbackException alike into an "Error:"
+        // string. The last four are environmental, not id-shaped: a full volume, an antivirus or
+        // indexer holding a handle, an encoding fault reading an existing concept. And --check is more
+        // exposed to those than an ordinary run, not less -- its generation writes into a GUID-named
+        // temporary copy and stages beside it, both under Path.GetTempPath() (BundleDrift.Check,
+        // BundleWriter.CreateStagingDirectory), so the writes land on whatever volume that names and
+        // behind whatever watches it, rather than beside the operator's --out.
+        //
+        // Reachable, then, but not deterministically constructible from a test -- which is why there is
+        // no witness for it, and why deleting it would be the wrong repair: deleting it restores an
+        // exit 0 over a regeneration that failed.
         var failures = new List<(ConceptId Id, string Error)>();
 
         // The count is the floor DriftReport refuses to report clean without: a composition that
@@ -383,9 +401,16 @@ public static class OkfgenCli
 
         foreach (var link in report.LinksSkipped)
         {
-            // A note, never a difference: a link is on both sides and regenerating does not change
-            // it, so counting it would fail a check over a bundle nobody had touched. What it does
-            // change is which property a clean result asserts, and that is what this says.
+            // A note, never a difference: both sides are listed by the same walk and that walk stops
+            // at a reparse point, so the link's own path is in neither file set and counting it would
+            // fail a check over a bundle nobody had touched. What it does change is which property a
+            // clean result asserts, and that is what this says.
+            //
+            // Not the same as "the link is on both sides", which this comment used to claim and which
+            // is false: the copy never holds the link. When the generator writes at that path the copy
+            // holds real concepts there and the bundle side holds nothing, so the run reports drift and
+            // exits 1 -- correctly, since `generate` cannot write through the link either. See
+            // DriftReport.LinksSkipped.
             note($"'{link}' is a symbolic link or junction, so it was neither copied nor compared -- what hangs off the far end was never part of this bundle, and `generate` refuses to write through it. A clean result here is a statement about everything else.");
         }
 

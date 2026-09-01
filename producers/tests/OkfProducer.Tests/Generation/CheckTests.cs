@@ -302,10 +302,57 @@ public class CheckTests(ITestOutputHelper output)
         Assert.True(report.IsClean, Explain(report));
 
         // Reported rather than passed over in silence: a check that quietly stops looking at part of a
-        // bundle is the failure this whole file is built against. Not a difference -- a link is on
-        // both sides and regenerating does not change it, so counting it would fail a check over a
-        // bundle nobody had touched, which the IsClean assertion above pins.
+        // bundle is the failure this whole file is built against. Not a difference -- both sides are
+        // listed by the same walk and it stops at a reparse point, so the link's own path is in
+        // neither file set and counting it would fail a check over a bundle nobody had touched, which
+        // the IsClean assertion above pins.
+        //
+        // THE CLEAN RESULT ABOVE DEPENDS ON THE FIXTURE'S CHOICE OF `code/x`, and this comment used to
+        // credit it to a symmetry that does not exist ("a link is on both sides"). The copy never holds
+        // the link: CopyDirectory reproduces directories and files and not links, and the copy is
+        // walked only after the regeneration has written into it. `code/x` is clean because no id this
+        // producer emits maps to that path, so nothing is written there and the path stays absent from
+        // both sides. Move the link to somewhere the generator does write and the same code reports
+        // drift -- which is
+        // A_link_where_the_generator_writes_is_reported_as_drift_rather_than_passed_over, below.
         Assert.Equal(["code/x"], report.LinksSkipped);
+    }
+
+    [Fact]
+    public void A_link_where_the_generator_writes_is_reported_as_drift_rather_than_passed_over()
+    {
+        // THE COUNTEREXAMPLE TO A SENTENCE THIS FILE USED TO CARRY: "a link is on both sides and
+        // regenerating does not change it". The walk is symmetric; the two sides are not. CopyDirectory
+        // reproduces directories and files and deliberately NOT the link, and the copy is walked only
+        // after the regeneration has written into it -- so where the generator writes, the copy holds
+        // real concepts at paths the bundle side holds nothing at.
+        //
+        // Its sibling above gets a clean result only because it puts the link at code/x, which no id
+        // this producer emits maps to. code/csharp/n/scanner is the opposite: the golden bundle has
+        // five files under it, so regenerating produces five the linked bundle cannot have.
+        //
+        // Clean is the WRONG answer here and drift is the right one: `generate` refuses every
+        // destination that leaves the root, so those concepts are genuinely not in the bundle and will
+        // not be until the link goes.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+        using var bundle = ProducerFixture.CopyGoldenBundle();
+
+        var outside = Path.Combine(workspace.Path, "notes-outside-the-bundle");
+        Directory.CreateDirectory(outside);
+
+        var occupied = Path.Combine(bundle.Path, "code", "csharp", "n", "scanner");
+        Assert.True(Directory.Exists(occupied), "the fixture assumes the golden bundle writes into this directory.");
+        Directory.Delete(occupied, recursive: true);
+        ProducerFixture.CreateDirectoryLink(occupied, outside);
+
+        var report = RunCheck(workspace, bundle.Path);
+
+        Assert.Equal(["code/csharp/n/scanner"], report.LinksSkipped);
+        Assert.False(report.IsClean);
+        Assert.Contains(
+            report.Differences,
+            d => d.StartsWith("code/csharp/n/scanner/", StringComparison.Ordinal)
+                && d.EndsWith("produced by regenerating, but missing from the bundle.", StringComparison.Ordinal));
     }
 
     [Fact]

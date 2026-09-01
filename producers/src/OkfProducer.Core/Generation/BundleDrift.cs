@@ -49,12 +49,27 @@ public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsE
     /// The bundle-relative, <c>/</c>-separated path of every symbolic link and junction the check
     /// declined to walk into -- neither copied nor compared, on either side.
     ///
-    /// <para><b>Not a difference, and deliberately not one.</b> A link in a bundle is not drift: it is
-    /// there on both sides and regenerating does not change it, so counting it would fail a check over
-    /// a bundle nobody had touched. It is reported for the same reason
-    /// <see cref="FieldsExcluded"/> is -- it says which property the run just verified. A clean report
-    /// with a non-empty list means "everything I compared matches", over less than the whole
-    /// directory.</para>
+    /// <para><b>Not a difference, and deliberately not one.</b> The bundle side and the regenerated
+    /// side are listed by the same walk, and that walk stops at a reparse point, so the link's own path
+    /// is absent from both file sets and can never be reported as a file one side has and the other
+    /// lacks. Counting it anyway would fail a check over a bundle nobody had touched. It is reported
+    /// for the same reason <see cref="FieldsExcluded"/> is -- it says which property the run just
+    /// verified. A clean report with a non-empty list means "everything I compared matches", over less
+    /// than the whole directory.</para>
+    ///
+    /// <para><b>What that does NOT say is that the two sides are symmetric. They are not.</b> An
+    /// earlier version of this paragraph said "a link in a bundle is not drift: it is there on both
+    /// sides", and that is false by construction. <c>CopyDirectory</c> reproduces directories and
+    /// files and deliberately not the link; the regeneration then writes into the copy; and only then
+    /// is the copy walked. So a link sitting where the generator writes -- <c>code/&lt;namespace&gt;</c>,
+    /// which is the natural place for the very substitution this skip exists to stop -- leaves the copy
+    /// holding real regenerated concepts at paths the bundle side holds nothing at, and each of them is
+    /// reported as "produced by regenerating, but missing from the bundle". That is drift, the check
+    /// exits 1, and it is the correct answer: <c>generate</c> refuses to write through the link, so
+    /// those concepts are genuinely not in the bundle and will not be until the link goes.
+    /// <c>CheckTests.A_link_where_the_generator_writes_is_reported_as_drift_rather_than_passed_over</c>
+    /// pins that; its sibling reaches a clean result only because it puts the link at <c>code/x</c>, a
+    /// path no id this producer emits maps to.</para>
     ///
     /// <para>Empty for every bundle that holds no link, which is every bundle this producer writes.</para>
     /// </summary>
@@ -351,6 +366,19 @@ public static class BundleDrift
     /// any other, and a manifest that no longer describes the bundle is exactly the staleness this
     /// check exists to catch. So are hidden and system files -- the enumeration this replaced skipped
     /// neither (measured), and this one skips neither.</para>
+    ///
+    /// <para><b>One structural limit, recorded and deliberately not acted on.</b>
+    /// <see cref="Descend"/> recurses, so directory depth sits on the call stack rather than in a
+    /// queue, and a tree deep enough would end the process with a <see cref="StackOverflowException"/>
+    /// where the BCL enumerator this replaced would have raised a catchable
+    /// <see cref="IOException"/> at the platform's path-length limit. The depth needed is thousands of
+    /// levels; nothing this producer writes is more than a handful, and the input is a bundle the
+    /// operator points at rather than anything derived from a repository. It is recorded because it is
+    /// a genuine difference from what was here before, and left alone because the exact depth at which
+    /// it bites depends on the platform's path limit and, on Windows, on whether long paths are in
+    /// play -- <b>and that was not measured.</b> <c>BundleWriter.FirstLinkUnder</c>, written later for
+    /// a related walk, uses an explicit stack instead; this one has three lists to fill and is not
+    /// worth converting on an unmeasured concern.</para>
     /// </summary>
     private static Tree Walk(string root)
     {

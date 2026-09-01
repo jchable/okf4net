@@ -100,9 +100,14 @@ public sealed class BundleWriter : IBundleWriter
             // The Reset deletion happens HERE and not at the top of the method. Deleting first means a
             // run that then throws while generating -- a hostile source file, a full disk, a bug in the
             // extractor -- has already destroyed the bundle, which is precisely what IBundleWriter's
-            // transactional guarantee says cannot happen. Deleted at the commit boundary instead, the
-            // window between "the old bundle exists" and "the new one is in place" is the commit loop
-            // alone, and everything before it is undoable by doing nothing.
+            // transactional guarantee says cannot happen. Deleted at the commit boundary instead,
+            // everything before this line is undoable by doing nothing.
+            //
+            // The window between "the old bundle exists" and "the new one is in place" is therefore
+            // ResetBundle's delete PLUS the commit loop -- not "the commit loop alone", which is what
+            // this comment used to claim and what left the delete's own failure modes unaccounted for.
+            // One of them emptied the bundle and then threw; ResetBundle now refuses before deleting
+            // anything in that shape, and says there which part of the window it does not close.
             if (policy == WritePolicy.Reset)
             {
                 ResetBundle(outPath);
@@ -683,13 +688,21 @@ public sealed class BundleWriter : IBundleWriter
     /// owned prefix only, and only where nothing remains but the <c>index.md</c> this producer's own
     /// regeneration put there. A directory holding any other file, or any subdirectory, is left alone.
     ///
-    /// <para><b>Every directory the walk ascends through is resolved before it is deleted.</b> This is
-    /// the one place the producer calls <c>Directory.Delete(recursive: true)</c>, and the walk climbs
-    /// paths built by string concatenation from ids: without the resolution, a junction sitting
-    /// anywhere between the owned prefix and a pruned concept is a directory the walk reaches
+    /// <para><b>Every directory the walk ascends through is resolved before it is deleted.</b> The
+    /// walk climbs paths built by string concatenation from ids: without the resolution, a junction
+    /// sitting anywhere between the owned prefix and a pruned concept is a directory the walk reaches
     /// lexically and deletes. A directory that does not resolve to itself is left alone and the climb
     /// stops there -- a link is not this producer's to remove even when the bundle contains it,
     /// because what hangs off the far end was never the bundle's.</para>
+    ///
+    /// <para>An id-derived path is what makes the resolution load-bearing <i>here</i>. The producer's
+    /// other recursive deletes -- <see cref="ResetBundle"/>, <see cref="TryDeleteDirectory"/>, and
+    /// <c>BundleDrift</c>'s cleanup of the temporary copy it made -- act on a path the operator named
+    /// or one this process just created under a GUID, never on one assembled from a concept id. This
+    /// paragraph used to open by calling this "the one place the producer calls
+    /// <c>Directory.Delete(recursive: true)</c>"; it is not, and an exhaustive claim in a comment is
+    /// the shape of sentence <see cref="BundlePaths"/>'s "deliberately not totalled anywhere" is
+    /// about.</para>
     ///
     /// <para><b>What is at stake there, stated at its real size rather than its scariest.</b> The
     /// guard stops the LINK being unlinked, not the tree behind it being erased:
@@ -700,6 +713,13 @@ public sealed class BundleWriter : IBundleWriter
     /// <c>PruningTests.The_directory_cleanup_after_a_prune_removes_no_link_the_bundle_merely_holds</c>
     /// asserts exactly that -- the link still exists and is still a link. An earlier version of this
     /// paragraph implied the tree went with it; it does not.</para>
+    ///
+    /// <para><b>And this call cannot hit the failure <see cref="ResetBundle"/> guards against</b> --
+    /// a recursive delete over a tree containing a junction unlinks it and then throws. It cannot here,
+    /// because the two conditions below run first and both have to pass: the directory must hold no
+    /// subdirectory at all, and no file but <c>index.md</c>. A junction is seen by
+    /// <see cref="Directory.EnumerateDirectories(string)"/> -- measured -- so it fails the first and
+    /// stops the climb before any delete. There is nothing left inside for the recursion to meet.</para>
     /// </summary>
     private static void RemoveEmptyDirectories(string outPath, string ownedPrefix, IReadOnlyList<ConceptId> pruned)
     {
@@ -1269,17 +1289,105 @@ public sealed class BundleWriter : IBundleWriter
     /// <summary>
     /// <see cref="WritePolicy.Reset"/>'s deletion, performed at the commit boundary rather than on the
     /// way in: everything before it is work in a staging directory the bundle cannot see, so a run that
-    /// fails there leaves the bundle exactly as it was. The directory is recreated immediately, because
-    /// a run with nothing to write must still leave an empty bundle behind rather than no bundle.
+    /// fails before this point leaves the bundle exactly as it was. The directory is recreated
+    /// immediately, because a run with nothing to write must still leave an empty bundle behind rather
+    /// than no bundle.
+    ///
+    /// <para><b>Refused, before the first file is deleted, when the bundle holds a symbolic link or a
+    /// junction anywhere inside it.</b> MEASURED, Windows 11 build 26200 on .NET 10.0.8, with a
+    /// junction at <c>bundle/code/sub</c> and again at <c>bundle/sub</c>:
+    /// <c>Directory.Delete(outPath, recursive: true)</c> deletes the real files, unlinks the junction,
+    /// leaves what hangs off the far end alone -- and <i>then</i> throws
+    /// <see cref="UnauthorizedAccessException"/> (<c>Access to the path 'sub' is denied</c>).
+    /// Deterministic: six runs out of six, three of each shape. So the unguarded call did the one
+    /// thing the transactional guarantee promises cannot happen -- it emptied the bundle and threw out
+    /// of <see cref="Write"/> before <see cref="CommitStaging"/> could put anything back, leaving the
+    /// operator with neither the old bundle nor the new one.</para>
+    ///
+    /// <para><b>Why refuse rather than unlink the link ourselves and let the reset finish.</b> A link
+    /// is not this producer's to remove even when the bundle contains it -- the same rule
+    /// <see cref="RemoveEmptyDirectories"/> follows, for the same reason: what hangs off the far end
+    /// was never the bundle's. Refusing before the delete also satisfies the half of the guarantee the
+    /// operator actually needs, since the bundle is still there afterwards. Nothing that worked before
+    /// stops working: a bundle in this shape could not be regenerated through the link either way
+    /// (<see cref="CommitStaging"/> refuses every destination that leaves the root), and
+    /// <c>--update</c> is unaffected.</para>
+    ///
+    /// <para><b>What this does NOT cover, said rather than left to be discovered.</b> A delete that
+    /// fails part-way for a reason no scan can anticipate -- a concept file locked by another process,
+    /// a volume that goes away mid-delete -- still leaves the bundle partly emptied. That is the
+    /// residual window <see cref="IBundleWriter.Write"/> already describes for
+    /// <see cref="WritePolicy.Reset"/>. This guard removes the one shape a bundle can carry
+    /// deliberately, not the class.</para>
+    ///
+    /// <para><b>Not a claim about <paramref name="outPath"/> itself.</b> The scan starts inside it, so
+    /// an <c>--out</c> that <i>is</i> a link is untouched by this: measured on the same host,
+    /// <c>Directory.Delete</c> on the link itself returns normally, unlinks it, and leaves the far end
+    /// intact -- no throw, nothing lost outside. That path is the operator's own spelling of
+    /// <c>--out</c>, not one this producer built.</para>
     /// </summary>
+    /// <exception cref="InvalidOperationException"><paramref name="outPath"/> holds a symbolic link or junction. Nothing is deleted.</exception>
     private static void ResetBundle(string outPath)
     {
         if (Directory.Exists(outPath))
         {
+            if (FirstLinkUnder(outPath) is { } link)
+            {
+                throw new InvalidOperationException(
+                    $"Refusing to reset '{outPath}': it holds a symbolic link or junction at '{link}'."
+                    + " Deleting a tree containing one removes the real files, unlinks the link and then fails, which would leave"
+                    + " you with neither the old bundle nor the new one. Remove the link, or use --update.");
+            }
+
             Directory.Delete(outPath, recursive: true);
         }
 
         Directory.CreateDirectory(outPath);
+    }
+
+    /// <summary>
+    /// The bundle-relative, <c>/</c>-separated path of the first symbolic link or junction anywhere
+    /// under <paramref name="outPath"/>, or <see langword="null"/> when there is none.
+    ///
+    /// <para>Iterative and short-circuiting: the question is "is there one at all", so there is nothing
+    /// to gain by finishing the walk, and nothing to gain by putting a directory depth the operator
+    /// controls onto the call stack.</para>
+    ///
+    /// <para>Deliberately not <c>BundleDrift.Walk</c>. That one answers a different question -- every
+    /// directory, every file and every link, all three lists built in full -- behind a private type in
+    /// another class. What the two do share is the only part that must not diverge:
+    /// <see cref="BundlePaths.IsReparsePoint"/> is the single definition of what counts as a link, and
+    /// in both walks it is asked BEFORE <see cref="Directory.Exists"/>, which answers true for a
+    /// junction and would send the walk through it.</para>
+    ///
+    /// <para>An enumeration failure is left to propagate rather than caught. It reaches the caller
+    /// before anything has been deleted, so the bundle is intact either way -- which is the property
+    /// this scan exists to protect, and a refusal spelt as an <see cref="IOException"/> protects it
+    /// exactly as well as one spelt as a message.</para>
+    /// </summary>
+    private static string? FirstLinkUnder(string outPath)
+    {
+        var pending = new Stack<string>();
+        pending.Push(outPath);
+
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            foreach (var entry in Directory.GetFileSystemEntries(current))
+            {
+                if (BundlePaths.IsReparsePoint(entry))
+                {
+                    return Path.GetRelativePath(outPath, entry).Replace(Path.DirectorySeparatorChar, '/');
+                }
+
+                if (Directory.Exists(entry))
+                {
+                    pending.Push(entry);
+                }
+            }
+        }
+
+        return null;
     }
 
     private static void TryDeleteDirectory(string path)

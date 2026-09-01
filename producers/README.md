@@ -48,7 +48,7 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--repo <path>` | required | Repository to scan. |
 | `--out <path>` | required | Bundle to write. |
 | `--update` | off | Write into a non-empty `--out`. Concepts this run does not generate are preserved — except under `code`, where a concept the previous run claimed and this one no longer produces is pruned. |
-| `--reset` / `--force` | off | Delete and recreate `--out` first. Refused when `--out` is, or contains, `--repo`. The delete happens at the commit boundary, so a run that fails while *generating* leaves the old bundle — but a run interrupted during the commit itself leaves an empty or half-repopulated directory, and unlike every other operation here that costs the hand-written concepts outside `code` too. `--reset` means "throw this bundle away and write it again"; `--update` is the flag with no such window. |
+| `--reset` / `--force` | off | Delete and recreate `--out` first. Refused when `--out` is, or contains, `--repo`, and refused when `--out` holds a symbolic link or junction (see below). The delete happens at the commit boundary, so a run that fails while *generating* leaves the old bundle — but a run interrupted during the commit itself leaves an empty or half-repopulated directory, and unlike every other operation here that costs the hand-written concepts outside `code` too. `--reset` means "throw this bundle away and write it again"; `--update` is the flag with no such window. |
 | `--repo-url <url>` | absent | Permalink base, e.g. `https://github.com/owner/repo`. With a ref, every code concept gets a `resource` link to its declaration. Without both, **no `resource` is emitted at all** — see below. |
 | `--rev <ref>` | current branch | The ref permalinks point at. Never a commit sha by default: a sha would rewrite every code concept's `resource` on the next commit. On a detached HEAD there is no branch name, so this becomes required for permalinks. |
 | `--check` | off | Regenerate over a copy of the bundle and exit non-zero if anything differs. Never writes to `--out`. Refused with `--reset`/`--force` (it would delete nothing while the operator believed a reset happened) and with `--no-code` (see below). |
@@ -155,10 +155,19 @@ What this means for you:
   write failures for every concept whose path crosses the link, keeps concepts it would
   otherwise prune, and — if the link is `.okfgen-manifest.json` itself — leaves its
   ownership record unwritten and says so. Remove the link and re-run.
+- **`--reset` refuses outright** rather than emptying such a bundle. Measured on Windows:
+  a recursive delete over a tree holding a junction removes the real files, unlinks the
+  junction, and *then* fails — so the unguarded reset destroyed the bundle and returned an
+  error, leaving neither the old bundle nor the new one. The refusal happens before the
+  first file is deleted; the message names the link. Remove it, or use `--update`.
 - **`--check` neither copies nor compares what a link points at,** and emits one note per
   link it skipped. A clean result there is a statement about everything else. Earlier it
   copied *through* a link, which flattened the far side into the comparison and produced
-  notes about files that were never in the bundle.
+  notes about files that were never in the bundle. Note that a link is not automatically
+  invisible to the check: put one where the generator writes (`code/<namespace>`) and the
+  regeneration fills that path in its own copy while your bundle has nothing there, so every
+  concept the link displaced is reported as drift and the check exits 1. That is the right
+  answer — `generate` cannot write those concepts through the link either.
 - **A bundle root that is itself a link stays fine** — a symlinked project directory, a
   container or WSL bind mount. Only the root's own link is followed, and every path below
   it is measured against the resolved root.

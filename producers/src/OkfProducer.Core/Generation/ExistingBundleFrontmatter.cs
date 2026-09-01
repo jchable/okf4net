@@ -61,6 +61,43 @@ public static class ExistingBundleFrontmatter
         };
     }
 
+    /// <summary>
+    /// <b>An ungated read, and the invariant that makes it safe is not written in this file.</b>
+    /// <c>id.ToPath(bundleRoot)</c> is string concatenation; nothing here asks
+    /// <see cref="BundlePaths.ResolveInsideRoot"/> anything, so in a bundle holding a junction at
+    /// <c>code/x</c>, generating <c>code/x/report</c> reads the frontmatter of somebody else's
+    /// <c>report.md</c> on the far side of it. Three separate facts stop that borrowed text reaching
+    /// the operator, and none of the three lives here -- which is why they are named here.
+    ///
+    /// <para><b>One: the id that reads is the id that is written.</b> Every call of
+    /// <c>GenerateOptions.ExistingFrontmatter</c> in <c>ConceptGenerator</c> -- overview, package, doc,
+    /// code concept, container concept -- passes the id of the concept currently being built, and each
+    /// result is immediately paired with that same id in a <c>GeneratedConcept</c>. Same id means the
+    /// same path and so the same link: a description can only be borrowed into the one document that
+    /// would have been written where it was read from. There is no cross-concept borrowing to reason
+    /// about.</para>
+    ///
+    /// <para><b>Two: the containment links carry no description.</b> A parent concept names its
+    /// children through <c>ConceptGenerator.Child</c>, which is an id and the link text and nothing
+    /// else. So even the parent of a linked-through id -- <c>overview.md</c>, a package concept -- has
+    /// no channel through which the borrowed text could ride into a document that <i>is</i>
+    /// written.</para>
+    ///
+    /// <para><b>Three: the write is refused.</b> <c>BundleWriter.CommitStaging</c> resolves every
+    /// staged destination and refuses the ones that do not land inside the bundle root -- a set that
+    /// includes every id this read can reach outside for, and then some, since an unresolvable path is
+    /// refused there too. The concept is reported as a write failure instead, and the borrowed
+    /// description never lands anywhere.</para>
+    ///
+    /// <para><b>Recorded rather than gated, deliberately.</b> Gating would cost a component walk per
+    /// concept id and buy no property that the three facts above do not already give. But they are
+    /// three facts in three other files, none of which mentions this one: a change that made a refused
+    /// write stop being refused, or gave <c>Child</c> a description field, would silently make this
+    /// read matter. The read itself also opens a path somebody else chose, which is the same class of
+    /// exposure <c>GenerationManifest.WriteTo</c> records for the manifest's read side -- reached
+    /// through a different shape of link here, since a junction anywhere along the id's path is enough
+    /// and the manifest's needs a file symbolic link on the last component.</para>
+    /// </summary>
     private static Frontmatter? Read(string bundleRoot, ConceptId id)
     {
         try

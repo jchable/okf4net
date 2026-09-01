@@ -60,7 +60,11 @@ public interface IBundleWriter
     /// already exists and is non-empty; or <paramref name="policy"/> is <see cref="WritePolicy.Reset"/>
     /// and <paramref name="outPath"/>'s resolved absolute path equals, or is an ancestor directory of,
     /// <paramref name="repoPath"/>'s resolved absolute path -- refusing to delete the very repository
-    /// being scanned. Nothing is written in either case.
+    /// being scanned; or <paramref name="policy"/> is <see cref="WritePolicy.Reset"/> and
+    /// <paramref name="outPath"/> holds a symbolic link or junction, which a recursive delete empties
+    /// the bundle over and then fails on (see <c>BundleWriter.ResetBundle</c>). Nothing is deleted and
+    /// nothing is written in any of the three cases; the last is raised at the commit boundary, after
+    /// the concepts have been staged, so it costs the run but not the bundle.
     /// </exception>
     WriteResult Write(
         string outPath,

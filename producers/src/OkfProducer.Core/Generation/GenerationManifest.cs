@@ -212,13 +212,31 @@ public sealed record GenerationManifest(
     /// resolves <c>.</c> and <c>..</c> and no reparse point.</para>
     ///
     /// <para><b>The READ side (<see cref="TryRead"/>, <see cref="IsPresent"/>) is deliberately not
-    /// gated.</b> Reading through a link grants nothing writing through one grants: anyone who can
-    /// plant that link in the bundle can equally write a hostile manifest into the bundle directly,
-    /// and the manifest is already documented as a file in a directory the user controls from which
-    /// <c>BundleWriter</c> re-derives nothing. What it authorizes -- deletions -- is bounded
-    /// elsewhere, by <c>BundleWriter</c> resolving every id it is about to delete back inside the
-    /// bundle. Gating the read would buy no property and would make a bundle whose manifest is a
-    /// deliberate link un-prunable rather than safer.</para>
+    /// gated, and stays that way -- but the argument for it establishes less than it was written to
+    /// claim, so here it is at its real width.</b> What it establishes is about AUTHORITY: reading
+    /// through a link grants nothing writing through one grants. Anyone who can plant that link in the
+    /// bundle can equally write a hostile manifest into the bundle directly; the manifest is already a
+    /// file in a directory the user controls, from which <c>BundleWriter</c> re-derives nothing; and
+    /// what it authorizes -- deletions -- is bounded elsewhere, by <c>BundleWriter</c> resolving every
+    /// id it is about to delete back inside the bundle. Gating the read buys no property there, and
+    /// would make a bundle whose manifest is a deliberate link un-prunable rather than safer.</para>
+    ///
+    /// <para><b>What that does not reach is the ACT of reading, which is a channel a refused write is
+    /// not.</b> <see cref="File.Exists(string)"/> and <see cref="File.ReadAllBytes(string)"/> open a
+    /// path somebody else chose. A symbolic link to a FIFO makes the open block with no timeout; one
+    /// to a UNC path turns an existence probe into an outbound authentication attempt. Neither
+    /// escalates anything -- they hang the run or leak a connection attempt, they do not delete or
+    /// overwrite -- which is why the conclusion above is unchanged; they are simply not covered by it.
+    /// <b>Stated as the shape of the exposure and NOT as an observation:</b> neither was executed, on
+    /// this host or any other.</para>
+    ///
+    /// <para><b>Both need a FILE symbolic link at <see cref="FileName"/>, which puts them out of reach
+    /// on an ordinary Windows box -- and this part was measured.</b>
+    /// <see cref="File.CreateSymbolicLink(string, string)"/> fails there without
+    /// SeCreateSymbolicLinkPrivilege ("the client does not have a required privilege"), and the
+    /// junction that substitutes for a symbolic link elsewhere in these tests cannot substitute here:
+    /// <see cref="File.Exists(string)"/> answers FALSE for a directory reparse point, so
+    /// <see cref="TryRead"/> returns null without opening anything at all.</para>
     /// </summary>
     /// <returns>
     /// <see langword="true"/> when the manifest was written. <see langword="false"/> when it was
