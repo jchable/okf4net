@@ -262,11 +262,18 @@ public class CheckTests(ITestOutputHelper output)
     [Fact]
     public void A_regeneration_that_writes_nothing_is_never_reported_clean()
     {
-        // THE FLOOR UNDER THIS ENTIRE CHECK. The regeneration is the caller's, so a caller that
-        // composes its pipeline wrongly -- or has not composed it yet, which is exactly where the CLI
-        // stands until its code-graph stage is wired -- hands over a run that writes nothing. The copy
-        // then equals the bundle, no difference is found, and `--check` prints "no drift" on every
-        // bundle for ever: a guard that cannot fire, in the one place with nothing behind it.
+        // THE FLOOR UNDER THIS ENTIRE CHECK, and a contract check on the caller's Func -- exactly that
+        // much. The regeneration is the caller's, so a caller that composes its pipeline wrongly hands
+        // over a run that writes nothing; the copy then equals the bundle, no difference is found, and
+        // `--check` prints "no drift" on every bundle for ever.
+        //
+        // It does NOT cover the shipped CLI's own compositions. This comment used to add "or has not
+        // composed it yet, which is exactly where the CLI stands until its code-graph stage is wired":
+        // that stage is wired, ConceptGenerator always emits `overview`, and every composition the CLI
+        // can build therefore returns at least 1. The sentence was deleted from BundleDrift.cs and
+        // survived here, where BundleDrift's doc comment then pointed a reader at it. In particular
+        // this floor does not catch `--check --no-code`, which the CLI rejects outright --
+        // CliTests.Check_refuses_to_be_combined_with_no_code is that guard, not this one.
         //
         // Asserted against the GOLDEN, the bundle every other test in this file expects to be clean,
         // so the only thing making this report dirty is the empty run.
@@ -312,6 +319,15 @@ public class CheckTests(ITestOutputHelper output)
         // comparison does not make.
         Assert.Contains("by hand", BundleDrift.CheckDescription, StringComparison.Ordinal);
         Assert.Contains("unowned", BundleDrift.CheckDescription, StringComparison.Ordinal);
+
+        // And both refusals. The CLI rejects --check --reset and --check --no-code, and until now only
+        // the README said so -- but --help is where an operator meets the flag, and the second of the
+        // two exists precisely because its failure mode is silent. Named here rather than left to the
+        // CLI's own wiring, so the sentence travels with the definition of what --check means.
+        // That the CLI really refuses them -- as opposed to this string merely saying so -- is
+        // CliTests.Check_refuses_to_be_combined_with_no_code and .._with_reset, which run the command.
+        Assert.Contains("--reset", BundleDrift.CheckDescription, StringComparison.Ordinal);
+        Assert.Contains("--no-code", BundleDrift.CheckDescription, StringComparison.Ordinal);
     }
 
     // -- the end-to-end run, made permanent -------------------------------------------------------

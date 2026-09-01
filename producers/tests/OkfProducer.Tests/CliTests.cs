@@ -320,6 +320,20 @@ public class CliTests
         Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle, "--include-internal").ExitCode);
         AssertPresent(bundle, HiddenConcept);
 
+        // Run TWICE, because once is what a broken fix passes. The refusal keeps `Hidden` by carrying
+        // its manifest entry forward; if the manifest that run writes records this narrow run's own
+        // scope over that widened set, the second identical command compares equal scopes, sees no
+        // narrowing, finds `Hidden` settled -- its file is read cleanly with or without the flag,
+        // which is the whole asymmetry -- and deletes it. The reprieve lasted exactly one run.
+        for (var run = 1; run <= 2; run++)
+        {
+            var narrowed = Run("generate", "--repo", repo, "--out", bundle, "--update");
+
+            Assert.Equal(0, narrowed.ExitCode);
+            AssertPresent(bundle, HiddenConcept);
+            Assert.Contains("--include-internal", narrowed.Error, StringComparison.Ordinal);
+        }
+
         var result = Run("generate", "--repo", repo, "--out", bundle, "--update");
 
         Assert.Equal(0, result.ExitCode);

@@ -186,13 +186,24 @@ public static class OkfgenCli
                 return 1;
             }
 
+            // --check always regenerates over a COPY under Update -- the only policy that runs the
+            // real regeneration path, field preservation and pruning included (§6.2).
+            //
+            // Hoisted out of the argument list below rather than sitting inside it. A comment embedded
+            // between two arguments makes Roslyn's formatter rewrite the newline trivia around it, and
+            // it rewrites it to Environment.NewLine -- so on Windows the same bytes pass
+            // `dotnet format --verify-no-changes` with CRLF endings and fail with LF, which is what a
+            // checkout under core.autocrlf=false, or any tool that rewrites the file with LF, leaves
+            // behind. `producers/` is outside CI, so nothing catches that. Out here the comment is
+            // ordinary statement-level trivia and no rule has an opinion about the line ending.
+            var policy = check
+                ? WritePolicy.Update
+                : reset ? WritePolicy.Reset : update ? WritePolicy.Update : WritePolicy.RequireEmpty;
+
             var request = new GenerateRequest(
                 RepoPath: parseResult.GetValue(repoOption)!,
                 OutPath: parseResult.GetValue(outOption)!,
-
-                // --check always regenerates over a COPY under Update -- the only policy that runs the
-                // real regeneration path, field preservation and pruning included (§6.2).
-                Policy: check ? WritePolicy.Update : reset ? WritePolicy.Reset : update ? WritePolicy.Update : WritePolicy.RequireEmpty,
+                Policy: policy,
                 RepoUrl: repoUrl,
                 Rev: Trimmed(parseResult.GetValue(revOption)),
                 Check: check,

@@ -48,7 +48,7 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--repo <path>` | required | Repository to scan. |
 | `--out <path>` | required | Bundle to write. |
 | `--update` | off | Write into a non-empty `--out`. Concepts this run does not generate are preserved — except under `code`, where a concept the previous run claimed and this one no longer produces is pruned. |
-| `--reset` / `--force` | off | Delete and recreate `--out` first. Refused when `--out` is, or contains, `--repo`. |
+| `--reset` / `--force` | off | Delete and recreate `--out` first. Refused when `--out` is, or contains, `--repo`. The delete happens at the commit boundary, so a run that fails while *generating* leaves the old bundle — but a run interrupted during the commit itself leaves an empty or half-repopulated directory, and unlike every other operation here that costs the hand-written concepts outside `code` too. `--reset` means "throw this bundle away and write it again"; `--update` is the flag with no such window. |
 | `--repo-url <url>` | absent | Permalink base, e.g. `https://github.com/owner/repo`. With a ref, every code concept gets a `resource` link to its declaration. Without both, **no `resource` is emitted at all** — see below. |
 | `--rev <ref>` | current branch | The ref permalinks point at. Never a commit sha by default: a sha would rewrite every code concept's `resource` on the next commit. On a detached HEAD there is no branch name, so this becomes required for permalinks. |
 | `--check` | off | Regenerate over a copy of the bundle and exit non-zero if anything differs. Never writes to `--out`. Refused with `--reset`/`--force` (it would delete nothing while the operator believed a reset happened) and with `--no-code` (see below). |
@@ -75,16 +75,28 @@ stdout. A note never changes the exit code. The ones worth knowing:
 - **a file under `code` that this run took ownership of.** §6.3 stops this producer
   *deleting* a concept no manifest claims; nothing stops it *overwriting* one, because
   the moment the generator produces the same id the staged file is moved over it. A
-  concept you wrote by hand at an id the producer later generates is replaced — body,
-  description and all — and this note, naming the file, is the only signal there is.
-  Field preservation (`description_source`) applies to concepts this producer wrote
-  before, so the way to keep a hand-written concept is to give it an id the producer
-  does not generate;
+  concept you wrote by hand at an id the producer later generates is replaced — body and
+  all — and this note, naming the file, is the only signal there is. The note says which
+  of the two happened to the *description*: a concept carrying a `description_source` this
+  producer does not derive (`manual`, `llm`, anything it never wrote) keeps its
+  description under §4.2 and the note says so; anything else loses it with the body. Field
+  preservation applies to concepts this producer wrote before, so the way to keep a
+  hand-written concept whole is to give it an id the producer does not generate;
 - **a scope narrower than the run that wrote the manifest**, e.g. dropping
   `--include-internal`. Nothing is pruned in that run: a concept missing from it may
   simply be out of scope rather than gone from the repository, and the two are
   indistinguishable from this run's own output alone. Re-run with the flag to prune
-  again.
+  again. The refusal **persists**: the manifest that run writes records the widest scope
+  covering the concepts it kept, not its own narrow one, so running the same narrowed
+  command a second and a third time refuses again rather than deleting on the next pass;
+- **a manifest this build cannot read**, which is a corrupt one or one written by a
+  producer whose schema version this build does not know — including every bundle
+  produced before schema 2. That run prunes nothing and cannot say which files under
+  `code` it had written before, so it reports the manifest once instead of reporting
+  every file. It writes a manifest this build does read, so the run after it is normal
+  again;
+- **a concept whose destination leaves the bundle through a link**, which is refused
+  rather than written (see the warning below).
 
 `--check` forwards these too, including the writer's reconciliation notes. For one case
 they are the only signal that exists: a hand-written concept under the owned prefix that
@@ -109,6 +121,28 @@ A **malformed** `--repo-url` is not a note but an error: anything that is not an
 `http`/`https` URL (`github.com/o/r`, `git@github.com:o/r` — the two forms a forge shows
 and a user pastes) is rejected before any work, because the alternative is a
 successful-looking run containing not one `resource`.
+
+### Symbolic links and junctions inside the bundle
+
+A concept id is joined onto the bundle root to make a path, and `File.Move`, `File.Delete`
+and `Directory.Delete` all **follow** a symbolic link or a junction — while
+`Path.GetFullPath` does not resolve one, so no comparison of path strings can see it. A
+bundle that carries `code/x -> ~/notes` therefore used to reach outside itself, and a
+bundle committed beside a repository is content a clone brings with it.
+
+Three of the four places that touch the filesystem now resolve the path component by
+component, following every link they meet, and refuse anything landing outside the bundle:
+deleting a pruned concept, removing an emptied directory, and committing a staged file. A
+refused write is reported as a write failure, which also keeps the id out of the manifest
+and disqualifies the run from pruning.
+
+**The fourth is not gated, and you should know where it is.** Index regeneration is
+`OKF4net`'s `IndexGenerator`, shipped library API this producer only calls, and it walks
+the bundle with `Directory.EnumerateDirectories` — which reports a junction as an ordinary
+directory. So a `generate` over a bundle containing `code/x -> ~/notes` still writes an
+`index.md` into `~/notes`. What escapes is one generated index file in a directory the
+bundle points at; no concept is written or deleted there. If you do not control the
+contents of a bundle, check it for reparse points before generating into it.
 
 ### Why `--repo-url` is all-or-nothing
 

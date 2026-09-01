@@ -99,7 +99,9 @@ public static class BundleDrift
     /// <summary>
     /// The <c>--check</c> flag's help text (Task 13 wires the flag; this is the sentence it must
     /// carry). It states the exclusion list in full because §6.2 requires that list to be closed and
-    /// visible to the operator, not a property of whatever this file happens to do.
+    /// visible to the operator, not a property of whatever this file happens to do -- and it names the
+    /// two flag combinations the CLI refuses, because <c>--help</c> is where an operator meets the
+    /// flag and a refusal discovered by being refused is a refusal discovered too late.
     /// </summary>
     public const string CheckDescription =
         "Regenerate the bundle over a copy of itself and exit non-zero if anything differs. "
@@ -111,7 +113,11 @@ public static class BundleDrift
         + "above. No other FIELD is ever excluded, in either case. One thing is out of reach rather "
         + "than excluded: a concept you added to the bundle by hand, at an id this producer never "
         + "generates, is copied forward untouched and so cannot differ -- `generate` reports it as "
-        + "unowned instead.";
+        + "unowned instead. Cannot be combined with --reset (which would destroy the bundle it is "
+        + "supposed to be comparing) or with --no-code (a regeneration that skips the code stage "
+        + "produces no `code` concept at all, so every `code/` concept is copied forward untouched, "
+        + "cannot differ, and the check would report no drift however stale they are). Both "
+        + "combinations are rejected with an error rather than run.";
 
     /// <summary>
     /// Copies the bundle at <paramref name="bundlePath"/> into a temporary directory, hands that copy

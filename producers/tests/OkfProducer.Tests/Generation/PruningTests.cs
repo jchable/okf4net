@@ -355,19 +355,30 @@ public class PruningTests
     // ---------------------------------------------------------------------------------------------
 
     [Theory]
+    // DISCRIMINATING. Both of these PARSE -- ConceptId.Parse drops empty segments, so each is a
+    // different spelling of `code/csharp/n/t/a`, an id this bundle really holds. What refuses them is
+    // the round-trip check, `parsed.ToString() != id`, and that check is the only part of
+    // TryResolveConceptFile's validation a future edit can actually drop: the method returns a
+    // ConceptId?, so TryParse cannot be removed without changing its type. Drop the round trip and
+    // both rows resolve to `<bundle>/code/csharp/n/t/a.md`, which EXISTS, and delete a live concept --
+    // the assertion on `a.md` below is what goes red.
+    [InlineData("code//csharp/n/t/a")]
+    [InlineData("code/csharp/n/t/a/")]
+    // NOT DISCRIMINATING, and kept anyway with that said out loud. `..` is not a legal segment
+    // (a segment is [A-Za-z0-9_][A-Za-z0-9_.-]*, and `.` is not a valid first character), so this row
+    // is refused by ConceptId.Parse inside src/OKF4net and never reaches anything this producer owns.
+    // The previous round's mutation table claimed a naive join made rows like this fire; it does not,
+    // and neither does `code/csharp/n/t/..`, which was dropped from this table for that reason. Two
+    // separate things stand behind Parse here and each is unfalsifiable on its own: the charset admits
+    // no separator, no drive letter and no dotted segment, so no id this producer can parse joins to a
+    // path outside the root, and any that did would be refused by the lexical IsInside check before
+    // the filesystem is consulted. This row is a boundary case pinned against a future relaxation of
+    // the charset -- a smoke check, not proof. What defends the bundle today against a path that
+    // really does leave it is the reparse-point resolution, and the test below is the one that
+    // reaches it.
     [InlineData("code/../../victim")]
-    [InlineData("code/./../victim")]
-    [InlineData("code/csharp/n/t/..")]
-    public void A_manifest_id_that_tries_to_climb_out_of_the_bundle_deletes_nothing_outside_it(string hostile)
+    public void A_manifest_id_that_is_not_this_producers_own_spelling_of_it_resolves_to_nothing(string hostile)
     {
-        // Every one of these is caught by ConceptId.Parse, before BundleWriter's own containment check
-        // is consulted at all: a segment is [A-Za-z0-9_][A-Za-z0-9_.-]*, and `.` is not a valid first
-        // character, so `..` never parses. Said here because it is easy to read this test as covering
-        // the full-path check underneath -- it does not, and NOTHING can: that charset admits no
-        // separator, no drive letter and no dotted segment, so no id this producer can parse joins to a
-        // path outside the root. The full-path check is a backstop against a future relaxation of the
-        // charset; what defends the bundle today against a path that really does leave it is the
-        // reparse-point resolution, and the test below is the one that reaches it.
         using var tmp = new TempDir();
         var victim = Path.Combine(tmp.Root, "victim.md");
         File.WriteAllText(victim, "not the bundle's to delete");
@@ -377,7 +388,10 @@ public class PruningTests
 
         var result = WriteRun(tmp, [A], complete: true);
 
-        Assert.True(File.Exists(victim));
+        Assert.True(File.Exists(victim), "a manifest id reached a file outside the bundle.");
+        Assert.True(
+            File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")),
+            "a manifest id spelled differently from the concept it names deleted that concept.");
         Assert.Empty(result.Pruned);
         Assert.Contains(result.Notes, n => n.Contains("does not resolve to a file inside the bundle", StringComparison.Ordinal));
     }
@@ -416,6 +430,48 @@ public class PruningTests
         Assert.Empty(result.Pruned);
         Assert.Contains(result.Notes, n => n.Contains("code/x/report", StringComparison.Ordinal)
             && n.Contains("symbolic link or junction", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_concept_whose_destination_leaves_the_bundle_through_a_link_is_never_written_through_it()
+    {
+        // The WRITE side of the hole whose delete side is the test above, and it was still open after
+        // that one was closed: File.Move(overwrite: true) follows a link exactly as File.Delete does,
+        // and CommitStaging built its destination by joining a relative path onto the bundle root --
+        // string work, which Path.GetFullPath cannot see through. Same fixture as the delete case,
+        // same clone-an-untrusted-repository reachability: the bundle carries `code/x -> ~/notes`, the
+        // generator produces `code/x/report`, and the commit overwrote a file outside the bundle.
+        using var tmp = new TempDir();
+
+        var outside = Path.Combine(tmp.Root, "notes");
+        Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "report.md");
+        File.WriteAllText(victim, "someone's notes, outside the bundle entirely");
+        var before = File.ReadAllBytes(victim);
+
+        WriteRun(tmp, [A], complete: true);
+
+        var link = Path.Combine(tmp.Path, "code", "x");
+        CreateDirectoryLink(link, outside);
+        Assert.True(File.Exists(Path.Combine(link, "report.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
+
+        var result = WriteRun(tmp, [A, "code/x/report"], complete: true);
+
+        Assert.True(before.AsSpan().SequenceEqual(File.ReadAllBytes(victim)),
+            "File.Move followed a link out of the bundle and overwrote a file outside it.");
+
+        // Recorded as a write FAILURE, not merely skipped, and both consequences are asserted because
+        // each is load-bearing on its own. A refused id must never be claimed as owned -- a manifest
+        // entry is a standing licence to delete whatever later appears at that path -- and a run that
+        // could not commit everything must not go on to prune.
+        Assert.Contains(result.Failures, f => f.Id.ToString() == "code/x/report");
+        Assert.DoesNotContain("code/x/report", GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
+        Assert.Contains(result.Notes, n => n.Contains("symbolic link", StringComparison.Ordinal)
+            && n.Contains("code/x/report.md", StringComparison.Ordinal));
+
+        // The other direction: the concept that had nothing to do with the link was still written, so
+        // this is a refusal of one destination and not a writer that gave up on the run.
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
     }
 
     [Fact]
@@ -475,6 +531,117 @@ public class PruningTests
 
         Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
         Assert.Empty(result.Pruned);
+    }
+
+    [Fact]
+    public void A_manifest_this_build_cannot_read_is_reported_once_as_a_manifest_and_not_once_per_file()
+    {
+        // The upgrade path, and the shape the schema bump gave every bundle already on disk. A v1
+        // manifest -- or a corrupt one -- is not read at all, so `previous` is null, so every file this
+        // run overwrote under the owned prefix looked like a file "no previous manifest claimed",
+        // and each got its own alarming note asserting that its body and description were gone. On a
+        // real repository that is one line per code concept, on an upgrade, about this producer's own
+        // output, and most of it untrue: the manifest is sitting right there.
+        //
+        // Both halves of the fix are asserted, because either alone passes for the wrong reason: the
+        // storm is gone AND the fact that produced it is still reported, once, where it belongs.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true);
+        File.WriteAllText(Path.Combine(tmp.Path, GenerationManifest.FileName), "{ this is not json");
+
+        var result = WriteRun(tmp, [A, B], complete: true);
+
+        Assert.DoesNotContain(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
+        Assert.Contains(result.Notes, n => n.Contains("could not read it", StringComparison.Ordinal)
+            && n.Contains("pruned no concept", StringComparison.Ordinal));
+
+        // ONE note, not two: this run overwrote two files it could not account for and must not have
+        // said so twice.
+        Assert.Single(result.Notes, n => n.Contains("could not read it", StringComparison.Ordinal));
+        Assert.Contains(result.Notes, n => n.Contains("2 file(s)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_bundle_with_no_manifest_at_all_still_names_every_file_it_took_over()
+    {
+        // The other side of the distinction, without which the fix above could be "stop reporting
+        // overwrites whenever there is no previous manifest" -- which would silence the one case §6.3
+        // rule 2 cannot otherwise reach. Nothing was ever written here by this producer, so "no
+        // previous manifest claimed it" is a true statement about each file, and each is named.
+        using var tmp = new TempDir();
+        foreach (var id in new[] { A, B })
+        {
+            var path = Path.Combine(tmp.Path, id.Replace('/', Path.DirectorySeparatorChar) + ".md");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "---\ntype: Note\ntitle: Mine\n---\n\nMy notes.\n");
+        }
+
+        Assert.False(GenerationManifest.IsPresent(tmp.Path));
+
+        var result = WriteRun(tmp, [A, B], complete: true);
+
+        Assert.Equal(2, result.Notes.Count(n => n.Contains("taken ownership", StringComparison.Ordinal)));
+        Assert.DoesNotContain(result.Notes, n => n.Contains("could not read it", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_overwrite_note_does_not_claim_a_description_is_gone_that_section_4_2_just_kept()
+    {
+        // One sentence used to assert both that the file's `description_source` was `manual` and that
+        // its description was gone. DescriptionResolver preserves a description on exactly that value,
+        // so the note was false for the one class of file whose author most needs to trust it -- a
+        // concept somebody deliberately marked as hand-written.
+        using var tmp = new TempDir();
+
+        var path = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(
+            path,
+            $"---\ntype: Note\ntitle: Mine\ndescription: Written by a person.\n{DescriptionResolver.DescriptionSourceKey}: {DescriptionResolver.ManualLabel}\n---\n\nMy notes.\n");
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        var note = Assert.Single(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
+        Assert.Contains($"`{DescriptionResolver.ManualLabel}`", note, StringComparison.Ordinal);
+        Assert.Contains("§4.2 kept that description", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("body, description and any keys", note, StringComparison.Ordinal);
+
+        // The note is right about the file and not merely differently worded. §4.2 is applied by the
+        // GENERATOR, not by this writer -- the fixture here hands the writer a document that was never
+        // put through the resolver -- so the claim is checked against the one definition of the rule,
+        // which is also the definition the note consults. DescriptionTests.A_manual_description_is_
+        // never_overwritten is the end of that chain: it runs the resolver and watches the text survive.
+        Assert.True(OkfDocument.TryParse(File.ReadAllText(path), out var rewritten, out _));
+        Assert.DoesNotContain("My notes.", rewritten.Body, StringComparison.Ordinal);
+
+        Assert.True(OkfDocument.TryParse(
+            $"---\ntype: Note\ndescription: Written by a person.\n{DescriptionResolver.DescriptionSourceKey}: {DescriptionResolver.ManualLabel}\n---\n",
+            out var claimed,
+            out _));
+        Assert.True(DescriptionResolver.PreservesDescription(claimed.Frontmatter));
+    }
+
+    [Fact]
+    public void The_overwrite_note_still_says_a_derived_description_is_gone()
+    {
+        // The negative direction of the pair above. A `description_source` this producer DOES derive
+        // is re-derived, so the honest sentence there is the original one -- and a fix that simply
+        // softened the wording for every file carrying the key would say the description survived when
+        // it did not.
+        using var tmp = new TempDir();
+
+        var path = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(
+            path,
+            $"---\ntype: Note\ntitle: Mine\ndescription: Derived once.\n{DescriptionResolver.DescriptionSourceKey}: {SignatureSource.SourceLabel}\n---\n\nMy notes.\n");
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        var note = Assert.Single(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
+        Assert.Contains($"`{SignatureSource.SourceLabel}`", note, StringComparison.Ordinal);
+        Assert.Contains("body, description and any keys", note, StringComparison.Ordinal);
+        Assert.DoesNotContain("§4.2 kept that description", note, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -744,6 +911,50 @@ public class PruningTests
     }
 
     [Fact]
+    public void The_narrowing_refusal_survives_the_manifest_the_refusing_run_writes()
+    {
+        // THREE runs, and the third is the one that matters. The refusal above kept B by carrying its
+        // manifest entry forward -- but the merged manifest used to record THIS run's narrow scope over
+        // a concept set that now included a wide run's ids. The next identical command then compared
+        // equal scopes, saw no narrowing, found B settled (its owning file was read cleanly) and
+        // deleted it: the refusal was a one-run reprieve, and running the same safe command twice was
+        // enough to lose the work it existed to protect.
+        //
+        // Two runs is exactly what the fix's own regression test used to do, which is why this one goes
+        // to four: three narrowed runs after the wide one, so a merge that widens the scope only once
+        // is caught as well.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true, scope: new ScopeOptions(IncludeTests: false, IncludeInternal: true));
+
+        for (var run = 1; run <= 3; run++)
+        {
+            var result = WriteRun(tmp, [A], complete: true, scope: ScopeOptions.Default);
+
+            Assert.True(
+                File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")),
+                $"narrowed run {run} deleted a concept only the wider run could account for.");
+            Assert.Empty(result.Pruned);
+            Assert.Contains(result.Notes, n => n.Contains("--include-internal", StringComparison.Ordinal));
+
+            // The record on disk, not just the behaviour: the manifest has to keep claiming B, and to
+            // keep saying the set it claims needs --include-internal to account for.
+            var manifest = GenerationManifest.TryRead(tmp.Path);
+            Assert.NotNull(manifest);
+            Assert.Contains(B, manifest.ConceptIds);
+            Assert.Equal(new ScopeOptions(IncludeTests: false, IncludeInternal: true), manifest.Scope);
+        }
+
+        // The other direction, or a merge that simply pinned the widest scope for ever would pass just
+        // as happily: once a run accounts for every id the manifest claims, nothing is carried, the
+        // set is that run's own output, and the scope must come back down to what that run covered
+        // rather than claiming a coverage nobody asked for.
+        var accounted = WriteRun(tmp, [A, B], complete: true, scope: ScopeOptions.Default);
+
+        Assert.Empty(accounted.Pruned);
+        Assert.Equal(ScopeOptions.Default, GenerationManifest.TryRead(tmp.Path)?.Scope);
+    }
+
+    [Fact]
     public void A_run_that_widens_its_scope_prunes_exactly_as_it_always_did()
     {
         // Only NARROWING is a reason to refuse. Without this, "record the scope" could be implemented
@@ -768,10 +979,13 @@ public class PruningTests
         using var tmp = new TempDir();
         WriteRun(tmp, [A, B], complete: true);
 
+        // `Scope: null` is spelled out rather than omitted: the record has no default for that
+        // parameter, so "no scope recorded" is a thing a caller says on purpose and a reader can see.
         new GenerationManifest(
                 Prefix,
                 [new ManifestConcept(A, [SharedSource]), new ManifestConcept(B, [SharedSource])],
-                [SharedSource])
+                [SharedSource],
+                Scope: null)
             .WriteTo(tmp.Path);
 
         var result = WriteRun(tmp, [A], complete: true);
@@ -893,17 +1107,17 @@ public class PruningTests
     /// Replaces the manifest in the bundle with one naming exactly <paramref name="ids"/>, each owned
     /// by the cleanly-extracted fixture source -- the way an operator, or anything else on the machine,
     /// could edit the file this producer trusts.
+    ///
+    /// <para>The scope is always recorded, so that a test planting a manifest exercises the check it is
+    /// aiming at rather than tripping the scope gate on the way in -- a scope-less manifest prunes
+    /// nothing at all, which is what
+    /// <see cref="A_manifest_that_records_no_scope_authorizes_no_deletion"/> pins deliberately.</para>
     /// </summary>
     private static void PlantManifestIds(TempDir tmp, string ownedPrefix, IReadOnlyList<string> ids, ScopeOptions? scope = null) =>
         new GenerationManifest(
                 ownedPrefix,
                 [.. ids.Select(id => new ManifestConcept(id, [SharedSource]))],
                 [SharedSource],
-
-                // Recorded, so that a test planting a manifest exercises the check it is aiming at
-                // rather than tripping the scope gate on the way in -- a scope-less manifest prunes
-                // nothing at all, which is what A_manifest_that_records_no_scope_authorizes_no_deletion
-                // pins deliberately.
                 scope ?? ScopeOptions.Default)
             .WriteTo(tmp.Path);
 

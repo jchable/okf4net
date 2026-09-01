@@ -62,6 +62,12 @@ public sealed class BundleWriter : IBundleWriter
         // and RequireEmpty refuses to run at all unless the directory is empty.
         var previous = policy == WritePolicy.Update ? GenerationManifest.TryRead(outPath) : null;
 
+        // Read at the same moment, and for the one thing a null `previous` cannot tell apart: "no
+        // manifest was ever written here" from "a manifest is here and this build cannot read it".
+        // Identical for every deletion decision below -- both own nothing -- and not identical at all
+        // for what this run may TELL an operator about a file it overwrote. See ReportClaimedFiles.
+        var previousUnreadable = policy == WritePolicy.Update && previous is null && GenerationManifest.IsPresent(outPath);
+
         var failures = new List<(ConceptId Id, string Error)>();
         var notes = new List<string>();
         var written = 0;
@@ -102,10 +108,29 @@ public sealed class BundleWriter : IBundleWriter
             // question. After the Reset above, because a reset bundle has nothing left to claim.
             if (manifest is not null)
             {
-                ReportClaimedFiles(staging, outPath, manifest, previous, notes);
+                ReportClaimedFiles(staging, outPath, manifest, previous, previousUnreadable, notes);
             }
 
-            CommitStaging(staging, outPath);
+            // Recorded as write failures, before Reconcile, because that is exactly what they are: the
+            // concept never reached the bundle. Doing it here rather than as a note gets both of the
+            // consequences for free -- the id is excluded from the manifest this run writes (so it is
+            // never claimed as owned, and never becomes a licence to delete whatever appears at that
+            // path), and a non-zero failure count disqualifies the run from pruning.
+            foreach (var relative in CommitStaging(staging, outPath))
+            {
+                written--;
+                var destination = Path.Combine(outPath, relative.Replace('/', Path.DirectorySeparatorChar));
+                var error =
+                    $"Error: refused to write '{relative}': the path leaves the bundle root through a symbolic link"
+                    + " or junction, and File.Move would have followed it and overwritten a file outside the bundle."
+                    + " Remove the link, or generate into a bundle that does not contain one.";
+
+                notes.Add(error);
+                if (TryConceptIdOf(outPath, destination, out var id) && ConceptId.TryParse(id, out var parsed))
+                {
+                    failures.Add((parsed, error));
+                }
+            }
         }
         finally
         {
@@ -136,6 +161,15 @@ public sealed class BundleWriter : IBundleWriter
             var merged = manifest with
             {
                 Concepts = [.. manifest.Concepts.Where(c => !failed.Contains(c.Id)), .. outcome.Carried],
+
+                // And the SCOPE is widened with the concept set, which is not bookkeeping either. The
+                // set above is this run's ids PLUS ids a wider run produced; recording this run's own
+                // narrow scope over it describes a state no run ever reached, and it turns the
+                // narrowing refusal into a one-run reprieve: the next identical command finds
+                // `previous.Scope == manifest.Scope`, sees no narrowing, finds the carried concept
+                // settled (its file was read cleanly), and deletes exactly what the refusal existed to
+                // protect -- taking any hand-written description with it. See MergedScope.
+                Scope = MergedScope(manifest, previous, outcome.Carried),
             };
 
             merged.WriteTo(outPath);
@@ -143,6 +177,20 @@ public sealed class BundleWriter : IBundleWriter
             ReportUnownedFiles(outPath, manifest.OwnedPrefix, manifest, previous, notes);
         }
 
+        // NOT gated on the reparse-point resolution, and the one place in this method that is not.
+        // Deleting a concept (TryResolveConceptFile), removing an emptied directory
+        // (RemoveEmptyDirectories) and committing a staged file (CommitStaging) all resolve their path
+        // through the filesystem first, because all three follow a link. This call cannot: it is
+        // OKF4net's IndexGenerator, shipped library API this producer only consumes, and it walks the
+        // bundle with Directory.EnumerateDirectories -- which reports a junction as an ordinary
+        // directory and descends through it. A bundle containing `code/x -> ~/notes` therefore still
+        // gets an `index.md` written into `~/notes`.
+        //
+        // Left as a documented gap rather than worked around, and the size of it is why: what escapes
+        // is one generated index file in a directory the bundle points at, never a concept and never
+        // an overwrite of anything a human wrote at an id this producer does not generate. Closing it
+        // belongs in OKF4net, beside the walk. producers/README.md warns an operator in the same
+        // words, which is where they would meet it.
         IndexGenerator.RegenerateIndexes(outPath);
 
         return new WriteResult(written, failures)
@@ -150,6 +198,51 @@ public sealed class BundleWriter : IBundleWriter
             Pruned = outcome.Pruned,
             Notes = notes,
         };
+    }
+
+    /// <summary>
+    /// The scope to record for a manifest whose concept set is this run's output <b>plus</b> entries
+    /// carried over from the previous manifest: the widest scope that covers that whole set, so the
+    /// next run has to be at least that wide before it may delete any of it.
+    ///
+    /// <para><b>Why a union and not this run's scope.</b> <see cref="GenerationManifest.Scope"/> is
+    /// read back as a gate, and what it gates is the id list it sits beside. Widen the list to keep a
+    /// wider run's concepts -- which is exactly what a narrowing refusal does -- while leaving the
+    /// scope at this run's narrow value, and the file claims a narrow run produced a wide run's
+    /// concepts. One run later the refusal is gone: the next identical command compares equal scopes,
+    /// finds no narrowing, and prunes the concepts the refusal was protecting.</para>
+    ///
+    /// <para><b>It cannot over-refuse.</b> The union differs from this run's own scope only where the
+    /// previous manifest sets a flag this run dropped -- which is precisely the condition
+    /// <see cref="Narrowing"/> tests, and a narrowing run prunes nothing anyway. Where nothing was
+    /// carried, the set is this run's output alone and this run's scope is the honest record of it.
+    /// The alternative shape -- a per-entry scope so a carried concept keeps the scope that produced
+    /// it -- says the same thing about the set as a whole and costs another schema version, so the
+    /// union is preferred; it is more conservative only in the cases the gate already refuses.</para>
+    ///
+    /// <para><see langword="null"/> when either side is unknown and anything was carried: the carried
+    /// entries then came from a run whose coverage this build cannot establish, and "unknown" is the
+    /// value that refuses. It is not a dead end -- a later run that produces every id the manifest
+    /// claims carries nothing, and records its own scope.</para>
+    /// </summary>
+    private static ScopeOptions? MergedScope(
+        GenerationManifest manifest,
+        GenerationManifest? previous,
+        IReadOnlyList<ManifestConcept> carried)
+    {
+        if (carried.Count == 0)
+        {
+            return manifest.Scope;
+        }
+
+        if (manifest.Scope is not { } scope || previous?.Scope is not { } previousScope)
+        {
+            return null;
+        }
+
+        return new ScopeOptions(
+            IncludeTests: scope.IncludeTests || previousScope.IncludeTests,
+            IncludeInternal: scope.IncludeInternal || previousScope.IncludeInternal);
     }
 
     /// <summary>What reconciling this run against the previous manifest decided: what was deleted, and what is still owned but was not written this time.</summary>
@@ -585,7 +678,8 @@ public sealed class BundleWriter : IBundleWriter
     ///
     /// <para>Every failure is <see langword="null"/>, which the callers read as "refuse". A broken
     /// link, a permission error, a path the platform rejects: none of them is evidence that deleting
-    /// is safe, and this is the code path that ends in <see cref="File.Delete(string)"/>.</para>
+    /// is safe, and this is the code path that ends in <see cref="File.Delete(string)"/>. The broken
+    /// link is the one this used to get wrong -- see <see cref="LinkAt"/>.</para>
     /// </summary>
     private static string? ResolveInsideRoot(string resolvedRoot, string candidate)
     {
@@ -613,7 +707,7 @@ public sealed class BundleWriter : IBundleWriter
 
                 FileSystemInfo? info = Directory.Exists(current)
                     ? new DirectoryInfo(current)
-                    : File.Exists(current) ? new FileInfo(current) : null;
+                    : File.Exists(current) ? new FileInfo(current) : LinkAt(current);
 
                 if (info?.LinkTarget is null)
                 {
@@ -636,6 +730,42 @@ public sealed class BundleWriter : IBundleWriter
         return IsInside(resolvedRoot, current) ? current : null;
     }
 
+    /// <summary>
+    /// The reparse point at <paramref name="path"/> when neither <see cref="Directory.Exists"/> nor
+    /// <see cref="File.Exists"/> could see one, or <see langword="null"/> when there is none.
+    ///
+    /// <para><b>Why the Exists probes are not enough, which the doc above claimed they were.</b> Both
+    /// of them FOLLOW a symbolic link, so a link whose target has been removed answers false to both
+    /// -- and the component walk above then treated it as an ordinary path component and carried on,
+    /// while <see cref="ResolveInsideRoot"/> promised in writing that a broken link is refused. The
+    /// link's own target string is still on disk, so asking for it directly finds it.</para>
+    ///
+    /// <para><b>Measured, and it is not uniform.</b> On Windows a dangling <i>junction</i> is already
+    /// caught: a junction is a real directory entry, so <c>Directory.Exists</c> answers true even with
+    /// its target gone, and the walk resolves it. The gap is a dangling <i>symbolic</i> link, which
+    /// needs SeCreateSymbolicLinkPrivilege to create on Windows -- so no test in this suite can reach
+    /// this method on an ordinary Windows run, and it is left untested rather than covered by an
+    /// assertion that would pass whatever this code did. On Unix, where a symbolic link needs no
+    /// privilege, it is the ordinary shape.</para>
+    ///
+    /// <para>Reached only after both probes have failed, deliberately: probing first would change
+    /// which of <see cref="DirectoryInfo"/> and <see cref="FileInfo"/> is handed to
+    /// <see cref="FileSystemInfo.ResolveLinkTarget"/> for links that resolve perfectly well today,
+    /// and that argument is not inert -- it tells the BCL which kind of object to expect at the far
+    /// end. This adds the missing case without moving any case that already worked.</para>
+    /// </summary>
+    private static FileSystemInfo? LinkAt(string path)
+    {
+        var directory = new DirectoryInfo(path);
+        if (directory.LinkTarget is not null)
+        {
+            return directory;
+        }
+
+        var file = new FileInfo(path);
+        return file.LinkTarget is not null ? file : null;
+    }
+
     /// <summary>Whether <paramref name="path"/> lies strictly under <paramref name="root"/>, comparing whole path components.</summary>
     private static bool IsInside(string root, string path) =>
         path.StartsWith(root + Path.DirectorySeparatorChar, PathComparison);
@@ -648,10 +778,20 @@ public sealed class BundleWriter : IBundleWriter
     /// <para><b>Every directory the walk ascends through is resolved before it is deleted.</b> This is
     /// the one place the producer calls <c>Directory.Delete(recursive: true)</c>, and the walk climbs
     /// paths built by string concatenation from ids: without the resolution, a junction sitting
-    /// anywhere between the owned prefix and a pruned concept would be a directory the walk reaches
-    /// lexically and deletes for real. A directory that does not resolve to itself is left alone and
-    /// the climb stops there -- a link is not this producer's to remove even when the bundle contains
-    /// it, because what hangs off the far end was never the bundle's.</para>
+    /// anywhere between the owned prefix and a pruned concept is a directory the walk reaches
+    /// lexically and deletes. A directory that does not resolve to itself is left alone and the climb
+    /// stops there -- a link is not this producer's to remove even when the bundle contains it,
+    /// because what hangs off the far end was never the bundle's.</para>
+    ///
+    /// <para><b>What is at stake there, stated at its real size rather than its scariest.</b> The
+    /// guard stops the LINK being unlinked, not the tree behind it being erased:
+    /// <c>Directory.Delete(recursive: true)</c> does not recurse through a name-surrogate reparse
+    /// point on Windows, and on Unix it unlinks the symbolic link rather than walking into it. So an
+    /// unguarded delete costs the operator the structure they put in the bundle, and the far end
+    /// survives. That is still not this producer's to remove, which is why the guard is here and why
+    /// <c>PruningTests.The_directory_cleanup_after_a_prune_removes_no_link_the_bundle_merely_holds</c>
+    /// asserts exactly that -- the link still exists and is still a link. An earlier version of this
+    /// paragraph implied the tree went with it; it does not.</para>
     /// </summary>
     private static void RemoveEmptyDirectories(string outPath, string ownedPrefix, IReadOnlyList<ConceptId> pruned)
     {
@@ -690,8 +830,9 @@ public sealed class BundleWriter : IBundleWriter
                 && Directory.Exists(directory))
             {
                 // Identity, not mere containment: the directory must be reachable from the root with
-                // no reparse point anywhere on the way, or a recursive delete would be aimed at a tree
-                // the bundle only points at.
+                // no reparse point anywhere on the way. Without it the delete unlinks a link the
+                // operator put in the bundle -- the structure, not the tree behind it, which a
+                // recursive delete does not follow through a reparse point either way.
                 if (ResolveInsideRoot(root, directory) is not { } resolved
                     || !string.Equals(resolved, directory, PathComparison))
                 {
@@ -814,12 +955,25 @@ public sealed class BundleWriter : IBundleWriter
     /// this producer claims; <c>overview</c>, <c>packages/*</c> and <c>docs/*</c> are wholly derived
     /// from the repository and rewritten by every run by design, so reporting them would be a note on
     /// every file of every run against a bundle with no manifest.</para>
+    ///
+    /// <para><b>And it does not say "no manifest claimed it" when a manifest is sitting there unread.</b>
+    /// <see cref="GenerationManifest.TryRead"/> returns null for a missing manifest, a corrupt one, and
+    /// one whose schema this build does not know -- and that last case is every bundle written before
+    /// the version-2 bump, on its very first <c>--update</c>. Reporting per file there would print one
+    /// alarming line per code concept, each of them claiming as a fact about that file something the
+    /// run cannot know, on an upgrade, about this producer's own output. So an unread manifest gets one
+    /// note about the manifest instead, which is where the uncertainty actually lives.</para>
     /// </summary>
+    /// <param name="previousUnreadable">
+    /// A manifest file is present and this build could not read it, so <paramref name="previous"/>
+    /// being null says nothing about which ids were claimed.
+    /// </param>
     private static void ReportClaimedFiles(
         string staging,
         string outPath,
         GenerationManifest manifest,
         GenerationManifest? previous,
+        bool previousUnreadable,
         List<string> notes)
     {
         var alreadyClaimed = new HashSet<string>(previous?.ConceptIds ?? [], StringComparer.Ordinal);
@@ -835,6 +989,7 @@ public sealed class BundleWriter : IBundleWriter
         }
 
         var claimed = new List<(string Id, string Note)>();
+        var overwritten = 0;
         foreach (var source in staged)
         {
             var destination = Path.Combine(outPath, Path.GetRelativePath(staging, source));
@@ -846,12 +1001,34 @@ public sealed class BundleWriter : IBundleWriter
                 continue;
             }
 
+            overwritten++;
+            if (previousUnreadable)
+            {
+                continue;
+            }
+
+            var (provenance, loss) = Overwrite(destination);
             claimed.Add((id,
                 $"'{id}' already existed under the owned prefix '{manifest.OwnedPrefix}' and no previous manifest claimed it,"
-                + $" so this run has taken ownership of that id and overwritten the file ({Provenance(destination)});"
-                + " its previous body, description and any keys this producer does not write are gone."
-                + " §4.2 preserves a description only on a concept this producer wrote before, so recover a"
-                + " hand-written one from version control and give the concept an id this producer does not generate."));
+                + $" so this run has taken ownership of that id and overwritten the file ({provenance}); {loss}"
+                + " Recover what you need from version control and give the concept an id this producer does not generate."));
+        }
+
+        if (previousUnreadable)
+        {
+            // One note, and it names the count rather than the files: the run genuinely cannot tell
+            // which of them it had written before, so listing them would be listing suspects. It also
+            // says why nothing was pruned, which is the same fact seen from the other side and was
+            // otherwise reported nowhere at all -- a run against an unread manifest returns from
+            // Reconcile before any refusal note is written.
+            notes.Add(
+                $"A generation manifest is present in '{outPath}' but this build could not read it -- it is corrupt, or it"
+                + $" carries a schema version this build does not know (bundles written before schema {GenerationManifest.SchemaVersion}"
+                + " do). It therefore claims nothing: this run pruned no concept, and it cannot say which of the"
+                + $" {overwritten} file(s) it overwrote under the owned prefix '{manifest.OwnedPrefix}' it had written"
+                + " before. This run leaves a manifest this build does read, so the next one behaves normally;"
+                + " if a concept under that prefix was hand-written, check it against version control now.");
+            return;
         }
 
         foreach (var (_, note) in claimed.OrderBy(c => c.Id, StringComparer.Ordinal))
@@ -861,26 +1038,47 @@ public sealed class BundleWriter : IBundleWriter
     }
 
     /// <summary>
-    /// What the file about to be overwritten says about who wrote it: its <c>description_source</c> if
-    /// it has one, and otherwise the fact that it has none -- which is what a hand-written concept
-    /// looks like, since every concept this producer emits under the owned prefix carries the key.
+    /// What the file about to be overwritten says about who wrote it, and -- separately, because the
+    /// two answers are not the same -- what the overwrite actually destroys.
+    ///
+    /// <para><b>The second half used to be a constant sentence, and it was false for the one file that
+    /// most needed it true.</b> It read "its previous body, description and any keys this producer does
+    /// not write are gone" in the same breath as reporting a <c>description_source</c> of
+    /// <c>manual</c> -- and a <c>manual</c> source is exactly what makes §4.2 keep the description.
+    /// One sentence asserted both. The predicate is
+    /// <see cref="DescriptionResolver.PreservesDescription"/>, asked of the file itself rather than
+    /// restated here, so the note cannot drift from the rule it describes.</para>
     /// </summary>
-    private static string Provenance(string path)
+    private static (string Provenance, string Loss) Overwrite(string path)
     {
+        const string EverythingLost =
+            "its previous body, description and any keys this producer does not write are gone."
+            + " §4.2 preserves a description only where the concept records a `description_source` this producer"
+            + " does not derive, and this one does not.";
+
         try
         {
-            if (OkfDocument.TryParse(File.ReadAllText(path), out var document, out _)
-                && document.Frontmatter.Get(DescriptionResolver.DescriptionSourceKey)?.AsDisplayString() is { Length: > 0 } source)
+            if (!OkfDocument.TryParse(File.ReadAllText(path), out var document, out _))
             {
-                return $"its `description_source` was `{source}`";
+                return ("it does not parse as an OKF concept, so nothing can be said about what wrote it", EverythingLost);
             }
+
+            var source = document.Frontmatter.Get(DescriptionResolver.DescriptionSourceKey)?.AsDisplayString();
+            if (source is not { Length: > 0 })
+            {
+                return ("it carried no `description_source`, so this producer had not written it", EverythingLost);
+            }
+
+            return DescriptionResolver.PreservesDescription(document.Frontmatter)
+                ? ($"its `description_source` was `{source}`",
+                    "§4.2 kept that description, so it is the one thing the overwrite did not destroy --"
+                    + " its previous body and any keys this producer does not write are gone.")
+                : ($"its `description_source` was `{source}`", EverythingLost);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OkfException)
         {
-            return "it could not be read to say what wrote it";
+            return ("it could not be read to say what wrote it", EverythingLost);
         }
-
-        return "it carried no `description_source`, so this producer had not written it";
     }
 
     private static bool TryConceptIdOf(string bundleRoot, string file, out string id)
@@ -927,10 +1125,20 @@ public sealed class BundleWriter : IBundleWriter
     /// as a whole it is the more dangerous: it requires deleting the existing bundle first, so a crash
     /// in the instant between the delete and the rename destroys everything the bundle held --
     /// including the hand-written concepts outside the owned prefix that this producer goes to some
-    /// length never to touch. Moving file by file cannot lose data: the worst interruption leaves a mix
-    /// of new and old concepts, which the next run corrects. The property that actually needs to hold
-    /// -- a run that fails while producing content leaves the bundle untouched -- is provided by the
-    /// staging directory itself, not by the shape of the commit.</para>
+    /// length never to touch. That is true of <b>every</b> run under a swap, whatever the policy, and
+    /// it is why the swap was not taken. The property that actually needs to hold -- a run that fails
+    /// while producing content leaves the bundle untouched -- is provided by the staging directory
+    /// itself, not by the shape of the commit.</para>
+    ///
+    /// <para><b>What moving file by file buys, said exactly.</b> The moves alone cannot lose data: the
+    /// worst interruption leaves a mix of new and old concepts, which the next run corrects. That is
+    /// the whole claim, and it is a claim about the moves. It is <b>not</b> a claim about the commit
+    /// under <see cref="WritePolicy.Reset"/>, whose first act is <see cref="ResetBundle"/> deleting
+    /// the bundle outright -- the same window the swap has, entered deliberately, for the one policy
+    /// whose contract is "throw this away and write it again". Under Reset the difference from a swap
+    /// is that the window opens once per <c>--reset</c> instead of once per run of any kind; it is not
+    /// that there is no window. <see cref="IBundleWriter.Write"/> states it as part of the
+    /// interface.</para>
     ///
     /// <para><b>One thing staging gives up, stated so nobody discovers it later.</b>
     /// <c>BundleConceptWriter</c> serializes writes through a lock keyed on its bundle root, so two
@@ -939,16 +1147,54 @@ public sealed class BundleWriter : IBundleWriter
     /// into the same <c>--out</c> were already unsafe -- they share one manifest and one index
     /// regeneration -- so this narrows nothing that was safe; it just means the last writer wins per
     /// file rather than per lock acquisition.</para>
+    ///
+    /// <para><b>Every destination is resolved through the filesystem before it is written, for the
+    /// same reason the delete side is.</b> <c>File.Move(overwrite: true)</c> follows a symbolic link or
+    /// junction exactly as <see cref="File.Delete(string)"/> does, and the destination here is built by
+    /// joining a staged relative path onto <paramref name="outPath"/> -- string work, which
+    /// <see cref="Path.GetFullPath(string)"/> cannot see through. A bundle carrying
+    /// <c>code/x -&gt; ~/notes</c>, which a clone brings with it, turned a generated
+    /// <c>code/x/report</c> into an overwrite of <c>~/notes/report.md</c>. The gate is
+    /// <see cref="ResolveInsideRoot"/>, the same resolution the prune uses, and a destination that
+    /// does not land inside the bundle is not written: the file is left in staging (where the
+    /// <c>finally</c> discards it) and its path is returned to the caller, which records it as a
+    /// write failure. A failure is the right shape rather than a note, because it already means both
+    /// of the things that have to follow -- the id is dropped from the manifest this run writes, so it
+    /// is never claimed as owned, and the run is disqualified from pruning.</para>
+    ///
+    /// <para><b>What this does NOT gate, said where it is decided.</b>
+    /// <c>IndexGenerator.RegenerateIndexes</c> runs after the commit and walks the bundle with
+    /// <c>Directory.EnumerateDirectories</c>, which reports a junction as an ordinary directory -- so
+    /// it still descends through one and writes an <c>index.md</c> at the far end. That code is
+    /// <c>src/OKF4net</c>, shipped library API outside this producer's reach, so the gap is documented
+    /// rather than closed: see the note in <see cref="Write"/> and the warning in
+    /// <c>producers/README.md</c>. It costs an unwanted <c>index.md</c> in a linked-to directory, not
+    /// a concept overwritten there.</para>
     /// </summary>
-    private static void CommitStaging(string staging, string outPath)
+    /// <returns>The bundle-relative paths that were refused, sorted <see cref="StringComparer.Ordinal"/>; empty on an ordinary commit.</returns>
+    private static IReadOnlyList<string> CommitStaging(string staging, string outPath)
     {
         var staged = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
             .OrderBy(p => p, StringComparer.Ordinal)
             .ToList();
 
+        var root = ResolveRoot(outPath);
+        var refused = new List<string>();
+
         foreach (var source in staged)
         {
-            var destination = Path.Combine(outPath, Path.GetRelativePath(staging, source));
+            var relative = Path.GetRelativePath(staging, source);
+            var destination = Path.Combine(outPath, relative);
+
+            // Resolved BEFORE the directories are created, not after: CreateDirectory follows a
+            // reparse point too, so a check that ran afterwards would already have built the caller's
+            // directory tree inside somebody else's.
+            if (root is null || ResolveInsideRoot(root, Path.GetFullPath(destination)) is null)
+            {
+                refused.Add(relative.Replace(Path.DirectorySeparatorChar, '/'));
+                continue;
+            }
+
             var directory = Path.GetDirectoryName(destination);
             if (!string.IsNullOrEmpty(directory))
             {
@@ -957,6 +1203,8 @@ public sealed class BundleWriter : IBundleWriter
 
             File.Move(source, destination, overwrite: true);
         }
+
+        return refused;
     }
 
     /// <summary>

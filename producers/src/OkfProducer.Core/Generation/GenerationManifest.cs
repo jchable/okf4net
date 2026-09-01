@@ -85,12 +85,30 @@ public sealed record ManifestConcept(string Id, IReadOnlyList<string> SourceFile
 /// <para><see langword="null"/> only for a manifest that was hand-assembled or hand-edited without
 /// one -- <see cref="ForRun"/> always sets it. A null is treated as "unknown", which refuses pruning,
 /// because the whole point of the field is that its absence cannot be assumed benign.</para>
+///
+/// <para><b>Editing it by hand is as dangerous as editing the id list, and in one respect worse.</b>
+/// The same trust model applies -- this is a file in a directory the user controls, and
+/// <c>BundleWriter</c> re-derives nothing from it -- but the id list only says WHICH concepts may be
+/// considered, while this field is the only thing standing between a wide run's concepts and
+/// deletion. Write <c>"scope": { "includeTests": false, "includeInternal": false }</c> over a manifest
+/// produced by a <c>--include-internal</c> run and the next ordinary <c>--update</c> sees no
+/// narrowing, finds every internal symbol's concept settled, and deletes it with any hand-written
+/// description on it -- reporting the deletion as a symbol gone from the repository. That is why
+/// <c>BundleWriter</c> widens this field when it carries entries forward instead of recording the
+/// narrow run's own value: the manifest must never describe a scope narrower than the set it
+/// claims.</para>
+///
+/// <para><b>It has no <c>= null</c> default, deliberately.</b> A default is the one shape that makes a
+/// forgotten scope invisible at the call site, and the paragraph above is about what a wrong scope
+/// deletes: three-argument construction used to compile silently and mean "prune nothing for ever".
+/// Callers that genuinely have no scope to record pass <see langword="null"/> and say so where a
+/// reader can see it.</para>
 /// </param>
 public sealed record GenerationManifest(
     string OwnedPrefix,
     IReadOnlyList<ManifestConcept> Concepts,
     IReadOnlyList<string> ExtractedFiles,
-    ScopeOptions? Scope = null)
+    ScopeOptions? Scope)
 {
     /// <summary>
     /// The manifest's file name inside the bundle. A leading dot and a <c>.json</c> extension: the
@@ -228,6 +246,34 @@ public sealed record GenerationManifest(
         catch (UnauthorizedAccessException)
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="bundleRoot"/> holds a manifest file at all, whatever this build can make
+    /// of its contents.
+    ///
+    /// <para><b>Why a caller needs this beside <see cref="TryRead"/>.</b> A null from
+    /// <see cref="TryRead"/> deliberately flattens three very different situations: no manifest was
+    /// ever written here, one is here and is corrupt, and one is here and carries a
+    /// <see cref="SchemaVersion"/> this build does not read -- which every bundle produced before the
+    /// version-2 bump does. For the deletion decision that flattening is right (all three mean "own
+    /// nothing"). For what a run TELLS its operator it is not: "no manifest ever claimed this file" is
+    /// a statement about the file, and it is simply false when the manifest is sitting right there
+    /// unread. Callers that report use this to say which of the two happened.</para>
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> is null or empty.</exception>
+    public static bool IsPresent(string bundleRoot)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(bundleRoot);
+
+        try
+        {
+            return File.Exists(Path.Combine(bundleRoot, FileName));
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

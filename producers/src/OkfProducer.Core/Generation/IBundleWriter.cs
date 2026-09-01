@@ -16,10 +16,20 @@ public interface IBundleWriter
     /// <paramref name="concepts"/> sequence throws part-way through -- leaves the bundle exactly as it
     /// was. <see cref="WritePolicy.Reset"/> is inside that guarantee and not an exception to it: its
     /// deletion happens at the commit boundary, after the whole set exists, so a reset run that dies
-    /// while generating leaves the old bundle rather than an empty directory. What the guarantee does
-    /// <b>not</b> cover, for any policy, is a failure during the commit itself -- the staged files are
-    /// moved one at a time, so an interruption there leaves a mix of new and old concepts, which the
-    /// next run corrects.</para>
+    /// while generating leaves the old bundle rather than an empty directory.</para>
+    ///
+    /// <para><b>What the guarantee does not cover is the commit itself, and it is not the same size
+    /// under both policies.</b> Under <see cref="WritePolicy.Update"/> and
+    /// <see cref="WritePolicy.RequireEmpty"/> the commit only moves staged files in one at a time, so
+    /// an interruption leaves a mix of new and old concepts and the next run corrects it -- nothing is
+    /// lost. Under <see cref="WritePolicy.Reset"/> the commit <i>opens</i> by deleting the whole
+    /// bundle, so an interruption between that delete and the last move leaves an empty or partly
+    /// repopulated directory. That window costs the concepts <see cref="WritePolicy.Reset"/> was going
+    /// to replace and, unlike every other operation here, the hand-written ones outside the owned
+    /// prefix as well: <c>--reset</c> means "throw this bundle away and write it again", and there is
+    /// no crash-safe way to say that without a directory swap, which is worse on its own terms (see
+    /// <c>BundleWriter.CommitStaging</c>). Version control is the answer to that window, not this
+    /// interface; <c>--update</c> is the answer to not wanting the window at all.</para>
     ///
     /// <para><b>Pruning is opt-in and it is the caller who opts in</b>, by supplying both
     /// <paramref name="manifest"/> and <paramref name="status"/> under
