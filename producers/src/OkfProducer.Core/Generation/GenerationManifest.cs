@@ -199,13 +199,60 @@ public sealed record GenerationManifest(
     /// <summary>
     /// Writes this manifest into <paramref name="bundleRoot"/>, normalized (see
     /// <see cref="Normalized"/>) and byte-stable. Overwrites any manifest already there.
+    ///
+    /// <para><b>Unless <see cref="FileName"/> is a symbolic link or a junction, in which case nothing
+    /// is written at all.</b> <see cref="File.WriteAllBytes(string, byte[])"/> follows a link exactly
+    /// as <c>File.Move</c> and <c>File.Delete</c> do, and it opens the far end with
+    /// <c>FileMode.Create</c> -- so a bundle whose <c>.okfgen-manifest.json</c> points somewhere else
+    /// had that file replaced by this JSON on every <c>--update</c>, at an attacker-chosen path. A
+    /// bundle committed beside a repository is content a clone brings with it, which is what makes it
+    /// reachable rather than theoretical. The containment question is asked of the filesystem through
+    /// <see cref="BundlePaths.ResolveInsideRoot"/>, the same walk the delete and commit sides use; no
+    /// comparison of path strings can answer it, because <see cref="Path.GetFullPath(string)"/>
+    /// resolves <c>.</c> and <c>..</c> and no reparse point.</para>
+    ///
+    /// <para><b>The READ side (<see cref="TryRead"/>, <see cref="IsPresent"/>) is deliberately not
+    /// gated.</b> Reading through a link grants nothing writing through one grants: anyone who can
+    /// plant that link in the bundle can equally write a hostile manifest into the bundle directly,
+    /// and the manifest is already documented as a file in a directory the user controls from which
+    /// <c>BundleWriter</c> re-derives nothing. What it authorizes -- deletions -- is bounded
+    /// elsewhere, by <c>BundleWriter</c> resolving every id it is about to delete back inside the
+    /// bundle. Gating the read would buy no property and would make a bundle whose manifest is a
+    /// deliberate link un-prunable rather than safer.</para>
     /// </summary>
+    /// <returns>
+    /// <see langword="true"/> when the manifest was written. <see langword="false"/> when it was
+    /// refused because the path leaves the bundle root, or because the root itself is a link this
+    /// process cannot follow -- callers that care report it; callers that do not compile unchanged,
+    /// and get the safe outcome either way, since a manifest that was not written leaves the previous
+    /// one in place and the next run prunes by that instead.
+    /// </returns>
     /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> is null or empty.</exception>
     /// <exception cref="IOException">The file could not be written.</exception>
-    public void WriteTo(string bundleRoot)
+    public bool WriteTo(string bundleRoot)
     {
         ArgumentException.ThrowIfNullOrEmpty(bundleRoot);
-        File.WriteAllBytes(Path.Combine(bundleRoot, FileName), Serialize(Normalized()));
+
+        if (BundlePaths.ResolveRoot(bundleRoot) is not { } root)
+        {
+            return false;
+        }
+
+        // Joined onto the RESOLVED root, which is ResolveInsideRoot's precondition: it walks the
+        // relative path from the root it was given, so a candidate built from the caller's spelling of
+        // a linked bundle would send the walk climbing components that have nothing to do with the
+        // bundle. Same reasoning, and the same fix, as BundleWriter.CommitStaging.
+        var path = Path.Combine(root, FileName);
+        if (BundlePaths.ResolveInsideRoot(root, path) is null)
+        {
+            return false;
+        }
+
+        // Written to `path`, not to the value ResolveInsideRoot returned: a manifest linked to another
+        // name INSIDE the bundle is contained, and following the link is what the operator asked for.
+        // The commit side writes its unresolved destination for the same reason.
+        File.WriteAllBytes(path, Serialize(Normalized()));
+        return true;
     }
 
     /// <summary>

@@ -418,7 +418,7 @@ public class PruningTests
         WriteRun(tmp, [A], complete: true);
 
         var link = Path.Combine(tmp.Path, "code", "x");
-        CreateDirectoryLink(link, outside);
+        ProducerFixture.CreateDirectoryLink(link, outside);
 
         // The link is real, and the bundle really can see through it -- without this the test would
         // pass on a platform where the link silently did not happen.
@@ -454,7 +454,7 @@ public class PruningTests
         WriteRun(tmp, [A], complete: true);
 
         var link = Path.Combine(tmp.Path, "code", "x");
-        CreateDirectoryLink(link, outside);
+        ProducerFixture.CreateDirectoryLink(link, outside);
         Assert.True(File.Exists(Path.Combine(link, "report.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
 
         var result = WriteRun(tmp, [A, "code/x/report"], complete: true);
@@ -492,11 +492,17 @@ public class PruningTests
     [Fact]
     public void A_file_the_bundle_reaches_only_through_a_link_is_not_reported_as_an_unowned_concept()
     {
-        // The READ side of the same hole, and the last place in this writer that reached outside the
-        // bundle. ReportUnownedFiles lists the owned prefix with
-        // Directory.EnumerateFiles(SearchOption.AllDirectories), whose default EnumerationOptions skip
-        // Hidden and System entries -- and a junction is neither, so the walk descends it. Measured
-        // before it was fixed: the run announced "'code/x/report' sits under the owned prefix 'code'
+        // The READ side of the same hole. ReportUnownedFiles lists the owned prefix with
+        // Directory.EnumerateFiles(SearchOption.AllDirectories), which descends a junction because
+        // .NET's enumeration has no reparse-point filter at all. (The reason recorded here used to be
+        // "its default EnumerationOptions skip Hidden and System entries -- and a junction is
+        // neither"; measured on Windows, that overload skips no attribute, and Hidden and System files
+        // come back too. The conclusion held; the mechanism did not.) It was also called "the last
+        // place in this writer that reached outside the bundle", which it was not: the manifest write
+        // was ungated at the time -- see
+        // The_generation_manifest_is_never_written_through_a_link_that_leaves_the_bundle.
+        //
+        // Measured before it was fixed: the run announced "'code/x/report' sits under the owned prefix 'code'
         // but no manifest claims it; it was left in place and will never be pruned" about a file that
         // is not in the bundle, has no concept id, and was never this producer's to describe.
         using var tmp = new TempDir();
@@ -508,7 +514,7 @@ public class PruningTests
         WriteRun(tmp, [A], complete: true);
 
         var link = Path.Combine(tmp.Path, "code", "x");
-        CreateDirectoryLink(link, outside);
+        ProducerFixture.CreateDirectoryLink(link, outside);
         Assert.True(File.Exists(Path.Combine(link, "report.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
 
         var result = WriteRun(tmp, [A], complete: true);
@@ -544,7 +550,7 @@ public class PruningTests
         var real = Path.Combine(tmp.Root, "real-bundle");
         Directory.CreateDirectory(real);
         var linked = Path.Combine(tmp.Root, "linked-bundle");
-        CreateDirectoryLink(linked, real);
+        ProducerFixture.CreateDirectoryLink(linked, real);
 
         var concepts = new[] { Concept(A, [SharedSource]) };
         var status = new RunStatus(true, [(SharedSource, FileStatus.Extracted)]);
@@ -576,7 +582,7 @@ public class PruningTests
         File.WriteAllText(Path.Combine(real, "b.md"), "---\ntype: Note\n---\n\nreachable two ways.\n");
 
         var link = Path.Combine(tmp.Path, "code", "csharp", "n", "t2");
-        CreateDirectoryLink(link, real);
+        ProducerFixture.CreateDirectoryLink(link, real);
 
         PlantManifestIds(tmp, Prefix, [A, "code/csharp/n/t2/b"]);
 
@@ -588,6 +594,79 @@ public class PruningTests
         // ... and the link survived it, still a link rather than a directory the cleanup recreated.
         Assert.True(Directory.Exists(link), "the directory cleanup deleted a link the bundle only pointed through.");
         Assert.NotNull(new DirectoryInfo(link).LinkTarget);
+    }
+
+    [Fact]
+    public void The_generation_manifest_is_never_written_through_a_link_that_leaves_the_bundle()
+    {
+        // The write this producer had left ungated while three rounds of review counted the others.
+        // `.okfgen-manifest.json` sits at the bundle root, and GenerationManifest.WriteTo reached it
+        // with File.WriteAllBytes -- which follows a symbolic link exactly as File.Move and
+        // File.Delete do, and opens the far end with FileMode.Create. A bundle whose manifest is a
+        // link therefore had an attacker-chosen file replaced by this JSON on every --update. Worse
+        // than the class the gated writes belong to: those cost a generated file landing in a
+        // pointed-at DIRECTORY; this one names a single file and overwrites it.
+        //
+        // WHAT THIS TEST CAN AND CANNOT ESTABLISH, per platform, said plainly rather than left to the
+        // assertions. The overwrite needs a link whose NAME is a file, and a junction is a directory,
+        // so on Windows without SeCreateSymbolicLinkPrivilege the overwrite shape cannot be built at
+        // all -- the same limit LinkAt's doc comment records for dangling symbolic links. There the
+        // fallback is a junction at the manifest's name, which is still a reparse point the gate must
+        // refuse, and which without the gate makes File.WriteAllBytes THROW out of a Write() whose
+        // concepts are already committed. Two different damages, one gate, and each platform asserts
+        // the one it can actually reach.
+        using var tmp = new TempDir();
+
+        var outside = Path.Combine(tmp.Root, "notes");
+        Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "victim.txt");
+        File.WriteAllText(victim, "someone's file, outside the bundle entirely");
+        var before = File.ReadAllBytes(victim);
+
+        WriteRun(tmp, [A], complete: true);
+
+        var manifestPath = Path.Combine(tmp.Path, GenerationManifest.FileName);
+        File.Delete(manifestPath);
+
+        var overwriteShape = ProducerFixture.TryCreateFileLink(manifestPath, victim);
+        if (!overwriteShape)
+        {
+            ProducerFixture.CreateDirectoryLink(manifestPath, outside);
+        }
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        Assert.Contains(result.Notes, n => n.Contains(GenerationManifest.FileName, StringComparison.Ordinal)
+            && n.Contains("symbolic link or junction", StringComparison.Ordinal));
+
+        if (overwriteShape)
+        {
+            Assert.True(before.AsSpan().SequenceEqual(File.ReadAllBytes(victim)),
+                "File.WriteAllBytes followed a link out of the bundle and overwrote a file outside it.");
+        }
+
+        // Both platforms assert this, and on Windows it is the whole mutation witness: without the
+        // gate the junction makes WriteAllBytes throw UnauthorizedAccessException out of Write(),
+        // after the concepts are committed and the prune has run -- a successful generation reported
+        // to the operator as a failed one.
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")),
+            "the refused manifest write took the rest of the run down with it.");
+        Assert.Empty(result.Failures);
+    }
+
+    [Fact]
+    public void An_ordinary_bundle_still_gets_its_manifest_written()
+    {
+        // The other direction of the gate above, because "refuse everything" passes that test. A
+        // bundle with no link in it must still get a manifest, and it must be the one this run wrote:
+        // a gate that resolved the manifest path wrongly would silence every run's ownership record
+        // and disable pruning everywhere, which no other test in this file would notice -- they plant
+        // their manifests with PlantManifestIds rather than reading one back.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true);
+
+        Assert.True(File.Exists(Path.Combine(tmp.Path, GenerationManifest.FileName)));
+        Assert.Equal([A, B], GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
     }
 
     [Fact]
@@ -761,7 +840,16 @@ public class PruningTests
         // A `description_source` this producer DOES derive, carrying text the run does not write back.
         // Kept from the previous round because it guards the other blanket failure: a fix that softens
         // the wording for every file carrying the key would say the description survived when it did
-        // not. The assertion on the file is what makes that non-vacuous.
+        // not.
+        //
+        // The assertion on the file below is a FIXTURE PREMISE, not the load-bearing one, and this
+        // comment used to call it "what makes that non-vacuous". It does not: CommitStaging File.Moves
+        // the staged document over the destination, so the description on disk afterwards is whatever
+        // the staged concept carried, and no edit to the note's wording can make it "Derived once."
+        // again. It is worth asserting -- it says the fixture really did get overwritten -- but what
+        // makes the test bite is the three note assertions under it. (The sibling test's
+        // `Assert.Equal("d", ...)` IS load-bearing, because there the staged text and the text on disk
+        // are meant to be equal and the note's claim rests on exactly that.)
         using var tmp = new TempDir();
 
         var path = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
@@ -1155,51 +1243,6 @@ public class PruningTests
     // ---------------------------------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------------------------------
-
-    /// <summary>
-    /// A directory reparse point at <paramref name="link"/> pointing at <paramref name="target"/>.
-    ///
-    /// <para>A symbolic link where the platform allows one; a junction on Windows, where creating a
-    /// symbolic link needs SeCreateSymbolicLinkPrivilege (Developer Mode or an elevated shell) that an
-    /// ordinary test run does not have. A junction is the same kind of object for every purpose these
-    /// tests have: <c>Path.GetFullPath</c> does not resolve it, <c>File.Exists</c> and
-    /// <c>File.Delete</c> follow it, and <c>FileSystemInfo.LinkTarget</c> reports it.</para>
-    ///
-    /// <para>If neither can be created this fails loudly rather than letting the test pass without a
-    /// link -- which is exactly the shape of assertion this whole exercise exists to root out.</para>
-    /// </summary>
-    private static void CreateDirectoryLink(string link, string target)
-    {
-        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(link)!);
-
-        try
-        {
-            Directory.CreateSymbolicLink(link, target);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            if (!OperatingSystem.IsWindows())
-            {
-                Assert.Fail($"could not create a symbolic link at '{link}': {ex.Message}");
-            }
-
-            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe")
-            {
-                ArgumentList = { "/c", "mklink", "/J", link, target },
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            });
-
-            process?.WaitForExit();
-        }
-
-        Assert.True(
-            new DirectoryInfo(link).LinkTarget is not null,
-            $"no symbolic link or junction could be created at '{link}', so this test would pass without exercising anything. "
-                + "On Windows a junction needs no privilege; if even that failed, the temporary directory is on a filesystem "
-                + "that has no reparse points and this test cannot run there.");
-    }
 
     private static WriteResult WriteRun(
         TempDir tmp,

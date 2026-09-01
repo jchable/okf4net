@@ -46,8 +46,25 @@ namespace OkfProducer.Core.Generation;
 public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsExcluded, int ConceptsRegenerated)
 {
     /// <summary>
+    /// The bundle-relative, <c>/</c>-separated path of every symbolic link and junction the check
+    /// declined to walk into -- neither copied nor compared, on either side.
+    ///
+    /// <para><b>Not a difference, and deliberately not one.</b> A link in a bundle is not drift: it is
+    /// there on both sides and regenerating does not change it, so counting it would fail a check over
+    /// a bundle nobody had touched. It is reported for the same reason
+    /// <see cref="FieldsExcluded"/> is -- it says which property the run just verified. A clean report
+    /// with a non-empty list means "everything I compared matches", over less than the whole
+    /// directory.</para>
+    ///
+    /// <para>Empty for every bundle that holds no link, which is every bundle this producer writes.</para>
+    /// </summary>
+    public IReadOnlyList<string> LinksSkipped { get; init; } = [];
+
+    /// <summary>
     /// Whether the bundle matches what regenerating it produces -- <b>and</b> whether regenerating
     /// produced anything at all. Both, deliberately: see <see cref="ConceptsRegenerated"/>.
+    ///
+    /// <para><see cref="LinksSkipped"/> is <b>not</b> consulted: see why on that member.</para>
     /// </summary>
     public bool IsClean => ConceptsRegenerated > 0 && Differences.Count == 0;
 
@@ -117,7 +134,10 @@ public static class BundleDrift
         + "supposed to be comparing) or with --no-code (a regeneration that skips the code stage "
         + "produces no `code` concept at all, so every `code/` concept is copied forward untouched, "
         + "cannot differ, and the check would report no drift however stale they are). Both "
-        + "combinations are rejected with an error rather than run.";
+        + "combinations are rejected with an error rather than run. One more thing is out of reach "
+        + "rather than excluded: a symbolic link or junction inside the bundle is neither copied nor "
+        + "compared, on either side, because what hangs off the far end was never the bundle's -- and "
+        + "`generate` already refuses to write through one. Each link skipped is reported as a note.";
 
     /// <summary>
     /// Copies the bundle at <paramref name="bundlePath"/> into a temporary directory, hands that copy
@@ -176,7 +196,7 @@ public static class BundleDrift
 
         try
         {
-            CopyDirectory(bundlePath, copyPath);
+            var linksSkipped = CopyDirectory(bundlePath, copyPath);
             var regenerated = regenerateInto(copyPath);
 
             var differences = new List<string>();
@@ -192,7 +212,10 @@ public static class BundleDrift
 
             differences.AddRange(Compare(bundlePath, copyPath, insideGitRepository));
 
-            return new DriftReport(differences, !insideGitRepository, regenerated);
+            return new DriftReport(differences, !insideGitRepository, regenerated)
+            {
+                LinksSkipped = linksSkipped,
+            };
         }
         finally
         {
@@ -288,32 +311,117 @@ public static class BundleDrift
     }
 
     /// <summary>
-    /// Every file under <paramref name="root"/>, as <c>/</c>-separated paths relative to it. Dotted
-    /// names are included deliberately: <see cref="GenerationManifest.FileName"/> is written output
-    /// like any other, and a manifest that no longer describes the bundle is exactly the kind of
-    /// staleness this check exists to catch.
+    /// What <see cref="Walk"/> found under a directory: the ordinary files and directories below it,
+    /// and the reparse points it declined to walk into.
+    /// </summary>
+    /// <param name="Directories">Relative native paths of every ordinary directory, parents before children.</param>
+    /// <param name="Files">Relative native paths of every ordinary file.</param>
+    /// <param name="Links">Relative <c>/</c>-separated paths of every symbolic link and junction, sorted <see cref="StringComparer.Ordinal"/>.</param>
+    private sealed record Tree(IReadOnlyList<string> Directories, IReadOnlyList<string> Files, IReadOnlyList<string> Links);
+
+    /// <summary>
+    /// Everything under <paramref name="root"/> that is really <i>in</i> it: an ordinary recursive
+    /// walk that stops at each symbolic link and junction and records it instead of descending.
+    ///
+    /// <para><b>Why this is not <c>Directory.EnumerateFiles(root, "*", AllDirectories)</c>, which is
+    /// what it used to be.</b> That call descends a reparse point -- .NET's enumeration has no filter
+    /// for one -- so both halves of <c>--check</c> reached through a junction: the copy MATERIALIZED
+    /// the far side as real directories and real files, and the comparison listed paths at the far
+    /// end as if they were bundle files. The copy is the damaging half. The regeneration then ran
+    /// against a directory in which somebody else's file genuinely <i>was</i> inside the root, so
+    /// every containment gate in <c>BundleWriter</c> passed and the run said the things those gates
+    /// exist to stop it saying -- that it had "taken ownership of that id and overwritten the file",
+    /// and that the file "sits under the owned prefix but no manifest claims it" -- about a file
+    /// outside the bundle, in the one mode that writes nothing to the bundle at all.</para>
+    ///
+    /// <para><b>Both sides skip, and that symmetry is the point.</b> Skipping in the copy alone would
+    /// invent drift: the original still listed the far-side paths, the copy no longer had them, and
+    /// every one would read as "in the bundle, but regenerating does not produce it".</para>
+    ///
+    /// <para><b>What is given up, and why it was never held.</b> A bundle whose owned subtree is a
+    /// link is no longer compared through it. It was not checkable in any useful sense before:
+    /// <c>generate</c> refuses every destination that resolves outside the root, so this producer
+    /// cannot write there -- it records write failures instead -- and a <c>--check</c> that compared
+    /// a subtree no run can regenerate was reporting on content the producer had already declined to
+    /// own. The links are reported (<see cref="DriftReport.LinksSkipped"/>) rather than passed over in
+    /// silence, since a check that quietly stops looking at part of a bundle is the failure mode this
+    /// whole file is built against.</para>
+    ///
+    /// <para>Dotted names are kept: <see cref="GenerationManifest.FileName"/> is written output like
+    /// any other, and a manifest that no longer describes the bundle is exactly the staleness this
+    /// check exists to catch. So are hidden and system files -- the enumeration this replaced skipped
+    /// neither (measured), and this one skips neither.</para>
+    /// </summary>
+    private static Tree Walk(string root)
+    {
+        var directories = new List<string>();
+        var files = new List<string>();
+        var links = new List<string>();
+
+        Descend(root, root, directories, files, links);
+
+        links.Sort(StringComparer.Ordinal);
+        return new Tree(directories, files, links);
+    }
+
+    private static void Descend(string root, string current, List<string> directories, List<string> files, List<string> links)
+    {
+        foreach (var entry in Directory.GetFileSystemEntries(current))
+        {
+            var relative = Path.GetRelativePath(root, entry);
+
+            // Tested BEFORE Directory.Exists, which answers true for a junction and would send the
+            // walk through it.
+            if (BundlePaths.IsReparsePoint(entry))
+            {
+                links.Add(relative.Replace(Path.DirectorySeparatorChar, '/'));
+                continue;
+            }
+
+            if (Directory.Exists(entry))
+            {
+                directories.Add(relative);
+                Descend(root, entry, directories, files, links);
+            }
+            else
+            {
+                files.Add(relative);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The <c>/</c>-separated relative paths of every file really inside <paramref name="root"/>.
+    /// See <see cref="Walk"/> for what "really inside" excludes.
     /// </summary>
     private static HashSet<string> RelativeFiles(string root) =>
         new(
-            Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-                .Select(path => Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/')),
+            Walk(root).Files.Select(path => path.Replace(Path.DirectorySeparatorChar, '/')),
             StringComparer.Ordinal);
 
     private static string ToNativePath(string relative) => relative.Replace('/', Path.DirectorySeparatorChar);
 
-    private static void CopyDirectory(string source, string destination)
+    /// <summary>
+    /// Copies everything really inside <paramref name="source"/> into <paramref name="destination"/>,
+    /// and returns the reparse points it declined to follow. See <see cref="Walk"/>.
+    /// </summary>
+    private static IReadOnlyList<string> CopyDirectory(string source, string destination)
     {
         Directory.CreateDirectory(destination);
 
-        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        var tree = Walk(source);
+
+        foreach (var directory in tree.Directories)
         {
-            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+            Directory.CreateDirectory(Path.Combine(destination, directory));
         }
 
-        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        foreach (var file in tree.Files)
         {
-            File.Copy(file, Path.Combine(destination, Path.GetRelativePath(source, file)), overwrite: true);
+            File.Copy(Path.Combine(source, file), Path.Combine(destination, file), overwrite: true);
         }
+
+        return tree.Links;
     }
 
     private static void TryDeleteDirectory(string path)

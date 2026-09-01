@@ -271,6 +271,80 @@ internal static class ProducerFixture
     /// <summary>Whether <c>git</c> can resolve a HEAD commit for <paramref name="path"/> -- the same question <c>BundleDrift.Check</c> asks to decide whether any field is excluded.</summary>
     public static bool IsInsideGitRepository(string path) => GitRevision.HeadSha(path) is not null;
 
+    /// <summary>
+    /// A directory reparse point at <paramref name="link"/> pointing at <paramref name="target"/>.
+    ///
+    /// <para>A symbolic link where the platform allows one; a junction on Windows, where creating a
+    /// symbolic link needs SeCreateSymbolicLinkPrivilege (Developer Mode or an elevated shell) that an
+    /// ordinary test run does not have. A junction is the same kind of object for every purpose these
+    /// tests have: <c>Path.GetFullPath</c> does not resolve it, <c>File.Exists</c> and
+    /// <c>File.Delete</c> follow it, and <c>FileSystemInfo.LinkTarget</c> reports it.</para>
+    ///
+    /// <para>If neither can be created this fails loudly rather than letting the test pass without a
+    /// link -- which is exactly the shape of assertion this whole exercise exists to root out.</para>
+    ///
+    /// <para>Shared here rather than kept private to one test class: two files now need it, and a
+    /// second copy is a second place for the fallback to rot.</para>
+    /// </summary>
+    public static void CreateDirectoryLink(string link, string target)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.Fail($"could not create a symbolic link at '{link}': {ex.Message}");
+            }
+
+            using var process = Process.Start(new ProcessStartInfo("cmd.exe")
+            {
+                ArgumentList = { "/c", "mklink", "/J", link, target },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            });
+
+            process?.WaitForExit();
+        }
+
+        Assert.True(
+            new DirectoryInfo(link).LinkTarget is not null,
+            $"no symbolic link or junction could be created at '{link}', so this test would pass without exercising anything. "
+                + "On Windows a junction needs no privilege; if even that failed, the temporary directory is on a filesystem "
+                + "that has no reparse points and this test cannot run there.");
+    }
+
+    /// <summary>
+    /// A <b>file</b> symbolic link at <paramref name="link"/> pointing at <paramref name="target"/>,
+    /// or <see langword="false"/> when this platform will not create one.
+    ///
+    /// <para><b>The one link shape with no Windows fallback, which is why this reports failure instead
+    /// of asserting.</b> A junction is a directory, so it cannot stand in for a link whose name has to
+    /// be a file -- and a file symbolic link needs SeCreateSymbolicLinkPrivilege, which an ordinary
+    /// Windows test run does not have. A caller that gets <see langword="false"/> must still exercise
+    /// something (see <see cref="CreateDirectoryLink"/> for the substitute) and must say in its own
+    /// assertions which half of the property it could and could not establish. Returning false and
+    /// letting a test quietly assert nothing is the outcome this comment exists to prevent.</para>
+    /// </summary>
+    public static bool TryCreateFileLink(string link, string target)
+    {
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return new FileInfo(link).LinkTarget is not null;
+    }
+
     public static void CopyDirectory(string source, string destination)
     {
         Directory.CreateDirectory(destination);

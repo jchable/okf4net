@@ -264,7 +264,7 @@ public static class OkfgenCli
         try
         {
             return request.Check
-                ? Check(request, services, output, Note)
+                ? Check(request, services, output, error, Note)
                 : Write(request, services, output, error, Note);
         }
         catch (Exception ex) when (ex is InvalidOperationException or OkfException or IOException or UnauthorizedAccessException)
@@ -336,18 +336,36 @@ public static class OkfgenCli
         return result;
     }
 
-    private static int Check(GenerateRequest request, ProducerServices services, TextWriter output, Action<string> note)
+    private static int Check(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error, Action<string> note)
     {
+        // The regeneration's own write failures, which this used to drop on the floor. `--check` runs
+        // a real generation into the copy, so it can fail to write a concept exactly as `generate`
+        // can -- and a copy missing a concept is a comparison whose result means nothing, in the
+        // direction that reads as clean: if the bundle is missing the same concept, neither side has
+        // it, no difference is found, and the run exits 0 over a regeneration that did not work.
+        // Reported, and counted into the exit code, for the same reason ConceptsRegenerated is.
+        var failures = new List<(ConceptId Id, string Error)>();
+
         // The count is the floor DriftReport refuses to report clean without: a composition that
         // regenerates nothing would otherwise leave the copy identical to the bundle and pass for ever.
         var report = BundleDrift.Check(
             request.OutPath,
             request.RepoPath,
-            copy => ExecuteAndReport(request with { OutPath = copy }, services, note).Written);
+            copy =>
+            {
+                var result = ExecuteAndReport(request with { OutPath = copy }, services, note);
+                failures.AddRange(result.Failures);
+                return result.Written;
+            });
 
         foreach (var difference in report.Differences)
         {
             output.WriteLine($"drift: {difference}");
+        }
+
+        foreach (var (id, failure) in failures)
+        {
+            error.WriteLine($"error: {id}: {failure}");
         }
 
         output.WriteLine(report.IsClean
@@ -356,10 +374,22 @@ public static class OkfgenCli
 
         if (report.FieldsExcluded)
         {
-            note("the repository has no HEAD commit to stamp from, so `generated.at` and `revision` on `overview` were excluded from the comparison -- both fall back to the wall clock there and cannot be reproduced by regenerating. Every other file and field was compared byte for byte.");
+            // "Every other FIELD", where this used to say "every other file and field". The file half
+            // stopped being true the moment --check learned to skip a link, and a note that overstates
+            // its own coverage is the thing this run exists to avoid. What was and was not compared at
+            // FILE granularity is said by the link notes below, which name each one.
+            note("the repository has no HEAD commit to stamp from, so `generated.at` and `revision` on `overview` were excluded from the comparison -- both fall back to the wall clock there and cannot be reproduced by regenerating. Every other field was compared byte for byte, on every file compared.");
         }
 
-        return report.ExitCode;
+        foreach (var link in report.LinksSkipped)
+        {
+            // A note, never a difference: a link is on both sides and regenerating does not change
+            // it, so counting it would fail a check over a bundle nobody had touched. What it does
+            // change is which property a clean result asserts, and that is what this says.
+            note($"'{link}' is a symbolic link or junction, so it was neither copied nor compared -- what hangs off the far end was never part of this bundle, and `generate` refuses to write through it. A clean result here is a statement about everything else.");
+        }
+
+        return report.ExitCode != 0 || failures.Count > 0 ? 1 : 0;
     }
 
     /// <summary>An option's value with surrounding whitespace removed, or <see langword="null"/> when it was absent or blank.</summary>

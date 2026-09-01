@@ -251,6 +251,89 @@ public class CheckTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void Check_neither_copies_nor_compares_what_a_link_in_the_bundle_points_at()
+    {
+        // --check ROUTED AROUND every containment gate in BundleWriter, and it did it by removing the
+        // thing they gate against. The copy was made with Directory.EnumerateDirectories/EnumerateFiles
+        // (AllDirectories), which descend a junction -- so the far side of a link was MATERIALIZED into
+        // the copy as ordinary directories and ordinary files. The regeneration then ran against a
+        // directory in which somebody else's file genuinely was inside the root: ResolveInsideRoot said
+        // yes, because by then it was true, and the run emitted the notes those gates exist to prevent
+        // -- "'code/x/report' sits under the owned prefix 'code' but no manifest claims it" -- about a
+        // file outside the bundle, in the one mode that writes nothing to the bundle at all.
+        //
+        // The notes reach the operator: OkfgenCli.Check forwards WriteResult.Notes through
+        // ExecuteAndReport. So this is a false statement printed to a human about a file that is not
+        // theirs, not merely an internal one.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+        using var bundle = ProducerFixture.CopyGoldenBundle();
+
+        var outside = Path.Combine(workspace.Path, "notes-outside-the-bundle");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "report.md"), "---\ntype: Note\ntitle: Mine\n---\n\nsomeone's notes\n");
+
+        var link = Path.Combine(bundle.Path, "code", "x");
+        ProducerFixture.CreateDirectoryLink(link, outside);
+        Assert.True(File.Exists(Path.Combine(link, "report.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
+
+        var repo = RepoIn(workspace);
+        var notes = new List<string>();
+        var report = BundleDrift.Check(bundle.Path, repo, copy =>
+        {
+            var run = ProducerFixture.Run(repo, copy);
+            notes.AddRange(run.Write.Notes);
+
+            // The copy is where the damage was done, so it is the copy that is asserted about: the
+            // far-side file must not be in it at all. Checked inside the callback because Check
+            // deletes the copy in a finally.
+            Assert.False(
+                Directory.Exists(Path.Combine(copy, "code", "x")),
+                "the copy materialised the far side of a link as a real directory, which is what let every containment gate pass.");
+
+            return run.Write.Written;
+        });
+
+        Assert.DoesNotContain(notes, n => n.Contains("code/x/report", StringComparison.Ordinal));
+
+        // And the ORIGINAL side skips it too, which is not a second nicety but the thing that keeps
+        // this from inventing drift: skip in the copy alone and every far-side path reads as "in the
+        // bundle, but regenerating does not produce it".
+        Assert.DoesNotContain(report.Differences, d => d.Contains("code/x/", StringComparison.Ordinal));
+        Assert.True(report.IsClean, Explain(report));
+
+        // Reported rather than passed over in silence: a check that quietly stops looking at part of a
+        // bundle is the failure this whole file is built against. Not a difference -- a link is on
+        // both sides and regenerating does not change it, so counting it would fail a check over a
+        // bundle nobody had touched, which the IsClean assertion above pins.
+        Assert.Equal(["code/x"], report.LinksSkipped);
+    }
+
+    [Fact]
+    public void Check_still_reports_drift_in_a_bundle_that_also_holds_a_link()
+    {
+        // The other direction of the skip. "Stop walking at a reparse point" is one bad edit away from
+        // "stop walking", and a --check that compares nothing reports clean on everything for ever --
+        // the exact failure mode DriftReport.ConceptsRegenerated exists to catch a different cause of.
+        // So: the same linked bundle, with one real concept edited, must still come back dirty and name
+        // the file.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+        using var bundle = ProducerFixture.CopyGoldenBundle();
+
+        var outside = Path.Combine(workspace.Path, "notes-outside-the-bundle");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "report.md"), "---\ntype: Note\ntitle: Mine\n---\n\nsomeone's notes\n");
+        ProducerFixture.CreateDirectoryLink(Path.Combine(bundle.Path, "code", "x"), outside);
+
+        var overview = Path.Combine(bundle.Path, "overview.md");
+        File.WriteAllText(overview, File.ReadAllText(overview) + "\nAn edit no regeneration produces.\n");
+
+        var report = RunCheck(workspace, bundle.Path);
+
+        Assert.False(report.IsClean);
+        Assert.Contains(report.Differences, d => d.StartsWith("overview.md:", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Check_refuses_a_bundle_path_that_does_not_exist()
     {
         using var workspace = ProducerFixture.CopyRepoOutsideGit();

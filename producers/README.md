@@ -124,35 +124,47 @@ successful-looking run containing not one `resource`.
 
 ### Symbolic links and junctions inside the bundle
 
-A concept id is joined onto the bundle root to make a path, and `File.Move`, `File.Delete`
-and `Directory.Delete` all **follow** a symbolic link or a junction — while
-`Path.GetFullPath` does not resolve one, so no comparison of path strings can see it. A
-bundle that carries `code/x -> ~/notes` therefore used to reach outside itself, and a
-bundle committed beside a repository is content a clone brings with it.
+`File.Move`, `File.Delete`, `File.WriteAllBytes` and `Directory.Delete` all **follow** a
+symbolic link or a junction, and `Path.GetFullPath` resolves neither — so no comparison of
+path strings can tell that `<bundle>/code/x/report.md` is really `~/notes/report.md`. The
+threat is not an `--out` you chose; it is a link inside a bundle somebody else wrote, and
+a bundle committed beside a repository is content a clone brings with it.
 
-Every place `okfgen` reaches the filesystem under the bundle root now resolves the path
-component by component, following every link it meets, and refuses anything landing
-outside the bundle. There are five:
+`okfgen` asks the **filesystem** where a path lands, not the path string: it walks the
+candidate component by component, follows every reparse point it meets, and refuses
+anything landing outside the bundle root.
 
-| What it does | On a path that leaves the bundle |
-|---|---|
-| Commits a staged concept (`File.Move`) | Refused, and recorded as a **write failure** — which also keeps the id out of the manifest and disqualifies the run from pruning |
-| Deletes a pruned concept (`File.Delete`) | Refused; the concept is kept and a note names it |
-| Removes a directory a prune emptied (`Directory.Delete`) | The climb stops at the link; the link is not this producer's to remove |
-| Reads a file it is about to overwrite, to say what wrote it | Skipped, so no note is emitted about a file the run then refuses to touch |
-| Lists the owned prefix to find files no manifest claims | Skipped, so a file behind a link is never reported under a bundle concept id |
+**This section gives no total, on purpose.** Two rounds of review put a number here and
+both were wrong — one invented an ungated hole in `OKF4net`'s `IndexGenerator` that does
+not exist, the next declared every write gated while two were not. A count in prose is a
+claim nobody re-derives; each gate is instead documented in the code that has it
+(`BundleWriter.CommitStaging`, the prune and the directory cleanup in `BundleWriter`,
+`GenerationManifest.WriteTo`, and the two reporting walks), where a reader can check the
+gate against the call it guards.
 
-A previous version of this section named a **sixth** place — index regeneration — as an
-ungated hole that "still writes an `index.md` into `~/notes`". **That was wrong**, and it
-is corrected here rather than quietly dropped. `OKF4net`'s `IndexGenerator` gates itself:
-it collects markdown with `Directory.GetFileSystemEntries` and tests for a reparse point
-*before* it recurses, so nothing under a linked directory is collected; it applies the same
-skip when listing a directory's children; and immediately before each write it re-checks
-both the directory's ancestor chain and the `index.md` node itself. Junctions and symbolic
-links are both covered.
+The `IndexGenerator` correction is kept rather than quietly dropped: it gates itself. It
+collects markdown with `Directory.GetFileSystemEntries` and tests for a reparse point
+*before* it recurses, applies the same skip when listing a directory's children, and
+immediately before each write re-checks both the directory's ancestor chain and the
+`index.md` node itself. Junctions and symbolic links are both covered.
 
-None of this makes an untrusted bundle safe to generate into in general — it makes the
-paths *this producer* builds from concept ids land inside the bundle or not at all.
+What this means for you:
+
+- **Do not generate into a bundle that contains a symbolic link or a junction.** The gates
+  make the refusals safe, not the arrangement workable. A run against such a bundle reports
+  write failures for every concept whose path crosses the link, keeps concepts it would
+  otherwise prune, and — if the link is `.okfgen-manifest.json` itself — leaves its
+  ownership record unwritten and says so. Remove the link and re-run.
+- **`--check` neither copies nor compares what a link points at,** and emits one note per
+  link it skipped. A clean result there is a statement about everything else. Earlier it
+  copied *through* a link, which flattened the far side into the comparison and produced
+  notes about files that were never in the bundle.
+- **A bundle root that is itself a link stays fine** — a symlinked project directory, a
+  container or WSL bind mount. Only the root's own link is followed, and every path below
+  it is measured against the resolved root.
+
+None of this makes an untrusted bundle safe to generate into in general. It bounds the
+paths *this producer* builds from concept ids, and that is the whole claim.
 
 ### Why `--repo-url` is all-or-nothing
 
