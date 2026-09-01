@@ -22,6 +22,13 @@ namespace OkfProducer.Core.Generation;
 /// and <see cref="HeadSha"/> returns <see langword="null"/>: there is no commit to report, so nothing
 /// is fabricated. A later task's <c>--check</c> excludes both fields from its byte-for-byte comparison
 /// in exactly that case, since a wall-clock value cannot be reproduced by regenerating.</para>
+///
+/// <para><b>A dirty working tree is read as HEAD, not as its own state.</b> Both values name the commit
+/// currently checked out, regardless of any uncommitted change to the source this run actually scanned
+/// -- so <c>revision</c> can name a commit the bundle was not, byte for byte, generated from. "Which
+/// state of the code this bundle reflects" above is therefore a claim about the committed HEAD, not
+/// about the working tree at generation time; a repository with real, uncommitted local edits is the
+/// one case that claim overstates.</para>
 /// </summary>
 public static class GitRevision
 {
@@ -112,21 +119,28 @@ public static class GitRevision
 
         using (process)
         {
-            using var timeout = new CancellationTokenSource(Timeout);
+            using var cts = new CancellationTokenSource(Timeout);
 
             // Both streams drained concurrently, never one ReadToEnd() after the other: a filled pipe
             // buffer on either side would otherwise deadlock a process that is blocked writing to it.
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+            var exitTask = process.WaitForExitAsync(cts.Token);
 
             string stdout;
             try
             {
-                process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
-                stdout = stdoutTask.GetAwaiter().GetResult();
-                _ = stderrTask.GetAwaiter().GetResult();
+                // Bounded TWICE, deliberately. `cts` is the fast path and works in the ordinary case,
+                // but cancelling a synchronous pipe read is not guaranteed to interrupt it -- the same
+                // gap `MsBuildProjectQuery` (OkfProducer.CodeGraph.Roslyn) closed for the same reason.
+                // `WaitAsync(Timeout)` throws once the timeout elapses regardless of whether the
+                // awaited tasks ever observe their own cancellation, so this call returns on time
+                // either way; a read left stuck is abandoned to complete on its own once TryKill below
+                // closes the pipe, but nothing here blocks on it any longer.
+                Task.WhenAll(exitTask, stdoutTask, stderrTask).WaitAsync(Timeout).GetAwaiter().GetResult();
+                stdout = stdoutTask.Result;
             }
-            catch (OperationCanceledException)
+            catch (Exception e) when (e is OperationCanceledException or TimeoutException)
             {
                 TryKill(process);
                 return null;

@@ -505,6 +505,34 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void A_bundle_authored_description_still_has_its_leading_fence_defused()
+    {
+        // Fix round 1 on Task 10: the ruling above ("a manual description is left exactly as written")
+        // held for every OTHER marker, but not for a fence -- a fence is not a rendering choice, it is
+        // structural. LinkScanner.ExtractLinks skips every line after an UNBALANCED one as code, so a
+        // fence surviving in a preserved description (the shape a real bundle's frontmatter takes after
+        // a prior --update) would still silently sever this concept's own `## Calls` link, exactly the
+        // carry-over-B bug, just reachable through the OTHER route into BodyDescription.
+        var options = Options() with
+        {
+            ExistingFrontmatter = _ => ExistingFrontmatter("```\n- a bullet the fence would otherwise hide.", "manual"),
+        };
+
+        var concept = Single(Generate(options), "code/csharp/n/scanner/scan");
+
+        // Frontmatter keeps the author's exact bytes, as every preserved field does.
+        Assert.Equal("```\n- a bullet the fence would otherwise hide.", concept.Document.Frontmatter.Description);
+
+        // The fence is defused, so the concept's own `## Calls` link (present in the fixture graph --
+        // see Resolved_calls_become_absolute_markdown_links) is not swallowed as code.
+        Assert.Contains(LinkScanner.ExtractLinks(concept.Document.Body), link => link.Target == "/code/csharp/n/other/callee");
+
+        // And ONLY the fence: the bullet marker on line 2 is left exactly as written, proving this is a
+        // narrow fence-only exception rather than BodyDescription silently escaping again.
+        Assert.Contains("\\```\n- a bullet the fence would otherwise hide.", concept.Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_tagged_link_is_unwrapped_first_and_then_neutralized()
     {
         // The two fixes meeting, in the exact shape that produced the original defect: LinkScanner's own

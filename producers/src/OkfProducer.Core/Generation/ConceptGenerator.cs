@@ -1224,12 +1224,7 @@ public sealed class ConceptGenerator : IConceptGenerator
 
     private static string EscapeLineBlockMarker(string line)
     {
-        var start = 0;
-        while (start < line.Length && (line[start] == ' ' || line[start] == '\t'))
-        {
-            start++;
-        }
-
+        var start = LeadingWhitespaceEnd(line);
         if (start >= line.Length)
         {
             return line;
@@ -1241,26 +1236,9 @@ public sealed class ConceptGenerator : IConceptGenerator
             return line.Insert(start, "\\");
         }
 
-        // A run of 3+ backticks or tildes opens a fenced code block -- CommonMark requires no following
-        // space either (an info string may sit right against it, `` ```csharp ``), so this is unconditional
-        // like the block quote above. Left undefused, an UNBALANCED fence (no matching close anywhere
-        // later in the same body -- ordinary when the text is only a description, not a whole document)
-        // makes OKF4net.LinkScanner.ExtractLinks skip every line after it as code, silently hiding this
-        // concept's own outgoing links (`## Contains`, `## Calls`) from the very scanner that resolves
-        // them: nothing dangles, so `okf validate` stays silent while the branch is simply severed.
-        if (line[start] is '`' or '~')
+        if (TryEscapeLeadingFence(line, start, out var fenced))
         {
-            var fenceMarker = line[start];
-            var run = start;
-            while (run < line.Length && line[run] == fenceMarker)
-            {
-                run++;
-            }
-
-            if (run - start >= 3)
-            {
-                return line.Insert(start, "\\");
-            }
+            return fenced;
         }
 
         // A line that is nothing but one repeated marker is a thematic break (`---`, `***`, `___`) or a
@@ -1314,6 +1292,53 @@ public sealed class ConceptGenerator : IConceptGenerator
             && IsBlockMarkerBoundary(line, delimiter + 1)
                 ? line.Insert(delimiter, "\\")
                 : line;
+    }
+
+    /// <summary>The index of the first non-space, non-tab character in <paramref name="line"/> (or its length, if there is none).</summary>
+    private static int LeadingWhitespaceEnd(string line)
+    {
+        var start = 0;
+        while (start < line.Length && (line[start] == ' ' || line[start] == '\t'))
+        {
+            start++;
+        }
+
+        return start;
+    }
+
+    /// <summary>
+    /// Escapes a leading run of 3+ backticks or tildes at <paramref name="start"/> -- a fenced code
+    /// block opener -- and reports whether it did. CommonMark requires no following space (an info
+    /// string may sit right against it, `` ```csharp ``), so this is unconditional, like a block quote.
+    ///
+    /// <para><b>Why an unbalanced fence is dangerous, not just ugly.</b> Left undefused, a fence with no
+    /// matching close anywhere later in the same body -- ordinary when the text is only a description,
+    /// not a whole document -- makes <see cref="OKF4net.LinkScanner"/>.<c>ExtractLinks</c> skip every
+    /// line after it as code, silently hiding this concept's own outgoing links (<c>## Contains</c>,
+    /// <c>## Calls</c>) from the very scanner that resolves them. Nothing dangles, so <c>okf validate</c>
+    /// stays silent while the branch is simply severed -- which is why <see cref="BodyDescription"/>
+    /// defuses this one marker even on text it otherwise leaves untouched (see its own remarks).</para>
+    /// </summary>
+    private static bool TryEscapeLeadingFence(string line, int start, out string escaped)
+    {
+        if (line[start] is '`' or '~')
+        {
+            var fenceMarker = line[start];
+            var run = start;
+            while (run < line.Length && line[run] == fenceMarker)
+            {
+                run++;
+            }
+
+            if (run - start >= 3)
+            {
+                escaped = line.Insert(start, "\\");
+                return true;
+            }
+        }
+
+        escaped = line;
+        return false;
     }
 
     /// <summary>
@@ -1381,11 +1406,41 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// <para>The families with no <c>description_source</c> at all -- <c>packages/*</c>, <c>docs/*</c>,
     /// <c>overview</c> -- never reach this method: nothing in them is bundle-authored, so they go
     /// straight through <see cref="LiftedBodyText"/>.</para>
+    ///
+    /// <para><b>One exception to "left exactly as the author wrote it": a leading fence is defused
+    /// regardless of provenance.</b> Every other marker only changes rendering, which is the author's
+    /// choice to make. A fence is different in kind -- <see cref="TryEscapeLeadingFence"/>'s own remarks
+    /// explain why -- and the danger it poses to <c>## Contains</c>/<c>## Calls</c> is the same whether
+    /// the text came from a doc comment or was hand-typed straight into the bundle's frontmatter on a
+    /// prior <c>--update</c>. So a bundle-authored description is defused for a fence and left untouched
+    /// for everything else, rather than skipping <see cref="BodyDescription"/> entirely.</para>
     /// </summary>
     private static string BodyDescription(string description, string descriptionSource) =>
         descriptionSource is DocCommentSource.SourceLabel or SignatureSource.SourceLabel
             ? LiftedBodyParagraph(description)
-            : description;
+            : DefuseLeadingFenceOnly(description);
+
+    /// <summary>
+    /// Escapes only a leading fenced-code-block marker on each line of <paramref name="text"/> --
+    /// nothing else, including every other block marker <see cref="EscapeLeadingBlockMarker"/> also
+    /// handles. See <see cref="BodyDescription"/> for why a fence alone is defused on text this producer
+    /// otherwise never touches.
+    /// </summary>
+    private static string DefuseLeadingFenceOnly(string text)
+    {
+        var lines = text.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var start = LeadingWhitespaceEnd(line);
+            if (start < line.Length && TryEscapeLeadingFence(line, start, out var fenced))
+            {
+                lines[i] = fenced;
+            }
+        }
+
+        return string.Join('\n', lines);
+    }
 
     /// <summary>
     /// Escapes every unescaped <c>]</c>, which neutralizes markdown link <i>syntax</i> while leaving
