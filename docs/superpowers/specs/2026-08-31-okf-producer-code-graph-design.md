@@ -549,7 +549,7 @@ Sur « bundle », les dix premiers résultats sont des membres d'`OkfBundleTools
 
 **Contrefactuel mesuré** — restreindre la portée aux types (147 concepts, membres retirés) : top 5 **1 / 55**, inchangé ; top 20 : 23 / 220 au lieu de 18. Réduire le volume **ne corrige pas** le problème, parce que la cause est l'ordre, pas le nombre.
 
-**Décision prise, et implémentée le 2026-08-31 :** rotation par famille dans le sélecteur partagé (`ConceptSearch.TopDiversified`), branchée dans les deux seuls points de troncature — `okf_search` (20 résultats) et `OkfContextProvider` (5 concepts injectés). Les deux autres issues envisagées — sortir les concepts de code dans un bundle séparé, ou assumer un bundle non cherchable — sont écartées : la première coûte la navigation d'un seul tenant, la seconde rend l'auto-injection de contexte inutilisable.
+**Décision prise, et implémentée le 2026-08-31 :** rotation par famille dans le sélecteur partagé (`ConceptSearch.TopDiversified`), branchée dans les points de troncature. Les deux autres issues envisagées — sortir les concepts de code dans un bundle séparé, ou assumer un bundle non cherchable — sont écartées : la première coûte la navigation d'un seul tenant, la seconde rend l'auto-injection de contexte inutilisable.
 
 **Une hypothèse intermédiaire a été essayée et mesurée fausse**, et cela vaut d'être consigné parce que c'est contre-intuitif : diversifier *à l'intérieur* d'une bande de score ne suffit pas. Sur « bundle », un membre généré littéralement nommé `Bundle` matche le terme dans son titre, sa description et son corps et score le maximum (6), tandis que le concept curaté qui répond réellement à la question ne le mentionne que dans sa description (2). Ils sont dans des bandes différentes : aucune rotation intra-bande ne rend le curaté atteignable. La sélection doit donc **traverser les bandes**, en donnant son tour à chaque famille — au prix assumé qu'un concept mieux scoré soit déplacé par un moins bien scoré d'une famille non représentée.
 
@@ -563,7 +563,32 @@ Sur « bundle », les dix premiers résultats sont des membres d'`OkfBundleTools
 | Rang du premier curaté sur « bundle » | #74 | **#2** |
 | Rang du premier curaté sur « concept » | #83 | **#2** |
 
-Le critère d'acceptation est rempli. Le benchmark est devenu un **test permanent** (`tests/OKF4net.Tests/SearchScaleTests.cs`), assorti d'un troisième test qui verrouille le défaut lui-même : sans diversification, le même corpus starve toujours les concepts curatés — de sorte qu'un retour en arrière échoue bruyamment au lieu de repasser au vert pour la mauvaise raison.
+Le critère d'acceptation est rempli. Le benchmark est devenu un **test permanent** (`tests/OKF4net.Tests/SearchScaleTests.cs`), assorti d'un test de contrôle sur le même corpus : sans diversification, `Take(5)` ne ramène aucun concept curaté — ce qui atteste que le corpus **discrimine** réellement les deux ordres, et donc que le vert des tests au-dessus veut dire quelque chose.
+
+**Correction du 2026-09-01 — il n'y avait pas deux points de troncature, mais trois.** Cette section affirmait que la rotation était branchée dans « les deux **seuls** points de troncature ». C'était faux, et dans le sens le plus gênant : le troisième était le chemin *recommandé*.
+
+`OkfContextProvider` a deux chemins de lecture. Le constructeur V1 (`OkfBundleTools`) tronque à `MaxConceptsInjected` — c'est celui qui avait été corrigé. Le constructeur V2 « scopé » (`IKnowledgeResolver` + `IMemoryStore`), lui, ne tronque pas à un nombre de slots : `ProvideScopedAsync` → `AppendPassages` rend un **préfixe contigu** de la liste de passages jusqu'à épuisement du budget de tokens. C'est une troncature, simplement bornée par un budget plutôt que par un compteur — et le chemin V1 porte un `[Obsolete]` sur `MemoryDirectory` qui pousse explicitement les hôtes vers V2. La correction avait donc atterri sur le chemin déprécié et manqué le chemin recommandé.
+
+`KnowledgeQuery.FairnessQuota` ne couvre pas ce cas : il fait tourner les **sources** du catalogue, pas les familles d'ids à l'intérieur d'une source.
+
+**Mesuré le 2026-09-01, pas supposé.** Corpus §8.7 avec les descriptions générées partageant le vocabulaire curaté (ce que produit réellement okfgen à partir des commentaires de doc), une source de catalogue, options par défaut (`TokenBudget` 2000, part connaissance 0,6) :
+
+| Requête | passages rendus / disponibles | curatés rendus | rang du premier curaté |
+|---|---|---|---|
+| validation | 83 / 336 | **0** | #333 |
+| bundle | 38 / 336 | **0** | #333 |
+| concept | 38 / 334 | **0** | #333 |
+| yaml | 40 / 335 | **0** | #333 |
+| catalog | 38 / 334 | **0** | #47 |
+| search | 38 / 336 | **0** | #333 |
+
+Zéro concept curaté injecté sur 6 requêtes larges sur 7 (la septième, `index`, ne ramène que 2 hits en tout et tient entièrement dans le budget). Le chemin scopé est donc corrigé lui aussi.
+
+Il l'est avec une **variante** du sélecteur, `ConceptSearch.TopDiversifiedBy`, et la différence n'est pas cosmétique : `TopDiversified` re-dérive l'ordre des familles depuis les scores, ce qui écraserait silencieusement l'entrelacement inter-sources que `FairnessQuota` vient d'appliquer en amont (vérifié : cela fait rougir `OkfContextProviderFusionTests.A_merged_ranking_with_a_fairness_quota_surfaces_both_sources`). `TopDiversifiedBy` visite les familles dans leur **ordre de première apparition**, donc les deux mécanismes se composent au lieu de se disputer. Sur une liste triée par score les deux ordres coïncident, `ConceptId` comparant segment par segment en ordinal.
+
+La surface mémoire n'est **pas** diversifiée, et c'est délibéré : `FileMemoryStore` concatène une liste classée par tier dans son ordre de lecture, et préfixe les ids par le tier — une rotation par famille y entrelacerait les tiers et écraserait cette précédence au lieu de répartir des slots à l'intérieur.
+
+Enfin, les tests d'acceptation passent désormais par les **types de production** (`OkfBundleTools.Search`, les deux constructeurs d'`OkfContextProvider`) et non plus seulement par `ConceptSearch.TopDiversified` appelé directement : la version précédente restait verte si l'on remettait un `.Take(...)` aux deux points de branchement.
 
 **La revendication §11 doit être lue précisément** : `src/OKF4net` n'est pas modifié dans son comportement — `ConceptSearch.Search` est inchangé, `TopDiversified` est une méthode ajoutée que seuls les consommateurs appellent. Mais le comportement d'`OKF4net.Agents`, lui, change délibérément.
 

@@ -94,6 +94,16 @@ public sealed class OkfContextProviderOptions
     /// prolific source's run can consume the whole budget before any other
     /// source is reached. Has no effect unless the injected resolver uses a
     /// fusing strategy.
+    /// <para>
+    /// This quota interleaves SOURCES. One prolific id family inside a single
+    /// source is a separate problem it does not address, so the provider also
+    /// family-rotates the resolved passages by top-level id segment
+    /// (<see cref="ConceptSearch.TopDiversifiedBy"/>) before spending the
+    /// budget. The two compose rather than compete: that rotation visits
+    /// families in the order they first appear, so whatever this quota pulled
+    /// forward keeps its position within its family and is still reached in
+    /// the first rotation.
+    /// </para>
     /// </remarks>
     public int? KnowledgeQueryFairnessQuota { get; init; }
 }

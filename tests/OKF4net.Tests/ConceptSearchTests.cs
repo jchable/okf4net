@@ -269,15 +269,22 @@ public class ConceptSearchTests
         Assert.Equal(["code/csharp/a", "code/csharp/b"], top.Select(s => s.Concept.Id.ToString()));
     }
 
+    /// <summary>
+    /// The rotation order is pinned to an EXPECTED sequence, not to a second
+    /// call's output: comparing two calls in one process on one input is
+    /// satisfied by any stable implementation, a plain <c>Take</c> included,
+    /// and cannot see a family order that depends on hash iteration. Here the
+    /// input is deliberately NOT in id order, so only the documented
+    /// (score, then segment ordinal) family order produces this sequence.
+    /// </summary>
     [Fact]
-    public void TopDiversified_is_deterministic()
+    public void TopDiversified_orders_tied_families_by_segment_ordinal_not_by_input_order()
     {
         var scored = Band(6, "packages/x", "code/a", "docs/y", "code/b", "overview");
 
-        var first = ConceptSearch.TopDiversified(scored, 3).Select(s => s.Concept.Id.ToString()).ToList();
-        var second = ConceptSearch.TopDiversified(scored, 3).Select(s => s.Concept.Id.ToString()).ToList();
+        var top = ConceptSearch.TopDiversified(scored, 3);
 
-        Assert.Equal(first, second);
+        Assert.Equal(["code/a", "docs/y", "overview"], top.Select(s => s.Concept.Id.ToString()));
     }
 
     [Fact]
@@ -301,4 +308,68 @@ public class ConceptSearchTests
     [Fact]
     public void TopDiversified_returns_empty_for_a_non_positive_count()
         => Assert.Empty(ConceptSearch.TopDiversified(Band(6, "code/a"), 0));
+
+    // ---- TopDiversifiedBy: the same rotation over a caller-ordered list ----
+
+    private static string FamilyOf(string id)
+    {
+        var slash = id.IndexOf('/');
+        return slash < 0 ? id : id[..slash];
+    }
+
+    /// <summary>
+    /// The one behaviour that distinguishes it from <see cref="ConceptSearch.TopDiversified"/>,
+    /// and the reason both exist: the caller's list is already ordered by
+    /// something the scores cannot express (a catalog resolver's source
+    /// interleave), so families are visited as they first appear rather than
+    /// re-sorted by score. Feeding this same input to
+    /// <see cref="ConceptSearch.TopDiversified"/> would lead with <c>docs/a</c>
+    /// and undo the caller's ordering.
+    /// </summary>
+    [Fact]
+    public void TopDiversifiedBy_visits_families_in_first_appearance_order()
+    {
+        string[] ids = ["code/a", "docs/a", "code/b", "code/c", "docs/b"];
+
+        var top = ConceptSearch.TopDiversifiedBy(ids, FamilyOf, 4);
+
+        Assert.Equal(["code/a", "docs/a", "code/b", "docs/b"], top);
+    }
+
+    [Fact]
+    public void TopDiversifiedBy_preserves_the_incoming_order_inside_a_family()
+    {
+        string[] ids = ["code/c", "code/a", "code/b"];
+
+        Assert.Equal(ids, ConceptSearch.TopDiversifiedBy(ids, FamilyOf, 3));
+    }
+
+    /// <summary>
+    /// The shape the scoped context provider uses: <c>count = items.Count</c>
+    /// is a full reordering, not a truncation, because what bounds its list is
+    /// a token budget spent top-down rather than a slot count.
+    /// </summary>
+    [Fact]
+    public void TopDiversifiedBy_reorders_the_whole_list_when_count_covers_it()
+    {
+        string[] ids = ["code/a", "code/b", "code/c", "docs/a"];
+
+        Assert.Equal(
+            ["code/a", "docs/a", "code/b", "code/c"],
+            ConceptSearch.TopDiversifiedBy(ids, FamilyOf, ids.Length));
+    }
+
+    [Fact]
+    public void TopDiversifiedBy_returns_empty_for_an_empty_input_or_a_non_positive_count()
+    {
+        Assert.Empty(ConceptSearch.TopDiversifiedBy(Array.Empty<string>(), FamilyOf, 5));
+        Assert.Empty(ConceptSearch.TopDiversifiedBy(["code/a"], FamilyOf, 0));
+    }
+
+    [Fact]
+    public void TopDiversifiedBy_rejects_null_arguments()
+    {
+        Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversifiedBy<string>(null!, FamilyOf, 1));
+        Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversifiedBy(["code/a"], null!, 1));
+    }
 }

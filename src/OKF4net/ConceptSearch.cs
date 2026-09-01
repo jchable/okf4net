@@ -160,6 +160,17 @@ public static class ConceptSearch
     /// window that shows twenty members of one type answers a narrower question
     /// than one that also shows the package and the document describing them.
     /// </para>
+    /// <para>
+    /// SCOPE. This is the <c>OKF4net.Agents</c>-side answer to a crowded
+    /// window, not a global property of the scorer: <see cref="Search"/> is
+    /// unchanged, and nothing applies this for a caller automatically. The
+    /// catalog surfaces (<c>OkfBundleKnowledgeSource</c>,
+    /// <c>FileMemoryStore</c>) return COMPLETE ranked lists and are therefore
+    /// unaffected either way — but any caller that truncates one of those
+    /// lists, or spends a budget down it, inherits the same starvation and
+    /// must apply this itself. <see cref="TopDiversifiedBy"/> is the variant
+    /// for lists that are not simply score-ordered.
+    /// </para>
     /// </remarks>
     /// <param name="scored">Results from <see cref="Search"/>, in descending score order.</param>
     /// <param name="count">Maximum number of results to return.</param>
@@ -173,21 +184,9 @@ public static class ConceptSearch
 
         // Group by top-level id segment, preserving the input order (score
         // descending, then id) inside each family.
-        var families = new List<(string Segment, Queue<ScoredConcept> Queue)>();
-        var bySegment = new Dictionary<string, Queue<ScoredConcept>>(StringComparer.Ordinal);
-        foreach (var entry in scored)
-        {
-            var segments = entry.Concept.Id.Segments;
-            var segment = segments.Count > 0 ? segments[0] : string.Empty;
-            if (!bySegment.TryGetValue(segment, out var queue))
-            {
-                queue = new Queue<ScoredConcept>();
-                bySegment[segment] = queue;
-                families.Add((segment, queue));
-            }
-
-            queue.Enqueue(entry);
-        }
+        var families = GroupIntoFamilies(
+            scored,
+            static entry => entry.Concept.Id.Segments is { Count: > 0 } segments ? segments[0] : string.Empty);
 
         // Visit families best-first, so the highest-scoring concept overall is
         // always picked first. Ordinal on the segment breaks ties, keeping the
@@ -195,10 +194,97 @@ public static class ConceptSearch
         families.Sort((a, b) =>
         {
             var byScore = b.Queue.Peek().Score.CompareTo(a.Queue.Peek().Score);
-            return byScore != 0 ? byScore : string.CompareOrdinal(a.Segment, b.Segment);
+            return byScore != 0 ? byScore : string.CompareOrdinal(a.Family, b.Family);
         });
 
-        var picked = new List<ScoredConcept>(Math.Min(count, scored.Count));
+        return RoundRobin(families, count, scored.Count);
+    }
+
+    /// <summary>
+    /// The order-preserving sibling of <see cref="TopDiversified"/>: picks the
+    /// top <paramref name="count"/> of <paramref name="items"/> while spreading
+    /// scarce slots across the families named by <paramref name="familyOf"/>,
+    /// visiting families in the order they FIRST APPEAR in
+    /// <paramref name="items"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Same rotation, different family order, and the difference is the whole
+    /// point of having two. <see cref="TopDiversified"/> re-derives the family
+    /// order from the scores, which is right when the input is exactly
+    /// <see cref="Search"/>'s output and wrong the moment a caller has already
+    /// ordered the list by something else — a catalog resolver's
+    /// source-fairness interleave, a priority weighting — because re-sorting by
+    /// score silently undoes that work. Ordering families by first appearance
+    /// instead keeps every upstream decision: within a family the incoming
+    /// order is preserved exactly, and a passage its caller deliberately pulled
+    /// to the head of its family keeps that head position and so is reached in
+    /// the first rotation.
+    /// </para>
+    /// <para>
+    /// For a list that IS score-ordered the two agree, since
+    /// <see cref="ConceptId"/> compares segment by segment (ordinal): first
+    /// appearance is then exactly "best score first, ties by first segment".
+    /// </para>
+    /// <para>
+    /// Pass <c>items.Count</c> as <paramref name="count"/> to get a full
+    /// diversified reordering rather than a truncation — the shape a caller
+    /// wants when what bounds the list is a token budget spent top-down rather
+    /// than a fixed slot count.
+    /// </para>
+    /// </remarks>
+    /// <typeparam name="T">The item type; anything that can name a family.</typeparam>
+    /// <param name="items">The already-ordered items to select from.</param>
+    /// <param name="familyOf">Names the family an item belongs to (compared with <see cref="StringComparer.Ordinal"/>).</param>
+    /// <param name="count">Maximum number of items to return.</param>
+    /// <returns>At most <paramref name="count"/> items, in the order they should be shown.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="items"/> or <paramref name="familyOf"/> is <see langword="null"/>.</exception>
+    public static IReadOnlyList<T> TopDiversifiedBy<T>(IReadOnlyList<T> items, Func<T, string> familyOf, int count)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        ArgumentNullException.ThrowIfNull(familyOf);
+
+        if (count <= 0 || items.Count == 0)
+        {
+            return [];
+        }
+
+        return RoundRobin(GroupIntoFamilies(items, familyOf), count, items.Count);
+    }
+
+    /// <summary>
+    /// Buckets <paramref name="items"/> by family, preserving the input order
+    /// inside each bucket and returning the buckets in order of first
+    /// appearance.
+    /// </summary>
+    private static List<(string Family, Queue<T> Queue)> GroupIntoFamilies<T>(IReadOnlyList<T> items, Func<T, string> familyOf)
+    {
+        var families = new List<(string Family, Queue<T> Queue)>();
+        var byFamily = new Dictionary<string, Queue<T>>(StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            var family = familyOf(item) ?? string.Empty;
+            if (!byFamily.TryGetValue(family, out var queue))
+            {
+                queue = new Queue<T>();
+                byFamily[family] = queue;
+                families.Add((family, queue));
+            }
+
+            queue.Enqueue(item);
+        }
+
+        return families;
+    }
+
+    /// <summary>
+    /// Drains <paramref name="families"/> one item per family per rotation, in
+    /// the given family order, until <paramref name="count"/> items are picked
+    /// or every family is empty.
+    /// </summary>
+    private static List<T> RoundRobin<T>(List<(string Family, Queue<T> Queue)> families, int count, int total)
+    {
+        var picked = new List<T>(Math.Min(count, total));
         var drained = false;
         while (!drained && picked.Count < count)
         {

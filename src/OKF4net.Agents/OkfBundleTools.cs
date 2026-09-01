@@ -386,13 +386,17 @@ public sealed class OkfBundleTools
     /// an <see cref="StringComparison.OrdinalIgnoreCase"/> substring. A
     /// concept's score is the sum, over all terms, of the weights of every
     /// field the term is found in: title ×3, tags/description ×2, body ×1.
-    /// Concepts scoring zero are dropped. Results are sorted by descending
-    /// score, then ascending concept id (ordinal), bounded to the top 20
-    /// with the total match count reported alongside.
+    /// Concepts scoring zero are dropped. Matches are ranked by descending
+    /// score, then ascending concept id (ordinal); the 20 that are SHOWN are
+    /// then picked by <see cref="ConceptSearch.TopDiversified"/> rather than
+    /// taken off the front of that ranking, so the best match is first but the
+    /// rest is spread across top-level id families and the printed scores are
+    /// not monotonically descending. The total match count is reported
+    /// alongside.
     /// </summary>
     /// <param name="query">The search query (case-insensitive substring terms).</param>
     /// <param name="tag">Optional tag filter: only concepts carrying this tag.</param>
-    [Description("Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.")]
+    [Description("Full-text search across concept titles, descriptions, tags and bodies. Returns the best-matching concept id first, then spreads the remaining results across top-level id families, so the list is not in descending score order.")]
     public string Search(
         [Description("The search query (case-insensitive substring terms).")] string query,
         [Description("Optional tag filter: only concepts carrying this tag.")] string? tag = null)
@@ -1117,7 +1121,10 @@ public sealed class OkfBundleTools
     };
 
     /// <summary>
-    /// Renders the ranked, bounded (top 20) search results as markdown, with the total match count.
+    /// Renders the 20 shown search results as markdown, with the total match count. The 20 are
+    /// picked from <paramref name="scored"/> by <see cref="ConceptSearch.TopDiversified"/>, not off
+    /// the front of it: the best-scoring hit is first, the rest are spread across top-level id
+    /// families, and the printed scores therefore do not descend monotonically.
     /// Each hit is annotated with a trailing <c>[deprecated]</c> marker when its lifecycle status is
     /// <see cref="ConceptStatus.Deprecated"/> and/or a <c>[stale]</c> marker when it is stale as of
     /// <paramref name="today"/>.
