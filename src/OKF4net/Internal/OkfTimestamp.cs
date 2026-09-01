@@ -225,9 +225,8 @@ internal static class OkfTimestamp
     /// is the only reliable way to tell the two apart. Deliberately looser than
     /// the §5 grammar: this only routes a value to the offset-bearing parse
     /// branch, and <see cref="IsConformantSpelling"/> stays the sole authority
-    /// on the spelling — a lowercase <c>z</c> or a basic-format <c>+0200</c>
-    /// passes here and is classified <see cref="TimestampForm.NonIso8601"/>
-    /// there.
+    /// on the spelling — the forms listed above that §5 rejects pass here and
+    /// are classified <see cref="TimestampForm.NonIso8601"/> there.
     /// </summary>
     private static bool HasExplicitOffset(string raw)
     {
