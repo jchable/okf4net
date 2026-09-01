@@ -29,7 +29,8 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// untouched. This resolver never resolves from a compilation that has errors. <see cref="Projects"/>,
 /// <see cref="IsAvailable"/> and <see cref="IsComplete"/> are what let a caller distinguish "ran, and
 /// resolved nothing" from "could not run" -- the difference between a repository with no internal
-/// calls and one whose graph should not be pruned against.</para>
+/// calls and one whose call graph is only approximate. That distinction is a report to the operator,
+/// not a pruning gate: see <see cref="IsComplete"/>'s own doc comment for why it cannot be one.</para>
 ///
 /// <para><b>Loud, but never fatal to the run.</b> An unknown <c>LangVersion</c> is refused rather
 /// than degraded to a preview language version (correction 3) -- but the refusal is scoped to the one
@@ -55,8 +56,8 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// better resolution on some projects is not a trade to make quietly. A future path exists -- a
 /// sandboxed generator host -- and that, not an unguarded <c>CSharpGeneratorDriver</c>, is what would
 /// lift the limit. Meanwhile the behaviour is the safe one: such a project degrades to the
-/// name-matching baseline and <see cref="IsComplete"/> says so, which is what a pruning consumer must
-/// see. See 7.2 of <c>docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md</c>.</para>
+/// name-matching baseline and <see cref="IsComplete"/> says so, which is what an operator reading the
+/// run's report must see. See 7.2 of <c>docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md</c>.</para>
 ///
 /// <para><b>Blast radius of a failed project.</b> A project that does not compile costs more than its
 /// own files, and the cost is worth stating plainly. Its files are not <see cref="Owns"/>ed, so every
@@ -105,9 +106,21 @@ public sealed class RoslynResolver : ISymbolResolver
 
     /// <summary>
     /// Whether this resolver covered the repository completely: at least one project, and every one of
-    /// them compiled. <see langword="false"/> means some C# was resolved by name alone, so a consumer
-    /// that deletes concepts on the strength of this graph (Task 11's pruning) is working from an
-    /// incomplete picture and must not.
+    /// them compiled. <see langword="false"/> means some C# was resolved by name alone, so this run's
+    /// call graph is approximate and an operator should be told.
+    ///
+    /// <para><b>It is not the pruning gate, and an earlier version of this comment said it was.</b>
+    /// Task 11 settled it against the code: which concepts exist is decided entirely by extraction --
+    /// <c>CodeGraphBuilder</c> builds <c>CodeGraph.Symbols</c> from <see cref="ILanguageExtractor"/>
+    /// output filtered by <see cref="FileEligibility.IsInScope"/>, and no resolver contributes a symbol
+    /// to it. A resolver decides only whether a call site renders as a link or as a code span. So a
+    /// degraded resolver cannot make a symbol <i>absent</i>, which is the only way an incomplete
+    /// picture could turn into a wrong deletion. Gating on it would also make pruning dead code on this
+    /// very repository -- <c>src/OKF4net.Cli</c> uses a source generator and does not compile here, so
+    /// this property is <see langword="false"/> on an ordinary checkout -- which is the same trap
+    /// <see cref="RunStatus.IsComplete"/> sets, for the same shape of reason. What DOES gate pruning is
+    /// <see cref="RunStatus.TraversalComplete"/> plus the per-file <see cref="FileStatus"/>; see
+    /// <c>BundleWriter</c>.</para>
     ///
     /// <para>
     /// The <c>Count &gt; 0</c> clause is the whole point of this property, not a formality.

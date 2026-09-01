@@ -618,6 +618,27 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         var attribution = AttributePackages(groups, containerIds, registeredByRawPath, titlesByRawPath, packages, options);
 
+        // Which repository files each node was derived from -- the ownership Task 11's manifest records
+        // and its pruning joins on (§6.3 rule 3): an id whose owning file this run could not read is
+        // absent for a reason that is not "the symbol was deleted", and must survive.
+        //
+        // Accumulated onto every ancestor path, not just the group's own, because a container concept
+        // is synthesized rather than declared: with no owner it could never be pruned (correct but
+        // leaky), and with a wrong one it could be pruned while a member below it survives. Its honest
+        // owners are the files of everything nested under it, which is exactly what this loop builds.
+        var filesByRawPath = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            for (var length = group.RawSegments.Length; length >= MinimumContainerDepth; length--)
+            {
+                var key = RawKey(group.RawSegments[..length]);
+                foreach (var declaration in group.Declarations)
+                {
+                    AddSorted(filesByRawPath, key, NormalizeSeparators(declaration.RelativePath));
+                }
+            }
+        }
+
         // Pass 2 -- documents.
         var concepts = new List<GeneratedConcept>(groups.Count + containers.Count);
         for (var depth = MinimumContainerDepth; depth <= maxDepth; depth++)
@@ -630,7 +651,10 @@ public sealed class ConceptGenerator : IConceptGenerator
                 var extras = ExtrasFor(RawKey(rawSegments), childrenByParent, attribution, options.SourceOwnership, declarations);
 
                 concepts.Add(new GeneratedConcept(id, BuildCodeConcept(
-                    id, declarations, profile, edges ?? [], idsByName, primaryByName, options, extras)));
+                    id, declarations, profile, edges ?? [], idsByName, primaryByName, options, extras))
+                {
+                    SourceFiles = FilesOf(filesByRawPath, RawKey(rawSegments)),
+                });
             }
 
             foreach (var segments in containers.Where(c => c.Length == depth))
@@ -643,7 +667,10 @@ public sealed class ConceptGenerator : IConceptGenerator
 
                 concepts.Add(new GeneratedConcept(
                     containerIds[containerKey],
-                    BuildContainerConcept(containerIds[containerKey], segments, titlesByRawPath[containerKey], extras, options)));
+                    BuildContainerConcept(containerIds[containerKey], segments, titlesByRawPath[containerKey], extras, options))
+                {
+                    SourceFiles = FilesOf(filesByRawPath, containerKey),
+                });
             }
         }
 
@@ -936,6 +963,16 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         return absent ?? [];
     }
+
+    /// <summary>
+    /// The repository files recorded against one raw path, materialised out of the
+    /// <see cref="SortedSet{T}"/> that accumulated them so nothing downstream is ordered by a hash
+    /// table (§6.2). Empty for a node nothing was declared under -- which no node reachable here has,
+    /// since containers are only synthesized where a group sits below them, but empty is the honest
+    /// answer rather than a throw: an owner-less id is simply never pruned.
+    /// </summary>
+    private static IReadOnlyList<string> FilesOf(Dictionary<string, SortedSet<string>> filesByRawPath, string rawKey) =>
+        filesByRawPath.TryGetValue(rawKey, out var files) ? [.. files] : [];
 
     private static void AddSorted(Dictionary<string, SortedSet<string>> map, string key, string value)
     {
