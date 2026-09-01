@@ -69,9 +69,11 @@ public sealed class DocCommentSource : IDescriptionSource
     /// paired tag still contributes its inner text.</item>
     /// <item>A <c>&lt;</c> that does not begin a tag is emitted verbatim: <c>a &lt; b</c>, an unterminated
     /// tag, an opening tag nothing closes, an opening tag a closer only pops <i>over</i> (the
-    /// <c>&lt;T&gt;</c> of <c>&lt;c&gt;List&lt;T&gt;&lt;/c&gt;</c>), and a span whose markup is not shaped
-    /// like the tag it claims to be (<c>&lt;/b and c &gt;</c>). Doc comments are untrusted input (§2.3),
-    /// and eating prose that merely looks like markup is the failure this guards against.</item>
+    /// <c>&lt;T&gt;</c> of <c>&lt;c&gt;List&lt;T&gt;&lt;/c&gt;</c>), a span whose markup is not shaped
+    /// like the tag it claims to be (<c>&lt;/b and c &gt;</c>), and a self-closing span whose name is not
+    /// an XML name -- an angle-bracketed URL, <c>&lt;https://example.com/&gt;</c>, whose trailing slash
+    /// made it a self-closing tag standing for nothing. Doc comments are untrusted input (§2.3), and
+    /// eating prose that merely looks like markup is the failure this guards against.</item>
     /// <item>A <c>&lt;![CDATA[...]]&gt;</c> section contributes its content, delimiters dropped and the
     /// content copied through <b>unread</b>: that is what a CDATA section means, and it is the one
     /// construct in a doc comment that says "the markup inside me is text".</item>
@@ -184,6 +186,18 @@ public sealed class DocCommentSource : IDescriptionSource
     {
         var tokens = new List<Token>();
         var open = new List<int>();
+
+        // Every span this method can recognise -- a tag or a CDATA section alike -- ends at a `>`, so once
+        // the last one is behind us nothing ahead can be one. Leaving is not an optimisation of the
+        // output (with no `>` left, every `<` from here would fail FindTagEnd and be emitted verbatim
+        // anyway, which is exactly what leaving does); it is a bound on the WORK, and the bound is the
+        // point: FindTagEnd scans to the end of the string when it fails, and a failure advances by one
+        // character rather than abandoning the comment, so a suffix of `<a<a<a...` with no `>` at all
+        // re-entered that end-to-end scan once per bracket. That is quadratic in a doc comment's length,
+        // on input a hostile repository chooses (§2.3). Measured at 40k characters: 803ms without this
+        // check, 1ms with it, same output. See the remarks on FindTagEnd for the two shapes this does
+        // NOT bound and why.
+        var lastEnd = comment.LastIndexOf('>');
         var i = 0;
 
         while (i < comment.Length)
@@ -192,6 +206,11 @@ public sealed class DocCommentSource : IDescriptionSource
             {
                 i++;
                 continue;
+            }
+
+            if (lastEnd <= i)
+            {
+                break;
             }
 
             if (string.CompareOrdinal(comment, i, CdataOpen, 0, CdataOpen.Length) == 0)
@@ -281,8 +300,32 @@ public sealed class DocCommentSource : IDescriptionSource
     /// anything: stopping at the first <c>&gt;</c> cuts <c>&lt;see cref="a&gt;b"&gt;</c> in half, and the
     /// front half is then an opener that the real <c>&lt;/see&gt;</c> pairs with and deletes, leaving the
     /// back half (<c>b"&gt;</c>) standing in the prose. Only <c>"</c> is tracked, which is the one quote
-    /// <see cref="AttributeValue"/> reads and the one XML doc comments use; treating <c>'</c> the same way
-    /// would let an apostrophe in a malformed span swallow the rest of the comment.</para>
+    /// <see cref="AttributeValue"/> reads and the one XML doc comments use.</para>
+    ///
+    /// <para><b>Single quotes are legal XML and are still not tracked, so the residual is stated instead
+    /// of implied:</b> <c>&lt;see cref='a&gt;b'&gt;tagged&lt;/see&gt;</c> splits the way the double-quoted
+    /// form used to, and yields <c>b'&gt;tagged</c> -- leaked markup, not deleted prose, which is the
+    /// lesser of the two failures. The obvious fix, opening a single-quoted value only on a <c>'</c> that
+    /// follows an <c>=</c>, was written out and rejected: it can only move the terminating <c>&gt;</c>
+    /// LATER, so a span can grow to swallow a whole nested tag, and if that grown span is then paired it
+    /// deletes the prose inside it. On <c>&lt;b x='y&gt; hello &lt;c&gt;z&lt;/c&gt; w'&gt; more
+    /// &lt;/b&gt;</c> that costs the words <c>hello</c> and <c>z</c>, which is exactly the failure
+    /// <see cref="UnwrapXmlDocTags"/> exists to prevent, paid to tidy up markup.</para>
+    ///
+    /// <para><b>Cost.</b> A failing search walks to the end of the string, and its caller advances by one
+    /// character and comes back, so a run of <c>&lt;</c> can re-enter it once per bracket.
+    /// <see cref="ScanTokens"/> bounds the case where no <c>&gt;</c> remains at all -- the plain
+    /// <c>&lt;a&lt;a&lt;a...</c> suffix -- to a single check. Two shapes stay quadratic in one comment's
+    /// length: a run of <c>&lt;</c> sharing one far <c>&gt;</c> where each span is rejected by
+    /// <see cref="IsTagShaped"/> (<c>&lt;a &lt;a &lt;a ... &gt;</c>), and a run whose only <c>&gt;</c> is
+    /// quoted relative to each start (<c>&lt;a&lt;a&lt;a...&lt;a"&gt;</c>). Bounding those exactly is not
+    /// a scalar memo: whether a <c>&gt;</c> terminates a span depends on the parity of the <c>"</c>
+    /// between it and the start, so a result from one <c>&lt;</c> does not transfer to a later one, and
+    /// the honest fix is an index of every <c>&gt;</c> bucketed by that parity. The cheap-looking
+    /// alternative -- failing at an unquoted <c>&lt;</c>, which a tag's markup may not contain -- is
+    /// linear and was also rejected: it changes which openers the stack pairs, and on
+    /// <c>&lt;a&gt;keep&lt;a b=c&lt;d&gt;text&lt;/a&gt;</c> it deletes an <c>&lt;a&gt;</c> this version
+    /// keeps. Neither is worth a behaviour change to this machine for a cost bounded by one doc comment.</para>
     /// </summary>
     private static int FindTagEnd(string comment, int start)
     {
@@ -304,16 +347,34 @@ public sealed class DocCommentSource : IDescriptionSource
     }
 
     /// <summary>
-    /// Whether <paramref name="markup"/> is shaped like the tag <paramref name="shape"/> says it is: a
-    /// closing tag is a name and nothing else, and an opening or self-closing tag is a name followed by
-    /// an attribute list, in which every attribute carries an <c>=</c>.
+    /// Whether <paramref name="markup"/> is shaped like the tag <paramref name="shape"/> says it is: it
+    /// carries a name, a closing tag is that name and nothing else, and an opening or self-closing tag is
+    /// the name followed by an attribute list in which every attribute carries an <c>=</c>. A
+    /// <b>self-closing</b> tag's name must additionally be shaped like an XML name
+    /// (<see cref="IsNameShaped"/>).
     ///
-    /// <para>Both are <b>necessary</b> conditions of XML's grammar rather than a validator -- this accepts
-    /// <c>&lt;b x=y z&gt;</c> -- and that direction is the one that matters: nothing well-formed is ever
-    /// rejected, so no real tag becomes visible markup. It is checked because without it
-    /// <c>a &lt;/b and c &gt; d</c> is one closing tag named <c>b</c>, a closing tag contributes nothing,
+    /// <para>All of these are <b>necessary</b> conditions of XML's grammar rather than a validator -- this
+    /// accepts <c>&lt;b x=y z&gt;</c> -- and that direction is the one that matters: nothing well-formed is
+    /// ever rejected, so no real tag becomes visible markup. The attribute rule is checked because without
+    /// it <c>a &lt;/b and c &gt; d</c> is one closing tag named <c>b</c>, a closing tag contributes nothing,
     /// and <c>and c</c> is deleted -- prose eaten by a span that merely starts like markup, which is the
     /// failure <see cref="UnwrapXmlDocTags"/> exists to prevent.</para>
+    ///
+    /// <para><b>Why the name rule is asked of a self-closing tag alone</b>, which is the one asymmetry
+    /// here. A self-closing span is the only shape that can delete itself on its own authority: it needs
+    /// no partner anywhere in the comment, and its <see cref="Substitution"/> is empty unless it carries a
+    /// name-bearing attribute. So <c>See &lt;https://example.com/&gt; for details.</c> -- an angle-bracketed
+    /// URL, ordinary prose in a doc comment -- was whitespace-free, therefore tag-shaped, therefore a
+    /// self-closing tag standing for nothing, and became <c>See for details.</c>; drop the trailing slash
+    /// and the same URL survived as an unmatched opener, so the loss was inconsistent as well as silent.
+    /// The other two shapes cannot commit it: an opener with a nonsense name is harmless, because nothing
+    /// closes it and it stays prose, and a closer with one loses only its own brackets. Asking a name of
+    /// them would also stop <c>&lt;K,V&gt;that&lt;/K,V&gt;</c> from unwrapping, which is a pair a reader
+    /// wrote on purpose.</para>
+    ///
+    /// <para>An <b>empty</b> name is refused for every shape, which in practice only <c>&lt;/&gt;</c> has:
+    /// no opening tag's name is empty (<see cref="StartsTag"/> requires a letter after the <c>&lt;</c>),
+    /// so a span with an empty name can never have been anyone's partner.</para>
     /// </summary>
     private static bool IsTagShaped(string markup, TokenShape shape)
     {
@@ -330,8 +391,38 @@ public sealed class DocCommentSource : IDescriptionSource
             nameLength++;
         }
 
+        if (nameLength == 0 || (shape == TokenShape.SelfClosing && !IsNameShaped(body, nameLength)))
+        {
+            return false;
+        }
+
         return nameLength == body.Length
             || (shape != TokenShape.Closing && body.IndexOf('=', nameLength) >= 0);
+    }
+
+    /// <summary>
+    /// Whether the first <paramref name="nameLength"/> characters of <paramref name="body"/> are all
+    /// characters an XML name may contain: a letter or digit, or one of <c>_</c>, <c>-</c>, <c>.</c>,
+    /// <c>:</c>.
+    ///
+    /// <para>Looser than XML's real name production on two points it costs nothing to allow: the first
+    /// character is not required to be a letter, and Unicode letters and digits are taken wholesale. What
+    /// it does reject -- <c>/</c>, <c>@</c>, <c>+</c>, <c>=</c> and their like -- cannot appear in an XML
+    /// name at all, so no well-formed tag is rejected by it, and a span it rejects is emitted verbatim
+    /// rather than deleted.</para>
+    /// </summary>
+    private static bool IsNameShaped(string body, int nameLength)
+    {
+        for (var i = 0; i < nameLength; i++)
+        {
+            var character = body[i];
+            if (!char.IsLetterOrDigit(character) && character is not ('_' or '-' or '.' or ':'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>The literal opening a CDATA section, which <see cref="StartsTag"/> deliberately does not recognise (<c>!</c> is neither <c>/</c> nor a letter).</summary>

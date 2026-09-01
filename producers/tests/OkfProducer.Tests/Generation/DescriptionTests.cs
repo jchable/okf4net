@@ -289,6 +289,41 @@ public class DescriptionTests
             Resolver.Resolve(Member("T", "Scan", "A <see cref=\"a>b\">tagged</see> mention."), existing: null).Text);
     }
 
+    [Fact]
+    public void A_single_quoted_attribute_value_still_splits_the_tag_it_belongs_to()
+    {
+        // Pins a KNOWN residual, not a guarantee. `'` is legal XML and FindTagEnd tracks only `"`, so this
+        // splits exactly the way the double-quoted form used to. What it costs is leaked markup (`b'>`),
+        // never a deleted word -- and the obvious fix, opening a quote on a `'` that follows an `=`, can
+        // only push the terminating `>` later, which lets a span swallow a nested tag and delete the prose
+        // inside it. FindTagEnd's remarks carry that counterexample. If this ever returns
+        // "A tagged mention." the residual is closed and this test should be deleted, not adjusted.
+        Assert.Equal("A b'>tagged mention.",
+            Resolver.Resolve(Member("T", "Scan", "A <see cref='a>b'>tagged</see> mention."), existing: null).Text);
+    }
+
+    [Theory]
+    [InlineData("See <https://example.com/> for details.")]
+    [InlineData("See <https://example.com> for details.")]
+    [InlineData("Adds <a+b/> together.")]
+    [InlineData("Closes </> nothing.")]
+    public void A_self_closing_span_whose_name_is_not_a_name_is_prose(string doc)
+    {
+        // An angle-bracketed URL is ordinary prose in a doc comment, and the trailing slash turned it into
+        // a SELF-CLOSING tag: whitespace-free, so tag-shaped, and carrying no `cref`/`name`/`langword`, so
+        // its substitution was empty and the whole span was deleted -- `See for details.`. Without the
+        // slash the same URL survived as an unmatched opener, so the loss was inconsistent as well as
+        // silent.
+        //
+        // A self-closing span is the ONLY shape that can delete itself on its own authority, with no
+        // partner anywhere in the comment, so it is the one shape whose name has to be an XML name. An
+        // opener with a nonsense name is harmless (nothing closes it, so it stays prose) and a closer with
+        // one loses only its own brackets -- and requiring a name of either would stop `<K,V>that</K,V>`
+        // from unwrapping, which the pairing theory above deliberately pins. The empty name of `</>` is
+        // rejected for every shape: no opener can have one, so it can never have been a partner.
+        Assert.Equal(doc, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+    }
+
     [Theory]
     [InlineData("Matches <![CDATA[a < b]]> exactly.", "Matches a < b exactly.")]
     [InlineData("Emits <![CDATA[<c>x</c>]]> literally.", "Emits <c>x</c> literally.")]

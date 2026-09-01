@@ -393,17 +393,27 @@ public class ConceptGeneratorTests
         // The run carries a code graph on purpose. Without one there is no `code/*` concept in it at all,
         // so the half of this name that says "the code family" pinned nothing: deleting the `generated`
         // extension from BuildCodeConcept AND from BuildContainerConcept left the assertion green, since
-        // every concept present took the `Assert.Null` branch. The graph below produces both kinds --
-        // a member and the two synthesized containers above it.
+        // every concept present took the `Assert.Null` branch. The graph below produces both kinds -- two
+        // DECLARED concepts (the type `code/csharp/n/scanner`, its member `.../scan`) and exactly one
+        // SYNTHESIZED container above them, `code/csharp/n`.
+        //
+        // All four ids are asserted present, and `code/csharp/n` is the one that carries its weight
+        // twice. It is the only concept `BuildContainerConcept` builds here, so it is the only thing
+        // standing between that method's `generated` block and a green test; and container synthesis is
+        // conditional -- a change to MinimumContainerDepth or to the `claimed` set stops it -- so without
+        // this line the coverage could evaporate while every remaining concept still took the branch it
+        // was already taking. Asserting only the declared pair is the same defect this comment describes,
+        // one level down.
         var snapshot = new RepositorySnapshot("/repo", "my-repo",
             [new PackageManifest("nuget", "Foo.csproj", "Foo", null)],
             [new DocFile("README.md", "Readme")]);
 
-        var concepts = new ConceptGenerator().Generate(snapshot, GraphWithOneMember(), CodeOptions());
+        var concepts = new ConceptGenerator().Generate(snapshot, GraphWithOneMember(), GenerateOptions.Default);
         var ids = concepts.Select(c => c.Id.ToString()).ToList();
 
         Assert.Contains("code/csharp/n/scanner/scan", ids);
         Assert.Contains("code/csharp/n/scanner", ids);
+        Assert.Contains("code/csharp/n", ids);
         Assert.Contains("packages/foo", ids);
         Assert.Contains("docs/readme", ids);
 
@@ -466,10 +476,20 @@ public class ConceptGeneratorTests
             .Frontmatter;
 
     /// <summary>
-    /// The smallest graph that produces both kinds of <c>code/*</c> concept: one member, so
-    /// <c>BuildCodeConcept</c> runs, and the namespace and type above it, so <c>BuildContainerConcept</c>
-    /// does too. <c>CodeConceptGeneratorTests</c> owns the rich fixture; this one exists only so the
-    /// families this file compares are all actually present in the run.
+    /// The smallest graph that produces both kinds of <c>code/*</c> concept: a type and its member, so
+    /// <c>BuildCodeConcept</c> runs, and the namespace above them -- unclaimed by any declaration -- so
+    /// <c>BuildContainerConcept</c> does too. <c>CodeConceptGeneratorTests</c> owns the rich fixture; this
+    /// one exists only so the families this file compares are all actually present in the run.
+    ///
+    /// <para>Its caller passes <see cref="GenerateOptions.Default"/>, which carries no C# profile, and
+    /// that is on purpose rather than an omission. A helper supplying one was tried and removed: it was
+    /// inert, because <c>ConceptGenerator.ProfileFor</c> synthesizes a fallback profile from the language
+    /// name alone and <c>LanguageProfile.SplitContainer</c> is documented as a pure function of
+    /// <c>Language</c>, so the ids came out identical either way and the helper's doc claimed a necessity
+    /// that did not exist. Taking the fallback path instead makes the ids asserted above a live check on
+    /// that documented invariant: if container splitting ever consults another field, the fallback -- whose
+    /// every other field is empty -- stops reproducing the real profile's ids, and these assertions go red
+    /// where a supplied profile would have hidden it.</para>
     /// </summary>
     private static CodeGraphModel GraphWithOneMember() => new(
         [
@@ -480,19 +500,4 @@ public class ConceptGeneratorTests
         ],
         [],
         RunStatus.Complete);
-
-    /// <summary>Options that admit the C# profile <see cref="GraphWithOneMember"/>'s symbols are tagged with.</summary>
-    private static GenerateOptions CodeOptions() => GenerateOptions.Default with
-    {
-        Profiles =
-        [
-            new LanguageProfile(
-                Language: "csharp",
-                GrammarName: "c_sharp",
-                DeclarationQuery: string.Empty,
-                CallQuery: string.Empty,
-                DocCommentPrefix: "///",
-                FileExtensions: [".cs"]),
-        ],
-    };
 }
