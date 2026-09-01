@@ -822,6 +822,12 @@ public class ValidateTests
     [Fact]
     public void A_conformant_instant_per_entry_usage_window_produces_no_warning()
     {
+        // A false-positive guard, not proof the feature works: this test
+        // asserts only absences, so it passes against pre-change code too --
+        // deleting the whole per-entry validation block fails the other five
+        // tests in this group and leaves this one green. Its job is to catch a
+        // future over-eager warning on conformant input; do not count it as
+        // coverage that the override is validated at all.
         var r = ValidateConcept(
             "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
             "sources:\n  - resource: https://x\n    usage_window: {from: '2026-01-01T00:00:00Z'}\n");

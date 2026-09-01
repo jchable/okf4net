@@ -270,7 +270,7 @@ export default function Library() {
                 </>,
               ],
               [
-                'Provenance.ToYaml(IEnumerable&lt;Source&gt;) → YamlSequence',
+                'Provenance.ToYaml(IEnumerable<Source>) → YamlSequence',
                 <>
                   The serialize direction of <code>Frontmatter.Sources</code>' parse — for a producer building{' '}
                   <code>sources</code> from scratch rather than editing an existing document.

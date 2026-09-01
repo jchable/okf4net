@@ -137,7 +137,8 @@ Checked one at a time on `d6b778d`, **before** writing any implementation.
 | **C10** | *(the draft's §1 and §8)* an unparsed override is **lost** | ❌ **false** — `okf fmt` preserves it today, proven by running it before any change. §1 and §8 corrected. |
 
 **C6, the one the design missed.** `OkfDocumentBuilder.AddSource`
-(`OkfDocumentBuilder.cs:84-96`) is the supported producer API for writing a
+(`OkfDocumentBuilder.cs:85-96` at `d6b778d` — signature line through closing
+brace; its doc comment runs 81-84) is the supported producer API for writing a
 source, and it has parameters for `id`, `title`, `author`, `usageCount` and
 `lastModified` — but adding a seventh member to `Source` does not reach it. A
 producer using the builder could not emit a per-entry window at all: the field

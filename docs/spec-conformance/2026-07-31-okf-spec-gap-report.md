@@ -208,10 +208,12 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   level (`Provenance.cs:45-46`, wired at `Frontmatter.cs:83`) with no
   per-entry override path.
 
-  > **Resolved 2026-09-01** by `fix/usage-window-override`: `Source` gains
-  > an optional `UsageWindow?` member, `Provenance.ParseSources`/`ToYaml`
-  > read and write it, `BundleValidator` checks its bounds through the same
-  > `CheckTemporal` as the shared position, and the new
+  > **Implemented 2026-09-01 on branch `fix/usage-window-override`** (this
+  > annotation records the branch that closes the gap, not a merge — cut
+  > from `dev` at `d6b778d`): `Source` gains an optional `UsageWindow?`
+  > member, `Provenance.ParseSources`/`ToYaml` read and write it,
+  > `BundleValidator` checks its bounds through the same `CheckTemporal`
+  > as the shared position, and the new
   > `Frontmatter.EffectiveUsageWindow(Source)` applies the override rule.
   > See
   > `docs/superpowers/specs/2026-09-01-okf-per-entry-usage-window-design.md`.

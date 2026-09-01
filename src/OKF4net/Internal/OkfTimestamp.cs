@@ -37,9 +37,13 @@ internal enum TimestampForm
 /// (§5.2), and <c>sources[].last_modified</c> plus both <c>usage_window</c>
 /// bounds in either position — the shared, top-level sibling
 /// (<c>usage_window.from</c> / <c>usage_window.to</c>) and a per-entry
-/// <c>sources[].usage_window</c> override (§5.1). All of them come through
-/// <see cref="TryParse"/>, so the rule is spelled once rather than re-derived
-/// per field.
+/// <c>sources[].usage_window</c> override (§5.1). Every one of them is read
+/// through <see cref="Classify"/> — the validator calls it directly, for all
+/// eight positions those keys occupy, and the thin wrappers
+/// <see cref="TryParse"/> (its one caller is <see cref="OKF4net.Lifecycle"/>,
+/// which needs only the legacy/not distinction) and <see cref="IsConformant"/>
+/// delegate to it — so the rule is spelled once rather than re-derived per
+/// field.
 /// </para>
 /// <para>
 /// It deliberately does <b>not</b> cover §9 <c>log.md</c> date headings, which
