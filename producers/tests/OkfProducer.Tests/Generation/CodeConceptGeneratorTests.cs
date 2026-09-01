@@ -593,6 +593,52 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void An_escaped_backtick_does_not_desynchronise_the_producer_from_the_scanner()
+    {
+        // The toggle must mirror LinkScanner.BlankInlineCode LITERALLY, because that method is what
+        // decides whether a link exists. It has no backslash awareness: it closes its span at the second
+        // backtick and reads the rest as prose. A producer that treated the first backtick as escaped
+        // would still believe it was inside a span there and stop escaping -- and ship a live link.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "A \\` b ` [text](dest)."));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Empty(LinkScanner.ExtractLinks(body));
+    }
+
+    [Fact]
+    public void A_code_span_does_not_leak_across_a_newline()
+    {
+        // BlankInlineCode runs per line, so an unclosed backtick cannot make the NEXT line code. A
+        // producer that carried the flag across `\n` would treat every later line as code and stop
+        // escaping -- and a `.csproj` <Description> reaches a body with its newlines intact.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "Opens ` here.\nThen [text](dest)."));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Empty(LinkScanner.ExtractLinks(body));
+    }
+
+    [Theory]
+    [InlineData("Summary line.\n---\nMore prose.", "\\---")]
+    [InlineData("Summary line.\n***\nMore prose.", "\\***")]
+    [InlineData("Summary line.\n===\nMore prose.", "\\===")]
+    [InlineData("Summary line.\n___\nMore prose.", "\\___")]
+    [InlineData("Summary line.\n--\nMore prose.", "\\--")]
+    public void A_line_that_is_nothing_but_markers_is_defused(string doc, string expected)
+    {
+        // Requiring a space after `-` let thematic breaks and setext underlines through: `---` on its
+        // own line turns the paragraph ABOVE it into a heading, which is precisely the block-type change
+        // this guard promises to prevent. A line whose every non-space character is the same marker is
+        // escaped at its first character.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: doc));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Contains(expected, body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Leading_emphasis_is_not_mistaken_for_a_bullet()
     {
         // A bullet marker requires a following space; without that check `*fast* and small.` becomes

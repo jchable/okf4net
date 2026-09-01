@@ -255,12 +255,112 @@ public class ContainmentTests
     }
 
     [Fact]
+    public void A_gap_between_two_declared_containers_is_bridged_rather_than_left_open()
+    {
+        // The shape sparse synthesis got wrong: something declared in `N`, something declared in
+        // `N.Sub.Deeper`, nothing at all in `N.Sub`. The package's attach keys are `n` and
+        // `n/sub/deeper`; minimality drops the deeper one because an ancestor is claimed, on the premise
+        // that it is "already reachable one level down from that ancestor" -- which is only true while
+        // the level in between exists. It did not, so `n/sub/deeper` took its whole subtree off the
+        // graph with no link dangling anywhere.
+        //
+        // The bridge is bounded: `n/sub` is synthesized because it connects a container to a REGISTERED
+        // ancestor. Where there is no such ancestor, nothing is synthesized and the package attaches
+        // directly -- which is the case the test below this one pins.
+        var concepts = new ConceptGenerator().Generate(Snapshot(), GapGraph(), Options());
+
+        AssertEveryContainerIsReachable(concepts);
+
+        Assert.Contains(concepts, c => c.Id.ToString() == "code/csharp/n/sub");
+        Assert.Contains("(/code/csharp/n/sub)", Single(concepts, "code/csharp/n").Document.Body, StringComparison.Ordinal);
+        Assert.Contains("(/code/csharp/n/sub/deeper)", Single(concepts, "code/csharp/n/sub").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("deep-only")]
+    [InlineData("gap")]
+    [InlineData("two-gaps")]
+    [InlineData("nested-types")]
+    [InlineData("global-namespace")]
+    [InlineData("two-roots")]
+    [InlineData("deep-chain")]
+    public void No_container_is_ever_disconnected_whatever_the_namespace_shape(string shape)
+    {
+        // The permanent form of the probe that caught the last two defects, kept as a test rather than
+        // as a throwaway harness -- being deleted before commit is exactly why this class escaped twice.
+        // Reachability is invisible to BrokenLinks(): a severed branch dangles nothing.
+        //
+        // One repository's output cannot cover this, because none of these shapes occurs on ours. Each
+        // one is a different way for the chain between a package and a container to have a hole in it.
+        var concepts = new ConceptGenerator().Generate(Snapshot(), ShapeGraph(shape), Options());
+
+        AssertEveryContainerIsReachable(concepts);
+
+        // And the package always has somewhere to point: for `global-namespace` there is no container at
+        // all -- correctly, since nothing declares one -- so the reachability assertion above is vacuous
+        // for that shape and this is what carries it. The entry point into `code/` must never be empty.
+        Assert.Contains("## Contains", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+    }
+
+    private static CodeGraphModel ShapeGraph(string shape) => new(
+        shape switch
+        {
+            // Everything in one deep namespace, nothing above it: no ancestor exists, so the package
+            // attaches directly and no bridging level is invented.
+            "deep-only" => [Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs")],
+
+            // Something at the top and something deep, nothing in between.
+            "gap" =>
+            [
+                Type("N", "Top", "linked/Scanner.cs"),
+                Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs"),
+            ],
+
+            // Two independent holes below one root.
+            "two-gaps" =>
+            [
+                Type("N", "Top", "linked/Scanner.cs"),
+                Type("N.A.Deep", "One", "linked/Scanner.cs"),
+                Type("N.B.Deeper.Still", "Two", "linked/Scanner.cs"),
+            ],
+
+            // A member whose type is extracted: the type is claimed, so it is a registered ancestor and
+            // no container is needed between it and its members.
+            "nested-types" =>
+            [
+                Type("N", "Outer", "linked/Scanner.cs"),
+                Type("N.Outer", "Inner", "linked/Scanner.cs"),
+                Member("N.Outer.Inner", "Go", "public void Go()", "linked/Scanner.cs"),
+            ],
+
+            // No container at all: the package attaches to the type itself.
+            "global-namespace" => [Type("", "Loose", "linked/Scanner.cs")],
+
+            "two-roots" =>
+            [
+                Type("A.One", "Thing", "linked/Scanner.cs"),
+                Type("B.Two.Three", "Other", "linked/Scanner.cs"),
+            ],
+
+            _ =>
+            [
+                Type("N", "Top", "linked/Scanner.cs"),
+                Type("N.A.B.C.D", "Bottom", "linked/Scanner.cs"),
+            ],
+        },
+        [],
+        RunStatus.Complete);
+
+    [Fact]
     public void Every_container_in_an_ordinary_bundle_has_an_incoming_edge()
     {
         // The invariant itself, over the full fixture: mixed depths, two packages, a shared file. Stated
         // as a test rather than only fixed, because "no link dangles" -- which BrokenLinks() checks --
         // is not the same property as "no concept is unreachable", and only the first was ever asserted.
-        AssertEveryContainerIsReachable(Generate(sharedFile: true));
+        var concepts = Generate(sharedFile: true);
+
+        Assert.Contains(concepts, c => c.Document.Frontmatter.Type?.EndsWith(" Container", StringComparison.Ordinal) == true);
+        AssertEveryContainerIsReachable(concepts);
     }
 
     /// <summary>
@@ -275,8 +375,8 @@ public class ContainmentTests
             .Select(c => c.Id.ToString())
             .ToList();
 
-        Assert.NotEmpty(containers);
-
+        // Deliberately not asserting there ARE containers: a repository whose types sit in the global
+        // namespace correctly has none. Each caller that expects some says so itself.
         foreach (var container in containers)
         {
             Assert.Contains(
@@ -398,6 +498,19 @@ public class ContainmentTests
                 new ProjectCompileItems("src/B/B.csproj", "net10.0", ["src/shared/Thing.cs"]),
             ]
             : [new ProjectCompileItems("src/A/A.csproj", "net10.0", ["linked/Scanner.cs"])]);
+
+    /// <summary>
+    /// A repository declaring in <c>N</c> and in <c>N.Sub.Deeper</c>, with nothing whatsoever in
+    /// <c>N.Sub</c> -- the gap sparse container synthesis left unbridged.
+    /// </summary>
+    private static CodeGraphModel GapGraph() => new(
+        [
+            Type("N", "Top", "linked/Scanner.cs"),
+            Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs"),
+            Member("N.Sub.Deeper.Thing", "Go", "public void Go()", "linked/Scanner.cs"),
+        ],
+        [],
+        RunStatus.Complete);
 
     private static CodeGraphModel Graph(bool sharedFile = false) => new(
         sharedFile

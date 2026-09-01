@@ -319,7 +319,7 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// <c>OkfContextProvider.ScopeBox</c>, <c>HtmlSafeJson</c> and seven more -- private or internal
     /// declarations the default visibility scope excludes while their members survive it. Labelling
     /// those "C# Namespace" would put a plainly false statement about the code into a knowledge bundle
-    /// about a third of the time; "C# Container" is true of a namespace, of a
+    /// 39% of the time; "C# Container" is true of a namespace, of a
     /// module, and of a type alike. The inference that would recover "namespace" precisely -- a
     /// container with a member child is a type -- is right for C# and wrong for the next profile, where
     /// a module's members are functions, so it is not taken. If the scope filter is ever fixed to drop
@@ -446,9 +446,10 @@ public sealed class ConceptGenerator : IConceptGenerator
         //
         // Restricting synthesis to a container something is actually declared in makes the invariant
         // provable rather than hoped for: every container concept has at least one group whose immediate
-        // container it is, that group's package attaches at exactly this container, and every deeper
-        // container's parent is itself a container or a claimed type. A level with nothing in it is not
-        // a concept -- it stays a plain directory, exactly as `code/csharp/` does.
+        // container it is, and that group's package attaches at exactly this container -- PROVIDED the
+        // container is not cut off from the ancestor a package will attach to, which is what
+        // BridgeContainerGaps below guarantees. A level with nothing in it and nothing below it that
+        // needs it is not a concept: it stays a plain directory, exactly as `code/csharp/` does.
         var containerSegments = new Dictionary<string, string[]>(StringComparer.Ordinal);
         foreach (var group in groups)
         {
@@ -464,6 +465,8 @@ public sealed class ConceptGenerator : IConceptGenerator
                 containerSegments.TryAdd(key, parent);
             }
         }
+
+        BridgeContainerGaps(containerSegments, claimed);
 
         // Sorted out of the dictionary immediately: from here on this list, not the hash table, is what
         // decides registration order and output order (§6.2).
@@ -791,6 +794,55 @@ public sealed class ConceptGenerator : IConceptGenerator
         }
 
         return new Attribution(children, alsoCompiledBy);
+    }
+
+    /// <summary>
+    /// Adds the levels needed to connect a container to its nearest <i>registered</i> ancestor, and
+    /// nothing else.
+    ///
+    /// <para><b>Why a container can be cut off at all.</b> A package attaches at the deepest container
+    /// above the groups it owns, and the minimality filter then drops any attach key whose ancestor the
+    /// same package also claims -- on the premise that the deeper one is already reachable one level
+    /// down from that ancestor. Synthesizing only immediate containers is what can invalidate that
+    /// premise: with a type in <c>N</c> and a type in <c>N.Sub.Deeper</c> and nothing in <c>N.Sub</c>,
+    /// the package claims <c>N</c> and <c>N.Sub.Deeper</c>, minimality keeps only <c>N</c>, and the
+    /// chain from <c>N</c> to <c>N.Sub.Deeper</c> has a hole in it -- so an entire subtree leaves the
+    /// graph without a single link dangling anywhere.</para>
+    ///
+    /// <para><b>Why the closure is bounded rather than a return to synthesizing every prefix.</b> The
+    /// bridge is only built where there is something on both ends: a container whose nearest ancestor is
+    /// registered gets the levels in between, and a container with no registered ancestor at all gets
+    /// nothing, because that one is where its package attaches directly. Loosening the minimality filter
+    /// instead would keep the deeper key and put the package three levels down, past concepts it should
+    /// have gone through -- and synthesizing every prefix brings back the pass-through islands. This is
+    /// the only one of the three that leaves all of "sparse where nothing needs it", "truthful package
+    /// attachment", and "one level down" standing.</para>
+    /// </summary>
+    private static void BridgeContainerGaps(Dictionary<string, string[]> containerSegments, HashSet<string> claimed)
+    {
+        // A snapshot, because the loop adds to the dictionary: every level it adds sits between an
+        // already-registered ancestor and an already-present container, so it can create no new gap and
+        // one pass is enough.
+        foreach (var container in containerSegments.Values.ToList())
+        {
+            for (var length = container.Length - 1; length >= MinimumContainerDepth; length--)
+            {
+                var ancestorKey = RawKey(container[..length]);
+                if (!claimed.Contains(ancestorKey) && !containerSegments.ContainsKey(ancestorKey))
+                {
+                    continue;
+                }
+
+                // Found the nearest registered ancestor: fill in from just below it down to this
+                // container, so every step of the chain has a parent to hang off.
+                for (var bridge = length + 1; bridge < container.Length; bridge++)
+                {
+                    containerSegments.TryAdd(RawKey(container[..bridge]), container[..bridge]);
+                }
+
+                break;
+            }
+        }
     }
 
     /// <summary>
@@ -1153,6 +1205,16 @@ public sealed class ConceptGenerator : IConceptGenerator
             return line.Insert(start, "\\");
         }
 
+        // A line that is nothing but one repeated marker is a thematic break (`---`, `***`, `___`) or a
+        // setext underline (`---`, `===`), and a setext underline retitles the paragraph ABOVE it -- a
+        // block-type change made to a line the guard already passed. It is checked before the bullet
+        // rule because the space requirement below, correct for `- item`, is exactly what lets these
+        // through.
+        if (IsMarkerOnlyLine(line, start))
+        {
+            return line.Insert(start, "\\");
+        }
+
         // A bullet or an ATX heading marker only opens a block when a space (or the line's end) follows
         // it. Without that check this escapes ordinary emphasis: `*fast* and small.` would become
         // `\*fast* and small.`, which renders the asterisks literally -- the method damaging the prose
@@ -1203,6 +1265,37 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// </summary>
     private static bool IsBlockMarkerBoundary(string line, int index) =>
         index >= line.Length || line[index] is ' ' or '\t' or '\r';
+
+    /// <summary>
+    /// Whether every non-blank character from <paramref name="start"/> is the same one of
+    /// <c>-</c>, <c>*</c>, <c>_</c>, <c>=</c> -- the shape of a thematic break or a setext underline.
+    /// Requiring one repeated character is CommonMark's own rule and is what keeps this from firing on
+    /// ordinary prose: <c>-*-</c> is neither construct and is left alone.
+    /// </summary>
+    private static bool IsMarkerOnlyLine(string line, int start)
+    {
+        var marker = line[start];
+        if (marker is not ('-' or '*' or '_' or '='))
+        {
+            return false;
+        }
+
+        for (var i = start; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (c is ' ' or '\t' or '\r')
+            {
+                continue;
+            }
+
+            if (c != marker)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// A <c>description</c> as it is rendered <b>into a body</b>: neutralized as
@@ -1276,11 +1369,25 @@ public sealed class ConceptGenerator : IConceptGenerator
             var c = text[i];
 
             // A backtick toggles a code span, exactly as LinkScanner.BlankInlineCode does -- one
-            // backtick, not a run, because that is the rule the consumer applies and this has to agree
-            // with the consumer, not with CommonMark.
+            // backtick, not a run, and with NO backslash awareness, because that is the rule the
+            // consumer applies and this has to agree with the consumer, not with CommonMark. Honouring
+            // `\` before a backtick desynchronises the two: on ``A \` b ` [text](dest).`` the scanner
+            // closes its span at the second backtick and reads the rest as prose, while a producer that
+            // skipped the first would still believe it was inside a span and ship a live link.
             if (c == '`')
             {
                 inCodeSpan = !inCodeSpan;
+                builder.Append(c);
+                continue;
+            }
+
+            // And the flag resets at every newline, because BlankInlineCode is applied per line: an
+            // unclosed backtick cannot make the NEXT line code. Carrying it across `\n` would leave a
+            // multi-line description -- a `.csproj` <Description> reaches a body with its newlines
+            // intact -- "inside a code span" for the whole rest of the text.
+            if (c == '\n')
+            {
+                inCodeSpan = false;
                 builder.Append(c);
                 continue;
             }
@@ -1291,7 +1398,9 @@ public sealed class ConceptGenerator : IConceptGenerator
                 continue;
             }
 
-            if (c == '\\' && i + 1 < text.Length)
+            // The double-escape guard, but never over a backtick: that character is the consumer's
+            // state machine, and consuming it here is what caused the divergence described above.
+            if (c == '\\' && i + 1 < text.Length && text[i + 1] != '`')
             {
                 builder.Append(c).Append(text[i + 1]);
                 i++;
