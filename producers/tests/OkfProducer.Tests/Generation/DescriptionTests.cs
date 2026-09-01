@@ -223,6 +223,50 @@ public class DescriptionTests
         Assert.Equal(doc, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
     }
 
+    [Theory]
+    [InlineData("Returns a List<T> and <T>content</T>.", "Returns a List<T> and content.")]
+    [InlineData("Wraps <c>x</c>, unlike List<c> and <c>y</c>.", "Wraps x, unlike List<c> and y.")]
+    [InlineData("A Dictionary<K,V> before <c>this</c> and <K,V>that</K,V>.", "A Dictionary<K,V> before this and that.")]
+    public void An_unpaired_generic_stays_literal_even_when_a_later_unrelated_tag_shares_its_name(string doc, string expected)
+    {
+        // The theory above only covers names with NO closer ANYWHERE in the comment, which an unbounded
+        // `IndexOf("</name>")` passes for free. The discriminating shape is an unescaped generic FOLLOWED
+        // by a genuinely paired tag of the same name: a forward search that is not scoped to this tag's
+        // own partner pairs `List<T>` against the LATER `</T>`, decides it is markup, and deletes `T` --
+        // the exact "prose that merely looks like markup" failure the unwrapper claims to guard against,
+        // shipped in its general form while only the simple form was fixed.
+        Assert.Equal(expected, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+    }
+
+    [Fact]
+    public void Properly_nested_tags_of_the_same_name_are_both_unwrapped()
+    {
+        // The other side of the pairing rule: matching to the NEAREST unmatched opener must not make a
+        // legitimately nested pair look unpaired.
+        Assert.Equal("An outer inner pair here.",
+            Resolver.Resolve(Member("T", "Scan", "An <c>outer <c>inner</c> pair</c> here."), existing: null).Text);
+    }
+
+    [Theory]
+    [InlineData("Matches <![CDATA[a < b]]> exactly.", "Matches a < b exactly.")]
+    [InlineData("Emits <![CDATA[<c>x</c>]]> literally.", "Emits <c>x</c> literally.")]
+    public void A_cdata_section_contributes_its_content_without_its_delimiters(string doc, string expected)
+    {
+        // `<![CDATA[` is not tag-shaped (`!` is neither `/` nor a letter), so before this the delimiters
+        // leaked into the description as literal text AND the content between them was scanned for tags
+        // like any other prose -- which is precisely what a CDATA section says not to do.
+        Assert.Equal(expected, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+    }
+
+    [Fact]
+    public void An_unterminated_cdata_section_is_emitted_verbatim()
+    {
+        // Same rule as an unterminated tag: with no `]]>` there is no section, so the text is prose and
+        // is copied through rather than eaten to the end of the comment.
+        Assert.Equal("Matches <![CDATA[a < b",
+            Resolver.Resolve(Member("T", "Scan", "Matches <![CDATA[a < b"), existing: null).Text);
+    }
+
     [Fact]
     public void A_paired_tag_is_still_unwrapped_even_when_its_name_looks_generic()
     {

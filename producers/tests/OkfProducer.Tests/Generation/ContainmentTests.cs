@@ -401,6 +401,104 @@ public class ContainmentTests
     }
 
     [Fact]
+    public void Two_groups_whose_containers_differ_only_by_an_empty_segment_each_get_an_incoming_link()
+    {
+        // `SplitContainer` drops empty entries, so `N.Sub` and `N..Sub` are two distinct SymbolKeys with
+        // two distinct registry ids -- and ONE shared raw path. Everything downstream of the raw path was
+        // first-wins (`registeredByRawPath.TryAdd`), so the parent linked the first id twice and the
+        // second concept got no incoming link at all: a severed branch with nothing dangling, invisible
+        // to `okf validate`. Reachable on the malformed input §2.3 puts in scope -- a MISSING/ERROR node
+        // on a partial parse contributes an empty container segment.
+        var graph = new CodeGraphModel(
+            [
+                Type("N.Sub", "Thing", "linked/Scanner.cs"),
+                Type("N..Sub", "Thing", "linked/Scanner.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+        var leaves = concepts
+            .Select(c => c.Id.ToString())
+            .Where(id => id.StartsWith("code/csharp/n/sub/", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Equal(2, leaves.Count);
+        foreach (var leaf in leaves)
+        {
+            Assert.Contains(
+                concepts,
+                other => other.Id.ToString() != leaf
+                    && other.Document.Body.Contains($"](/{leaf})", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void A_package_links_both_top_level_groups_that_share_a_raw_path()
+    {
+        // The same first-wins lookup one level up, where the group IS the attachment point: with no
+        // container anywhere, `AttributePackages` resolves the package's child through the raw path too,
+        // so the second concept was unreachable from the only family that could reach it.
+        var graph = new CodeGraphModel(
+            [
+                Type("", "Loose", "linked/Scanner.cs"),
+                Type(".", "Loose", "linked/Scanner.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+        var body = Single(concepts, "packages/lib").Document.Body;
+
+        Assert.Contains("(/code/csharp/loose)", body, StringComparison.Ordinal);
+        Assert.Contains("(/code/csharp/loose-2)", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_package_description_opening_a_fence_behind_non_ascii_whitespace_still_lists_its_namespaces()
+    {
+        // The derived route into the same disagreement, and the only family where it is reachable: a
+        // `.csproj` <Description> reaches the body untrimmed, so a leading NBSP before a fence slipped
+        // past EscapeLineBlockMarker (' ' and '\t' only) while LinkScanner.CodeFreeLines trimmed it with
+        // TrimStart() and opened a fence -- swallowing this package's whole `## Contains` section, which
+        // is the only way into the `code/` family.
+        var snapshot = new RepositorySnapshot(RepoRoot, "my-repo",
+            [new PackageManifest("nuget", "src/A/A.csproj", "lib", "\u00a0```\nan unclosed fence.")],
+            [new DocFile("README.md", "Readme")]);
+
+        var body = Single(new ConceptGenerator().Generate(snapshot, Graph(), Options()), "packages/lib").Document.Body;
+
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n");
+    }
+
+    [Fact]
+    public void A_manual_package_description_still_has_its_leading_fence_defused()
+    {
+        // §4.2 preservation reaching `packages/*` brings the one exception `code/*` already makes with
+        // it: a description a human wrote is left exactly as written EXCEPT for an unbalanced leading
+        // fence, which is not a rendering choice but a severed branch -- the scanner would skip every
+        // line after it, `## Contains` included.
+        var options = Options() with
+        {
+            ExistingFrontmatter = id => id.ToString() == "packages/lib" ? Preserved("```\nan unclosed fence.") : null,
+        };
+
+        var concept = Single(new ConceptGenerator().Generate(Snapshot(), Graph(), options), "packages/lib");
+
+        Assert.Equal("```\nan unclosed fence.", concept.Document.Frontmatter.Description);
+        Assert.Contains(LinkScanner.ExtractLinks(concept.Document.Body), link => link.Target == "/code/csharp/n");
+    }
+
+    /// <summary>Frontmatter as a human would leave it behind: a description of their own, marked <c>manual</c>.</summary>
+    private static Frontmatter Preserved(string description) =>
+        OkfDocumentBuilder.ForType("Package")
+            .Description(description)
+            .Extension(DescriptionResolver.DescriptionSourceKey, new OKF4net.Yaml.YamlString(DescriptionResolver.ManualLabel))
+            .Body("body\n")
+            .Build()
+            .Frontmatter;
+
+    [Fact]
     public void A_manual_description_on_a_namespace_survives_regeneration()
     {
         // §4.2 reaches the namespace family too: a container concept is a real concept a human can edit,

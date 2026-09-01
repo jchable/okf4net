@@ -576,6 +576,84 @@ public class CodeConceptGeneratorTests
         Assert.Contains("\\```\n- a bullet the fence would otherwise hide.", concept.Document.Body, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("\u00a0")]
+    [InlineData("\f")]
+    [InlineData("\v")]
+    [InlineData("\u2028")]
+    public void A_leading_fence_behind_non_ascii_whitespace_is_still_defused(string whitespace)
+    {
+        // The defusal and the consumer disagreed about what "leading whitespace" is: this file skipped
+        // ' ' and '\t' only, while LinkScanner.CodeFreeLines uses TrimStart(), which trims every
+        // char.IsWhiteSpace -- NBSP, form feed, vertical tab, U+2028. So a description line beginning
+        // with one of those and then ``` was NOT defused here but DID open a fence there, and the
+        // scanner skipped every line after it, this concept's own `## Calls` included.
+        var options = Options() with
+        {
+            ExistingFrontmatter = _ => ExistingFrontmatter(whitespace + "```\nan unclosed fence.", "manual"),
+        };
+
+        var body = Single(Generate(options), "code/csharp/n/scanner/scan").Document.Body;
+
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n/other/callee");
+    }
+
+    [Fact]
+    public void A_balanced_fence_pair_in_an_authored_description_is_left_exactly_as_written()
+    {
+        // A balanced pair severs nothing -- the scanner opens the fence and closes it again, and every
+        // line after the close is scanned -- so escaping it bought no structural property while costing
+        // the author their code block: `\` + ``` renders as a literal backtick followed by a stray
+        // two-backtick span opener. Defuse only an UNBALANCED fence, which is the only one that can
+        // swallow the rest of the body.
+        var options = Options() with
+        {
+            ExistingFrontmatter = _ => ExistingFrontmatter("```\nvar x = 1;\n```\nAfter the block.", "manual"),
+        };
+
+        var body = Single(Generate(options), "code/csharp/n/scanner/scan").Document.Body;
+
+        Assert.Contains("\n\n```\nvar x = 1;\n```\nAfter the block.\n", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\```", body, StringComparison.Ordinal);
+
+        // And the pair still costs the concept nothing: `## Calls` sits after the closing fence.
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n/other/callee");
+    }
+
+    [Fact]
+    public void A_balanced_pair_followed_by_a_stray_opener_defuses_only_the_stray_one()
+    {
+        // Which one is unbalanced is decided by replaying the scanner's own state machine, not by
+        // counting: the author's closed block keeps its exact bytes and only the opener that never
+        // closes is escaped.
+        var options = Options() with
+        {
+            ExistingFrontmatter = _ => ExistingFrontmatter("```\nvar x = 1;\n```\ntext\n```\nstray.", "manual"),
+        };
+
+        var body = Single(Generate(options), "code/csharp/n/scanner/scan").Document.Body;
+
+        Assert.Contains("\n\n```\nvar x = 1;\n```\ntext\n\\```\nstray.\n", body, StringComparison.Ordinal);
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n/other/callee");
+    }
+
+    [Fact]
+    public void A_fence_that_only_becomes_reachable_once_the_opener_is_defused_is_defused_too()
+    {
+        // Escaping the unclosed opener puts the lines it was hiding back in front of the scanner, and one
+        // of them can open a fence of its own: `~~~` does not close a ``` block, so it is skipped on the
+        // first pass and becomes the new unclosed opener on the second. A single pass leaves the body
+        // severed exactly as before.
+        var options = Options() with
+        {
+            ExistingFrontmatter = _ => ExistingFrontmatter("```\n~~~\nstill hidden.", "manual"),
+        };
+
+        var body = Single(Generate(options), "code/csharp/n/scanner/scan").Document.Body;
+
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n/other/callee");
+    }
+
     [Fact]
     public void A_tagged_link_is_unwrapped_first_and_then_neutralized()
     {

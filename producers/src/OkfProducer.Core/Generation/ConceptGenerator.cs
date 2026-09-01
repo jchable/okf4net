@@ -31,10 +31,17 @@ namespace OkfProducer.Core.Generation;
 public sealed class ConceptGenerator : IConceptGenerator
 {
     /// <summary>
-    /// The §7 actor this producer writes into every generated concept's <c>generated.by</c>. Derived
-    /// from the assembly version rather than hard-coded so it cannot drift from the version the tool
-    /// actually ships as; the informational version (which can carry a git hash) is deliberately not
-    /// used, because it would churn every concept on every build.
+    /// The §7 actor this producer writes into <c>generated.by</c>. Derived from the assembly version
+    /// rather than hard-coded so it cannot drift from the version the tool actually ships as; the
+    /// informational version (which can carry a git hash) is deliberately not used, because it would
+    /// churn every concept on every build.
+    ///
+    /// <para><b>Not every concept carries it</b>, and the summary used to say otherwise. It is written
+    /// by <see cref="BuildOverview"/> (with <c>at</c>) and by the <c>code/</c> family --
+    /// <see cref="BuildCodeConcept"/> and <see cref="BuildContainerConcept"/>, <c>by</c> alone.
+    /// <c>packages/*</c> and <c>docs/*</c> carry no <c>generated</c> block at all: they are a projection
+    /// of a manifest and a file listing, and the run that produced them is already named on
+    /// <c>overview</c>.</para>
     /// </summary>
     public static string ProducerActor { get; } =
         $"okfgen/{typeof(ConceptGenerator).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"}";
@@ -142,16 +149,20 @@ public sealed class ConceptGenerator : IConceptGenerator
         // GenerateOptions.Rev's branch name (a later task builds permalinks from that one).
         var generatedAt = GitRevision.HeadCommitInstant(snapshot.RepoPath);
         var revision = GitRevision.HeadSha(snapshot.RepoPath);
-        results.Add(new GeneratedConcept(overviewId, BuildOverview(snapshot, overviewChildren, generatedAt, revision)));
+        results.Add(new GeneratedConcept(
+            overviewId,
+            BuildOverview(snapshot, overviewChildren, generatedAt, revision, options.ExistingFrontmatter?.Invoke(overviewId))));
 
         foreach (var (id, manifest) in packages)
         {
-            results.Add(new GeneratedConcept(id, BuildPackageConcept(manifest, code.ChildrenOf(id))));
+            results.Add(new GeneratedConcept(
+                id,
+                BuildPackageConcept(manifest, code.ChildrenOf(id), options.ExistingFrontmatter?.Invoke(id))));
         }
 
         foreach (var (id, doc) in docs)
         {
-            results.Add(new GeneratedConcept(id, BuildDocConcept(doc)));
+            results.Add(new GeneratedConcept(id, BuildDocConcept(doc, options.ExistingFrontmatter?.Invoke(id))));
         }
 
         results.AddRange(code.Concepts);
@@ -233,18 +244,25 @@ public sealed class ConceptGenerator : IConceptGenerator
         string.Equals(segment, "index", StringComparison.OrdinalIgnoreCase)
         || string.Equals(segment, "log", StringComparison.OrdinalIgnoreCase);
 
-    private static OkfDocument BuildOverview(RepositorySnapshot snapshot, IReadOnlyList<Child> children, string generatedAt, string? revision)
+    private static OkfDocument BuildOverview(
+        RepositorySnapshot snapshot,
+        IReadOnlyList<Child> children,
+        string generatedAt,
+        string? revision,
+        Frontmatter? existing)
     {
-        var description = snapshot.Packages.Count switch
+        var derived = snapshot.Packages.Count switch
         {
             0 => $"Repository {snapshot.RepoName}.",
             1 => $"Repository {snapshot.RepoName}, containing 1 detected package.",
             var n => $"Repository {snapshot.RepoName}, containing {n.ToString(CultureInfo.InvariantCulture)} detected packages.",
         };
 
+        var (description, preserved) = LiftedDescription(derived, existing);
+
         var body = new StringBuilder();
         body.Append("# ").Append(LiftedBodyText(snapshot.RepoName)).Append("\n\n")
-            .Append(LiftedBodyParagraph(description)).Append('\n');
+            .Append(LiftedBodyParagraph(description, preserved)).Append('\n');
         AppendContains(body, children);
 
         var builder = OkfDocumentBuilder
@@ -253,6 +271,8 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Description(description)
             .Tags("repository")
             .Body(body.ToString());
+
+        builder = WithPreservedSource(builder, preserved);
 
         // §6.1: `overview` is the one concept that carries `at` -- code and container concepts keep
         // `by` alone (see BuildCodeConcept/BuildContainerConcept), because all ~480 of them are
@@ -277,31 +297,34 @@ public sealed class ConceptGenerator : IConceptGenerator
         return builder.Build();
     }
 
-    private static OkfDocument BuildPackageConcept(PackageManifest package, IReadOnlyList<Child> children)
+    private static OkfDocument BuildPackageConcept(PackageManifest package, IReadOnlyList<Child> children, Frontmatter? existing)
     {
-        var description = package.Description ?? $"{package.Ecosystem} package {package.Name}.";
+        var derived = package.Description ?? $"{package.Ecosystem} package {package.Name}.";
+        var (description, preserved) = LiftedDescription(derived, existing);
 
         var body = new StringBuilder();
         body.Append("# ").Append(LiftedBodyText(package.Name)).Append("\n\n")
-            .Append(LiftedBodyParagraph(description)).Append('\n');
+            .Append(LiftedBodyParagraph(description, preserved)).Append('\n');
         AppendContains(body, children);
 
-        return OkfDocumentBuilder
+        var builder = OkfDocumentBuilder
             .ForType("Package")
             .Title(package.Name)
             .Description(description)
             .Tags(package.Ecosystem)
             .Resource(package.RelativePath)
             .AddSource(resource: package.RelativePath)
-            .Body(body.ToString())
-            .Build();
+            .Body(body.ToString());
+
+        return WithPreservedSource(builder, preserved).Build();
     }
 
-    private static OkfDocument BuildDocConcept(DocFile doc)
+    private static OkfDocument BuildDocConcept(DocFile doc, Frontmatter? existing)
     {
-        var description = $"Repository documentation file {doc.RelativePath}.";
+        var derived = $"Repository documentation file {doc.RelativePath}.";
+        var (description, preserved) = LiftedDescription(derived, existing);
 
-        return OkfDocumentBuilder
+        var builder = OkfDocumentBuilder
             .ForType("Documentation")
             .Title(doc.Title)
             .Description(description)
@@ -316,9 +339,97 @@ public sealed class ConceptGenerator : IConceptGenerator
             // what that helper exists for: a repository path may legally contain a backtick on either
             // platform, and a naive fence lets its own content close the span early -- after which the
             // rest of the path is prose again, and a lifted string has manufactured a real link.
-            .Body($"# {LiftedBodyText(doc.Title)}\n\nSee {CodeSpan(doc.RelativePath)} in the repository.\n")
-            .Build();
+            .Body($"# {LiftedBodyText(doc.Title)}\n\nSee {CodeSpan(doc.RelativePath)} in the repository.\n");
+
+        return WithPreservedSource(builder, preserved).Build();
     }
+
+    /// <summary>
+    /// §4.2's field preservation for the three families whose description is a projection of repository
+    /// metadata rather than of anything bundle-authored: <c>overview</c>, <c>packages/*</c> and
+    /// <c>docs/*</c>. Returns the description to write and, when one was preserved, the
+    /// <c>description_source</c> label the author had set.
+    ///
+    /// <para><b>Why these families needed wiring at all.</b> Preservation reached the <c>code/</c> family
+    /// alone; here <paramref name="derived"/> was recomputed unconditionally and the writer then rewrote
+    /// the file whole. So a hand-written description on <c>packages/okf4net</c> -- the concept a human is
+    /// most likely to write, since the derived text is only the <c>.csproj</c> <c>&lt;Description&gt;</c>
+    /// -- was destroyed on the next <c>generate --update</c>, and marking it
+    /// <c>description_source: manual</c> did not help, because the key was never read here. The reading
+    /// that these families "never reach" a bundle-authored description is true of what this producer
+    /// WRITES and false of what a user may EDIT, which is the situation §4.2 exists for.</para>
+    ///
+    /// <para><b>The rule itself is not reimplemented.</b> It is <see cref="DescriptionResolver"/>'s, run
+    /// over a one-source chain that yields <paramref name="derived"/>, so "which labels are re-derived"
+    /// has exactly one definition in this codebase rather than a second copy here that could drift from
+    /// it -- the same reason <c>ContainerFact</c> exists for the container family.</para>
+    ///
+    /// <para><b>A derived description writes no <c>description_source</c> at all, and that asymmetry with
+    /// <c>code/*</c> is load-bearing rather than an oversight.</b> The resolver re-derives on exactly two
+    /// labels (<see cref="DocCommentSource.SourceLabel"/>, <see cref="SignatureSource.SourceLabel"/>) and
+    /// preserves every other value, so a label of this family's own -- <c>package-manifest</c>, say --
+    /// would be read back on the next run as something to PRESERVE, freezing a description whose entire
+    /// job is to track the manifest. Absent means "derive normally", which is the behaviour these
+    /// families want; the label is written back only when there is an author's value to keep, and it must
+    /// be written back then, or the next run would find no key and re-derive over the text it just
+    /// preserved.</para>
+    /// </summary>
+    private static (string Description, string? PreservedSource) LiftedDescription(string derived, Frontmatter? existing)
+    {
+        var (text, source) = new DescriptionResolver([new LiftedMetadataSource(derived)]).Resolve(MetadataFact, existing);
+
+        return (text, source == LiftedMetadataSource.SourceLabel ? null : source);
+    }
+
+    /// <summary>Adds the author's <c>description_source</c> back to a concept whose description was preserved, and nothing at all otherwise.</summary>
+    private static OkfDocumentBuilder WithPreservedSource(OkfDocumentBuilder builder, string? preservedSource) =>
+        preservedSource is null
+            ? builder
+            : builder.Extension(DescriptionResolver.DescriptionSourceKey, new YamlString(preservedSource));
+
+    /// <summary>
+    /// A <see cref="LiftedBodyParagraph"/> that respects <paramref name="preservedSource"/>: text this
+    /// producer derived is neutralized, text the author wrote in the bundle is left as written apart from
+    /// an unclosed fence. The same rule <see cref="BodyDescription"/> applies to the <c>code/</c> family,
+    /// keyed the same way, so two concepts with identical text cannot behave differently.
+    /// </summary>
+    private static string LiftedBodyParagraph(string text, string? preservedSource) =>
+        preservedSource is null ? LiftedBodyParagraph(text) : DefuseLeadingFenceOnly(text);
+
+    /// <summary>
+    /// The description source for a family whose text is a projection of repository metadata: it always
+    /// produces, and its label is a sentinel this producer never writes to disk (see
+    /// <see cref="LiftedDescription"/>) -- so it can never come back as an existing value and be mistaken
+    /// for something to preserve.
+    /// </summary>
+    private sealed class LiftedMetadataSource(string derived) : IDescriptionSource
+    {
+        /// <summary>The label <see cref="LiftedDescription"/> reads to tell "derived" from "preserved", and never writes.</summary>
+        public const string SourceLabel = "repository-metadata";
+
+        /// <inheritdoc/>
+        public (string Text, string Source)? Describe(SymbolFact fact) => (derived, SourceLabel);
+    }
+
+    /// <summary>
+    /// The stand-in <see cref="SymbolFact"/> <see cref="LiftedDescription"/> hands the resolver.
+    /// <see cref="LiftedMetadataSource"/> ignores it entirely -- it is the resolver's signature, not an
+    /// input -- and, exactly as <c>ContainerFact</c> warns, it is not a declaration: it must never reach
+    /// <see cref="ResourceUrl"/> or anything else that would read a path or an offset off it.
+    /// </summary>
+    private static readonly SymbolFact MetadataFact = new(
+        SymbolKind.Namespace,
+        Language: string.Empty,
+        Container: string.Empty,
+        Name: string.Empty,
+        Signature: string.Empty,
+        SymbolVisibility.Public,
+        RelativePath: string.Empty,
+        StartOffset: 0,
+        EndOffset: 0,
+        StartLine: 0,
+        EndLine: 0,
+        DocComment: null);
 
     // ---------------------------------------------------------------------------------------------
     // §4: the code family.
@@ -411,6 +522,8 @@ public sealed class ConceptGenerator : IConceptGenerator
             .ThenBy(g => g.Key.Container, StringComparer.Ordinal)
             .ThenBy(g => g.Key.Name, StringComparer.Ordinal)
             .ToList();
+
+        DisambiguateSharedRawPaths(groups);
 
         // A call site names its caller as (container, name) and its target as (container, name) -- and
         // CallSite carries no language at all. Both joins below are therefore language-agnostic, which is
@@ -1331,11 +1444,32 @@ public sealed class ConceptGenerator : IConceptGenerator
                 : line;
     }
 
-    /// <summary>The index of the first non-space, non-tab character in <paramref name="line"/> (or its length, if there is none).</summary>
+    /// <summary>
+    /// The index of the first non-whitespace character in <paramref name="line"/> (or its length, if
+    /// there is none), where <b>whitespace means <see cref="char.IsWhiteSpace(char)"/></b> -- NBSP, form
+    /// feed, vertical tab and U+2028 included, not the <c>' '</c>/<c>'\t'</c> pair CommonMark allows
+    /// before a block marker.
+    ///
+    /// <para><b>The consumer's definition is the authoritative one, and the consumer is
+    /// <see cref="OKF4net.LinkScanner"/>.</b> Its <c>CodeFreeLines</c> decides a line opens a fenced code
+    /// block by <c>TrimStart()</c>, which trims every <c>char.IsWhiteSpace</c>. So a description line
+    /// beginning with an NBSP and then ``` was not defused here while it did open a fence there -- after
+    /// which the scanner skipped every following line, this concept's own <c>## Contains</c> and
+    /// <c>## Calls</c> included. Two definitions of "leading whitespace" is precisely how a branch gets
+    /// severed with nothing dangling for <c>okf validate</c> to see, and the same reasoning that makes
+    /// <see cref="NeutralizeMarkdownLinks"/> mirror <c>BlankInlineCode</c> rather than CommonMark applies
+    /// here: this has to agree with the consumer, not with a spec.</para>
+    ///
+    /// <para>The wider class is safe for the markers that only affect <i>rendering</i>
+    /// (<see cref="EscapeLineBlockMarker"/>'s others), because CommonMark does not admit them behind an
+    /// NBSP either: the line was already a paragraph, and the escape it now gets renders identically to
+    /// the character it protects (<c>\-</c> is <c>-</c>). It can add a redundant escape; it cannot
+    /// change what a reader sees.</para>
+    /// </summary>
     private static int LeadingWhitespaceEnd(string line)
     {
         var start = 0;
-        while (start < line.Length && (line[start] == ' ' || line[start] == '\t'))
+        while (start < line.Length && char.IsWhiteSpace(line[start]))
         {
             start++;
         }
@@ -1458,25 +1592,94 @@ public sealed class ConceptGenerator : IConceptGenerator
             : DefuseLeadingFenceOnly(description);
 
     /// <summary>
-    /// Escapes only a leading fenced-code-block marker on each line of <paramref name="text"/> --
-    /// nothing else, including every other block marker <see cref="EscapeLeadingBlockMarker"/> also
-    /// handles. See <see cref="BodyDescription"/> for why a fence alone is defused on text this producer
-    /// otherwise never touches.
+    /// Escapes the leading fenced-code-block marker that <b>never closes</b> -- nothing else, including
+    /// every other block marker <see cref="EscapeLeadingBlockMarker"/> also handles, and including a
+    /// fence that is part of a balanced pair. See <see cref="BodyDescription"/> for why a fence alone is
+    /// defused on text this producer otherwise never touches.
+    ///
+    /// <para><b>Balanced pairs are left alone, and that is a correction rather than a relaxation.</b> The
+    /// danger is not a fence, it is a fence <see cref="OKF4net.LinkScanner"/> never closes: on a balanced
+    /// pair the scanner opens the block and closes it again, so every line after the close -- this
+    /// concept's own <c>## Contains</c> and <c>## Calls</c> -- is scanned exactly as it would be with no
+    /// fence at all. Escaping such a pair bought no structural property whatsoever, and it was not free:
+    /// <c>\</c> before ``` renders as a literal backtick followed by a stray two-backtick span opener, so
+    /// the escape destroyed the author's code block rather than blemishing it -- damage done to text this
+    /// method's whole premise is that it must not edit.</para>
+    ///
+    /// <para><b>Which fence is the unclosed one is decided by replaying the scanner's own state machine,
+    /// not by counting.</b> A <c>~~~</c> does not close a ``` block, so parity over all fence-shaped
+    /// lines is the wrong question; and the replay has to be repeated until it settles, because escaping
+    /// the unclosed opener puts the lines it was hiding back in front of the scanner and one of THEM can
+    /// open a fence of its own (``` then <c>~~~</c> is the two-line case). Each pass escapes exactly one
+    /// line and strictly reduces the number of fence-shaped lines, so it terminates.</para>
     /// </summary>
     private static string DefuseLeadingFenceOnly(string text)
     {
         var lines = text.Split('\n');
-        for (var i = 0; i < lines.Length; i++)
+
+        while (UnclosedFenceLine(lines) is { } index)
         {
-            var line = lines[i];
-            var start = LeadingWhitespaceEnd(line);
-            if (start < line.Length && TryEscapeLeadingFence(line, start, out var fenced))
+            // The escape always lands: UnclosedFenceLine nominates a line only on the same 3+ run of the
+            // same marker that TryEscapeLeadingFence tests for. Guarded all the same, because the loop's
+            // termination rests on that agreement and a future edit to either could break it silently --
+            // an unescaped fence is the bug this method already has; an infinite loop would be a new one.
+            var start = LeadingWhitespaceEnd(lines[index]);
+            if (!TryEscapeLeadingFence(lines[index], start, out var fenced))
             {
-                lines[i] = fenced;
+                break;
             }
+
+            lines[index] = fenced;
         }
 
         return string.Join('\n', lines);
+    }
+
+    /// <summary>
+    /// The index of the line that opens a fenced code block <see cref="OKF4net.LinkScanner"/> never
+    /// closes, or <see langword="null"/> when every fence in <paramref name="lines"/> is balanced.
+    ///
+    /// <para>A transcription of <c>LinkScanner.CodeFreeLines</c>'s own loop, and deliberately so: the
+    /// question is not what CommonMark makes of these lines, it is what the scanner that resolves this
+    /// bundle's links does with them. Both marker characters are tracked separately, and a closer must
+    /// repeat the marker its opener used.</para>
+    /// </summary>
+    private static int? UnclosedFenceLine(IReadOnlyList<string> lines)
+    {
+        char? fence = null;
+        var opener = 0;
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            var start = LeadingWhitespaceEnd(line);
+            var marker = start < line.Length ? line[start] : '\0';
+            var run = 0;
+            while (start + run < line.Length && line[start + run] == marker)
+            {
+                run++;
+            }
+
+            var isFence = marker is '`' or '~' && run >= 3;
+
+            if (fence is { } open)
+            {
+                if (isFence && marker == open)
+                {
+                    fence = null;
+                }
+
+                continue;
+            }
+
+            if (isFence)
+            {
+                fence = marker;
+                opener = i;
+            }
+        }
+
+        return fence is null ? null : opener;
     }
 
     /// <summary>
@@ -1783,6 +1986,77 @@ public sealed class ConceptGenerator : IConceptGenerator
     private static string RawKey(IEnumerable<string> segments) => string.Join(char.MinValue, segments);
 
     /// <summary>
+    /// The character appended to a leaf raw segment to tell two groups apart that
+    /// <see cref="RawSegments"/> would otherwise give the same path. Never NUL, which
+    /// <see cref="RawKey"/> joins on and <see cref="IsProperAncestor"/>'s prefix test depends on, and
+    /// never anything an identifier can contain -- so a disambiguated key can collide with nothing and
+    /// still cannot be mistaken for a descendant of the key it was cloned from.
+    /// </summary>
+    private const char RawPathDiscriminator = '\u0001';
+
+    /// <summary>
+    /// Gives every symbol group a raw path of its own, which <see cref="RawSegments"/> alone does not
+    /// guarantee.
+    ///
+    /// <para><b>Why two groups can share one raw path.</b> <c>SplitContainer</c> drops empty entries, so
+    /// <c>N.Log</c> and <c>N..Log</c> are two distinct <see cref="SymbolKey"/>s -- two groups, two
+    /// registry ids -- that split to the same segments. The comment on the depth sort above already
+    /// records that more than one container spelling denotes the same structural path; this is the other
+    /// conclusion to draw from it. It is reachable on the malformed input §2.3 puts in scope: an
+    /// extractor builds a container path from every ancestor carrying a <c>name</c> field, and a
+    /// MISSING/ERROR node on a partial parse contributes an empty segment.</para>
+    ///
+    /// <para><b>What sharing one cost.</b> Every map keyed on the raw path -- the registered id, the
+    /// title, the source files pruning joins on, the package attachment -- is <c>TryAdd</c>, so the
+    /// second group lost to the first everywhere: the parent emitted the FIRST group's link twice
+    /// (deduplicated to one bullet by <see cref="AppendSection"/>) and the second concept got no incoming
+    /// link at all, while its files were recorded against its rival's id. An unreachable concept whose
+    /// file exists is a severed branch with nothing dangling -- exactly what <c>okf validate</c> cannot
+    /// see.</para>
+    ///
+    /// <para><b>Only the LEAF segment is disambiguated</b>, which is what makes this a local fix rather
+    /// than a re-parenting: a group's parent key is its segments minus the last, so suffixing the last
+    /// leaves the parent lookup -- and therefore <see cref="RegisterCodeId"/>'s "register under my
+    /// parent's registered id" rule -- exactly as it was. Nothing downstream reads a raw segment as a
+    /// name (titles come from the <see cref="SymbolFact"/>, container names from the container's own
+    /// segments), so the suffix never reaches output.</para>
+    ///
+    /// <para><b>The residual, stated because it is real.</b> Members declared under the second spelling
+    /// still compute their parent key from their own container string, which splits to the FIRST group's
+    /// path -- so they register and attach under the first group's concept. That is inherent to two
+    /// spellings denoting one structural path, and it is now consistent (one parent, one incoming link)
+    /// where before it was contradictory: both concepts listed the same children while one of them had no
+    /// parent.</para>
+    /// </summary>
+    private static void DisambiguateSharedRawPaths(
+        List<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)> groups)
+    {
+        // Run after the sort, so which group keeps the undecorated path is decided by §6.2's order and
+        // not by the order the extractor happened to emit symbols in.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < groups.Count; i++)
+        {
+            var segments = groups[i].RawSegments;
+            if (seen.Add(RawKey(segments)))
+            {
+                continue;
+            }
+
+            var disambiguated = (string[])segments.Clone();
+            var ordinal = 2;
+            do
+            {
+                disambiguated[^1] = segments[^1] + RawPathDiscriminator + ordinal.ToString(CultureInfo.InvariantCulture);
+                ordinal++;
+            }
+            while (!seen.Add(RawKey(disambiguated)));
+
+            groups[i] = (groups[i].Key, groups[i].Declarations, disambiguated);
+        }
+    }
+
+    /// <summary>
     /// The final id segment for this symbol's own name, taken from <see cref="CodeConceptIds.For"/> on
     /// a container-less copy rather than reimplemented: that method owns the word-boundary tokenizer
     /// (§3.1), and it appends the name segment identically whether or not there is a container, so this
@@ -2012,9 +2286,29 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// Escapes the display half of a markdown link. Symbol names are identifiers in practice, but they
     /// reach here from untrusted source text (§2.3), and a stray <c>]</c> would end the link text early
     /// and turn the rest of the line into prose.
+    ///
+    /// <para><b>A backtick is replaced rather than escaped, and it is the link's survival that is at
+    /// stake, not its rendering.</b> <see cref="OKF4net.LinkScanner"/>'s <c>BlankInlineCode</c> toggles a
+    /// code span on <i>every</i> backtick and blanks to the end of the line, so a bullet whose label
+    /// carries an ODD number of them has its own <c>](/id)</c> blanked before <c>ScanLineLinks</c> ever
+    /// sees it: the link vanishes, the target file still exists, and nothing dangles, so
+    /// <c>okf validate</c> stays silent while the branch is severed -- the same failure shape as an
+    /// unbalanced fence, one character wide. Reachable through <c>overview</c>'s own children, since a
+    /// doc concept's title is lifted verbatim from the README's <c>#</c> heading and an unbalanced
+    /// backtick in one (<c>Migrating to `v2</c>) is an ordinary typo.</para>
+    ///
+    /// <para><b>Why <c>&amp;#96;</c> and not <c>\`</c>.</b> A backslash would be correct for a renderer --
+    /// CommonMark escapes a backtick like any ASCII punctuation -- and useless here, because
+    /// <c>BlankInlineCode</c> has no backslash awareness at all, deliberately (see
+    /// <see cref="NeutralizeMarkdownLinks"/>, which mirrors that rule rather than CommonMark's for
+    /// exactly this reason). Only a form carrying no backtick CHARACTER leaves the consumer's state
+    /// machine alone, and a numeric character reference renders as the character the author wrote. The
+    /// substitution is not applied to <see cref="CodeSpan"/>, where a backtick is content and the fence
+    /// is widened around it instead.</para>
     /// </summary>
     private static string LinkText(string text) =>
         Flatten(text).Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("`", "&#96;", StringComparison.Ordinal)
             .Replace("[", "\\[", StringComparison.Ordinal)
             .Replace("]", "\\]", StringComparison.Ordinal);
 }

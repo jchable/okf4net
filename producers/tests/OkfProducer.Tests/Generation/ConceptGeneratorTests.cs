@@ -244,6 +244,137 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void A_documentation_title_containing_a_backtick_does_not_blank_its_own_containment_link()
+    {
+        // The other half of the backtick door, through the LABEL rather than the path. `LinkScanner`'s
+        // `BlankInlineCode` toggles on EVERY backtick and blanks to the end of the line, so a `## Contains`
+        // bullet whose label carries an ODD number of backticks has its own `](/id)` blanked before the
+        // link scanner ever sees it: the link vanishes, the target file still exists, and nothing dangles,
+        // so `okf validate` is silent while the branch is severed. A doc title is lifted verbatim from the
+        // README's `# ` heading, where an unbalanced backtick (`# Migrating to \`v2`) is an ordinary typo.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("guide.md", "Don`t Panic")]);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+        var docId = concepts.Single(c => c.Id.Segments[0] == "docs").Id.ToString();
+        var overviewBody = concepts[0].Document.Body;
+
+        Assert.Contains(LinkScanner.ExtractLinks(overviewBody), link => link.Target == "/" + docId);
+
+        // And the character still reaches the reader: `&#96;` renders as a backtick, which a backslash
+        // escape would too -- but `BlankInlineCode` has no backslash awareness, so only a form carrying
+        // no backtick CHARACTER keeps the link.
+        Assert.Contains("Don&#96;t Panic", overviewBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_manual_description_on_a_package_survives_regeneration()
+    {
+        // §4.2 was wired into the `code/` family alone: `packages/*` re-derived its description
+        // unconditionally and the writer rewrote the file wholesale, so a hand-written description on the
+        // concept a human is MOST likely to edit -- the derived text is only the `.csproj` <Description> --
+        // died on the next `generate --update`, and `description_source: manual` did not help because the
+        // key was never read for this family.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Foo.csproj", "Foo", "From the csproj.")],
+            []);
+
+        var concept = Generate(snapshot, "packages/foo", Preserved("Hand written."));
+
+        Assert.Equal("Hand written.", concept.Document.Frontmatter.Description);
+        Assert.Contains("Hand written.", concept.Document.Body, StringComparison.Ordinal);
+
+        // The label is written back out, or the next run would find no `description_source` and re-derive
+        // over the text it just preserved -- preservation that lasts exactly one run is not preservation.
+        Assert.Equal("manual", concept.Document.Frontmatter.Get(DescriptionResolver.DescriptionSourceKey)?.AsDisplayString());
+    }
+
+    [Fact]
+    public void A_manual_description_on_a_documentation_concept_survives_regeneration()
+    {
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("README.md", "Readme")]);
+
+        var concept = Generate(snapshot, "docs/readme", Preserved("Hand written."));
+
+        Assert.Equal("Hand written.", concept.Document.Frontmatter.Description);
+        Assert.Equal("manual", concept.Document.Frontmatter.Get(DescriptionResolver.DescriptionSourceKey)?.AsDisplayString());
+    }
+
+    [Fact]
+    public void A_manual_package_description_keeps_the_link_its_author_wrote()
+    {
+        // "On the same terms as `code/*`": a link in a description the producer DERIVED is doc syntax
+        // nobody meant for this bundle and is neutralized, while a link in a description a human wrote in
+        // the bundle is a link they meant. Keyed on `description_source`, exactly as `BodyDescription` is.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Foo.csproj", "Foo", "From the csproj.")],
+            []);
+
+        var body = Generate(snapshot, "packages/foo", Preserved("See [the overview](/overview).")).Document.Body;
+
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/overview");
+    }
+
+    [Fact]
+    public void A_manual_description_on_the_overview_survives_regeneration()
+    {
+        // One concept beyond the ruling's `packages/*` and `docs/*`, and for the same reason: the derived
+        // text is a head-count of detected packages, so `overview` is a concept a human plainly may
+        // rewrite -- and it was re-derived and overwritten wholesale exactly as the other two were.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Foo.csproj", "Foo", null)],
+            []);
+
+        var concept = Generate(snapshot, "overview", Preserved("What this repository is for."));
+
+        Assert.Equal("What this repository is for.", concept.Document.Frontmatter.Description);
+        Assert.Equal("manual", concept.Document.Frontmatter.Get(DescriptionResolver.DescriptionSourceKey)?.AsDisplayString());
+
+        // And the one level of containment below it is still there: `overview` is the way in.
+        Assert.Contains(LinkScanner.ExtractLinks(concept.Document.Body), link => link.Target == "/packages/foo");
+    }
+
+    [Fact]
+    public void A_derived_package_or_doc_description_carries_no_description_source_key()
+    {
+        // The asymmetry preservation rests on, pinned so it cannot drift: these families write NO
+        // `description_source` when the text is derived, which is what keeps "absent => derive normally"
+        // meaning "refresh from the manifest" here. A label of their own would be read back on the next
+        // run as a value DescriptionResolver does not recognise as derived -- and preserved for ever,
+        // freezing a description that is supposed to track the `.csproj`.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Foo.csproj", "Foo", "From the csproj.")],
+            [new DocFile("README.md", "Readme")]);
+
+        foreach (var concept in new ConceptGenerator().Generate(snapshot))
+        {
+            Assert.Null(concept.Document.Frontmatter.Get(DescriptionResolver.DescriptionSourceKey));
+        }
+    }
+
+    [Fact]
+    public void Only_the_code_family_carries_a_generated_block()
+    {
+        // ProducerActor's own summary claimed it was written into "every generated concept's
+        // `generated.by`"; `packages/*` and `docs/*` carry no `generated` block at all.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Foo.csproj", "Foo", null)],
+            [new DocFile("README.md", "Readme")]);
+
+        foreach (var concept in new ConceptGenerator().Generate(snapshot))
+        {
+            var generated = concept.Document.Frontmatter.Get("generated");
+            if (concept.Id.ToString() == "overview")
+            {
+                Assert.NotNull(generated);
+            }
+            else
+            {
+                Assert.Null(generated);
+            }
+        }
+    }
+
+    [Fact]
     public void The_overview_body_does_not_manufacture_a_link_from_a_repository_name()
     {
         var snapshot = new RepositorySnapshot("/repo", "[odd](name)", [], []);
@@ -265,4 +396,24 @@ public class ConceptGeneratorTests
             concept.Document.Validate();
         }
     }
+
+    /// <summary>The one concept <paramref name="id"/> names, generated with <paramref name="existing"/> standing in for its on-disk frontmatter.</summary>
+    private static GeneratedConcept Generate(RepositorySnapshot snapshot, string id, Frontmatter existing)
+    {
+        var options = GenerateOptions.Default with
+        {
+            ExistingFrontmatter = candidate => candidate.ToString() == id ? existing : null,
+        };
+
+        return new ConceptGenerator().Generate(snapshot, codeGraph: null, options).Single(c => c.Id.ToString() == id);
+    }
+
+    /// <summary>Frontmatter as a human would leave it behind: a description of their own, marked <c>manual</c>.</summary>
+    private static Frontmatter Preserved(string description) =>
+        OkfDocumentBuilder.ForType("Package")
+            .Description(description)
+            .Extension(DescriptionResolver.DescriptionSourceKey, new OKF4net.Yaml.YamlString(DescriptionResolver.ManualLabel))
+            .Body("body\n")
+            .Build()
+            .Frontmatter;
 }

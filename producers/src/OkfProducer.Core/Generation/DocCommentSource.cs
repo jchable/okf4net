@@ -67,9 +67,13 @@ public sealed class DocCommentSource : IDescriptionSource
     /// <c>x</c>; <c>&lt;see langword="null"/&gt;</c> becomes <c>null</c>.</item>
     /// <item>A self-closing tag with none of those attributes contributes nothing; an unrecognised
     /// paired tag still contributes its inner text.</item>
-    /// <item>A <c>&lt;</c> that does not begin a tag -- <c>a &lt; b</c>, or an unterminated tag at the
-    /// end of the text -- is emitted verbatim. Doc comments are untrusted input (§2.3), and eating
-    /// prose that merely looks like markup is the failure this guards against.</item>
+    /// <item>A <c>&lt;</c> that does not begin a tag -- <c>a &lt; b</c>, an unterminated tag at the end
+    /// of the text, or an opening tag nothing closes -- is emitted verbatim. Doc comments are untrusted
+    /// input (§2.3), and eating prose that merely looks like markup is the failure this guards
+    /// against.</item>
+    /// <item>A <c>&lt;![CDATA[...]]&gt;</c> section contributes its content, delimiters dropped and the
+    /// content copied through <b>unread</b>: that is what a CDATA section means, and it is the one
+    /// construct in a doc comment that says "the markup inside me is text".</item>
     /// </list>
     ///
     /// <para>Hand-written rather than a regex, for the reason this producer hand-writes its other
@@ -90,15 +94,112 @@ public sealed class DocCommentSource : IDescriptionSource
             return comment;
         }
 
+        var tokens = ScanTokens(comment);
         var result = new StringBuilder(comment.Length);
+        var next = 0;
         var i = 0;
 
         while (i < comment.Length)
         {
-            var c = comment[i];
-            if (c != '<' || !StartsTag(comment, i))
+            if (next < tokens.Count && tokens[next].Start == i)
             {
-                result.Append(c);
+                var token = tokens[next];
+                next++;
+                i = token.End + 1;
+
+                if (token.Shape == TokenShape.Cdata)
+                {
+                    // Content only, copied through unread: everything inside a CDATA section is text by
+                    // definition, so it is neither scanned for tags nor eligible to become one.
+                    result.Append(comment, token.ContentStart, token.ContentLength);
+                    continue;
+                }
+
+                if (token.IsTag)
+                {
+                    result.Append(Substitution(token.Markup));
+                }
+                else
+                {
+                    // Tag-shaped but nothing ever closes it, so it is not a tag: `List<T> of results` is
+                    // an unescaped generic, invalid XML that no compiler complains about unless doc files
+                    // are emitted -- and this producer runs on arbitrary repositories, not only careful
+                    // ones. Eating it would delete `T` and leave "a List of results", which is precisely
+                    // the "prose that merely looks like markup" failure this method claims not to commit.
+                    result.Append(comment, token.Start, token.End - token.Start + 1);
+                }
+
+                continue;
+            }
+
+            result.Append(comment[i]);
+            i++;
+        }
+
+        return CollapseWhitespaceRuns(result.ToString());
+    }
+
+    /// <summary>
+    /// Every tag-shaped span in <paramref name="comment"/>, in order, each already marked as real markup
+    /// or as prose that merely looks like it.
+    ///
+    /// <para><b>Why a pass of its own, rather than deciding tag-by-tag while emitting.</b> Whether an
+    /// opening tag is real depends on what comes <i>after</i> it, and the cheap way to ask -- search the
+    /// rest of the comment for <c>&lt;/name&gt;</c> -- answers a different question than the one that
+    /// matters. An unbounded forward search pairs an earlier unescaped generic against a <b>later,
+    /// unrelated</b> tag of the same name: on <c>List&lt;T&gt; and &lt;T&gt;content&lt;/T&gt;</c> it
+    /// declares the <c>&lt;T&gt;</c> of <c>List&lt;T&gt;</c> to be markup and deletes it, which is the
+    /// failure this whole method exists to avoid, committed in the general case while the simple one
+    /// (a name with no closer anywhere) looked fixed.</para>
+    ///
+    /// <para>So the pairing is done the only way that is actually about <i>this</i> tag: a stack, matched
+    /// to the <b>nearest</b> unmatched opener of the same name, exactly as a parser would. Openers left
+    /// on the stack at the end are prose. Openers a closer pops <i>over</i> -- crossed tags, which are
+    /// malformed either way -- stay markup, so a doc comment that is merely badly nested still degrades
+    /// to its inner text rather than sprouting visible angle brackets.</para>
+    ///
+    /// <para>An unmatched <i>closing</i> tag is still dropped, and the asymmetry is deliberate: a closer
+    /// has no content to sever from the sentence around it, so dropping it cannot commit the failure
+    /// above, while keeping it would put raw markup back into prose the extractor already unwrapped.</para>
+    /// </summary>
+    private static List<Token> ScanTokens(string comment)
+    {
+        var tokens = new List<Token>();
+        var open = new List<int>();
+        var i = 0;
+
+        while (i < comment.Length)
+        {
+            if (comment[i] != '<')
+            {
+                i++;
+                continue;
+            }
+
+            if (string.CompareOrdinal(comment, i, CdataOpen, 0, CdataOpen.Length) == 0)
+            {
+                var contentStart = i + CdataOpen.Length;
+                var end = comment.IndexOf(CdataClose, contentStart, StringComparison.Ordinal);
+                if (end < 0)
+                {
+                    // Unterminated, exactly as an unterminated tag is: with no `]]>` there is no section,
+                    // so the rest is prose and is copied through rather than eaten.
+                    break;
+                }
+
+                tokens.Add(new Token(i, end + CdataClose.Length - 1, string.Empty, TokenShape.Cdata, string.Empty)
+                {
+                    IsTag = true,
+                    ContentStart = contentStart,
+                    ContentLength = end - contentStart,
+                });
+
+                i = end + CdataClose.Length;
+                continue;
+            }
+
+            if (!StartsTag(comment, i))
+            {
                 i++;
                 continue;
             }
@@ -107,28 +208,122 @@ public sealed class DocCommentSource : IDescriptionSource
             if (close < 0)
             {
                 // Unterminated: the rest is prose, not markup.
-                result.Append(comment, i, comment.Length - i);
                 break;
             }
 
             var markup = comment[(i + 1)..close];
-            if (IsUnpairedOpeningTag(comment, markup, close))
+            var shape = ShapeOf(markup);
+            var token = new Token(i, close, markup, shape, NameOf(markup, shape));
+
+            if (shape == TokenShape.SelfClosing)
             {
-                // Tag-shaped but nothing ever closes it, so it is not a tag: `List<T> of results` is an
-                // unescaped generic, invalid XML that no compiler complains about unless doc files are
-                // emitted -- and this producer runs on arbitrary repositories, not only careful ones.
-                // Eating it would delete `T` and leave "a List of results", which is precisely the
-                // "prose that merely looks like markup" failure this method claims not to commit.
-                result.Append(comment, i, close - i + 1);
-                i = close + 1;
-                continue;
+                token.IsTag = true;
+            }
+            else if (shape == TokenShape.Closing)
+            {
+                // Nearest unmatched opener of the same name; everything above it on the stack was
+                // implicitly closed by it and stays markup.
+                var match = open.FindLastIndex(index => string.Equals(tokens[index].Name, token.Name, StringComparison.Ordinal));
+                if (match >= 0)
+                {
+                    for (var above = match; above < open.Count; above++)
+                    {
+                        tokens[open[above]].IsTag = true;
+                    }
+
+                    open.RemoveRange(match, open.Count - match);
+                }
+
+                // Matched or not, a closing tag contributes nothing either way -- see the remarks.
+                token.IsTag = true;
+            }
+            else
+            {
+                open.Add(tokens.Count);
             }
 
-            result.Append(Substitution(markup));
+            tokens.Add(token);
             i = close + 1;
         }
 
-        return CollapseWhitespaceRuns(result.ToString());
+        return tokens;
+    }
+
+    /// <summary>The literal opening a CDATA section, which <see cref="StartsTag"/> deliberately does not recognise (<c>!</c> is neither <c>/</c> nor a letter).</summary>
+    private const string CdataOpen = "<![CDATA[";
+
+    /// <summary>The literal closing a CDATA section.</summary>
+    private const string CdataClose = "]]>";
+
+    /// <summary>What one <c>&lt;...&gt;</c> span is, before pairing decides whether it is markup at all.</summary>
+    private enum TokenShape
+    {
+        /// <summary>An opening tag: real markup only if something closes it.</summary>
+        Opening,
+
+        /// <summary>A closing tag.</summary>
+        Closing,
+
+        /// <summary>A self-closing tag, which needs no partner.</summary>
+        SelfClosing,
+
+        /// <summary>A <c>&lt;![CDATA[...]]&gt;</c> section.</summary>
+        Cdata,
+    }
+
+    /// <summary>One tag-shaped span: where it sits, what it says, and -- once <see cref="ScanTokens"/> has paired it -- whether it is markup or prose.</summary>
+    private sealed class Token(int start, int end, string markup, TokenShape shape, string name)
+    {
+        /// <summary>Index of the opening <c>&lt;</c>.</summary>
+        public int Start { get; } = start;
+
+        /// <summary>Index of the last character of the span (the <c>&gt;</c>, or the <c>&gt;</c> of <c>]]&gt;</c>).</summary>
+        public int End { get; } = end;
+
+        /// <summary>Everything between <c>&lt;</c> and <c>&gt;</c>; empty for a CDATA section.</summary>
+        public string Markup { get; } = markup;
+
+        /// <summary>Which of the four shapes this span is.</summary>
+        public TokenShape Shape { get; } = shape;
+
+        /// <summary>The tag's name, with no attributes and no leading <c>/</c>; empty for a CDATA section.</summary>
+        public string Name { get; } = name;
+
+        /// <summary>Whether this span is real markup. False leaves it in the text verbatim.</summary>
+        public bool IsTag { get; set; }
+
+        /// <summary>Index of the first character inside a CDATA section.</summary>
+        public int ContentStart { get; init; }
+
+        /// <summary>Length of a CDATA section's content.</summary>
+        public int ContentLength { get; init; }
+    }
+
+    /// <summary>Which shape one tag's inner markup is. Self-closing and closing are decided by shape alone; everything else opens.</summary>
+    private static TokenShape ShapeOf(string markup) => markup.StartsWith('/')
+        ? TokenShape.Closing
+        : markup.EndsWith('/') ? TokenShape.SelfClosing : TokenShape.Opening;
+
+    /// <summary>
+    /// The name an opening or closing tag pairs on: everything up to the first whitespace, with a
+    /// closing tag's <c>/</c> removed first. Attributes are not part of the name, and
+    /// <c>&lt;see cref="X"&gt;</c> pairs with <c>&lt;/see&gt;</c>.
+    /// </summary>
+    private static string NameOf(string markup, TokenShape shape)
+    {
+        if (shape == TokenShape.SelfClosing)
+        {
+            return string.Empty;
+        }
+
+        var body = shape == TokenShape.Closing ? markup[1..].Trim() : markup;
+        var nameLength = 0;
+        while (nameLength < body.Length && !char.IsWhiteSpace(body[nameLength]))
+        {
+            nameLength++;
+        }
+
+        return body[..nameLength];
     }
 
     /// <summary>
@@ -208,31 +403,6 @@ public sealed class DocCommentSource : IDescriptionSource
         ("&quot;", '"'),
         ("&apos;", '\''),
     ];
-
-    /// <summary>
-    /// Whether <paramref name="markup"/> is an opening tag that nothing ever closes -- in which case it
-    /// is not markup at all and must be copied through verbatim.
-    ///
-    /// <para>Judged by looking for the matching <c>&lt;/name&gt;</c> after it, which is the only
-    /// evidence available: <c>&lt;T&gt;</c> and <c>&lt;summary&gt;</c> are indistinguishable by shape,
-    /// and only the presence of a close tag says which one the author meant. Self-closing tags and
-    /// closing tags are settled before this is asked.</para>
-    /// </summary>
-    private static bool IsUnpairedOpeningTag(string comment, string markup, int closeIndex)
-    {
-        if (markup.StartsWith('/') || markup.EndsWith('/'))
-        {
-            return false;
-        }
-
-        var nameLength = 0;
-        while (nameLength < markup.Length && !char.IsWhiteSpace(markup[nameLength]))
-        {
-            nameLength++;
-        }
-
-        return comment.IndexOf($"</{markup[..nameLength]}>", closeIndex, StringComparison.Ordinal) < 0;
-    }
 
     /// <summary>
     /// Whether the <c>&lt;</c> at <paramref name="index"/> opens something tag-shaped: a name, or a
