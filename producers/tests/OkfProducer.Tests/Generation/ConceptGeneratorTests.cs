@@ -230,6 +230,20 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void A_documentation_path_containing_a_backtick_cannot_close_its_own_code_span()
+    {
+        // A backtick is legal in a filename on both platforms. A hand-written pair of backticks lets the
+        // path close the span early, after which the rest of it is prose again -- and a lifted string
+        // has manufactured a real link. CodeSpan exists precisely to fence content that contains
+        // backticks, so the doc family uses it rather than a second, naive copy.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("odd`[x](y).md", "Odd")]);
+
+        var concept = new ConceptGenerator().Generate(snapshot).Single(c => c.Id.Segments[0] == "docs");
+
+        Assert.Empty(LinkScanner.ExtractLinks(concept.Document.Body));
+    }
+
+    [Fact]
     public void The_overview_body_does_not_manufacture_a_link_from_a_repository_name()
     {
         var snapshot = new RepositorySnapshot("/repo", "[odd](name)", [], []);

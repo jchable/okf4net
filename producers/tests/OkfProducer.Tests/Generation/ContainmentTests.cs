@@ -28,7 +28,7 @@ public class ContainmentTests
         //
         // Typed "C# Container" and not "C# Namespace": what this pass identifies is a level of the path
         // tree no extracted declaration claims, which is a namespace most of the time and measurably not
-        // always -- 11 of the 32 synthesized on this repository are private or internal types whose
+        // always -- 11 of the 28 synthesized on this repository are private or internal types whose
         // members outlived the visibility scope filter. See ConceptGenerator.ContainerToken.
         var concept = Single(Generate(), "code/csharp/n");
 
@@ -228,6 +228,65 @@ public class ContainmentTests
     }
 
     [Fact]
+    public void A_package_that_declares_only_deep_leaves_no_container_unreachable()
+    {
+        // The defect this pins: with symbols solely in `N.Sub.Deeper`, the pass-through levels `N` and
+        // `N.Sub` used to be emitted as concepts with children and NO incoming edge -- islands
+        // unreachable from overview, while `okf validate` stayed silent because nothing dangled. The
+        // tree was severed, not the links. `producers/src/OkfProducer.Core/` reproduces it exactly:
+        // everything sits in `OkfProducer.Core.Generation`, nothing in `OkfProducer.Core`.
+        var graph = new CodeGraphModel(
+            [
+                Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs"),
+                Member("N.Sub.Deeper.Thing", "Go", "public void Go()", "linked/Scanner.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+
+        AssertEveryContainerIsReachable(concepts);
+
+        // And the package links to the container it actually declares into -- no concept is skipped on
+        // the way, because the levels that would have been skipped are not concepts.
+        Assert.Contains("(/code/csharp/n/sub/deeper)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain(concepts, c => c.Id.ToString() == "code/csharp/n");
+        Assert.DoesNotContain(concepts, c => c.Id.ToString() == "code/csharp/n/sub");
+    }
+
+    [Fact]
+    public void Every_container_in_an_ordinary_bundle_has_an_incoming_edge()
+    {
+        // The invariant itself, over the full fixture: mixed depths, two packages, a shared file. Stated
+        // as a test rather than only fixed, because "no link dangles" -- which BrokenLinks() checks --
+        // is not the same property as "no concept is unreachable", and only the first was ever asserted.
+        AssertEveryContainerIsReachable(Generate(sharedFile: true));
+    }
+
+    /// <summary>
+    /// Asserts that every container concept is named by some other concept's containment section. A
+    /// container is reachable from <c>overview</c> exactly when it has an incoming edge, since every
+    /// other family is reachable by construction.
+    /// </summary>
+    private static void AssertEveryContainerIsReachable(IReadOnlyList<GeneratedConcept> concepts)
+    {
+        var containers = concepts
+            .Where(c => c.Document.Frontmatter.Type?.EndsWith(" Container", StringComparison.Ordinal) == true)
+            .Select(c => c.Id.ToString())
+            .ToList();
+
+        Assert.NotEmpty(containers);
+
+        foreach (var container in containers)
+        {
+            Assert.Contains(
+                concepts,
+                other => other.Id.ToString() != container
+                    && other.Document.Body.Contains($"](/{container})", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
     public void A_manual_description_on_a_namespace_survives_regeneration()
     {
         // §4.2 reaches the namespace family too: a container concept is a real concept a human can edit,
@@ -262,6 +321,14 @@ public class ContainmentTests
     [Fact]
     public void Two_runs_over_the_same_inputs_produce_identical_ids_and_bodies()
     {
+        // Honest scope, because the obvious reading of this name is wrong: .NET randomises the string
+        // hash seed once per PROCESS, so both runs here share it and an output ordered by a Dictionary
+        // or a HashSet would come back identical twice. This test cannot detect that class of defect.
+        // It pins in-process stability only -- that nothing carries mutable state between runs.
+        //
+        // The cross-process guard is elsewhere and is a different shape: the pinned literal id sequence
+        // in CodeConceptGeneratorTests.Code_concepts_come_out_in_a_pinned_order_shallowest_first_then_ordinal,
+        // which a hash-ordered output fails under some seed and therefore eventually in CI.
         var first = Generate(sharedFile: true);
         var second = Generate(sharedFile: true);
 

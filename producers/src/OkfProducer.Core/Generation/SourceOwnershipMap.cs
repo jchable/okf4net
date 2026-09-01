@@ -136,7 +136,7 @@ public sealed class SourceOwnershipMap
     /// The target frameworks <see cref="OwnerOf"/>'s project builds for but that do <b>not</b> compile
     /// <paramref name="relativePath"/> -- what lets a symbol declared in a conditionally-compiled file
     /// say so in its own body instead of silently claiming to exist under every framework. Empty for a
-    /// file whose owner was reported under a single framework, which is the ordinary case.
+    /// file whose owner was reported under a single framework -- which, today, is every file: see below.
     ///
     /// <para><b>No caller in this producer supplies a multi-framework map today, so this method always
     /// answers empty in the real pipeline -- do not mistake it for exercised code.</b>

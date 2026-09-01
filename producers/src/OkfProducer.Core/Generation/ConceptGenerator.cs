@@ -282,8 +282,13 @@ public sealed class ConceptGenerator : IConceptGenerator
             .AddSource(resource: doc.RelativePath)
             // The title is lifted straight out of the README's own `# ` heading, where
             // `# [Guide](docs/guide.md)` is an ordinary thing to write -- and a bundle-relative link
-            // nobody meant. `See \`path\`` needs no such care: a code span is blanked by the scanner.
-            .Body($"# {LiftedBodyText(doc.Title)}\n\nSee `{doc.RelativePath}` in the repository.\n")
+            // nobody meant.
+            //
+            // The path goes through CodeSpan rather than a hand-written pair of backticks, which is
+            // what that helper exists for: a repository path may legally contain a backtick on either
+            // platform, and a naive fence lets its own content close the span early -- after which the
+            // rest of the path is prose again, and a lifted string has manufactured a real link.
+            .Body($"# {LiftedBodyText(doc.Title)}\n\nSee {CodeSpan(doc.RelativePath)} in the repository.\n")
             .Build();
     }
 
@@ -309,7 +314,7 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// <para><b>"container" and not "namespace", and that is a measured choice, not a hedge.</b> §5.1
     /// asks for a concept per namespace; what this pass can actually identify is a level of the path
     /// tree that no extracted declaration claims, which is a namespace <i>most</i> of the time and
-    /// demonstrably not always. Measured against this repository, <b>11 of the 32</b> synthesized
+    /// demonstrably not always. Measured against this repository, <b>11 of the 28</b> synthesized
     /// containers are types, not namespaces -- <c>YamlParser</c>, <c>YamlParser.BlockParser</c>,
     /// <c>OkfContextProvider.ScopeBox</c>, <c>HtmlSafeJson</c> and seven more -- private or internal
     /// declarations the default visibility scope excludes while their members survive it. Labelling
@@ -412,8 +417,8 @@ public sealed class ConceptGenerator : IConceptGenerator
         // (`okf4net.md` beside `okf4net/`).
         //
         // Which containers need one is read off the raw paths rather than from a `SymbolKind.Namespace`
-        // symbol, because no shipped extractor emits one: every proper prefix of a symbol's raw path,
-        // down to `[code, language, X]`, that no symbol group already claims. An unclaimed prefix is a
+        // symbol, because no shipped extractor emits one: the immediate container of a symbol's raw
+        // path, whenever no symbol group already claims it. An unclaimed container is a
         // namespace or module in every case the C# profile can produce (types ARE extracted, so a
         // member's type prefix is claimed). It is presented as a namespace even in the one case it
         // might not be -- a type whose own declaration was never extracted while its members were. The
@@ -426,17 +431,37 @@ public sealed class ConceptGenerator : IConceptGenerator
             claimed.Add(RawKey(group.RawSegments));
         }
 
+        // Only a group's IMMEDIATE container, never every ancestor prefix -- and that bound is what
+        // keeps the spine a connected graph rather than a set of islands.
+        //
+        // A container synthesized from a deeper prefix has, by construction, nothing declared directly
+        // in it: it is a pure pass-through level of the path tree. It cannot be reached from a package,
+        // because a package attaches at the deepest container above the groups it owns, which is never
+        // this one; and it can only be reached from ITS parent, which is a pass-through level too. So a
+        // chain of them dangles off nothing. `producers/src/OkfProducer.Core/` is the case that shows
+        // it: every type there sits in `OkfProducer.Core.Generation` and its siblings, nothing at all in
+        // `OkfProducer.Core` or `OkfProducer`, so both were emitted as concepts with children and no
+        // incoming edge -- unreachable from `overview` while `okf validate` stayed silent, since nothing
+        // DANGLED, the tree simply had a severed branch.
+        //
+        // Restricting synthesis to a container something is actually declared in makes the invariant
+        // provable rather than hoped for: every container concept has at least one group whose immediate
+        // container it is, that group's package attaches at exactly this container, and every deeper
+        // container's parent is itself a container or a claimed type. A level with nothing in it is not
+        // a concept -- it stays a plain directory, exactly as `code/csharp/` does.
         var containerSegments = new Dictionary<string, string[]>(StringComparer.Ordinal);
         foreach (var group in groups)
         {
-            for (var length = MinimumContainerDepth; length < group.RawSegments.Length; length++)
+            var parent = group.RawSegments[..^1];
+            if (parent.Length < MinimumContainerDepth)
             {
-                var prefix = group.RawSegments[..length];
-                var key = RawKey(prefix);
-                if (!claimed.Contains(key))
-                {
-                    containerSegments.TryAdd(key, prefix);
-                }
+                continue;
+            }
+
+            var key = RawKey(parent);
+            if (!claimed.Contains(key))
+            {
+                containerSegments.TryAdd(key, parent);
             }
         }
 
@@ -1061,13 +1086,23 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// additionally escapes a leading block-construct marker, so a description cannot silently stop
     /// being a paragraph and start being a heading, a list item or a block quote.
     ///
-    /// <para><b>Bounded on purpose: one character, at one position.</b> The text is rendered as a
-    /// paragraph, so the only thing that can change its block type is the first non-space character --
-    /// <c>#</c>, <c>-</c>, <c>*</c>, <c>+</c>, <c>&gt;</c>, or a run of digits followed by <c>.</c> or
-    /// <c>)</c>. This is deliberately not a general markdown escaper: everything further into the line
-    /// is inline markup, which renders as the author's own emphasis and is none of this producer's
-    /// business. CommonMark renders <c>\#</c> as <c>#</c>, so the reader sees exactly what was
-    /// written.</para>
+    /// <para><b>Bounded on purpose: one character, at the start of a line.</b> The only thing that can
+    /// change a line's block type is its first non-space character -- <c>#</c>, <c>-</c>, <c>*</c>,
+    /// <c>+</c>, <c>&gt;</c>, or a run of digits followed by <c>.</c> or <c>)</c>. This is deliberately
+    /// not a general markdown escaper: everything further into the line is inline markup, which renders
+    /// as the author's own emphasis and is none of this producer's business. CommonMark renders
+    /// <c>\#</c> as <c>#</c>, so the reader sees exactly what was written.</para>
+    ///
+    /// <para><b>A marker only counts when a space, a tab or the line's end follows it</b> -- which is
+    /// CommonMark's own rule and not a refinement of it. Escaping unconditionally would rewrite ordinary
+    /// emphasis: <c>*fast* and small.</c> would become <c>\*fast* and small.</c> and render its asterisks
+    /// literally, this guard corrupting the prose it exists to protect. <c>&gt;</c> is the exception the
+    /// spec itself makes: <c>&gt;text</c> is a block quote with no space at all.</para>
+    ///
+    /// <para><b>Every line, not only the first.</b> A <c>.csproj</c> <c>&lt;Description&gt;</c> reaches
+    /// a body with its newlines intact, so a <c>- </c> opening line 2 starts a list exactly as it would
+    /// opening line 1 -- a guarantee stated for "the description" has to hold for all of it, or the
+    /// documentation and the code disagree about which half is covered.</para>
     ///
     /// <para><b>For an ordered-list marker the delimiter is escaped, not the digit</b>, and the two are
     /// not interchangeable: <c>\1.</c> renders a literal backslash, because a backslash escape is only
@@ -1086,37 +1121,88 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// </summary>
     private static string EscapeLeadingBlockMarker(string text)
     {
+        // Every line, not only the first: a `.csproj` <Description> reaches a body with its newlines
+        // intact, and a `- ` opening line 2 starts a list exactly as it would opening line 1. Splitting
+        // on `\n` and keeping any `\r` with the line leaves the text byte-identical apart from the
+        // escapes themselves.
+        var lines = text.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            lines[i] = EscapeLineBlockMarker(lines[i]);
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static string EscapeLineBlockMarker(string line)
+    {
         var start = 0;
-        while (start < text.Length && char.IsWhiteSpace(text[start]))
+        while (start < line.Length && (line[start] == ' ' || line[start] == '\t'))
         {
             start++;
         }
 
-        if (start >= text.Length)
+        if (start >= line.Length)
         {
-            return text;
+            return line;
         }
 
-        if (text[start] is '#' or '-' or '*' or '+' or '>')
+        // A block quote is the one marker CommonMark does not require a space after: `>text` quotes.
+        if (line[start] == '>')
         {
-            return text.Insert(start, "\\");
+            return line.Insert(start, "\\");
         }
 
-        if (!char.IsAsciiDigit(text[start]))
+        // A bullet or an ATX heading marker only opens a block when a space (or the line's end) follows
+        // it. Without that check this escapes ordinary emphasis: `*fast* and small.` would become
+        // `\*fast* and small.`, which renders the asterisks literally -- the method damaging the prose
+        // it is here to protect.
+        if (line[start] is '-' or '*' or '+')
         {
-            return text;
+            return IsBlockMarkerBoundary(line, start + 1) ? line.Insert(start, "\\") : line;
         }
 
+        if (line[start] == '#')
+        {
+            var hashes = start;
+            while (hashes < line.Length && line[hashes] == '#')
+            {
+                hashes++;
+            }
+
+            // Seven or more `#` is not a heading at all, so there is nothing to defuse.
+            return hashes - start <= 6 && IsBlockMarkerBoundary(line, hashes)
+                ? line.Insert(start, "\\")
+                : line;
+        }
+
+        if (!char.IsAsciiDigit(line[start]))
+        {
+            return line;
+        }
+
+        // An ordered-list marker: digits, then `.` or `)`, then the same boundary. The DELIMITER is
+        // escaped, never the digit -- see this method's caller.
         var delimiter = start;
-        while (delimiter < text.Length && char.IsAsciiDigit(text[delimiter]))
+        while (delimiter < line.Length && char.IsAsciiDigit(line[delimiter]))
         {
             delimiter++;
         }
 
-        return delimiter < text.Length && text[delimiter] is '.' or ')'
-            ? text.Insert(delimiter, "\\")
-            : text;
+        return delimiter < line.Length
+            && line[delimiter] is '.' or ')'
+            && IsBlockMarkerBoundary(line, delimiter + 1)
+                ? line.Insert(delimiter, "\\")
+                : line;
     }
+
+    /// <summary>
+    /// Whether position <paramref name="index"/> ends a block marker: a space, a tab, or the end of the
+    /// line (a bare <c>-</c> on its own line is an empty list item). A <c>\r</c> counts as the end, so a
+    /// CRLF-separated line behaves like an LF-separated one.
+    /// </summary>
+    private static bool IsBlockMarkerBoundary(string line, int index) =>
+        index >= line.Length || line[index] is ' ' or '\t' or '\r';
 
     /// <summary>
     /// A <c>description</c> as it is rendered <b>into a body</b>: neutralized as
@@ -1165,6 +1251,15 @@ public sealed class ConceptGenerator : IConceptGenerator
     ///
     /// <para>An already-escaped character is copied through untouched rather than escaped twice, which
     /// would turn an invisible escape into a visible backslash.</para>
+    ///
+    /// <para><b>Inside an inline code span nothing is escaped at all</b>, and that is a correctness
+    /// requirement rather than a nicety: CommonMark does not process backslash escapes inside a code
+    /// span, so the backslash would simply be VISIBLE -- <c>YamlValue.cs</c>'s summary shipped as
+    /// <c>A sequence (`[...\]` or block `- ...`)</c>, this method corrupting the very prose it exists to
+    /// preserve. It is also provably unnecessary there: <c>LinkScanner.BlankInlineCode</c> blanks code
+    /// spans before scanning, so a <c>]</c> inside one could never have produced a link. The backtick
+    /// rule here therefore mirrors that method's exactly -- toggle on every backtick, not on runs --
+    /// because the two must agree with each other, not with a spec.</para>
     /// </summary>
     private static string NeutralizeMarkdownLinks(string text)
     {
@@ -1174,9 +1269,28 @@ public sealed class ConceptGenerator : IConceptGenerator
         }
 
         var builder = new StringBuilder(text.Length + 8);
+        var inCodeSpan = false;
+
         for (var i = 0; i < text.Length; i++)
         {
             var c = text[i];
+
+            // A backtick toggles a code span, exactly as LinkScanner.BlankInlineCode does -- one
+            // backtick, not a run, because that is the rule the consumer applies and this has to agree
+            // with the consumer, not with CommonMark.
+            if (c == '`')
+            {
+                inCodeSpan = !inCodeSpan;
+                builder.Append(c);
+                continue;
+            }
+
+            if (inCodeSpan)
+            {
+                builder.Append(c);
+                continue;
+            }
+
             if (c == '\\' && i + 1 < text.Length)
             {
                 builder.Append(c).Append(text[i + 1]);

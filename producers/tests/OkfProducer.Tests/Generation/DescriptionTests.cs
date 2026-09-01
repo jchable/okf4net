@@ -210,6 +210,27 @@ public class DescriptionTests
         => Assert.Equal("Code point &#60; here.",
             Resolver.Resolve(Member("T", "Scan", "Code point &#60; here."), existing: null).Text);
 
+    [Theory]
+    [InlineData("Returns a List<T> of results.")]
+    [InlineData("A Dictionary<K,V> keyed by name.")]
+    [InlineData("Compares Foo<Bar> with Foo<Baz>.")]
+    public void An_unpaired_pseudo_tag_is_literal_text_and_keeps_its_content(string doc)
+    {
+        // `List<T>` is tag-shaped and nothing closes it, so it is not a tag. Eating it would delete `T`
+        // and leave "a List of results" -- the exact "prose that merely looks like markup" failure this
+        // unwrapper claims to guard against. Unescaped generics are invalid XML that no compiler
+        // complains about unless doc files are emitted, and this producer runs on arbitrary repositories.
+        Assert.Equal(doc, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+    }
+
+    [Fact]
+    public void A_paired_tag_is_still_unwrapped_even_when_its_name_looks_generic()
+    {
+        // The discriminator is the matching close tag and nothing else -- `<T>` and `<summary>` are
+        // indistinguishable by shape.
+        Assert.Equal("inner", Resolver.Resolve(Member("T", "Scan", "<T>inner</T>"), existing: null).Text);
+    }
+
     [Fact]
     public void Unwrapping_a_tag_does_not_leave_a_double_space_behind()
         => Assert.Equal("Scans a body.", Resolver.Resolve(Member("T", "Scan", "Scans a <para></para> body."), existing: null).Text);

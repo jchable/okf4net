@@ -76,9 +76,25 @@ public static class CodeConceptIds
     /// One of <paramref name="containerSegments"/> normalizes to an empty slug (see
     /// <see cref="ConceptId.Slugify"/>).
     /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="language"/> or <paramref name="containerSegments"/> is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="containerSegments"/> is empty. There is no such thing as a container with no
+    /// name: the path that would come back is <c>code/&lt;language&gt;</c>, the language root, which this
+    /// type's own contract calls a directory in the bundle and never a concept. Returning it would hand
+    /// a caller an id it must not register, so it fails here instead.
+    /// </exception>
     public static string ForContainer(string language, IReadOnlyList<string> containerSegments)
     {
+        ArgumentNullException.ThrowIfNull(language);
         ArgumentNullException.ThrowIfNull(containerSegments);
+
+        if (containerSegments.Count == 0)
+        {
+            throw new ArgumentException(
+                "A container needs at least one segment: with none, the composed path is the language root"
+                + " (code/<language>), which is a directory in the bundle and never a concept.",
+                nameof(containerSegments));
+        }
 
         return Compose(language, containerSegments);
     }

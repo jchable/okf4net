@@ -111,7 +111,20 @@ public sealed class DocCommentSource : IDescriptionSource
                 break;
             }
 
-            result.Append(Substitution(comment[(i + 1)..close]));
+            var markup = comment[(i + 1)..close];
+            if (IsUnpairedOpeningTag(comment, markup, close))
+            {
+                // Tag-shaped but nothing ever closes it, so it is not a tag: `List<T> of results` is an
+                // unescaped generic, invalid XML that no compiler complains about unless doc files are
+                // emitted -- and this producer runs on arbitrary repositories, not only careful ones.
+                // Eating it would delete `T` and leave "a List of results", which is precisely the
+                // "prose that merely looks like markup" failure this method claims not to commit.
+                result.Append(comment, i, close - i + 1);
+                i = close + 1;
+                continue;
+            }
+
+            result.Append(Substitution(markup));
             i = close + 1;
         }
 
@@ -195,6 +208,31 @@ public sealed class DocCommentSource : IDescriptionSource
         ("&quot;", '"'),
         ("&apos;", '\''),
     ];
+
+    /// <summary>
+    /// Whether <paramref name="markup"/> is an opening tag that nothing ever closes -- in which case it
+    /// is not markup at all and must be copied through verbatim.
+    ///
+    /// <para>Judged by looking for the matching <c>&lt;/name&gt;</c> after it, which is the only
+    /// evidence available: <c>&lt;T&gt;</c> and <c>&lt;summary&gt;</c> are indistinguishable by shape,
+    /// and only the presence of a close tag says which one the author meant. Self-closing tags and
+    /// closing tags are settled before this is asked.</para>
+    /// </summary>
+    private static bool IsUnpairedOpeningTag(string comment, string markup, int closeIndex)
+    {
+        if (markup.StartsWith('/') || markup.EndsWith('/'))
+        {
+            return false;
+        }
+
+        var nameLength = 0;
+        while (nameLength < markup.Length && !char.IsWhiteSpace(markup[nameLength]))
+        {
+            nameLength++;
+        }
+
+        return comment.IndexOf($"</{markup[..nameLength]}>", closeIndex, StringComparison.Ordinal) < 0;
+    }
 
     /// <summary>
     /// Whether the <c>&lt;</c> at <paramref name="index"/> opens something tag-shaped: a name, or a

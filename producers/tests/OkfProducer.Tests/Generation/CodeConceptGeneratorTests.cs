@@ -561,6 +561,62 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void A_bracket_inside_a_code_span_is_left_exactly_as_written()
+    {
+        // Live on this repository before the fix: YamlValue.cs's summary shipped as
+        // ``A sequence (`[...\]` or block `- ...`).`` -- CommonMark does not process backslash escapes
+        // inside a code span, so the backslash is VISIBLE and the guard corrupts the prose it exists to
+        // protect. It is also provably unnecessary there: LinkScanner blanks code spans before scanning,
+        // so a `]` inside one could never have produced a link. Both halves are asserted.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()",
+            doc: "A sequence (`[...]` or block `- ...`)."));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Contains("A sequence (`[...]` or block `- ...`).", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\]", body, StringComparison.Ordinal);
+        Assert.Empty(LinkScanner.ExtractLinks(body));
+    }
+
+    [Fact]
+    public void A_bracket_outside_a_code_span_is_still_escaped_when_a_span_is_present()
+    {
+        // The toggle must not swallow the rest of the text: a `]` after a closed code span is back in
+        // prose and still has to be neutralised.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()",
+            doc: "See `code` then [text](dest)."));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Contains("See `code` then [text\\](dest).", body, StringComparison.Ordinal);
+        Assert.Empty(LinkScanner.ExtractLinks(body));
+    }
+
+    [Fact]
+    public void Leading_emphasis_is_not_mistaken_for_a_bullet()
+    {
+        // A bullet marker requires a following space; without that check `*fast* and small.` becomes
+        // `\*fast* and small.` and renders its asterisks literally.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "*fast* and small."));
+
+        Assert.Contains("\n\n*fast* and small.\n",
+            Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_block_marker_on_a_later_line_is_escaped_too()
+    {
+        // A multi-line description reaches the body with its newlines intact, so a `- ` opening line 2
+        // starts a list exactly as it would opening line 1. The guarantee has to cover all of it.
+        var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "First line.\n- second line."));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
+
+        Assert.Contains("First line.\n\\- second line.", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Neutralizing_never_doubles_an_escape_the_author_already_wrote()
     {
         // An already-escaped bracket must be copied through, not escaped again: `\\]` renders a visible
