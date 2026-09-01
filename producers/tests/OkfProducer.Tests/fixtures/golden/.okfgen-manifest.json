@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "ownedPrefix": "code",
+  "extractedFiles": [
+    "src/Registry.cs",
+    "src/Scanner.cs",
+    "src/Sub/Formatter.cs"
+  ],
+  "concepts": [
+    {
+      "id": "code/csharp/n",
+      "sources": [
+        "src/Registry.cs",
+        "src/Scanner.cs",
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/registry",
+      "sources": [
+        "src/Registry.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/registry/count",
+      "sources": [
+        "src/Registry.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/registry/register",
+      "sources": [
+        "src/Registry.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/gone",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/normalize",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/root",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/scan",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/sub",
+      "sources": [
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/sub/formatter",
+      "sources": [
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/sub/formatter/format",
+      "sources": [
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "docs/fixture-repository",
+      "sources": []
+    },
+    {
+      "id": "overview",
+      "sources": []
+    },
+    {
+      "id": "packages/fixture",
+      "sources": []
+    }
+  ]
+}

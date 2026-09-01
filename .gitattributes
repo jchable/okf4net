@@ -1,3 +1,10 @@
 tests/fixtures/** -text
 bundles/acme_retail/** -text
 bundles/ga4/** -text
+
+# The producer's golden bundle and the fixture repository it is generated from are compared BYTE FOR
+# BYTE by `producers/tests/OkfProducer.Tests/Generation/CheckTests.cs`. Without -text, git would
+# translate line endings on checkout and the comparison would fail on a fresh clone for a reason no
+# diff of those files would show. `producers/` is outside CI, so nothing else would catch it.
+# Note the discipline there is the OPPOSITE of tests/fixtures/ -- see that directory's own README.
+producers/tests/OkfProducer.Tests/fixtures/** -text
