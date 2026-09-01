@@ -2,7 +2,7 @@
 type: C# Type
 title: N.Scanner
 description: Walks a repository and reports what it finds.
-resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L4-L28
+resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L4-L5
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ Walks a repository and reports what it finds.
 
 ## Signatures
 
-- `public class Scanner` — `src/Scanner.cs#L4-L28`
+- `public class Scanner` — `src/Scanner.cs#L4-L5`
 
 ## Contains
 

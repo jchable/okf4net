@@ -45,8 +45,8 @@ public class BlastRadiusTests
     [Theory]
 
     // §3.2: overloads collapse onto one concept, so a second signature rewrites that concept and
-    // creates no `scan-2` to renumber its neighbours.
-    [InlineData(Mutation.AddOverload, "code/csharp/n/scanner", "code/csharp/n/scanner/scan")]
+    // creates no `scan-2` to renumber its neighbours. Its TYPE does not move -- see the note below.
+    [InlineData(Mutation.AddOverload, "code/csharp/n/scanner/scan")]
 
     // §5.2: the namespace names the level directly below it and nothing further, so a new type
     // rewrites its container and adds itself -- not `overview`, which would name all ~480 concepts
@@ -54,8 +54,9 @@ public class BlastRadiusTests
     [InlineData(Mutation.AddPublicType, "code/csharp/n", "code/csharp/n/added")]
 
     // §5.4: a private member is not in scope, so it produces no concept -- and, being a member, it
-    // adds no child to anything. See the note below on why its enclosing type still moves.
-    [InlineData(Mutation.AddPrivateMember, "code/csharp/n/scanner")]
+    // adds no child to anything. Nothing whatsoever changes, which is the strongest row in the table
+    // and the one that caught the defect described below.
+    [InlineData(Mutation.AddPrivateMember)]
 
     // §6.3: `Update` used to preserve everything it did not generate, so a deleted method kept its
     // concept for ever, pointing at code that no longer exists. It is pruned, and its type loses a
@@ -63,22 +64,22 @@ public class BlastRadiusTests
     [InlineData(Mutation.DeleteMethod, "-code/csharp/n/scanner/gone", "code/csharp/n/scanner")]
     public void A_source_mutation_changes_exactly_the_expected_concepts(Mutation mutation, params string[] expected)
     {
-        // MEASURED, NOT COPIED FROM THE DESIGN'S TABLE. §8.3 lists `code/csharp/n/scanner/scan` alone
-        // for an added overload and NOTHING for an added private member; both rows also move
-        // `code/csharp/n/scanner`, and the reason is worth stating because it is not a defect in any of
-        // the three decisions this test exists to check.
+        // WHAT THIS TABLE CAUGHT, on its first run. A type's concept records the type's own line span
+        // -- in `resource` and beside its signature -- and a type declaration's span runs to its
+        // CLOSING brace. So every edit inside a type moved that type's concept, whatever it declared
+        // or failed to declare: rows 1 and 3 came back with `code/csharp/n/scanner` attached, and row 3
+        // is supposed to come back empty.
         //
-        // A type's concept records the type's own line span -- in `resource` and beside its signature
-        // -- and a type declaration's span runs to its closing brace. So ANY edit inside a type moves
-        // that type's concept, whatever it declared or failed to declare. The churn is one file, it is
-        // the file the edit is inside, and it is caused by the span, not by overload merging or by the
-        // visibility filter. What §3.2 and §5.4 actually promise still holds exactly, and the two
-        // assertions below say so separately: no id is added or renumbered by an overload, and a
-        // private member adds and removes nothing at all.
+        // That was churn caused by the edit's position rather than by anything the type declares, and
+        // it falsified one of the three promises the id scheme exists to keep. The fix is in emission,
+        // not here: `ConceptGenerator.RenderedEndLine` caps a type's rendered span at its header
+        // (SymbolFact.HeaderEndLine), so the body may change freely underneath it. An edit ABOVE a type
+        // still moves it, which is right -- the declaration genuinely moved -- and row 4 still lists
+        // `code/csharp/n/scanner`, because deleting a method really does remove one of its children.
         //
-        // Reported to the reviewer in this task's report rather than silently absorbed here: capping a
-        // type's recorded span at its declaration header would make both rows match §8.3 verbatim, and
-        // that is a change to Task 8's emission, not to this test.
+        // Kept as a note rather than deleted with the defect: this table is the only thing in the suite
+        // that could have found it, and the next person to widen what a concept records needs to know
+        // that a span is not a free field to add.
         var changed = ConceptsChangedBy(mutation);
 
         Assert.Equal(
@@ -89,26 +90,20 @@ public class BlastRadiusTests
     [Fact]
     public void An_added_overload_creates_no_new_id_and_renumbers_nothing()
     {
-        // §3.2's promise, stated as the property rather than as a file set: the alternative design
-        // (one concept per signature) would have produced `scan-2` here, and a numeric suffix
-        // allocated in declaration order renumbers its neighbours whenever an overload appears or
-        // disappears. The theory row above cannot distinguish "no new id" from "a new id that happened
-        // to be expected", so this asserts the absence directly.
+        // §3.2's promise named in the vocabulary of the design it rejects. One concept per SIGNATURE
+        // -- the alternative -- would have produced `scan-2` here, and a numeric suffix allocated in
+        // declaration order renumbers its neighbours whenever an overload appears or disappears. The
+        // theory row above already implies the absence (a new file would show in its change set); this
+        // says which id must never appear, so the counterfactual is greppable rather than folded into
+        // an expected-set literal.
+        //
+        // Deliberately not paired with a private-member twin: the row above expects the EMPTY set for
+        // that mutation, which says everything an id-set comparison could and more.
         var (before, after) = ConceptIdsAround(Mutation.AddOverload);
 
         Assert.Equal(before, after);
         Assert.Contains("code/csharp/n/scanner/scan", after);
         Assert.DoesNotContain("code/csharp/n/scanner/scan-2", after);
-    }
-
-    [Fact]
-    public void An_added_private_member_adds_and_removes_no_concept()
-    {
-        // §5.4's promise, likewise stated as the property. The theory row above shows one file moving;
-        // this shows that the file set itself is untouched -- no `cache`, no `hidden`, nothing.
-        var (before, after) = ConceptIdsAround(Mutation.AddPrivateMember);
-
-        Assert.Equal(before, after);
     }
 
     [Fact]

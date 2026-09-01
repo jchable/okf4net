@@ -393,6 +393,52 @@ public class TreeSitterExtractorTests : IDisposable
     }
 
     [Fact]
+    public void A_declarations_header_end_line_is_the_line_its_body_opens_on()
+    {
+        // What SymbolFact.HeaderEndLine is for: a type declaration's own span runs to its CLOSING
+        // brace, so without a separate header line every edit inside the body would move the type's
+        // rendered span and rewrite its concept -- and §8.3 promises adding a private member changes
+        // no concept at all.
+        //
+        // Both halves are pinned. The type's header stops on the brace line (2, not 5), and the
+        // member's stops on its own brace line (4) -- the member's FULL span is untouched, which is
+        // what emission still renders for it.
+        var result = ExtractSource("""
+            namespace N;
+            public class T
+            {
+                public void M()
+                {
+                }
+            }
+            """);
+
+        var type = result.Symbols.Single(s => s.Kind == SymbolKind.Type);
+        var member = result.Symbols.Single(s => s.Kind == SymbolKind.Member);
+
+        Assert.Equal(2, type.StartLine);
+        Assert.Equal(7, type.EndLine);
+        Assert.Equal(3, type.HeaderEndLine);
+
+        Assert.Equal(4, member.StartLine);
+        Assert.Equal(6, member.EndLine);
+        Assert.Equal(5, member.HeaderEndLine);
+    }
+
+    [Fact]
+    public void A_declaration_with_no_body_reports_its_own_last_line_as_its_header_end()
+    {
+        // The other branch: a field has no `body`, `accessors` or `value` node to stop at, so there is
+        // no brace line and the declaration IS its header. Reporting null here instead would make
+        // emission silently fall back to EndLine -- the same answer by accident rather than by rule.
+        var result = ExtractSource("namespace N;\npublic class T { public int Field; }");
+
+        var field = result.Symbols.Single(s => s.Name == "Field");
+
+        Assert.Equal(field.EndLine, field.HeaderEndLine);
+    }
+
+    [Fact]
     public void Extraction_is_marked_complete()
     {
         var result = ExtractSource("namespace N;\npublic class T {}");

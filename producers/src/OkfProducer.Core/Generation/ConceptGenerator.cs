@@ -1922,10 +1922,41 @@ public sealed class ConceptGenerator : IConceptGenerator
 
     private static string NormalizeSeparators(string path) => path.Replace('\\', '/');
 
-    private static string LineSpan(SymbolFact declaration) =>
-        declaration.StartLine == declaration.EndLine
+    private static string LineSpan(SymbolFact declaration)
+    {
+        var end = RenderedEndLine(declaration);
+
+        return declaration.StartLine == end
             ? $"#L{declaration.StartLine.ToString(CultureInfo.InvariantCulture)}"
-            : $"#L{declaration.StartLine.ToString(CultureInfo.InvariantCulture)}-L{declaration.EndLine.ToString(CultureInfo.InvariantCulture)}";
+            : $"#L{declaration.StartLine.ToString(CultureInfo.InvariantCulture)}-L{end.ToString(CultureInfo.InvariantCulture)}";
+    }
+
+    /// <summary>
+    /// The last line a declaration's rendered span covers: a <see cref="SymbolKind.Type"/> is capped at
+    /// its header (<see cref="SymbolFact.HeaderEndLine"/>), everything else keeps its full extent.
+    ///
+    /// <para><b>This is a churn bound, not a cosmetic choice.</b> A type declaration's span runs to its
+    /// closing brace, so without the cap <i>every</i> edit inside the body -- adding a private helper,
+    /// adding an overload, deleting a method -- rewrote the type's own concept, in <c>resource</c> and
+    /// in the label beside its signature. §8.3's blast-radius table says adding a private member must
+    /// change <b>no</b> concept at all, and that promise is one of the three (with merged overloads and
+    /// one-level containment) the whole id scheme exists to keep. Measured by
+    /// <c>BlastRadiusTests</c>, which is where the violation surfaced.</para>
+    ///
+    /// <para>What the cap deliberately does <b>not</b> hide: an edit <i>above</i> a type still moves it,
+    /// because the declaration genuinely moved. And the permalink stays useful -- a reader lands on the
+    /// declaration line rather than on a highlighted block spanning the whole type.</para>
+    ///
+    /// <para>Falls back to <see cref="SymbolFact.EndLine"/> when no header line was recorded (every
+    /// hand-constructed fact), and when a recorded one would run backwards -- a span whose end precedes
+    /// its start is worse than an over-wide one.</para>
+    /// </summary>
+    private static int RenderedEndLine(SymbolFact declaration) =>
+        declaration.Kind == SymbolKind.Type
+        && declaration.HeaderEndLine is { } header
+        && header >= declaration.StartLine
+            ? header
+            : declaration.EndLine;
 
     /// <summary>The <c>path#Lstart-Lend</c> label shown next to a signature in the body.</summary>
     private static string SpanLabel(SymbolFact declaration) =>

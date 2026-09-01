@@ -226,7 +226,13 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             var modifiersText = ComputeModifiersText(decl, kind);
             var visibility = profile.VisibilityOf(modifiersText, kind);
             var docComment = ExtractDocComment(decl, profile.DocCommentPrefix);
-            var signature = ComputeSignature(decl);
+
+            // Computed once and used twice: the node the header stops at is exactly what
+            // ComputeSignature cuts the signature text at, and exactly what SymbolFact.HeaderEndLine
+            // reports. Two independent walks could disagree, and a disagreement would show up as a
+            // permalink whose line span does not match the signature printed next to it.
+            var bodyStart = HeaderEndNode(decl);
+            var signature = ComputeSignature(decl, bodyStart);
 
             symbols.Add(new SymbolFact(
                 kind,
@@ -240,7 +246,14 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
                 Utf8Offsets.ToUtf8(source, decl.EndIndex),
                 decl.StartPosition.Row + 1,
                 decl.EndPosition.Row + 1,
-                docComment));
+                docComment)
+            {
+                // The line the body OPENS on, not the line before it: a brace on its own line is the
+                // ordinary C# layout, and cutting the span above it would produce a permalink that
+                // stops short of the declaration it names. Where there is no body at all
+                // (`public record Foo(int X);`), the declaration's own last line is its header's.
+                HeaderEndLine = (bodyStart?.StartPosition.Row ?? decl.EndPosition.Row) + 1,
+            });
         }
 
         return symbols;
@@ -351,11 +364,8 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// starts first in source order, so truncating there drops both in one step. Declarations with
     /// none of the three (fields, delegates) keep the whole text with a trailing <c>;</c> dropped.
     /// </summary>
-    private static string ComputeSignature(Node decl)
+    private static string ComputeSignature(Node decl, Node? end)
     {
-        var end = decl.GetChildForField(BodyFieldName)
-            ?? decl.GetChildForField(AccessorsFieldName)
-            ?? decl.GetChildForField(ValueFieldName);
         var headerLength = end is not null ? end.StartIndex - decl.StartIndex : decl.Text.Length;
         var header = decl.Text[..headerLength].TrimEnd();
 
@@ -366,6 +376,19 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
         return CollapseWhitespace(header).Trim();
     }
+
+    /// <summary>
+    /// The node <paramref name="decl"/>'s header stops at -- its <c>body</c>, <c>accessors</c> or
+    /// <c>value</c> field, in that precedence -- or <see langword="null"/> for a declaration that has
+    /// none of the three (a field, a delegate, a body-less record). Split out of
+    /// <see cref="ComputeSignature"/> so the signature text and
+    /// <see cref="SymbolFact.HeaderEndLine"/> are cut at the same node by construction; see that
+    /// property for why the line matters.
+    /// </summary>
+    private static Node? HeaderEndNode(Node decl) =>
+        decl.GetChildForField(BodyFieldName)
+        ?? decl.GetChildForField(AccessorsFieldName)
+        ?? decl.GetChildForField(ValueFieldName);
 
     /// <summary>
     /// Collects a contiguous run of <paramref name="prefix"/>-prefixed <c>comment</c> siblings

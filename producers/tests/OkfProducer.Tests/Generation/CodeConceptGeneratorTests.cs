@@ -131,6 +131,50 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
+    public void A_types_rendered_span_stops_at_its_header_while_a_members_covers_its_body()
+    {
+        // The churn bound §8.3's blast-radius table depends on. A type declaration's span runs to its
+        // CLOSING brace, so rendering it whole meant every edit inside the body -- a private helper, an
+        // overload, a deletion -- rewrote the type's own concept in `resource` AND in the label beside
+        // its signature. Both are asserted, because capping one and not the other would leave the churn
+        // exactly where it was.
+        //
+        // The member on the same fixture is the control: its span is NOT capped, so a test that simply
+        // truncated every span would go red here.
+        var graph = GraphOf(
+            new SymbolFact(SymbolKind.Type, "csharp", "N", "Big", "public class Big",
+                SymbolVisibility.Public, "src/Big.cs", 0, 400, 4, 90, null)
+            { HeaderEndLine = 5 },
+            new SymbolFact(SymbolKind.Member, "csharp", "N.Big", "Work", "public void Work()",
+                SymbolVisibility.Public, "src/Big.cs", 10, 200, 10, 40, null)
+            { HeaderEndLine = 11 });
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+        var type = Single(concepts, "code/csharp/n/big");
+        var member = Single(concepts, "code/csharp/n/big/work");
+
+        Assert.Equal("https://github.com/o/r/blob/main/src/Big.cs#L4-L5", type.Document.Frontmatter.Resource);
+        Assert.Contains("`src/Big.cs#L4-L5`", type.Document.Body, StringComparison.Ordinal);
+
+        Assert.Equal("https://github.com/o/r/blob/main/src/Big.cs#L10-L40", member.Document.Frontmatter.Resource);
+        Assert.Contains("`src/Big.cs#L10-L40`", member.Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_type_with_no_recorded_header_line_keeps_its_full_span()
+    {
+        // The fallback, pinned so it cannot rot into a silent zero-length span. Every SymbolFact built
+        // without a syntax tree -- every fixture in this file, and any future extractor that does not
+        // record the line -- leaves HeaderEndLine null, and an over-wide span is the safe answer there.
+        var graph = GraphOf(new SymbolFact(SymbolKind.Type, "csharp", "N", "Big", "public class Big",
+            SymbolVisibility.Public, "src/Big.cs", 0, 400, 4, 90, null));
+
+        var type = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/big");
+
+        Assert.Equal("https://github.com/o/r/blob/main/src/Big.cs#L4-L90", type.Document.Frontmatter.Resource);
+    }
+
+    [Fact]
     public void A_rev_with_a_slash_keeps_its_separator_and_a_space_is_escaped()
     {
         // A branch name is a path in a forge's blob URL, so its separators must survive; everything
