@@ -812,6 +812,119 @@ public class ValidateTests
             d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp && d.Field == "usage_window.from");
     }
 
+    // §5.1's per-entry usage_window override (a sources[] entry carrying its
+    // own usage_window) routes its bounds through the same CheckTemporal
+    // classifier as the shared, top-level usage_window -- reusing
+    // UsageWindowInvalidFrom/…To, with Field distinguishing
+    // "sources.usage_window.from"/".to" from the shared "usage_window.from"/
+    // ".to". No new DiagnosticCode member.
+
+    [Fact]
+    public void A_conformant_instant_per_entry_usage_window_produces_no_warning()
+    {
+        // A false-positive guard, not proof the feature works: this test
+        // asserts only absences, so it passes against pre-change code too --
+        // deleting the whole per-entry validation block fails the other five
+        // tests in this group and leaves this one green. Its job is to catch a
+        // future over-eager warning on conformant input; do not count it as
+        // coverage that the override is validated at all.
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "sources:\n  - resource: https://x\n    usage_window: {from: '2026-01-01T00:00:00Z'}\n");
+
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidFrom);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.NonIso8601Timestamp);
+    }
+
+    [Fact]
+    public void A_legacy_date_only_per_entry_usage_window_from_warns_as_legacy()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "sources:\n  - resource: https://x\n    usage_window: {from: '2026-01-01'}\n");
+
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidFrom);
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp && d.Field == "sources.usage_window.from");
+    }
+
+    [Fact]
+    public void A_non_iso8601_spelling_per_entry_usage_window_from_warns_not_legacy_not_invalid()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "sources:\n  - resource: https://x\n    usage_window: {from: '2026-1-1T00:00:00Z'}\n");
+
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.NonIso8601Timestamp && d.Field == "sources.usage_window.from");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.UsageWindowInvalidFrom);
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void An_unreadable_per_entry_usage_window_from_warns_invalid()
+    {
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "sources:\n  - resource: https://x\n    usage_window: {from: 'not-a-date'}\n");
+
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.UsageWindowInvalidFrom && d.Field == "sources.usage_window.from");
+        // The message label is the third hand-copied literal at the call site
+        // and the only one no other assertion pins. Asserted in FULL, not by
+        // Contains: the shared position's message
+        // ("usage_window from could not be read…") is a suffix of this one, so
+        // a substring check would pass with either label.
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Message == "source usage_window from could not be read as a timestamp: \"not-a-date\"");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void An_unreadable_per_entry_usage_window_to_warns_invalid()
+    {
+        // Pins the *identity* of the `to` call site, distinct from the
+        // `from` one above: the two blocks in BundleValidator.Validate are
+        // hand-copied literals (code, field, label) sitting right next to
+        // each other, so nothing else catches a copy-paste swap between
+        // them (e.g. UsageWindowInvalidFrom / "sources.usage_window.from"
+        // accidentally reused for the `to` bound). Without this test that
+        // exact mutation passes the whole suite.
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "sources:\n  - resource: https://x\n    usage_window: {to: 'not-a-date'}\n");
+
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.UsageWindowInvalidTo && d.Field == "sources.usage_window.to");
+        // Pins the label too, in FULL (see the `from` case above for why a
+        // Contains would not discriminate): with Code and Field asserted but
+        // not the label, swapping this call site's "source usage_window to"
+        // for the `from` wording leaves the whole suite green, and a bad `to`
+        // bound then reports a message naming `from`.
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Message == "source usage_window to could not be read as a timestamp: \"not-a-date\"");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
+    public void Bad_bounds_in_both_the_shared_and_per_entry_usage_window_yield_two_diagnostics_distinguished_by_field()
+    {
+        // Proves the reuse of UsageWindowInvalidFrom is safe: a bad shared
+        // usage_window.from and a bad per-entry sources.usage_window.from in
+        // the same document must not collapse into one finding, nor be
+        // mistaken for each other -- Field is what tells them apart.
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "usage_window: {from: 'not-a-date'}\n" +
+            "sources:\n  - resource: https://x\n    usage_window: {from: 'also-not-a-date'}\n");
+
+        var invalidFromDiagnostics = r.Of(Severity.Warning).Where(d => d.Code == DiagnosticCode.UsageWindowInvalidFrom).ToList();
+        Assert.Equal(2, invalidFromDiagnostics.Count);
+        Assert.Contains(invalidFromDiagnostics, d => d.Field == "usage_window.from");
+        Assert.Contains(invalidFromDiagnostics, d => d.Field == "sources.usage_window.from");
+    }
+
     [Theory]
     [InlineData("2026-01-01T25:00:00Z")]  // hour out of range
     [InlineData("2026-01-01T00:61:00Z")]  // minute out of range

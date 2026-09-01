@@ -28,6 +28,13 @@ are the concrete entry points.
   line), but the gap is CLI-wide and should be closed for all eight verbs at
   once — intercepting `--help` inside each command before its positional is
   resolved, which also changes those invocations from exit 1 to exit 0.
+- **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
+  builder can now write a *per-entry* §5.1 override (`AddSource(…,
+  usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal
+  case, the one that frames every `usage_count` in a document — has no typed
+  setter: a producer must hand-build its `{ from, to }` mapping and pass it
+  through `Extension("usage_window", …)`. The builder currently makes the
+  exception easier to write than the rule.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
 - `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source
