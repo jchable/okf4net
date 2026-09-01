@@ -207,6 +207,14 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   LastModified` only); `UsageWindow` is parsed exclusively at the top
   level (`Provenance.cs:45-46`, wired at `Frontmatter.cs:83`) with no
   per-entry override path.
+
+  > **Resolved 2026-09-01** by `fix/usage-window-override`: `Source` gains
+  > an optional `UsageWindow?` member, `Provenance.ParseSources`/`ToYaml`
+  > read and write it, `BundleValidator` checks its bounds through the same
+  > `CheckTemporal` as the shared position, and the new
+  > `Frontmatter.EffectiveUsageWindow(Source)` applies the override rule.
+  > See
+  > `docs/superpowers/specs/2026-09-01-okf-per-entry-usage-window-design.md`.
 - **S5.1-4** (§5.1, `usage_count` interpreted as liveness/trend not a
   ranking score) — **N/A**. No ranking/scoring code anywhere in `src/`
   reads `UsageCount` at all (parsed and passed through only,

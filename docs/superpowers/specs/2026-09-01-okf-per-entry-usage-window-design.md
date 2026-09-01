@@ -110,8 +110,11 @@ No new enum member, so no ordinal shifts.
 - `src/OKF4net/Frontmatter.cs` — the resolution accessor.
 - `src/OKF4net/Validate.cs` — the per-entry bounds through `CheckTemporal`.
 - Public API: `Source` gains an optional positional member. Source-compatible for
-  construction; **not** binary-compatible, and its `Deconstruct`/`with` arity
-  changes — acceptable at 0.x and consistent with this release's existing break.
+  construction; **not** binary-compatible, and its `Deconstruct` arity changes,
+  which breaks an external positional deconstruction at *source* level too — a
+  `with` expression names the members it sets, so it has no arity and is
+  unaffected. Acceptable at 0.x and consistent with this release's existing
+  break.
 - Fixtures and goldens: **none expected to move**. No fixture carries a
   per-entry `usage_window` today. To be verified, not assumed.
 - `bundles/`: verbatim upstream copies, untouched whatever the counts.
@@ -123,7 +126,7 @@ Checked one at a time on `d6b778d`, **before** writing any implementation.
 | | Claim | Result |
 |---|---|---|
 | **C1** | No fixture carries a per-entry `usage_window`, so no golden should move | ✅ every `usage_window` in `tests/fixtures/` and `bundles/` is the top-level sibling |
-| **C2** | Every `Source` construction site takes six arguments, positional or named | ✅ five sites (`OkfDocument.cs:212`, `OkfDocumentBuilder.cs:94`, `Provenance.cs:32`, three in tests) — an optional seventh keeps all compiling |
+| **C2** | Every `Source` construction site takes six arguments, positional or named | ✅ seven sites (`git grep -n "new Source(" d6b778d -- src tests`): three in `src/` (`OkfDocument.cs:212`, `OkfDocumentBuilder.cs:94`, `Provenance.cs:32`) and four in `ProvenanceTests.cs` (`:81`, `:95`, `:106`, `:115`) — an optional seventh member keeps all seven compiling |
 | **C3** | `usage_window` is consumed nowhere outside `Frontmatter`/`Validate` | ✅ no resolver, agent, viewer or CLI path reads it |
 | **C4** | The known-key list governs top-level keys only | ✅ `Frontmatter.cs:27-35` is a top-level list; a nested key inside a `sources` entry is not matched against it |
 | **C5** | `ToYaml`'s round-trip is already exercised | ✅ `ProvenanceTests.ToYaml_round_trips_through_ParseSources_in_order` and `…_uses_canonical_per_entry_key_order` |

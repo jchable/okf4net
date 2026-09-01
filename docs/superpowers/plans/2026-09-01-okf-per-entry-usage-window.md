@@ -282,14 +282,24 @@ codes is safe.
 
 **Files:** `CHANGELOG.md`, and whatever Step 1 establishes.
 
-1. **Do NOT amend the gap report.** Settled before writing this plan, so you do
-   not have to: `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md` is a
-   dated, generated snapshot — its own header says it compares the spec "against
-   **OKF4net** at commit `e5d8e4c` (2026-07-31)" and that it is "a report for a
-   human to act on". Editing its S5.1-3 entry would falsify that header, and
-   `git log -- docs/spec-conformance/` shows no prior in-place amendment. It
-   stays as the record of what was true then. The CHANGELOG entry below is where
-   this branch records that S5.1-3 is closed; reference the finding id there so
+1. **Annotate the gap report in place**, beside the S5.1-3 finding.
+
+   *Corrected after the fact.* This step originally said "Do NOT amend the gap
+   report", resting on the claim that "`git log -- docs/spec-conformance/` shows
+   no prior in-place amendment". **That claim was false.** `c55010d` amended
+   `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md` in place, twice,
+   adding dated attributed annotations of the form "**Resolved 2026-07-31** by
+   `feat/reserved-file-conformance-fix` (merged to `dev` at `8f394ab`); see …" —
+   once in the headline list and once in the per-section detail. The repo's
+   convention is therefore the opposite of what this step claimed: annotate in
+   place, following `c55010d`'s format.
+
+   The snapshot header (it compares the spec "against **OKF4net** at commit
+   `e5d8e4c` (2026-07-31)") is not falsified by doing so: an annotation sits
+   *beside* the original finding rather than rewriting it, so the report still
+   says what was true then and adds when it stopped being true. Do not touch the
+   original finding text, and do not restate the Summary counts. The CHANGELOG
+   entry below records the closure as well; reference the finding id there so
    the two are linkable.
 2. **`CHANGELOG.md`, under `Unreleased` → `Added`:** one entry stating that a
    `sources` entry's own `usage_window` is now read, validated against §5 and

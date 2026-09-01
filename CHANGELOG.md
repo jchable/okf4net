@@ -42,8 +42,9 @@ and this project adheres to
   apart — `sources.usage_window.from`/`.to` vs. `usage_window.from`/`.to`; no
   new `DiagnosticCode`), and the new `Frontmatter.EffectiveUsageWindow(Source)`
   resolves the two into the one value a consumer actually wants. This closes
-  **S5.1-3**, tracked as "Missing" in
-  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md:204`.
+  **S5.1-3**, recorded as "Missing" in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md:204` and annotated
+  as resolved beside that finding.
 
   This was never a data-loss bug: `okf fmt` already round-tripped a per-entry
   `usage_window` before this change, because `Frontmatter` re-serializes an
@@ -52,8 +53,10 @@ and this project adheres to
   The gap was that the library could not *see* the value: no typed access, no
   §5 validation, no way for a consumer to obtain it. `Source` gains an
   optional `UsageWindow?` member and `OkfDocumentBuilder.AddSource` a matching
-  optional parameter, so the field is also writable through the one supported
-  producer API.
+  optional parameter, so a per-entry override is also writable through the
+  producer builder. The *shared*, top-level `usage_window` — §5.1's normal
+  case — still has no typed builder method and can only be written through
+  `Extension("usage_window", …)`; that gap is tracked in `ROADMAP.md`.
 
   The override is **whole-object, not per-field**: an entry writing
   `usage_window: { from: X }` yields a window whose `to` is `null` — it does
@@ -69,8 +72,12 @@ and this project adheres to
   The `UsageWindow?` member above is appended last with a default, so every
   in-repo construction site (positional or named) still compiles unchanged —
   but the shape is not binary-compatible for anything built against the
-  previous six-member `Source`. Consistent with this release's other 0.x
-  breaks (see `Lifecycle.StaleAfter` below).
+  previous six-member `Source`, and it also breaks at **source** level for
+  external code that deconstructs a `Source` positionally (`var (id, resource,
+  title, author, usageCount, lastModified) = source;`) or pattern-matches on
+  its members, since `Deconstruct` now yields seven values. Nothing in this
+  repository does either. Consistent with this release's other 0.x breaks (see
+  `Lifecycle.StaleAfter` below).
 
 - **Breaking (0.x): staleness is compared on instants, not dates.**
   `Lifecycle.StaleAfter` is now a `DateTimeOffset?` rather than a `DateOnly?`,

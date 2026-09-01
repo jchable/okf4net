@@ -194,7 +194,15 @@ export default function Library() {
               [
                 'Sources → IReadOnlyList<Source> · UsageWindow → UsageWindow?',
                 <>
-                  The §5.1 <code>sources</code> list and its sibling <code>usage_window</code>.
+                  The §5.1 <code>sources</code> list and its shared sibling <code>usage_window</code>.
+                </>,
+              ],
+              [
+                'EffectiveUsageWindow(Source) → UsageWindow?',
+                <>
+                  The §5.1 window framing one entry's <code>usage_count</code>: that entry's own{' '}
+                  <code>usage_window</code> if it has one, else the shared sibling — the entry wins whole-object,
+                  never per-bound.
                 </>,
               ],
               [
@@ -253,10 +261,12 @@ export default function Library() {
                 </>,
               ],
               [
-                'Source(Id, Resource, Title, Author, UsageCount, LastModified) · UsageWindow(From, To)',
+                'Source(Id, Resource, Title, Author, UsageCount, LastModified, UsageWindow) · UsageWindow(From, To)',
                 <>
-                  One §5.1 <code>sources[]</code> entry, and the sibling <code>usage_window</code> that frames{' '}
-                  <code>usage_count</code>.
+                  One §5.1 <code>sources[]</code> entry, and the <code>usage_window</code> that frames{' '}
+                  <code>usage_count</code> — shared as a sibling of <code>sources</code>, or carried by a single
+                  entry as its own override. The override replaces the shared window whole, so read it through{' '}
+                  <code>Frontmatter.EffectiveUsageWindow</code>.
                 </>,
               ],
               [
