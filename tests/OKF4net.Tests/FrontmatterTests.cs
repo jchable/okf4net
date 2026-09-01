@@ -171,6 +171,86 @@ public class FrontmatterTests
     }
 
     [Fact]
+    public void EffectiveUsageWindow_prefers_the_entrys_own_window_over_the_shared_one()
+    {
+        var fm = Frontmatter.FromMapping(
+            YamlValue.Parse(
+                "usage_window: {from: '2026-01-01T00:00:00Z', to: '2026-01-31T00:00:00Z'}\n" +
+                "sources:\n  - resource: https://x\n    usage_window: {from: '2026-06-01T00:00:00Z', to: '2026-06-30T00:00:00Z'}\n")
+                .AsMapping()!);
+        var source = fm.Sources[0];
+
+        var effective = fm.EffectiveUsageWindow(source);
+
+        Assert.Equal(new UsageWindow("2026-06-01T00:00:00Z", "2026-06-30T00:00:00Z"), effective);
+    }
+
+    [Fact]
+    public void EffectiveUsageWindow_falls_back_to_the_shared_window_when_the_entry_has_none()
+    {
+        var fm = Frontmatter.FromMapping(
+            YamlValue.Parse(
+                "usage_window: {from: '2026-01-01T00:00:00Z', to: '2026-01-31T00:00:00Z'}\n" +
+                "sources:\n  - resource: https://x\n")
+                .AsMapping()!);
+        var source = fm.Sources[0];
+
+        var effective = fm.EffectiveUsageWindow(source);
+
+        Assert.Equal(new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"), effective);
+    }
+
+    [Fact]
+    public void EffectiveUsageWindow_is_null_when_neither_entry_nor_shared_window_exists()
+    {
+        var fm = Frontmatter.FromMapping(YamlValue.Parse("sources:\n  - resource: https://x\n").AsMapping()!);
+        var source = fm.Sources[0];
+
+        Assert.Null(fm.EffectiveUsageWindow(source));
+    }
+
+    [Fact]
+    public void EffectiveUsageWindow_override_is_whole_object_not_a_per_field_merge()
+    {
+        // The load-bearing test (decision 1): an entry writing `usage_window: {
+        // from: X }` yields a window whose `To` is null. It must NOT inherit
+        // the shared window's `to` -- a per-field merge is a rule §5.1 does
+        // not state, and would let a half-written entry silently borrow half
+        // a window from the shared sibling.
+        var fm = Frontmatter.FromMapping(
+            YamlValue.Parse(
+                "usage_window: {from: '2026-01-01T00:00:00Z', to: '2026-01-31T00:00:00Z'}\n" +
+                "sources:\n  - resource: https://x\n    usage_window: {from: '2026-06-01T00:00:00Z'}\n")
+                .AsMapping()!);
+        var source = fm.Sources[0];
+
+        var effective = fm.EffectiveUsageWindow(source);
+
+        Assert.NotNull(effective);
+        Assert.Equal("2026-06-01T00:00:00Z", effective.Value.From);
+        Assert.Null(effective.Value.To); // NOT the shared window's "2026-01-31T00:00:00Z"
+    }
+
+    [Fact]
+    public void EffectiveUsageWindow_falls_back_to_shared_when_the_entrys_override_is_not_a_mapping()
+    {
+        // Decision 2: a malformed override (usage_window present but not a
+        // mapping) parses to null via ParseUsageWindow's existing leniency,
+        // so the entry inherits the shared window exactly as an absent one
+        // does.
+        var fm = Frontmatter.FromMapping(
+            YamlValue.Parse(
+                "usage_window: {from: '2026-01-01T00:00:00Z', to: '2026-01-31T00:00:00Z'}\n" +
+                "sources:\n  - resource: https://x\n    usage_window: hello\n")
+                .AsMapping()!);
+        var source = fm.Sources[0];
+
+        var effective = fm.EffectiveUsageWindow(source);
+
+        Assert.Equal(new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"), effective);
+    }
+
+    [Fact]
     public void Equality_is_structural_over_the_underlying_mapping()
     {
         // F11: Frontmatter equality is structural over its underlying

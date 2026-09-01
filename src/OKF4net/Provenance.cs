@@ -8,7 +8,8 @@ namespace OKF4net;
 /// missing one is surfaced as "" for the validator to flag. <see cref="UsageWindow"/> is an
 /// optional per-entry override of the shared, top-level <c>usage_window</c> (§5.1: "A single entry
 /// MAY carry its own <c>usage_window</c> to override the shared one."); <see langword="null"/> means
-/// the entry has no override and falls back to the shared window.
+/// the entry has no override and falls back to the shared window. See
+/// <see cref="Frontmatter.EffectiveUsageWindow"/> for the resolution rule between the two.
 /// </summary>
 public readonly record struct Source(string? Id, string Resource, string? Title, Actor? Author, long? UsageCount, string? LastModified, UsageWindow? UsageWindow = null);
 

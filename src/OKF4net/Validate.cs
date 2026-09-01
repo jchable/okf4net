@@ -92,14 +92,22 @@ public enum DiagnosticCode
     SourceInvalidLastModified,
 
     /// <summary>
-    /// <c>usage_window.from</c> could not be read as a timestamp at all. The
+    /// A <c>usage_window</c> <c>from</c> bound could not be read as a timestamp
+    /// at all -- either the shared, top-level <c>usage_window.from</c> or a
+    /// <c>sources[].usage_window.from</c> per-entry override (§5.1); the
+    /// <see cref="Diagnostic.Field"/> (<c>usage_window.from</c> vs.
+    /// <c>sources.usage_window.from</c>) tells the two positions apart. The
     /// legacy <c>YYYY-MM-DD</c> form is read, and warns as
     /// <see cref="LegacyDateOnlyTimestamp"/> instead.
     /// </summary>
     UsageWindowInvalidFrom,
 
     /// <summary>
-    /// <c>usage_window.to</c> could not be read as a timestamp at all. The
+    /// A <c>usage_window</c> <c>to</c> bound could not be read as a timestamp
+    /// at all -- either the shared, top-level <c>usage_window.to</c> or a
+    /// <c>sources[].usage_window.to</c> per-entry override (§5.1); the
+    /// <see cref="Diagnostic.Field"/> (<c>usage_window.to</c> vs.
+    /// <c>sources.usage_window.to</c>) tells the two positions apart. The
     /// legacy <c>YYYY-MM-DD</c> form is read, and warns as
     /// <see cref="LegacyDateOnlyTimestamp"/> instead.
     /// </summary>
@@ -396,6 +404,19 @@ public static class BundleValidator
                 if (src.LastModified is { } lastModified)
                 {
                     CheckTemporal(diagnostics, concept, lastModified, "source last_modified", "sources.last_modified", DiagnosticCode.SourceInvalidLastModified);
+                }
+
+                if (src.UsageWindow is { } suw)
+                {
+                    if (suw.From is { } suf)
+                    {
+                        CheckTemporal(diagnostics, concept, suf, "source usage_window from", "sources.usage_window.from", DiagnosticCode.UsageWindowInvalidFrom);
+                    }
+
+                    if (suw.To is { } sut)
+                    {
+                        CheckTemporal(diagnostics, concept, sut, "source usage_window to", "sources.usage_window.to", DiagnosticCode.UsageWindowInvalidTo);
+                    }
                 }
             }
 
