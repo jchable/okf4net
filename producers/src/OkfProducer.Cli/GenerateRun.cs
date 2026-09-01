@@ -94,6 +94,12 @@ internal static class GenerateRun
         SourceOwnershipMap? ownership = null;
         IReadOnlyList<LanguageProfile> profiles = [];
 
+        // Built once and used twice -- by the extraction and by the manifest -- rather than
+        // reconstructed at each site. The manifest's copy is what a later run compares its own scope
+        // against before it is allowed to delete anything (see GenerationManifest.Scope), so the two
+        // must be the same value by construction and not by two call sites agreeing.
+        var scope = new ScopeOptions(request.IncludeTests, request.IncludeInternal);
+
         if (!request.NoCode)
         {
             profiles = [CSharpProfile.Instance];
@@ -117,7 +123,7 @@ internal static class GenerateRun
             graph = new CodeGraphBuilder(extractor, profiles, resolvers).Build(
                 snapshot,
                 ExtractionLimits.Default with { MaxFileBytes = request.MaxFileBytes },
-                new ScopeOptions(request.IncludeTests, request.IncludeInternal));
+                scope);
         }
 
         var options = new GenerateOptions
@@ -143,7 +149,7 @@ internal static class GenerateRun
         // run that analysed no source at all. BundleWriter has a backstop for that case, but a caller
         // that hands over a licence to delete and relies on the callee to refuse it is one refactor
         // away from deleting the whole code family.
-        var manifest = graph is null ? null : GenerationManifest.ForRun(OwnedPrefix, concepts, graph.Status);
+        var manifest = graph is null ? null : GenerationManifest.ForRun(OwnedPrefix, concepts, graph.Status, scope);
 
         return services.Writer.Write(request.OutPath, concepts, request.Policy, snapshot.RepoPath, manifest, graph?.Status);
     }

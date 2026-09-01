@@ -51,7 +51,7 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--reset` / `--force` | off | Delete and recreate `--out` first. Refused when `--out` is, or contains, `--repo`. |
 | `--repo-url <url>` | absent | Permalink base, e.g. `https://github.com/owner/repo`. With a ref, every code concept gets a `resource` link to its declaration. Without both, **no `resource` is emitted at all** — see below. |
 | `--rev <ref>` | current branch | The ref permalinks point at. Never a commit sha by default: a sha would rewrite every code concept's `resource` on the next commit. On a detached HEAD there is no branch name, so this becomes required for permalinks. |
-| `--check` | off | Regenerate over a copy of the bundle and exit non-zero if anything differs. Never writes to `--out`. |
+| `--check` | off | Regenerate over a copy of the bundle and exit non-zero if anything differs. Never writes to `--out`. Refused with `--reset`/`--force` (it would delete nothing while the operator believed a reset happened) and with `--no-code` (see below). |
 | `--include-tests` | off | Walk test projects and `test`/`tests`/`spec` directories too. |
 | `--include-internal` | off | Emit `internal` declarations, not only public ones. |
 | `--no-code` | off | Skip the code-graph stage entirely: `overview`, `packages/` and `docs/` only. |
@@ -71,7 +71,20 @@ stdout. A note never changes the exit code. The ones worth knowing:
   namespace to the wrong package;
 - `--repo-url` on a detached HEAD, where there is no branch name to build permalinks
   from and a sha is refused as a default;
-- `--rev` supplied without `--repo-url`, which does nothing.
+- `--rev` supplied without `--repo-url`, which does nothing;
+- **a file under `code` that this run took ownership of.** §6.3 stops this producer
+  *deleting* a concept no manifest claims; nothing stops it *overwriting* one, because
+  the moment the generator produces the same id the staged file is moved over it. A
+  concept you wrote by hand at an id the producer later generates is replaced — body,
+  description and all — and this note, naming the file, is the only signal there is.
+  Field preservation (`description_source`) applies to concepts this producer wrote
+  before, so the way to keep a hand-written concept is to give it an id the producer
+  does not generate;
+- **a scope narrower than the run that wrote the manifest**, e.g. dropping
+  `--include-internal`. Nothing is pruned in that run: a concept missing from it may
+  simply be out of scope rather than gone from the repository, and the two are
+  indistinguishable from this run's own output alone. Re-run with the flag to prune
+  again.
 
 `--check` forwards these too, including the writer's reconciliation notes. For one case
 they are the only signal that exists: a hand-written concept under the owned prefix that
@@ -84,6 +97,13 @@ a traversal that timed out, does leave stale `code/` concepts *held back* rather
 pruned — but the file also drops out of the manifest's extracted-file list, so
 `.okfgen-manifest.json` differs and `--check` exits 1 with a drift line naming it. There
 the notes explain *why* the run was degraded rather than *whether* anything is wrong.
+
+`--check --no-code` is **rejected**, not noted. `--check` regenerates over a copy of the
+bundle; with `--no-code` that regeneration produces no `code` concept and no manifest, so
+every `code/` file is copied forward untouched, cannot differ, and the copy's
+`.okfgen-manifest.json` stays byte-identical. The run would exit 0 and print `No drift`
+over a `code/` family of any age — and since a note never changes the exit code, a CI gate
+keyed on `--check` would stay green for ever. Drop one of the two flags.
 
 A **malformed** `--repo-url` is not a note but an error: anything that is not an absolute
 `http`/`https` URL (`github.com/o/r`, `git@github.com:o/r` — the two forms a forge shows

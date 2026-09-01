@@ -67,10 +67,30 @@ public sealed record ManifestConcept(string Id, IReadOnlyList<string> SourceFile
 /// <see cref="RunStatus"/> of the run doing the pruning, not off what some earlier run managed to
 /// read, so no one should wire this field into a safety check on the strength of it being here.
 /// </param>
+/// <param name="Scope">
+/// The <see cref="ScopeOptions"/> the run was given, and -- unlike <see cref="ExtractedFiles"/> --
+/// <b>read back as a gate</b>.
+///
+/// <para><b>Why it has to be recorded.</b> <c>FileEligibility</c> filters tests at the FILE level and
+/// visibility at the SYMBOL level, and only the first of those is safe to forget. Drop
+/// <c>--include-tests</c> and the owning file is never visited, so it is absent from
+/// <see cref="RunStatus.Skipped"/>, still on disk, and <c>BundleWriter</c>'s per-candidate settled
+/// check keeps its concepts. Drop <c>--include-internal</c> and the owning file <i>is</i> visited and
+/// comes back <see cref="FileStatus.Extracted"/> -- so every internal symbol's concept looks settled
+/// and gets deleted, taking any hand-written description with it, while the run reports the deletion
+/// as a symbol gone from the repository. Nothing in a run's own output distinguishes "this symbol was
+/// deleted" from "this symbol is no longer in scope"; only the previous run's scope does, so the
+/// previous run writes it down.</para>
+///
+/// <para><see langword="null"/> only for a manifest that was hand-assembled or hand-edited without
+/// one -- <see cref="ForRun"/> always sets it. A null is treated as "unknown", which refuses pruning,
+/// because the whole point of the field is that its absence cannot be assumed benign.</para>
+/// </param>
 public sealed record GenerationManifest(
     string OwnedPrefix,
     IReadOnlyList<ManifestConcept> Concepts,
-    IReadOnlyList<string> ExtractedFiles)
+    IReadOnlyList<string> ExtractedFiles,
+    ScopeOptions? Scope = null)
 {
     /// <summary>
     /// The manifest's file name inside the bundle. A leading dot and a <c>.json</c> extension: the
@@ -83,8 +103,16 @@ public sealed record GenerationManifest(
     /// else is treated exactly like a missing one -- ignored, and nothing is pruned -- because the one
     /// thing a manifest from an unknown future must not do is authorize deletions under rules this
     /// build does not know.
+    ///
+    /// <para><b>2 rather than 1 because <see cref="Scope"/> is a gate, not a field.</b> A version-1
+    /// manifest records no scope, and this build cannot tell whether the run that wrote it covered a
+    /// wider one -- so reading it as if it did would be exactly the deletion the field exists to stop.
+    /// Bumping makes an old manifest ignored once: that run prunes nothing, writes a version-2
+    /// manifest, and every run after it prunes normally. The alternative -- reading a version-1
+    /// manifest and defaulting its scope -- silently assumes the narrowest answer for a question the
+    /// file does not answer.</para>
     /// </summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     /// <summary>
     /// The ids in <see cref="Concepts"/>, in the order they are held. Convenience for callers that
@@ -103,13 +131,25 @@ public sealed record GenerationManifest(
     /// <see cref="RunStatus.TraversalComplete"/> is true, which is why the pruning gate checks that
     /// first and this method makes no safety claim at all.</para>
     /// </summary>
+    /// <param name="ownedPrefix">The concept-id prefix the run claims.</param>
+    /// <param name="concepts">Every concept the run produced.</param>
+    /// <param name="status">The run's extraction outcome.</param>
+    /// <param name="scope">
+    /// The scope the run was given. Required rather than defaulted: see <see cref="Scope"/> for what a
+    /// forgotten scope deletes, and a default would be the one value that makes the omission invisible.
+    /// </param>
     /// <exception cref="ArgumentException"><paramref name="ownedPrefix"/> is null, empty or whitespace.</exception>
-    /// <exception cref="ArgumentNullException"><paramref name="concepts"/> or <paramref name="status"/> is null.</exception>
-    public static GenerationManifest ForRun(string ownedPrefix, IReadOnlyList<GeneratedConcept> concepts, RunStatus status)
+    /// <exception cref="ArgumentNullException"><paramref name="concepts"/>, <paramref name="status"/> or <paramref name="scope"/> is null.</exception>
+    public static GenerationManifest ForRun(
+        string ownedPrefix,
+        IReadOnlyList<GeneratedConcept> concepts,
+        RunStatus status,
+        ScopeOptions scope)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownedPrefix);
         ArgumentNullException.ThrowIfNull(concepts);
         ArgumentNullException.ThrowIfNull(status);
+        ArgumentNullException.ThrowIfNull(scope);
 
         var entries = concepts
             .Select(c => new ManifestConcept(c.Id.ToString(), NormalizePaths(c.SourceFiles)))
@@ -119,7 +159,7 @@ public sealed record GenerationManifest(
             .Where(s => s.Status == FileStatus.Extracted)
             .Select(s => s.Path);
 
-        return new GenerationManifest(ownedPrefix.Trim(), entries, NormalizePaths(extracted)).Normalized();
+        return new GenerationManifest(ownedPrefix.Trim(), entries, NormalizePaths(extracted), scope).Normalized();
     }
 
     /// <summary>
@@ -135,7 +175,8 @@ public sealed record GenerationManifest(
             .GroupBy(c => c.Id, StringComparer.Ordinal)
             .Select(g => new ManifestConcept(g.Key, NormalizePaths(g.SelectMany(c => c.SourceFiles ?? []))))
             .OrderBy(c => c.Id, StringComparer.Ordinal)],
-        NormalizePaths(ExtractedFiles ?? []));
+        NormalizePaths(ExtractedFiles ?? []),
+        Scope);
 
     /// <summary>
     /// Writes this manifest into <paramref name="bundleRoot"/>, normalized (see
@@ -221,8 +262,32 @@ public sealed record GenerationManifest(
             }
         }
 
-        return new GenerationManifest(ownedPrefix, concepts, ReadStrings(root, "extractedFiles"));
+        return new GenerationManifest(ownedPrefix, concepts, ReadStrings(root, "extractedFiles"), ReadScope(root));
     }
+
+    /// <summary>
+    /// The <c>scope</c> object, or <see langword="null"/> when it is missing, is not an object, or does
+    /// not carry both booleans. Null rather than a default, and the whole manifest is <b>not</b>
+    /// rejected for it: a scope-less manifest still bounds deletion by id and prefix, and
+    /// <c>BundleWriter</c> reads the null as "unknown scope, prune nothing" -- strictly safer than
+    /// throwing the id list away, which would leave the concepts orphaned instead.
+    /// </summary>
+    private static ScopeOptions? ReadScope(JsonElement root)
+    {
+        if (!root.TryGetProperty("scope", out var scope) || scope.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return TryReadBool(scope, "includeTests") is { } tests && TryReadBool(scope, "includeInternal") is { } internals
+            ? new ScopeOptions(tests, internals)
+            : null;
+    }
+
+    private static bool? TryReadBool(JsonElement parent, string property) =>
+        parent.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : null;
 
     private static IReadOnlyList<string> ReadStrings(JsonElement parent, string property)
     {
@@ -255,6 +320,17 @@ public sealed record GenerationManifest(
             writer.WriteStartObject();
             writer.WriteNumber("version", SchemaVersion);
             writer.WriteString("ownedPrefix", manifest.OwnedPrefix);
+
+            // Omitted entirely rather than written as `null` when unknown: the reader treats a missing
+            // and a malformed scope the same way (prune nothing), so one spelling of "not recorded" is
+            // enough, and a JSON null would read as a value that was chosen.
+            if (manifest.Scope is { } scope)
+            {
+                writer.WriteStartObject("scope");
+                writer.WriteBoolean("includeTests", scope.IncludeTests);
+                writer.WriteBoolean("includeInternal", scope.IncludeInternal);
+                writer.WriteEndObject();
+            }
 
             writer.WriteStartArray("extractedFiles");
             foreach (var file in manifest.ExtractedFiles)

@@ -17,9 +17,23 @@ namespace OkfProducer.Core.Generation;
 /// <listheader><term><c>description_source</c> on the existing concept</term><description>behaviour</description></listheader>
 /// <item><term><c>doc-comment</c></term><description>re-derived -- the code stays the source of truth, so an improved comment propagates</description></item>
 /// <item><term><c>generated</c></term><description>re-derived -- this is the slot a later LLM enrichment step fills</description></item>
-/// <item><term>absent (never written by this producer before)</term><description>derive normally</description></item>
+/// <item><term>absent</term><description>derive normally -- <b>and this covers two different situations, only one of which is harmless</b>: see below</description></item>
 /// <item><term>anything else -- <c>manual</c>, <c>llm</c>, a typo'd or differently-cased spelling of either, or a value this producer has never written at all</term><description>preserved, never overwritten</description></item>
 /// </list>
+///
+/// <para><b>What "absent" really means, stated because the row above used to claim the wrong one.</b>
+/// The row read "absent (never written by this producer before)", which is true of a fresh bundle and
+/// false of the case that costs someone their work: a concept a <i>human</i> wrote by hand, at an id
+/// this producer later generates. That file has no <c>description_source</c> either, so it takes this
+/// same branch and its description is re-derived -- and then the whole file is overwritten by
+/// <c>BundleWriter</c>, body and all. The two situations are indistinguishable <i>here</i>, and
+/// deliberately left so: a null <paramref name="existing"/> and an existing document with no such key
+/// both mean "this producer has no record of writing a description at this id", and inventing a
+/// <c>manual</c> claim for the second would write a label into a user's file that nobody chose.
+/// <b>Where they are told apart is <c>BundleWriter</c></b>, which knows whether a file was already
+/// there and whether any manifest claimed it, and raises a note naming the file it took ownership of.
+/// §4.2 preservation applies to concepts this producer wrote before; a hand-written concept is kept
+/// out of harm's way by giving it an id the producer does not generate.</para>
 ///
 /// Without this rule, a human-written description would disappear at the very next
 /// <c>generate</c> and the bundle would be a throwaway artefact rather than an editable knowledge

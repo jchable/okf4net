@@ -14,7 +14,12 @@ public interface IBundleWriter
     /// beside <paramref name="outPath"/> first; the bundle is only touched once the whole set has been
     /// produced. A run that fails while generating -- including one whose
     /// <paramref name="concepts"/> sequence throws part-way through -- leaves the bundle exactly as it
-    /// was.</para>
+    /// was. <see cref="WritePolicy.Reset"/> is inside that guarantee and not an exception to it: its
+    /// deletion happens at the commit boundary, after the whole set exists, so a reset run that dies
+    /// while generating leaves the old bundle rather than an empty directory. What the guarantee does
+    /// <b>not</b> cover, for any policy, is a failure during the commit itself -- the staged files are
+    /// moved one at a time, so an interruption there leaves a mix of new and old concepts, which the
+    /// next run corrects.</para>
     ///
     /// <para><b>Pruning is opt-in and it is the caller who opts in</b>, by supplying both
     /// <paramref name="manifest"/> and <paramref name="status"/> under

@@ -82,7 +82,7 @@ internal static class ProducerFixture
         };
 
         var concepts = new ConceptGenerator().Generate(snapshot, graph, options);
-        var manifest = GenerationManifest.ForRun(OwnedPrefix, concepts, graph.Status);
+        var manifest = GenerationManifest.ForRun(OwnedPrefix, concepts, graph.Status, ScopeOptions.Default);
         var write = new BundleWriter().Write(outPath, concepts, WritePolicy.Update, repoPath, manifest, graph.Status);
 
         return new RunOutcome(concepts.Count, graph.Status, write);

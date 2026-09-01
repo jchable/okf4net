@@ -125,6 +125,29 @@ public class PruningTests
         Assert.Empty(Directory.EnumerateDirectories(tmp.Root, ".okfgen-staging-*"));
     }
 
+    [Fact]
+    public void A_reset_that_fails_while_generating_leaves_the_bundle_it_was_going_to_replace()
+    {
+        // Reset used to delete the bundle at the TOP of Write, before the staging directory existed --
+        // so anything throwing afterwards left an empty directory where the bundle had been, while
+        // IBundleWriter promised without qualification that "a run that fails while generating leaves
+        // the bundle exactly as it was". The delete belongs at the commit boundary, where the rest of
+        // the write already is.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true);
+        var before = ProducerFixture.SnapshotFiles(tmp.Path);
+        Assert.NotEmpty(before);
+
+        Assert.Throws<InvalidOperationException>(() => WriteRunThatThrows(tmp, WritePolicy.Reset));
+
+        // Byte for byte over the whole bundle, not "the file is still there": the failure mode is an
+        // EMPTY directory, which a per-file assertion on one concept would also catch, but a partial
+        // wipe would not.
+        var after = ProducerFixture.SnapshotFiles(tmp.Path);
+        Assert.Equal(before.Keys.OrderBy(k => k, StringComparer.Ordinal), after.Keys.OrderBy(k => k, StringComparer.Ordinal));
+        Assert.All(before, entry => Assert.True(entry.Value.AsSpan().SequenceEqual(after[entry.Key]), $"'{entry.Key}' changed."));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Rule 3: scope restricted to owners that succeeded.
     // ---------------------------------------------------------------------------------------------
@@ -331,21 +354,98 @@ public class PruningTests
     // The manifest is a file in a directory the user controls, so it is treated as input.
     // ---------------------------------------------------------------------------------------------
 
-    [Fact]
-    public void A_manifest_id_that_escapes_the_bundle_deletes_nothing_outside_it()
+    [Theory]
+    [InlineData("code/../../victim")]
+    [InlineData("code/./../victim")]
+    [InlineData("code/csharp/n/t/..")]
+    public void A_manifest_id_that_tries_to_climb_out_of_the_bundle_deletes_nothing_outside_it(string hostile)
     {
+        // Every one of these is caught by ConceptId.Parse, before BundleWriter's own containment check
+        // is consulted at all: a segment is [A-Za-z0-9_][A-Za-z0-9_.-]*, and `.` is not a valid first
+        // character, so `..` never parses. Said here because it is easy to read this test as covering
+        // the full-path check underneath -- it does not, and NOTHING can: that charset admits no
+        // separator, no drive letter and no dotted segment, so no id this producer can parse joins to a
+        // path outside the root. The full-path check is a backstop against a future relaxation of the
+        // charset; what defends the bundle today against a path that really does leave it is the
+        // reparse-point resolution, and the test below is the one that reaches it.
         using var tmp = new TempDir();
         var victim = Path.Combine(tmp.Root, "victim.md");
         File.WriteAllText(victim, "not the bundle's to delete");
 
         WriteRun(tmp, [A], complete: true);
-        PlantManifestIds(tmp, Prefix, [A, "code/../../victim"]);
+        PlantManifestIds(tmp, Prefix, [A, hostile]);
 
         var result = WriteRun(tmp, [A], complete: true);
 
         Assert.True(File.Exists(victim));
         Assert.Empty(result.Pruned);
         Assert.Contains(result.Notes, n => n.Contains("does not resolve to a file inside the bundle", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_concept_the_bundle_reaches_only_through_a_link_is_never_deleted()
+    {
+        // THE ONE THAT WAS REACHABLE. Path.GetFullPath resolves `.` and `..` and nothing else -- it does
+        // not follow a symbolic link or a junction -- so `candidate.StartsWith(root + sep)` answered
+        // "inside the bundle" for a path whose directory was a link to somewhere else, and File.Delete
+        // followed the link. Reachable in the workflow the README documents: clone an untrusted
+        // repository whose committed bundle holds `code/x -> ~/notes` plus a manifest claiming
+        // `code/x/report`, and every gate passes -- named by the previous manifest, under the owned
+        // prefix, owned by a file this run read cleanly, lexically inside the root.
+        using var tmp = new TempDir();
+
+        var outside = Path.Combine(tmp.Root, "notes");
+        Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "report.md");
+        File.WriteAllText(victim, "someone's notes, outside the bundle entirely");
+
+        WriteRun(tmp, [A], complete: true);
+
+        var link = Path.Combine(tmp.Path, "code", "x");
+        CreateDirectoryLink(link, outside);
+
+        // The link is real, and the bundle really can see through it -- without this the test would
+        // pass on a platform where the link silently did not happen.
+        Assert.True(File.Exists(Path.Combine(link, "report.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
+
+        PlantManifestIds(tmp, Prefix, [A, "code/x/report"]);
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        Assert.True(File.Exists(victim), "File.Delete followed a link out of the bundle and destroyed a file outside it.");
+        Assert.Empty(result.Pruned);
+        Assert.Contains(result.Notes, n => n.Contains("code/x/report", StringComparison.Ordinal)
+            && n.Contains("symbolic link or junction", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_directory_cleanup_after_a_prune_removes_no_link_the_bundle_merely_holds()
+    {
+        // RemoveEmptyDirectories climbs from a pruned concept's directory to the owned prefix calling
+        // Directory.Delete(recursive: true), and it built those paths by string concatenation too. Here
+        // the link points back INSIDE the bundle, so the concept file itself resolves inside and is
+        // genuinely this producer's to delete -- which is what gets the walk started. The link it walks
+        // through is still a piece of structure the operator put there, and no prune may remove it.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A], complete: true);
+
+        var real = Path.Combine(tmp.Path, "code", "real");
+        Directory.CreateDirectory(real);
+        File.WriteAllText(Path.Combine(real, "b.md"), "---\ntype: Note\n---\n\nreachable two ways.\n");
+
+        var link = Path.Combine(tmp.Path, "code", "csharp", "n", "t2");
+        CreateDirectoryLink(link, real);
+
+        PlantManifestIds(tmp, Prefix, [A, "code/csharp/n/t2/b"]);
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        // Both halves. The prune happened (so the walk really ran) ...
+        Assert.Equal(new[] { "code/csharp/n/t2/b" }, result.Pruned.Select(id => id.ToString()));
+
+        // ... and the link survived it, still a link rather than a directory the cleanup recreated.
+        Assert.True(Directory.Exists(link), "the directory cleanup deleted a link the bundle only pointed through.");
+        Assert.NotNull(new DirectoryInfo(link).LinkTarget);
     }
 
     [Fact]
@@ -383,7 +483,15 @@ public class PruningTests
         using var tmp = new TempDir();
         WriteRun(tmp, [A, B], complete: true);
         var path = Path.Combine(tmp.Path, GenerationManifest.FileName);
-        File.WriteAllText(path, File.ReadAllText(path).Replace("\"version\": 1", "\"version\": 99", StringComparison.Ordinal));
+        var text = File.ReadAllText(path);
+
+        // Read off the constant rather than pinned to a literal: with `"version": 1` hard-coded here
+        // this test silently stopped substituting anything the moment the schema was bumped, and then
+        // asserted that a manifest of the CURRENT version authorizes nothing -- passing only because
+        // the run it was aiming at had been replaced by a different one.
+        var current = $"\"version\": {GenerationManifest.SchemaVersion}";
+        Assert.Contains(current, text, StringComparison.Ordinal);
+        File.WriteAllText(path, text.Replace(current, "\"version\": 99", StringComparison.Ordinal));
 
         var result = WriteRun(tmp, [A], complete: true);
 
@@ -469,7 +577,8 @@ public class PruningTests
         new GenerationManifest(
                 Prefix,
                 [new ManifestConcept(B, ["src/Z.cs", "src/A.cs"]), new ManifestConcept(A, [])],
-                ["src/Z.cs", "src/A.cs"])
+                ["src/Z.cs", "src/A.cs"],
+                ScopeOptions.Default)
             .WriteTo(tmp.Path);
 
         var text = File.ReadAllText(Path.Combine(tmp.Path, GenerationManifest.FileName));
@@ -569,8 +678,166 @@ public class PruningTests
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Rule 2's other half: an unclaimed file is safe from deletion, and was not safe from overwrite.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void A_run_that_takes_over_a_file_no_manifest_claimed_says_which_one_it_overwrote()
+    {
+        // §6.3 rule 2 stops this producer DELETING a file no manifest claims. Nothing stopped it
+        // writing over one: the moment the generator produces the same id, CommitStaging moves the
+        // staged file with overwrite: true and the hand-written body and description are gone. There
+        // was no signal at all -- ReportUnownedFiles computes owned as (this run's manifest) U (the
+        // previous one), and this run's manifest now claims the id, so the file reads as owned.
+        using var tmp = new TempDir();
+
+        var path = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "---\ntype: Note\ntitle: Mine\ndescription: Written by a person.\n---\n\nMy notes.\n");
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        // The overwrite still happens -- that is the behaviour, stated rather than hidden. The note is
+        // the whole of the remedy, so it has to name the file and say what it could not tell about it.
+        Assert.DoesNotContain("My notes.", File.ReadAllText(path), StringComparison.Ordinal);
+        Assert.Contains(result.Notes, n => n.Contains(A, StringComparison.Ordinal)
+            && n.Contains("taken ownership", StringComparison.Ordinal)
+            && n.Contains("no `description_source`", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_run_over_its_own_previous_output_takes_over_nothing_and_says_nothing()
+    {
+        // The other direction, without which the note above passes just as happily on a writer that
+        // announces an ownership claim for every file it writes -- which would bury the one case that
+        // matters under a note per concept per run.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true);
+
+        var result = WriteRun(tmp, [A, B], complete: true);
+
+        Assert.DoesNotContain(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The scope the previous run covered, which is the difference between "deleted" and "out of scope".
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void A_run_that_narrows_its_scope_deletes_nothing_and_names_the_flag_that_was_dropped()
+    {
+        // The asymmetry that made this dangerous: FileEligibility filters TESTS at the file level and
+        // VISIBILITY at the symbol level. Drop --include-tests and the owning file is never visited, so
+        // it is neither attempted nor gone and its concepts are held back -- correct, by accident of
+        // where the filter sits. Drop --include-internal and the owning file IS visited and comes back
+        // Extracted, so every internal symbol's concept looks settled and was deleted, with any manual
+        // description on it, while the run reported the deletion as a symbol gone from the repository.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true, scope: new ScopeOptions(IncludeTests: false, IncludeInternal: true));
+
+        var result = WriteRun(tmp, [A], complete: true, scope: ScopeOptions.Default);
+
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
+        Assert.Empty(result.Pruned);
+        Assert.Contains(result.Notes, n => n.Contains("--include-internal", StringComparison.Ordinal)
+            && n.Contains("out of scope rather than gone", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_run_that_widens_its_scope_prunes_exactly_as_it_always_did()
+    {
+        // Only NARROWING is a reason to refuse. Without this, "record the scope" could be implemented
+        // as "never prune when the two differ", which would make pruning die the first time anyone
+        // passed a flag -- and the test above would not notice.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true, scope: ScopeOptions.Default);
+
+        var result = WriteRun(tmp, [A], complete: true, scope: new ScopeOptions(IncludeTests: true, IncludeInternal: true));
+
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
+        Assert.Equal(new[] { B }, result.Pruned.Select(id => id.ToString()));
+    }
+
+    [Fact]
+    public void A_manifest_that_records_no_scope_authorizes_no_deletion()
+    {
+        // A hand-assembled or hand-edited manifest inside a schema this build does read. "No scope
+        // recorded" is not "the narrowest scope"; it is a question the file does not answer, and the
+        // only safe reading of an unanswered question here is to keep the concept.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A, B], complete: true);
+
+        new GenerationManifest(
+                Prefix,
+                [new ManifestConcept(A, [SharedSource]), new ManifestConcept(B, [SharedSource])],
+                [SharedSource])
+            .WriteTo(tmp.Path);
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
+        Assert.Empty(result.Pruned);
+        Assert.Contains(result.Notes, n => n.Contains("records no extraction scope", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_manifest_records_the_scope_the_run_covered()
+    {
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A], complete: true, scope: new ScopeOptions(IncludeTests: true, IncludeInternal: false));
+
+        Assert.Equal(new ScopeOptions(IncludeTests: true, IncludeInternal: false), GenerationManifest.TryRead(tmp.Path)?.Scope);
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A directory reparse point at <paramref name="link"/> pointing at <paramref name="target"/>.
+    ///
+    /// <para>A symbolic link where the platform allows one; a junction on Windows, where creating a
+    /// symbolic link needs SeCreateSymbolicLinkPrivilege (Developer Mode or an elevated shell) that an
+    /// ordinary test run does not have. A junction is the same kind of object for every purpose these
+    /// tests have: <c>Path.GetFullPath</c> does not resolve it, <c>File.Exists</c> and
+    /// <c>File.Delete</c> follow it, and <c>FileSystemInfo.LinkTarget</c> reports it.</para>
+    ///
+    /// <para>If neither can be created this fails loudly rather than letting the test pass without a
+    /// link -- which is exactly the shape of assertion this whole exercise exists to root out.</para>
+    /// </summary>
+    private static void CreateDirectoryLink(string link, string target)
+    {
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(link)!);
+
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.Fail($"could not create a symbolic link at '{link}': {ex.Message}");
+            }
+
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe")
+            {
+                ArgumentList = { "/c", "mklink", "/J", link, target },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            });
+
+            process?.WaitForExit();
+        }
+
+        Assert.True(
+            new DirectoryInfo(link).LinkTarget is not null,
+            $"no symbolic link or junction could be created at '{link}', so this test would pass without exercising anything. "
+                + "On Windows a junction needs no privilege; if even that failed, the temporary directory is on a filesystem "
+                + "that has no reparse points and this test cannot run there.");
+    }
 
     private static WriteResult WriteRun(
         TempDir tmp,
@@ -579,14 +846,15 @@ public class PruningTests
         IReadOnlyList<(string Path, FileStatus Status)>? attempted = null,
         IReadOnlyDictionary<string, string[]>? sources = null,
         string? ownedPrefix = null,
-        string? repoPath = null)
+        string? repoPath = null,
+        ScopeOptions? scope = null)
     {
         var concepts = ids
             .Select(id => Concept(id, sources is not null && sources.TryGetValue(id, out var own) ? own : [SharedSource]))
             .ToList();
 
         var status = new RunStatus(complete, attempted ?? [(SharedSource, FileStatus.Extracted)]);
-        var manifest = GenerationManifest.ForRun(ownedPrefix ?? Prefix, concepts, status);
+        var manifest = GenerationManifest.ForRun(ownedPrefix ?? Prefix, concepts, status, scope ?? ScopeOptions.Default);
 
         return new BundleWriter().Write(tmp.Path, concepts, WritePolicy.Update, repoPath ?? tmp.RepoPath, manifest, status);
     }
@@ -597,7 +865,7 @@ public class PruningTests
     /// outside. The concept it does yield carries a DIFFERENT body from the one already in the bundle,
     /// so that a writer without staging would visibly overwrite it and the test would fail.
     /// </summary>
-    private static void WriteRunThatThrows(TempDir tmp)
+    private static void WriteRunThatThrows(TempDir tmp, WritePolicy policy = WritePolicy.Update)
     {
         var concepts = new ThrowingList([Concept(A, [SharedSource], body: "a body this run must never commit")]);
         var status = RunStatus.Complete;
@@ -605,9 +873,9 @@ public class PruningTests
         new BundleWriter().Write(
             tmp.Path,
             concepts,
-            WritePolicy.Update,
+            policy,
             tmp.RepoPath,
-            GenerationManifest.ForRun(Prefix, [], status),
+            GenerationManifest.ForRun(Prefix, [], status, ScopeOptions.Default),
             status);
     }
 
@@ -626,11 +894,17 @@ public class PruningTests
     /// by the cleanly-extracted fixture source -- the way an operator, or anything else on the machine,
     /// could edit the file this producer trusts.
     /// </summary>
-    private static void PlantManifestIds(TempDir tmp, string ownedPrefix, IReadOnlyList<string> ids) =>
+    private static void PlantManifestIds(TempDir tmp, string ownedPrefix, IReadOnlyList<string> ids, ScopeOptions? scope = null) =>
         new GenerationManifest(
                 ownedPrefix,
                 [.. ids.Select(id => new ManifestConcept(id, [SharedSource]))],
-                [SharedSource])
+                [SharedSource],
+
+                // Recorded, so that a test planting a manifest exercises the check it is aiming at
+                // rather than tripping the scope gate on the way in -- a scope-less manifest prunes
+                // nothing at all, which is what A_manifest_that_records_no_scope_authorizes_no_deletion
+                // pins deliberately.
+                scope ?? ScopeOptions.Default)
             .WriteTo(tmp.Path);
 
     /// <summary>One concept from a real <see cref="ConceptGenerator"/> run over the fixture graph below.</summary>

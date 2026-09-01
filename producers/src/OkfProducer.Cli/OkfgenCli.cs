@@ -149,6 +149,23 @@ public static class OkfgenCli
                 return 1;
             }
 
+            if (check && parseResult.GetValue(noCodeOption))
+            {
+                // Rejected for the same reason as --check --reset, and it is the more dangerous of the
+                // two because it fails silently rather than doing nothing. --check regenerates over a
+                // COPY of the bundle; with --no-code the regeneration produces no `code` concept and no
+                // manifest, so every `code/` file is copied forward untouched, cannot differ, and the
+                // manifest on the copy stays byte-identical. The run exits 0 and prints "No drift" over
+                // a `code/` family that may be arbitrarily stale -- and a CI gate keyed on --check then
+                // stays green for ever. A note would not help: a note never changes the exit code.
+                error.WriteLine(
+                    "error: --check cannot be combined with --no-code. --check compares the bundle against a regeneration of it,"
+                    + " and a regeneration that skips the code stage produces no `code` concept at all -- so every `code/` concept"
+                    + " is copied forward untouched, cannot differ, and the check would report no drift however stale they are."
+                    + " Drop --no-code to check the whole bundle, or drop --check.");
+                return 1;
+            }
+
             var repoUrl = Trimmed(parseResult.GetValue(repoUrlOption));
             if (repoUrl is not null && !GenerateOptions.TryPermalinkBase(repoUrl, out _))
             {
@@ -254,7 +271,12 @@ public static class OkfgenCli
 
         if (result.Pruned.Count > 0)
         {
-            output.WriteLine($"Pruned {result.Pruned.Count.ToString(CultureInfo.InvariantCulture)} concept(s) whose declarations are gone from the source.");
+            // Not "whose declarations are gone from the source": that is a claim this producer cannot
+            // make. What it established is that the previous manifest claimed the id, this run did not
+            // produce it, and every file it came from was read in full or is gone. A declaration that
+            // merely left this run's scope satisfies all three -- which is why a narrowed scope refuses
+            // the prune outright (BundleWriter.Narrowing) instead of being papered over here.
+            output.WriteLine($"Pruned {result.Pruned.Count.ToString(CultureInfo.InvariantCulture)} concept(s) the previous run claimed and this one no longer produces.");
             foreach (var id in result.Pruned)
             {
                 output.WriteLine($"  - {id}");

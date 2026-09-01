@@ -1,6 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "ownedPrefix": "code",
+  "scope": {
+    "includeTests": false,
+    "includeInternal": false
+  },
   "extractedFiles": [
     "src/Registry.cs",
     "src/Scanner.cs",

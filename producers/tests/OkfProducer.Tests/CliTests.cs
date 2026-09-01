@@ -280,6 +280,63 @@ public class CliTests
     }
 
     [Fact]
+    public void Check_refuses_to_be_combined_with_no_code()
+    {
+        // The combination that used to exit 0 over an arbitrarily stale `code/` family. --check
+        // regenerates over a COPY of the bundle; with --no-code that regeneration produces no `code`
+        // concept and no manifest, so every `code/` file is copied forward untouched and cannot differ,
+        // and the copy's .okfgen-manifest.json is byte-identical because nothing rewrote it. The floor
+        // in DriftReport does not catch it either: ConceptGenerator always emits `overview`, so the
+        // count is positive for every composition the CLI can build. And a note could not fix it --
+        // this producer's README says a note never changes the exit code -- so a CI gate keyed on
+        // `--check` stayed green for ever. Rejected, exactly as --check --reset is.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        // Drift the bundle can only see through the code stage: a member added to the source.
+        WriteSource(repo, "src/Widget.cs", WidgetSource(AddedMember));
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--check", "--no-code");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--no-code", result.Error, StringComparison.Ordinal);
+
+        // Not merely non-zero: the run must not have reported a clean bundle on the way out. Without
+        // the rejection this printed "No drift" and exited 0 against exactly this drift.
+        Assert.DoesNotContain("No drift", result.Output, StringComparison.Ordinal);
+
+        // And the combination is refused rather than silently downgraded to a plain --check: nothing
+        // was compared, so nothing was reported.
+        Assert.DoesNotContain("drift:", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Dropping_include_internal_does_not_delete_the_concepts_it_stopped_covering()
+    {
+        // The end-to-end shape of the manifest-scope rule, through the shipped composition. `Hidden` is
+        // declared internal, so it exists under --include-internal and not without it -- and its owning
+        // file is read cleanly either way, which is what made its concept look settled and deleted.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle, "--include-internal").ExitCode);
+        AssertPresent(bundle, HiddenConcept);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--update");
+
+        Assert.Equal(0, result.ExitCode);
+        AssertPresent(bundle, HiddenConcept);
+        Assert.Contains("--include-internal", result.Error, StringComparison.Ordinal);
+
+        // Both halves: a writer that pruned nothing at all would pass the assertion above just as
+        // happily. Re-running with the flag back on must leave the same bundle, pruning nothing and
+        // saying nothing about scope.
+        var widened = Run("generate", "--repo", repo, "--out", bundle, "--update", "--include-internal");
+
+        Assert.Equal(0, widened.ExitCode);
+        AssertPresent(bundle, HiddenConcept);
+        Assert.DoesNotContain("wider scope", widened.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Check_refuses_to_be_combined_with_reset()
     {
         using var workspace = NewWorkspace(out var repo, out var bundle);

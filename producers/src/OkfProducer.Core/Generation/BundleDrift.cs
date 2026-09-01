@@ -24,12 +24,24 @@ namespace OkfProducer.Core.Generation;
 /// <param name="ConceptsRegenerated">
 /// How many concepts the caller's regeneration actually wrote into the copy.
 ///
-/// <para><b>The floor without which this whole check can never fail.</b> The regeneration is supplied
-/// by the caller, so a caller that composes its pipeline wrongly -- or not at all, which is exactly
-/// the state the CLI is in until its code-graph stage is wired -- hands over a run that writes
+/// <para><b>A contract check on the caller's delegate, and exactly that much.</b> The regeneration is
+/// supplied by the caller, so a caller that composes its pipeline wrongly hands over a run that writes
 /// nothing. The copy then equals the original, no difference is found, and <c>--check</c> prints "no
-/// drift" on every bundle for ever: a guard that cannot fire, in the one place with nothing behind it.
-/// Zero here therefore makes <see cref="IsClean"/> false whatever the byte comparison said.</para>
+/// drift" on every bundle for ever. Zero here therefore makes <see cref="IsClean"/> false whatever the
+/// byte comparison said. <c>CheckTests.A_regeneration_that_writes_nothing_is_never_reported_clean</c>
+/// is what shows it fires.</para>
+///
+/// <para><b>What it does NOT cover, said plainly because this doc comment used to imply it did.</b>
+/// It once read "or not at all, which is exactly the state the CLI is in until its code-graph stage is
+/// wired" -- that stage is wired now, and <c>ConceptGenerator</c> always emits <c>overview</c>, so
+/// every composition the shipped CLI can build returns at least 1 and this floor cannot fire from
+/// there. In particular it does not catch <c>--check --no-code</c>, where the code stage is skipped
+/// but <c>overview</c> and the package and doc families are still written: the count is positive, no
+/// <c>code/</c> concept is regenerated, the copy's manifest is byte-identical because a code-less run
+/// writes none, and the check reports clean over an arbitrarily stale <c>code/</c> family. A note
+/// cannot fix that -- the producer's README says a note never changes the exit code -- so the CLI
+/// rejects the combination outright, the way it already rejects <c>--check --reset</c>. This floor is
+/// a guard on the <c>Func</c> contract, not a guard on how the caller composed its pipeline.</para>
 /// </param>
 public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsExcluded, int ConceptsRegenerated)
 {
