@@ -1,7 +1,11 @@
 # §5.1 Per-entry `usage_window` override — Design
 
-**Status:** proposed, awaiting implementation
-**Date:** 2026-09-01
+**Status:** implemented, merged into `dev` (PR #57). This document is maintained
+to describe the code as it shipped, not the draft that preceded it: verification
+came back false on two of its claims (C6 and C10 in §6) and the text was
+corrected in place rather than left standing. §7's predictions held — the suite
+was green at merge, and no fixture and no golden moved.
+**Date:** 2026-09-01, revised 2026-09-01 (§3 malformed-vs-empty, §4 `ToYaml`)
 **Branch:** `fix/usage-window-override`
 **Normative source:** `docs/spec/SPEC.md` (OKF v0.2, vendored verbatim at upstream
 `62432a0`, `sha256 26aa5da0…`). Every `§` and line number refers to **that file**.
@@ -20,7 +24,7 @@ against §5, and no consumer can obtain it.
 before any change: `Frontmatter` wraps an order-preserving `YamlMapping` and
 re-serializes the raw tree, so a nested key it has no typed accessor for
 survives untouched. `Provenance.ToYaml` has exactly one caller
-(`OkfDocumentBuilder.cs:172`), so the serializer reaches only the
+(`OkfDocumentBuilder.cs:176`), so the serializer reaches only the
 producer/builder path, never `fmt`. The gap is therefore **blindness, not data
 loss**: the value sits in the file, correctly preserved, and the library cannot
 see it, cannot check it, and cannot hand it to anyone.
@@ -64,10 +68,16 @@ library never sees.
   per-field merge would be inventing a rule the spec does not state, and would
   make a half-written entry silently borrow half a window from elsewhere. This
   is the one semantic judgement in the change, and it is pinned by a test.
-- **A malformed override does not fall back.** If an entry's `usage_window` is
-  present but not a mapping, it yields null and the entry inherits the shared
-  window, exactly as an absent one does — consistent with `ParseUsageWindow`'s
-  existing leniency (`Provenance.cs:45-46`: "a non-mapping value yields null").
+- **A malformed override falls back; a present-but-empty one does not.**
+  `usage_window: hello` is *not a mapping*, so `ParseUsageWindow`'s existing
+  leniency ("a non-mapping value yields null") lets the entry inherit the shared
+  window, exactly as an absent key does. `usage_window: {}` **is** a mapping — it
+  parses to `UsageWindow(null, null)`, a present override with two absent bounds
+  — so by the whole-object rule above it wins rather than falling back; reading
+  `{}` as "nothing to override with" would be the per-field merge this design
+  rejects. Both halves are pinned:
+  `FrontmatterTests.EffectiveUsageWindow_falls_back_to_shared_when_the_entrys_override_is_not_a_mapping`
+  and `…_present_and_empty_entry_window_is_not_absent_and_does_not_fall_back`.
 
 ## 4. Model
 
@@ -87,7 +97,9 @@ public UsageWindow? Frontmatter.EffectiveUsageWindow(Source source);
 - `Provenance.ToYaml` writes it back, keeping the canonical key order it
   documents (`id, resource, title, author, usage_count, last_modified`, then
   `usage_window`) so a round-trip is lossless. **This is the part most likely to
-  be forgotten**, and it is what makes `okf fmt` stop deleting the field.
+  be forgotten** and, per §1, the only path that ever risked the field: `ToYaml`
+  serves `OkfDocumentBuilder` alone, so a field read but not written back is lost
+  for builder callers — never for `okf fmt`, which does not call it.
 - `Frontmatter.EffectiveUsageWindow` applies the override rule. Without it every
   consumer re-derives §5.1 for itself — the forking `CLAUDE.md` forbids for
   `ConceptSearch`, `LfLines` and `ConceptAudit`, and there is no reason this
