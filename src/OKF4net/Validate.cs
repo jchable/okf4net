@@ -703,10 +703,9 @@ public static class BundleValidator
                 // Deliberately says only that the value could not be read, not
                 // that it is not ISO 8601: the readability gate is
                 // DateTimeOffset.TryParse, which cannot read several genuine
-                // ISO 8601 spellings (end-of-day 24:00, wholly-basic
-                // 20260630T140000Z, leap seconds, week and ordinal dates). They
-                // land here, and calling them "not an ISO-8601 datetime" would
-                // be false of every one of them.
+                // ISO 8601 spellings (the wholly-basic 20260630T140000Z, leap
+                // seconds, week and ordinal dates). They land here, and calling
+                // them "not an ISO-8601 datetime" would be false of them.
                 diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} could not be read as a timestamp: {DebugQuote.Quote(raw)}", invalidCode, field));
                 break;
             case TimestampForm.LegacyDateOnly:

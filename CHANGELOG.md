@@ -165,9 +165,9 @@ and this project adheres to
 - **A value that is not a timestamp at all is no longer told it is "not an
   ISO-8601 datetime".** That claim is false of a whole class of value: the
   readability gate is `DateTimeOffset.TryParse`, which cannot read several
-  genuine ISO 8601 datetimes carrying an explicit UTC offset — end-of-day
-  `2020-06-30T24:00:00Z`, the wholly-basic `20200630T140000Z`, a leap second,
-  a week date (`2026-W27-1T…`), an ordinal date (`2026-181T…`). They are not
+  genuine ISO 8601 datetimes carrying an explicit UTC offset — the wholly-basic
+  `20200630T140000Z`, a leap second (`…T23:59:60Z`), a week date
+  (`2026-W27-1T…`), an ordinal date (`2026-181T…`). They are not
   read (so they are never evaluated for staleness), and the diagnostic now says
   only that: `<label> could not be read as a timestamp: "<value>"`. The
   `DiagnosticCode` for each field is unchanged, so `--json` consumers matching

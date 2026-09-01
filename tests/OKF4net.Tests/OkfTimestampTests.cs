@@ -241,14 +241,27 @@ public class OkfTimestampTests
     /// read, deliberately never that it is not ISO 8601, because of these rows.
     /// </summary>
     [Theory]
-    [InlineData("2020-06-30T24:00:00Z")]      // end-of-day 24:00 (ISO 8601 §4.2.3)
     [InlineData("20200630T140000Z")]          // wholly basic format
-    [InlineData("2026-06-30T23:59:60Z")]      // leap second
+    [InlineData("2026-06-30T23:59:60Z")]      // leap second: ISO 8601 admits [60]
     [InlineData("2026-W27-1T14:00:00Z")]      // week date
     [InlineData("2026-181T14:00:00Z")]        // ordinal date
     public void Iso8601_forms_the_bcl_parser_cannot_read_are_Unreadable(string raw)
     {
         Assert.Equal(TimestampForm.Unreadable, OkfTimestamp.Classify(raw, out var instant));
+        Assert.Equal(default, instant);
+    }
+
+    [Fact]
+    public void End_of_day_24_00_is_Unreadable_and_that_is_correct_not_a_gap()
+    {
+        // Deliberately NOT a row in the theory above: end-of-day 24:00 is not an
+        // ISO 8601 form this parser fails to read, it is a form ISO 8601 does not
+        // permit here at all. ISO 8601 admits [24] for the hour "only to indicate
+        // the end of a calendar day within a time interval", and forbids it "for
+        // a single time point" -- which is exactly what §5.5 makes stale_after
+        // ("An absolute instant"). So rejecting it is right, and it must not be
+        // listed among the spellings we regret dropping.
+        Assert.Equal(TimestampForm.Unreadable, OkfTimestamp.Classify("2020-06-30T24:00:00Z", out var instant));
         Assert.Equal(default, instant);
     }
 }

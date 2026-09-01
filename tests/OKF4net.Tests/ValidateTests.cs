@@ -898,18 +898,24 @@ public class ValidateTests
     public void An_unreadable_value_is_not_told_it_is_not_iso8601()
     {
         // The Unreadable bucket is defined by what DateTimeOffset.TryParse can
-        // read, not by what ISO 8601 permits: end-of-day 24:00 (used here),
-        // wholly-basic 20260630T140000Z, leap seconds, week dates and ordinal
-        // dates are all genuine ISO 8601 datetimes with an explicit UTC offset
-        // that the BCL parser refuses (pinned in
+        // read, not by what ISO 8601 permits: the wholly-basic form used here,
+        // plus leap seconds, week dates and ordinal dates, are all genuine ISO
+        // 8601 datetimes with an explicit UTC offset that the BCL parser refuses
+        // (pinned in
         // OkfTimestampTests.Iso8601_forms_the_bcl_parser_cannot_read_are_Unreadable).
         // Reporting them as "not an ISO-8601 datetime" would be false, so the
         // message states only that the value could not be read. The code is
         // unchanged; only the wording is constrained.
-        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '2020-06-30T24:00:00Z'\n");
+        //
+        // The input must be a form ISO 8601 genuinely permits, or this test
+        // proves nothing: it previously used end-of-day 24:00, which ISO 8601
+        // allows only inside a time interval and forbids for a single time point
+        // (§4.2.3 NOTE 3) -- so the premise did not hold for the one value the
+        // test was built on.
+        var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '20200630T140000Z'\n");
 
         var d = Assert.Single(r.Of(Severity.Warning), x => x.Code == DiagnosticCode.StaleAfterInvalid);
-        Assert.Equal("stale_after could not be read as a timestamp: \"2020-06-30T24:00:00Z\"", d.Message);
+        Assert.Equal("stale_after could not be read as a timestamp: \"20200630T140000Z\"", d.Message);
         Assert.DoesNotContain("ISO", d.Message, StringComparison.OrdinalIgnoreCase);
     }
 
