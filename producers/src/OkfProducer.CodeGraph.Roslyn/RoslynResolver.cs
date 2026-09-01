@@ -126,10 +126,17 @@ public sealed class RoslynResolver : ISymbolResolver
     /// The <c>Count &gt; 0</c> clause is the whole point of this property, not a formality.
     /// <c>Projects.All(...)</c> over an empty list is vacuously <see langword="true"/>, so a resolver
     /// constructed with no projects at all -- which is precisely the state in which EVERY call in the
-    /// repository fell back to name matching -- would otherwise report itself complete and green-light
-    /// the one thing it must forbid. That state is reachable rather than theoretical: finding no
-    /// <c>.csproj</c> in a C# repository is a known gap in this producer, and it yields an empty
-    /// project list, not an error.
+    /// repository fell back to name matching -- would otherwise report itself complete. That state is
+    /// reachable rather than theoretical: finding no <c>.csproj</c> in a C# repository is a known gap
+    /// in this producer, and it yields an empty project list, not an error.
+    /// </para>
+    ///
+    /// <para>
+    /// What that clause protects is the <b>run's report</b>, which is all this property feeds. Claiming
+    /// completeness there would tell a human the call graph is exact when every edge in it was in fact
+    /// guessed from a name -- and a wrong <c>## Calls</c> link reads as confidently as a right one. It
+    /// forbids nothing, gates nothing, and blocks no deletion; see the paragraph above for why it
+    /// cannot.
     /// </para>
     /// </summary>
     public bool IsComplete =>

@@ -57,9 +57,9 @@ public class TreeSitterExtractorTests : IDisposable
     // The guard above exercises Utf8Offsets in isolation; this one runs the same non-ASCII-before-a-
     // call shape through the REAL extractor and checks the CallSite it produces lands on the correct
     // UTF-8 byte offset. TreeSitter.DotNet 1.3.0 turned out not to report raw tree-sitter byte
-    // offsets at all -- see the "café" cases in Offsets_from_the_real_extractor_are_utf8_byte_offsets
-    // below and the task report for the full finding -- so this is the test that would have caught a
-    // wrong conversion (or a skipped one) inside TreeSitterExtractor itself.
+    // offsets at all -- see this test's own "café" case below, and the task report, for the full
+    // finding -- so this is the test that would have caught a wrong conversion (or a skipped one)
+    // inside TreeSitterExtractor itself.
     [Theory]
     [InlineData("namespace N;\npublic class T { public void M() { var café = 1; Foo(); } }")]
     [InlineData("namespace N;\npublic class T { public void M() { var x = \"🎯\"; Foo(); } }")]
