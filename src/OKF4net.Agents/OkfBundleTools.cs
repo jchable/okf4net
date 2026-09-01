@@ -478,7 +478,7 @@ public sealed class OkfBundleTools
     /// <param name="type">Keep only concepts with this frontmatter type (exact match).</param>
     [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Called bare it returns the stale worklist; combined with trust/status/type it stops constraining staleness unless you pass stale explicitly.")]
     public string Audit(
-        [Description("Only concepts past their stale_after date. Leave unset for the default: the stale worklist when no other filter is given, no staleness constraint when one is.")] bool? stale = null,
+        [Description("Only concepts past their stale_after instant. Leave unset for the default: the stale worklist when no other filter is given, no staleness constraint when one is.")] bool? stale = null,
         [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
         [Description("Only concepts with this lifecycle status: draft, stable or deprecated.")] string? status = null,
         [Description("Only concepts with this frontmatter type (exact match).")] string? type = null)
