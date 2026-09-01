@@ -232,6 +232,29 @@ public class FrontmatterTests
     }
 
     [Fact]
+    public void EffectiveUsageWindow_present_and_empty_entry_window_is_not_absent_and_does_not_fall_back()
+    {
+        // usage_window: {} on an entry parses to new UsageWindow(null, null) --
+        // present, just empty -- which is NOT the same as the entry having no
+        // usage_window at all. A per-field-merge mutant would treat an empty
+        // entry window as "nothing to override with" and silently fall back to
+        // the shared bounds; this pins that the whole-object override still
+        // wins even when it is empty.
+        var fm = Frontmatter.FromMapping(
+            YamlValue.Parse(
+                "usage_window: {from: '2026-01-01T00:00:00Z', to: '2026-01-31T00:00:00Z'}\n" +
+                "sources:\n  - resource: https://x\n    usage_window: {}\n")
+                .AsMapping()!);
+        var source = fm.Sources[0];
+
+        var effective = fm.EffectiveUsageWindow(source);
+
+        Assert.NotNull(effective); // present, not absent/null
+        Assert.Null(effective.Value.From);
+        Assert.Null(effective.Value.To); // NOT the shared window's bounds
+    }
+
+    [Fact]
     public void EffectiveUsageWindow_falls_back_to_shared_when_the_entrys_override_is_not_a_mapping()
     {
         // Decision 2: a malformed override (usage_window present but not a

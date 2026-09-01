@@ -705,9 +705,12 @@ public static class BundleValidator
     /// ones get <see cref="DiagnosticCode.NonIso8601Timestamp"/>, and the §5 form
     /// is silent. All six §5 timestamp keys go through here — <c>stale_after</c>
     /// via <see cref="Lifecycle"/>, plus <c>generated.at</c>, <c>verified[].at</c>,
-    /// <c>sources[].last_modified</c> and both <c>usage_window</c> bounds — so a
-    /// value cannot be rejected in one field and accepted in another, and the
-    /// four forms cannot swap places between fields.
+    /// <c>sources[].last_modified</c>, and both <c>usage_window</c> bounds in
+    /// either position (the shared, top-level sibling and a per-entry
+    /// <c>sources[].usage_window</c> override, §5.1) — so a value cannot be
+    /// rejected in one field and accepted in another, the four forms cannot
+    /// swap places between fields, and the two <c>usage_window</c> positions
+    /// cannot classify the same raw value differently.
     /// </summary>
     private static void CheckTemporal(
         List<Diagnostic> diagnostics,

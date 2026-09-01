@@ -869,6 +869,25 @@ public class ValidateTests
     }
 
     [Fact]
+    public void An_unreadable_per_entry_usage_window_to_warns_invalid()
+    {
+        // Pins the *identity* of the `to` call site, distinct from the
+        // `from` one above: the two blocks in BundleValidator.Validate are
+        // hand-copied literals (code, field, label) sitting right next to
+        // each other, so nothing else catches a copy-paste swap between
+        // them (e.g. UsageWindowInvalidFrom / "sources.usage_window.from"
+        // accidentally reused for the `to` bound). Without this test that
+        // exact mutation passes the whole suite.
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\n" +
+            "sources:\n  - resource: https://x\n    usage_window: {to: 'not-a-date'}\n");
+
+        Assert.Contains(r.Of(Severity.Warning),
+            d => d.Code == DiagnosticCode.UsageWindowInvalidTo && d.Field == "sources.usage_window.to");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
+    }
+
+    [Fact]
     public void Bad_bounds_in_both_the_shared_and_per_entry_usage_window_yield_two_diagnostics_distinguished_by_field()
     {
         // Proves the reuse of UsageWindowInvalidFrom is safe: a bad shared
