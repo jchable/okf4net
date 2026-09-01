@@ -67,10 +67,11 @@ public sealed class DocCommentSource : IDescriptionSource
     /// <c>x</c>; <c>&lt;see langword="null"/&gt;</c> becomes <c>null</c>.</item>
     /// <item>A self-closing tag with none of those attributes contributes nothing; an unrecognised
     /// paired tag still contributes its inner text.</item>
-    /// <item>A <c>&lt;</c> that does not begin a tag -- <c>a &lt; b</c>, an unterminated tag at the end
-    /// of the text, or an opening tag nothing closes -- is emitted verbatim. Doc comments are untrusted
-    /// input (§2.3), and eating prose that merely looks like markup is the failure this guards
-    /// against.</item>
+    /// <item>A <c>&lt;</c> that does not begin a tag is emitted verbatim: <c>a &lt; b</c>, an unterminated
+    /// tag, an opening tag nothing closes, an opening tag a closer only pops <i>over</i> (the
+    /// <c>&lt;T&gt;</c> of <c>&lt;c&gt;List&lt;T&gt;&lt;/c&gt;</c>), and a span whose markup is not shaped
+    /// like the tag it claims to be (<c>&lt;/b and c &gt;</c>). Doc comments are untrusted input (§2.3),
+    /// and eating prose that merely looks like markup is the failure this guards against.</item>
     /// <item>A <c>&lt;![CDATA[...]]&gt;</c> section contributes its content, delimiters dropped and the
     /// content copied through <b>unread</b>: that is what a CDATA section means, and it is the one
     /// construct in a doc comment that says "the markup inside me is text".</item>
@@ -121,11 +122,13 @@ public sealed class DocCommentSource : IDescriptionSource
                 }
                 else
                 {
-                    // Tag-shaped but nothing ever closes it, so it is not a tag: `List<T> of results` is
-                    // an unescaped generic, invalid XML that no compiler complains about unless doc files
-                    // are emitted -- and this producer runs on arbitrary repositories, not only careful
-                    // ones. Eating it would delete `T` and leave "a List of results", which is precisely
-                    // the "prose that merely looks like markup" failure this method claims not to commit.
+                    // Tag-shaped, but nothing its own closer ever paired with it, so it is not a tag:
+                    // `List<T> of results` is an unescaped generic, invalid XML that no compiler complains
+                    // about unless doc files are emitted -- and this producer runs on arbitrary
+                    // repositories, not only careful ones. It reads the same whether the generic stands in
+                    // open prose or inside `<c>...</c>`. Eating it would delete `T` and leave "a List of
+                    // results", which is precisely the "prose that merely looks like markup" failure this
+                    // method claims not to commit.
                     result.Append(comment, token.Start, token.End - token.Start + 1);
                 }
 
@@ -153,14 +156,29 @@ public sealed class DocCommentSource : IDescriptionSource
     /// (a name with no closer anywhere) looked fixed.</para>
     ///
     /// <para>So the pairing is done the only way that is actually about <i>this</i> tag: a stack, matched
-    /// to the <b>nearest</b> unmatched opener of the same name, exactly as a parser would. Openers left
-    /// on the stack at the end are prose. Openers a closer pops <i>over</i> -- crossed tags, which are
-    /// malformed either way -- stay markup, so a doc comment that is merely badly nested still degrades
-    /// to its inner text rather than sprouting visible angle brackets.</para>
+    /// to the <b>nearest</b> unmatched opener of the same name, exactly as a parser would. A closer marks
+    /// <b>that opener and no other</b>. Openers left on the stack at the end are prose, and so are the
+    /// openers a closer pops <i>over</i>.</para>
+    ///
+    /// <para><b>Why those popped-over openers are prose, which is not the obvious answer.</b> Reading them
+    /// as "crossed tags, malformed either way, so keep them markup" tidies a badly nested comment -- and
+    /// deletes <c>&lt;T&gt;</c> from <c>&lt;c&gt;List&lt;T&gt;&lt;/c&gt;</c>, because an unescaped generic
+    /// inside a matched pair <i>is</i> an opener the closer pops over. That is the same prose-deletion
+    /// failure as above, in a strictly more reachable shape: it needs only a generic mentioned inside
+    /// <c>&lt;c&gt;</c>, <c>&lt;b&gt;</c>, <c>&lt;i&gt;</c> or <c>&lt;see&gt;</c>, which is the commonest
+    /// way a doc comment names one, where genuinely interleaved
+    /// <c>&lt;a&gt;&lt;b&gt;&lt;/a&gt;&lt;/b&gt;</c> is rare. The price is a visible <c>&lt;b&gt;</c> on
+    /// input that was malformed anyway, and angle brackets are worth strictly less than a deleted word.
+    /// The popped openers do leave the stack, so a later closer cannot reach back and claim one -- that
+    /// would be the unbounded forward search again, by another route.</para>
     ///
     /// <para>An unmatched <i>closing</i> tag is still dropped, and the asymmetry is deliberate: a closer
     /// has no content to sever from the sentence around it, so dropping it cannot commit the failure
-    /// above, while keeping it would put raw markup back into prose the extractor already unwrapped.</para>
+    /// above, while keeping it would put raw markup back into prose the extractor already unwrapped.
+    /// That drop is what makes <see cref="IsTagShaped"/> load-bearing rather than pedantic: a span is
+    /// only a tag if its markup is shaped like one, or <c>a &lt;/b and c &gt; d</c> is a closing tag that
+    /// contributes nothing and takes <c>and c</c> with it. <see cref="FindTagEnd"/> is the same idea at
+    /// the other end -- a <c>&gt;</c> inside a quoted attribute value does not terminate a tag.</para>
     /// </summary>
     private static List<Token> ScanTokens(string comment)
     {
@@ -204,15 +222,25 @@ public sealed class DocCommentSource : IDescriptionSource
                 continue;
             }
 
-            var close = comment.IndexOf('>', i + 1);
+            var close = FindTagEnd(comment, i + 1);
             if (close < 0)
             {
-                // Unterminated: the rest is prose, not markup.
-                break;
+                // No complete span starts here -- nothing terminates it, or a quoted attribute value ran
+                // off the end. Prose, and only this one character of it: the scan resumes at the next
+                // character rather than abandoning the rest of the comment, so a well-formed tag further
+                // on is still unwrapped.
+                i++;
+                continue;
             }
 
             var markup = comment[(i + 1)..close];
             var shape = ShapeOf(markup);
+            if (!IsTagShaped(markup, shape))
+            {
+                i++;
+                continue;
+            }
+
             var token = new Token(i, close, markup, shape, NameOf(markup, shape));
 
             if (shape == TokenShape.SelfClosing)
@@ -221,16 +249,12 @@ public sealed class DocCommentSource : IDescriptionSource
             }
             else if (shape == TokenShape.Closing)
             {
-                // Nearest unmatched opener of the same name; everything above it on the stack was
-                // implicitly closed by it and stays markup.
+                // The nearest unmatched opener of the same name, and only it -- see the remarks for why
+                // the openers it pops over stay prose.
                 var match = open.FindLastIndex(index => string.Equals(tokens[index].Name, token.Name, StringComparison.Ordinal));
                 if (match >= 0)
                 {
-                    for (var above = match; above < open.Count; above++)
-                    {
-                        tokens[open[above]].IsTag = true;
-                    }
-
+                    tokens[open[match]].IsTag = true;
                     open.RemoveRange(match, open.Count - match);
                 }
 
@@ -247,6 +271,67 @@ public sealed class DocCommentSource : IDescriptionSource
         }
 
         return tokens;
+    }
+
+    /// <summary>
+    /// The index of the <c>&gt;</c> that ends the tag beginning at <paramref name="start"/>, or
+    /// <c>-1</c> when none does.
+    ///
+    /// <para>Double-quoted attribute values are skipped, because a <c>&gt;</c> inside one does not end
+    /// anything: stopping at the first <c>&gt;</c> cuts <c>&lt;see cref="a&gt;b"&gt;</c> in half, and the
+    /// front half is then an opener that the real <c>&lt;/see&gt;</c> pairs with and deletes, leaving the
+    /// back half (<c>b"&gt;</c>) standing in the prose. Only <c>"</c> is tracked, which is the one quote
+    /// <see cref="AttributeValue"/> reads and the one XML doc comments use; treating <c>'</c> the same way
+    /// would let an apostrophe in a malformed span swallow the rest of the comment.</para>
+    /// </summary>
+    private static int FindTagEnd(string comment, int start)
+    {
+        var inQuotes = false;
+
+        for (var i = start; i < comment.Length; i++)
+        {
+            if (comment[i] == '"')
+            {
+                inQuotes = !inQuotes;
+            }
+            else if (comment[i] == '>' && !inQuotes)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="markup"/> is shaped like the tag <paramref name="shape"/> says it is: a
+    /// closing tag is a name and nothing else, and an opening or self-closing tag is a name followed by
+    /// an attribute list, in which every attribute carries an <c>=</c>.
+    ///
+    /// <para>Both are <b>necessary</b> conditions of XML's grammar rather than a validator -- this accepts
+    /// <c>&lt;b x=y z&gt;</c> -- and that direction is the one that matters: nothing well-formed is ever
+    /// rejected, so no real tag becomes visible markup. It is checked because without it
+    /// <c>a &lt;/b and c &gt; d</c> is one closing tag named <c>b</c>, a closing tag contributes nothing,
+    /// and <c>and c</c> is deleted -- prose eaten by a span that merely starts like markup, which is the
+    /// failure <see cref="UnwrapXmlDocTags"/> exists to prevent.</para>
+    /// </summary>
+    private static bool IsTagShaped(string markup, TokenShape shape)
+    {
+        var body = (shape switch
+        {
+            TokenShape.Closing => markup[1..],
+            TokenShape.SelfClosing => markup[..^1],
+            _ => markup,
+        }).Trim();
+
+        var nameLength = 0;
+        while (nameLength < body.Length && !char.IsWhiteSpace(body[nameLength]))
+        {
+            nameLength++;
+        }
+
+        return nameLength == body.Length
+            || (shape != TokenShape.Closing && body.IndexOf('=', nameLength) >= 0);
     }
 
     /// <summary>The literal opening a CDATA section, which <see cref="StartsTag"/> deliberately does not recognise (<c>!</c> is neither <c>/</c> nor a letter).</summary>

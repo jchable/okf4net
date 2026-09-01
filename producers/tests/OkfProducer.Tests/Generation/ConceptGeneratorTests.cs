@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net;
+using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
+
+// `CodeGraph` alone would bind to the sibling namespace OkfProducer.Tests.CodeGraph, not to the type
+// (CS0118) -- see the same alias, and the same reason, at the top of ConceptGenerator.cs.
+using CodeGraphModel = OkfProducer.Core.CodeGraph.CodeGraph;
 
 namespace OkfProducer.Tests.Generation;
 
@@ -333,6 +338,34 @@ public class ConceptGeneratorTests
         Assert.Contains(LinkScanner.ExtractLinks(concept.Document.Body), link => link.Target == "/packages/foo");
     }
 
+    [Theory]
+    [InlineData("repository-metadata")]
+    [InlineData("Repository-Metadata")]
+    public void A_description_source_spelt_like_the_derivation_sentinel_still_survives_the_NEXT_run(string label)
+    {
+        // `repository-metadata` is LiftedMetadataSource's label -- this producer's private sentinel for
+        // "this text was derived here, write no key". It was told apart from a preserved label by
+        // comparing the RESOLVER's answer to it, so a human who happens to type that exact string was
+        // read as a derivation: their description was kept, its key was dropped, and the next run found
+        // no `description_source` and re-derived over it. Preservation that lasts exactly one run, with
+        // nothing said anywhere. The second row is the same defect from the other side -- an ordinal
+        // comparison sent it down the OTHER branch, contradicting the deliberately case-insensitive check
+        // in DescriptionResolver that decided the text was preserved in the first place.
+        //
+        // So this asserts the second run, not the key: the key is only the mechanism, and asserting the
+        // mechanism would let a fix that writes the key but re-derives anyway pass.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Foo.csproj", "Foo", "From the csproj.")],
+            []);
+
+        var first = Generate(snapshot, "packages/foo", Preserved("Hand written.", label));
+        var second = Generate(snapshot, "packages/foo", first.Document.Frontmatter);
+
+        Assert.Equal("Hand written.", first.Document.Frontmatter.Description);
+        Assert.Equal("Hand written.", second.Document.Frontmatter.Description);
+        Assert.Equal(label, second.Document.Frontmatter.Get(DescriptionResolver.DescriptionSourceKey)?.AsDisplayString());
+    }
+
     [Fact]
     public void A_derived_package_or_doc_description_carries_no_description_source_key()
     {
@@ -356,14 +389,29 @@ public class ConceptGeneratorTests
     {
         // ProducerActor's own summary claimed it was written into "every generated concept's
         // `generated.by`"; `packages/*` and `docs/*` carry no `generated` block at all.
+        //
+        // The run carries a code graph on purpose. Without one there is no `code/*` concept in it at all,
+        // so the half of this name that says "the code family" pinned nothing: deleting the `generated`
+        // extension from BuildCodeConcept AND from BuildContainerConcept left the assertion green, since
+        // every concept present took the `Assert.Null` branch. The graph below produces both kinds --
+        // a member and the two synthesized containers above it.
         var snapshot = new RepositorySnapshot("/repo", "my-repo",
             [new PackageManifest("nuget", "Foo.csproj", "Foo", null)],
             [new DocFile("README.md", "Readme")]);
 
-        foreach (var concept in new ConceptGenerator().Generate(snapshot))
+        var concepts = new ConceptGenerator().Generate(snapshot, GraphWithOneMember(), CodeOptions());
+        var ids = concepts.Select(c => c.Id.ToString()).ToList();
+
+        Assert.Contains("code/csharp/n/scanner/scan", ids);
+        Assert.Contains("code/csharp/n/scanner", ids);
+        Assert.Contains("packages/foo", ids);
+        Assert.Contains("docs/readme", ids);
+
+        foreach (var concept in concepts)
         {
+            var id = concept.Id.ToString();
             var generated = concept.Document.Frontmatter.Get("generated");
-            if (concept.Id.ToString() == "overview")
+            if (id == "overview" || id.StartsWith("code/", StringComparison.Ordinal))
             {
                 Assert.NotNull(generated);
             }
@@ -408,12 +456,43 @@ public class ConceptGeneratorTests
         return new ConceptGenerator().Generate(snapshot, codeGraph: null, options).Single(c => c.Id.ToString() == id);
     }
 
-    /// <summary>Frontmatter as a human would leave it behind: a description of their own, marked <c>manual</c>.</summary>
-    private static Frontmatter Preserved(string description) =>
+    /// <summary>Frontmatter as a human would leave it behind: a description of their own, marked <c>manual</c> unless <paramref name="source"/> says otherwise.</summary>
+    private static Frontmatter Preserved(string description, string source = DescriptionResolver.ManualLabel) =>
         OkfDocumentBuilder.ForType("Package")
             .Description(description)
-            .Extension(DescriptionResolver.DescriptionSourceKey, new OKF4net.Yaml.YamlString(DescriptionResolver.ManualLabel))
+            .Extension(DescriptionResolver.DescriptionSourceKey, new OKF4net.Yaml.YamlString(source))
             .Body("body\n")
             .Build()
             .Frontmatter;
+
+    /// <summary>
+    /// The smallest graph that produces both kinds of <c>code/*</c> concept: one member, so
+    /// <c>BuildCodeConcept</c> runs, and the namespace and type above it, so <c>BuildContainerConcept</c>
+    /// does too. <c>CodeConceptGeneratorTests</c> owns the rich fixture; this one exists only so the
+    /// families this file compares are all actually present in the run.
+    /// </summary>
+    private static CodeGraphModel GraphWithOneMember() => new(
+        [
+            new SymbolFact(SymbolKind.Type, "csharp", "N", "Scanner", "public class Scanner",
+                SymbolVisibility.Public, "src/Scanner.cs", 0, 1, 1, 2, null),
+            new SymbolFact(SymbolKind.Member, "csharp", "N.Scanner", "Scan", "public void Scan()",
+                SymbolVisibility.Public, "src/Scanner.cs", 2, 3, 3, 4, null),
+        ],
+        [],
+        RunStatus.Complete);
+
+    /// <summary>Options that admit the C# profile <see cref="GraphWithOneMember"/>'s symbols are tagged with.</summary>
+    private static GenerateOptions CodeOptions() => GenerateOptions.Default with
+    {
+        Profiles =
+        [
+            new LanguageProfile(
+                Language: "csharp",
+                GrammarName: "c_sharp",
+                DeclarationQuery: string.Empty,
+                CallQuery: string.Empty,
+                DocCommentPrefix: "///",
+                FileExtensions: [".cs"]),
+        ],
+    };
 }

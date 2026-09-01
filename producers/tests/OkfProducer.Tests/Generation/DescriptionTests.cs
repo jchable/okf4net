@@ -248,6 +248,48 @@ public class DescriptionTests
     }
 
     [Theory]
+    [InlineData("Returns a <c>List<T></c> of items.", "Returns a List<T> of items.")]
+    [InlineData("A <see cref=\"Foo\">List<T> holder</see> here.", "A List<T> holder here.")]
+    [InlineData("Badly <a>nested <b>tags</a> here</b>.", "Badly nested <b>tags here.")]
+    public void An_unmatched_opener_INSIDE_a_matched_pair_is_still_literal_text(string doc, string expected)
+    {
+        // The third side of the pairing rule, and the one that shipped wrong. A closer used to mark every
+        // opener at or above its match -- "crossed tags are malformed either way, so keep them markup" --
+        // which makes `<c>List<T></c>` a matched `<c>` pair with `<T>` marked markup INSIDE it, and `T` is
+        // deleted. That is the same prose-deletion failure the two theories above exist to prevent, in a
+        // strictly more reachable shape: those need a later genuinely-paired tag sharing the name, this
+        // needs only an unescaped generic inside `<c>`/`<b>`/`<i>`/`<see>`, which is the commonest way a
+        // doc comment names a generic. So a closer marks its own match and nothing else.
+        //
+        // The third row is what that costs: a genuinely crossed `<b>` becomes visible rather than being
+        // tidied away. Angle brackets on input that was malformed anyway are worth strictly less than a
+        // deleted word, and the crossed shape is the rarer of the two by a wide margin.
+        Assert.Equal(expected, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+    }
+
+    [Theory]
+    [InlineData("Everything </b and c > survives.")]
+    [InlineData("Divides <a and b/> evenly.")]
+    public void A_span_whose_markup_is_not_tag_shaped_is_prose(string doc)
+    {
+        // `</b and c >` parses as a closing tag named `b` if nothing looks past the name, and a closing tag
+        // contributes nothing -- so `and c` was deleted, prose eaten by a span that only starts like
+        // markup. A closer is a name and nothing else; an opener or self-closing tag is a name followed by
+        // attributes, and every attribute carries an `=`. Both are NECESSARY conditions of XML's grammar,
+        // so nothing well-formed is rejected by them.
+        Assert.Equal(doc, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
+    }
+
+    [Fact]
+    public void A_bracket_inside_a_quoted_attribute_value_does_not_end_the_tag()
+    {
+        // Ending the tag at the first `>` cuts `<see cref="a>b">` in half: the front becomes an opener that
+        // `</see>` pairs with and deletes, and the back, `b">`, is left standing in the prose.
+        Assert.Equal("A tagged mention.",
+            Resolver.Resolve(Member("T", "Scan", "A <see cref=\"a>b\">tagged</see> mention."), existing: null).Text);
+    }
+
+    [Theory]
     [InlineData("Matches <![CDATA[a < b]]> exactly.", "Matches a < b exactly.")]
     [InlineData("Emits <![CDATA[<c>x</c>]]> literally.", "Emits <c>x</c> literally.")]
     public void A_cdata_section_contributes_its_content_without_its_delimiters(string doc, string expected)

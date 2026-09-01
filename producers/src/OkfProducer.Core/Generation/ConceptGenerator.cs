@@ -373,12 +373,23 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// families want; the label is written back only when there is an author's value to keep, and it must
     /// be written back then, or the next run would find no key and re-derive over the text it just
     /// preserved.</para>
+    ///
+    /// <para><b>Which of the two happened is asked of the resolver, not inferred from the label it
+    /// returned.</b> Comparing that label to <see cref="LiftedMetadataSource.SourceLabel"/> reads
+    /// "derived" off a string an author can also type, and both directions of that were wrong: a human
+    /// who writes <c>description_source: repository-metadata</c> had their description kept but its key
+    /// dropped, so the next run found no key and re-derived over it -- preservation lasting exactly one
+    /// run, silently -- while <c>Repository-Metadata</c> took the other branch, because that comparison
+    /// was ordinal and <see cref="DescriptionResolver"/>'s, which had already decided the text was worth
+    /// preserving, is deliberately not. <see cref="DescriptionResolver.PreservesDescription"/> is the
+    /// same predicate <c>Resolve</c> itself branched on, so the two cannot disagree and no spelling of
+    /// any label is load-bearing here.</para>
     /// </summary>
     private static (string Description, string? PreservedSource) LiftedDescription(string derived, Frontmatter? existing)
     {
         var (text, source) = new DescriptionResolver([new LiftedMetadataSource(derived)]).Resolve(MetadataFact, existing);
 
-        return (text, source == LiftedMetadataSource.SourceLabel ? null : source);
+        return (text, DescriptionResolver.PreservesDescription(existing) ? source : null);
     }
 
     /// <summary>Adds the author's <c>description_source</c> back to a concept whose description was preserved, and nothing at all otherwise.</summary>
@@ -398,13 +409,17 @@ public sealed class ConceptGenerator : IConceptGenerator
 
     /// <summary>
     /// The description source for a family whose text is a projection of repository metadata: it always
-    /// produces, and its label is a sentinel this producer never writes to disk (see
-    /// <see cref="LiftedDescription"/>) -- so it can never come back as an existing value and be mistaken
-    /// for something to preserve.
+    /// produces, and the label it produces is dropped rather than written (see
+    /// <see cref="LiftedDescription"/>), because absent is what makes these families re-derive.
+    ///
+    /// <para>The label is <b>not</b> a sentinel that has to be unguessable. <see cref="LiftedDescription"/>
+    /// asks <see cref="DescriptionResolver.PreservesDescription"/> which branch was taken rather than
+    /// comparing against this string, so an author who happens to write this exact value in frontmatter
+    /// is preserved on the same terms as any other -- their spelling and all.</para>
     /// </summary>
     private sealed class LiftedMetadataSource(string derived) : IDescriptionSource
     {
-        /// <summary>The label <see cref="LiftedDescription"/> reads to tell "derived" from "preserved", and never writes.</summary>
+        /// <summary>The label this source produces, which <see cref="LiftedDescription"/> drops.</summary>
         public const string SourceLabel = "repository-metadata";
 
         /// <inheritdoc/>
