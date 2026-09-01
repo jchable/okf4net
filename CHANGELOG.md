@@ -43,8 +43,9 @@ and this project adheres to
   new `DiagnosticCode`), and the new `Frontmatter.EffectiveUsageWindow(Source)`
   resolves the two into the one value a consumer actually wants. This closes
   **S5.1-3**, recorded as "Missing" in
-  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md:204` and annotated
-  as resolved beside that finding.
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md:204`, where an
+  annotation beside that finding now names the branch that implements it and
+  points to the design doc.
 
   This was never a data-loss bug: `okf fmt` already round-tripped a per-entry
   `usage_window` before this change, because `Frontmatter` re-serializes an
