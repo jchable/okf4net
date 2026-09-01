@@ -90,14 +90,29 @@ public sealed class DocCommentSource : IDescriptionSource
     /// that was previously hidden inside a tag, and it must reach the guard rather than slip past it.
     /// It does, because this runs at description-derivation time and that runs at body-render time.</para>
     /// </summary>
-    internal static string UnwrapXmlDocTags(string comment)
+    internal static string UnwrapXmlDocTags(string comment) => UnwrapXmlDocTags(comment, out _);
+
+    /// <summary>
+    /// <see cref="UnwrapXmlDocTags(string)"/>, additionally reporting how many characters the scan
+    /// examined looking for the ends of spans -- the sum, over every <see cref="FindTagEnd"/> call and
+    /// every search for a <c>]]&gt;</c>, of the characters that search read.
+    ///
+    /// <para>It exists so the early-out in <see cref="ScanTokens"/> has a guard that can go red. That
+    /// early-out is behaviour-neutral by construction, so no assertion about the <i>output</i> can
+    /// distinguish its presence from its absence, and the only evidence it ever had was a wall-clock
+    /// measurement in a comment -- which a later refactor deleting it would not disturb. This counts
+    /// steps instead: it is a pure function of the input, identical on every machine and every build
+    /// configuration, so a test can bound it without the flakiness a millisecond budget would bring.</para>
+    /// </summary>
+    internal static string UnwrapXmlDocTags(string comment, out long scanCost)
     {
         if (!comment.Contains('<', StringComparison.Ordinal))
         {
+            scanCost = 0;
             return comment;
         }
 
-        var tokens = ScanTokens(comment);
+        var tokens = ScanTokens(comment, out scanCost);
         var result = new StringBuilder(comment.Length);
         var next = 0;
         var i = 0;
@@ -182,10 +197,11 @@ public sealed class DocCommentSource : IDescriptionSource
     /// contributes nothing and takes <c>and c</c> with it. <see cref="FindTagEnd"/> is the same idea at
     /// the other end -- a <c>&gt;</c> inside a quoted attribute value does not terminate a tag.</para>
     /// </summary>
-    private static List<Token> ScanTokens(string comment)
+    private static List<Token> ScanTokens(string comment, out long scanCost)
     {
         var tokens = new List<Token>();
         var open = new List<int>();
+        var cost = 0L;
 
         // Every span this method can recognise -- a tag or a CDATA section alike -- ends at a `>`, so once
         // the last one is behind us nothing ahead can be one. Leaving is not an optimisation of the
@@ -194,9 +210,15 @@ public sealed class DocCommentSource : IDescriptionSource
         // point: FindTagEnd scans to the end of the string when it fails, and a failure advances by one
         // character rather than abandoning the comment, so a suffix of `<a<a<a...` with no `>` at all
         // re-entered that end-to-end scan once per bracket. That is quadratic in a doc comment's length,
-        // on input a hostile repository chooses (§2.3). Measured at 40k characters: 803ms without this
-        // check, 1ms with it, same output. See the remarks on FindTagEnd for the two shapes this does
-        // NOT bound and why.
+        // on input a hostile repository chooses (§2.3). See the remarks on FindTagEnd for the two shapes
+        // this does NOT bound and why.
+        //
+        // Because it changes no output, deleting this check breaks nothing an assertion about text can
+        // see -- so the guard is `scanCost`, and the test is
+        // The_scan_stops_re_reading_a_comment_once_no_bracket_can_end_a_tag, which bounds the characters
+        // this scan reads at four per character of the comment. That is a step count, not a duration:
+        // wall-clock budgets in a suite are their own defect, and the earlier 803ms-to-1ms measurement,
+        // true as it was, lived only in this comment and could not go red.
         var lastEnd = comment.LastIndexOf('>');
         var i = 0;
 
@@ -217,6 +239,7 @@ public sealed class DocCommentSource : IDescriptionSource
             {
                 var contentStart = i + CdataOpen.Length;
                 var end = comment.IndexOf(CdataClose, contentStart, StringComparison.Ordinal);
+                cost += (end < 0 ? comment.Length : end + CdataClose.Length) - contentStart;
                 if (end < 0)
                 {
                     // Unterminated, exactly as an unterminated tag is: with no `]]>` there is no section,
@@ -242,6 +265,7 @@ public sealed class DocCommentSource : IDescriptionSource
             }
 
             var close = FindTagEnd(comment, i + 1);
+            cost += (close < 0 ? comment.Length : close + 1) - (i + 1);
             if (close < 0)
             {
                 // No complete span starts here -- nothing terminates it, or a quoted attribute value ran
@@ -256,6 +280,48 @@ public sealed class DocCommentSource : IDescriptionSource
             var shape = ShapeOf(markup);
             if (!IsTagShaped(markup, shape))
             {
+                // Not a tag, so it is emitted verbatim -- and the scan resumes at Start + 1, not at
+                // End + 1, so the bytes inside the rejected span are read again and can become tokens of
+                // their own. What that rescan is allowed to do is the safety question for the whole
+                // IsTagShaped change, and the answer is narrower than the obvious one.
+                //
+                // Call a span a DELTA span when this predicate rejects it and the pre-IsNameShaped
+                // predicate accepted it: exactly a self-closing span whose name is not an XML name, plus a
+                // closing span with an empty name (`</>`). WHAT IS GUARANTEED: if a delta span's markup
+                // contains no `<`, the change is one-way -- every character the old code emitted is still
+                // emitted. The only `<` in the span is the one at Start, so the rescan finds no token
+                // before End (which is a `>`) and arrives at End + 1 with `open` holding exactly what the
+                // old scan held there -- a self-closing token is never pushed, and an empty-name closer's
+                // FindLastIndex cannot match, since StartsTag makes every opener's name at least one
+                // character -- so from End + 1 the two runs classify every token identically. (Old's token
+                // LIST carries one extra entry, the delta span's own; `open` stores indices into that list,
+                // but each run indexes its own consistently.) The span's old contribution was
+                // Substitution(markup) -- empty, or one attribute value, which is a substring of its own
+                // markup -- and its new contribution is the whole span verbatim. `</>` satisfies the
+                // condition by construction and so does every angle-bracketed URL, which are the two cases
+                // this predicate exists for.
+                //
+                // WHAT IS NOT GUARANTEED, stated because the stronger claim was made here once and was
+                // false. A delta span that DOES contain a `<` can hand the rescan a token that reaches
+                // outside the bytes the old code was deleting, in three independent ways:
+                //
+                //   * an inner CLOSING tag reaches open.FindLastIndex and can mark a surviving OUTER
+                //     opener as markup, deleting it: `<b/ x=y>keep<a+</b/>` was `<b/ x=y>keep` and is now
+                //     `keep<a+`;
+                //   * an inner `<![CDATA[` can pair with a `]]>` lying AFTER End and swallow it:
+                //     `<a<![CDATA[x/> keep ]]> tail` was `keep ]]> tail` and is now `<ax/> keep tail`;
+                //   * with an odd number of `"` between the inner `<` and End, FindTagEnd skips End and
+                //     terminates later, so even the inner token's own bytes fall outside the old span:
+                //     `A <a" b=c<d "e/> hello k=1 "x/> tail.` was `A hello k=1 "x/> tail.` and is now
+                //     `A <a" b=c tail.`, losing the word `hello`.
+                //
+                // All three need markup both versions already mangle. How reachable they are depends
+                // entirely on what you sample: 3 non-monotone strings in 4,635,516 drawn character by
+                // character, but 40,834 in 3,000,000 built by concatenating tag fragments -- which is why
+                // "a random sweep found none" is not the argument here. The condition above is, and it
+                // held on all 776,797 differing inputs across those sweeps whose delta spans contained no
+                // `<`, with no exception. Restoring monotonicity in general would cost the angle-bracketed
+                // URL, which is a real doc comment; this is the trade.
                 i++;
                 continue;
             }
@@ -289,6 +355,7 @@ public sealed class DocCommentSource : IDescriptionSource
             i = close + 1;
         }
 
+        scanCost = cost;
         return tokens;
     }
 
@@ -304,13 +371,26 @@ public sealed class DocCommentSource : IDescriptionSource
     ///
     /// <para><b>Single quotes are legal XML and are still not tracked, so the residual is stated instead
     /// of implied:</b> <c>&lt;see cref='a&gt;b'&gt;tagged&lt;/see&gt;</c> splits the way the double-quoted
-    /// form used to, and yields <c>b'&gt;tagged</c> -- leaked markup, not deleted prose, which is the
-    /// lesser of the two failures. The obvious fix, opening a single-quoted value only on a <c>'</c> that
-    /// follows an <c>=</c>, was written out and rejected: it can only move the terminating <c>&gt;</c>
-    /// LATER, so a span can grow to swallow a whole nested tag, and if that grown span is then paired it
-    /// deletes the prose inside it. On <c>&lt;b x='y&gt; hello &lt;c&gt;z&lt;/c&gt; w'&gt; more
-    /// &lt;/b&gt;</c> that costs the words <c>hello</c> and <c>z</c>, which is exactly the failure
-    /// <see cref="UnwrapXmlDocTags"/> exists to prevent, paid to tidy up markup.</para>
+    /// form used to, and yields <c>b'&gt;tagged</c>.</para>
+    ///
+    /// <para><b>What is established about the residual, and what is not.</b> Run span for span against a
+    /// fully <c>'</c>-aware <see cref="FindTagEnd"/>, this version deletes a whole span that parse keeps on
+    /// 2,781 of 335,923 exhaustive strings over <c>&lt; &gt; / ' = a</c>, on 22,627 of 3,000,000 random
+    /// strings, and on 265,448 of 2,000,000 built by concatenating tag fragments and sentences. Every case
+    /// inspected was tag-shaped markup, and the only text lost with it was letters standing inside that
+    /// markup (<c>see</c>, <c>cref</c>) rather than words of the surrounding sentence -- so the comparative
+    /// judgement below holds on the evidence there is. The categorical form of it, "what it costs is never
+    /// a deleted word", is <b>not</b> established and is not claimed here: it is the same shape of claim as
+    /// the monotonicity argument the rescan comment in <see cref="ScanTokens"/> had to retract.</para>
+    ///
+    /// <para><b>Why the residual is kept anyway, which is a comparison and not an absolute.</b> The obvious
+    /// fix, opening a single-quoted value only on a <c>'</c> that follows an <c>=</c>, was written out and
+    /// rejected: it can only move the terminating <c>&gt;</c> LATER, so a span can grow to swallow a whole
+    /// nested tag, and if that grown span is then paired it deletes the prose inside it. On
+    /// <c>&lt;b x='y&gt; hello &lt;c&gt;z&lt;/c&gt; w'&gt; more &lt;/b&gt;</c> that costs the words
+    /// <c>hello</c> and <c>z</c>. The two failures are not symmetric: the residual leaks <c>b'&gt;</c> into
+    /// a description that a human reviewing the bundle <b>sees</b>, while the fix deletes words
+    /// <b>silently</b>, and a silent deletion is strictly worse than a visible leak.</para>
     ///
     /// <para><b>Cost.</b> A failing search walks to the end of the string, and its caller advances by one
     /// character and comes back, so a run of <c>&lt;</c> can re-enter it once per bracket.
@@ -353,12 +433,13 @@ public sealed class DocCommentSource : IDescriptionSource
     /// <b>self-closing</b> tag's name must additionally be shaped like an XML name
     /// (<see cref="IsNameShaped"/>).
     ///
-    /// <para>All of these are <b>necessary</b> conditions of XML's grammar rather than a validator -- this
-    /// accepts <c>&lt;b x=y z&gt;</c> -- and that direction is the one that matters: nothing well-formed is
-    /// ever rejected, so no real tag becomes visible markup. The attribute rule is checked because without
-    /// it <c>a &lt;/b and c &gt; d</c> is one closing tag named <c>b</c>, a closing tag contributes nothing,
-    /// and <c>and c</c> is deleted -- prose eaten by a span that merely starts like markup, which is the
-    /// failure <see cref="UnwrapXmlDocTags"/> exists to prevent.</para>
+    /// <para>The <i>shape</i> rules are <b>necessary</b> conditions of XML's grammar rather than a
+    /// validator -- this accepts <c>&lt;b x=y z&gt;</c> -- so no well-formed tag is rejected by them. The
+    /// attribute rule is checked because without it <c>a &lt;/b and c &gt; d</c> is one closing tag named
+    /// <c>b</c>, a closing tag contributes nothing, and <c>and c</c> is deleted -- prose eaten by a span
+    /// that merely starts like markup, which is the failure <see cref="UnwrapXmlDocTags"/> exists to
+    /// prevent. The <b>name</b> rule is <i>not</i> a necessary condition and does reject a few well-formed
+    /// names; <see cref="IsNameShaped"/> says which, and why that direction is the safe one.</para>
     ///
     /// <para><b>Why the name rule is asked of a self-closing tag alone</b>, which is the one asymmetry
     /// here. A self-closing span is the only shape that can delete itself on its own authority: it needs
@@ -406,10 +487,22 @@ public sealed class DocCommentSource : IDescriptionSource
     /// <c>:</c>.
     ///
     /// <para>Looser than XML's real name production on two points it costs nothing to allow: the first
-    /// character is not required to be a letter, and Unicode letters and digits are taken wholesale. What
-    /// it does reject -- <c>/</c>, <c>@</c>, <c>+</c>, <c>=</c> and their like -- cannot appear in an XML
-    /// name at all, so no well-formed tag is rejected by it, and a span it rejects is emitted verbatim
-    /// rather than deleted.</para>
+    /// character is not required to be a letter, and Unicode letters and digits are taken wholesale.</para>
+    ///
+    /// <para><b>It is also stricter than that production, so "no well-formed tag is rejected by it" -- what
+    /// this remark used to say -- is false.</b> XML's <c>NameChar</c> additionally admits U+00B7 and the
+    /// ranges U+0300-U+036F and U+203F-U+2040, which are <c>Po</c>, <c>Mn</c> and <c>Pc</c> respectively
+    /// and which <c>char.IsLetterOrDigit</c> refuses; a self-closing tag whose name carries a combining
+    /// acute (U+0301) is well-formed and is now emitted verbatim rather than unwrapped. Its
+    /// <c>NameStartChar</c> range U+10000-U+EFFFF never reaches this predicate at all --
+    /// <see cref="StartsTag"/> already requires an ASCII letter or <c>/</c> after the <c>&lt;</c>, so an
+    /// astral name is prose in every version of this file.</para>
+    ///
+    /// <para><b>Not widened, deliberately.</b> What this costs is a visible pair of angle brackets on a
+    /// tag a reader would rather not see; what widening it would buy is moving spans from "kept verbatim"
+    /// to "deleted on their own authority", which is the direction that has produced a Critical in this
+    /// file twice. The guarantee is therefore the <i>direction</i> and not the exactness: a span this
+    /// rejects is emitted verbatim rather than deleted, whether it rejected it rightly or wrongly.</para>
     /// </summary>
     private static bool IsNameShaped(string body, int nameLength)
     {

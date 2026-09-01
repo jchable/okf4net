@@ -293,11 +293,16 @@ public class DescriptionTests
     public void A_single_quoted_attribute_value_still_splits_the_tag_it_belongs_to()
     {
         // Pins a KNOWN residual, not a guarantee. `'` is legal XML and FindTagEnd tracks only `"`, so this
-        // splits exactly the way the double-quoted form used to. What it costs is leaked markup (`b'>`),
-        // never a deleted word -- and the obvious fix, opening a quote on a `'` that follows an `=`, can
-        // only push the terminating `>` later, which lets a span swallow a nested tag and delete the prose
-        // inside it. FindTagEnd's remarks carry that counterexample. If this ever returns
-        // "A tagged mention." the residual is closed and this test should be deleted, not adjusted.
+        // splits exactly the way the double-quoted form used to, and what it costs HERE is leaked markup
+        // (`b'>`). That the cost is never anything worse -- never a deleted word -- is NOT established:
+        // measured against a fully `'`-aware FindTagEnd the shipped version deletes a span that parse keeps
+        // on hundreds of thousands of soup inputs, and while every case inspected was markup rather than
+        // prose, "every case inspected" is the whole of the evidence. FindTagEnd's remarks carry the
+        // counts. What IS established is the comparison that keeps the residual: the obvious fix (open a
+        // quote on a `'` that follows an `=`) pushes the terminating `>` later, lets a span swallow a
+        // nested tag, and deletes the prose inside it SILENTLY, where the residual leaks `b'>` into a
+        // description a human reviewing the bundle sees. If this ever returns "A tagged mention." the
+        // residual is closed and this test should be deleted, not adjusted.
         Assert.Equal("A b'>tagged mention.",
             Resolver.Resolve(Member("T", "Scan", "A <see cref='a>b'>tagged</see> mention."), existing: null).Text);
     }
@@ -321,6 +326,15 @@ public class DescriptionTests
         // one loses only its own brackets -- and requiring a name of either would stop `<K,V>that</K,V>`
         // from unwrapping, which the pairing theory above deliberately pins. The empty name of `</>` is
         // rejected for every shape: no opener can have one, so it can never have been a partner.
+        //
+        // The rows are not equally load-bearing, and saying so is the point of this note. Rows 1, 3 and 4
+        // discriminate: dropping the name half of IsTagShaped's condition reddens rows 1 and 3, dropping
+        // its empty-name half reddens row 4. Row 2 -- the same URL WITHOUT the trailing slash -- cannot be
+        // reddened by any edit to this
+        // predicate at all, because rejecting a non-name opener and accepting one that never finds a
+        // partner both leave it verbatim. It is here as documentation of the slash/no-slash symmetry that
+        // made the original loss inconsistent as well as silent; the invariant it rests on is pinned by
+        // An_unpaired_pseudo_tag_is_literal_text_and_keeps_its_content, not by this row.
         Assert.Equal(doc, Resolver.Resolve(Member("T", "Scan", doc), existing: null).Text);
     }
 
@@ -350,6 +364,36 @@ public class DescriptionTests
         // The discriminator is the matching close tag and nothing else -- `<T>` and `<summary>` are
         // indistinguishable by shape.
         Assert.Equal("inner", Resolver.Resolve(Member("T", "Scan", "<T>inner</T>"), existing: null).Text);
+    }
+
+    [Fact]
+    public void The_scan_stops_re_reading_a_comment_once_no_bracket_can_end_a_tag()
+    {
+        // The guard on ScanTokens' early-out, and it counts STEPS rather than milliseconds on purpose: a
+        // wall-clock budget in a suite is its own defect, red on a loaded CI agent and green on a fast one,
+        // where a step count is a pure function of the input and identical everywhere.
+        //
+        // What is being guarded. FindTagEnd walks to the end of the comment when it fails and its caller
+        // then advances by ONE character and calls it again, so a run of `<` with no `>` anywhere after it
+        // re-reads the whole tail once per bracket -- quadratic, on input a hostile repository chooses.
+        // ScanTokens leaves the loop once no `>` remains at or after the current `<`. That changes no
+        // output whatsoever (with no `>` left, every one of those `<` would fail FindTagEnd and be emitted
+        // verbatim, which is exactly what leaving does), which is precisely why no assertion about the text
+        // can see it: delete the `lastEnd` check and every other test in this file stays green.
+        //
+        // First, the control: a comment with real tags must cost something, or the bound below would hold
+        // just as well against a meter that had been gutted to return zero.
+        DocCommentSource.UnwrapXmlDocTags("Wraps <c>x</c> and <see cref=\"T:A.B\"/> here.", out var tagged);
+        Assert.True(tagged > 0, $"the scan cost meter reported {tagged} on a comment full of tags");
+
+        // Then the bound. 4,000 brackets, no `>` at all: guarded this reads nothing, unguarded it reads
+        // about 16,000,000 characters -- 500 times the linear budget asserted here, so the margin is not
+        // delicate.
+        var hostile = "Summary. " + string.Concat(Enumerable.Repeat("<a", 4_000));
+        var text = DocCommentSource.UnwrapXmlDocTags(hostile, out var cost);
+
+        Assert.Equal(hostile, text);
+        Assert.True(cost <= 4L * hostile.Length, $"scan cost {cost:N0} exceeds the linear budget {4L * hostile.Length:N0} for {hostile.Length:N0} characters");
     }
 
     [Fact]
