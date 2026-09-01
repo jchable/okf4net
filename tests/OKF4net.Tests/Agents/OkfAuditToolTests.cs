@@ -27,8 +27,10 @@ public class OkfAuditToolTests
     }
 
     /// <summary>
-    /// §5.5's boundary is <c>today &gt;= stale_after</c>, so a concept whose
-    /// stale_after is exactly today is stale. Without the pinned seam this
+    /// §5.5's boundary is <c>now &gt;= stale_after</c>, and both sides here are
+    /// midnight UTC (the clock is pinned to a date, a date-only stale_after
+    /// normalizes to one), so a concept whose stale_after names the pinned day
+    /// is stale from that day's first instant. Without the pinned seam this
     /// assertion would silently depend on the day the suite runs.
     /// </summary>
     [Fact]
@@ -175,7 +177,7 @@ public class OkfAuditToolTests
     /// <summary>
     /// The stale-only path (the tool's default) is the one place "needs
     /// attention" is an accurate label -- every selected concept really is
-    /// past its <c>stale_after</c> date.
+    /// past its <c>stale_after</c> instant.
     /// </summary>
     [Fact]
     public void Audit_stale_only_path_still_says_needs_attention()

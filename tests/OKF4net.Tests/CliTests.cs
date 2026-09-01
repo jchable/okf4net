@@ -103,7 +103,9 @@ public class CliTests
         var before = Run("validate", tmp.Path, "--as-of", "2026-05-31");
         var onTheDay = Run("validate", tmp.Path, "--as-of", "2026-06-01");
 
-        // §5.5 is `today >= stale_after`, so the boundary date is already stale.
+        // §5.5 is `now >= stale_after`, and both sides here are midnight UTC
+        // (--as-of pins one, a date-only stale_after normalizes to one), so the
+        // boundary date is already stale.
         Assert.DoesNotContain("concept is stale", before.Out);
         Assert.Contains("concept is stale (stale_after 2026-06-01)", onTheDay.Out);
 
