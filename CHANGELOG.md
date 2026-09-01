@@ -217,6 +217,15 @@ and this project adheres to
   `DiagnosticCode` for each field is unchanged, so `--json` consumers matching
   on `code` are unaffected; only the rendered message moved, and no golden
   captured it.
+- **The `okf_audit` tool told the model `stale_after` was a date.** Its `stale`
+  parameter carries two descriptions: an XML doc comment, which never leaves the
+  IDE, and a `[Description]` attribute, which is the text handed to the model in
+  the function-tool schema. The instant-semantics work above corrected the first
+  and left the second, so the only description that ships was also the wrong
+  one. No behaviour changed — the filter was already instant-based — but an
+  agent driving `okf_audit` kept a date-grained model of it, wrong exactly at
+  the boundary this work exists to pin: a `stale_after` falling later the same
+  day is not yet stale.
 
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had
