@@ -123,16 +123,6 @@ public class BlastRadiusTests
     private const string ScannerSource = "src/Scanner.cs";
 
     /// <summary>
-    /// The exact text of the method <see cref="Mutation.DeleteMethod"/> removes, doc comment included.
-    /// It is the <b>last</b> declaration in its file on purpose: deleting text above another
-    /// declaration would move that declaration's lines and rewrite its concept too, and this test would
-    /// then be measuring the edit's position rather than the deletion.
-    /// </summary>
-    private const string GoneMethod =
-        "\n    /// <summary>Reads a legacy manifest. The symbol a mutation deletes; it is last in the file on purpose.</summary>\n"
-        + "    public void Gone()\n    {\n    }\n";
-
-    /// <summary>
     /// Generates the bundle, applies <paramref name="mutation"/>, regenerates over the same bundle
     /// (the real <c>--update</c> path, pruning included) and returns the concepts that moved: an id per
     /// changed or added concept, and <c>-id</c> for one the run deleted.
@@ -207,12 +197,7 @@ public class BlastRadiusTests
                 break;
 
             case Mutation.DeleteMethod:
-                ProducerFixture.EditSource(repo, ScannerSource, source =>
-                {
-                    Assert.Contains(GoneMethod, source, StringComparison.Ordinal);
-                    return source.Replace(GoneMethod, string.Empty, StringComparison.Ordinal);
-                });
-
+                ProducerFixture.DeleteGoneMethod(repo);
                 break;
 
             case Mutation.CommitUnrelatedFile:
@@ -271,9 +256,11 @@ public class BlastRadiusTests
             .Select(path => path[..^".md".Length])
             .OrderBy(id => id, StringComparer.Ordinal)];
 
-    private static bool IsConceptFile(string relativePath) =>
-        relativePath.EndsWith(".md", StringComparison.Ordinal)
-        // The whole file name, not a suffix: a concept legitimately named `build-index` would end with
-        // "index.md" too, and dropping it would hide real churn.
-        && !string.Equals(Path.GetFileName(relativePath), "index.md", StringComparison.Ordinal);
+    /// <summary>
+    /// One spelling, in <see cref="ProducerFixture.IsConceptFile"/>, shared with
+    /// <see cref="CheckTests"/>. Two local copies is how one of them ends up testing a suffix and
+    /// swallowing a concept named <c>build-index</c> while the other's comment explains why that is
+    /// wrong.
+    /// </summary>
+    private static bool IsConceptFile(string relativePath) => ProducerFixture.IsConceptFile(relativePath);
 }

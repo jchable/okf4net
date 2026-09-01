@@ -426,6 +426,32 @@ public class TreeSitterExtractorTests : IDisposable
     }
 
     [Fact]
+    public void An_enums_header_end_line_is_the_line_its_member_list_opens_on()
+    {
+        // Checked because it is not obvious from the query: `enum_declaration` captures its members in
+        // an `enum_member_declaration_list`, and whether the grammar exposes that under the `body`
+        // FIELD -- rather than as an unnamed child -- is what decides whether HeaderEndNode finds it.
+        // If it did not, an enum would silently fall back to its full end line and enum concepts would
+        // keep the exact churn defect the cap exists to remove, one shape over and invisible in a
+        // golden with no enum in it.
+        var result = ExtractSource("""
+            namespace N;
+            public enum Colour
+            {
+                Red,
+                Green,
+            }
+            """);
+
+        var enumType = result.Symbols.Single(s => s.Name == "Colour");
+
+        Assert.Equal(SymbolKind.Type, enumType.Kind);
+        Assert.Equal(2, enumType.StartLine);
+        Assert.Equal(6, enumType.EndLine);
+        Assert.Equal(3, enumType.HeaderEndLine);
+    }
+
+    [Fact]
     public void A_declaration_with_no_body_reports_its_own_last_line_as_its_header_end()
     {
         // The other branch: a field has no `body`, `accessors` or `value` node to stop at, so there is

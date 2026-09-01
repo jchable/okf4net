@@ -214,6 +214,43 @@ internal static class ProducerFixture
     };
 
     /// <summary>
+    /// The exact text of <c>Scanner.Gone</c>, doc comment included -- the symbol both
+    /// <see cref="BlastRadiusTests"/> and <see cref="CheckTests"/> delete, so it lives here rather
+    /// than in one of them with a copy in the other.
+    ///
+    /// <para>It is the <b>last</b> declaration in its file on purpose: deleting text above another
+    /// declaration would move that declaration's lines and rewrite its concept too, and a
+    /// blast-radius measurement would then be about the edit's position rather than the deletion.
+    /// Every escape here is <c>\n</c> rather than a verbatim literal, so the constant's runtime value
+    /// is LF whatever line endings git checks this <c>.cs</c> file out with -- the fixture it is
+    /// matched against is pinned to LF by <c>.gitattributes</c>.</para>
+    /// </summary>
+    public const string GoneMethod =
+        "\n    /// <summary>Reads a legacy manifest. The symbol a mutation deletes; it is last in the file on purpose.</summary>\n"
+        + "    public void Gone()\n    {\n    }\n";
+
+    /// <summary>Removes <see cref="GoneMethod"/> from a repository copy's <c>src/Scanner.cs</c>, asserting it was there to remove.</summary>
+    public static void DeleteGoneMethod(string repoPath) =>
+        EditSource(repoPath, "src/Scanner.cs", source =>
+        {
+            Assert.Contains(GoneMethod, source, StringComparison.Ordinal);
+            return source.Replace(GoneMethod, string.Empty, StringComparison.Ordinal);
+        });
+
+    /// <summary>
+    /// Whether <paramref name="relativePath"/> is a concept file rather than one of the two things a
+    /// bundle carries that no design decision controls: an <c>index.md</c>, rewritten mechanically by
+    /// <c>IndexGenerator</c> whenever a directory's children change, and the generation manifest.
+    ///
+    /// <para>Compared as a whole file NAME, never as a suffix: a concept legitimately named
+    /// <c>build-index</c> ends with "index.md" too, and dropping it would hide real churn. Shared by
+    /// every caller precisely so the two spellings cannot drift apart.</para>
+    /// </summary>
+    public static bool IsConceptFile(string relativePath) =>
+        relativePath.EndsWith(".md", StringComparison.Ordinal)
+        && !string.Equals(Path.GetFileName(relativePath), "index.md", StringComparison.Ordinal);
+
+    /// <summary>
     /// Fails loudly, with an explanation, instead of letting a test that needs a real git checkout
     /// degrade into something that passes for the wrong reason.
     /// </summary>

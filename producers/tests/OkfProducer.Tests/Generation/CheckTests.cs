@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net;
 using OkfProducer.Core.Generation;
+using Xunit.Abstractions;
 
 namespace OkfProducer.Tests.Generation;
 
@@ -24,10 +25,22 @@ namespace OkfProducer.Tests.Generation;
 /// <see cref="Inside_a_git_repository_the_stamp_fields_are_compared_like_any_other"/> covers the
 /// other half of the exclusion rule.</para>
 /// </summary>
-public class CheckTests
+public class CheckTests(ITestOutputHelper output)
 {
     /// <summary>Set this to <c>1</c> to rewrite the golden bundle from the fixture repository instead of asserting against it.</summary>
     private const string UpdateGoldenVariable = "OKFGEN_UPDATE_GOLDEN";
+
+    /// <summary>
+    /// What update mode says on its way out. Stated as a refusal to assert rather than as a passing
+    /// test, because in update mode the expected side is written by the very harness that produced the
+    /// actual side: the comparison below would be a tautology, and a tautology reported green is
+    /// exactly how a stale variable in someone's shell disarms a golden without anyone noticing.
+    /// </summary>
+    private const string GoldenRewrittenNotice =
+        UpdateGoldenVariable + "=1: the golden bundle was REWRITTEN from the fixture repository, and this run"
+        + " proves nothing -- the expected side was just produced by the same harness as the actual side."
+        + " Review `git diff producers/tests/OkfProducer.Tests/fixtures/golden`, then re-run WITHOUT the"
+        + " variable to actually check it.";
 
     [Fact]
     public void Check_passes_on_an_unchanged_bundle()
@@ -36,11 +49,19 @@ public class CheckTests
 
         // Regeneration is a mode of THIS test rather than a separate fact that does nothing when the
         // variable is unset: a fact whose only job is to be skipped is a green result that proves
-        // nothing, and this plan has already shipped several assertions incapable of failing. Here the
-        // assertion below runs in both modes.
+        // nothing, and this plan has already shipped several assertions incapable of failing.
         if (Environment.GetEnvironmentVariable(UpdateGoldenVariable) == "1")
         {
             ProducerFixture.RegenerateGolden(workspace);
+
+            // Written to the test output AND failed, because a line printed by a green test is a line
+            // nobody reads -- and "silently disarmed" is the exact failure mode this guards against.
+            // xunit 2.9 has no dynamic skip (Assert.Skip is v3), so a deliberate failure carrying the
+            // explanation is the only mechanism here that a passing run cannot swallow. The message is
+            // an instruction, not an error report: regenerate, read the diff, re-run without the
+            // variable to get a real green.
+            output.WriteLine(GoldenRewrittenNotice);
+            Assert.Fail(GoldenRewrittenNotice);
         }
 
         var report = RunCheck(workspace, ProducerFixture.GoldenBundle);
@@ -85,9 +106,13 @@ public class CheckTests
     [Fact]
     public void Check_reports_a_concept_deleted_from_the_bundle_by_hand()
     {
-        // The other direction of the comparison. A check that only diffed the files it regenerated
-        // would stay green here, having never looked at what the bundle has and the run does not
-        // produce -- and a concept someone deleted by hand is exactly the staleness this guards.
+        // Deleting from the BUNDLE exercises the "produced by regenerating, but missing from the
+        // bundle" branch: the source still declares `Normalize`, so the run writes it back into the
+        // copy and the copy has a file the bundle lacks. A check that iterated only the BUNDLE's files
+        // would stay green here, never having looked at what the regeneration produced.
+        //
+        // Its mirror -- a concept the bundle still holds that the regeneration no longer produces --
+        // is the likelier drift in practice and has its own test below.
         using var workspace = ProducerFixture.CopyRepoOutsideGit();
         using var bundle = ProducerFixture.CopyGoldenBundle();
 
@@ -97,7 +122,29 @@ public class CheckTests
 
         Assert.Contains(
             report.Differences,
-            d => d.StartsWith("code/csharp/n/scanner/normalize.md:", StringComparison.Ordinal));
+            d => d.StartsWith("code/csharp/n/scanner/normalize.md:", StringComparison.Ordinal)
+                && d.Contains("missing from the bundle", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Check_reports_a_concept_whose_symbol_was_deleted_but_never_regenerated()
+    {
+        // THE MOST LIKELY REAL DRIFT THERE IS: someone deletes a method and forgets to regenerate, so
+        // the bundle keeps a concept pointing at code that no longer exists -- an agent querying it
+        // gets a confidently wrong answer, which §6.3 calls worse than no answer.
+        //
+        // It is also the only branch of the comparison nothing else reaches. `Gone()` is deleted from
+        // the SOURCE and the golden is left untouched, so the regeneration over the copy prunes
+        // `gone.md` and the bundle is the side holding a file the run does not produce.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+        ProducerFixture.DeleteGoneMethod(RepoIn(workspace));
+
+        var report = RunCheck(workspace, ProducerFixture.GoldenBundle);
+
+        Assert.Contains(
+            report.Differences,
+            d => d.StartsWith("code/csharp/n/scanner/gone.md:", StringComparison.Ordinal)
+                && d.Contains("regenerating does not produce it", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -209,7 +256,41 @@ public class CheckTests
         using var workspace = ProducerFixture.CopyRepoOutsideGit();
 
         Assert.Throws<InvalidOperationException>(
-            () => BundleDrift.Check(Path.Combine(workspace.Path, "nope"), RepoIn(workspace), _ => { }));
+            () => BundleDrift.Check(Path.Combine(workspace.Path, "nope"), RepoIn(workspace), _ => 0));
+    }
+
+    [Fact]
+    public void A_regeneration_that_writes_nothing_is_never_reported_clean()
+    {
+        // THE FLOOR UNDER THIS ENTIRE CHECK. The regeneration is the caller's, so a caller that
+        // composes its pipeline wrongly -- or has not composed it yet, which is exactly where the CLI
+        // stands until its code-graph stage is wired -- hands over a run that writes nothing. The copy
+        // then equals the bundle, no difference is found, and `--check` prints "no drift" on every
+        // bundle for ever: a guard that cannot fire, in the one place with nothing behind it.
+        //
+        // Asserted against the GOLDEN, the bundle every other test in this file expects to be clean,
+        // so the only thing making this report dirty is the empty run.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+
+        var report = BundleDrift.Check(ProducerFixture.GoldenBundle, RepoIn(workspace), _ => 0);
+
+        Assert.False(report.IsClean);
+        Assert.NotEqual(0, report.ExitCode);
+        Assert.Equal(0, report.ConceptsRegenerated);
+
+        // And it SAYS so, rather than handing an operator an empty list beside a non-zero exit code.
+        Assert.Contains(report.Differences, d => d.Contains("proves nothing", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_real_regeneration_reports_how_many_concepts_it_wrote()
+    {
+        // The other side of the floor: the count has to be the run's real output, not a constant that
+        // happens to be positive. 15 is the fixture's whole inventory, pinned by
+        // The_golden_bundle_holds_one_occurrence_of_each_shape.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+
+        Assert.Equal(15, RunCheck(workspace, ProducerFixture.GoldenBundle).ConceptsRegenerated);
     }
 
     [Fact]
@@ -224,6 +305,13 @@ public class CheckTests
         Assert.Contains("overview", BundleDrift.CheckDescription, StringComparison.Ordinal);
         Assert.Contains("byte for byte", BundleDrift.CheckDescription, StringComparison.Ordinal);
         Assert.Contains("weaker", BundleDrift.CheckDescription, StringComparison.Ordinal);
+
+        // And the one thing that is out of reach rather than excluded: a hand-added concept at an id
+        // this producer never generates is copied forward on both sides and cannot differ. Named in
+        // the help because "nothing else is ever excluded" would otherwise read as a promise the
+        // comparison does not make.
+        Assert.Contains("by hand", BundleDrift.CheckDescription, StringComparison.Ordinal);
+        Assert.Contains("unowned", BundleDrift.CheckDescription, StringComparison.Ordinal);
     }
 
     // -- the end-to-end run, made permanent -------------------------------------------------------
@@ -270,9 +358,12 @@ public class CheckTests
         // fixture at the size the brief asks for AND names the shapes it is supposed to carry, so a
         // fixture that quietly lost its merged overload pair (or grew to 400 concepts) fails here
         // rather than weakening every other test in this file silently.
+        // The SHARED filter, not a local suffix test: an `EndsWith("index.md")` here would also swallow
+        // a concept legitimately named `build-index`, which is exactly the mistake the one spelling in
+        // ProducerFixture exists to prevent both call sites from making independently.
         var concepts = Directory.EnumerateFiles(ProducerFixture.GoldenBundle, "*.md", SearchOption.AllDirectories)
             .Select(path => Path.GetRelativePath(ProducerFixture.GoldenBundle, path).Replace(Path.DirectorySeparatorChar, '/'))
-            .Where(path => !path.EndsWith("index.md", StringComparison.Ordinal))
+            .Where(ProducerFixture.IsConceptFile)
             .Select(path => path[..^".md".Length])
             .OrderBy(id => id, StringComparer.Ordinal)
             .ToList();
@@ -319,7 +410,9 @@ public class CheckTests
     private static DriftReport RunCheck(ProducerFixture.TempDir workspace, string bundlePath)
     {
         var repo = RepoIn(workspace);
-        return BundleDrift.Check(bundlePath, repo, copy => ProducerFixture.Run(repo, copy));
+
+        // The count is what Check refuses to report clean without -- see DriftReport.ConceptsRegenerated.
+        return BundleDrift.Check(bundlePath, repo, copy => ProducerFixture.Run(repo, copy).Write.Written);
     }
 
     private static string Explain(DriftReport report) =>

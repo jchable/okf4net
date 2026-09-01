@@ -10,6 +10,9 @@ namespace OkfProducer.Core.Generation;
 /// <param name="Differences">
 /// One plain sentence per file that differs, sorted <see cref="StringComparer.Ordinal"/> by the
 /// bundle-relative path it names, with no severity prefix -- the caller decides how to render them.
+/// One entry does not name a file: when <see cref="ConceptsRegenerated"/> is zero, the first sentence
+/// says the regeneration produced nothing, so an operator reading this list is told why the check
+/// failed rather than being handed an empty list beside a non-zero exit code.
 /// </param>
 /// <param name="FieldsExcluded">
 /// Whether the outside-a-git-repository projection was applied (see
@@ -18,10 +21,23 @@ namespace OkfProducer.Core.Generation;
 /// removed from both sides first, and the guarantee is correspondingly weaker. Reported rather than
 /// inferred, so a caller can say which of the two properties it just verified.
 /// </param>
-public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsExcluded)
+/// <param name="ConceptsRegenerated">
+/// How many concepts the caller's regeneration actually wrote into the copy.
+///
+/// <para><b>The floor without which this whole check can never fail.</b> The regeneration is supplied
+/// by the caller, so a caller that composes its pipeline wrongly -- or not at all, which is exactly
+/// the state the CLI is in until its code-graph stage is wired -- hands over a run that writes
+/// nothing. The copy then equals the original, no difference is found, and <c>--check</c> prints "no
+/// drift" on every bundle for ever: a guard that cannot fire, in the one place with nothing behind it.
+/// Zero here therefore makes <see cref="IsClean"/> false whatever the byte comparison said.</para>
+/// </param>
+public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsExcluded, int ConceptsRegenerated)
 {
-    /// <summary>Whether the bundle matches what regenerating it produces.</summary>
-    public bool IsClean => Differences.Count == 0;
+    /// <summary>
+    /// Whether the bundle matches what regenerating it produces -- <b>and</b> whether regenerating
+    /// produced anything at all. Both, deliberately: see <see cref="ConceptsRegenerated"/>.
+    /// </summary>
+    public bool IsClean => ConceptsRegenerated > 0 && Differences.Count == 0;
 
     /// <summary>The process exit code this report warrants: <c>0</c> when clean, <c>1</c> on drift.</summary>
     public int ExitCode => IsClean ? 0 : 1;
@@ -47,6 +63,14 @@ public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsE
 /// there (see <see cref="GitRevision"/>) and a wall-clock value cannot be reproduced by regenerating.
 /// Outside git the property is therefore not "byte for byte" but "byte for byte over a projection
 /// with two fields removed", which is weaker, and the help text says so.</para>
+///
+/// <para><b>The one thing "in both directions" does not reach: a concept added to the bundle by
+/// hand.</b> The regeneration runs over a <i>copy</i> that already holds it, and pruning only ever
+/// considers ids the previous manifest claims (§6.3 rule 2), so a <c>.md</c> someone wrote at an id
+/// this producer never generated survives untouched on both sides and is invisible here. That is a
+/// consequence of the copy-based definition, not a gap in the comparison: the alternative -- treating
+/// every unclaimed file as drift -- would report the hand-written concepts §6.3 exists to protect.
+/// <c>BundleWriter</c> is where such a file is surfaced, as a "no manifest claims it" note.</para>
 /// </summary>
 public static class BundleDrift
 {
@@ -72,7 +96,10 @@ public static class BundleDrift
         + "`revision`. There is no HEAD commit to stamp outside a repository, so both fall back to the "
         + "wall clock and neither can be reproduced by regenerating; the comparison is then byte for "
         + "byte over a projection with those two fields removed -- a weaker property than the one "
-        + "above. Nothing else is ever excluded, in either case.";
+        + "above. No other FIELD is ever excluded, in either case. One thing is out of reach rather "
+        + "than excluded: a concept you added to the bundle by hand, at an id this producer never "
+        + "generates, is copied forward untouched and so cannot differ -- `generate` reports it as "
+        + "unowned instead.";
 
     /// <summary>
     /// Copies the bundle at <paramref name="bundlePath"/> into a temporary directory, hands that copy
@@ -93,14 +120,19 @@ public static class BundleDrift
     /// "is there a HEAD to stamp?" has an answer.
     /// </param>
     /// <param name="regenerateInto">
-    /// Runs the generation into the directory it is given. The caller supplies it because composing
-    /// the pipeline (scan, extract, resolve, generate, write) needs the language extractor and
-    /// resolvers, which live in projects this one does not, and must not, reference.
+    /// Runs the generation into the directory it is given, and <b>returns how many concepts it
+    /// wrote</b>. The caller supplies the run because composing the pipeline (scan, extract, resolve,
+    /// generate, write) needs the language extractor and resolvers, which live in projects this one
+    /// does not, and must not, reference.
+    ///
+    /// <para>The return value is not bookkeeping: it is the only thing standing between this method
+    /// and a caller whose regeneration silently does nothing, which would make every bundle look
+    /// clean for ever. See <see cref="DriftReport.ConceptsRegenerated"/>.</para>
     /// </param>
     /// <exception cref="ArgumentException"><paramref name="bundlePath"/> or <paramref name="repoPath"/> is null or empty.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="regenerateInto"/> is null.</exception>
     /// <exception cref="InvalidOperationException"><paramref name="bundlePath"/> is not an existing directory.</exception>
-    public static DriftReport Check(string bundlePath, string repoPath, Action<string> regenerateInto)
+    public static DriftReport Check(string bundlePath, string repoPath, Func<string, int> regenerateInto)
     {
         ArgumentException.ThrowIfNullOrEmpty(bundlePath);
         ArgumentException.ThrowIfNullOrEmpty(repoPath);
@@ -127,9 +159,22 @@ public static class BundleDrift
         try
         {
             CopyDirectory(bundlePath, copyPath);
-            regenerateInto(copyPath);
+            var regenerated = regenerateInto(copyPath);
 
-            return new DriftReport(Compare(bundlePath, copyPath, insideGitRepository), !insideGitRepository);
+            var differences = new List<string>();
+            if (regenerated <= 0)
+            {
+                // Said first, and said as a sentence rather than left implicit in an exit code: a
+                // caller staring at "1 difference" wants to know that the comparison itself was
+                // meaningless, not to go hunting for a file that changed.
+                differences.Add(
+                    "the regeneration produced no concept at all, so this comparison proves nothing:"
+                    + " a run that writes nothing leaves the copy identical to the bundle and every bundle looks clean.");
+            }
+
+            differences.AddRange(Compare(bundlePath, copyPath, insideGitRepository));
+
+            return new DriftReport(differences, !insideGitRepository, regenerated);
         }
         finally
         {
