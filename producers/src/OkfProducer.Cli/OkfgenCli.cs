@@ -149,6 +149,22 @@ public static class OkfgenCli
                 return 1;
             }
 
+            var repoUrl = Trimmed(parseResult.GetValue(repoUrlOption));
+            if (repoUrl is not null && !IsPermalinkBase(repoUrl))
+            {
+                // Refused here rather than tolerated, because the failure downstream is silent: the
+                // generator returns no permalink for a value that is not an absolute http(s) URL, so
+                // `--repo-url github.com/o/r` or `--repo-url git@github.com:o/r` -- the two forms a
+                // forge displays and a user pastes -- would produce a successful-looking run
+                // containing not one `resource`. A detached HEAD gets a note instead of an error
+                // because nothing the operator typed is wrong there; here it is.
+                error.WriteLine(
+                    $"error: --repo-url '{repoUrl}' is not an absolute http/https URL, so no permalink can be built from it"
+                    + " and every code concept would silently lose its `resource`. Pass the form the forge shows in the"
+                    + " address bar, e.g. https://github.com/owner/repo.");
+                return 1;
+            }
+
             var request = new GenerateRequest(
                 RepoPath: parseResult.GetValue(repoOption)!,
                 OutPath: parseResult.GetValue(outOption)!,
@@ -156,7 +172,7 @@ public static class OkfgenCli
                 // --check always regenerates over a COPY under Update -- the only policy that runs the
                 // real regeneration path, field preservation and pruning included (§6.2).
                 Policy: check ? WritePolicy.Update : reset ? WritePolicy.Reset : update ? WritePolicy.Update : WritePolicy.RequireEmpty,
-                RepoUrl: Trimmed(parseResult.GetValue(repoUrlOption)),
+                RepoUrl: repoUrl,
                 Rev: Trimmed(parseResult.GetValue(revOption)),
                 Check: check,
                 IncludeTests: parseResult.GetValue(includeTestsOption),
@@ -228,7 +244,7 @@ public static class OkfgenCli
 
     private static int Write(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error, Action<string> note)
     {
-        var result = GenerateRun.Execute(request, services, note);
+        var result = ExecuteAndReport(request, services, note);
 
         output.WriteLine($"Wrote {result.Written.ToString(CultureInfo.InvariantCulture)} concept(s) to {request.OutPath}.");
 
@@ -241,17 +257,36 @@ public static class OkfgenCli
             }
         }
 
-        foreach (var text in result.Notes)
-        {
-            note(text);
-        }
-
         foreach (var (id, failure) in result.Failures)
         {
             error.WriteLine($"error: {id}: {failure}");
         }
 
         return result.Failures.Count > 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// One generation, with <b>everything</b> the run had to say about what it could not do forwarded
+    /// to <paramref name="note"/>: the notes raised during generation (which reach the sink directly)
+    /// and <see cref="WriteResult.Notes"/>, which the writer can only hand back at the end.
+    ///
+    /// <para><b>Both callers go through here, and that is the point.</b> The two paths used to forward
+    /// separately, and <c>--check</c> forgot: it took only the concept count off the run and dropped
+    /// the reconciliation notes -- exactly the sentences saying a clean check was weakened, e.g. a
+    /// source file over <c>--max-file-size</c> whose stale <c>code/</c> concepts were held back in the
+    /// copy, matched the bundle byte for byte, and printed "No drift" with no signal at all. One
+    /// funnel, so a third caller cannot reintroduce it.</para>
+    /// </summary>
+    private static WriteResult ExecuteAndReport(GenerateRequest request, ProducerServices services, Action<string> note)
+    {
+        var result = GenerateRun.Execute(request, services, note);
+
+        foreach (var text in result.Notes)
+        {
+            note(text);
+        }
+
+        return result;
     }
 
     private static int Check(GenerateRequest request, ProducerServices services, TextWriter output, Action<string> note)
@@ -261,7 +296,7 @@ public static class OkfgenCli
         var report = BundleDrift.Check(
             request.OutPath,
             request.RepoPath,
-            copy => GenerateRun.Execute(request with { OutPath = copy }, services, note).Written);
+            copy => ExecuteAndReport(request with { OutPath = copy }, services, note).Written);
 
         foreach (var difference in report.Differences)
         {
@@ -282,4 +317,13 @@ public static class OkfgenCli
 
     /// <summary>An option's value with surrounding whitespace removed, or <see langword="null"/> when it was absent or blank.</summary>
     private static string? Trimmed(string? value) => value?.Trim() is { Length: > 0 } trimmed ? trimmed : null;
+
+    /// <summary>
+    /// Whether <paramref name="repoUrl"/> is something a <c>resource</c> permalink can be built from.
+    /// <b>Deliberately the same predicate <c>ConceptGenerator.ResourceUrl</c> applies</b> -- absolute,
+    /// scheme <c>http</c> or <c>https</c> -- so this boundary check can never be stricter than the
+    /// generator and reject a URL that would in fact have worked.
+    /// </summary>
+    private static bool IsPermalinkBase(string repoUrl) =>
+        Uri.TryCreate(repoUrl, UriKind.Absolute, out var parsed) && parsed.Scheme is "http" or "https";
 }

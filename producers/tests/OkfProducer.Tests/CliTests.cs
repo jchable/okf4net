@@ -2,6 +2,7 @@
 using System.Text.RegularExpressions;
 using OKF4net;
 using OkfProducer.Cli;
+using OkfProducer.CodeGraph.Roslyn;
 using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 using OkfProducer.Tests.Generation;
@@ -289,8 +290,125 @@ public class CliTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("--check", result.Error, StringComparison.Ordinal);
+
+        // Bytes, not a file count: a rejected run that nevertheless rewrote every concept in place
+        // would keep the count identical and pass a weaker assertion.
+        Assert.All(before, entry =>
+        {
+            var now = Path.Combine(bundle, entry.Key.Replace('/', Path.DirectorySeparatorChar));
+            Assert.True(File.Exists(now), $"'{entry.Key}' was deleted by a rejected run.");
+            Assert.True(entry.Value.AsSpan().SequenceEqual(File.ReadAllBytes(now)), $"'{entry.Key}' was rewritten by a rejected run.");
+        });
         Assert.Equal(before.Count, ProducerFixture.SnapshotFiles(bundle).Count);
     }
+
+    [Fact]
+    public void A_repo_url_that_is_not_an_absolute_http_url_is_rejected_before_anything_is_written()
+    {
+        // Both forms a forge displays and a user pastes. Each would otherwise produce a
+        // successful-looking run carrying not one `resource`, since the generator silently returns no
+        // permalink for anything that is not an absolute http(s) URL.
+        foreach (var malformed in new[] { "github.com/acme/demo", "git@github.com:acme/demo.git", "file:///srv/demo" })
+        {
+            using var workspace = NewWorkspace(out var repo, out var bundle);
+
+            var result = Run("generate", "--repo", repo, "--out", bundle, "--repo-url", malformed);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Contains("--repo-url", result.Error, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(bundle), $"'{malformed}' was rejected but the run still created the bundle.");
+        }
+    }
+
+    [Fact]
+    public void A_rev_without_a_repo_url_says_it_had_no_effect()
+    {
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--rev", "main");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("note: --rev was supplied without --repo-url", result.Error, StringComparison.Ordinal);
+
+        // And the note is not unconditional noise: supplying both says nothing about --rev.
+        var both = Path.Combine(workspace.Path, "both");
+        var quiet = Run("generate", "--repo", repo, "--out", both, "--repo-url", "https://example.com/acme/demo", "--rev", "main");
+
+        Assert.Equal(0, quiet.ExitCode);
+        Assert.DoesNotContain("--rev was supplied without", quiet.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Check_forwards_the_writer_notes_that_say_a_clean_result_was_weakened()
+    {
+        // The failure this pins is silent by construction. A source file over --max-file-size is
+        // recorded unsettled, so the concepts it owns are held back rather than pruned in the copy;
+        // the copy then matches the bundle byte for byte and --check prints "No drift". Without the
+        // writer's own reconciliation notes reaching stderr there is no signal at all that the
+        // comparison was weakened -- and --check taking only the concept count off the run is exactly
+        // how that happened.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        // Delete the declarations, then forbid reading the file that held them: this run cannot vouch
+        // for their absence, so the writer must hold the ids back and say so.
+        WriteSource(repo, "src/Widget.cs", WidgetSource());
+        var widgetBytes = new FileInfo(Path.Combine(repo, "src", "Widget.cs")).Length;
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--check", "--max-file-size", (widgetBytes - 1).ToString());
+
+        Assert.Contains("note: ", result.Error, StringComparison.Ordinal);
+        Assert.Contains("src/Widget.cs", result.Error, StringComparison.Ordinal);
+    }
+
+    // ---- the composition root's one piece of pure data logic ---------------------------------
+
+    [Fact]
+    public void The_ownership_join_turns_msbuild_compile_items_into_repository_relative_ownership()
+    {
+        // No MSBuild, no disk: ProjectInputs in, SourceOwnershipMap out. This join had zero
+        // executable coverage anywhere in the solution, and a wrong one is quiet -- a missing or
+        // misattributed package -> namespace link, not a failure.
+        var repo = Path.Combine(Path.GetTempPath(), "okfgen-join-fixture");
+        var alpha = Path.Combine(repo, "src", "Alpha", "Alpha.csproj");
+        var beta = Path.Combine(repo, "src", "Beta", "Beta.csproj");
+
+        var map = GenerateRun.Attribution(
+            repo,
+            [
+                // Deliberately not in Ordinal order, so the "first .csproj wins" rule below is the
+                // map's rule and not the order this list happened to be built in.
+                Inputs(beta, [Path.Combine(repo, "src", "Beta", "Beta.cs"), Path.Combine(repo, "shared", "Shared.cs")]),
+                Inputs(alpha, [Path.Combine(repo, "src", "Alpha", "Alpha.cs"), Path.Combine(repo, "shared", "Shared.cs")]),
+            ],
+            _ => { });
+
+        Assert.NotNull(map);
+        Assert.Equal("src/Alpha/Alpha.csproj", map.OwnerOf("src/Alpha/Alpha.cs"));
+        Assert.Equal("src/Beta/Beta.csproj", map.OwnerOf("src/Beta/Beta.cs"));
+
+        // §5.1: a file two projects compile belongs to the Ordinal-first .csproj, and the other is
+        // still reported rather than the concept being duplicated.
+        Assert.Equal("src/Alpha/Alpha.csproj", map.OwnerOf("shared/Shared.cs"));
+        Assert.Equal(new[] { "src/Alpha/Alpha.csproj", "src/Beta/Beta.csproj" }, map.ClaimantsOf("shared/Shared.cs"));
+
+        Assert.Null(map.OwnerOf("src/Gamma/Gamma.cs"));
+    }
+
+    [Fact]
+    public void The_ownership_join_supplies_no_map_at_all_when_msbuild_answered_for_nothing()
+    {
+        // Not an empty map: an empty one attributes nothing AND suppresses the note that says why,
+        // leaving the operator with "N containers unattributed" -- the symptom instead of the cause.
+        var notes = new List<string>();
+
+        Assert.Null(GenerateRun.Attribution(Path.GetTempPath(), [], notes.Add));
+        Assert.Contains(notes, n => n.Contains("source-ownership map", StringComparison.Ordinal));
+    }
+
+    /// <summary>One project's MSBuild answer, with only the two fields this join reads filled in meaningfully.</summary>
+    private static ProjectInputs Inputs(string projectPath, string[] compileFiles) =>
+        new(projectPath, Path.GetFileNameWithoutExtension(projectPath), compileFiles, [], string.Empty, "14", true, false, "Library", "net10.0");
 
     [Fact]
     public void Check_help_carries_the_whole_exclusion_list()

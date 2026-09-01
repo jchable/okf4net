@@ -82,6 +82,14 @@ internal static class GenerateRun
                 + " as a fallback: it would rewrite the `resource` of every code concept on the next commit.");
         }
 
+        if (request.RepoUrl is null && request.Rev is { Length: > 0 })
+        {
+            // The mirror of the note above, and reported for the same reason: a `resource` needs both
+            // halves, so a --rev with no base URL to address changes nothing at all. Saying so beats
+            // letting an operator conclude the permalinks are missing for some deeper reason.
+            note("--rev was supplied without --repo-url, so it had no effect: a `resource` permalink needs both a base URL and a ref, and there is no base URL here for the ref to address.");
+        }
+
         CodeGraphModel? graph = null;
         SourceOwnershipMap? ownership = null;
         IReadOnlyList<LanguageProfile> profiles = [];
@@ -100,7 +108,7 @@ internal static class GenerateRun
                 resolvers.Add(roslyn);
 
                 ReportProjects(roslyn, request.RepoPath, note);
-                ownership = Attribution(roslyn, request.RepoPath, note);
+                ownership = Attribution(request.RepoPath, roslyn.QueriedProjects, note);
             }
 
             // Disposed as soon as the graph exists: CodeGraph holds symbols and edges, never a handle
@@ -157,10 +165,18 @@ internal static class GenerateRun
     /// MSBuild for -- or <see langword="null"/> when MSBuild answered for no project at all, in which
     /// case the run says so and emits no package -> namespace link rather than guessing one from the
     /// directory tree.
+    ///
+    /// <para>Takes the queried inputs rather than the resolver that produced them, so the join is
+    /// pure data and can be exercised without an MSBuild invocation. A wrong join here is not loud:
+    /// it yields a missing or misattributed <c>packages -&gt; namespace</c> link, which is exactly the
+    /// kind of defect that survives on "verified by one manual run".</para>
     /// </summary>
-    private static SourceOwnershipMap? Attribution(RoslynResolver resolver, string repoPath, Action<string> note)
+    /// <param name="repoPath">The repository root every path is made relative to.</param>
+    /// <param name="queried">The compiler inputs MSBuild answered with, one entry per project.</param>
+    /// <param name="note">Where the "no map at all" degradation is reported.</param>
+    internal static SourceOwnershipMap? Attribution(string repoPath, IReadOnlyList<ProjectInputs> queried, Action<string> note)
     {
-        if (resolver.QueriedProjects.Count == 0)
+        if (queried.Count == 0)
         {
             note(
                 "MSBuild could not report the compiler inputs of any project (no `dotnet` on PATH, or a"
@@ -172,7 +188,7 @@ internal static class GenerateRun
 
         return SourceOwnershipMap.From(
             repoPath,
-            resolver.QueriedProjects.Select(p => new ProjectCompileItems(p.ProjectPath, p.TargetFramework, p.CompileFiles)));
+            queried.Select(p => new ProjectCompileItems(p.ProjectPath, p.TargetFramework, p.CompileFiles)));
     }
 
     /// <summary>

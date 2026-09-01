@@ -107,6 +107,21 @@ are the concrete entry points.
     release time**, described as such rather than implied to be covered.
   - **Documented.** [`producers/README.md`](producers/README.md) carries the flag surface, the
     verification command, the packaging step and the project layout.
+
+  Open follow-ups, still open:
+  - **More ecosystems.** Package detection is npm and NuGet only, and the code stage is C# only.
+    The architecture is multi-language by construction (one `LanguageProfile` per language, one
+    `ISymbolResolver` per precision level); a second profile would test the generality of that
+    seam rather than chase coverage.
+  - **Per-RID package weight.** A RID-specific `dotnet tool` package measures 80.7–87.6 MB
+    installed (11.5–13.3 MB to download). Most of it is tree-sitter grammars this producer never
+    loads — `verilog` 17.3 MB, `razor` 10.5 MB, `cpp` 5.1 MB — which cannot be removed one file
+    at a time, because `deps.json` is what feeds `NATIVE_DLL_SEARCH_DIRECTORIES`. Getting the
+    installed size below ~40 MB is a follow-up, not a v1 promise.
+  - **No test covers `--rev`'s branch auto-detection happy path.** Every CLI fixture repository is
+    deliberately outside git (so the suite stays at ~16 s and spawns no MSBuild), and the detached
+    -HEAD case is covered by the one test that does build a git repository. The auto-detected
+    branch name is verified by manual run only.
 - **Known limitation: `packages/` and `docs/` `resource` paths don't resolve against the bundle.**
   `producers/OkfProducer` records those families' `resource`/`sources[].resource` relative to the
   *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct

@@ -68,7 +68,21 @@ stdout. A note never changes the exit code. The ones worth knowing:
   so the package → namespace level of the containment spine is missing entirely.
   Nothing is guessed from the directory tree instead: a project can add, remove and
   link sources across directories, so a directory-derived link would attribute a
-  namespace to the wrong package.
+  namespace to the wrong package;
+- `--repo-url` on a detached HEAD, where there is no branch name to build permalinks
+  from and a sha is refused as a default;
+- `--rev` supplied without `--repo-url`, which does nothing.
+
+`--check` forwards these too, including the writer's reconciliation notes. That matters
+more there than anywhere else: a source file over `--max-file-size`, or a traversal that
+timed out, leaves stale `code/` concepts *held back* rather than pruned in the
+regenerated copy — the copy then matches the bundle byte for byte and `--check` prints
+`No drift`. The notes are the only thing that says the clean result was weakened.
+
+A **malformed** `--repo-url` is not a note but an error: anything that is not an absolute
+`http`/`https` URL (`github.com/o/r`, `git@github.com:o/r` — the two forms a forge shows
+and a user pastes) is rejected before any work, because the alternative is a
+successful-looking run containing not one `resource`.
 
 ### Why `--repo-url` is all-or-nothing
 
@@ -95,14 +109,16 @@ dotnet pack producers/src/OkfProducer.Cli -c Release
 ```
 
 Expect four packages in `producers/src/OkfProducer.Cli/bin/Release/`. Measured on
-2026-09-01, version 0.1.0:
+2026-09-01, version 0.1.0. **The size that matters is the installed one** — what a
+`dotnet tool install` leaves on disk; the download column is given because it is what
+the feed serves, not as a second target:
 
-| Package | Compressed | Uncompressed |
+| Package | Installed | Download |
 |---|---|---|
-| `OkfProducer.Cli.0.1.0.nupkg` (pointer) | 2 KB | 5 entries, no payload |
-| `OkfProducer.Cli.win-x64.0.1.0.nupkg` | 13.3 MB | 87.6 MB |
-| `OkfProducer.Cli.linux-x64.0.1.0.nupkg` | 11.6 MB | 83.7 MB |
-| `OkfProducer.Cli.osx-arm64.0.1.0.nupkg` | 11.5 MB | 80.7 MB |
+| `OkfProducer.Cli.0.1.0.nupkg` (pointer) | — | 2 KB (5 entries, no payload) |
+| `OkfProducer.Cli.win-x64.0.1.0.nupkg` | 87.6 MB | 13.3 MB |
+| `OkfProducer.Cli.linux-x64.0.1.0.nupkg` | 83.7 MB | 11.6 MB |
+| `OkfProducer.Cli.osx-arm64.0.1.0.nupkg` | 80.7 MB | 11.5 MB |
 
 **Every sub-package must be pushed, not only the pointer** — the pointer contains
 nothing but `DotnetToolSettings.xml`, and an install resolves the RID package from the
@@ -116,9 +132,13 @@ cannot be honest: nothing would run it. Verifying the pack means running the com
 above and, for a real release, installing the resulting package on each target OS by
 hand. Saying otherwise would claim coverage that does not exist.
 
-Two related facts, recorded rather than fixed: the per-RID payload is dominated by
-grammars this producer never uses (`verilog` 17.3 MB, `razor` 10.5 MB, `cpp` 5.1 MB
-on `linux-x64`), and getting below ~40 MB is a documented follow-up, not a v1 promise.
+Two related facts, recorded rather than fixed. The installed size is dominated by
+grammars this producer never loads (`verilog` 17.3 MB, `razor` 10.5 MB, `cpp` 5.1 MB
+on `linux-x64`), which cannot be removed one file at a time — `deps.json` is what feeds
+`NATIVE_DLL_SEARCH_DIRECTORIES`, not the contents of the folder. Getting the
+**installed** size below ~40 MB is a documented follow-up, not a v1 promise; the design
+spec's "~69 MB" was an estimate of that same installed dimension and came in low.
+
 None of this is applied to `src/OKF4net.Mcp`, which has real users and declares no
 `RuntimeIdentifier(s)` — so .NET 10's RID-specific tool behaviour does not touch it.
 
