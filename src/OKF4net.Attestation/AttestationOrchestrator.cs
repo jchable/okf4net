@@ -25,7 +25,7 @@ public sealed class AttestationOrchestrator
     /// Creates an orchestrator over <paramref name="runtimes"/>.
     /// </summary>
     /// <param name="runtimes">Resolves an <see cref="IAttestationRuntime"/> by the concept's <c>runtime</c> field.</param>
-    /// <param name="clock">Supplies today's date for staleness gating. Defaults to <see cref="SystemClock"/>.</param>
+    /// <param name="clock">Supplies the instant staleness gating is evaluated at. Defaults to <see cref="SystemClock"/>.</param>
     /// <param name="defaultPolicy">The gating policy used when <see cref="RunAsync"/> is not given one. Defaults to <see cref="StalePolicy.Use"/>.</param>
     public AttestationOrchestrator(IAttestationRuntimeRegistry runtimes, IOkfClock? clock = null, StalePolicy? defaultPolicy = null)
     {
