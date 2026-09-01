@@ -1,12 +1,15 @@
 # §5 Timestamp Spelling — Design
 
-**Status:** implemented on `fix/temporal-conformance` (`52801f2`, `787f237`,
-`538d949`). §4 and §6 below have been brought back in line with what actually
-shipped after two rounds of review — the grammar widened twice and narrowed once
-during implementation, and this document is only useful if it describes the code
-rather than the first draft of it. §7's predictions held: no fixture and no
-golden moved for this work.
-**Date:** 2026-08-31
+**Status:** implemented on `fix/temporal-conformance`. This document is
+maintained to describe the code as it shipped, not the first draft of it: the
+grammar widened twice and narrowed once during implementation and review, §6's
+out-of-scope list lost an entry that turned out not to belong there, and §4's
+oracle claim was tightened once the test was made to match it. It deliberately
+names **no commit SHAs** — an enumerated list drifts silently every time the
+work is revised, which it already did once here; `git log --oneline -- <this
+file>` is the accurate answer. §7's predictions held: no fixture and no golden
+moved for the spelling work.
+**Date:** 2026-08-31, revised 2026-09-01 (§4 oracle reach, §6 end-of-day, §11)
 **Branch:** `fix/temporal-conformance`
 **Normative source:** `docs/spec/SPEC.md` (OKF v0.2, vendored verbatim at upstream
 `62432a0`, `sha256 26aa5da0…`). Every `§` and every line number below refers to

@@ -56,7 +56,7 @@ and this project adheres to
   compiling and working. `FixedClock` gains a `DateTimeOffset` constructor
   beside the `DateOnly` one; note that a target-typed `new FixedClock(new(y, m,
   d))` is now ambiguous and must name the type (`new DateOnly(y, m, d)`).
-- **`Lifecycle`'s rewritten parser stays as narrow as the old one.** Teaching
+- **`Lifecycle`'s rewritten parser widened only where §5 required it.** Teaching
   `stale_after` to read instants (see *Fixed* below) meant choosing what the new
   zoneless fallback would accept. It reads an explicit ISO format list rather
   than `DateTime.TryParse`, which *would* have started accepting `01/02/2026` or
