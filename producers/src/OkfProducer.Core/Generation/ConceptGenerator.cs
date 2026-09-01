@@ -1891,7 +1891,7 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// </summary>
     private static string? ResourceUrl(SymbolFact declaration, GenerateOptions options)
     {
-        if (options.RepoUrl is not { Length: > 0 } repoUrl || options.Rev is not { Length: > 0 } rev)
+        if (options.Rev is not { Length: > 0 } rev)
         {
             return null;
         }
@@ -1899,8 +1899,10 @@ public sealed class ConceptGenerator : IConceptGenerator
         // A value that is not an absolute http(s) URL would not be classified as
         // FrontmatterResourceKind.Url by the validator, and would then be resolved as a path against
         // the concept's own directory -- the exact warning-per-concept outcome §4.3 exists to avoid.
-        if (!Uri.TryCreate(repoUrl, UriKind.Absolute, out var parsed)
-            || parsed.Scheme is not ("http" or "https"))
+        // The rule lives on GenerateOptions rather than here BECAUSE the CLI has to apply the same
+        // one to refuse such a value at its boundary, and two copies that merely agree today are two
+        // copies that stop agreeing the day one scheme list is widened and the other is not.
+        if (!GenerateOptions.TryPermalinkBase(options.RepoUrl, out var parsed))
         {
             return null;
         }

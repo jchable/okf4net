@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics.CodeAnalysis;
 using OKF4net;
 using OkfProducer.Core.CodeGraph;
 
@@ -95,4 +96,38 @@ public sealed record GenerateOptions
     /// notice the absence by reading the bundle.</para>
     /// </summary>
     public Action<string>? Note { get; init; }
+
+    /// <summary>
+    /// Whether <paramref name="repoUrl"/> is something §4.3's <c>resource</c> permalink can actually
+    /// be built from -- present, absolute, and <c>http</c> or <c>https</c> -- handing back the parsed
+    /// <see cref="Uri"/> so the one caller that needs it does not re-parse.
+    ///
+    /// <para><b>This is the single definition of that rule, and it is public for exactly one
+    /// reason.</b> Two parties have to agree on it: <c>ConceptGenerator</c>, which emits no
+    /// <c>resource</c> at all for a value that fails it, and the CLI, which refuses such a value at
+    /// the boundary rather than let a run look successful while containing not one permalink. Those
+    /// were briefly two independently-written copies that happened to agree, with a comment claiming
+    /// they were one -- and nothing to notice if someone widened one scheme list (a self-hosted
+    /// forge) and not the other. One method, two call sites, no drift possible.</para>
+    ///
+    /// <para><b>Why the scheme list is closed.</b> Anything else is not classified as
+    /// <c>FrontmatterResourceKind.Url</c> by the validator, so it would be resolved as a <i>path</i>
+    /// against the concept's own directory -- the warning-per-concept outcome §4.3 exists to avoid.
+    /// Widening it here without widening <c>Bundle</c>'s classifier would produce exactly that.</para>
+    /// </summary>
+    /// <param name="repoUrl">The candidate permalink base, typically the CLI's <c>--repo-url</c>.</param>
+    /// <param name="parsed">The parsed URL when this returns <see langword="true"/>; otherwise <see langword="null"/>.</param>
+    public static bool TryPermalinkBase(string? repoUrl, [NotNullWhen(true)] out Uri? parsed)
+    {
+        if (repoUrl is { Length: > 0 }
+            && Uri.TryCreate(repoUrl, UriKind.Absolute, out var candidate)
+            && candidate.Scheme is "http" or "https")
+        {
+            parsed = candidate;
+            return true;
+        }
+
+        parsed = null;
+        return false;
+    }
 }

@@ -150,7 +150,7 @@ public static class OkfgenCli
             }
 
             var repoUrl = Trimmed(parseResult.GetValue(repoUrlOption));
-            if (repoUrl is not null && !IsPermalinkBase(repoUrl))
+            if (repoUrl is not null && !GenerateOptions.TryPermalinkBase(repoUrl, out _))
             {
                 // Refused here rather than tolerated, because the failure downstream is silent: the
                 // generator returns no permalink for a value that is not an absolute http(s) URL, so
@@ -158,6 +158,10 @@ public static class OkfgenCli
                 // forge displays and a user pastes -- would produce a successful-looking run
                 // containing not one `resource`. A detached HEAD gets a note instead of an error
                 // because nothing the operator typed is wrong there; here it is.
+                //
+                // Through GenerateOptions.TryPermalinkBase, which is the generator's OWN rule and not
+                // a second copy of it, so this boundary check cannot become stricter than what it
+                // guards -- see that method for why it is public.
                 error.WriteLine(
                     $"error: --repo-url '{repoUrl}' is not an absolute http/https URL, so no permalink can be built from it"
                     + " and every code concept would silently lose its `resource`. Pass the form the forge shows in the"
@@ -317,13 +321,4 @@ public static class OkfgenCli
 
     /// <summary>An option's value with surrounding whitespace removed, or <see langword="null"/> when it was absent or blank.</summary>
     private static string? Trimmed(string? value) => value?.Trim() is { Length: > 0 } trimmed ? trimmed : null;
-
-    /// <summary>
-    /// Whether <paramref name="repoUrl"/> is something a <c>resource</c> permalink can be built from.
-    /// <b>Deliberately the same predicate <c>ConceptGenerator.ResourceUrl</c> applies</b> -- absolute,
-    /// scheme <c>http</c> or <c>https</c> -- so this boundary check can never be stricter than the
-    /// generator and reject a URL that would in fact have worked.
-    /// </summary>
-    private static bool IsPermalinkBase(string repoUrl) =>
-        Uri.TryCreate(repoUrl, UriKind.Absolute, out var parsed) && parsed.Scheme is "http" or "https";
 }

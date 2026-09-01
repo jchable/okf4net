@@ -320,6 +320,34 @@ public class CliTests
         }
     }
 
+    [Theory]
+    // Accepted: the two schemes a forge blob URL can carry, scheme-insensitively, with or without a
+    // path, and with the query string the generator later strips.
+    [InlineData("https://github.com/acme/demo", true)]
+    [InlineData("http://git.internal.example/acme/demo", true)]
+    [InlineData("HTTPS://GitHub.com/acme/demo", true)]
+    [InlineData("https://example.com", true)]
+    [InlineData("https://example.com/acme/demo?ref=x", true)]
+    // Rejected, and each for a reason that reaches a user: the form a forge displays, the form a
+    // clone dialog offers, a scheme the validator would not classify as a URL, and nothing at all.
+    [InlineData("github.com/acme/demo", false)]
+    [InlineData("git@github.com:acme/demo.git", false)]
+    [InlineData("ssh://git@github.com/acme/demo.git", false)]
+    [InlineData("file:///srv/demo", false)]
+    [InlineData("ftp://example.com/demo", false)]
+    [InlineData("/srv/demo", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void The_permalink_base_rule_is_one_definition_shared_by_the_generator_and_the_cli(string? repoUrl, bool expected)
+    {
+        // Pinned as a table because this rule now has two consumers who must not diverge: the
+        // generator, which emits no `resource` at all when it fails, and the CLI, which refuses the
+        // value at its boundary. They were briefly two copies that happened to agree; they are one
+        // method now, and this is the definition that method is held to.
+        Assert.Equal(expected, GenerateOptions.TryPermalinkBase(repoUrl, out var parsed));
+        Assert.Equal(expected, parsed is not null);
+    }
+
     [Fact]
     public void A_rev_without_a_repo_url_says_it_had_no_effect()
     {
@@ -341,25 +369,84 @@ public class CliTests
     [Fact]
     public void Check_forwards_the_writer_notes_that_say_a_clean_result_was_weakened()
     {
-        // The failure this pins is silent by construction. A source file over --max-file-size is
-        // recorded unsettled, so the concepts it owns are held back rather than pruned in the copy;
-        // the copy then matches the bundle byte for byte and --check prints "No drift". Without the
-        // writer's own reconciliation notes reaching stderr there is no signal at all that the
-        // comparison was weakened -- and --check taking only the concept count off the run is exactly
-        // how that happened.
+        // The case where "No drift" is the whole of what an operator would otherwise see. A concept
+        // sitting under the owned prefix that no manifest claims is copied forward untouched and
+        // regenerating never produces it, so it cannot differ -- the comparison is clean and stays
+        // clean for ever, while the bundle carries a file this producer will never prune. The
+        // writer's note is the only signal that exists, and --check taking nothing but the concept
+        // count off the run dropped it.
         using var workspace = NewWorkspace(out var repo, out var bundle);
         Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
 
-        // Delete the declarations, then forbid reading the file that held them: this run cannot vouch
-        // for their absence, so the writer must hold the ids back and say so.
-        WriteSource(repo, "src/Widget.cs", WidgetSource());
-        var widgetBytes = new FileInfo(Path.Combine(repo, "src", "Widget.cs")).Length;
+        var handWritten = Path.Combine(bundle, "code", "csharp", "demo", "extra.md");
+        File.WriteAllText(handWritten, string.Join('\n',
+            "---",
+            "type: Note",
+            "title: Extra",
+            "description: A concept a human wrote by hand under the owned prefix.",
+            "---",
+            "",
+            "# Extra",
+            "",
+            "A concept a human wrote by hand under the owned prefix.",
+            ""));
 
+        // Settles the index files the new concept appears in, so the bundle is in the state an
+        // ordinary update leaves and the check below measures the unowned file, not a stale index.
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle, "--update").ExitCode);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--check");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("No drift", result.Output, StringComparison.Ordinal);
+
+        // Anchored to the note's own words, and required to be ONE line: separate Assert.Contains
+        // calls over the whole of stderr would pass on any note plus any mention of the id anywhere,
+        // and would survive a rewording that dropped the meaning entirely.
+        Assert.Contains(
+            NoteLines(result.Error),
+            line => line.Contains("code/csharp/demo/extra", StringComparison.Ordinal)
+                && line.Contains("no manifest claims it", StringComparison.Ordinal)
+                && line.Contains("will never be pruned", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Check_forwards_the_note_that_explains_a_drift_the_drift_line_cannot()
+    {
+        // The second half, and the honest correction to how this was first described: a source file
+        // over --max-file-size does NOT produce a clean check. Its concepts are held back rather than
+        // pruned, so no `.md` differs -- but `.okfgen-manifest.json` records which files the run
+        // read, so the manifest differs and --check fails.
+        //
+        // Which is exactly why the note matters here too. Without it the operator sees one opaque
+        // line about a machine-written JSON file and nothing at all about the cause: a source file
+        // that was never read, and three concepts kept on the strength of that.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        var widgetBytes = new FileInfo(Path.Combine(repo, "src", "Widget.cs")).Length;
         var result = Run("generate", "--repo", repo, "--out", bundle, "--check", "--max-file-size", (widgetBytes - 1).ToString());
 
-        Assert.Contains("note: ", result.Error, StringComparison.Ordinal);
-        Assert.Contains("src/Widget.cs", result.Error, StringComparison.Ordinal);
+        Assert.Equal(1, result.ExitCode);
+
+        var drift = result.Output.Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith("drift: ", StringComparison.Ordinal)).ToList();
+        var only = Assert.Single(drift);
+        Assert.Contains(GenerationManifest.FileName, only, StringComparison.Ordinal);
+
+        Assert.Contains(
+            NoteLines(result.Error),
+            line => line.Contains("src/Widget.cs", StringComparison.Ordinal)
+                && line.Contains("were absent from this run but kept", StringComparison.Ordinal)
+                && line.Contains("may be unread rather than deleted", StringComparison.Ordinal));
     }
+
+    /// <summary>Every <c>note: </c> line written to stderr, trimmed -- one string per note, so an assertion can require one note to carry the whole meaning.</summary>
+    private static IReadOnlyList<string> NoteLines(string error) =>
+    [
+        .. error.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith("note: ", StringComparison.Ordinal))
+    ];
 
     // ---- the composition root's one piece of pure data logic ---------------------------------
 
