@@ -70,6 +70,29 @@ public static class GitRevision
     /// <param name="repoRoot">The repository root to run <c>git</c> in.</param>
     public static string? HeadSha(string repoRoot) => RunGit(repoRoot, "rev-parse", "HEAD");
 
+    /// <summary>
+    /// The name of the branch currently checked out in <paramref name="repoRoot"/> (e.g. <c>main</c>,
+    /// <c>feature/x</c>), or <see langword="null"/> when there is none to read: a <b>detached
+    /// HEAD</b>, a path outside any git repository, or <c>git</c> itself not runnable.
+    ///
+    /// <para><b>What the null is for.</b> This is the default the CLI's <c>--rev</c> falls back to
+    /// when building §4.3's <c>resource</c> permalinks, and a branch name is deliberately the only
+    /// thing that can serve: it is stable as the branch moves, so a code concept's <c>resource</c>
+    /// survives the next commit unchanged. On a detached HEAD there is no such name, and the tempting
+    /// substitute -- <see cref="HeadSha"/> -- is exactly the wrong one: a sha would rewrite the
+    /// <c>resource</c> of every code concept on every commit. So the null propagates, no
+    /// <c>resource</c> is emitted at all, and <c>--rev</c> becomes required for permalinks there.</para>
+    ///
+    /// <para><c>symbolic-ref</c>, not <c>rev-parse --abbrev-ref HEAD</c>: the latter answers the
+    /// literal string <c>HEAD</c> on a detached HEAD, which parses as a branch name and would silently
+    /// build permalinks pointing at whatever <c>HEAD</c> means to the forge when the link is followed.
+    /// <c>symbolic-ref</c> exits non-zero instead, which is the honest answer and the one that reaches
+    /// the caller as a null.</para>
+    /// </summary>
+    /// <param name="repoRoot">The repository root to run <c>git</c> in.</param>
+    public static string? CurrentBranch(string repoRoot) =>
+        RunGit(repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD") is { Length: > 0 } branch ? branch : null;
+
     /// <summary>Formats <paramref name="instant"/>, taken as UTC, as <c>yyyy-MM-ddTHH:mm:ssZ</c> -- invariant, second precision, a literal <c>Z</c>.</summary>
     private static string FormatUtc(DateTimeOffset instant) =>
         instant.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";

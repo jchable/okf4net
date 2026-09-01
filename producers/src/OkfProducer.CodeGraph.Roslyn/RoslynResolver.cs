@@ -86,14 +86,35 @@ public sealed class RoslynResolver : ISymbolResolver
 
     private RoslynResolver(
         IReadOnlyList<RoslynProjectReport> projects,
+        IReadOnlyList<ProjectInputs> queriedProjects,
         IReadOnlyDictionary<string, OwnedFile> ownedFiles,
         IReadOnlySet<string> repositoryProjectAssemblies)
     {
         Projects = projects;
+        QueriedProjects = queriedProjects;
         _ownedFiles = ownedFiles;
         _repositoryProjectAssemblies = repositoryProjectAssemblies;
         _indexCache = new Dictionary<string, IReadOnlyDictionary<int, CalleeMatch>>(PathComparer);
     }
+
+    /// <summary>
+    /// The compiler inputs MSBuild actually answered with, for every project in the queried closure,
+    /// sorted by project path (<see cref="StringComparer.Ordinal"/>). Empty when nothing could be
+    /// queried at all -- no <c>dotnet</c> on <c>PATH</c>, or a repository that was never restored.
+    ///
+    /// <para><b>Why this is exposed rather than kept private.</b> §5.1's package -> namespace link is
+    /// attributed from the evaluated <c>Compile</c> item set and from nothing else, and that item set
+    /// is precisely what this resolver already asks MSBuild for. Without this property the composition
+    /// root would have to run the same <c>dotnet msbuild</c> query a second time, per project, to
+    /// build its <c>SourceOwnershipMap</c> -- the same answer at twice the cost, and two query sites
+    /// free to drift apart on which projects they cover.</para>
+    ///
+    /// <para>A project that failed to query is simply absent here, and a project present here may
+    /// still have failed to <i>compile</i>: this reports what MSBuild said, <see cref="Projects"/>
+    /// reports what Roslyn then made of it. Attribution wants the former -- knowing which project
+    /// compiles a file does not require that project to build.</para>
+    /// </summary>
+    public IReadOnlyList<ProjectInputs> QueriedProjects { get; }
 
     /// <summary>
     /// Every project this resolver tried to compile -- those it was asked for and the in-repository
@@ -191,6 +212,7 @@ public sealed class RoslynResolver : ISymbolResolver
 
         return new RoslynResolver(
             reports.Values.OrderBy(r => r.ProjectPath, StringComparer.Ordinal).ToList(),
+            queried.Values.OrderBy(p => p.ProjectPath, StringComparer.Ordinal).ToList(),
             ownedFiles,
             RepositoryProjectAssemblies(repositoryRoot, queried));
     }

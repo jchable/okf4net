@@ -91,25 +91,33 @@ are the concrete entry points.
   broaden `ValidateSegment` needs its own design pass (cross-platform Unicode
   normalization, golden-fixture impact).
 
-- **`producers/OkfProducer` walking skeleton shipped** (repo scanner → OKF v0.2 bundle generator,
-  `generate`/`validate` commands, npm/NuGet/README detection only — see
-  [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md) and
-  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)). Two follow-ups noted at
-  merge time, not yet acted on:
-  - **No CI coverage.** `producers/` is deliberately outside `OKF4net.sln`/`ci.yml`, so nothing
-    verifies it still builds after an `src/OKF4net` API change — it can rot silently. Either add a
-    lightweight build+test job for `producers/OkfProducer.sln`, or treat "does `producers/` still
-    build" as an explicit step whenever a public `OKF4net` API changes.
-  - **Undocumented.** Not mentioned in `README.md`/`CLAUDE.md`/`CONTRIBUTING.md`. Add pointers once
-    the producer grows past this first walking-skeleton slice (more ecosystems, LLM enrichment).
-- **Known limitation: generated `sources[].resource` paths don't resolve against the bundle.**
-  `producers/OkfProducer`'s `ConceptGenerator` records `sources[].resource` relative to the
-  *scanned repository* (e.g. `package.json`), which is the semantically correct provenance
-  reference — but `BundleValidator` resolves `sources[].resource` relative to the *bundle root*,
-  so every generated package/doc concept gets a "path not found" warning by construction. Decided
-  at merge time: accept the warning rather than embed copies of referenced files in the bundle
-  (which would be a larger, unplanned scope change). Revisit only if this becomes a real friction
-  point once the producer has actual users.
+- **`producers/OkfProducer` shipped** (repo scanner → OKF v0.2 bundle generator, `generate`/
+  `validate` commands, npm/NuGet/README detection, and a C# code-graph stage: one concept per
+  namespace, type and member, with resolved `## Calls` links — see
+  [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md), the
+  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md) and the
+  [code-graph design](docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md)).
+  Two things a reader should not mistake for open questions:
+  - **No CI coverage — decided, not pending.** On 2026-08-01 it was settled that `producers/` does
+    **not** go into CI: it stays outside `OKF4net.sln`/`ci.yml`. Two consequences, both accepted.
+    The guarantee is local and it is one command, stated at the top of
+    [`producers/README.md`](producers/README.md): `dotnet test producers/OkfProducer.sln`, run
+    before touching the producer and after any public `OKF4net` API change. And the per-RID
+    packaging smoke test cannot be a guarantee without CI, so it is a **documented manual step at
+    release time**, described as such rather than implied to be covered.
+  - **Documented.** [`producers/README.md`](producers/README.md) carries the flag surface, the
+    verification command, the packaging step and the project layout.
+- **Known limitation: `packages/` and `docs/` `resource` paths don't resolve against the bundle.**
+  `producers/OkfProducer` records those families' `resource`/`sources[].resource` relative to the
+  *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct
+  provenance reference — but `BundleValidator` resolves a bare relative `resource` against the
+  **concept's own directory**, not the bundle root (`Bundle.TryResolveResource`), so
+  `packages/okf4net.md` sends the validator looking under `<bundle>/packages/src/OKF4net/…` and it
+  misses by construction: one "path not found" warning apiece (20 on this repository). Decided at
+  merge time: accept the warning rather than embed copies of referenced files in the bundle (a
+  larger, unplanned scope change). The `code/` family is not affected — it omits `resource`
+  entirely unless `--repo-url` and a ref make it an absolute permalink, which is exactly this
+  mechanism's reason. Revisit only if this becomes real friction once the producer has users.
 
 ## Out of scope
 

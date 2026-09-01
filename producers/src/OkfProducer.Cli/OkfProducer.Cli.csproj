@@ -2,6 +2,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OkfProducer.Core\OkfProducer.Core.csproj" />
+    <ProjectReference Include="..\OkfProducer.CodeGraph.TreeSitter\OkfProducer.CodeGraph.TreeSitter.csproj" />
+    <ProjectReference Include="..\OkfProducer.CodeGraph.Roslyn\OkfProducer.CodeGraph.Roslyn.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -14,6 +16,35 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    RID-specific `dotnet tool` packaging (design 7.1). A PORTABLE tool package would carry the
+    tree-sitter natives for every RID at once - ~590 MB, and not trimmable by hand, because it is
+    `deps.json` that feeds NATIVE_DLL_SEARCH_DIRECTORIES, not the contents of the folder. .NET 10
+    can emit one pointer package plus one package per RID (~69 MB each) and `dotnet tool install`
+    picks the right one.
+
+    `ToolPackageRuntimeIdentifiers` WITHOUT `RuntimeIdentifiers` fails `dotnet pack` with NETSDK1047.
+    That was measured, not reasoned about: both are required, and every sub-package must be pushed,
+    not only the pointer.
+
+    Deliberately NOT applied to src/OKF4net.Mcp, which has real users and declares no
+    RuntimeIdentifier(s) today - so .NET 10's RID-specific tool behaviour does not touch it.
+
+    No Native AOT here: Roslyn, System.CommandLine and the Generic Host rule it out, and an AOT pack
+    would have to be built per OS. Framework-dependent RID-specific is the right form. (The `okf`
+    CLI in src/ stays AOT; that is unrelated.)
+
+    NOT covered by any automated test: `producers/` is outside CI by decision (design 8.6), so
+    `dotnet pack` and a per-RID `dotnet tool install` are a documented manual release step. See
+    producers/README.md.
+  -->
+  <PropertyGroup>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>okfgen</ToolCommandName>
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
+    <ToolPackageRuntimeIdentifiers>win-x64;linux-x64;osx-arm64</ToolPackageRuntimeIdentifiers>
   </PropertyGroup>
 
 </Project>

@@ -1,0 +1,285 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.CommandLine;
+using System.Globalization;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using OKF4net;
+using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Generation;
+using OkfProducer.Core.Scanning;
+using OkfProducer.Core.Validation;
+
+namespace OkfProducer.Cli;
+
+/// <summary>The four services a run resolves from the host, gathered so the pipeline takes one argument rather than a container.</summary>
+/// <param name="Scanner">Reads the repository.</param>
+/// <param name="Generator">Turns the scan (and the code graph) into concepts.</param>
+/// <param name="Writer">Writes, prunes and indexes the bundle.</param>
+/// <param name="Validator">Backs the <c>validate</c> verb.</param>
+internal sealed record ProducerServices(
+    IRepositoryScanner Scanner,
+    IConceptGenerator Generator,
+    IBundleWriter Writer,
+    IBundleValidationRunner Validator);
+
+/// <summary>
+/// The <c>okfgen</c> command surface. Every verb's logic runs through
+/// <see cref="Run(string[], TextWriter, TextWriter)"/> against the two writers it is given, never
+/// against <see cref="Console"/> directly, so the whole CLI -- flags, exit codes, stdout and stderr --
+/// is exercised in-process by the test suite rather than by spawning a binary. That is the same shape
+/// <c>OkfCli.Run</c> uses in <c>src/OKF4net.Cli</c>.
+/// </summary>
+public static class OkfgenCli
+{
+    /// <summary>The prefix every note carries on stderr. Notes are what a run reports about what it could not do; they are not errors and never change the exit code.</summary>
+    private const string NotePrefix = "note: ";
+
+    /// <summary>
+    /// Parses <paramref name="args"/> and runs the requested verb, writing ordinary output to
+    /// <paramref name="output"/> and errors, notes and parse failures to <paramref name="error"/>.
+    /// </summary>
+    /// <param name="args">The command line, as the process received it.</param>
+    /// <param name="output">Where results are written.</param>
+    /// <param name="error">Where errors and notes are written.</param>
+    /// <returns>The process exit code: <c>0</c> on success, non-zero otherwise.</returns>
+    public static int Run(string[] args, TextWriter output, TextWriter error)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(error);
+
+        var builder = Host.CreateApplicationBuilder(args);
+        builder.Services.AddSingleton<IRepositoryScanner, RepositoryScanner>();
+        builder.Services.AddSingleton<IConceptGenerator, ConceptGenerator>();
+        builder.Services.AddSingleton<IBundleWriter, BundleWriter>();
+        builder.Services.AddSingleton<IBundleValidationRunner, BundleValidationRunner>();
+        using var host = builder.Build();
+
+        var services = new ProducerServices(
+            host.Services.GetRequiredService<IRepositoryScanner>(),
+            host.Services.GetRequiredService<IConceptGenerator>(),
+            host.Services.GetRequiredService<IBundleWriter>(),
+            host.Services.GetRequiredService<IBundleValidationRunner>());
+
+        return BuildRootCommand(services, output, error)
+            .Parse(args)
+            .Invoke(new InvocationConfiguration { Output = output, Error = error });
+    }
+
+    private static RootCommand BuildRootCommand(ProducerServices services, TextWriter output, TextWriter error)
+    {
+        var repoOption = new Option<string>("--repo") { Description = "Root of the repository to scan", Required = true };
+        var outOption = new Option<string>("--out") { Description = "Root of the OKF bundle to write", Required = true };
+        var updateOption = new Option<bool>("--update") { Description = "Allow writing into a non-empty --out. Concepts this run does not generate are preserved, except under the `code` prefix, where a concept the previous run claimed and this one no longer produces is pruned." };
+        var resetOption = new Option<bool>("--reset") { Description = "Delete and recreate --out before writing" };
+        var forceOption = new Option<bool>("--force") { Description = "Alias for --reset" };
+
+        var repoUrlOption = new Option<string>("--repo-url")
+        {
+            Description =
+                "Base URL of the repository, e.g. https://github.com/owner/repo. With it and a ref, every code "
+                + "concept carries a `resource` permalink to its declaration; without both, no `resource` is "
+                + "emitted at all -- a repository-relative path would be resolved against the concept's own "
+                + "directory by the validator and miss for every code concept.",
+        };
+
+        var revOption = new Option<string>("--rev")
+        {
+            Description =
+                "The git ref --repo-url permalinks are built against. Defaults to the current branch name, never "
+                + "a commit sha -- a sha would rewrite every code concept's `resource` on the next commit. On a "
+                + "detached HEAD there is no branch name to read, so this becomes required for permalinks.",
+        };
+
+        var checkOption = new Option<bool>("--check") { Description = BundleDrift.CheckDescription };
+
+        var includeTestsOption = new Option<bool>("--include-tests")
+        {
+            Description = "Include test projects and `test`/`tests`/`spec` directories in the code stage. Off by default: on a repository like this one they triple the bundle without telling an agent anything new.",
+        };
+
+        var includeInternalOption = new Option<bool>("--include-internal")
+        {
+            Description = "Emit `internal` declarations too. Off by default, so scope is a visibility filter rather than a hard-coded path convention.",
+        };
+
+        var noCodeOption = new Option<bool>("--no-code")
+        {
+            Description = "Skip the code-graph stage entirely: overview, packages and docs only, exactly as this producer behaved before the stage existed. Generates no `code` concept, and therefore prunes none either.",
+        };
+
+        var maxFileSizeOption = new Option<long>("--max-file-size")
+        {
+            Description =
+                "Largest source file, in bytes, the code stage will read. A larger file is skipped and counted, "
+                + "which makes the run partial: the concepts that file owned are then never pruned, because this "
+                + "run cannot vouch for their absence.",
+            DefaultValueFactory = _ => ExtractionLimits.Default.MaxFileBytes,
+        };
+
+        var generateCommand = new Command("generate", "Generate an OKF bundle from a repository")
+        {
+            Options =
+            {
+                repoOption, outOption, updateOption, resetOption, forceOption,
+                repoUrlOption, revOption, checkOption,
+                includeTestsOption, includeInternalOption, noCodeOption, maxFileSizeOption,
+            },
+        };
+
+        generateCommand.SetAction(parseResult =>
+        {
+            var reset = parseResult.GetValue(resetOption) || parseResult.GetValue(forceOption);
+            var update = parseResult.GetValue(updateOption);
+            var check = parseResult.GetValue(checkOption);
+            var maxFileBytes = parseResult.GetValue(maxFileSizeOption);
+
+            if (maxFileBytes <= 0)
+            {
+                error.WriteLine("error: --max-file-size must be a positive number of bytes.");
+                return 1;
+            }
+
+            if (check && reset)
+            {
+                // Rejected rather than ignored: --check never writes to --out, so honouring --reset
+                // would mean deleting nothing while the operator believes a reset happened, and
+                // ignoring it silently would mean the same thing one run later.
+                error.WriteLine("error: --check never writes to --out, so it cannot be combined with --reset/--force. Drop one of them.");
+                return 1;
+            }
+
+            var request = new GenerateRequest(
+                RepoPath: parseResult.GetValue(repoOption)!,
+                OutPath: parseResult.GetValue(outOption)!,
+
+                // --check always regenerates over a COPY under Update -- the only policy that runs the
+                // real regeneration path, field preservation and pruning included (§6.2).
+                Policy: check ? WritePolicy.Update : reset ? WritePolicy.Reset : update ? WritePolicy.Update : WritePolicy.RequireEmpty,
+                RepoUrl: Trimmed(parseResult.GetValue(repoUrlOption)),
+                Rev: Trimmed(parseResult.GetValue(revOption)),
+                Check: check,
+                IncludeTests: parseResult.GetValue(includeTestsOption),
+                IncludeInternal: parseResult.GetValue(includeInternalOption),
+                NoCode: parseResult.GetValue(noCodeOption),
+                MaxFileBytes: maxFileBytes);
+
+            return Generate(request, services, output, error);
+        });
+
+        var okfOption = new Option<string>("--okf") { Description = "Root of the OKF bundle to validate", Required = true };
+
+        var validateCommand = new Command("validate", "Validate an OKF bundle")
+        {
+            Options = { okfOption },
+        };
+
+        validateCommand.SetAction(parseResult =>
+        {
+            var okfPath = parseResult.GetValue(okfOption)!;
+
+            try
+            {
+                var outcome = services.Validator.Validate(okfPath);
+
+                foreach (var line in outcome.DiagnosticLines)
+                {
+                    output.WriteLine(line);
+                }
+
+                output.WriteLine($"{outcome.ErrorCount} error(s), {outcome.WarningCount} warning(s).");
+                return outcome.IsConformant ? 0 : 1;
+            }
+            catch (BundleLoadException ex)
+            {
+                error.WriteLine($"error: {ex.Message}");
+                return 1;
+            }
+        });
+
+        return new RootCommand("okfgen -- generate and validate OKF bundles from a repository")
+        {
+            Subcommands = { generateCommand, validateCommand },
+        };
+    }
+
+    private static int Generate(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error)
+    {
+        void Note(string text) => error.WriteLine(NotePrefix + text);
+
+        if (!Directory.Exists(request.RepoPath))
+        {
+            error.WriteLine($"error: repository path '{request.RepoPath}' does not exist or is not a directory.");
+            return 1;
+        }
+
+        try
+        {
+            return request.Check
+                ? Check(request, services, output, Note)
+                : Write(request, services, output, error, Note);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or OkfException or IOException or UnauthorizedAccessException)
+        {
+            error.WriteLine($"error: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static int Write(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error, Action<string> note)
+    {
+        var result = GenerateRun.Execute(request, services, note);
+
+        output.WriteLine($"Wrote {result.Written.ToString(CultureInfo.InvariantCulture)} concept(s) to {request.OutPath}.");
+
+        if (result.Pruned.Count > 0)
+        {
+            output.WriteLine($"Pruned {result.Pruned.Count.ToString(CultureInfo.InvariantCulture)} concept(s) whose declarations are gone from the source.");
+            foreach (var id in result.Pruned)
+            {
+                output.WriteLine($"  - {id}");
+            }
+        }
+
+        foreach (var text in result.Notes)
+        {
+            note(text);
+        }
+
+        foreach (var (id, failure) in result.Failures)
+        {
+            error.WriteLine($"error: {id}: {failure}");
+        }
+
+        return result.Failures.Count > 0 ? 1 : 0;
+    }
+
+    private static int Check(GenerateRequest request, ProducerServices services, TextWriter output, Action<string> note)
+    {
+        // The count is the floor DriftReport refuses to report clean without: a composition that
+        // regenerates nothing would otherwise leave the copy identical to the bundle and pass for ever.
+        var report = BundleDrift.Check(
+            request.OutPath,
+            request.RepoPath,
+            copy => GenerateRun.Execute(request with { OutPath = copy }, services, note).Written);
+
+        foreach (var difference in report.Differences)
+        {
+            output.WriteLine($"drift: {difference}");
+        }
+
+        output.WriteLine(report.IsClean
+            ? $"No drift: {request.OutPath} is what regenerating it produces."
+            : $"{report.Differences.Count.ToString(CultureInfo.InvariantCulture)} difference(s) between {request.OutPath} and what regenerating it produces.");
+
+        if (report.FieldsExcluded)
+        {
+            note("the repository has no HEAD commit to stamp from, so `generated.at` and `revision` on `overview` were excluded from the comparison -- both fall back to the wall clock there and cannot be reproduced by regenerating. Every other file and field was compared byte for byte.");
+        }
+
+        return report.ExitCode;
+    }
+
+    /// <summary>An option's value with surrounding whitespace removed, or <see langword="null"/> when it was absent or blank.</summary>
+    private static string? Trimmed(string? value) => value?.Trim() is { Length: > 0 } trimmed ? trimmed : null;
+}
