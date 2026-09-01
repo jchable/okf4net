@@ -87,7 +87,11 @@ public sealed class AuditReport
         Findings = findings;
     }
 
-    /// <summary>The observation date staleness was evaluated against.</summary>
+    /// <summary>
+    /// The UTC date of the instant the report was run at -- a display stamp,
+    /// not the comparison input: staleness itself is evaluated against that
+    /// instant, see <see cref="AuditFinding.IsStale"/>.
+    /// </summary>
     public DateOnly AsOf { get; }
 
     /// <summary>The number of concepts in the bundle (not in the selection).</summary>
