@@ -14,7 +14,7 @@ namespace OKF4net;
 /// not use an <see cref="AuditQuery"/> as a dictionary key: the record struct is
 /// for <c>with</c> and <c>ToString</c>, not for its equality.
 /// </remarks>
-/// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> date.</param>
+/// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> instant.</param>
 /// <param name="Trust">Keep only concepts whose derived tier is in this set; null keeps every tier.</param>
 /// <param name="Status">Keep only concepts with this lifecycle status; null keeps every status.</param>
 /// <param name="Type">

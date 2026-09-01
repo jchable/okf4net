@@ -466,7 +466,7 @@ public sealed class OkfBundleTools
     /// instead.
     /// </summary>
     /// <param name="stale">
-    /// Keep only concepts past their <c>stale_after</c> date. Left unset it
+    /// Keep only concepts past their <c>stale_after</c> instant. Left unset it
     /// follows the CLI's rule: the stale worklist when nothing else is
     /// filtered, no staleness constraint as soon as another filter is given.
     /// Without that, "which concepts were never verified by a human?" would
