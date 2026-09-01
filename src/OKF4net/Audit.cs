@@ -235,7 +235,7 @@ public static class ConceptAudit
     /// <summary>Runs <paramref name="query"/> over <paramref name="bundle"/>.</summary>
     /// <param name="bundle">The loaded bundle.</param>
     /// <param name="query">The selection predicates; <c>default</c> selects everything.</param>
-    /// <param name="clock">Supplies "today" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
+    /// <param name="clock">Supplies "now" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static AuditReport Run(Bundle bundle, AuditQuery query = default, IOkfClock? clock = null)
     {
         // Staleness is an instant comparison (§5/§5.5); AsOf stays a date
