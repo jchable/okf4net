@@ -210,11 +210,12 @@ conformant in one field and not another.
 - **ISO 8601 spellings `DateTimeOffset.TryParse` cannot read.** The readability
   gate is the BCL parser, unchanged by this work, and it refuses several
   spellings that *are* genuine ISO 8601 datetimes with an explicit UTC offset —
-  verified by execution, not assumed: end-of-day `2020-06-30T24:00:00Z`
-  (§4.2.3), the wholly-basic `20200630T140000Z`, a leap second
-  `…T23:59:60Z`, a week date `2026-W27-1T14:00:00Z`, an ordinal date
-  `2026-181T14:00:00Z`. All classify `Unreadable`: they yield **no instant**, so
-  a `stale_after` written that way is never evaluated for staleness, and its key
+  verified by execution, not assumed: the wholly-basic `20200630T140000Z`
+  (§4.3.2), a leap second `…T23:59:60Z` (§4.2.2.2 admits `[60]` "only to
+  indicate a positive leap second"), a week date `2026-W27-1T14:00:00Z` and an
+  ordinal date `2026-181T14:00:00Z` (§4.3.2: "ordinal dates or week dates may be
+  substituted"). All classify `Unreadable`: they yield **no instant**, so a
+  `stale_after` written that way is never evaluated for staleness, and its key
   gets the field's `*Invalid*` code. Reading them is a parser rewrite, not a
   spelling change, and no literal in `SPEC.md` uses any of these forms — so the
   cost is real and the benefit is hypothetical. What this *does* require is that
@@ -233,6 +234,15 @@ conformant in one field and not another.
   the warning names the spelling as wrong in the same breath, and two minutes of
   skew on a value the producer is being told to fix is a smaller harm than
   silently ignoring a staleness deadline. Worth knowing it moved.
+- **End-of-day `2020-06-30T24:00:00Z` is NOT in this list**, though an earlier
+  round of this document put it there. ISO 8601 admits `[24]` for the hour, but
+  §4.2.2.2 allows it "only to indicate the end of a calendar day within a time
+  interval", and §4.2.3 NOTE 3 is explicit: "The end of day representation,
+  where [hh] has a value of [24], **shall not be used for a single time point**."
+  `SPEC.md` §5.5 makes `stale_after` "an absolute instant" — a single time
+  point. So `24:00` is not a valid spelling for any §5 key, and reporting it as
+  unreadable is not a gap to apologise for. Corrected on 2026-09-01 after
+  obtaining a normative source (see §11).
 - **§9 log date headings.** Line 550 pins them to bare `YYYY-MM-DD`.
   `ChangeLog.IsIsoDate` stays untouched; a test already pins the boundary.
 - **The legacy `timestamp` field (§13.1).** Its *presence* already warns
@@ -300,3 +310,41 @@ two defects already found on this branch, and the class the project's own memory
 flags as having survived five internal reviews. Mitigation: the oracle test
 above, a table-driven case battery covering each rejection reason separately,
 and no reliance on `DateTimeOffset.TryParse` for any conformance decision.
+
+## 11. The delegate, and what it actually says
+
+`SPEC.md` §5 delegates to "ISO 8601" and stops, so ISO 8601 decides this
+grammar. Through the implementation and its three review rounds, every ISO rule
+below was applied **from recalled knowledge, with no source consulted** — the
+single largest weakness in this work, and the one no amount of internal review
+could have caught, because every reviewer shared the same blind spot.
+
+ISO 8601-1:2019 is not free (CHF 181; ISO publishes only a cover-and-terms
+preview). The rules were therefore checked on 2026-09-01 against
+**ISO/TC 154/WG 5 N0038, ISO/WD 8601-1, 2016-02-16** — the drafting committee's
+own working draft, publicly archived. It is not the published text and its
+clause numbers may have shifted for the 2019 edition, so it is cited here as
+*strong evidence*, not as the standard. It is **not vendored**: it is © ISO 2016
+and the repo has no licence to redistribute it.
+
+| Rule the grammar enforces | Verdict | Source |
+|---|---|---|
+| Components are fixed-width | **Confirmed** | §3.6: "If a time element in a defined representation has a defined length, then leading zeros shall be used as required." |
+| A representation may not mix basic and extended | **Confirmed** | §4.3.3 d): "the expression shall either be completely in basic format … or completely in extended format" |
+| The comma is the *preferred* decimal sign | **Confirmed** | §4.2.2.4: "the comma [,] or full stop [.]. Of these, the comma is the preferred sign." Also "A decimal fraction shall have at least one digit", which the grammar's `[0-9]+` already required. |
+| A reduced-precision `±hh` offset is valid | **Confirmed, and stronger than assumed** | §4.3.2 lists `YYYY-MM-DDThh:mm:ss±hh` (`1985-04-12T10:15:30+04`) among the *extended* complete representations. §4.2.5.1 permits omitting minutes "only if the difference … is exactly an integral number of hours" — which `±hh` satisfies by construction. |
+| Seconds may be omitted | **Confirmed** | §4.2.2.3 with §4.3.3, which allows a complete date with a reduced-accuracy time. |
+| A negative zero offset is forbidden | **Confirmed** | §4.2.5.1: the difference "shall be expressed as positive (i.e. with the leading plus sign [+]) if the local time is ahead of **or equal to** UTC of day". Zero takes a plus. |
+| The UTC designator is uppercase `Z` | **Partly** | §3.5: "[Z] is used as UTC designator", and no lowercase variant is defined anywhere. But no sentence forbids lowercase in so many words, so flagging `…00z` rests on *not defined* rather than *prohibited*. The weakest of the seven. |
+
+Two things the source **corrected**, neither of which recall had right:
+
+1. **`24:00` was wrongly listed as a valid spelling we fail to read** (§6). §4.2.2.2
+   admits `[24]` "only to indicate the end of a calendar day within a time
+   interval", and §4.2.3 NOTE 3 says it "shall not be used for a single time
+   point". `stale_after` is an absolute instant, so `24:00` is simply invalid
+   for it. The out-of-scope entry was overstating a gap that does not exist.
+2. **A leap second `…T23:59:60Z` is genuinely valid** — §4.2.2.2: "second is
+   represented by two digits from [00] to [60]. The representation of the second
+   by [60] is allowed only to indicate a positive leap second". It stays in the
+   out-of-scope list, correctly.
