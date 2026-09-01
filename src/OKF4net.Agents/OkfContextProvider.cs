@@ -251,9 +251,9 @@ public sealed class OkfContextProvider : AIContextProvider
             // all, since every following concept has the same or less room.
             if (query is not null)
             {
-                var today = DateOnly.FromDateTime(UtcNow().Date);
+                var now = new DateTimeOffset(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
                 foreach (var (concept, _) in _tools!.ScoreConceptsFor(query)
-                    .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, today))
+                    .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, now))
                     .Take(_options.MaxConceptsInjected))
                 {
                     if (remaining <= 0)

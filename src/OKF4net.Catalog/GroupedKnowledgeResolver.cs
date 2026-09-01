@@ -38,9 +38,9 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
     private readonly IOkfClock _clock;
     private readonly Func<KnowledgeAccessScope, KnowledgeCatalogSource, bool>? _defaultSourceVisibilityPolicy;
 
-    /// <summary>Creates a resolver over <paramref name="catalog"/>; <paramref name="clock"/> supplies "today" for stale-policy filtering (defaults to the system clock).</summary>
+    /// <summary>Creates a resolver over <paramref name="catalog"/>; <paramref name="clock"/> supplies "now" for stale-policy filtering (defaults to the system clock).</summary>
     /// <param name="catalog">The catalog whose enabled knowledge sources are searched.</param>
-    /// <param name="clock">Supplies "today" for stale-policy filtering; defaults to the system clock.</param>
+    /// <param name="clock">Supplies "now" for stale-policy filtering; defaults to the system clock.</param>
     /// <param name="defaultSourceVisibilityPolicy">
     /// The visibility policy applied when a query leaves both
     /// <see cref="KnowledgeQuery.PermittedSourceIds"/> and
@@ -155,9 +155,9 @@ public sealed class GroupedKnowledgeResolver : IKnowledgeResolver
             passages.AddRange(result.Passages);
         }
 
-        var today = _clock.Today;
+        var now = _clock.Now;
         var admitted = passages
-            .Where(p => query.StalePolicy.Admits(p.Lifecycle, today))
+            .Where(p => query.StalePolicy.Admits(p.Lifecycle, now))
             .ToList();
 
         if (admitted.Count == 0 && anySourceSearchedSuccessfully)

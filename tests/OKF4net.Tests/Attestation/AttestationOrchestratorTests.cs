@@ -37,7 +37,7 @@ public class AttestationOrchestratorTests
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 })),
         });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
         Assert.True(outcome.Displayable);
         Assert.True(outcome.Verdict!.Value.Passed);
@@ -91,7 +91,7 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-01-01\n---\n# Computation\n\n```\nX\n```\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
             parameterValues: new Dictionary<string, object?>(), policy: StalePolicy.Strict);
         Assert.Equal(StaleState.Stale, outcome.Stale);
@@ -107,11 +107,39 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2099-01-01\n---\n# Computation\n\n```\nX\n```\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"),
             new Dictionary<string, object?>(), policy: StalePolicy.Strict);
         Assert.Equal(StaleState.Fresh, outcome.Stale);
         Assert.True(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// Regression test for the §5 bug this branch fixes, at §10.6's gate.
+    /// <see cref="Stale_concept_gated_under_strict_policy"/> above uses the
+    /// legacy date-only <c>2025-01-01</c>, which the pre-fix <c>Lifecycle</c>
+    /// parsed too (<c>DateOnly.TryParseExact("yyyy-MM-dd")</c>) — so it would
+    /// stay green even if the gate regressed to that parser. A §5-conformant
+    /// instant is what it could not read: <c>StaleAfter</c> came back null,
+    /// <c>ComputeStale</c> returned <see cref="StaleState.Unknown"/>, and
+    /// <c>StalePolicy.Strict</c> admits a null <c>StaleAfter</c> — so a concept
+    /// six months past its expiry was attested and displayed. This test fails
+    /// on the pre-fix parser and passes on the shipped one.
+    /// </summary>
+    [Fact]
+    public async Task Stale_concept_with_a_conformant_instant_stale_after_is_gated_under_strict_policy()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-06-30T14:00:00Z\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
+            parameterValues: new Dictionary<string, object?>(), policy: StalePolicy.Strict);
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+        Assert.False(outcome.Displayable);
+        Assert.True(outcome.Verdict!.Value.Passed); // attested fine; only the staleness gate blocks display
+        Assert.Contains(outcome.Reasons, r => r.Contains("stale"));
     }
 
     [Fact]

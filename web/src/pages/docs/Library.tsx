@@ -269,8 +269,11 @@ export default function Library() {
               [
                 'Lifecycle(Status, StatusIsKnown, StaleAfterRaw, StaleAfter) · ConceptStatus',
                 <>
-                  §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>; <code>IsStale(DateOnly)</code> is{' '}
-                  <code>today &gt;= stale_after</code>.
+                  §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>;{' '}
+                  <code>IsStale(DateTimeOffset)</code> is <code>now &gt;= stale_after</code>. §5 makes{' '}
+                  <code>stale_after</code> an absolute instant, so <code>StaleAfter</code> is a{' '}
+                  <code>DateTimeOffset?</code>; the legacy date-only form is still read, normalized to
+                  midnight UTC and flagged by <code>StaleAfterIsLegacyDate</code>.
                 </>,
               ],
               [
@@ -278,15 +281,20 @@ export default function Library() {
                 <>
                   A consumer's policy for stale concepts: <code>Use</code> (admit everything, the default),{' '}
                   <code>Strict</code> (exclude), <code>Tolerate(graceDays)</code>.{' '}
-                  <code>Admits(Lifecycle, DateOnly)</code> is the one method both <code>Agents</code> and{' '}
+                  <code>Admits(Lifecycle, DateTimeOffset)</code> is the one method both <code>Agents</code> and{' '}
                   <code>Catalog</code> call.
                 </>,
               ],
               [
                 'IOkfClock · SystemClock · FixedClock',
                 <>
-                  <code>DateOnly Today</code>, injected wherever "now" matters — <code>SystemClock</code> for real
-                  time, <code>FixedClock(DateOnly)</code> to pin it. Every API taking a clock (
+                  <code>DateTimeOffset Now</code> and <code>DateOnly Today</code>, injected wherever "now" matters.
+                  Staleness compares <code>Now</code> (§5 makes <code>stale_after</code> an instant);{' '}
+                  <code>Today</code> is for display, such as an audit report's stamp. <code>Now</code> is a default
+                  interface member derived from <code>Today</code>, so a clock written before it existed still
+                  compiles. <code>SystemClock</code> for real time, <code>FixedClock</code> to pin it — it takes
+                  either a <code>DateTimeOffset</code> or a <code>DateOnly</code> (which pins midnight UTC). Every
+                  API taking a clock (
                   <code>BundleValidator.Validate</code>, <code>ConceptAudit.Run</code>) exists so staleness (§5.5)
                   can be made reproducible, in your own code as much as in ours.
                 </>,

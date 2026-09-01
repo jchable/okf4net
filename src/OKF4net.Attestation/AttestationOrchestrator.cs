@@ -116,9 +116,9 @@ public sealed class AttestationOrchestrator
             return Fail(missingParameters);
         }
 
-        var today = _clock.Today;
-        var stale = ComputeStale(frontmatter.Lifecycle, today);
-        var staleAdmitted = (policy ?? _defaultPolicy).Admits(frontmatter.Lifecycle, today);
+        var now = _clock.Now;
+        var stale = ComputeStale(frontmatter.Lifecycle, now);
+        var staleAdmitted = (policy ?? _defaultPolicy).Admits(frontmatter.Lifecycle, now);
 
         // Step 5: bind.
         BoundComputation bound;
@@ -190,13 +190,24 @@ public sealed class AttestationOrchestrator
     private static AttestationOutcome Fail(IReadOnlyList<string> reasons, StaleState stale = StaleState.Unknown, Exception? error = null)
         => new(false, null, null, false, stale, reasons, error);
 
-    private static StaleState ComputeStale(Lifecycle lifecycle, DateOnly today)
+    private static StaleState ComputeStale(Lifecycle lifecycle, DateTimeOffset now)
     {
-        if (lifecycle.StaleAfter is not { } staleAfter)
+        // A stale_after that is absent *or unparseable* is Unknown, never
+        // Fresh: IsStale alone returns false for both, so Fresh would assert a
+        // freshness nothing established. This is reporting, not gating -- the
+        // gate admits the concept either way (StalePolicy.Admits returns true
+        // when StaleAfter is null, under every mode, which
+        // StalePolicyTests.A_malformed_stale_after_is_admitted_by_every_mode
+        // pins as deliberate: the validator owns that diagnostic, and a policy
+        // must not silently drop a concept over an unreadable stamp). What
+        // Unknown buys is that a caller inspecting Outcome.Stale can tell "we
+        // checked, it is current" from "we could not check", instead of being
+        // told the second is the first.
+        if (lifecycle.StaleAfter is null)
         {
             return StaleState.Unknown;
         }
 
-        return today >= staleAfter ? StaleState.Stale : StaleState.Fresh;
+        return lifecycle.IsStale(now) ? StaleState.Stale : StaleState.Fresh;
     }
 }

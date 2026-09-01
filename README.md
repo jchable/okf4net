@@ -207,7 +207,8 @@ summary form; with any filter flag it prints one line per matching concept, so
 the output pipes. `--json` always emits the full document.
 
 `--as-of <YYYY-MM-DD>` pins the date staleness is evaluated against, on both
-`okf audit` and `okf validate`. Without it, anything touching `stale_after`
+`okf audit` and `okf validate`; it pins to midnight UTC on that date, since §5
+makes `stale_after` an instant. Without it, anything touching `stale_after`
 (§5.5) depends on the day it runs — including `okf validate`'s
 `concept is stale` warning, which is why a CI job that wants a reproducible
 verdict should pin the date rather than let the calendar move under it. Note the counts

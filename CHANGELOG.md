@@ -10,7 +10,7 @@ and this project adheres to
 
 ### Added
 
-- **`FixedClock`** — an `IOkfClock` pinned to one date, alongside `SystemClock`.
+- **`FixedClock`** — an `IOkfClock` pinned to one instant, alongside `SystemClock`.
   Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
   exists to make staleness (§5.5) reproducible; until now each caller wanting
   that had to write the same four-line type, and three copies of it had
@@ -36,6 +36,34 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking (0.x): staleness is compared on instants, not dates.**
+  `Lifecycle.StaleAfter` is now a `DateTimeOffset?` rather than a `DateOnly?`,
+  and `Lifecycle.IsStale` / `StalePolicy.Admits` take a `DateTimeOffset` — the
+  `DateOnly` overloads are **not** kept. Two comparison semantics for one
+  question is a footgun: a `DateOnly` caller silently gets midnight-UTC
+  semantics and can read a concept as fresh for up to ~24h after it went stale.
+  Callers thread a `DateTimeOffset` (typically `IOkfClock.Now`); code that
+  rendered `StaleAfter` as a date uses the new `Lifecycle.StaleAfterDate`.
+  `AuditReport.AsOf` stays a `DateOnly` — it is the report's display stamp, not
+  the comparison input — so `okf audit --json` is unaffected. The mirror
+  consequence applies to `StaleMode.Tolerate`, which measures grace from the
+  parsed instant: a date-only `stale_after` now anchors that grace at midnight
+  UTC, so `Tolerate(n)` admits the concept for up to ~24h less than the previous
+  day-granular comparison did (`Tolerate(1)` on `stale_after: 2026-01-01` now
+  ends at `2026-01-02T00:00:00Z`, where it used to cover all of 2026-01-02).
+- `IOkfClock` gains `Now` (a `DateTimeOffset`) as a **default interface member**
+  derived from `Today`, so existing implementers that define only `Today` keep
+  compiling and working. `FixedClock` gains a `DateTimeOffset` constructor
+  beside the `DateOnly` one; note that a target-typed `new FixedClock(new(y, m,
+  d))` is now ambiguous and must name the type (`new DateOnly(y, m, d)`).
+- **`Lifecycle`'s rewritten parser widened only where §5 required it.** Teaching
+  `stale_after` to read instants (see *Fixed* below) meant choosing what the new
+  zoneless fallback would accept. It reads an explicit ISO format list rather
+  than `DateTime.TryParse`, which *would* have started accepting `01/02/2026` or
+  a bare year — values the previous `DateOnly.TryParseExact` parser already
+  reported as malformed and which stay malformed. Recorded because widening
+  "malformed" into "legacy, assumed UTC" was the silent, easy way to write that
+  rewrite, and this notes it was not taken; nothing regressed here.
 - **`ConceptId.FromPath`'s "not under bundle root" error now names the root, and
   quotes both paths.** It previously reported only the offending path, leaving a
   caller deriving ids against several bundles to guess which root rejected it.
@@ -92,6 +120,59 @@ and this project adheres to
   `packaging/winget/README.md`.
 
 ### Fixed
+
+- **`stale_after` now reads the spec-conformant timestamp form.** OKF v0.2 §5
+  requires every timestamp-valued key to be an ISO 8601 datetime with an
+  explicit UTC offset (`2026-06-30T14:00:00Z`). `Lifecycle` previously parsed
+  `stale_after` only as a bare `YYYY-MM-DD`, so a conformant value was reported
+  as malformed and **staleness was never computed for it** — a concept past its
+  expiry silently read as fresh, in `okf audit`, `okf validate`, the agent
+  tools, the catalog resolvers and §10.6's attestation gate alike. The legacy
+  date-only form is still accepted and now raises a `LegacyDateOnlyTimestamp`
+  warning, matching how the §13.1 legacy fields are handled. The same warning
+  covers `generated.at` and `verified[].at`. A datetime with no offset is read
+  as UTC and flagged the same way.
+- **`sources[].last_modified` and `usage_window.from`/`.to` no longer reject the
+  conformant form.** §5.1 makes `last_modified` a timestamp-valued key and
+  `usage_window` a "`{ from, to }` datetime range", so §5's rule covers all
+  three — but they were checked against `YYYY-MM-DD`, so a spec-conformant
+  `2026-06-30T14:00:00Z` was reported *invalid*. This is the mirror of the
+  `stale_after` bug and the more damaging half: rather than missing a signal, it
+  told producers their correct data was wrong and pushed them toward the legacy
+  form. All three now accept the §5 form silently, warn
+  `LegacyDateOnlyTimestamp` on the date-only one, and keep their existing
+  `SourceInvalidLastModified` / `UsageWindowInvalid*` codes for values that are
+  not timestamps at all. §9 `log.md` date headings are **unchanged** — §9 pins
+  those to bare `YYYY-MM-DD`, and `ChangeLog.IsIsoDate` still backs them.
+- **A §5 timestamp that carries an explicit UTC offset but is not spelled ISO
+  8601 now warns.** Once the two fixes above routed all six §5 keys through
+  the shared `OkfTimestamp` parser, the conformance decision was made by a
+  permissive `DateTimeOffset.TryParse`: `2026-6-3T14:00:00Z` (unpadded
+  month/day), a lowercase `z` designator, and a basic-format offset (`+0200`
+  instead of `+02:00`) all parsed successfully and passed with no diagnostic
+  at all, across `generated.at`, `verified[].at`, `sources[].last_modified`,
+  `usage_window.from`/`.to` and `stale_after`. The grammar is now checked
+  against the exact spelling ISO 8601 requires — fixed component widths, an
+  uppercase `Z`, no mixing of basic and extended offset forms, and no negative
+  zero offset (`-00:00` and `-00` are RFC 3339 spellings that ISO 8601 forbids,
+  and the spec cites no RFC; `Z` and `+00:00` are the conformant ones) —
+  verified against every timestamp literal `docs/spec/SPEC.md` itself writes, so
+  it cannot reject a spelling the spec uses. Still read as the parsed instant
+  either way (§11); only the spelling now raises a new `NonIso8601Timestamp`
+  warning. `stale_after` now shares the same `CheckTemporal` check as the
+  other five keys rather than a separate path, so a spelling cannot be
+  conformant in one field and not another.
+- **A value that is not a timestamp at all is no longer told it is "not an
+  ISO-8601 datetime".** That claim is false of a whole class of value: the
+  readability gate is `DateTimeOffset.TryParse`, which cannot read several
+  genuine ISO 8601 datetimes carrying an explicit UTC offset — the wholly-basic
+  `20200630T140000Z`, a leap second (`…T23:59:60Z`), a week date
+  (`2026-W27-1T…`), an ordinal date (`2026-181T…`). They are not
+  read (so they are never evaluated for staleness), and the diagnostic now says
+  only that: `<label> could not be read as a timestamp: "<value>"`. The
+  `DiagnosticCode` for each field is unchanged, so `--json` consumers matching
+  on `code` are unaffected; only the rendered message moved, and no golden
+  captured it.
 
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had
