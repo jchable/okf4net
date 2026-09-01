@@ -81,6 +81,9 @@ public sealed class OkfDocumentBuilder
     /// <summary>
     /// Appends one §5.1 provenance source, in call order. Does not validate <paramref name="resource"/>
     /// (producer-grade validation stays in <see cref="BundleValidator"/>/<see cref="OkfDocument.Validate"/>).
+    /// <paramref name="usageWindow"/> is the entry's own §5.1 <c>usage_window</c> override of the
+    /// shared, top-level window; omit it (or pass <see langword="null"/>) for an entry that inherits
+    /// the shared window unchanged.
     /// </summary>
     public OkfDocumentBuilder AddSource(
         string resource,
@@ -88,10 +91,11 @@ public sealed class OkfDocumentBuilder
         string? title = null,
         Actor? author = null,
         long? usageCount = null,
-        string? lastModified = null)
+        string? lastModified = null,
+        UsageWindow? usageWindow = null)
     {
         ArgumentNullException.ThrowIfNull(resource);
-        _sources.Add(new Source(id, resource, title, author, usageCount, lastModified));
+        _sources.Add(new Source(id, resource, title, author, usageCount, lastModified, usageWindow));
         return this;
     }
 

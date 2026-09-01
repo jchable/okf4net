@@ -99,6 +99,18 @@ public class OkfDocumentBuilderTests
     }
 
     [Fact]
+    public void AddSource_usage_window_reaches_the_built_document_s_frontmatter()
+    {
+        var window = new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z");
+        var doc = OkfDocumentBuilder.ForType("t")
+            .AddSource(resource: "README.md", usageWindow: window)
+            .Body("")
+            .Build();
+
+        Assert.Equal(window, doc.Frontmatter.Sources[0].UsageWindow);
+    }
+
+    [Fact]
     public void Extension_targeting_a_well_known_key_wins_over_the_typed_setter_regardless_of_call_order()
     {
         var doc = OkfDocumentBuilder.ForType("t")
