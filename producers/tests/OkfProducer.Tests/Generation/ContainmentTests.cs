@@ -294,7 +294,12 @@ public class ContainmentTests
         // one is a different way for the chain between a package and a container to have a hole in it.
         var concepts = new ConceptGenerator().Generate(Snapshot(), ShapeGraph(shape), Options());
 
-        AssertEveryContainerIsReachable(concepts);
+        // `global-namespace` legitimately synthesizes no container at all, since nothing declares one --
+        // every other shape must produce at least one, or a producer that synthesizes ZERO containers
+        // would satisfy the reachability loop below vacuously (an empty `foreach` asserts nothing). This
+        // is the floor Task 9's own cap parked rather than fixed: restored here rather than only in the
+        // three non-Theory callers, so the class it exists to catch cannot slip back in through a fourth.
+        AssertEveryContainerIsReachable(concepts, expectAtLeastOne: shape != "global-namespace");
 
         // And the package always has somewhere to point: for `global-namespace` there is no container at
         // all -- correctly, since nothing declares one -- so the reachability assertion above is vacuous
@@ -368,15 +373,24 @@ public class ContainmentTests
     /// container is reachable from <c>overview</c> exactly when it has an incoming edge, since every
     /// other family is reachable by construction.
     /// </summary>
-    private static void AssertEveryContainerIsReachable(IReadOnlyList<GeneratedConcept> concepts)
+    /// <param name="expectAtLeastOne">
+    /// Whether this fixture is expected to synthesize at least one container. True by default, since
+    /// every caller but <c>global-namespace</c> does: a producer regression that stopped synthesizing
+    /// containers entirely would otherwise satisfy the <c>foreach</c> below vacuously (nothing to
+    /// iterate is nothing to fail on) -- exactly the regression class this whole probe exists to catch.
+    /// </param>
+    private static void AssertEveryContainerIsReachable(IReadOnlyList<GeneratedConcept> concepts, bool expectAtLeastOne = true)
     {
         var containers = concepts
             .Where(c => c.Document.Frontmatter.Type?.EndsWith(" Container", StringComparison.Ordinal) == true)
             .Select(c => c.Id.ToString())
             .ToList();
 
-        // Deliberately not asserting there ARE containers: a repository whose types sit in the global
-        // namespace correctly has none. Each caller that expects some says so itself.
+        if (expectAtLeastOne)
+        {
+            Assert.NotEmpty(containers);
+        }
+
         foreach (var container in containers)
         {
             Assert.Contains(

@@ -530,6 +530,8 @@ public class CodeConceptGeneratorTests
     [InlineData("> a quoted opening.", "\\> a quoted opening.")]
     [InlineData("1. an ordered opening.", "1\\. an ordered opening.")]
     [InlineData("12) another ordered opening.", "12\\) another ordered opening.")]
+    [InlineData("```csharp\nvar x = 1;", "\\```csharp\nvar x = 1;")]
+    [InlineData("~~~\nfenced.", "\\~~~\nfenced.")]
     public void A_description_that_would_open_a_block_is_escaped_at_that_one_character(string doc, string expected)
     {
         // A description is rendered as a paragraph; its first non-space character is the only thing that
@@ -538,13 +540,35 @@ public class CodeConceptGeneratorTests
         //
         // A text assertion, and stated as one: nothing in OKF4net parses block structure, so unlike the
         // link and citation cases there is no consumer to assert through. See the report for why the
-        // `# Citations` case is a rendering fault today rather than a LegacyCitations warning.
+        // `# Citations` case is a rendering fault today rather than a LegacyCitations warning. The fence
+        // cases below get their OWN LinkScanner-backed test, since an unbalanced fence has a real
+        // consumer to answer to, not just a renderer.
         var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: doc));
 
         var concept = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc");
 
         Assert.Equal(doc, concept.Document.Frontmatter.Description);
         Assert.Contains("\n\n" + expected + "\n", concept.Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unbalanced_fence_in_a_description_does_not_swallow_the_rest_of_the_body()
+    {
+        // Task 9's cap parked this one rather than fixing it (Ruling R44): EscapeLineBlockMarker defused
+        // every other block marker but not a leading ``` or ~~~, and LinkScanner.ExtractLinks skips
+        // every line after an UNBALANCED fence -- so a doc comment containing one hides this concept's
+        // own outgoing `## Contains` links from the very scanner that resolves them. Nothing dangles, so
+        // validation stays silent; the branch is simply severed. A doc comment ending mid-fence, without
+        // a closing pair, is ordinary -- it is only a description, not a whole document.
+        //
+        // Asserted through LinkScanner.ExtractLinks, not by eye, as the earlier fixes in this file are.
+        var graph = GraphOf(
+            Type("N", "Scanner", "src/Scanner.cs", doc: "```\nvar unterminated = fence;"),
+            Member("N.Scanner", "Scan", "public void Scan()"));
+
+        var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner").Document.Body;
+
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n/scanner/scan");
     }
 
     [Theory]
@@ -769,9 +793,9 @@ public class CodeConceptGeneratorTests
 
     private static CodeGraphModel GraphOf(params SymbolFact[] symbols) => new(symbols, [], RunStatus.Complete);
 
-    private static SymbolFact Type(string container, string name, string path) =>
+    private static SymbolFact Type(string container, string name, string path, string? doc = null) =>
         new(SymbolKind.Type, "csharp", container, name, $"public class {name}",
-            SymbolVisibility.Public, path, 0, 1, 1, 2, null);
+            SymbolVisibility.Public, path, 0, 1, 1, 2, doc);
 
     private static SymbolFact Member(
         string container,

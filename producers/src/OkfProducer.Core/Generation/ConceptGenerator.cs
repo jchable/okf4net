@@ -135,7 +135,14 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Select(p => new Child(p.Id, p.Manifest.Name))
             .Concat(docs.Select(d => new Child(d.Id, d.Doc.Title)))
             .ToList();
-        results.Add(new GeneratedConcept(overviewId, BuildOverview(snapshot, overviewChildren)));
+
+        // §6.1: resolved once per run, not once per concept -- and only `overview` ever sees either
+        // value (see BuildOverview). `generatedAt` is the HEAD commit's own instant, so a
+        // source-identical run reproduces the same bytes; `revision` is the exact sha, distinct from
+        // GenerateOptions.Rev's branch name (a later task builds permalinks from that one).
+        var generatedAt = GitRevision.HeadCommitInstant(snapshot.RepoPath);
+        var revision = GitRevision.HeadSha(snapshot.RepoPath);
+        results.Add(new GeneratedConcept(overviewId, BuildOverview(snapshot, overviewChildren, generatedAt, revision)));
 
         foreach (var (id, manifest) in packages)
         {
@@ -226,7 +233,7 @@ public sealed class ConceptGenerator : IConceptGenerator
         string.Equals(segment, "index", StringComparison.OrdinalIgnoreCase)
         || string.Equals(segment, "log", StringComparison.OrdinalIgnoreCase);
 
-    private static OkfDocument BuildOverview(RepositorySnapshot snapshot, IReadOnlyList<Child> children)
+    private static OkfDocument BuildOverview(RepositorySnapshot snapshot, IReadOnlyList<Child> children, string generatedAt, string? revision)
     {
         var description = snapshot.Packages.Count switch
         {
@@ -240,13 +247,34 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Append(LiftedBodyParagraph(description)).Append('\n');
         AppendContains(body, children);
 
-        return OkfDocumentBuilder
+        var builder = OkfDocumentBuilder
             .ForType("Repository")
             .Title(snapshot.RepoName)
             .Description(description)
             .Tags("repository")
-            .Body(body.ToString())
-            .Build();
+            .Body(body.ToString());
+
+        // §6.1: `overview` is the one concept that carries `at` -- code and container concepts keep
+        // `by` alone (see BuildCodeConcept/BuildContainerConcept), because all ~480 of them are
+        // generated in one pass, and a per-concept timestamp would store the same fact hundreds of
+        // times over, rewriting every file's `generated.at` on every regeneration regardless of what in
+        // the code actually changed.
+        var generated = new YamlMapping();
+        generated.Insert("by", new YamlString(ProducerActor));
+        generated.Insert("at", new YamlString(generatedAt));
+        builder = builder.Extension("generated", generated);
+
+        // `revision` is the exact sha, a sibling of `generated` rather than nested inside it -- distinct
+        // from the branch name a permalink `resource` URL is built against (GenerateOptions.Rev), which
+        // stays stable as the branch moves while this names one precise commit. Omitted outside a git
+        // repository: there is no sha to report, and writing a fabricated one would be worse than
+        // nothing.
+        if (revision is { Length: > 0 })
+        {
+            builder = builder.Extension("revision", new YamlString(revision));
+        }
+
+        return builder.Build();
     }
 
     private static OkfDocument BuildPackageConcept(PackageManifest package, IReadOnlyList<Child> children)
@@ -1140,16 +1168,24 @@ public sealed class ConceptGenerator : IConceptGenerator
     ///
     /// <para><b>Bounded on purpose: one character, at the start of a line.</b> The only thing that can
     /// change a line's block type is its first non-space character -- <c>#</c>, <c>-</c>, <c>*</c>,
-    /// <c>+</c>, <c>&gt;</c>, or a run of digits followed by <c>.</c> or <c>)</c>. This is deliberately
-    /// not a general markdown escaper: everything further into the line is inline markup, which renders
-    /// as the author's own emphasis and is none of this producer's business. CommonMark renders
-    /// <c>\#</c> as <c>#</c>, so the reader sees exactly what was written.</para>
+    /// <c>+</c>, <c>&gt;</c>, a run of 3+ backticks or tildes (a fenced code block), or a run of digits
+    /// followed by <c>.</c> or <c>)</c>. This is deliberately not a general markdown escaper: everything
+    /// further into the line is inline markup, which renders as the author's own emphasis and is none of
+    /// this producer's business. CommonMark renders <c>\#</c> as <c>#</c>, so the reader sees exactly
+    /// what was written.</para>
     ///
     /// <para><b>A marker only counts when a space, a tab or the line's end follows it</b> -- which is
     /// CommonMark's own rule and not a refinement of it. Escaping unconditionally would rewrite ordinary
     /// emphasis: <c>*fast* and small.</c> would become <c>\*fast* and small.</c> and render its asterisks
-    /// literally, this guard corrupting the prose it exists to protect. <c>&gt;</c> is the exception the
-    /// spec itself makes: <c>&gt;text</c> is a block quote with no space at all.</para>
+    /// literally, this guard corrupting the prose it exists to protect. <c>&gt;</c> and a fence are the
+    /// exceptions the spec itself makes: <c>&gt;text</c> is a block quote with no space at all, and an
+    /// info string may sit right against a fence (<c>```csharp</c>).</para>
+    ///
+    /// <para><b>An unbalanced fence has a consumer, not just a renderer, to answer to.</b> A leading
+    /// ``` or <c>~~~</c> left undefused makes <see cref="OKF4net.LinkScanner"/>.<c>ExtractLinks</c> skip
+    /// every line after it as code -- so a description whose fence is never closed (ordinary: it is only
+    /// a description, not a whole document) silently hides the rest of this concept's own body, links
+    /// included, from the very scanner that resolves them.</para>
     ///
     /// <para><b>Every line, not only the first.</b> A <c>.csproj</c> <c>&lt;Description&gt;</c> reaches
     /// a body with its newlines intact, so a <c>- </c> opening line 2 starts a list exactly as it would
@@ -1203,6 +1239,28 @@ public sealed class ConceptGenerator : IConceptGenerator
         if (line[start] == '>')
         {
             return line.Insert(start, "\\");
+        }
+
+        // A run of 3+ backticks or tildes opens a fenced code block -- CommonMark requires no following
+        // space either (an info string may sit right against it, `` ```csharp ``), so this is unconditional
+        // like the block quote above. Left undefused, an UNBALANCED fence (no matching close anywhere
+        // later in the same body -- ordinary when the text is only a description, not a whole document)
+        // makes OKF4net.LinkScanner.ExtractLinks skip every line after it as code, silently hiding this
+        // concept's own outgoing links (`## Contains`, `## Calls`) from the very scanner that resolves
+        // them: nothing dangles, so `okf validate` stays silent while the branch is simply severed.
+        if (line[start] is '`' or '~')
+        {
+            var fenceMarker = line[start];
+            var run = start;
+            while (run < line.Length && line[run] == fenceMarker)
+            {
+                run++;
+            }
+
+            if (run - start >= 3)
+            {
+                return line.Insert(start, "\\");
+            }
         }
 
         // A line that is nothing but one repeated marker is a thematic break (`---`, `***`, `___`) or a
