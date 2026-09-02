@@ -32,4 +32,15 @@
     <ProjectReference Include="..\OkfProducer.Core\OkfProducer.Core.csproj" />
   </ItemGroup>
 
+  <!--
+    So MsBuildProjectQuery.ReadInputs can be tested without spawning `dotnet msbuild`. Every branch
+    that handles a malformed MSBuild answer is unreachable from a real msbuild, which is precisely why
+    an InvalidOperationException escaping from one of them went unnoticed long enough to be able to
+    abort a whole run. An internal seam, not a public one: nothing outside this assembly should be
+    reading MSBuild JSON.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="OkfProducer.Tests" />
+  </ItemGroup>
+
 </Project>

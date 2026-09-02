@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics;
 using System.Text;
+using OkfProducer.Cli;
 using OkfProducer.CodeGraph.Roslyn;
 using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
@@ -41,6 +42,48 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.Contains(inputs.CompileFiles, f => f.EndsWith("GlobalUsings.g.cs", StringComparison.Ordinal));
         Assert.Contains(inputs.CompileFiles, f => f.EndsWith("AssemblyInfo.cs", StringComparison.Ordinal));
         Assert.True(inputs.References.Count > 100, $"only {inputs.References.Count} references resolved; is the repository restored?");
+    }
+
+    [Theory]
+    // Well-formed JSON that is not the object -getItem/-getProperty promise. TryGetProperty throws
+    // InvalidOperationException on every one of these, not "returns false".
+    [InlineData("[]")]
+    [InlineData("7")]
+    [InlineData("null")]
+    [InlineData("\"Items\"")]
+    // The object is right; a group inside it is not. EnumerateObject/EnumerateArray throw here.
+    [InlineData("""{ "Properties": [] }""")]
+    [InlineData("""{ "Items": 7 }""")]
+    [InlineData("""{ "Items": { "Compile": "one-file.cs" } }""")]
+    [InlineData("""{ "Items": { "Compile": [ "one-file.cs" ] } }""")]
+    public void A_malformed_msbuild_answer_degrades_one_project_rather_than_aborting_the_run(string json)
+    {
+        // The whole point is the exception TYPE, not that it throws. RoslynResolver.QueryProjectClosure
+        // catches exactly MsBuildQueryException, deliberately and by its own doc, so anything else
+        // escaping this reader skips the per-project degradation and takes generation down for the
+        // ENTIRE repository -- landing on OkfgenCli.Generate's coarse top-level filter by coincidence.
+        // Syntactically invalid JSON was already wrapped; syntactically VALID JSON of the wrong shape
+        // was not, and that is the gap these cases hold.
+        var ex = Record.Exception(() => MsBuildProjectQuery.ReadInputs("C:/repo/Some.csproj", json));
+
+        Assert.IsType<MsBuildQueryException>(ex);
+        Assert.Contains("Some.csproj", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_property_msbuild_prints_as_a_non_string_reads_as_unset_rather_than_throwing()
+    {
+        // The other direction, and deliberately NOT a refusal: Property() already treats an empty
+        // value as "not set", so a non-string value has a correct answer that costs nothing. Only a
+        // shape that would be read downstream as a fact about the project -- an item group that is
+        // not a list -- is refused, because there an empty result reads as "no Compile items".
+        var inputs = MsBuildProjectQuery.ReadInputs(
+            "C:/repo/Some.csproj",
+            """{ "Properties": { "LangVersion": 14, "AssemblyName": "Chosen" }, "Items": { "Compile": [ { "FullPath": "a.cs" } ] } }""");
+
+        Assert.Equal(string.Empty, inputs.LangVersion);
+        Assert.Equal("Chosen", inputs.AssemblyName);
+        Assert.Equal(["a.cs"], inputs.CompileFiles);
     }
 
     [Fact]
@@ -288,9 +331,13 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     {
         // The other side of the same coin. Handed no sites, the resolver returns no edges -- exactly
         // what an unavailable one returns -- so the only thing separating the two is this status.
+        //
+        // `Assert.Empty(Resolve([], symbols))` used to stand here and has been removed rather than
+        // moved: Resolve builds its result by iterating `sites`, so it returns empty for ANY
+        // implementation of it, including a broken one. That assertion could not fail. The three
+        // below can: each names a value this fixture's own restore-and-compile has to have produced.
         Assert.True(_scratch.Resolver.IsAvailable);
         Assert.True(_scratch.Resolver.IsComplete);
-        Assert.Empty(_scratch.Resolver.Resolve([], _scratch.Symbols));
         Assert.All(_scratch.Resolver.Projects, p => Assert.Equal(RoslynProjectAvailability.Compiled, p.Availability));
     }
 
@@ -345,6 +392,141 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         // And it actually joins, which is the half CodeGraphBuilder would otherwise degrade.
         Assert.Contains(_scratch.Symbols, s => s.Container == edge.TargetContainer && s.Name == edge.TargetName);
+    }
+
+    // Source for the test below. Written to disk as UTF-8 WITH a BOM and with CRLF endings -- the one
+    // fixture in this file that is not UTF-8-without-BOM and LF.
+    public const string BomCrlfSource = """
+        namespace BomCrlf;
+        public class Meter
+        {
+            public int Depth() => 3;
+            public int Gauge() => Depth();
+        }
+        """;
+
+    [Fact]
+    public void Offset_identity_holds_for_a_file_with_a_BOM_and_CRLF_endings()
+    {
+        // The property this whole class is built around is about encoding: a BOM stripped by one
+        // engine and kept by the other shifts every offset in the file by three bytes and credits
+        // calls to whatever sits three bytes away. It was asserted for exactly one encoding shape.
+        var path = Path.Combine(_scratch.Root, "BomCrlf.cs");
+        var bytes = File.ReadAllBytes(path);
+
+        // The fixture really is what this test claims, read back off disk rather than trusted from
+        // the writer: without these two, every assertion below would pass just as happily on a plain
+        // LF, no-BOM file, and the test would measure nothing it is named for.
+        Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, bytes[..3]);
+        Assert.Contains("\r\n", Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3), StringComparison.Ordinal);
+
+        var site = Assert.Single(_scratch.SitesIn("BomCrlf.cs"), s => s.CallerName == "Gauge");
+
+        // Offsets are measured against the DECODED text, and SourceDecoder.DecodeStrict strips the
+        // BOM -- so the expected value carries no +3. It does carry one extra byte per preceding
+        // CRLF, which is what the second assertion pins: the same source spelled with LF would put
+        // this call somewhere else, so an offset that matched both would prove nothing.
+        Assert.Equal(BomCrlfSource.ReplaceLineEndings("\r\n").IndexOf("Depth();", StringComparison.Ordinal), site.Offset);
+        Assert.NotEqual(BomCrlfSource.ReplaceLineEndings("\n").IndexOf("Depth();", StringComparison.Ordinal), site.Offset);
+
+        // And Roslyn, reading the same bytes through the same decoder, lands on the same offset.
+        var edge = Assert.Single(_scratch.Resolver.Resolve([site], _scratch.Symbols));
+        Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
+        Assert.Equal("BomCrlf.Meter", edge.TargetContainer);
+        Assert.Equal("Depth", edge.TargetName);
+    }
+
+    // Source for the two tests below. Both hold a CONTAINER segment whose source spelling differs
+    // from ISymbol.Name, which is the axis SimpleNameOf already guards for the target's own name and
+    // ContainerPathOf did not guard at all: Roslyn strips the @ from a verbatim identifier, so the
+    // namespace and the type here come back as `event.class` where the grammar hands the extractor
+    // `@event.@class`.
+    public const string ContainerSpellingSource = """
+        namespace @event;
+        public class @class
+        {
+            public int Reserved() => 1;
+            public int ReservedCaller() => Reserved();
+        }
+        """;
+
+    // The other half of the same defect, and it needs no verbatim identifier at all: Roslyn mangles
+    // an explicit interface implementation's name to its qualified form (Explicitly.IShape.Draw), so
+    // a local function declared inside one reports a container carrying two extra dots -- and
+    // therefore two extra SEGMENTS -- that the extractor's `Explicitly.Square.Draw` does not have.
+    public const string ExplicitImplementationSource = """
+        namespace Explicitly;
+        public interface IShape { void Draw(); }
+        public class Square : IShape
+        {
+            public int Sides;
+            void IShape.Draw()
+            {
+                int Nested() => 4;
+                Sides = Nested();
+            }
+        }
+        """;
+
+    [Fact]
+    public void A_verbatim_identifier_keeps_its_at_sign_in_the_container_as_well_as_the_name()
+    {
+        var site = Assert.Single(_scratch.SitesIn("ContainerSpelling.cs"), s => s.CallerName == "ReservedCaller");
+
+        // Precondition, and the whole point of the test: the baseline settles this one CORRECTLY,
+        // because the name is unique in the scratch repository. So a different container from this
+        // resolver is not a missed opportunity, it is a regression against not running it at all --
+        // the one outcome 2.1's chaining is supposed to make impossible, since CodeGraphBuilder
+        // overwrites the baseline's verdict first and only then degrades a non-joining Exact.
+        var baseline = Assert.Single(new NameMatchResolver().Resolve([site], _scratch.Symbols));
+        Assert.Equal(EdgeConfidence.ByName, baseline.Confidence);
+        Assert.Equal("@event.@class", baseline.TargetContainer);
+
+        var edge = Assert.Single(_scratch.Resolver.Resolve([site], _scratch.Symbols));
+
+        Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
+        Assert.Equal("@event.@class", edge.TargetContainer);
+        Assert.Equal("Reserved", edge.TargetName);
+
+        // And it joins, which is the half CodeGraphBuilder would otherwise degrade.
+        Assert.Contains(_scratch.Symbols, s => s.Container == edge.TargetContainer && s.Name == edge.TargetName);
+    }
+
+    [Fact]
+    public void An_explicit_interface_implementation_contributes_the_segment_source_spells()
+    {
+        var site = Assert.Single(_scratch.SitesIn("ExplicitImplementation.cs"), s => s.CalledName == "Nested");
+
+        var baseline = Assert.Single(new NameMatchResolver().Resolve([site], _scratch.Symbols));
+        Assert.Equal(EdgeConfidence.ByName, baseline.Confidence);
+        Assert.Equal("Explicitly.Square.Draw", baseline.TargetContainer);
+
+        var edge = Assert.Single(_scratch.Resolver.Resolve([site], _scratch.Symbols));
+
+        Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
+        Assert.Equal("Explicitly.Square.Draw", edge.TargetContainer);
+        Assert.Contains(_scratch.Symbols, s => s.Container == edge.TargetContainer && s.Name == edge.TargetName);
+    }
+
+    [Fact]
+    public void An_exact_verdict_on_an_oddly_spelled_container_survives_the_builders_join()
+    {
+        // The two assertions above measure this resolver; this one measures what the produced graph
+        // actually holds, which is the only place the "strictly worse than the baseline" failure is
+        // visible: CodeGraphBuilder overwrites the baseline edge with the Exact one and only then
+        // degrades it to Unresolved when its (Container, Name) joins no SymbolFact.
+        var snapshot = new RepositorySnapshot(_scratch.Root, "scratch", [], []);
+        using var extractor = new TreeSitterExtractor();
+        var builder = new CodeGraphBuilder(
+            extractor,
+            [CSharpProfile.Instance],
+            [new NameMatchResolver(), _scratch.Resolver]);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        var edge = Assert.Single(graph.Edges, e => e.Site.CalledName == "Reserved");
+        Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
+        Assert.Equal("@event.@class", edge.TargetContainer);
     }
 
     [Fact]
@@ -531,6 +713,78 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.Equal("Greet", edge.TargetName);
     }
 
+    [Fact]
+    public void A_compile_item_over_the_size_cap_is_refused_by_the_roslyn_engine_too()
+    {
+        // --max-file-size's help says "Largest source file, in bytes, the code stage will read", and
+        // the Roslyn half of the code stage did a bare File.ReadAllBytes on every Compile item MSBuild
+        // listed. Nothing of that content reaches the bundle -- symbols come only from the extractor --
+        // so this is a documented bound one of the two engines did not honour, not a disclosure hole.
+        using var repository = new OversizedSourceRepository();
+        var limits = ExtractionLimits.Default with { MaxFileBytes = 4096 };
+
+        // Preconditions, measured off disk rather than assumed from how the fixture was written.
+        Assert.True(new FileInfo(repository.BigFile).Length > limits.MaxFileBytes);
+        Assert.True(new FileInfo(repository.SmallFile).Length < limits.MaxFileBytes);
+
+        // The tree-sitter half already refuses it, which is the disagreement this closes.
+        using var extractor = new TreeSitterExtractor();
+        var extracted = extractor.Extract("Big.cs", repository.BigFile, CSharpProfile.Instance, limits);
+        Assert.Equal(FileStatus.SkippedTooLarge, extracted.Status);
+
+        // Under the default 2 MiB cap the Roslyn half does read it, so the assertion below is about
+        // the cap and not about the file being unreadable for some unrelated reason.
+        var uncapped = RoslynResolver.Create(repository.Root, [repository.Project]);
+        Assert.True(uncapped.Owns("Big.cs"), Describe(uncapped));
+
+        var capped = RoslynResolver.Create(repository.Root, [repository.Project], limits);
+
+        Assert.False(capped.Owns("Big.cs"));
+        // Still a cap and not a collapse: the project compiled and its in-bounds file is owned.
+        Assert.True(capped.IsComplete, Describe(capped));
+        Assert.True(capped.Owns("Small.cs"), Describe(capped));
+    }
+
+    [Fact]
+    public void No_msbuild_skips_the_stage_that_executes_the_scanned_repositorys_build_logic()
+    {
+        // Lives with the resolver rather than in CliTests because the property under test is a fact
+        // about THIS stage: whether it ran at all. Driven through the shipped composition, because
+        // "no dotnet msbuild was spawned" is not something the resolver can be asked -- it is the
+        // absence of the call that creates it.
+        //
+        // The repository is deliberately NOT restored, so the query fails and the run says so by
+        // name. That note is the observable difference: it can only exist if msbuild ran.
+        using var repository = new UnrestoredProjectRepository();
+        using var workspace = new Workspace();
+
+        var ran = Generate(repository.Root, Path.Combine(workspace.Root, "with"));
+        Assert.Equal(0, ran.ExitCode);
+        Assert.Contains("not compiled", ran.Error, StringComparison.Ordinal);
+
+        var skipped = Generate(repository.Root, Path.Combine(workspace.Root, "without"), "--no-msbuild");
+        Assert.Equal(0, skipped.ExitCode);
+        Assert.DoesNotContain("not compiled", skipped.Error, StringComparison.Ordinal);
+
+        // And it is disclosed rather than silent: what an operator loses here is edges, and a run
+        // that quietly resolved fewer calls would look exactly like a run that had fewer to resolve.
+        Assert.Contains("--no-msbuild", skipped.Error, StringComparison.Ordinal);
+        Assert.Contains("name-matching baseline", skipped.Error, StringComparison.Ordinal);
+
+        // The rest of the stage still ran: the bundle has code concepts either way.
+        Assert.True(Directory.Exists(Path.Combine(workspace.Root, "without", "code")));
+    }
+
+    private static (int ExitCode, string Output, string Error) Generate(string repoPath, string outPath, params string[] extra)
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        string[] args = ["generate", "--repo", repoPath, "--out", outPath, .. extra];
+        var exitCode = OkfgenCli.Run(args, output, error);
+
+        return (exitCode, output.ToString(), error.ToString());
+    }
+
     private static string Describe(RoslynResolver resolver) =>
         string.Join("; ", resolver.Projects.Select(p => $"{Path.GetFileName(p.ProjectPath)}: {p.Availability} {p.Detail}"));
 
@@ -625,12 +879,15 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     /// </summary>
     public sealed class ScratchProject : IDisposable
     {
-        private static readonly (string FileName, string Source)[] Sources =
+        private static readonly (string FileName, string Source, bool BomAndCrlf)[] Sources =
         [
-            ("Ambiguity.cs", AmbiguitySource),
-            ("NonAscii.cs", NonAsciiSource),
-            ("External.cs", ExternalSource),
-            ("Verbatim.cs", VerbatimSource),
+            ("Ambiguity.cs", AmbiguitySource, false),
+            ("NonAscii.cs", NonAsciiSource, false),
+            ("External.cs", ExternalSource, false),
+            ("Verbatim.cs", VerbatimSource, false),
+            ("ContainerSpelling.cs", ContainerSpellingSource, false),
+            ("ExplicitImplementation.cs", ExplicitImplementationSource, false),
+            ("BomCrlf.cs", BomCrlfSource, true),
         ];
 
         private readonly Dictionary<string, ExtractionResult> _extracted = new(StringComparer.Ordinal);
@@ -643,12 +900,20 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             var projectPath = Path.Combine(Root, "Scratch.csproj");
             File.WriteAllText(projectPath, ProjectFile, new UTF8Encoding(false));
 
-            foreach (var (fileName, source) in Sources)
+            foreach (var (fileName, source, bomAndCrlf) in Sources)
             {
-                // UTF-8 with no BOM, LF-normalised, so the bytes on disk are exactly the bytes the
-                // const string in this file describes -- the offsets asserted above are computed
-                // against that string.
-                File.WriteAllText(Path.Combine(Root, fileName), source.ReplaceLineEndings("\n"), new UTF8Encoding(false));
+                // UTF-8, LF-normalised and no BOM by default, so the bytes on disk are exactly the
+                // bytes the const string in this file describes -- the offsets asserted above are
+                // computed against that string.
+                //
+                // Exactly one file is written the other way, BOM + CRLF. This class is built around a
+                // property about ENCODING -- "a BOM stripped by one engine and kept by the other
+                // credits calls to whatever sits three bytes away" -- and one encoding shape cannot
+                // hold a claim about two.
+                File.WriteAllText(
+                    Path.Combine(Root, fileName),
+                    source.ReplaceLineEndings(bomAndCrlf ? "\r\n" : "\n"),
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: bomAndCrlf));
             }
 
             Restore(projectPath);
@@ -658,7 +923,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
             using var extractor = new TreeSitterExtractor();
             var symbols = new List<SymbolFact>();
-            foreach (var (fileName, _) in Sources)
+            foreach (var (fileName, _, _) in Sources)
             {
                 var result = extractor.Extract(fileName, Path.Combine(Root, fileName), CSharpProfile.Instance, ExtractionLimits.Default);
                 _extracted[fileName] = result;
@@ -983,6 +1248,91 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
                     System.Text.Json.JsonSerializer.Serialize(payload, PayloadContext.Default.Payload);
             }
             """;
+    }
+
+    /// <summary>
+    /// A restored single-project repository holding one ordinary source file and one deliberately
+    /// oversized one that <b>nothing references</b>, so dropping the big one still leaves a clean
+    /// compilation -- which is what lets the assertion be about the cap rather than about a project
+    /// that stopped compiling.
+    /// </summary>
+    private sealed class OversizedSourceRepository : ScratchRepository
+    {
+        public OversizedSourceRepository()
+            : base("oversize")
+        {
+            Project = Write("Oversize.csproj", ProjectFile);
+            SmallFile = Write("Small.cs", SmallSource);
+            BigFile = Write("Big.cs", BigSource());
+
+            Restore(Project);
+        }
+
+        public string Project { get; }
+
+        public string SmallFile { get; }
+
+        public string BigFile { get; }
+
+        private static string BigSource()
+        {
+            var padding = string.Join("\n", Enumerable.Repeat("// padding, so this file is over the cap the test sets", 400));
+            return $"namespace Oversize;\n{padding}\npublic class Bulky {{ public int Weigh() => 1; }}\n";
+        }
+
+        private const string SmallSource = """
+            namespace Oversize;
+            public class Slight { public int Weigh() => 2; }
+            """;
+
+        private const string ProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """;
+    }
+
+    /// <summary>
+    /// A single-project repository that is deliberately never restored, so <c>dotnet msbuild</c>'s
+    /// <c>ResolveReferences</c> fails on it -- the documented common cause of a project the exact
+    /// resolver cannot query, and the one that makes a run print a note naming that project.
+    /// </summary>
+    private sealed class UnrestoredProjectRepository : ScratchRepository
+    {
+        public UnrestoredProjectRepository()
+            : base("unrestored")
+        {
+            Write("Unrestored.csproj", ProjectFile);
+            Write("Widget.cs", Source);
+        }
+
+        private const string ProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private const string Source = """
+            namespace Unrestored;
+            public class Widget
+            {
+                public int Weight() => 1;
+                public int Total() => Weight();
+            }
+            """;
+    }
+
+    /// <summary>An empty throwaway directory to write bundles into, so no <c>--out</c> lands inside a scanned repository.</summary>
+    private sealed class Workspace : ScratchRepository
+    {
+        public Workspace()
+            : base("workspace")
+        {
+        }
     }
 
     /// <summary>

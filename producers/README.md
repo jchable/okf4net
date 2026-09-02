@@ -55,7 +55,30 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--include-tests` | off | Walk test projects and `test`/`tests`/`spec` directories too. |
 | `--include-internal` | off | Emit `internal` declarations, not only public ones. |
 | `--no-code` | off | Skip the code-graph stage entirely: `overview`, `packages/` and `docs/` only. |
-| `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read. A larger one is skipped and counted, which makes the run partial — the concepts it owned are then not pruned. |
+| `--no-msbuild` | off | Do not run `dotnet msbuild` on the scanned repository, and skip the Roslyn resolver built on it. Call links then come from name matching alone, so an ambiguous name is left unlinked instead of resolved exactly. **Read the section below before deciding you do not need this.** |
+| `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. A larger one is skipped and counted, which makes the run partial: the concepts it owned are then not pruned. |
+
+### Generating from a repository runs that repository's build logic
+
+Only point `okfgen` at a repository you would be willing to **build**.
+
+The exact (Roslyn) resolver gets its reference set by spawning `dotnet msbuild` once per
+project, in the project's own directory. An MSBuild *evaluation* is the execution of
+repository-authored logic — there is no read-only mode of it to ask for — so
+`Directory.Build.props` and `Directory.Build.targets`, everything they `Import`, any target
+hooked on `BeforeTargets="ResolveReferences"`, and a `RoslynCodeTaskFactory` inline `<Code>`
+task all run, as the user running `okfgen`. That is a wider door than anything else in this
+producer: the tree-sitter extractor only parses, and the Roslyn stage deliberately does not
+run source generators.
+
+`--no-msbuild` is the way out. It skips the whole stage: no process is spawned, nothing from
+the scanned tree is executed, and calls are resolved by the name-matching baseline — which
+refuses an ambiguous name rather than guessing it, so what you lose is edges, not
+correctness. The run says so in a note.
+
+It is **off by default on purpose**. Turning it on by default would silently degrade the
+resolution quality of every run that exists today, which is a worse trade than a documented
+hazard with a lever next to it.
 
 Notes — what a run could not do — go to **stderr**, prefixed `note: `; results go to
 stdout. A note never changes the exit code. The ones worth knowing:

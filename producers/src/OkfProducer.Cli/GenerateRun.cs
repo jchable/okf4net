@@ -20,6 +20,12 @@ namespace OkfProducer.Cli;
 /// <param name="IncludeInternal">§5.4: emit <c>internal</c> declarations, not only public ones.</param>
 /// <param name="NoCode">§5.4: skip the code-graph stage entirely.</param>
 /// <param name="MaxFileBytes">§2.3: the per-file size cap the extractor enforces.</param>
+/// <param name="NoMsBuild">
+/// Skip the Roslyn stage, and with it the <c>dotnet msbuild</c> evaluation it is built on, leaving
+/// the name-matching baseline to resolve calls. This is the run's only lever over the fact that
+/// evaluating a repository's MSBuild logic <i>executes</i> that logic; see <see cref="GenerateRun"/>'s
+/// own remarks.
+/// </param>
 internal sealed record GenerateRequest(
     string RepoPath,
     string OutPath,
@@ -30,7 +36,8 @@ internal sealed record GenerateRequest(
     bool IncludeTests,
     bool IncludeInternal,
     bool NoCode,
-    long MaxFileBytes);
+    long MaxFileBytes,
+    bool NoMsBuild);
 
 /// <summary>
 /// The producer's composition root: the one place scan, extract, resolve, attribute, generate and
@@ -55,6 +62,20 @@ internal sealed record GenerateRequest(
 /// account of what it could not do -- a package whose namespaces went unattributed, a project MSBuild
 /// could not answer for -- and with no sink they were computed and dropped.</item>
 /// </list>
+///
+/// <para><b>Running this on a repository evaluates that repository's MSBuild logic, which means
+/// executing it.</b> The Roslyn stage below builds its compilations from a reference set obtained by
+/// spawning <c>dotnet msbuild</c> once per project, in the project's own directory -- so
+/// <c>Directory.Build.props</c> and <c>Directory.Build.targets</c>, every <c>Import</c> they reach,
+/// any target hooked on <c>BeforeTargets="ResolveReferences"</c>, and a
+/// <c>RoslynCodeTaskFactory</c> inline <c>&lt;Code&gt;</c> task all run, as the user running
+/// <c>okfgen</c>. That is not a bound this producer can tighten from the outside: it is what MSBuild
+/// evaluation is. <b>Point <c>okfgen</c> only at a repository you would be willing to build.</b>
+/// <c>--no-msbuild</c> is the way out for a repository you would not: it skips this stage entirely,
+/// leaving the name-matching baseline, so no process is spawned and nothing from the scanned tree is
+/// executed. It is off by default deliberately -- making it opt-in would silently degrade the
+/// resolution quality of every run that exists today -- which is why it is stated here and in
+/// <c>producers/README.md</c> rather than left to be discovered.</para>
 /// </summary>
 internal static class GenerateRun
 {
@@ -106,11 +127,26 @@ internal static class GenerateRun
             var resolvers = new List<ISymbolResolver> { new NameMatchResolver() };
             var projectPaths = CSharpProjectPaths(snapshot);
 
-            if (projectPaths.Count > 0)
+            // The one cap the two engines have to agree on. The tree-sitter extractor has always
+            // enforced it; the Roslyn stage read every Compile item MSBuild listed regardless, which
+            // made --max-file-size's help text false of half the code stage.
+            var limits = ExtractionLimits.Default with { MaxFileBytes = request.MaxFileBytes };
+
+            if (request.NoMsBuild)
+            {
+                // Said out loud rather than left to be inferred from a thinner call graph: this run's
+                // links are name matches, and §2.1's whole point is that a name match on an ambiguous
+                // name is refused rather than guessed, so what an operator loses here is edges.
+                note("--no-msbuild was passed, so no `dotnet msbuild` was spawned and no project was"
+                    + " compiled: every `## Calls` link in this bundle comes from the name-matching"
+                    + " baseline alone, and an inter-type ambiguity it cannot settle is left unlinked."
+                    + " Drop --no-msbuild on a repository you are willing to build to resolve them exactly.");
+            }
+            else if (projectPaths.Count > 0)
             {
                 // Later resolvers override earlier ones for the files they own (§2.1), so the exact
                 // resolver goes after the name-matching baseline, never before it.
-                var roslyn = RoslynResolver.Create(request.RepoPath, projectPaths);
+                var roslyn = RoslynResolver.Create(request.RepoPath, projectPaths, limits);
                 resolvers.Add(roslyn);
 
                 ReportProjects(roslyn, request.RepoPath, note);
@@ -120,10 +156,7 @@ internal static class GenerateRun
             // Disposed as soon as the graph exists: CodeGraph holds symbols and edges, never a handle
             // into the parser.
             using var extractor = new TreeSitterExtractor();
-            graph = new CodeGraphBuilder(extractor, profiles, resolvers).Build(
-                snapshot,
-                ExtractionLimits.Default with { MaxFileBytes = request.MaxFileBytes },
-                scope);
+            graph = new CodeGraphBuilder(extractor, profiles, resolvers).Build(snapshot, limits, scope);
         }
 
         var options = new GenerateOptions

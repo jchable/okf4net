@@ -40,6 +40,32 @@ public sealed class MsBuildQueryException : Exception
 /// <c>Microsoft.CodeAnalysis.Workspaces.MSBuild</c> anywhere: <c>dotnet msbuild</c>'s own
 /// <c>-getItem</c>/<c>-getProperty</c> switches print exactly the item and property values a target
 /// run produced, as JSON, which is all a <c>CSharpCompilation</c> needs.
+///
+/// <para><b>THREAT MODEL: this class executes the scanned repository's code.</b> Not "may", and not
+/// only under some option -- an MSBuild evaluation <i>is</i> the execution of repository-authored
+/// logic, and there is no read-only mode of it to ask for. Everything the project reaches runs, as the
+/// user running <c>okfgen</c>: <c>Directory.Build.props</c> and <c>Directory.Build.targets</c> (found
+/// from the project's own directory, which is why <see cref="Run"/> sets
+/// <c>WorkingDirectory</c> there), every <c>Import</c> they pull in, any target hooked on
+/// <c>BeforeTargets="ResolveReferences"</c>, and a <c>RoslynCodeTaskFactory</c> inline
+/// <c>&lt;Code&gt;</c> task, which is a C# compiler invocation on source the repository supplies. The
+/// three targets in <see cref="Targets"/> bound what is <i>asked for</i>; they bound nothing about
+/// what evaluation runs on the way.</para>
+///
+/// <para>
+/// So <b>only point <c>okfgen</c> at a repository you would be willing to build</b>. That is the whole
+/// mitigation, stated rather than implied, and it is why <c>okfgen generate --no-msbuild</c> exists:
+/// it skips this stage entirely, spawns nothing, and leaves call resolution to the name-matching
+/// baseline. It is off by default because turning it on by default would silently degrade every
+/// existing run's resolution quality -- a documented hazard with a lever beats a quiet downgrade.
+/// </para>
+///
+/// <para>
+/// Nothing else in this producer executes scanned input: the tree-sitter extractor parses, and
+/// <see cref="CompilationFactory"/> compiles without running generators (see
+/// <see cref="RoslynResolver"/>'s remarks, whose refusal is about not widening this further rather
+/// than about holding a line that this class had already crossed).
+/// </para>
 /// </summary>
 public static class MsBuildProjectQuery
 {
@@ -124,15 +150,35 @@ public static class MsBuildProjectQuery
             json = RunQuery(fullPath, framework);
         }
 
-        using var document = ParseJson(fullPath, json);
+        return ReadInputs(fullPath, json);
+    }
+
+    /// <summary>
+    /// Turns one MSBuild answer into <see cref="ProjectInputs"/>.
+    ///
+    /// <para>
+    /// <see langword="internal"/> rather than folded into <see cref="Query"/> so the malformed-answer
+    /// branches have an executable test at all: every other route to them spawns a real
+    /// <c>dotnet msbuild</c>, which cannot be made to print a document of the wrong shape. Those
+    /// branches are exactly where an <see cref="InvalidOperationException"/> used to escape
+    /// <see cref="MsBuildQueryException"/> and abort the whole run.
+    /// </para>
+    /// </summary>
+    /// <exception cref="MsBuildQueryException">
+    /// <paramref name="json"/> is not the JSON object, with the item and property groups in the shapes,
+    /// that <c>-getItem</c>/<c>-getProperty</c> promise.
+    /// </exception>
+    internal static ProjectInputs ReadInputs(string projectPath, string json)
+    {
+        using var document = ParseJson(projectPath, json);
         var root = document.RootElement;
 
-        var properties = ReadProperties(root);
-        var items = ReadItems(root);
+        var properties = ReadProperties(projectPath, root);
+        var items = ReadItems(projectPath, root);
 
         return new ProjectInputs(
-            fullPath,
-            Property(properties, "AssemblyName") ?? Path.GetFileNameWithoutExtension(fullPath),
+            projectPath,
+            Property(properties, "AssemblyName") ?? Path.GetFileNameWithoutExtension(projectPath),
             ReadCompileFiles(items),
             ReadReferences(items),
             Property(properties, "DefineConstants") ?? string.Empty,
@@ -163,8 +209,11 @@ public static class MsBuildProjectQuery
 
         try
         {
-            using var document = JsonDocument.Parse(json);
-            var properties = ReadProperties(document.RootElement);
+            // Through ParseJson, not JsonDocument.Parse: the shape check lives there, and a probe that
+            // parsed the document its own way would be the one route into ReadProperties that had not
+            // been through it -- the shape on which TryGetProperty throws rather than returning false.
+            using var document = ParseJson(projectPath, json);
+            var properties = ReadProperties(projectPath, document.RootElement);
 
             // A single-targeting project reports TargetFramework and (usually) no TargetFrameworks;
             // only the outer build of a multi-targeting one reports the plural with the singular empty.
@@ -177,8 +226,11 @@ public static class MsBuildProjectQuery
                 .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .FirstOrDefault();
         }
-        catch (JsonException)
+        catch (MsBuildQueryException)
         {
+            // This is a probe taken only after the full query already failed, so its own failure is
+            // never the interesting one: returning null re-throws the caller's original error, which
+            // says what actually went wrong with the project.
             return null;
         }
     }
@@ -205,7 +257,11 @@ public static class MsBuildProjectQuery
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             // MSBuild resolves Directory.Build.props/targets from the project's own directory, so run
-            // there rather than wherever the producer happened to be invoked from.
+            // there rather than wherever the producer happened to be invoked from. Note what that
+            // sentence means: those files are then FOUND, and being found means being evaluated, and
+            // being evaluated means running. See this class's threat-model paragraph -- the choice
+            // here is between evaluating the project correctly and evaluating it wrongly, not between
+            // running repository logic and not running it.
             WorkingDirectory = Path.GetDirectoryName(projectPath)!,
         };
 
@@ -255,11 +311,13 @@ public static class MsBuildProjectQuery
 
             string stdout;
             string stderr;
+            int exitCode;
             try
             {
                 process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
                 stdout = stdoutTask.GetAwaiter().GetResult();
                 stderr = stderrTask.GetAwaiter().GetResult();
+                exitCode = process.ExitCode;
             }
             catch (OperationCanceledException)
             {
@@ -267,11 +325,27 @@ public static class MsBuildProjectQuery
                 throw new MsBuildQueryException(
                     $"`dotnet msbuild` for {projectPath} did not finish within {QueryTimeout.TotalSeconds:0} s.");
             }
+            catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
+            {
+                // The SUCCESS path has its own failure mode, and it is the one that used to escape raw.
+                // WaitForExitAsync can return normally and a subsequent read still throw -- a pipe torn
+                // down abnormally by a killed or crashed msbuild, by a scanner holding the handle, or by
+                // a worker going away mid-write -- and process.ExitCode throws InvalidOperationException
+                // if the process object is not in the state that read requires. Every one of those means
+                // exactly what a non-zero exit means: this project's inputs are unknown. Left unwrapped
+                // they escaped RoslynResolver.QueryProjectClosure's deliberately narrow
+                // `catch (MsBuildQueryException)`, so a single project's abnormal msbuild aborted
+                // generation for the WHOLE repository instead of degrading that one project to the
+                // name-matching baseline.
+                TryKill(process);
+                throw new MsBuildQueryException(
+                    $"`dotnet msbuild` for {projectPath} ended abnormally while its output was being read: {e.Message}", e);
+            }
 
-            if (process.ExitCode != 0)
+            if (exitCode != 0)
             {
                 throw new MsBuildQueryException(
-                    $"`dotnet msbuild` for {projectPath} exited {process.ExitCode}. "
+                    $"`dotnet msbuild` for {projectPath} exited {exitCode}. "
                     + $"A project that has not been restored fails here. {Truncate(stderr.Length > 0 ? stderr : stdout, 400)}");
             }
 
@@ -295,53 +369,101 @@ public static class MsBuildProjectQuery
         }
     }
 
+    /// <summary>
+    /// Parses MSBuild's answer, and checks it is the <i>object</i> <c>-getItem</c>/<c>-getProperty</c>
+    /// promise rather than merely well-formed JSON.
+    ///
+    /// <para>
+    /// Syntax was never the only way that answer can be wrong. <c>JsonDocument.Parse</c> accepts
+    /// <c>"[]"</c>, <c>"7"</c> and <c>"null"</c> quite happily, and every reader below then meets a
+    /// <see cref="JsonElement"/> of the wrong kind -- on which <c>TryGetProperty</c>,
+    /// <c>EnumerateObject</c> and <c>EnumerateArray</c> all throw
+    /// <see cref="InvalidOperationException"/>, a type nothing upstream catches. The shape check
+    /// belongs here, once, so that every route into the readers has been through it.
+    /// </para>
+    /// </summary>
     private static JsonDocument ParseJson(string projectPath, string json)
     {
+        JsonDocument document;
         try
         {
-            return JsonDocument.Parse(json);
+            document = JsonDocument.Parse(json);
         }
         catch (JsonException e)
         {
             throw new MsBuildQueryException(
                 $"`dotnet msbuild` for {projectPath} did not print the JSON that -getItem/-getProperty promise: {Truncate(json, 400)}", e);
         }
+
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            document.Dispose();
+            throw new MsBuildQueryException(
+                $"`dotnet msbuild` for {projectPath} printed valid JSON that is not an object "
+                + $"({Truncate(json, 400)}); -getItem/-getProperty promise an object.");
+        }
+
+        return document;
     }
 
-    private static Dictionary<string, string> ReadProperties(JsonElement root)
+    private static Dictionary<string, string> ReadProperties(string projectPath, JsonElement root)
     {
         // A lookup only -- Property() indexes it, nothing ever iterates it into output.
         var properties = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (!root.TryGetProperty("Properties", out var element))
+        if (!TryGetGroup(projectPath, root, "Properties", JsonValueKind.Object, out var element))
         {
             return properties;
         }
 
         foreach (var property in element.EnumerateObject())
         {
-            properties[property.Name] = property.Value.GetString() ?? string.Empty;
+            // A non-string value is read as absent rather than crashing the run: Property() already
+            // treats an empty value as "not set", which is the same answer, and every property this
+            // query asks for is a string when MSBuild answers at all.
+            properties[property.Name] = property.Value.ValueKind == JsonValueKind.String
+                ? property.Value.GetString() ?? string.Empty
+                : string.Empty;
         }
 
         return properties;
     }
 
-    private static Dictionary<string, List<Dictionary<string, string>>> ReadItems(JsonElement root)
+    private static Dictionary<string, List<Dictionary<string, string>>> ReadItems(string projectPath, JsonElement root)
     {
         var items = new Dictionary<string, List<Dictionary<string, string>>>(StringComparer.Ordinal);
-        if (!root.TryGetProperty("Items", out var element))
+        if (!TryGetGroup(projectPath, root, "Items", JsonValueKind.Object, out var element))
         {
             return items;
         }
 
         foreach (var group in element.EnumerateObject())
         {
+            if (group.Value.ValueKind != JsonValueKind.Array)
+            {
+                // Refused, not skipped. An item group this reader cannot read means the item set is
+                // unknown, and an empty list would be read downstream as "this project has no Compile
+                // items" -- a half-answer, which is exactly what Query's contract forbids.
+                throw new MsBuildQueryException(
+                    $"`dotnet msbuild` for {projectPath} printed item group `{group.Name}` as "
+                    + $"{group.Value.ValueKind} rather than an array.");
+            }
+
             var entries = new List<Dictionary<string, string>>();
             foreach (var entry in group.Value.EnumerateArray())
             {
+                if (entry.ValueKind != JsonValueKind.Object)
+                {
+                    throw new MsBuildQueryException(
+                        $"`dotnet msbuild` for {projectPath} printed an entry of item group `{group.Name}` as "
+                        + $"{entry.ValueKind} rather than an object.");
+                }
+
                 var metadata = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (var value in entry.EnumerateObject())
                 {
-                    metadata[value.Name] = value.Value.GetString() ?? string.Empty;
+                    metadata[value.Name] = value.Value.ValueKind == JsonValueKind.String
+                        ? value.Value.GetString() ?? string.Empty
+                        : string.Empty;
                 }
 
                 entries.Add(metadata);
@@ -351,6 +473,29 @@ public static class MsBuildProjectQuery
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// The named top-level group, or <see langword="false"/> when MSBuild did not print one at all --
+    /// which is legitimate (nothing matched) and reads as empty. A group that is present but of the
+    /// wrong kind is not: that is an answer this reader cannot read, and an empty result there would
+    /// be indistinguishable from "no references", which the caller is told never to conclude.
+    /// </summary>
+    private static bool TryGetGroup(
+        string projectPath, JsonElement root, string name, JsonValueKind expected, out JsonElement element)
+    {
+        if (!root.TryGetProperty(name, out element))
+        {
+            return false;
+        }
+
+        if (element.ValueKind != expected)
+        {
+            throw new MsBuildQueryException(
+                $"`dotnet msbuild` for {projectPath} printed `{name}` as {element.ValueKind} rather than {expected}.");
+        }
+
+        return true;
     }
 
     /// <summary>

@@ -29,8 +29,9 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// untouched. This resolver never resolves from a compilation that has errors. <see cref="Projects"/>,
 /// <see cref="IsAvailable"/> and <see cref="IsComplete"/> are what let a caller distinguish "ran, and
 /// resolved nothing" from "could not run" -- the difference between a repository with no internal
-/// calls and one whose call graph is only approximate. That distinction is a report to the operator,
-/// not a pruning gate: see <see cref="IsComplete"/>'s own doc comment for why it cannot be one.</para>
+/// calls and one whose call graph is only approximate. That distinction is a question a caller can
+/// ask, not a pruning gate: see <see cref="IsComplete"/>'s own doc comment for why it cannot be one,
+/// and for the fact that only <see cref="Projects"/> reaches the run's report today.</para>
 ///
 /// <para><b>Loud, but never fatal to the run.</b> An unknown <c>LangVersion</c> is refused rather
 /// than degraded to a preview language version (correction 3) -- but the refusal is scoped to the one
@@ -52,12 +53,27 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// <b>This is a documented limitation, ruled on deliberately -- not an oversight and not a bug to
 /// fix in passing.</b> Running generators means loading and executing analyzer assemblies chosen by
 /// the <i>scanned repository</i>: arbitrary code, from exactly the input 2.3 treats as hostile, inside
-/// a tool whose whole job is to read untrusted source. Trading this producer's security posture for
-/// better resolution on some projects is not a trade to make quietly. A future path exists -- a
-/// sandboxed generator host -- and that, not an unguarded <c>CSharpGeneratorDriver</c>, is what would
-/// lift the limit. Meanwhile the behaviour is the safe one: such a project degrades to the
-/// name-matching baseline and <see cref="IsComplete"/> says so, which is what an operator reading the
-/// run's report must see. See 7.2 of <c>docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md</c>.</para>
+/// a tool whose whole job is to read untrusted source. A future path exists -- a sandboxed generator
+/// host -- and that, not an unguarded <c>CSharpGeneratorDriver</c>, is what would lift the limit.
+/// Meanwhile the behaviour is the safe one: such a project degrades to the name-matching baseline,
+/// and its <see cref="RoslynProjectReport"/> in <see cref="Projects"/> names the errors, which is what
+/// an operator reading the run's report sees.</para>
+///
+/// <para><b>What this refusal does NOT do, and an earlier version of this comment claimed it did.</b>
+/// It does not preserve a posture in which nothing from the scanned repository executes. That posture
+/// does not exist here and never did: <see cref="MsBuildProjectQuery"/> spawns <c>dotnet msbuild</c>
+/// per project, in the project's own directory, so <c>Directory.Build.props</c>/<c>targets</c>, every
+/// <c>Import</c> they reach, any target hooked on <c>BeforeTargets="ResolveReferences"</c> and a
+/// <c>RoslynCodeTaskFactory</c> inline <c>&lt;Code&gt;</c> task all run as the user running
+/// <c>okfgen</c> -- a wider door than a generator, opened one file over, before this resolver ever
+/// sees a symbol. So the honest statement of the trade is narrower and still worth making: pointing
+/// <c>okfgen</c> at a repository already means agreeing to evaluate its build, and <b>only a
+/// repository you would be willing to build should be scanned</b> (<c>okfgen generate --no-msbuild</c>
+/// skips this whole stage for one you would not). Adding a generator host on top would extend that
+/// execution from MSBuild's own evaluation into the compiler process, under no sandbox at all, for a
+/// resolution gain on some projects -- which is a further step, not a preserved line, and not one to
+/// take without the sandbox. See 7.2 of
+/// <c>docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md</c>.</para>
 ///
 /// <para><b>Blast radius of a failed project.</b> A project that does not compile costs more than its
 /// own files, and the cost is worth stating plainly. Its files are not <see cref="Owns"/>ed, so every
@@ -122,7 +138,13 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </summary>
     public IReadOnlyList<RoslynProjectReport> Projects { get; }
 
-    /// <summary>Whether at least one project compiled, i.e. whether this resolver can settle anything at all.</summary>
+    /// <summary>
+    /// Whether at least one project compiled, i.e. whether this resolver can settle anything at all.
+    ///
+    /// <para><b>Nothing in <c>producers/src</c> reads this, or <see cref="IsComplete"/>.</b> Grepped,
+    /// not assumed: the only readers are this project's tests. See <see cref="IsComplete"/> for what
+    /// the run's report actually feeds from and why that was left as it is.</para>
+    /// </summary>
     public bool IsAvailable => Projects.Any(p => p.Availability == RoslynProjectAvailability.Compiled);
 
     /// <summary>
@@ -153,12 +175,23 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </para>
     ///
     /// <para>
-    /// What that clause protects is the <b>run's report</b>, which is all this property feeds. Claiming
-    /// completeness there would tell a human the call graph is exact when every edge in it was in fact
-    /// guessed from a name -- and a wrong <c>## Calls</c> link reads as confidently as a right one. It
-    /// forbids nothing, gates nothing, and blocks no deletion; see the paragraph above for why it
-    /// cannot.
+    /// What that clause protects is a caller who asks this question. Claiming completeness would tell
+    /// one the call graph is exact when every edge in it was in fact guessed from a name -- and a wrong
+    /// <c>## Calls</c> link reads as confidently as a right one. It forbids nothing, gates nothing, and
+    /// blocks no deletion; see the paragraph above for why it cannot.
     /// </para>
+    ///
+    /// <para><b>It does not feed the run's report, and this comment used to say it did -- as did
+    /// 7.2.</b> Grepped across <c>producers/src</c>: nothing reads this property or
+    /// <see cref="IsAvailable"/>; the only readers are this project's tests. What the operator
+    /// actually sees is <c>GenerateRun.ReportProjects</c> iterating <see cref="Projects"/> and
+    /// emitting one note per project that did not compile, naming the project, the
+    /// <see cref="RoslynProjectAvailability"/> and the detail. That is strictly more than a single
+    /// boolean says, which is why the fix was to correct this claim and 7.2's rather than to wire a
+    /// second, coarser channel alongside a working one. Both properties stay: they are the question a
+    /// host embedding this resolver would ask, and the fixture in <c>RoslynResolverTests</c> asserts
+    /// on <see cref="IsComplete"/> to prove its own scratch repository really compiled -- a test that
+    /// would otherwise measure nothing.</para>
     /// </summary>
     public bool IsComplete =>
         Projects.Count > 0 && Projects.All(p => p.Availability == RoslynProjectAvailability.Compiled);
@@ -179,19 +212,28 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </summary>
     /// <param name="repositoryPath">The repository root that <see cref="CallSite.RelativePath"/> values are relative to.</param>
     /// <param name="projectPaths">The <c>.csproj</c> files to compile. Order does not affect the result.</param>
+    /// <param name="limits">
+    /// The extraction limits this run was given, or <see langword="null"/> for
+    /// <see cref="ExtractionLimits.Default"/>. Only <see cref="ExtractionLimits.MaxFileBytes"/> reaches
+    /// this stage, and it must: it is the bound <c>--max-file-size</c> names, and reading a
+    /// <c>Compile</c> item here that the extractor refused over there would make that option's help
+    /// text false of half the code stage. See <see cref="SourceFileGate"/>.
+    /// </param>
     /// <remarks>
     /// Does not throw for a project it cannot handle -- every failure, including a <c>LangVersion</c>
     /// this Roslyn build does not know, is reported through <see cref="Projects"/> so the run
     /// continues with whatever did compile.
     /// </remarks>
-    public static RoslynResolver Create(string repositoryPath, IReadOnlyList<string> projectPaths)
+    public static RoslynResolver Create(
+        string repositoryPath, IReadOnlyList<string> projectPaths, ExtractionLimits? limits = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(repositoryPath);
         ArgumentNullException.ThrowIfNull(projectPaths);
 
         var repositoryRoot = Path.GetFullPath(repositoryPath);
+        var gate = new SourceFileGate((limits ?? ExtractionLimits.Default).MaxFileBytes, repositoryRoot);
         var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports);
-        var compiled = CompileInDependencyOrder(queried, reports);
+        var compiled = CompileInDependencyOrder(queried, reports, gate);
 
         var ownedFiles = new Dictionary<string, OwnedFile>(PathComparer);
         // Ordinal by project path so that, when two projects both compile the same file (a linked
@@ -388,14 +430,15 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </summary>
     private static Dictionary<string, CSharpCompilation> CompileInDependencyOrder(
         Dictionary<string, ProjectInputs> queried,
-        Dictionary<string, RoslynProjectReport> reports)
+        Dictionary<string, RoslynProjectReport> reports,
+        SourceFileGate gate)
     {
         var compiled = new Dictionary<string, CSharpCompilation>(PathComparer);
         var inProgress = new HashSet<string>(PathComparer);
 
         foreach (var projectPath in queried.Keys.OrderBy(p => p, StringComparer.Ordinal))
         {
-            Compile(projectPath, queried, reports, compiled, inProgress);
+            Compile(projectPath, queried, reports, compiled, inProgress, gate);
         }
 
         return compiled;
@@ -406,7 +449,8 @@ public sealed class RoslynResolver : ISymbolResolver
         Dictionary<string, ProjectInputs> queried,
         Dictionary<string, RoslynProjectReport> reports,
         Dictionary<string, CSharpCompilation> compiled,
-        HashSet<string> inProgress)
+        HashSet<string> inProgress,
+        SourceFileGate gate)
     {
         if (compiled.ContainsKey(projectPath) || reports.ContainsKey(projectPath) || !inProgress.Add(projectPath))
         {
@@ -423,14 +467,14 @@ public sealed class RoslynResolver : ISymbolResolver
                          .Select(p => p!)
                          .OrderBy(p => p, StringComparer.Ordinal))
             {
-                Compile(dependency, queried, reports, compiled, inProgress);
+                Compile(dependency, queried, reports, compiled, inProgress, gate);
             }
 
             CSharpCompilation compilation;
             IReadOnlyList<string> missingReferences;
             try
             {
-                compilation = CompilationFactory.Create(inputs, compiled, out missingReferences);
+                compilation = CompilationFactory.Create(inputs, compiled, gate, out missingReferences);
             }
             catch (UnknownLanguageVersionException e)
             {
@@ -596,15 +640,16 @@ public sealed class RoslynResolver : ISymbolResolver
     /// <para>
     /// Shape matters more than it looks: <c>CodeGraphBuilder</c> joins an edge's target to a
     /// <see cref="SymbolFact"/> on <c>(Container, Name)</c> exactly, and degrades any edge that does
-    /// not join. So the container is built the same way <c>TreeSitterExtractor.ComputeContainerPath</c>
-    /// builds it -- every enclosing namespace and type, outermost first, dotted, plus the enclosing
-    /// member for a local function -- and not, say, as Roslyn's own display string, which would render
-    /// generics with their type arguments and never join anything.
+    /// not join -- <i>after</i> it has already overwritten the baseline's verdict, so a container this
+    /// resolver spells differently costs a correct <see cref="EdgeConfidence.ByName"/> edge and
+    /// returns nothing for it. That is the one outcome 2.1's chaining is supposed to make impossible,
+    /// which is why both halves of the pair are read off the declaring <i>syntax</i>: see
+    /// <see cref="ContainerPathOf"/> and <see cref="SimpleNameOf"/>.
     /// </para>
     ///
     /// <para>
     /// A symbol with no source declaration comes back <see cref="TargetKind.External"/>, and the two
-    /// reasons that can happen need opposite handling -- which is why this returns three outcomes, not
+    /// reasons that can happen need opposite handling -- which is why this returns four outcomes, not
     /// two. A target that is <i>genuinely</i> outside the repository (the BCL, a NuGet package) has no
     /// concept to point at, so saying so is a gain: it retracts the baseline's name-only guess rather
     /// than leaving a link to a same-named declaration that has nothing to do with the call. But a
@@ -615,13 +660,22 @@ public sealed class RoslynResolver : ISymbolResolver
     /// That second case is <see cref="TargetKind.UncompiledRepositoryProject"/> and this resolver
     /// stays out of its way.
     /// </para>
+    ///
+    /// <para>
+    /// The fourth outcome is the invocation Roslyn bound to <i>nothing</i>, which this used to fold
+    /// into <see cref="TargetKind.External"/> -- reporting "the target is outside this repository"
+    /// where the fact was "there is no answer". Same verdict, different fact; it is
+    /// <see cref="TargetKind.Unbound"/> now, and that enum member records where it is reachable from.
+    /// </para>
     /// </summary>
     private static (TargetKind Kind, string? Container, string? Name) DescribeTarget(
         CSharpCompilation compilation, IReadOnlySet<string> repositoryProjectAssemblies, ISymbol? symbol)
     {
         if (symbol is null)
         {
-            return (TargetKind.External, null, null);
+            // "Roslyn had no answer", which is a different fact from "the target is outside this
+            // repository" even though both retract the baseline's guess today. See TargetKind.Unbound.
+            return (TargetKind.Unbound, null, null);
         }
 
         var definition = symbol.OriginalDefinition;
@@ -694,7 +748,75 @@ public sealed class RoslynResolver : ISymbolResolver
     private static bool IsDeclarationKindThisProducerEmits(ISymbol symbol) =>
         symbol is INamedTypeSymbol or IMethodSymbol or IPropertySymbol or IFieldSymbol or IEventSymbol;
 
-    private static string ContainerPathOf(ISymbol symbol)
+    /// <summary>
+    /// The dotted path of enclosing namespaces, types and members above a declaration, <b>spelled the
+    /// way source spells it</b> -- the same reason <see cref="SimpleNameOf"/> reads the declaring
+    /// syntax rather than <see cref="ISymbol.Name"/>, applied to the other half of the join key.
+    ///
+    /// <para>
+    /// Two shapes were measured disagreeing, and both were reachable from the produced graph rather
+    /// than theoretical. <c>namespace @event { class @class { ... } }</c>: Roslyn reports
+    /// <c>event.class</c>, the extractor <c>@event.@class</c>. A local function inside
+    /// <c>void IFoo.Bar()</c>: Roslyn reports the explicit implementation's mangled name, so the
+    /// container gains two whole segments (<c>Ns.Type.Ns.IFoo.Bar</c>) where the extractor has
+    /// <c>Ns.Type.Bar</c>. Neither merely loses an edge -- <c>CodeGraphBuilder</c> overwrites the
+    /// baseline's correct <see cref="EdgeConfidence.ByName"/> verdict before it discovers the target
+    /// joins nothing, so the run ends with <i>less</i> than it would have had this resolver not run.
+    /// </para>
+    ///
+    /// <para>
+    /// So the walk is over Roslyn's own syntax ancestors, mirroring
+    /// <c>TreeSitterExtractor.ComputeContainerPath</c> node kind for node kind rather than
+    /// approximating it from the symbol table: the same declaration kinds
+    /// <see cref="SimpleNameOf"/> reads, plus the namespace declarations that can only ever be
+    /// containers. A namespace contributes the text of its name clause, so <c>namespace A.B</c> is
+    /// one segment <c>A.B</c> exactly as the grammar's single <c>name</c> field makes it, and
+    /// C#'s file-scoped form -- a syntactic ancestor here, a sibling over there -- lands in the same
+    /// place the extractor prepends it. A lambda, an accessor list, an operator and an indexer expose
+    /// no name and so contribute no segment, on both sides.
+    /// </para>
+    ///
+    /// <para>
+    /// <see cref="ContainerPathFromSymbols"/> remains the fallback for a symbol with a source location
+    /// but no declaring syntax to read.
+    /// </para>
+    /// </summary>
+    private static string ContainerPathOf(ISymbol symbol) =>
+        symbol.DeclaringSyntaxReferences.Length > 0
+            ? ContainerPathFromSyntax(symbol.DeclaringSyntaxReferences[0].GetSyntax())
+            : ContainerPathFromSymbols(symbol);
+
+    private static string ContainerPathFromSyntax(SyntaxNode declaration)
+    {
+        var segments = new List<string>();
+
+        for (var current = declaration.Parent; current is not null; current = current.Parent)
+        {
+            var segment = current switch
+            {
+                BaseNamespaceDeclarationSyntax ns => ns.Name.ToString(),
+                BaseTypeDeclarationSyntax type => type.Identifier.Text,
+                DelegateDeclarationSyntax dele => dele.Identifier.Text,
+                MethodDeclarationSyntax method => method.Identifier.Text,
+                ConstructorDeclarationSyntax constructor => constructor.Identifier.Text,
+                DestructorDeclarationSyntax destructor => destructor.Identifier.Text,
+                PropertyDeclarationSyntax property => property.Identifier.Text,
+                EventDeclarationSyntax @event => @event.Identifier.Text,
+                LocalFunctionStatementSyntax local => local.Identifier.Text,
+                VariableDeclaratorSyntax declarator => declarator.Identifier.Text,
+                _ => string.Empty,
+            };
+
+            if (segment.Length > 0)
+            {
+                segments.Insert(0, segment);
+            }
+        }
+
+        return string.Join(".", segments);
+    }
+
+    private static string ContainerPathFromSymbols(ISymbol symbol)
     {
         var segments = new List<string>();
 
@@ -829,6 +951,24 @@ public sealed class RoslynResolver : ISymbolResolver
         /// name-only baseline guess, because that guess is wrong.
         /// </summary>
         External,
+
+        /// <summary>
+        /// Roslyn bound the invocation to nothing at all, in a compilation that had no errors. Not the
+        /// same fact as <see cref="External"/>, though it currently earns the same verdict, and worth a
+        /// name of its own because this class's own doc distinguishes the two and the code did not.
+        ///
+        /// <para>
+        /// Reachable in a CLEAN compilation, measured rather than supposed: a call on a
+        /// <c>dynamic</c> receiver, where the semantic model reports
+        /// <c>CandidateReason.LateBound</c> and no symbol; and <c>nameof(x)</c>, which the grammar
+        /// hands over as an invocation and the language does not treat as a call at all. Retracting
+        /// is right for both -- <c>nameof</c> has no callee to link, and a late-bound call has one
+        /// only at run time -- so "missing, not wrong" is served either way. What would change if
+        /// this ever needed different handling is that it can now be told apart at the one site that
+        /// decides, instead of arriving as an indistinguishable <see cref="External"/>.
+        /// </para>
+        /// </summary>
+        Unbound,
 
         /// <summary>
         /// Declared in one of the repository's own projects, reached as metadata because that project

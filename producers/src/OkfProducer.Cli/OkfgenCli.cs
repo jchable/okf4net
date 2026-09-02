@@ -108,6 +108,17 @@ public static class OkfgenCli
             Description = "Skip the code-graph stage entirely: overview, packages and docs only, exactly as this producer behaved before the stage existed. Generates no `code` concept, and therefore prunes none either.",
         };
 
+        var noMsBuildOption = new Option<bool>("--no-msbuild")
+        {
+            Description =
+                "Do not run `dotnet msbuild` on the scanned repository, and skip the Roslyn resolver that "
+                + "depends on it. Generating from a repository otherwise EVALUATES its MSBuild logic, which "
+                + "means executing it: Directory.Build.props/targets, whatever they Import, targets hooked on "
+                + "ResolveReferences, and inline code tasks all run as you. Pass this for a repository you would "
+                + "not be willing to build. Call links then come from name matching alone, so an ambiguous name "
+                + "is left unlinked rather than resolved exactly.",
+        };
+
         var maxFileSizeOption = new Option<long>("--max-file-size")
         {
             Description =
@@ -123,7 +134,7 @@ public static class OkfgenCli
             {
                 repoOption, outOption, updateOption, resetOption, forceOption,
                 repoUrlOption, revOption, checkOption,
-                includeTestsOption, includeInternalOption, noCodeOption, maxFileSizeOption,
+                includeTestsOption, includeInternalOption, noCodeOption, noMsBuildOption, maxFileSizeOption,
             },
         };
 
@@ -210,7 +221,8 @@ public static class OkfgenCli
                 IncludeTests: parseResult.GetValue(includeTestsOption),
                 IncludeInternal: parseResult.GetValue(includeInternalOption),
                 NoCode: parseResult.GetValue(noCodeOption),
-                MaxFileBytes: maxFileBytes);
+                MaxFileBytes: maxFileBytes,
+                NoMsBuild: parseResult.GetValue(noMsBuildOption));
 
             return Generate(request, services, output, error);
         });

@@ -46,6 +46,39 @@ public sealed class UnknownLanguageVersionException : InvalidOperationException
 }
 
 /// <summary>
+/// The bounds this factory reads a <c>Compile</c> item under -- the same two
+/// <c>TreeSitterExtractor.TryReadSource</c> applies to the very same files.
+///
+/// <para>
+/// They were enforced in one engine only, which made <c>--max-file-size</c>'s help text
+/// ("Largest source file, in bytes, the code stage will read") false of half the code stage: the
+/// Roslyn path did a bare <see cref="File.ReadAllBytes(string)"/> on every item MSBuild listed, so a
+/// <c>&lt;Compile Include="..\..\..\outside\file" /&gt;</c>, or an item behind a junction, was read
+/// here after the tree-sitter path had refused it. Nothing of that content reaches the bundle --
+/// symbols come only from the extractor -- so this is not a disclosure hole; it is a documented bound
+/// that one of the two engines did not honour.
+/// </para>
+///
+/// <para>
+/// A refused item is dropped from the compilation exactly as a missing one is, which is the safe
+/// direction: the caller's zero-errors gate then reports the project unavailable and the
+/// name-matching baseline carries it, rather than an incomplete symbol table resolving calls to the
+/// wrong thing.
+/// </para>
+/// </summary>
+/// <param name="MaxFileBytes">Largest source file to read; a larger one is dropped from the compilation.</param>
+/// <param name="RepositoryRoot">
+/// The root the reparse-point walk stops at, or <see langword="null"/> to check only whether the file
+/// itself is a link. Bounding the walk is what keeps it the same check the extractor makes -- that
+/// one walks up as many levels as the file's repository-relative depth, and no further.
+/// </param>
+public sealed record SourceFileGate(long MaxFileBytes, string? RepositoryRoot)
+{
+    /// <summary>No size bound and no reparse-point walk: what a caller that has no repository gets.</summary>
+    public static SourceFileGate Unbounded { get; } = new(long.MaxValue, null);
+}
+
+/// <summary>
 /// Turns one project's <see cref="ProjectInputs"/> into a <see cref="CSharpCompilation"/>, with no
 /// <c>MSBuildWorkspace</c> involved.
 /// </summary>
@@ -58,7 +91,17 @@ public static class CompilationFactory
     /// <paramref name="inputs"/>'s <c>LangVersion</c> is not one this Roslyn build knows.
     /// </exception>
     public static CSharpCompilation Create(ProjectInputs inputs) =>
-        Create(inputs, projectCompilations: null, out _);
+        Create(inputs, projectCompilations: null, SourceFileGate.Unbounded, out _);
+
+    /// <summary>
+    /// As <see cref="Create(ProjectInputs, IReadOnlyDictionary{string, CSharpCompilation}, SourceFileGate, out IReadOnlyList{string})"/>,
+    /// reading every <c>Compile</c> item under <see cref="SourceFileGate.Unbounded"/>.
+    /// </summary>
+    public static CSharpCompilation Create(
+        ProjectInputs inputs,
+        IReadOnlyDictionary<string, CSharpCompilation>? projectCompilations,
+        out IReadOnlyList<string> missingReferences) =>
+        Create(inputs, projectCompilations, SourceFileGate.Unbounded, out missingReferences);
 
     /// <summary>
     /// Builds the compilation for <paramref name="inputs"/>, substituting a from-source
@@ -101,19 +144,22 @@ public static class CompilationFactory
     /// the rest -- refusing to guess at one project's language is no reason to give up the exact
     /// resolution of every other.
     /// </exception>
+    /// <param name="gate">The bounds each <c>Compile</c> item is read under; see <see cref="SourceFileGate"/>.</param>
     public static CSharpCompilation Create(
         ProjectInputs inputs,
         IReadOnlyDictionary<string, CSharpCompilation>? projectCompilations,
+        SourceFileGate gate,
         out IReadOnlyList<string> missingReferences)
     {
         ArgumentNullException.ThrowIfNull(inputs);
+        ArgumentNullException.ThrowIfNull(gate);
 
         var parseOptions = ParseOptionsFor(inputs);
 
         var trees = new List<SyntaxTree>(inputs.CompileFiles.Count);
         foreach (var file in inputs.CompileFiles)
         {
-            var tree = TryParse(file, parseOptions);
+            var tree = TryParse(file, parseOptions, gate);
             if (tree is not null)
             {
                 trees.Add(tree);
@@ -190,6 +236,13 @@ public static class CompilationFactory
     /// to fabricate an empty tree for.
     ///
     /// <para>
+    /// A file over <paramref name="gate"/>'s size cap, or reached through a symlink or junction, is
+    /// reported by the same omission and for the same reason. Those are the two bounds
+    /// <c>TreeSitterExtractor.TryReadSource</c> applies to the very same files, and until they were
+    /// applied here too the Roslyn half of the code stage read what the tree-sitter half had refused.
+    /// </para>
+    ///
+    /// <para>
     /// The text is decoded through <see cref="SourceDecoder.DecodeStrict"/>, the same call
     /// <c>TreeSitterExtractor</c> makes, and handed to <see cref="SourceText.From(string, Encoding, SourceHashAlgorithm)"/>
     /// unchanged. That is load-bearing rather than tidy: <see cref="CallSite.Offset"/> is a UTF-8 byte
@@ -209,11 +262,17 @@ public static class CompilationFactory
     /// offset to mis-attach to.
     /// </para>
     /// </summary>
-    private static SyntaxTree? TryParse(string path, CSharpParseOptions parseOptions)
+    private static SyntaxTree? TryParse(string path, CSharpParseOptions parseOptions, SourceFileGate gate)
     {
         byte[] bytes;
         try
         {
+            var file = new FileInfo(path);
+            if (!file.Exists || file.Length > gate.MaxFileBytes || IsBehindReparsePoint(file, gate.RepositoryRoot))
+            {
+                return null;
+            }
+
             bytes = File.ReadAllBytes(path);
         }
         catch (IOException)
@@ -236,6 +295,47 @@ public static class CompilationFactory
         }
 
         return CSharpSyntaxTree.ParseText(SourceText.From(text), parseOptions, path);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="file"/> is a link, or sits under a directory that is one.
+    ///
+    /// <para>
+    /// The walk stops at <paramref name="repositoryRoot"/> rather than at the drive root, which is the
+    /// same bound <c>TreeSitterExtractor</c> gets from counting the separators in a file's
+    /// repository-relative path: a junction somewhere above the repository is the operator's own
+    /// checkout layout, not something the scanned repository chose. A file outside the root -- a
+    /// linked <c>Compile</c> item from elsewhere -- keeps only the check on the file itself, since
+    /// there is no bound to walk within.
+    /// </para>
+    /// </summary>
+    private static bool IsBehindReparsePoint(FileInfo file, string? repositoryRoot)
+    {
+        if (file.LinkTarget is not null)
+        {
+            return true;
+        }
+
+        if (repositoryRoot is null)
+        {
+            return false;
+        }
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repositoryRoot));
+        var directory = file.DirectoryName;
+
+        while (directory is not null
+            && !string.Equals(Path.TrimEndingDirectorySeparator(directory), root, StringComparison.Ordinal))
+        {
+            if (new DirectoryInfo(directory).LinkTarget is not null)
+            {
+                return true;
+            }
+
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return false;
     }
 
     private static OutputKind OutputKindFor(string outputType) =>
