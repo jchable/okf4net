@@ -245,9 +245,26 @@ public sealed record GenerationManifest(
     /// cannot follow -- callers that care report it; callers that do not compile unchanged,
     /// and get the safe outcome either way, since a manifest that was not written leaves the previous
     /// one in place and the next run prunes by that instead.
+    ///
+    /// <para><b>All three refusals arrive as the same bare <see langword="false"/>, so the caller's
+    /// note has to name the likely cause instead of the established one</b> (see
+    /// <c>BundleWriter.Write</c>). If an operator ever needs to be told WHICH, the fix is a
+    /// <c>TryWriteTo(string, out string? refusal)</c> overload beside this method -- source-compatible,
+    /// no call site forced to change, and this one becomes a two-line forwarder. Recorded here with
+    /// its real cost because a previous round filed it as "means changing the return type", which
+    /// overstated it: this assembly is not published to NuGet and this method has four call sites.
+    /// Not done in this round; not expensive when it is.</para>
     /// </returns>
     /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> is null or empty.</exception>
     /// <exception cref="IOException">The file could not be written.</exception>
+    /// <exception cref="UnauthorizedAccessException">
+    /// The manifest's own path could not be opened for writing -- an ACL that denies this process, or
+    /// a read-only file at <see cref="FileName"/>. <b>Listed because it is real and was not, not
+    /// because this round introduced it.</b> It escapes <c>BundleWriter.Write()</c> exactly the way
+    /// the reparse-point cases used to, after the concepts are committed and the prune has run: the
+    /// same escape class the gate above closes for links, still open for permissions. Nothing here
+    /// catches it, and this doc no longer implies <see cref="IOException"/> is the only way out.
+    /// </exception>
     public bool WriteTo(string bundleRoot)
     {
         ArgumentException.ThrowIfNullOrEmpty(bundleRoot);
@@ -290,10 +307,15 @@ public sealed record GenerationManifest(
         //   - a FILE symbolic link at the manifest's name pointing at a concept file inside the bundle
         //     resolves inside, passes containment, and File.WriteAllBytes FOLLOWS it and replaces that
         //     concept with manifest JSON -- WriteTo returning true and the run reporting success. NOT
-        //     EXECUTED: a file symbolic link needs SeCreateSymbolicLinkPrivilege, which this host does
-        //     not have (ProducerFixture.TryCreateFileLink returned false), so this shape is stated from
-        //     the mechanism and from the same BCL behaviour the outward case already measures, not from
-        //     a run. The same equality below refuses it either way.
+        //     EXECUTED HERE: a file symbolic link needs SeCreateSymbolicLinkPrivilege, which this host
+        //     does not have (ProducerFixture.TryCreateFileLink returned false), so this shape is stated
+        //     from the mechanism, not from a run. It is stated and NOT asserted anywhere in this
+        //     repository's measurements: the outward test does not establish it either -- it also falls
+        //     back to a junction on this host, so its byte-comparison of the outside victim is skipped
+        //     too. What changed in this round is that both tests now ATTEMPT the file link first and
+        //     assert the overwrite wherever the platform will build one (Linux will; a privileged
+        //     Windows box will), instead of hardcoding the junction and leaving the worse damage
+        //     unreachable on every host. The same equality below refuses both shapes either way.
         //
         // So: written to `path`, and only once the walk has shown that `path` is where it lands.
         // `landing` is where the walk really arrives; they differ exactly when a link was crossed,

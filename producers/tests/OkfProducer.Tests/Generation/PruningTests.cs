@@ -601,10 +601,18 @@ public class PruningTests
         // a catch at all.
         //
         // Checked by hand rather than argued: replace the `refused.Add(...)` in CommitStaging's move
-        // catch with `return refused;` and the suite goes 2 RED / 553 green -- this test, and
+        // catch with `return refused;` and the suite goes 2 RED / 554 green -- this test, and
         // The_manifest_is_written_after_the_concepts_it_describes, whose Assert.Single on the failures
-        // also fails because an early return leaves `refused` empty. Two, not one: the sentence that
-        // stood here said "the whole suite stays green except this test", and that was never measured.
+        // also fails because an early return leaves `refused` empty. Both die at
+        // `Assert.Single() Failure: The collection did not contain any matching items / Collection: []`.
+        // Two, not one: the sentence that stood here once said "the whole suite stays green except this
+        // test", and that was never measured.
+        //
+        // THE GREEN HALF OF THAT COUNT IS A MEASUREMENT AND MOVES WHEN THE SUITE DOES. It said "553"
+        // for one round, which was the number from BEFORE that same round added a test -- re-run at a
+        // 556-test HEAD and a maintainer gets 554, not 553, and has no way to tell a stale count from a
+        // wrong one. 554 is the number measured on the suite this line ships with (556 total). If you
+        // add a test and do not re-run this mutation, say the count is stale rather than leaving it.
         //
         // `a.md` sorts before `b.md` under StringComparer.Ordinal, which is the order CommitStaging
         // walks staging in, so the failure here happens with a concept still unwritten behind it.
@@ -789,6 +797,27 @@ public class PruningTests
         // Landed in the REAL directory, not merely "somewhere the link can see": a writer that
         // silently created a second tree beside the link would satisfy a check through `linked`.
         Assert.True(File.Exists(Path.Combine(real, "code", "csharp", "n", "t", "a.md")));
+
+        // AND THE MANIFEST, which is the half this test was missing and the reason it is here at all.
+        // GenerationManifest.WriteTo now asks the same equality CommitStaging asks -- does the walk
+        // land on the path that was asked for -- and that equality can only refuse where a link was
+        // crossed, which is exactly this configuration. A REFUSED MANIFEST IS A NOTE, NOT A FAILURE,
+        // so if the equality ever stopped holding on a linked root, every such run would silently lose
+        // its ownership record and the three assertions above would stay GREEN -- as would
+        // An_ordinary_bundle_still_gets_its_manifest_written, which uses a root that is not a link.
+        // README.md promises this configuration "stays fine"; this line is what makes that a claim the
+        // suite can lose. Same witness CommitStaging's equality was given when it landed.
+        //
+        // Checked by hand, not argued -- row M1 of the round-3 table: build the candidate from the
+        // CALLER's spelling instead of the resolved root in GenerationManifest.WriteTo,
+        //
+        //     var path = Path.Combine(bundleRoot, FileName);            // was: Path.Combine(root, ...)
+        //
+        // and this line is the only one in the suite that goes red. The walk still lands in `real`
+        // while `path` names `linked`, so the equality refuses, the manifest is never written, and
+        // every other assertion in this file is untouched.
+        Assert.True(File.Exists(Path.Combine(real, GenerationManifest.FileName)),
+            "the manifest was not written through a bundle root that is itself a link.");
     }
 
     [Fact]
@@ -880,12 +909,18 @@ public class PruningTests
                 "File.WriteAllBytes followed a link out of the bundle and overwrote a file outside it.");
         }
 
-        // Both platforms assert this, and on Windows it is the whole mutation witness: without the
-        // gate the junction makes WriteAllBytes throw UnauthorizedAccessException out of Write(),
-        // after the concepts are committed and the prune has run -- a successful generation reported
-        // to the operator as a failed one.
-        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")),
-            "the refused manifest write took the rest of the run down with it.");
+        // THERE WAS AN `Assert.True(File.Exists(.../a.md), "the refused manifest write took the rest of
+        // the run down with it.")` HERE, CALLED "the whole mutation witness", AND IT WAS NEITHER. The
+        // priming WriteRun above already wrote `a.md`, so the passing case proves nothing; and the
+        // damage the message names -- WriteAllBytes throwing out of a Write() whose concepts are
+        // already committed -- surfaces as an exception out of the WriteRun two lines up, so in the
+        // failing case the line is never reached. Unfalsifiable both ways. It is deleted rather than
+        // repaired because on this host the throw IS the witness: remove the gate and this test dies
+        // inside WriteRun, which is a stronger signal than any assertion after it could be.
+        //
+        // What survives is falsifiable. A refused manifest is a NOTE and never a FAILURE -- by the
+        // time WriteTo runs the concepts are on disk and the prune has happened -- and turning the
+        // refusal into a failure is a production edit this line goes red for.
         Assert.Empty(result.Failures);
     }
 
@@ -911,40 +946,82 @@ public class PruningTests
         // '...\\.okfgen-manifest.json' is denied", escaping Write() with `a.md` already on disk. A run
         // that succeeded, reported to the operator as one that threw.
         //
-        // NOT EXECUTED, on this host: a FILE symbolic link at the manifest's name pointing at a concept
-        // file inside the bundle, where File.WriteAllBytes follows it and replaces that concept with
-        // manifest JSON while WriteTo returns true and the run reports success. That is the worse of the
-        // two and it is the one that cannot be built here -- ProducerFixture.TryCreateFileLink returned
-        // false, SeCreateSymbolicLinkPrivilege being absent, which was confirmed by running it. The
-        // shape is stated from the mechanism, not asserted from a run; the equality in WriteTo refuses
-        // both, and the junction below is what actually witnesses the gate on this host.
+        // NOT EXECUTED ON THIS HOST, BUT THE TEST NOW REACHES FOR IT: a FILE symbolic link at the
+        // manifest's name pointing at a concept file inside the bundle, where File.WriteAllBytes
+        // follows it and replaces that concept with manifest JSON while WriteTo returns true and the
+        // run reports success. That is the worse of the two damages. A previous round declined to
+        // build it at all, on the ground that a branch which cannot run here would "silently assert
+        // nothing" -- which was the wrong call, and the outward sibling sixty lines up had already
+        // shown why: TryCreateFileLink first, CreateDirectoryLink as the fallback, and the strong
+        // assertion guarded by the flag. That shape asserts the real damage wherever the link CAN be
+        // built and nothing extra where it cannot, which is the opposite of asserting nothing.
+        // ProducerFixture.TryCreateFileLink's own doc says so: "Returning false and letting a test
+        // quietly assert nothing is the outcome this comment exists to prevent."
+        //
+        // The consequence of the shape that was here: this test hardcoded CreateDirectoryLink, so on
+        // LINUX -- where a file symbolic link needs no privilege at all -- it still built a DIRECTORY
+        // symlink and still only reached the throw. The overwrite was unreachable on EVERY host, not
+        // just this one, while the label said "on this host". Both are fixed below.
         using var tmp = new TempDir();
 
         WriteRun(tmp, [A], complete: true);
+
+        // The victim of the overwrite shape: a concept this producer wrote a moment ago, inside the
+        // bundle, at the path its id names.
+        var concept = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
 
         var target = Path.Combine(tmp.Path, "code", "elsewhere");
         Directory.CreateDirectory(target);
 
         var manifestPath = Path.Combine(tmp.Path, GenerationManifest.FileName);
         File.Delete(manifestPath);
-        ProducerFixture.CreateDirectoryLink(manifestPath, target);
 
-        // Nothing escapes. Without the gate this line is where the test dies, with the
-        // UnauthorizedAccessException quoted above -- which is the mutation witness.
+        var overwriteShape = ProducerFixture.TryCreateFileLink(manifestPath, concept);
+        if (!overwriteShape)
+        {
+            ProducerFixture.CreateDirectoryLink(manifestPath, target);
+        }
+
+        // Nothing escapes. In the junction shape, removing the gate is what makes this line throw the
+        // UnauthorizedAccessException quoted above -- so on this host the mutation witness is the test
+        // dying here, which is stronger than any assertion placed after it.
         var result = WriteRun(tmp, [A], complete: true);
 
         Assert.Contains(result.Notes, n => n.Contains(GenerationManifest.FileName, StringComparison.Ordinal)
             && n.Contains("symbolic link or junction", StringComparison.Ordinal));
 
-        // The rest of the run stands: a refused manifest is a note, never a failure, because by this
-        // point the concepts are on disk and the prune has already happened.
-        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")),
-            "the refused manifest write took the rest of the run down with it.");
-        Assert.Empty(result.Failures);
+        if (overwriteShape)
+        {
+            // THE DAMAGE ITSELF, on a host that can build the link. Without the gate the concept file
+            // holds the manifest JSON -- which starts `{` and carries `"version"` (Serialize) where a
+            // concept starts with a `---` frontmatter fence. Asserted on the shape of the content
+            // rather than on a byte-for-byte match against a copy taken before the run, because the
+            // run under test rewrites this concept itself a moment earlier and a byte comparison would
+            // be asserting write determinism, which is a different property and not this test's.
+            var after = File.ReadAllText(concept);
+            Assert.StartsWith("---", after, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"version\"", after, StringComparison.Ordinal);
 
-        // And the link is still a link, holding nothing this producer put there.
-        Assert.NotNull(new DirectoryInfo(manifestPath).LinkTarget);
-        Assert.Empty(Directory.EnumerateFileSystemEntries(target));
+            Assert.NotNull(new FileInfo(manifestPath).LinkTarget);
+        }
+        else
+        {
+            Assert.NotNull(new DirectoryInfo(manifestPath).LinkTarget);
+        }
+
+        // AN `Assert.True(File.Exists(concept), "the refused manifest write took the rest of the run
+        // down with it.")` AND AN `Assert.Empty(Directory.EnumerateFileSystemEntries(target))` STOOD
+        // HERE, AND NEITHER COULD FAIL. The priming WriteRun above already wrote the concept, so its
+        // passing case proves nothing, and the damage its message names surfaces as a throw out of the
+        // WriteRun above it, so its failing case is never reached. The Empty was worse: with a
+        // DIRECTORY junction at the manifest's name, File.WriteAllBytes can only throw, and there is no
+        // path by which it deposits a file inside `target`. The overwriteShape branch above is where
+        // the real assertion now lives, and it names the concept file, not `target`, because a concept
+        // replaced by manifest JSON is the damage this gate exists for.
+        //
+        // What is left is falsifiable: a refused manifest is a NOTE and never a FAILURE, and a
+        // production edit that reported it as a failure turns this red.
+        Assert.Empty(result.Failures);
     }
 
     [Fact]
@@ -1233,8 +1310,15 @@ public class PruningTests
         // THE MUTATION THAT SHOWS IT, named exactly as it was run, because the sentence that stood here
         // named a different one and got its outcome wrong. It is NOT "delete `merged.WriteTo(outPath)`":
         // that removes the write for EVERY run, the priming one included, so it takes the fallback away
-        // along with the thing being tested and turns 35 tests red across the file. The mutation that
-        // isolates this blind spot has to leave successful runs writing normally and skip only the
+        // along with the thing being tested. Measured on the suite this line ships with (556 total),
+        // `if (!merged.WriteTo(outPath))` -> `if (merged is null)` goes 37 RED / 519 green, and NOT
+        // "across the file" -- the previous wording said 35 and said "across the file", and both halves
+        // were wrong. The 37 span four classes: 32 in PruningTests, 3 in CliTests
+        // (Check_forwards_the_note_that_explains_a_drift_the_drift_line_cannot,
+        // Dropping_include_internal_does_not_delete_the_concepts_it_stopped_covering,
+        // No_code_over_a_code_bundle_deletes_nothing_and_leaves_the_manifest_alone), 1 in CheckTests
+        // (Check_compares_the_generation_manifest_too) and 1 BlastRadiusTests theory case. The mutation
+        // that isolates this blind spot has to leave successful runs writing normally and skip only the
         // write on a run that had a failure:
         //
         //     if (failures.Count == 0 && !merged.WriteTo(outPath))     // BundleWriter.Write
