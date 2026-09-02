@@ -287,15 +287,19 @@ public sealed class DocCommentSource : IDescriptionSource
                 //
                 // Call a span a DELTA span when this predicate rejects it and the pre-IsNameShaped
                 // predicate accepted it: exactly a self-closing span whose name is not an XML name, plus a
-                // closing span with an empty name (`</>`). WHAT IS GUARANTEED: if a delta span's markup
-                // contains no `<`, the change is one-way -- every character the old code emitted is still
-                // emitted. The only `<` in the span is the one at Start, so the rescan finds no token
-                // before End (which is a `>`) and arrives at End + 1 with `open` holding exactly what the
-                // old scan held there -- a self-closing token is never pushed, and an empty-name closer's
-                // FindLastIndex cannot match, since StartsTag makes every opener's name at least one
-                // character -- so from End + 1 the two runs classify every token identically. (Old's token
-                // LIST carries one extra entry, the delta span's own; `open` stores indices into that list,
-                // but each run indexes its own consistently.) The span's old contribution was
+                // closing span with an empty name (`</>`). WHAT IS GUARANTEED, and the quantifier is the
+                // whole of it: if EVERY delta span in the comment has markup containing no `<`, the change
+                // is one-way -- every character the old code emitted is still emitted. Read per-span the
+                // sentence would say nothing, because one comment can hold a `<`-free delta span next to
+                // one that has a `<`, and what that second span is then free to do is the paragraph below.
+                // Under the universal the argument runs per span and composes: the only `<` in the span is
+                // the one at Start, so the rescan finds no token before End (which is a `>`) and arrives
+                // at End + 1 with `open` holding exactly what the old scan held there -- a self-closing
+                // token is never pushed, and an empty-name closer's FindLastIndex cannot match, since
+                // StartsTag makes every opener's name at least one character -- so from End + 1 the two
+                // runs classify every token identically. (Old's token LIST carries one extra entry, the
+                // delta span's own; `open` stores indices into that list, but each run indexes its own
+                // consistently.) The span's old contribution was
                 // Substitution(markup) -- empty, or one attribute value, which is a substring of its own
                 // markup -- and its new contribution is the whole span verbatim. `</>` satisfies the
                 // condition by construction and so does every angle-bracketed URL, which are the two cases
@@ -494,9 +498,17 @@ public sealed class DocCommentSource : IDescriptionSource
     /// ranges U+0300-U+036F and U+203F-U+2040, which are <c>Po</c>, <c>Mn</c> and <c>Pc</c> respectively
     /// and which <c>char.IsLetterOrDigit</c> refuses; a self-closing tag whose name carries a combining
     /// acute (U+0301) is well-formed and is now emitted verbatim rather than unwrapped. Its
-    /// <c>NameStartChar</c> range U+10000-U+EFFFF never reaches this predicate at all --
-    /// <see cref="StartsTag"/> already requires an ASCII letter or <c>/</c> after the <c>&lt;</c>, so an
-    /// astral name is prose in every version of this file.</para>
+    /// <c>NameStartChar</c> range U+10000-U+EFFFF is refused as well, and only half of the obvious reason
+    /// applies. <see cref="StartsTag"/> does keep an astral code point out of the name-<b>start</b>
+    /// position -- it requires an ASCII letter or <c>/</c> after the <c>&lt;</c>, so a span whose name
+    /// begins with one never opens at all -- but it constrains that one character and no other. An
+    /// astral code point in any <b>later</b> name position does reach this loop, as the two surrogate
+    /// halves it is stored in, and <c>char.IsLetterOrDigit(char)</c> is false for each half on its own, so
+    /// the name is refused. A self-closing span named <c>a</c> followed by U+10000 is therefore a
+    /// well-formed XML element that this predicate rejects, and a <b>delta</b> span rather than prose: run
+    /// against the predicate that shipped before this one it was accepted, <see cref="Substitution"/>
+    /// found no name-carrying attribute and returned empty, and the whole span was deleted; run against
+    /// this one it is emitted verbatim. Both of those runs were executed, not deduced.</para>
     ///
     /// <para><b>Not widened, deliberately.</b> What this costs is a visible pair of angle brackets on a
     /// tag a reader would rather not see; what widening it would buy is moving spans from "kept verbatim"

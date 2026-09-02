@@ -339,6 +339,36 @@ public class DescriptionTests
     }
 
     [Theory]
+    [InlineData("<b/ x=y>keep<a+</b/>", "keep<a+")]
+    [InlineData("<a<![CDATA[x/> keep ]]> tail", "<ax/> keep tail")]
+    [InlineData("A <a\" b=c<d \"e/> hello k=1 \"x/> tail.", "A <a\" b=c tail.")]
+    public void A_rejected_span_is_rescanned_and_these_are_the_shapes_where_that_reaches_furthest(string doc, string expected)
+    {
+        // RECORDS, does not guarantee. Each expected string is what the scan produces today on that input,
+        // obtained by running it -- not a property anyone wants and not a shape any of these characters
+        // should be read as promising. All three inputs are markup that both the current predicate and the
+        // one before it already mangle; the point is only that they are the three ways the mangling
+        // DIFFERS, and that the difference stops being invisible when it moves.
+        //
+        // Why they are pinned at all. A span this file rejects as not-tag-shaped is emitted verbatim and
+        // the scan resumes at Start + 1, so the bytes inside it are read again and can become tokens. The
+        // remark on that rescan in ScanTokens states the safety condition -- one-way whenever every span
+        // the IsNameShaped check newly rejects has markup with no `<` in it -- and then enumerates, as its
+        // own complement, the three ways a rejected span that DOES contain a `<` reaches outside the bytes
+        // the old code was deleting: an inner closing tag reaching open.FindLastIndex (row 1), an inner
+        // `<![CDATA[` pairing with a `]]>` that lies after the span's end (row 2), and an odd `"` count
+        // making FindTagEnd skip that end and terminate later (row 3). Those three inputs were named in a
+        // comment and asserted nowhere, which made the complement of the safety claim prose exactly like
+        // the claim itself -- the mechanism that put four false sentences into this file's remarks. A
+        // future edit that moves any of these three now leaves something red.
+        //
+        // Read against UnwrapXmlDocTags rather than the resolver on purpose: the remark's claims are about
+        // this function's output, and going through DescriptionResolver would put first-sentence
+        // extraction and link neutralization between the claim and the assertion.
+        Assert.Equal(expected, DocCommentSource.UnwrapXmlDocTags(doc));
+    }
+
+    [Theory]
     [InlineData("Matches <![CDATA[a < b]]> exactly.", "Matches a < b exactly.")]
     [InlineData("Emits <![CDATA[<c>x</c>]]> literally.", "Emits <c>x</c> literally.")]
     public void A_cdata_section_contributes_its_content_without_its_delimiters(string doc, string expected)
