@@ -125,14 +125,17 @@ public sealed class BundleWriter : IBundleWriter
             // consequences for free -- the id is excluded from the manifest this run writes (so it is
             // never claimed as owned, and never becomes a licence to delete whatever appears at that
             // path), and a non-zero failure count disqualifies the run from pruning.
-            foreach (var relative in CommitStaging(staging, outPath))
+            foreach (var (relative, reason) in CommitStaging(staging, outPath))
             {
                 written--;
                 var destination = Path.Combine(outPath, relative.Replace('/', Path.DirectorySeparatorChar));
-                var error =
-                    $"Error: refused to write '{relative}': the path leaves the bundle root through a symbolic link"
-                    + " or junction, and File.Move would have followed it and overwritten a file outside the bundle."
-                    + " Remove the link, or generate into a bundle that does not contain one.";
+
+                // The reason travels WITH the path now, because there are two of them and they are not
+                // interchangeable: one is a gate this producer chose to close, the other is the
+                // filesystem refusing a move this producer was willing to make. Building the sentence
+                // here from a single hard-coded cause is what made the second one unsayable, and an
+                // unsayable failure is the reason it used to come out as an unhandled exception.
+                var error = $"Error: refused to write '{relative}': {reason}";
 
                 // Either a failure or a note, never both. Adding it to both put the same sentence on
                 // stderr twice under clashing prefixes -- OkfgenCli renders one as
@@ -165,9 +168,17 @@ public sealed class BundleWriter : IBundleWriter
             // ordering is load-bearing, not incidental. This file is the licence the NEXT run deletes
             // by, so a manifest describing a state the bundle never reached is worse than no manifest
             // at all. Written first, a failure during the commit (a directory sitting where a concept
-            // file must land, a permission change, a full disk) would leave exactly that. Written
-            // last, the same failure leaves the PREVIOUS manifest: conservative, and self-healing on
-            // the next run. Pinned by PruningTests.The_manifest_is_written_after_the_concepts_it_describes.
+            // file must land, a reparse point at that path, a permission change, a full disk) would
+            // leave exactly that: an id claimed as owned that was never written.
+            //
+            // What the ordering buys is the SUBTRACTION below, and that is now the whole of it. This
+            // comment used to add "written last, the same failure leaves the PREVIOUS manifest",
+            // which was true only because such a failure escaped CommitStaging as an exception and
+            // ended the run before this line. It no longer does -- one unwritable destination is a
+            // write failure, not the end of the run -- so the run reaches here and writes a manifest
+            // that simply does not claim the id it could not write. The remaining causes that still
+            // leave the previous manifest are the ones CommitStaging does not catch.
+            // Pinned by PruningTests.The_manifest_is_written_after_the_concepts_it_describes.
             //
             // The new manifest is this run's ids PLUS every previous id that survived: a degraded run
             // that could not confirm an id gone must not drop it from the record, or the next complete
@@ -1226,23 +1237,27 @@ public sealed class BundleWriter : IBundleWriter
     /// <c>index.md</c> node itself immediately before writing. The line references are in
     /// <see cref="Write"/>, beside the call.</para>
     /// </summary>
-    /// <returns>The bundle-relative paths that were refused, sorted <see cref="StringComparer.Ordinal"/>; empty on an ordinary commit.</returns>
-    private static IReadOnlyList<string> CommitStaging(string staging, string outPath)
+    /// <returns>
+    /// One entry per staged file that never reached the bundle, each carrying the reason, sorted
+    /// <see cref="StringComparer.Ordinal"/> by path; empty on an ordinary commit.
+    /// </returns>
+    private static IReadOnlyList<Uncommitted> CommitStaging(string staging, string outPath)
     {
         var staged = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
             .OrderBy(p => p, StringComparer.Ordinal)
             .ToList();
 
         var root = BundlePaths.ResolveRoot(outPath);
-        var refused = new List<string>();
+        var refused = new List<Uncommitted>();
 
         foreach (var source in staged)
         {
             var relative = Path.GetRelativePath(staging, source);
+            var reported = relative.Replace(Path.DirectorySeparatorChar, '/');
 
             if (root is null)
             {
-                refused.Add(relative.Replace(Path.DirectorySeparatorChar, '/'));
+                refused.Add(new Uncommitted(reported, LeavesRootReason));
                 continue;
             }
 
@@ -1270,21 +1285,77 @@ public sealed class BundleWriter : IBundleWriter
             // directory tree inside somebody else's.
             if (BundlePaths.ResolveInsideRoot(root, destination) is null)
             {
-                refused.Add(relative.Replace(Path.DirectorySeparatorChar, '/'));
+                refused.Add(new Uncommitted(reported, LeavesRootReason));
                 continue;
             }
 
-            var directory = Path.GetDirectoryName(destination);
-            if (!string.IsNullOrEmpty(directory))
+            // THE GATE ABOVE IS NOT THE ONLY WAY THIS MOVE CAN FAIL, and until this catch existed the
+            // other ways ended the run. ResolveInsideRoot answers one question -- does the destination
+            // escape the bundle? -- and a reparse point that resolves back INSIDE the root truthfully
+            // answers no, so it passes. File.Move then runs against a path that is a directory reparse
+            // point where a file belongs. MEASURED, Windows 11 build 26200 on .NET 10.0.8, with a
+            // junction at `code/csharp/n/t/a.md` pointing at `<bundle>/code`: UnauthorizedAccessException,
+            // straight out of BundleWriter.Write and out of the caller's run, taking every concept
+            // already committed in this loop with it.
+            //
+            // Caught per file and recorded, because that is what every other unwritable destination in
+            // this class already does: a write failure is a claim about ONE concept, the id is then
+            // excluded from the manifest, and a non-zero failure count disqualifies the run from
+            // pruning. An exception gets none of those and loses the rest of the commit as well.
+            //
+            // Deliberately NOT narrowed to the link shape. The exception carries no property saying
+            // "this was a reparse point", so testing for one would mean re-probing the path after the
+            // fact and guessing; and the other things in this catch -- a full disk, a file held open,
+            // a permission the operator does not have -- want the same treatment for the same reason.
+            // What the message must not do is assert a cause it did not establish, so it reports the
+            // platform's own sentence and names the link case as the one to check first.
+            try
             {
-                Directory.CreateDirectory(directory);
-            }
+                var directory = Path.GetDirectoryName(destination);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
 
-            File.Move(source, destination, overwrite: true);
+                File.Move(source, destination, overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                refused.Add(new Uncommitted(reported, MoveFailedReason(ex)));
+            }
         }
 
         return refused;
     }
+
+    /// <summary>One staged file that never reached the bundle, and the sentence saying why.</summary>
+    /// <param name="Relative">The bundle-relative, <c>/</c>-separated path it would have been written to.</param>
+    /// <param name="Reason">
+    /// The clause the caller appends to <c>"refused to write '&lt;path&gt;': "</c>. Carried rather than
+    /// rebuilt by the caller, because the two causes are not interchangeable and a caller holding only
+    /// a path can state only one of them.
+    /// </param>
+    private sealed record Uncommitted(string Relative, string Reason);
+
+    /// <summary>The reason a destination resolving outside the bundle root is refused before it is attempted.</summary>
+    private const string LeavesRootReason =
+        "the path leaves the bundle root through a symbolic link or junction, and File.Move would have"
+        + " followed it and overwritten a file outside the bundle."
+        + " Remove the link, or generate into a bundle that does not contain one.";
+
+    /// <summary>
+    /// The reason a destination that passed every gate could still not be written.
+    ///
+    /// <para>States what the platform said and stops there. The likeliest cause on a bundle somebody
+    /// else wrote is a reparse point at that exact path resolving back inside the root -- which the
+    /// containment gate passes, correctly, because nothing is escaping -- so that is named as the first
+    /// thing to check. It is <b>not</b> asserted: the exception does not say, and this producer has
+    /// shipped enough sentences claiming more than was established.</para>
+    /// </summary>
+    private static string MoveFailedReason(Exception ex) =>
+        $"moving it into place failed and the concept was not written -- {ex.Message.TrimEnd()}"
+        + " Check whether that path is a symbolic link or junction; one pointing back inside the bundle"
+        + " passes the containment gate and still cannot be written through.";
 
     /// <summary>
     /// <see cref="WritePolicy.Reset"/>'s deletion, performed at the commit boundary rather than on the

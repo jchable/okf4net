@@ -435,6 +435,61 @@ public class PruningTests
     }
 
     [Fact]
+    public void A_concept_whose_destination_is_a_link_INSIDE_the_bundle_fails_rather_than_ending_the_run()
+    {
+        // THE OTHER HALF OF THE GATE BELOW, and the half it does not cover. CommitStaging refuses a
+        // destination only when ResolveInsideRoot says it LEAVES the bundle root. A reparse point that
+        // resolves back INSIDE the root passes that gate -- correctly, nothing is escaping -- and then
+        // File.Move runs against a path that is a directory reparse point where a file belongs.
+        //
+        // MEASURED before this test existed, Windows 11 build 26200 on .NET 10.0.8: the move threw
+        // UnauthorizedAccessException and it came out of BundleWriter.Write, out of the whole run. Not
+        // a refusal, not a failure, not a note -- the call died, and every concept the run had already
+        // staged went with it. That is strictly worse than the outward case below, which reports the
+        // one destination it could not take and carries on.
+        //
+        // Same reachability as every other link test here: a bundle a clone brought. It needs no
+        // privilege on Linux or macOS, and on Windows a junction is enough, which is what this uses.
+        using var tmp = new TempDir();
+
+        WriteRun(tmp, [A], complete: true);
+
+        // Points at a directory INSIDE the bundle, so ResolveInsideRoot resolves it and says yes.
+        var insideTarget = Path.Combine(tmp.Path, "code");
+        Assert.True(Directory.Exists(insideTarget), "the fixture assumes the first run created this directory.");
+
+        var destination = Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md");
+        Assert.True(File.Exists(destination), "the fixture assumes the first run wrote this concept.");
+        File.Delete(destination);
+        ProducerFixture.CreateDirectoryLink(destination, insideTarget);
+
+        // The whole point: this call used to throw. Reaching the next line at all is the assertion.
+        var result = WriteRun(tmp, [A], complete: true);
+
+        var failure = Assert.Single(result.Failures, f => f.Id.ToString() == A);
+        Assert.Contains("code/csharp/n/t/a.md", failure.Error, StringComparison.Ordinal);
+
+        // AND IT MUST NOT BORROW THE OTHER CAUSE'S SENTENCE. The gate's message says the path "leaves
+        // the bundle root" -- which is exactly what did NOT happen here: this link resolves back
+        // inside, the gate passed it, and the move failed for a different reason. Reusing that
+        // sentence would state a cause the run never established, which is the failure mode this
+        // branch exists to stop. The message reports what the platform said instead.
+        Assert.DoesNotContain("leaves the bundle root", failure.Error, StringComparison.Ordinal);
+        Assert.Contains("moving it into place failed", failure.Error, StringComparison.Ordinal);
+
+        // A refused id must never be claimed as owned -- a manifest entry is a standing licence to
+        // delete whatever later appears at that path -- and a run that could not commit everything
+        // must not go on to prune. Both are consequences the outward case already relies on.
+        Assert.DoesNotContain(A, GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
+
+        // Reported ONCE, under one prefix, exactly as the outward refusal is.
+        Assert.DoesNotContain(result.Notes, n => n.Contains("refused to write", StringComparison.Ordinal));
+
+        // And the link is still a link: the writer must not have clobbered it on the way past.
+        Assert.NotNull(new DirectoryInfo(destination).LinkTarget);
+    }
+
+    [Fact]
     public void A_concept_whose_destination_leaves_the_bundle_through_a_link_is_never_written_through_it()
     {
         // The WRITE side of the hole whose delete side is the test above, and it was still open after
@@ -915,22 +970,44 @@ public class PruningTests
     public void The_manifest_is_written_after_the_concepts_it_describes()
     {
         // Ordering, pinned rather than assumed: the manifest is the record of what the bundle holds,
-        // so writing it before the staged files are in place would leave, on any failure during the
-        // commit, a manifest describing a state the bundle never reached -- and that manifest is the
-        // licence the NEXT run deletes by. Written last, an interrupted commit leaves the PREVIOUS
-        // manifest: conservative, and self-healing on the next run.
+        // and it is the licence the NEXT run deletes by, so it must never claim an id that did not
+        // actually land. Written last, after CommitStaging has reported which destinations it could
+        // not take, the failed ids can be subtracted (BundleWriter's `failed` set). Written first,
+        // they could not be: the manifest would claim `b` before anything had tried to write it.
+        //
+        // THE MECHANISM HERE CHANGED, and the old one is worth recording because it was the more
+        // obvious one. This test used to assert that the run THREW -- the commit's File.Move raised
+        // UnauthorizedAccessException against the directory below, that escaped BundleWriter.Write,
+        // and the manifest was never reached at all. That escape was a defect in its own right (it
+        // took the whole run down over one unwritable destination) and CommitStaging now catches it
+        // and records a write failure instead. So the run completes, and the ordering has to be
+        // observed by what the manifest SAYS rather than by the run dying before it is written.
+        //
+        // The replacement is the stronger observation of the two: subtracting the failed id is only
+        // possible after the commit has run, so "the manifest does not claim `b`" cannot be true of a
+        // manifest written first.
         using var tmp = new TempDir();
         WriteRun(tmp, [A], complete: true);
-        var before = File.ReadAllBytes(Path.Combine(tmp.Path, GenerationManifest.FileName));
 
         // A directory sitting exactly where a concept file must land. The move that commits staging
         // cannot overwrite it, so the failure lands in the one window that distinguishes the two
-        // orderings: after staging succeeded, before the manifest would be written.
+        // orderings: after staging succeeded, before the manifest is written.
         Directory.CreateDirectory(Path.Combine(tmp.Path, "code", "csharp", "n", "t", "b.md"));
 
-        Assert.ThrowsAny<SystemException>(() => WriteRun(tmp, [A, B], complete: true));
+        var result = WriteRun(tmp, [A, B], complete: true);
 
-        Assert.Equal(before, File.ReadAllBytes(Path.Combine(tmp.Path, GenerationManifest.FileName)));
+        Assert.Single(result.Failures, f => f.Id.ToString() == B);
+
+        // The two halves together, because either alone is weak. "Does not claim B" would pass over a
+        // manifest that was never written; "claims A" would pass over one written before the commit.
+        var claimed = GenerationManifest.TryRead(tmp.Path)!.ConceptIds;
+        Assert.DoesNotContain(B, claimed);
+        Assert.Contains(A, claimed);
+
+        // Deliberately NOT an assertion that the manifest bytes are unchanged, which is what this test
+        // checked before. It would still pass -- the first run claimed exactly [A] and this one lands
+        // exactly [A] again -- but it would pass for a reason that has nothing to do with the ordering,
+        // and it would stay green if the manifest stopped being written at all.
         Assert.Empty(Directory.EnumerateDirectories(tmp.Root, ".okfgen-staging-*"));
     }
 
