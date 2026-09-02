@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics.CodeAnalysis;
+
 namespace OKF4net.Attestation;
 
 /// <summary>
@@ -52,6 +54,16 @@ public sealed class AttestationOrchestrator
     /// is lost to the host; what changes is what crosses into a model's
     /// context.
     /// </para>
+    ///
+    /// <para>
+    /// The body reads as the numbered §10.5 steps, in order. Two of them —
+    /// resolving the computation and attesting — live in
+    /// <see cref="TryResolveComputation"/> and <see cref="AttestAsync"/>
+    /// because they branch several ways with I/O of their own, and inlining
+    /// them buried the pipeline they are steps of. Everything else is here on
+    /// purpose: the sequence IS the specification, and hiding it behind
+    /// helpers would cost more than it saved.
+    /// </para>
     /// </summary>
     /// <param name="bundle">The bundle to load the concept from.</param>
     /// <param name="conceptId">The attested-computation concept to run.</param>
@@ -81,36 +93,9 @@ public sealed class AttestationOrchestrator
         var contract = frontmatter.ComputationContract;
 
         // Step 2: resolve the sanctioned computation (inline fence, or file via §6.2 path-safe resolution).
-        var computation = concept.Document.Computation();
-        SanctionedComputation resolved;
-        switch (computation.Source)
+        if (!TryResolveComputation(bundle, concept, out var resolved, out var resolutionFailure))
         {
-            case ComputationSource.Inline when !string.IsNullOrEmpty(computation.InlineCode):
-                resolved = computation;
-                break;
-
-            case ComputationSource.File when !string.IsNullOrEmpty(computation.Path):
-                if (!bundle.TryResolveResource(concept, computation.Path, out var absolutePath, out var status)
-                    || status != ResourceResolutionStatus.Resolved)
-                {
-                    return Fail($"computation file '{computation.Path}' could not be resolved ({status})");
-                }
-
-                string text;
-                try
-                {
-                    text = bundle.ReadResourceText(absolutePath!);
-                }
-                catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
-                {
-                    return Fail($"computation file '{computation.Path}' could not be read: {e.Message}");
-                }
-
-                resolved = new SanctionedComputation(ComputationSource.File, text, computation.Path);
-                break;
-
-            default:
-                return Fail("attested computation has no computation (neither an inline `# Computation` fence nor a `computation:` path)");
+            return resolutionFailure;
         }
 
         // Step 3: resolve the runtime.
@@ -177,20 +162,8 @@ public sealed class AttestationOrchestrator
         Exception? error = null;
         if (receiptShapeOk)
         {
-            try
-            {
-                var context = new AttestationContext(contract, resolved, bound, parameterValues, receipt);
-                verdict = await runtime.Attester.AttestAsync(context, cancellationToken).ConfigureAwait(false);
-                if (verdict is { Passed: false } failed)
-                {
-                    reasons.Add(string.IsNullOrEmpty(failed.Detail) ? "attestation did not pass" : $"attestation did not pass: {failed.Detail}");
-                }
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                error = e;
-                reasons.Add($"attester threw: {e.GetType().Name}");
-            }
+            var context = new AttestationContext(contract, resolved, bound, parameterValues, receipt);
+            (verdict, error) = await AttestAsync(runtime, context, reasons, cancellationToken).ConfigureAwait(false);
         }
 
         // Step 9/10: gate on staleness and aggregate the outcome.
@@ -201,6 +174,102 @@ public sealed class AttestationOrchestrator
 
         var displayable = receiptShapeOk && verdict is { Passed: true } && staleAdmitted;
         return new AttestationOutcome(displayable, verdict, receipt, receiptShapeOk, stale, reasons, error);
+    }
+
+    /// <summary>
+    /// §10.5 step 8: runs the attester and reports what it decided.
+    ///
+    /// Appends to <paramref name="reasons"/> rather than returning a third
+    /// value, because a non-passing verdict and a throwing attester contribute
+    /// the same kind of entry to the same list the caller is already building.
+    /// Behaviour is unchanged from when this was inline in <see cref="RunAsync"/>,
+    /// including the exact reason wording and the deliberate choice to report
+    /// the exception TYPE rather than its message.
+    /// </summary>
+    /// <param name="runtime">The resolved runtime whose attester to invoke.</param>
+    /// <param name="context">The §10.5 attestation context for this run.</param>
+    /// <param name="reasons">The outcome's reason list, appended to in place.</param>
+    /// <param name="cancellationToken">Cancels the attester; an <see cref="OperationCanceledException"/> propagates rather than becoming an outcome.</param>
+    private static async ValueTask<(AttestationVerdict? Verdict, Exception? Error)> AttestAsync(
+        IAttestationRuntime runtime,
+        AttestationContext context,
+        List<string> reasons,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var verdict = await runtime.Attester.AttestAsync(context, cancellationToken).ConfigureAwait(false);
+            if (verdict is { Passed: false } failed)
+            {
+                reasons.Add(string.IsNullOrEmpty(failed.Detail) ? "attestation did not pass" : $"attestation did not pass: {failed.Detail}");
+            }
+
+            return (verdict, null);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            reasons.Add($"attester threw: {e.GetType().Name}");
+            return (null, e);
+        }
+    }
+
+    /// <summary>
+    /// §10.5 step 2: resolves the concept's sanctioned computation — the inline
+    /// <c># Computation</c> fence, or the <c>computation:</c> file read through
+    /// §6.2 path-safe resolution.
+    ///
+    /// Extracted from <see cref="RunAsync"/> purely to keep that method
+    /// readable: it is one linear pipeline, and this was the one step that
+    /// branched three ways with I/O of its own inside. Behaviour is unchanged,
+    /// including which failures are reported and their exact wording.
+    /// </summary>
+    /// <param name="bundle">The bundle the concept was loaded from.</param>
+    /// <param name="concept">The attested-computation concept.</param>
+    /// <param name="resolved">The resolved computation, when this returns <see langword="true"/>.</param>
+    /// <param name="failure">The non-displayable outcome to return, when this returns <see langword="false"/>.</param>
+    private static bool TryResolveComputation(
+        Bundle bundle,
+        Concept concept,
+        out SanctionedComputation resolved,
+        [NotNullWhen(false)] out AttestationOutcome? failure)
+    {
+        var computation = concept.Document.Computation();
+        failure = null;
+
+        switch (computation.Source)
+        {
+            case ComputationSource.Inline when !string.IsNullOrEmpty(computation.InlineCode):
+                resolved = computation;
+                return true;
+
+            case ComputationSource.File when !string.IsNullOrEmpty(computation.Path):
+                resolved = default;
+                if (!bundle.TryResolveResource(concept, computation.Path, out var absolutePath, out var status)
+                    || status != ResourceResolutionStatus.Resolved)
+                {
+                    failure = Fail($"computation file '{computation.Path}' could not be resolved ({status})");
+                    return false;
+                }
+
+                string text;
+                try
+                {
+                    text = bundle.ReadResourceText(absolutePath!);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+                {
+                    failure = Fail($"computation file '{computation.Path}' could not be read: {e.Message}");
+                    return false;
+                }
+
+                resolved = new SanctionedComputation(ComputationSource.File, text, computation.Path);
+                return true;
+
+            default:
+                resolved = default;
+                failure = Fail("attested computation has no computation (neither an inline `# Computation` fence nor a `computation:` path)");
+                return false;
+        }
     }
 
     private static AttestationOutcome Fail(string reason, StaleState stale = StaleState.Unknown, Exception? error = null)

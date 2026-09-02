@@ -345,34 +345,13 @@ public static class OkfCli
 
                 if (Array.IndexOf(valuedFlags, token) >= 0)
                 {
-                    // The separator is not a value: swallowing it would hide
-                    // "requires a value" and cancel the separator's contract for
-                    // everything that follows.
-                    var hasValue = i + 1 < args.Length && args[i + 1] != "--";
-
-                    // First occurrence wins. A later one still consumes its own
-                    // value, so that value can never be read as the positional.
-                    if (!scanned._flags.ContainsKey(token))
-                    {
-                        scanned._flags[token] = hasValue ? args[i + 1] : null;
-                    }
-
-                    if (hasValue)
-                    {
-                        i++;
-                    }
-
+                    i = scanned.TakeValuedFlag(args, i, token);
                     continue;
                 }
 
                 if (token.StartsWith('-'))
                 {
-                    if (Array.IndexOf(spec.ValuelessFlags, token) < 0 && Array.IndexOf(HelpFlags, token) < 0)
-                    {
-                        throw new CliOperationException($"unknown option: {token}");
-                    }
-
-                    scanned._flags[token] = null;
+                    scanned.TakeOption(token, spec);
                     continue;
                 }
 
@@ -380,6 +359,48 @@ public static class OkfCli
             }
 
             return scanned;
+        }
+
+        /// <summary>
+        /// Records a flag that consumes the following token as its value, and
+        /// returns the index the scan continues from — one past the value when
+        /// there was one, otherwise unchanged.
+        /// </summary>
+        /// <param name="args">The full argument array being scanned.</param>
+        /// <param name="i">The index of <paramref name="token"/> itself.</param>
+        /// <param name="token">The valued flag.</param>
+        private int TakeValuedFlag(string[] args, int i, string token)
+        {
+            // The separator is not a value: swallowing it would hide
+            // "requires a value" and cancel the separator's contract for
+            // everything that follows.
+            var hasValue = i + 1 < args.Length && args[i + 1] != "--";
+
+            // First occurrence wins. A later one still consumes its own value,
+            // so that value can never be read as the positional.
+            if (!_flags.ContainsKey(token))
+            {
+                _flags[token] = hasValue ? args[i + 1] : null;
+            }
+
+            return hasValue ? i + 1 : i;
+        }
+
+        /// <summary>
+        /// Records a valueless flag, rejecting one this verb does not declare.
+        /// The allowlist is per-verb plus the universal help flags, so a flag
+        /// another verb defines is still unknown here.
+        /// </summary>
+        /// <param name="token">The <c>-</c>-prefixed token.</param>
+        /// <param name="spec">The verb whose contract decides what is accepted.</param>
+        private void TakeOption(string token, VerbSpec spec)
+        {
+            if (Array.IndexOf(spec.ValuelessFlags, token) < 0 && Array.IndexOf(HelpFlags, token) < 0)
+            {
+                throw new CliOperationException($"unknown option: {token}");
+            }
+
+            _flags[token] = null;
         }
 
         /// <summary>Fills the single positional slot, or reports the surplus token rather than dropping it.</summary>
