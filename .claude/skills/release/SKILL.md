@@ -33,6 +33,10 @@ everything is checked *before* the tag exists.
 - **Local verification** (catches problems before they burn a tag):
   `dotnet test OKF4net.sln -c Release` and
   `dotnet format OKF4net.sln --verify-no-changes`.
+- **`dotnet test producers/OkfProducer.sln`.** `producers/` is deliberately
+  outside `OKF4net.sln`/`ci.yml` (a settled decision, see `ROADMAP.md`), so CI
+  never builds it: a public `OKF4net` API change can break it silently. This
+  manual run is the whole trade-off for keeping it out of CI — do not skip it.
 - First release only: the nuget.org **Trusted Publishing policy** must exist
   (owner `jchable`, repo `okf4net`, workflow file `release.yml` — file name
   only) and the `NUGET_USER` GitHub secret must contain the nuget.org

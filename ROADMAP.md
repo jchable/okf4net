@@ -101,12 +101,14 @@ are the concrete entry points.
 - **`producers/OkfProducer` walking skeleton shipped** (repo scanner → OKF v0.2 bundle generator,
   `generate`/`validate` commands, npm/NuGet/README detection only — see
   [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md) and
-  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)). Two follow-ups noted at
-  merge time, not yet acted on:
-  - **No CI coverage.** `producers/` is deliberately outside `OKF4net.sln`/`ci.yml`, so nothing
-    verifies it still builds after an `src/OKF4net` API change — it can rot silently. Either add a
-    lightweight build+test job for `producers/OkfProducer.sln`, or treat "does `producers/` still
-    build" as an explicit step whenever a public `OKF4net` API changes.
+  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)).
+  - **Out of CI, by decision — not a follow-up.** `producers/` sits outside `OKF4net.sln` and
+    `ci.yml`, and stays there. The trade-off is real (nothing verifies it still builds after an
+    `src/OKF4net` API change, so it can rot silently) and is paid manually: running
+    `dotnet test producers/OkfProducer.sln` is an explicit step whenever a public `OKF4net` API
+    changes, and part of the release preflight. This is recorded here because the earlier
+    "either add a CI job, or…" wording read as an open question and was re-raised by an external
+    audit; it is settled.
   - **Undocumented.** Not mentioned in `README.md`/`CLAUDE.md`/`CONTRIBUTING.md`. Add pointers once
     the producer grows past this first walking-skeleton slice (more ecosystems, LLM enrichment).
 - **Known limitation: generated `sources[].resource` paths don't resolve against the bundle.**

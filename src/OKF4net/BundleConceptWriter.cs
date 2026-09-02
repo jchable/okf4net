@@ -48,7 +48,13 @@ public sealed class BundleConceptWriter
     /// per distinct bundle path for the process's lifetime -- bounded in
     /// practice by how many distinct bundle directories a process ever
     /// opens, and never removed (there is no matching "last instance for
-    /// this path went away" signal to remove it on).
+    /// this path went away" signal to remove it on). Evicting correctly would
+    /// need reference counting, since a lock must never be evicted while it is
+    /// held -- disproportionate for one small object per root. That makes the
+    /// bound a HOST CONSTRAINT rather than an implementation detail: a service
+    /// that maps untrusted input to bundle roots (a multi-tenant server opening
+    /// a root per request, say) must bound the number of distinct roots
+    /// upstream, or the registry grows with the input.
     /// </summary>
     private static readonly ConcurrentDictionary<string, object> BundleLocks = new(StringComparer.OrdinalIgnoreCase);
 
