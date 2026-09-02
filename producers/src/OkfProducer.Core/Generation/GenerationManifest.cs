@@ -240,8 +240,9 @@ public sealed record GenerationManifest(
     /// </summary>
     /// <returns>
     /// <see langword="true"/> when the manifest was written. <see langword="false"/> when it was
-    /// refused because the path leaves the bundle root, or because the root itself is a link this
-    /// process cannot follow -- callers that care report it; callers that do not compile unchanged,
+    /// refused because the path leaves the bundle root, because it lands somewhere inside the bundle
+    /// other than <see cref="FileName"/> itself, or because the root itself is a link this process
+    /// cannot follow -- callers that care report it; callers that do not compile unchanged,
     /// and get the safe outcome either way, since a manifest that was not written leaves the previous
     /// one in place and the next run prunes by that instead.
     /// </returns>
@@ -261,14 +262,47 @@ public sealed record GenerationManifest(
         // a linked bundle would send the walk climbing components that have nothing to do with the
         // bundle. Same reasoning, and the same fix, as BundleWriter.CommitStaging.
         var path = Path.Combine(root, FileName);
-        if (BundlePaths.ResolveInsideRoot(root, path) is null)
+        if (BundlePaths.ResolveInsideRoot(root, path) is not { } landing)
         {
             return false;
         }
 
-        // Written to `path`, not to the value ResolveInsideRoot returned: a manifest linked to another
-        // name INSIDE the bundle is contained, and following the link is what the operator asked for.
-        // The commit side writes its unresolved destination for the same reason.
+        // THE SECOND HALF OF THE SAME GATE THE COMMIT SIDE HAS, and this file went a round without it
+        // while carrying a comment that said the opposite -- that "a manifest linked to another name
+        // INSIDE the bundle is contained, and following the link is what the operator asked for", and
+        // that "the commit side writes its unresolved destination for the same reason". The second
+        // clause was true of an older commit side and is not true of this one: BundleWriter.CommitStaging
+        // writes its unresolved destination only after proving the walk landed on that exact path, and
+        // its own comment says a link back inside the bundle is "REFUSED rather than followed" because
+        // following it "would write a concept at a path that no longer matches its id and destroy
+        // whatever the far end holds". Two comments in one file pair cannot justify opposite behaviours
+        // by citing each other; this one was the wrong half.
+        //
+        // What containment alone allows through, and it is not hypothetical. `.okfgen-manifest.json` is
+        // a fixed name at the bundle root, so a link planted there redirects this write and nothing
+        // else. Both reachable shapes were run by hand on Windows 11 build 26200, .NET 10.0.8:
+        //
+        //   - a DIRECTORY junction at the manifest's name pointing at a directory inside the bundle
+        //     resolves inside, passes containment, and File.WriteAllBytes then throws
+        //     UnauthorizedAccessException OUT of BundleWriter.Write -- after the concepts are committed
+        //     and the prune has run. A successful generation reported to the operator as a failed one.
+        //     EXECUTED; it is what the test below asserts on this host.
+        //   - a FILE symbolic link at the manifest's name pointing at a concept file inside the bundle
+        //     resolves inside, passes containment, and File.WriteAllBytes FOLLOWS it and replaces that
+        //     concept with manifest JSON -- WriteTo returning true and the run reporting success. NOT
+        //     EXECUTED: a file symbolic link needs SeCreateSymbolicLinkPrivilege, which this host does
+        //     not have (ProducerFixture.TryCreateFileLink returned false), so this shape is stated from
+        //     the mechanism and from the same BCL behaviour the outward case already measures, not from
+        //     a run. The same equality below refuses it either way.
+        //
+        // So: written to `path`, and only once the walk has shown that `path` is where it lands.
+        // `landing` is where the walk really arrives; they differ exactly when a link was crossed,
+        // because no reparse point can have its own path as its target.
+        if (!string.Equals(landing, path, BundlePaths.PathComparison))
+        {
+            return false;
+        }
+
         File.WriteAllBytes(path, Serialize(Normalized()));
         return true;
     }

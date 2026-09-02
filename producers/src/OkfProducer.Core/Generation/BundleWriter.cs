@@ -213,11 +213,18 @@ public sealed class BundleWriter : IBundleWriter
             // is correct; only the record of who owns it is stale.
             if (!merged.WriteTo(outPath))
             {
+                // The cause is named as the likely one rather than as the established one. WriteTo
+                // refuses on three findings and reports them all as false: the path leaves the root,
+                // it lands somewhere else inside the bundle, or the root itself is a link this process
+                // cannot follow. A note that picked one and asserted it would be wrong for two.
                 notes.Add(
-                    $"The generation manifest could not be written to '{outPath}': '{GenerationManifest.FileName}' leaves the"
-                    + " bundle root through a symbolic link or junction, and File.WriteAllBytes would have followed it and"
-                    + " overwritten a file outside the bundle. The concepts this run produced were written; what was not"
-                    + " written is the record of which ids it owns, so the next run prunes by the previous manifest instead."
+                    $"The generation manifest could not be written to '{outPath}': resolving"
+                    + $" '{GenerationManifest.FileName}' under that root did not land on that file. The usual cause is a"
+                    + " symbolic link or junction at that name, which File.WriteAllBytes would have followed, writing this"
+                    + " JSON over whatever it points at -- a file outside the bundle, or another file inside it; a bundle"
+                    + " root that is itself a link this process cannot follow ends here too. The concepts this run produced"
+                    + " were written; what was not written is the record of which ids it owns, so the next run prunes by the"
+                    + " previous manifest instead."
                     + " Remove the link, or generate into a bundle that does not contain one.");
             }
 
@@ -685,6 +692,30 @@ public sealed class BundleWriter : IBundleWriter
                 return null;
             }
 
+            // AN OPEN QUESTION, RECORDED HERE RATHER THAN ANSWERED, because a maintainer changing this
+            // resolution is the person who needs to meet it and there is no other place they must pass.
+            //
+            // `resolved` is returned even when it is not `candidate` -- that is, when the walk crossed
+            // a link that pointed back INSIDE the bundle -- and the caller then File.Deletes it. So an
+            // inward link is FOLLOWED here, and the file at the far end is deleted. Deliberate, and
+            // pinned: The_directory_cleanup_after_a_prune_removes_no_link_the_bundle_merely_holds
+            // asserts that such an id IS pruned while the link itself survives.
+            //
+            // The write side now does the opposite on the identical shape. CommitStaging compares its
+            // landing against the literal destination and REFUSES when they differ, and
+            // GenerationManifest.WriteTo does the same for the manifest, both on the stated ground that
+            // following the link "would write a concept at a path that no longer matches its id and
+            // destroy whatever the far end holds".
+            //
+            // The question: if writing through an inward link is damage because the far end was never
+            // this run's to touch, is deleting through one damage for the same reason -- or is a
+            // manifest id a standing claim on wherever that id resolves, which is what this method's
+            // whole design already assumes? Refusing makes a bundle that deliberately links a concept
+            // directory un-prunable and leaves stale concepts in it; following keeps today's behaviour
+            // and today's exposure. NEITHER IS ARGUED FOR HERE and neither was chosen; the asymmetry is
+            // stated so that the next change to either side is made knowing it exists. Settle it before
+            // touching this line, and settle both sides together. See producers/README.md, "An open
+            // question the writes and the prune answer differently".
             path = resolved;
             return parsed;
         }
@@ -1446,12 +1477,23 @@ public sealed class BundleWriter : IBundleWriter
     /// <summary>
     /// The reason a destination that passed every gate could still not be moved into place.
     ///
-    /// <para>States what the platform said and stops there. It no longer names a reparse point as the
-    /// first thing to check: a link on this path -- pointing out of the bundle, or back inside it --
-    /// is refused by one of the two gates before the move is attempted, so naming it here would send
-    /// the operator after a cause the run has already excluded. What is left is an ordinary directory
-    /// standing where the concept file belongs, a file held open, a permission the operator does not
-    /// have, a full disk; the exception says which, and this does not guess.</para>
+    /// <para>States what the platform said and stops there. It no longer leads with a reparse point,
+    /// because a link that was already there when the gates ran -- pointing out of the bundle, or back
+    /// inside it -- is refused before the move is attempted, so that is the least likely cause and a
+    /// poor first thing to send an operator after. The likely ones are an ordinary directory standing
+    /// where the concept file belongs, a file held open, a permission the operator does not have, a
+    /// full disk; the exception says which, and this does not guess.</para>
+    ///
+    /// <para><b>What it deliberately does not say is that a link has been ruled out</b>, and the earlier
+    /// wording here did say exactly that. The gates resolve the path and then, a moment later,
+    /// <see cref="Directory.CreateDirectory(string)"/> and <see cref="File.Move(string, string, bool)"/>
+    /// act on it; nothing holds a handle across that window. A reparse point created inside it reaches
+    /// the move having passed both gates, so "the run has already excluded that cause" is a claim this
+    /// message is not entitled to make -- and a message that positively excludes the true cause steers
+    /// the operator further from it than one that stays silent. Narrow, and it needs someone mutating
+    /// the bundle while the run is in progress, which is outside what these gates address at all (see
+    /// the README's statement about generating into an untrusted bundle); narrow is not the same as
+    /// impossible, and only the second would license the sentence that stood here.</para>
     /// </summary>
     private static string MoveFailedReason(Exception ex) =>
         $"moving it into place failed and the concept was not written -- {ex.Message.TrimEnd()}"

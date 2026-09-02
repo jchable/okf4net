@@ -528,12 +528,23 @@ public class PruningTests
         ProducerFixture.CreateDirectoryLink(directory, target);
         Assert.True(File.Exists(Path.Combine(directory, "a.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
 
-        // So that `A` is NOT already claimed, which is what puts ReportClaimedFiles' walk in play: it
-        // probes the destination with File.Exists, that follows the junction and answers for the file
-        // at the far end, and without the same redirect gate the run announces it "has taken ownership
-        // of that id and overwritten the file" about a path it is about to refuse. The outward case has
-        // the identical pair of notes pinned one test below; this is the inward one.
-        PlantManifestIds(tmp, Prefix, []);
+        // A concept the previous run claimed and this one does not produce, whose file really exists --
+        // so the prune below has something it COULD delete, and "it deleted nothing" is a fact about the
+        // failure count rather than about an empty candidate list. The plant here was `[]` and the
+        // Assert.Empty(result.Pruned) further down could not fail: with no candidates Reconcile returns
+        // NothingToReconcile before RefusalToPrune is ever consulted, so `Pruned` was empty for a reason
+        // that had nothing to do with the property being claimed. The sibling outward test plants
+        // `[A, "code/x/report"]` for exactly this reason; this one had been left without it.
+        //
+        // `A` is deliberately still NOT among the planted ids, which is what puts ReportClaimedFiles'
+        // walk in play: it probes the destination with File.Exists, that follows the junction and
+        // answers for the file at the far end, and without the same redirect gate the run announces it
+        // "has taken ownership of that id and overwritten the file" about a path it is about to refuse.
+        // The outward case has the identical pair of notes pinned one test below; this is the inward one.
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "code", "spare"));
+        var prunable = Path.Combine(tmp.Path, "code", "spare", "orphan.md");
+        File.WriteAllText(prunable, "---\ntype: Note\n---\n\nprunable, and nothing else here needs it.\n");
+        PlantManifestIds(tmp, Prefix, ["code/spare/orphan"]);
 
         var result = WriteRun(tmp, [A], complete: true);
 
@@ -555,7 +566,14 @@ public class PruningTests
         Assert.DoesNotContain("leaves the bundle root", failure.Error, StringComparison.Ordinal);
 
         Assert.DoesNotContain(A, GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
+
+        // The second consequence a write failure buys, and the reason `code/spare/orphan` was planted
+        // above: it is settled, it is under the owned prefix, its file is on disk, and this run did not
+        // produce it -- everything a prune needs except a run that fully succeeded. Delete the
+        // `if (failureCount > 0)` branch from RefusalToPrune and this line goes red with
+        // `Pruned == [code/spare/orphan]`; that mutation was run by hand.
         Assert.Empty(result.Pruned);
+        Assert.True(File.Exists(prunable), "the refused run pruned a concept anyway.");
 
         // Reported ONCE, under one prefix, exactly as both other refusals are.
         Assert.DoesNotContain(result.Notes, n => n.Contains("refused to write", StringComparison.Ordinal));
@@ -572,12 +590,21 @@ public class PruningTests
     {
         // THE PROPERTY THE CATCH IN CommitStaging IS NAMED FOR, which nothing observed until this test.
         // Its commit message says the escaping exception was "taking every concept already committed in
-        // this loop with it", and the three tests that touch a caught failure all put the failing
-        // concept LAST in the loop's Ordinal order -- so each of them witnesses only that the concepts
-        // before it survived, which is true of a writer that gives up on the first failure too.
+        // this loop with it", and every OTHER test that reaches that catch puts the failing concept
+        // LAST in the loop's Ordinal order -- so each of them witnesses only that the concepts before
+        // it survived, which is true of a writer that gives up on the first failure too.
+        //
+        // COUNTED, not assumed: exactly two tests reach the move catch at all, this one and
+        // The_manifest_is_written_after_the_concepts_it_describes. It used to be three; the third,
+        // A_concept_whose_destination_is_a_link_INSIDE_the_bundle_fails_rather_than_ending_the_run, is
+        // now stopped by the redirect gate before the move is ever attempted, so it no longer exercises
+        // a catch at all.
         //
         // Checked by hand rather than argued: replace the `refused.Add(...)` in CommitStaging's move
-        // catch with `return refused;` and the whole suite stays green except this test.
+        // catch with `return refused;` and the suite goes 2 RED / 553 green -- this test, and
+        // The_manifest_is_written_after_the_concepts_it_describes, whose Assert.Single on the failures
+        // also fails because an early return leaves `refused` empty. Two, not one: the sentence that
+        // stood here said "the whole suite stays green except this test", and that was never measured.
         //
         // `a.md` sorts before `b.md` under StringComparer.Ordinal, which is the order CommitStaging
         // walks staging in, so the failure here happens with a concept still unwritten behind it.
@@ -772,6 +799,16 @@ public class PruningTests
         // the link points back INSIDE the bundle, so the concept file itself resolves inside and is
         // genuinely this producer's to delete -- which is what gets the walk started. The link it walks
         // through is still a piece of structure the operator put there, and no prune may remove it.
+        //
+        // AND THIS IS WHERE THE ASYMMETRY IS PINNED, so it is worth saying here rather than only in the
+        // README. The first assertion below states that a manifest id resolving through an inward
+        // junction IS pruned -- the far-side file is deleted. The write side refuses the identical
+        // shape: CommitStaging will not move a concept through an inward link and
+        // GenerationManifest.WriteTo will not write the manifest through one, both on the ground that
+        // the far end was never this run's to touch. RECORDED, NOT SETTLED, and deliberately not argued
+        // either way: see producers/README.md, "An open question the writes and the prune answer
+        // differently", and the same note at BundleWriter.TryResolveConceptFile. If this assertion is
+        // ever inverted, the two write sites have to move with it.
         using var tmp = new TempDir();
         WriteRun(tmp, [A], complete: true);
 
@@ -850,6 +887,64 @@ public class PruningTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")),
             "the refused manifest write took the rest of the run down with it.");
         Assert.Empty(result.Failures);
+    }
+
+    [Fact]
+    public void The_generation_manifest_is_never_written_through_a_link_that_stays_INSIDE_the_bundle()
+    {
+        // THE HALF OF THE MANIFEST WRITE THE GATE ABOVE DOES NOT REACH, and it was left open one round
+        // longer than the commit side's equivalent because a comment in GenerationManifest.WriteTo said
+        // it was deliberate -- "a manifest linked to another name INSIDE the bundle is contained, and
+        // following the link is what the operator asked for". Containment is the wrong question here for
+        // the same reason CommitStaging stopped asking it: `.okfgen-manifest.json` is a fixed name at
+        // the bundle root, so a link at it does not send the JSON somewhere the operator chose, it
+        // redirects the one write this producer makes there onto some other file that IS inside.
+        //
+        // WHAT THIS TEST EXECUTES AND WHAT IT ONLY STATES, per platform, said plainly rather than left
+        // to the assertions -- the same division The_generation_manifest_is_never_written_through_a_
+        // link_that_leaves_the_bundle records, and for the same privilege reason.
+        //
+        // EXECUTED here: a directory JUNCTION at the manifest's name pointing at a directory inside the
+        // bundle. It resolves inside, so containment alone passes it, and File.WriteAllBytes then throws
+        // UnauthorizedAccessException straight out of BundleWriter.Write -- after the concepts are
+        // committed and the prune has run. Measured before the gate, on this host: "Access to the path
+        // '...\\.okfgen-manifest.json' is denied", escaping Write() with `a.md` already on disk. A run
+        // that succeeded, reported to the operator as one that threw.
+        //
+        // NOT EXECUTED, on this host: a FILE symbolic link at the manifest's name pointing at a concept
+        // file inside the bundle, where File.WriteAllBytes follows it and replaces that concept with
+        // manifest JSON while WriteTo returns true and the run reports success. That is the worse of the
+        // two and it is the one that cannot be built here -- ProducerFixture.TryCreateFileLink returned
+        // false, SeCreateSymbolicLinkPrivilege being absent, which was confirmed by running it. The
+        // shape is stated from the mechanism, not asserted from a run; the equality in WriteTo refuses
+        // both, and the junction below is what actually witnesses the gate on this host.
+        using var tmp = new TempDir();
+
+        WriteRun(tmp, [A], complete: true);
+
+        var target = Path.Combine(tmp.Path, "code", "elsewhere");
+        Directory.CreateDirectory(target);
+
+        var manifestPath = Path.Combine(tmp.Path, GenerationManifest.FileName);
+        File.Delete(manifestPath);
+        ProducerFixture.CreateDirectoryLink(manifestPath, target);
+
+        // Nothing escapes. Without the gate this line is where the test dies, with the
+        // UnauthorizedAccessException quoted above -- which is the mutation witness.
+        var result = WriteRun(tmp, [A], complete: true);
+
+        Assert.Contains(result.Notes, n => n.Contains(GenerationManifest.FileName, StringComparison.Ordinal)
+            && n.Contains("symbolic link or junction", StringComparison.Ordinal));
+
+        // The rest of the run stands: a refused manifest is a note, never a failure, because by this
+        // point the concepts are on disk and the prune has already happened.
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")),
+            "the refused manifest write took the rest of the run down with it.");
+        Assert.Empty(result.Failures);
+
+        // And the link is still a link, holding nothing this producer put there.
+        Assert.NotNull(new DirectoryInfo(manifestPath).LinkTarget);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(target));
     }
 
     [Fact]
@@ -1133,10 +1228,21 @@ public class PruningTests
         // AND THERE IS NO PRIMING RUN, which there was, and the comment below was false because of it.
         // It said the two halves together cover "a manifest that was never written" -- but with a first
         // run in front of them, TryRead came back with the PREVIOUS manifest, whose concept set is
-        // exactly [A]: delete `merged.WriteTo(outPath)` from BundleWriter and all three assertions
-        // stayed green, which is precisely the blind spot the comment invoked. Checked by hand.
-        // The single observed run leaves nothing for TryRead to fall back on, so the NotNull below is
-        // the assertion that mutation now trips.
+        // exactly [A], so all three assertions passed over a run that wrote no manifest at all.
+        //
+        // THE MUTATION THAT SHOWS IT, named exactly as it was run, because the sentence that stood here
+        // named a different one and got its outcome wrong. It is NOT "delete `merged.WriteTo(outPath)`":
+        // that removes the write for EVERY run, the priming one included, so it takes the fallback away
+        // along with the thing being tested and turns 35 tests red across the file. The mutation that
+        // isolates this blind spot has to leave successful runs writing normally and skip only the
+        // write on a run that had a failure:
+        //
+        //     if (failures.Count == 0 && !merged.WriteTo(outPath))     // BundleWriter.Write
+        //
+        // Measured by hand under that mutation: with the priming run reinstated the test is GREEN --
+        // NotNull, "claims A" and "does not claim B" are all satisfied by the first run's manifest. As
+        // written below, with the priming run gone, it is RED at the NotNull. That is the whole gap,
+        // and the NotNull is the assertion that closes it.
         using var tmp = new TempDir();
 
         // A directory sitting exactly where a concept file must land, created directly rather than by a

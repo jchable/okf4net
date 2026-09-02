@@ -152,8 +152,9 @@ What this means for you:
 
 - **Do not generate into a bundle that contains a symbolic link or a junction.** The gates
   make the refusals safe, not the arrangement workable. A run against such a bundle keeps
-  concepts it would otherwise prune, and — if the link is `.okfgen-manifest.json` itself —
-  leaves its ownership record unwritten and says so. A concept whose path crosses the link
+  concepts it would otherwise prune, and — if the link is `.okfgen-manifest.json` itself,
+  pointing out of the bundle *or* back inside it — leaves its ownership record unwritten and
+  says so. A concept whose path crosses the link
   is refused and recorded as a **write failure**; which of the two gates refuses it depends
   on where the link points, and so does the sentence you get — see the `generate` bullet
   below. Remove the link and re-run.
@@ -201,7 +202,39 @@ What this means for you:
   it is measured against the resolved root.
 
 None of this makes an untrusted bundle safe to generate into in general. It bounds the
-paths *this producer* builds from concept ids, and that is the whole claim.
+paths *this producer* builds from concept ids, and that is the whole claim. Neither does it
+bound a bundle that is being *changed while a run is in progress*: the gates resolve a path
+and the write acts on it a moment later, with no handle held across that window.
+
+#### An open question the writes and the prune answer differently
+
+**Recorded, not settled.** As of this round the write side refuses a link that points back
+*inside* the bundle: `CommitStaging` will not move a concept through one, and
+`GenerationManifest.WriteTo` will not write the manifest through one. The reason given at
+both sites is that following it "would write a concept at a path that no longer matches its
+id and destroy whatever the far end holds".
+
+The **prune** does the opposite on the same shape. `TryResolveConceptFile` resolves a
+manifest id through an inward junction, finds the far end inside the bundle, and
+`File.Delete` removes it — the far-side file, not the link. This is deliberate and pinned by
+a test (`The_directory_cleanup_after_a_prune_removes_no_link_the_bundle_merely_holds`), which
+asserts that the id *is* pruned while the link itself survives. It predates the write-side
+gates and was not changed by them.
+
+So the two sites are:
+
+- `BundleWriter.CommitStaging` + `GenerationManifest.WriteTo` — an inward link is a **refusal**.
+- `BundleWriter.Reconcile` → `TryResolveConceptFile` → `File.Delete` — an inward link is
+  **followed**, and the file at the far end is deleted.
+
+The question, stated without an answer: if writing through an inward link is damage because
+the file at the far end was never this run's to touch, is deleting through one damage for the
+same reason — or is a manifest id a standing claim on wherever that id resolves, which is
+precisely what the prune's three-check design already assumes? Choosing "refuse" makes a
+bundle that deliberately links a concept directory un-prunable and leaves stale concepts
+behind; choosing "follow" keeps the current behaviour and the current exposure. Both readings
+have a real cost and neither was picked here. A maintainer changing either site should settle
+this first, and change both.
 
 ### Why `--repo-url` is all-or-nothing
 
