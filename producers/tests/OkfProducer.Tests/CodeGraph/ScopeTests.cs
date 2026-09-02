@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OkfProducer.CodeGraph.TreeSitter;
+using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Scanning;
 
@@ -8,9 +10,29 @@ namespace OkfProducer.Tests.CodeGraph;
 /// §5.4: scope is decided by directory nature and by symbol visibility, never by hard-coding a
 /// convention like <c>src/</c> that is only this repository's own.
 /// </summary>
-public class ScopeTests
+public class ScopeTests : IDisposable
 {
     private static readonly RepositorySnapshot Snapshot = new("/repo", "test-repo", [], []);
+
+    private readonly List<string> _tempDirectories = [];
+
+    public void Dispose()
+    {
+        foreach (var directory in _tempDirectories)
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup; a locked file on the way out should not fail the test run.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
 
     private static SymbolFact Member(string container, string name, SymbolVisibility visibility) =>
         new(SymbolKind.Member, "csharp", container, name, $"public void {name}()",
@@ -99,6 +121,73 @@ public class ScopeTests
         Assert.False(FileEligibility.IsInScope(Member("T", "Internal", SymbolVisibility.Internal), ScopeOptions.Default));
         Assert.True(FileEligibility.IsInScope(Member("T", "Internal", SymbolVisibility.Internal), ScopeOptions.Default with { IncludeInternal = true }));
         Assert.True(FileEligibility.IsInScope(Member("T", "Public", SymbolVisibility.Public), ScopeOptions.Default));
+    }
+
+    [Fact]
+    public void The_visibility_filter_never_makes_an_ambiguous_call_resolvable_end_to_end()
+    {
+        // The same defect as CodeGraphBuilderTests' stubbed repro, driven through the real
+        // tree-sitter extractor and the real NameMatchResolver on real C# source, because the stub
+        // could in principle be modelling the wrong thing. "Helper" is declared twice in this
+        // repository -- once public on A, once internal on B -- and C.Run calls the internal one.
+        // Under the default scope the internal declaration is filtered out; if that filter runs
+        // before the resolver, one declaration is left standing and the call links confidently to
+        // A.Helper, which is not what the source says. Under --include-internal the very same
+        // repository resolves to Unresolved, so the two runs would disagree about a fact of the
+        // source, which is the tell that one of them is lying.
+        var repoPath = CreateRepository(
+            ("A.cs", """
+                namespace N;
+
+                public static class A
+                {
+                    public static void Helper() { }
+                }
+                """),
+            ("B.cs", """
+                namespace N;
+
+                internal static class B
+                {
+                    internal static void Helper() { }
+                }
+                """),
+            ("C.cs", """
+                namespace N;
+
+                public class C
+                {
+                    public void Run() => B.Helper();
+                }
+                """));
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+
+        using var extractor = new TreeSitterExtractor();
+        var builder = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], [new NameMatchResolver()]);
+
+        var narrow = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+        var wide = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default with { IncludeInternal = true });
+
+        var narrowEdge = Assert.Single(narrow.Edges, e => e.Site.CalledName == "Helper");
+        var wideEdge = Assert.Single(wide.Edges, e => e.Site.CalledName == "Helper");
+        Assert.Equal(EdgeConfidence.Unresolved, wideEdge.Confidence);
+        Assert.Equal(EdgeConfidence.Unresolved, narrowEdge.Confidence);
+        Assert.Null(narrowEdge.TargetContainer);
+        Assert.Null(narrowEdge.TargetName);
+    }
+
+    private string CreateRepository(params (string RelativePath, string Source)[] files)
+    {
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-scope-e2e-").FullName;
+        _tempDirectories.Add(repoPath);
+        foreach (var (relativePath, source) in files)
+        {
+            var fullPath = Path.Combine(repoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllText(fullPath, source);
+        }
+
+        return repoPath;
     }
 
     /// <summary>

@@ -12,6 +12,17 @@ public interface ILanguageExtractor
     /// encoding reported, never silently replaced). Any guard this call cannot satisfy is reported
     /// through <see cref="ExtractionResult.Status"/>, never thrown -- hostile source is an expected
     /// input, not an exceptional one.
+    ///
+    /// <para>
+    /// <see cref="ExtractionLimits.Timeout"/> is deliberately NOT among the guards an implementation
+    /// is asked to enforce, and this call takes no <see cref="System.Threading.CancellationToken"/>
+    /// for the same reason: <see cref="CodeGraphBuilder.Build"/> checks the deadline between files,
+    /// and once it has entered this method it has no way to leave early. An implementation is
+    /// therefore free to run as long as its parser takes, and a caller must not read a returned
+    /// <see cref="ExtractionResult"/> as evidence that any deadline was respected. Adding a token
+    /// here would only be honest once a parser underneath can act on one -- see
+    /// <see cref="ExtractionLimits.Timeout"/> for the measurement behind that.
+    /// </para>
     /// </summary>
     /// <param name="relativePath">The file's path relative to the repository root -- carried onto every
     /// produced <see cref="SymbolFact"/> and <see cref="CallSite"/>.</param>

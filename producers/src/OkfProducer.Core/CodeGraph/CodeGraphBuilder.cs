@@ -25,17 +25,35 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// <see cref="ILanguageExtractor.Extract"/> itself, and its outcome -- clean or not -- is always
     /// recorded in <see cref="RunStatus.Skipped"/>; a skip from one of those guards affects
     /// <see cref="RunStatus.IsComplete"/> but, on its own, leaves <see cref="RunStatus.TraversalComplete"/>
-    /// <see langword="true"/> (the file WAS visited). Only the overall
-    /// <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/> elapsing, <paramref name="cancellationToken"/>
+    /// <see langword="true"/> (the file WAS visited). Only <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/>
+    /// being found already elapsed at a between-files checkpoint, <paramref name="cancellationToken"/>
     /// itself being cancelled, or the walk failing outright (a missing/unreadable repository root, or
     /// an enumeration failure such as a circular reparse point) before every eligible file is even
     /// visited flips <see cref="RunStatus.TraversalComplete"/> to <see langword="false"/> -- see
     /// <see cref="RunStatus"/>'s own doc comment for why that distinction exists and matters to Task
     /// 11's pruning gate. <paramref name="cancellationToken"/> defaults to <see langword="default"/>
     /// (never cancelled by the caller) and is linked internally with the timeout, so a caller does not
-    /// have to fabricate a timeout to test cancellation, or vice versa. Extracted symbols are further
-    /// filtered by <see cref="FileEligibility.IsInScope"/> before being returned, so an out-of-scope
-    /// member never reaches <see cref="CodeGraph.Symbols"/>.
+    /// have to fabricate a timeout to test cancellation, or vice versa.
+    ///
+    /// <para>
+    /// <b>Both deadlines are checked between files only, never inside one.</b> The loop below tests
+    /// them once per eligible file, immediately before handing it to
+    /// <see cref="ILanguageExtractor.Extract"/>; once inside that call there is no further
+    /// checkpoint, so an extraction that does not return does not return, whatever the clock says and
+    /// whatever the caller does with its token. What this method therefore guarantees is that it
+    /// STARTS no further file after either deadline -- not that it finishes within one.
+    /// <see cref="ExtractionLimits.Timeout"/>'s own doc comment records why the shipped extractor
+    /// cannot offer more (the parser it wraps exposes no per-parse bound at all) and what would have
+    /// to change for it to.
+    /// </para>
+    ///
+    /// <para>
+    /// Extracted symbols are filtered by <see cref="FileEligibility.IsInScope"/> before being
+    /// returned, so an out-of-scope member never reaches <see cref="CodeGraph.Symbols"/> -- but each
+    /// <see cref="ISymbolResolver"/> is handed the UNFILTERED set, so that scope narrowing cannot
+    /// erase an ambiguity the resolver needed to see; an edge resolved to an out-of-scope target is
+    /// degraded to <see cref="EdgeConfidence.Unresolved"/> afterwards instead.
+    /// </para>
     /// </summary>
     public CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits, ScopeOptions scope, CancellationToken cancellationToken = default)
     {
@@ -122,21 +140,13 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             results.Add((relativePath, extractor.Extract(relativePath, absolutePath, profile, limits)));
         }
 
-        // Sort keys must fully disambiguate every tie a real repository can produce: two overloads
-        // of the same member in the same file tie on (Container, Name, RelativePath), so
-        // StartOffset breaks that tie. Without a final key, LINQ's stable OrderBy would fall back to
-        // input order, which is not a documented contract -- and Tasks 10/12 assert the generated
-        // bundle byte-for-byte, so an unspecified tie order would surface there as an intermittent
-        // failure.
-        var symbolList = results.SelectMany(r => r.Result.Symbols)
-            .Where(s => FileEligibility.IsInScope(s, scope))
-            .ToList();
-        var symbols = symbolList
-            .OrderBy(s => s.Container, StringComparer.Ordinal)
-            .ThenBy(s => s.Name, StringComparer.Ordinal)
-            .ThenBy(s => s.RelativePath, StringComparer.Ordinal)
-            .ThenBy(s => s.StartOffset)
-            .ToList();
+        // Two lists, deliberately. `declared` is every symbol this run extracted, whatever its
+        // visibility; `symbols` is the scope-filtered subset that becomes CodeGraph.Symbols.
+        // Resolvers are handed `declared`, never `symbols` -- see the Resolve call below for why
+        // that is load-bearing rather than incidental. Filtering `declared` (already sorted) rather
+        // than sorting a separately-filtered list keeps the two in the same order by construction.
+        var declared = SortSymbols(results.SelectMany(r => r.Result.Symbols));
+        var symbols = declared.Where(s => FileEligibility.IsInScope(s, scope)).ToList();
 
         var sites = results.SelectMany(r => r.Result.Sites).ToList();
 
@@ -154,7 +164,18 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
                 continue;
             }
 
-            foreach (var edge in resolver.Resolve(ownedSites, symbols))
+            // `declared`, NOT `symbols`: a resolver must decide ambiguity over what the source
+            // DECLARES, not over what this run chose to publish. Handing it the scope-filtered list
+            // instead erases ambiguity before it can be seen -- a name declared once publicly and
+            // once internally arrives as a single declaration under the default scope, which
+            // NameMatchResolver reads as unambiguous and links, confidently, to the public one even
+            // when the call was to the internal one. The same repository run with
+            // --include-internal correctly leaves that call Unresolved, so the narrower run would
+            // be asserting something the wider run knows to be false. Resolving against the full
+            // declared set gives the invariant `symbols`-first cannot: narrowing visibility scope
+            // only ever LOSES edges, never invents one. Targets that are themselves out of scope
+            // are handled after the fact, by the degrade-to-Unresolved pass below.
+            foreach (var edge in resolver.Resolve(ownedSites, declared))
             {
                 verdicts[(edge.Site.RelativePath, edge.Site.Offset)] = edge;
             }
@@ -212,6 +233,24 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
 
         return new CodeGraph(symbols, edges, status);
     }
+
+    /// <summary>
+    /// The one symbol ordering this class uses, applied to the full declared set so its scope-filtered
+    /// subset inherits the same order by construction. Sort keys must fully disambiguate every tie a
+    /// real repository can produce: two overloads of the same member in the same file tie on
+    /// (<see cref="SymbolFact.Container"/>, <see cref="SymbolFact.Name"/>,
+    /// <see cref="SymbolFact.RelativePath"/>), so <see cref="SymbolFact.StartOffset"/> breaks that
+    /// tie. Without a final key, LINQ's stable <c>OrderBy</c> would fall back to input order, which
+    /// is not a documented contract -- and Tasks 10/12 assert the generated bundle byte-for-byte, so
+    /// an unspecified tie order would surface there as an intermittent failure.
+    /// </summary>
+    private static List<SymbolFact> SortSymbols(IEnumerable<SymbolFact> facts) =>
+        facts
+            .OrderBy(s => s.Container, StringComparer.Ordinal)
+            .ThenBy(s => s.Name, StringComparer.Ordinal)
+            .ThenBy(s => s.RelativePath, StringComparer.Ordinal)
+            .ThenBy(s => s.StartOffset)
+            .ToList();
 
     /// <summary>
     /// §2.3's pathological-nesting-depth guard: counts <paramref name="relativePath"/>'s directory

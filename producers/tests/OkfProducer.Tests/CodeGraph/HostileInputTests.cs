@@ -251,6 +251,88 @@ public class HostileInputTests : IDisposable
     }
 
     [Fact]
+    public void A_file_scoped_namespace_lost_to_error_recovery_yields_no_symbols_rather_than_wrong_containers()
+    {
+        // MEASURED against the vendored grammar, not assumed: an unclosed `public class Leftover {`
+        // sitting ABOVE a `namespace N;` line makes tree-sitter reparent the `namespace` keyword and
+        // its identifier under an ERROR node, leaving ZERO file_scoped_namespace_declaration nodes
+        // anywhere in the tree. The root-children lookup then reads null and is indistinguishable
+        // from a file that genuinely declares no namespace, so before this guard `T` came out with
+        // Container "" and `M` with Container "T" -- a confident claim that they live in the global
+        // namespace. That is the plausible-but-wrong identity §2.3 calls worse than skipping, and it
+        // collides: two malformed files each losing a different namespace land on the same empty
+        // container. Emitting nothing for the file, and saying so through PartiallyExtracted, is the
+        // honest outcome.
+        var result = ExtractSource(
+            "public class Leftover\n{\nnamespace N;\n\npublic class T\n{\n    public void M() { }\n}\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Empty(result.Symbols);
+        Assert.Empty(result.Sites);
+    }
+
+    [Theory]
+    // Malformation BELOW the namespace line: MEASURED to leave the file_scoped_namespace_declaration
+    // intact at the root, so the container is still correct and the guard above must not fire. This
+    // is the ordinary mid-edit and merge-conflict shape -- the guard would be worthless if it ate
+    // these, and this is the direction no test covered before.
+    //
+    // Each case names the declaration the grammar actually recovers from it, which is not the same
+    // one every time: an unclosed class loses the class_declaration node itself and keeps only the
+    // method inside it, while the merge-conflict shape keeps the class. A third shape measured
+    // alongside these -- a stray extra `{` inside a method body -- is deliberately NOT listed: it
+    // recovers no declaration at all, so an assertion over its symbols could not tell the guard
+    // firing apart from the grammar finding nothing, and would pass either way.
+    [InlineData("namespace N;\n\npublic class T\n{\n    public void M() { }\n", "M")]
+    [InlineData("namespace N;\n\n<<<<<<< HEAD\npublic class T\n{\n    public void M() { }\n}\n=======\npublic class T\n{\n}\n>>>>>>> other\n", "T")]
+    public void Malformed_source_below_the_namespace_line_keeps_its_container(string source, string recoveredName)
+    {
+        var result = ExtractSource(source);
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Contains(result.Symbols, s => s.Name == recoveredName && s.Container == "N");
+    }
+
+    [Theory]
+    // The false positives that would make the guard eat ordinary code, each with the production edit
+    // that was RUN by hand to confirm it turns this case red:
+    //
+    //   block / nested block  -- treating a `namespace_declaration` parent as orphaned and dropping
+    //                            the clean-tree early-out (both go red; so do two pre-existing
+    //                            TreeSitterExtractorTests container tests).
+    //   `[]` collection expr  -- distrusting the file-scoped name whenever HasError is set. This is
+    //                            the case that matters most: that grammar gap (pinned by its own
+    //                            test below) makes HasError true for nearly every modern C# file in
+    //                            this codebase, so that edit drops most of a real repository.
+    //   string literal        -- NO single-line edit found that turns this one red. It is a scope
+    //                            marker, not a proof: the word `namespace` inside a string is a
+    //                            `string_literal` node and never a `namespace` keyword node, so the
+    //                            node-type test cannot see it. It would start earning its keep the
+    //                            day someone reimplements the walk over node TEXT, and is kept for
+    //                            that reason alone.
+    [InlineData("namespace N\n{\n    public class T { public void M() { } }\n}\n", "N")]
+    [InlineData("namespace N.Deep\n{\n    namespace Inner { public class T { } }\n}\n", "N.Deep.Inner")]
+    [InlineData("namespace N;\n\npublic class T { public void M() { Use([]); } public void Use(int[] a) { } }\n", "N")]
+    [InlineData("namespace N;\n\npublic class T { public string S = \"namespace X;\"; }\n", "N")]
+    public void The_lost_namespace_guard_does_not_fire_on_source_whose_namespace_is_intact(string source, string expectedContainer)
+    {
+        var result = ExtractSource(source);
+
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == expectedContainer);
+    }
+
+    [Fact]
+    public void A_file_with_no_namespace_at_all_still_extracts_into_the_global_container()
+    {
+        // The other direction of the same distinction: "" here is a FACT about the source, not a
+        // lookup that failed, so the guard must let it through even though the file has an ERROR
+        // node of its own.
+        var result = ExtractSource("public class T\n{\n    public void M() { @@@ }\n}\n");
+
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == string.Empty);
+    }
+
+    [Fact]
     public void An_empty_collection_expression_used_as_an_argument_is_a_live_grammar_gap_not_a_theoretical_one()
     {
         // Measured against the real extractor (see task-4-report.md's fix-round-2 section for the

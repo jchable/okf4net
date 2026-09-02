@@ -193,6 +193,88 @@ public class CodeGraphBuilderTests
             secondBuild.Edges.Select(e => e.Site.Offset));
     }
 
+    [Fact]
+    public void A_name_declared_once_publicly_and_once_internally_stays_unresolved_under_the_default_scope()
+    {
+        // The resolver must see BOTH declarations of "Helper", not just the public one the default
+        // scope keeps. Filtering first leaves exactly one declaration standing, which
+        // NameMatchResolver reads as unambiguous and links -- confidently, and to the wrong concept,
+        // since the call is to the internal one. "Missing is acceptable, wrong is not" (§2.1), so
+        // the correct verdict is Unresolved.
+        var site = new CallSite("N.C", "Run", "Helper", "C.cs", 42);
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(
+                Member("N.A", "Helper"),
+                Member("N.B", "Helper", "B.cs", SymbolVisibility.Internal),
+                Member("N.C", "Run", "C.cs"))
+            { Sites = [site] },
+            CSharpProfiles,
+            [new NameMatchResolver()]);
+
+        var graph = builder.Build(SnapshotWith("A.cs", "B.cs", "C.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        var edge = Assert.Single(graph.Edges);
+        Assert.Equal(EdgeConfidence.Unresolved, edge.Confidence);
+        Assert.Null(edge.TargetContainer);
+        Assert.Null(edge.TargetName);
+    }
+
+    [Fact]
+    public void Narrowing_visibility_scope_never_turns_an_unresolved_call_into_a_resolved_one()
+    {
+        // The general property behind the case above, stated over the one axis this builder actually
+        // controls: SymbolFact.Visibility. IncludeInternal=true is the wider scope, ScopeOptions.Default
+        // the narrower one. Whatever the wide run leaves Unresolved, the narrow run must leave
+        // Unresolved too -- narrowing scope may only ever LOSE edges, never invent one.
+        //
+        // The property is stated over the VISIBILITY filter only, and that is not a hedge: the
+        // IncludeTests filter excludes whole files before they are ever opened
+        // (FileEligibility.IsEligible, applied in the walk above), so declarations in an excluded
+        // file are invisible to the resolver by construction and no in-process check can restore
+        // them. Only the visibility filter runs on symbols the run already extracted, which is
+        // exactly why it is the one that can be made not to lie.
+        var site = new CallSite("N.C", "Run", "Helper", "C.cs", 42);
+        CodeGraphBuilder Builder() => new(
+            new StubExtractor(
+                Member("N.A", "Helper"),
+                Member("N.B", "Helper", "B.cs", SymbolVisibility.Internal),
+                Member("N.C", "Run", "C.cs"))
+            { Sites = [site] },
+            CSharpProfiles,
+            [new NameMatchResolver()]);
+        var snapshot = SnapshotWith("A.cs", "B.cs", "C.cs");
+
+        var wide = Builder().Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default with { IncludeInternal = true });
+        var narrow = Builder().Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.Equal(EdgeConfidence.Unresolved, Assert.Single(wide.Edges).Confidence);
+        Assert.Equal(EdgeConfidence.Unresolved, Assert.Single(narrow.Edges).Confidence);
+    }
+
+    [Fact]
+    public void A_private_declaration_of_the_same_name_makes_the_call_ambiguous_even_though_it_is_never_in_scope()
+    {
+        // Private is out of scope under every flag, so there is no wider run to compare against --
+        // but the reason the ambiguity matters does not come from the flags. Two declarations of
+        // "Helper" exist in this repository and a name-only resolver cannot tell which one the call
+        // meant; linking it to the public one because the private one was filtered away is the same
+        // confident wrong edge, arrived at through a filter no flag can lift. Ambiguity is decided
+        // over what the source DECLARES, not over what this run chose to publish.
+        var site = new CallSite("N.C", "Run", "Helper", "C.cs", 42);
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(
+                Member("N.A", "Helper"),
+                Member("N.B", "Helper", "B.cs", SymbolVisibility.Private),
+                Member("N.C", "Run", "C.cs"))
+            { Sites = [site] },
+            CSharpProfiles,
+            [new NameMatchResolver()]);
+
+        var graph = builder.Build(SnapshotWith("A.cs", "B.cs", "C.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.Equal(EdgeConfidence.Unresolved, Assert.Single(graph.Edges).Confidence);
+    }
+
     /// <summary>
     /// Builds the <see cref="RepositorySnapshot"/> <see cref="RepositoryScanner"/> would produce for
     /// a repo containing an empty file at each of <paramref name="relativePaths"/>. Real files on

@@ -26,6 +26,8 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 {
     private const string CommentNodeType = "comment";
     private const string FileScopedNamespaceNodeType = "file_scoped_namespace_declaration";
+    private const string NamespaceDeclarationNodeType = "namespace_declaration";
+    private const string NamespaceKeywordNodeType = "namespace";
     private const string NameFieldName = "name";
     private const string BodyFieldName = "body";
     private const string AccessorsFieldName = "accessors";
@@ -73,11 +75,33 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         }
 
         var engine = GetOrCreateEngine(profile);
+
+        // UNBOUNDED, and knowingly so. ExtractionLimits.Timeout does not reach this line and cannot
+        // be made to on the shipped package: TreeSitter.DotNet 1.3.0's Parser exposes only
+        // Parse(string) and Parse(string, Tree) -- no cancellation-token overload, no options
+        // argument, no timeout property -- and its internal P/Invoke surface declares none of
+        // ts_parser_parse_with_options, ts_parser_set_timeout_micros or
+        // ts_parser_set_cancellation_flag, while Parser's native handle is internal, so the progress
+        // callback the package's own native tree-sitter.dll exports is unreachable from here.
+        // (Checked by reflecting over TreeSitter.dll's full type surface, not inferred from its
+        // documentation.) Running this on a Task to impose a deadline would leak the thread and the
+        // native call rather than stop them, so the guard that does exist is MaxFileBytes above, and
+        // ExtractionLimits.Timeout is documented as the between-files deadline it actually is. If
+        // the wrapper ever exposes the progress callback, that is the hook to wire a real per-parse
+        // bound to -- and the place to revisit ILanguageExtractor.Extract's no-token signature.
         using var tree = engine.Parser.Parse(source)!;
 
-        var fileScopedNamespaceName = tree.RootNode.Children
-            .FirstOrDefault(c => c.Type == FileScopedNamespaceNodeType)
-            ?.GetChildForField(NameFieldName)?.Text;
+        if (!TryReadFileScopedNamespace(tree.RootNode, out var fileScopedNamespaceName))
+        {
+            // The file declares a namespace this parse could not recover, so every container in it
+            // is unknown -- not empty. Emitting the symbols anyway would give each one a
+            // plausible-but-wrong identity (see TryReadFileScopedNamespace for the measurement), and
+            // §2.3's rule is that a wrong identity is worse than a missing one. PartiallyExtracted
+            // is the honest status: the file was visited, its outcome is recorded, and
+            // RunStatus.IsComplete goes false so no consumer treats this run as authoritative about
+            // what the file contains.
+            return new ExtractionResult([], [], FileStatus.PartiallyExtracted);
+        }
 
         var symbols = ExtractSymbols(source, tree, engine.DeclarationQuery, profile, relativePath, fileScopedNamespaceName);
         var sites = ExtractCallSites(source, tree, engine.CallQuery, relativePath, fileScopedNamespaceName);
@@ -88,6 +112,89 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         var status = tree.RootNode.HasError ? FileStatus.PartiallyExtracted : FileStatus.Extracted;
 
         return new ExtractionResult(symbols, sites, status);
+    }
+
+    /// <summary>
+    /// Reads the C# file-scoped namespace (<c>namespace N;</c>) every declaration in
+    /// <paramref name="root"/>'s file sits under, distinguishing "this file declares no file-scoped
+    /// namespace" (returns <see langword="true"/> with <paramref name="name"/>
+    /// <see langword="null"/>, the ordinary case for a block-namespace or top-level file) from "this
+    /// file declares one that this parse could not recover" (returns <see langword="false"/>).
+    ///
+    /// <para>
+    /// That distinction is the whole point of this method, and it is not theoretical. A file-scoped
+    /// namespace declaration is a SIBLING of the declarations it covers, so it is read by looking
+    /// among the root's own children rather than by walking up from a declaration -- and when
+    /// tree-sitter's error recovery swallows the <c>namespace</c> keyword into an <c>ERROR</c> node,
+    /// that lookup finds nothing and is indistinguishable, to the caller, from a file that never had
+    /// one. The container then comes out as <c>""</c>: not a crash, not a skip, but a confident claim
+    /// that a type lives in the global namespace when the source says otherwise -- and two such files
+    /// in one run collide on that same empty container.
+    /// </para>
+    ///
+    /// <para>
+    /// Measured against the vendored tree-sitter-c-sharp grammar, over eleven shapes. The recovery
+    /// only loses the declaration when the malformed region sits ABOVE the <c>namespace N;</c> line:
+    /// <c>public class Leftover {</c> left unclosed before it yields zero
+    /// <c>file_scoped_namespace_declaration</c> nodes ANYWHERE in the tree (not merely at the root,
+    /// so searching deeper would find nothing) with the <c>namespace</c> keyword and its identifier
+    /// reparented under an <c>ERROR</c>. Malformation BELOW the namespace line -- an unclosed class,
+    /// a stray extra <c>{</c>, a full set of merge-conflict markers, all measured -- leaves the
+    /// declaration intact at the root, so the ordinary mid-edit shape is not affected. The predicate
+    /// used here is therefore an orphaned <c>namespace</c> keyword: one whose parent is neither a
+    /// <c>namespace_declaration</c> nor a <c>file_scoped_namespace_declaration</c>. On those eleven
+    /// shapes it fired on exactly the broken one, and on none of: a clean file-scoped namespace, a
+    /// clean block namespace, nested block namespaces, a file with no namespace at all, a string
+    /// literal containing the text <c>namespace X;</c>, or the empty-collection-expression grammar
+    /// gap that makes <c>HasError</c> true for nearly every modern C# file in this codebase (see
+    /// <c>HostileInputTests</c>) -- which is exactly the false positive that would otherwise have
+    /// made this guard eat the whole repository.
+    /// </para>
+    ///
+    /// <para>
+    /// The walk runs only when <paramref name="root"/> reports <c>HasError</c>: on every clean shape
+    /// measured, every <c>namespace</c> keyword was already parented to a namespace node, so a clean
+    /// tree has nothing to find. It is iterative rather than recursive because its depth is bounded
+    /// by hostile input, not by <see cref="ExtractionLimits.MaxDepth"/>, which bounds directory
+    /// nesting and not syntactic nesting.
+    /// </para>
+    /// </summary>
+    private static bool TryReadFileScopedNamespace(Node root, out string? name)
+    {
+        var declaration = root.Children.FirstOrDefault(c => c.Type == FileScopedNamespaceNodeType);
+        name = declaration?.GetChildForField(NameFieldName)?.Text;
+
+        if (declaration is not null)
+        {
+            // A declaration whose name did not survive (`namespace ;` recovers to exactly this shape)
+            // is the same failure by a different route: the name reads as empty, and prepending an
+            // empty segment produces a container with a leading dot rather than a real path.
+            return !string.IsNullOrEmpty(name);
+        }
+
+        if (!root.HasError)
+        {
+            return true;
+        }
+
+        var pending = new Stack<Node>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            if (node.Type == NamespaceKeywordNodeType
+                && node.Parent?.Type is not (NamespaceDeclarationNodeType or FileScopedNamespaceNodeType))
+            {
+                return false;
+            }
+
+            foreach (var child in node.Children)
+            {
+                pending.Push(child);
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

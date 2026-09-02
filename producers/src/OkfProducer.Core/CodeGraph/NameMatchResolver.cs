@@ -9,14 +9,25 @@ namespace OkfProducer.Core.CodeGraph;
 /// for the files it owns more precisely.
 ///
 /// <para>
-/// Where a called name has exactly one declaration among <see cref="SymbolFact"/>s, this resolver
-/// matches it with <see cref="EdgeConfidence.ByName"/>. Where it has more than one -- or none at all
+/// Where a called name has exactly one declaration among the <see cref="SymbolFact"/>s it is given,
+/// this resolver matches it with <see cref="EdgeConfidence.ByName"/>. Where it has more than one -- or none at all
 /// -- it deliberately stays <see cref="EdgeConfidence.Unresolved"/> rather than guess: a spike
 /// measured 38-39% of internal call edges as inter-type ambiguous this way (e.g. <c>Equals</c> across
 /// seven types, <c>Get</c> across three), so this is the common case, not a rare corner. A wrong
 /// attribution would render as a confident link to the wrong concept; an unresolved call renders as
 /// honest plain text (§4.5). A name with zero declarations in the repository is the ordinary case for
 /// a BCL or NuGet call and is likewise left <see cref="EdgeConfidence.Unresolved"/>.
+/// </para>
+///
+/// <para>
+/// The declaration count is taken over every symbol the run extracted, not over the
+/// <see cref="ScopeOptions"/>-filtered subset that will become concepts -- see
+/// <see cref="ISymbolResolver.Resolve"/> for the contract and why counting the filtered subset
+/// instead produces a confident wrong link. A consequence worth stating plainly: this resolver can
+/// return a target that is itself out of scope, and <see cref="CodeGraphBuilder.Build"/> is what
+/// degrades such an edge back to <see cref="EdgeConfidence.Unresolved"/>; it does not attempt that
+/// itself, because doing so here would re-introduce exactly the ambiguity-erasing order this
+/// paragraph exists to prevent.
 /// </para>
 /// </summary>
 public sealed class NameMatchResolver : ISymbolResolver
