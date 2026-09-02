@@ -354,15 +354,144 @@ public class HostileInputTests : IDisposable
         // below with it -- [Deep]Inner, [Deep]T -- a namespace declared inside a method body inside
         // an unclosed class, attached to code it cannot possibly contain.
         //
-        // CanGovernFile is the bound: only a root child, or a declaration reached through nothing
-        // but preprocessor wrappers, can govern. Everything else is refused and its offset becomes
+        // CanGovernFile is the bound: only a declaration reached through nothing but unclosed
+        // preprocessor conditionals can govern. Everything else is refused and its offset becomes
         // suppression evidence.
+        //
+        // Here the unclosed class swallows everything below it, so the whole file is refused and
+        // Assert.Empty is the entire claim. An earlier revision of this test also asserted
+        // DoesNotContain(Container.StartsWith("Deep")) above that Empty -- strictly implied by it,
+        // never independently falsifiable, and therefore not a second check. The shape where that
+        // assertion IS load-bearing (a NON-empty result that must still name no "Deep") is the
+        // faithful variant in the test below.
         var result = ExtractSource(
             "public class Leftover\n{\n    void Q()\n    {\n#if X\nnamespace Deep;\n\n        void Inner() { }\n\npublic class T { }\n");
 
         Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
-        Assert.DoesNotContain(result.Symbols, s => s.Container.StartsWith("Deep", StringComparison.Ordinal));
         Assert.Empty(result.Symbols);
+    }
+
+    [Fact]
+    public void A_namespace_declared_inside_a_closed_method_body_never_reaches_the_declarations_below_it()
+    {
+        // The faithful form of the shape above, and a correction to the record: a previous round
+        // reported this illustration as "could not reproduce" after ONE reconstruction attempt that
+        // left the class unclosed (the test above), which makes tree-sitter absorb `Leftover` and
+        // `Q` and yields only two symbols. Keep the class and the method CLOSED and put the unclosed
+        // `#if X` INSIDE the method body, and it reproduces exactly: MEASURED against the pre-guard
+        // extractor, this source emitted
+        //
+        //     [Deep]Leftover, [Deep.Leftover]Q, [Deep.Leftover.Q]Inner, [Deep]T
+        //
+        // -- four declarations labelled with a namespace declared inside a method body, including
+        // `Leftover` itself, which lexically CONTAINS the declaration it is claimed to live in.
+        //
+        // A failure to reproduce is a claim like any other and needs the same evidence as a positive
+        // one; that one did not have it.
+        //
+        // Unlike the test above, this result is NOT empty -- `Leftover` and `Q` are real
+        // declarations whose own containers were never in doubt, and the guard must not eat them. So
+        // the "no container names Deep" assertion is a real constraint on a populated result rather
+        // than a restatement of Assert.Empty: neutering CanGovernFile's ancestor allowlist is
+        // MEASURED to fail this test on that exact line ("Assert.DoesNotContain() Failure: Filter
+        // matched in collection"), because the four fabricated symbols come back.
+        var result = ExtractSource(
+            "public class Leftover\n{\n    void Q()\n    {\n#if X\nnamespace Deep;\n\n        void Inner() { }\n    }\n}\n\npublic class T { }\n");
+
+        Assert.DoesNotContain(result.Symbols, s => s.Container.StartsWith("Deep", StringComparison.Ordinal));
+        Assert.Contains(result.Symbols, s => s.Name == "Leftover" && s.Container == string.Empty);
+        Assert.Contains(result.Symbols, s => s.Name == "Q" && s.Container == "Leftover");
+    }
+
+    [Theory]
+    // MEASURED, with the real C# compiler, on the first of these: with DEBUG undefined a second file
+    // referencing an unqualified `T` at global scope COMPILES (so `T` is global); with DEBUG defined
+    // that same reference fails CS0246 (so `T` is `A.T`). The file is valid C# either way and the
+    // answer depends on a symbol this parse does not know -- yet the previous revision emitted
+    // [A]T, [A.T]M, [A.T]Use, on the stated rationale that a preprocessor conditional "wraps what it
+    // guards without changing its scope". It does not; that was a bet on DEBUG written as a
+    // structural fact.
+    //
+    // The nested case is here because CanGovernFile must check EVERY ancestor, not just the nearest:
+    // both conditionals are closed and either one alone is enough to refuse. The `#else` case is
+    // here because a preproc_else carries no `#endif` child of its own -- the terminator belongs to
+    // the enclosing preproc_if -- so it passes the closure test vacuously and the enclosing
+    // conditional is what must decide.
+    //
+    // (The `[]` empty-collection-expression argument is load-bearing in all three: it is what sets
+    // HasError, without which ReadNamespaceContext returns before the deep search runs at all.)
+    [InlineData("#if DEBUG\nnamespace A;\n#endif\n")]
+    [InlineData("#if DEBUG\n#if TRACE\nnamespace A;\n#endif\n#endif\n")]
+    [InlineData("#if DEBUG\nnamespace A;\n#else\n#endif\n")]
+    public void A_namespace_inside_a_closed_preprocessor_conditional_cannot_govern_the_file(string prefix)
+    {
+        var result = ExtractSource(
+            prefix + "public class T { public void M() { Use([]); } public void Use(int[] a) { } }\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Empty(result.Symbols);
+        Assert.Empty(result.Sites);
+    }
+
+    [Fact]
+    public void Whether_the_conditional_was_closed_is_what_decides_if_a_wrapped_namespace_governs()
+    {
+        // The two halves of the rule on ONE source differing by ONE line, so the discriminator is
+        // pinned rather than inferred from two tests that could drift apart.
+        //
+        // Closed: valid C# whose container depends on DEBUG -- refused (see the theory above).
+        // Unclosed: NOT valid C# in any configuration -- MEASURED as CS1027 "#endif directive
+        // expected" with DEBUG both defined and undefined. There is no build of that file, so
+        // nothing was conditionally compiled; the declaration was merely reparented by error
+        // recovery, which is exactly the case recovery exists for. This is why narrowing to unclosed
+        // conditionals costs the recovery gain nothing.
+        //
+        // NOTE for anyone re-deriving "unclosed": it is NOT "the wrapper extends to end of file".
+        // MEASURED, this grammar ends a preproc_if before the file's trailing newline, so an
+        // EndIndex >= root.EndIndex test refuses the unclosed case too. The grammar instead
+        // synthesizes a zero-width `#endif` flagged IsMissing, which is what CanGovernFile reads.
+        const string Body = "public class T { public void M() { Use([]); } public void Use(int[] a) { } }\n";
+
+        var closed = ExtractSource("#if DEBUG\nnamespace A;\n#endif\n" + Body);
+        var unclosed = ExtractSource("#if DEBUG\nnamespace A;\n" + Body);
+
+        Assert.Empty(closed.Symbols);
+        Assert.Contains(unclosed.Symbols, s => s.Name == "T" && s.Container == "A");
+    }
+
+    [Theory]
+    // A namespace recovered from an unclosed `#if` at the top of the file, and a SECOND namespace
+    // lost further down -- so the file holds both a recovery and an unrelated loss at once.
+    //
+    // ReadNamespaceContext has always merged evidence of a second loss into the recovered context,
+    // but a previous revision computed "is there other evidence?" by comparing a single running
+    // minimum against the recovered declaration's own offset. A recovered file-scoped namespace sits
+    // at the top of the file, so it is nearly always that minimum -- which made the comparison
+    // discard every piece of evidence BELOW it, i.e. exactly the ones it was written for. MEASURED,
+    // all three of these emitted [N]T, [N]U: `U` is declared under `namespace Q;`, not `N`, and the
+    // carrier proving `Q` exists was sitting in the tree, seen and dropped. The comment on that
+    // merge said "no measured shape produces both" and that the alternative would be "silently
+    // preferring a recovery over an unrelated loss" -- both false, and the second one described what
+    // the code was doing.
+    //
+    // Two accumulators (evidence, declarations) replace the arithmetic. `T` still gets its recovered
+    // container; `U`, below the second loss, is dropped rather than mislabelled.
+    [InlineData("using System\n")]
+    [InlineData("/* oops\n")]
+    [InlineData("<<<<<<< HEAD\n=======\n>>>>>>> other\n")]
+    public void A_second_namespace_lost_below_a_recovered_one_still_suppresses_what_it_covers(string secondLoss)
+    {
+        var result = ExtractSource(
+            "#if DEBUG\nnamespace N;\n\npublic class T { }\n\n"
+            + secondLoss
+            + "\nnamespace Q;\n\npublic class U { }\n");
+
+        // The load-bearing half: restoring the old comparison turns this red (it re-emits [N]U).
+        Assert.DoesNotContain(result.Symbols, s => s.Name == "U");
+
+        // The guard against over-correcting: `T` is above the second loss and its container is
+        // known, so suppression must not reach it. Disabling recovery turns this red.
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == "N");
     }
 
     [Fact]
@@ -408,7 +537,12 @@ public class HostileInputTests : IDisposable
             "namespace N\n{\n    public class T\n    {\n        int F = namespace;\n"
             + "        public void Use() { Take([]); }\n        public void Take(int[] a) { }\n    }\n}\n");
 
+        // DOCUMENTARY, not load-bearing: `F`'s declaration STARTS above the carrier it contains, and
+        // suppression only ever drops declarations starting at or after the evidence offset -- so
+        // this line survives the mutation that removes the bound. It records where the carrier lives.
         Assert.Contains(result.Symbols, s => s.Name == "F" && s.Container == "N.T");
+
+        // LOAD-BEARING: these two start below the carrier, so they are what the bound actually saves.
         Assert.Contains(result.Symbols, s => s.Name == "Use" && s.Container == "N.T");
         Assert.Contains(result.Symbols, s => s.Name == "Take" && s.Container == "N.T");
     }

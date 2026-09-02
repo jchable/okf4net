@@ -35,6 +35,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private const string ModifierNodeType = "modifier";
     private const string DeclarationListNodeType = "declaration_list";
     private const string BlockNodeType = "block";
+    private const string EndIfNodeType = "#endif";
 
     /// <summary>
     /// Node types that, by this grammar, hold nothing but a C# identifier. A node of one of these
@@ -63,14 +64,22 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
     /// <summary>
     /// The only node types measured to sit between the root and a <c>file_scoped_namespace_declaration</c>
-    /// that still governs the file. A file-scoped namespace is a member of the compilation unit; the
-    /// one thing this grammar was measured to interpose is a preprocessor conditional, which wraps
-    /// what it guards without changing its scope (<c>#if DEBUG</c> / <c>#else</c> / <c>#elif</c> --
-    /// <c>#region</c> was measured NOT to wrap, leaving the declaration a root child). Anything else
-    /// in the chain -- an <c>ERROR</c>, a <c>class_declaration</c>, a body -- means the declaration is
-    /// nested inside something that cannot contain it, so it governs nothing and is refused. Measured
-    /// list, not a derived one: a fourth wrapper would be invisible until it is measured and added,
-    /// and its cost is a refusal, not a wrong answer.
+    /// that can still govern the file. A file-scoped namespace is a member of the compilation unit;
+    /// the one thing this grammar was measured to interpose is a preprocessor conditional
+    /// (<c>#if DEBUG</c> / <c>#else</c> / <c>#elif</c> -- <c>#region</c> was measured NOT to wrap,
+    /// leaving the declaration a root child). Anything else in the chain -- an <c>ERROR</c>, a
+    /// <c>class_declaration</c>, a body -- means the declaration is nested inside something that
+    /// cannot contain it, so it governs nothing and is refused.
+    ///
+    /// <para>Appearing in this list is NECESSARY but not SUFFICIENT: <see cref="CanGovernFile"/>
+    /// additionally requires the conditional to have been left unclosed, because a properly closed
+    /// <c>#if</c> is a branch whose selection depends on a preprocessor symbol this parse does not
+    /// know. Do not read membership here as "this wrapper is transparent" -- the earlier revision of
+    /// this comment said exactly that, and it was measured false with the real C# compiler; see
+    /// <see cref="CanGovernFile"/> for the measurement.</para>
+    ///
+    /// Measured list, not a derived one: a fourth wrapper would be invisible until it is measured and
+    /// added, and its cost is a refusal, not a wrong answer.
     /// </summary>
     private static readonly string[] PreprocessorWrapperNodeTypes = ["preproc_if", "preproc_else", "preproc_elif"];
 
@@ -220,20 +229,31 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// anything semantic. Turning a correct container into a fabricated one is the exact failure this
     /// whole guard exists to prevent, so recovery is now bounded on both axes:
     /// <list type="bullet">
-    /// <item><b>structurally</b> -- <see cref="CanGovernFile"/>: only a root child, or a declaration
-    /// reached through nothing but preprocessor wrappers (<see cref="PreprocessorWrapperNodeTypes"/>),
-    /// can govern. A declaration under an <c>ERROR</c>, inside an unclosed class or a method body,
-    /// cannot govern anything and is refused.</item>
+    /// <item><b>structurally</b> -- <see cref="CanGovernFile"/>: only a declaration reached through
+    /// nothing but UNCLOSED preprocessor conditionals can govern. A declaration under an
+    /// <c>ERROR</c>, inside an unclosed class or a method body, cannot govern anything; neither can
+    /// one inside a properly closed <c>#if</c>, whose selection depends on a preprocessor symbol
+    /// this parse does not know. Both are refused.</item>
     /// <item><b>positionally</b> -- the recovered name is scoped by
     /// <see cref="NamespaceContext.FileScopedFromIndex"/> exactly as suppression is scoped by
     /// <see cref="NamespaceContext.SuppressFromIndex"/>, so it covers its own line to end of file and
     /// nothing above it.</item>
     /// </list>
-    /// And when MORE THAN ONE <c>file_scoped_namespace_declaration</c> is in the tree, this REFUSES
-    /// rather than picks: there is no rule here that can say which branch of a <c>#if</c>/<c>#else</c>
-    /// the build selects, and inventing one by traversal order is how the fabricated containers above
-    /// happened. A refused declaration is not merely ignored -- its offset becomes suppression
-    /// evidence, since a namespace certainly starts there and this parse cannot say which.
+    /// And when the DEEP SEARCH finds more than one <c>file_scoped_namespace_declaration</c>, this
+    /// REFUSES rather than picks: there is no rule here that can say which branch of a
+    /// <c>#if</c>/<c>#else</c> the build selects, and inventing one by traversal order is how the
+    /// fabricated containers above happened. A refused declaration is not merely ignored -- its
+    /// offset becomes suppression evidence, since a namespace certainly starts there and this parse
+    /// cannot say which.
+    ///
+    /// <b>That last sentence is about the deep search only, and deliberately not about the file.</b>
+    /// A previous revision of this comment said "when more than one is IN THE TREE", which is false:
+    /// the root-children fast path above returns on the first match without counting anything, so
+    /// <c>namespace A;</c> followed by <c>#if DEBUG namespace B; #endif</c> -- two declarations in
+    /// the tree -- yields <c>[A]T</c> (measured), and is meant to. A root-level declaration is not a
+    /// candidate among others: C# requires it to precede every other member (<c>CS8956</c>), so it
+    /// governs whatever follows it whatever else the tree holds. The refusal rule exists for the
+    /// case where the fast path already failed and the candidates are all found by searching.
     /// </para>
     ///
     /// <para><b>Suppress locally, never file-wide.</b> Where recovery genuinely fails, what is
@@ -286,6 +306,29 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// namespace can be declared.
     /// </para>
     ///
+    /// <para><b>Recovery is fragile, and its fragility is not a gradient.</b> It depends on the
+    /// declaration's ancestor chain being nothing but unclosed conditionals, and that chain is
+    /// decided by the whole file, not by the region around the declaration. Measured:
+    /// <c>#if DEBUG / namespace N; / public class T { void M() {} }</c> recovers <c>[N]T, [N.T]M</c>,
+    /// but appending an unrelated, much later <c>using System</c> with no semicolon reparents the
+    /// <c>preproc_if</c> under an <c>ERROR</c>, and the same file then yields NOTHING -- two correct
+    /// declarations lost to damage that touched neither of them. That is the safe direction (a
+    /// missing identity, not a wrong one) and it is the same trade the rest of this method makes, but
+    /// it is a real cost and it is recorded here rather than left for the next reader to rediscover.
+    /// Recovery is a bonus on a narrow set of shapes, not a guarantee about damaged files.</para>
+    ///
+    /// <para><b>A confident wrong answer survives ABOVE this method, on the clean-parse path.</b>
+    /// <c>#if DEBUG / namespace A; / #endif / public class T ...</c> is valid C# whose container
+    /// depends on <c>DEBUG</c>. When something else in the file sets <c>HasError</c>, the deep search
+    /// reaches it and <see cref="CanGovernFile"/> now refuses it, so its declarations are dropped.
+    /// When the file parses cleanly, the <c>!HasError</c> early-out below returns before any of that
+    /// and the declarations come out labelled <c>""</c> -- a confident global-namespace claim on a
+    /// file that may well declare <c>A</c>. So the answer for one source still flips on unrelated
+    /// content elsewhere in it (measured: adding an empty collection expression <c>[]</c> is enough).
+    /// Closing that means loosening the <c>!HasError</c> early-out, which is the one thing keeping
+    /// this whole walk off the <c>[]</c>-grammar-gap population described below; it is a separate
+    /// decision, not an oversight of this one.</para>
+    ///
     /// <para><b>This does not close the class, and must not be read as if it did.</b> Some shapes
     /// leave NO node for the lost keyword at all -- <c>global using System</c> with no semicolon, and
     /// an unterminated string literal inside an assembly attribute, both measured -- because the
@@ -322,49 +365,54 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             return new NamespaceContext(null, 0, null);
         }
 
-        // One pass, collecting both what could be recovered and what would have to be refused. The
-        // declaration count is what decides between them: exactly one, structurally able to govern,
-        // is recoverable; anything else is refused, and every declaration found contributes its own
-        // offset as suppression evidence.
+        // One pass, accumulating the two kinds of offset SEPARATELY. They are separate because they
+        // answer different questions and only one of them survives a recovery: evidence is a
+        // namespace this parse could not name at all, while a declaration offset is a namespace it
+        // CAN name and may be about to return. A previous revision kept a single running minimum over
+        // both and then tried to subtract the recovered declaration back out of it by comparing
+        // against that minimum -- which made the subtraction fire only when the recovered declaration
+        // WAS the minimum, i.e. discarded every piece of evidence lying below it. Since a recovered
+        // file-scoped namespace sits at the top of the file, it is nearly always that minimum, so the
+        // merge below was dead for exactly the shapes it was written for (measured: three of them --
+        // `using System` with no semicolon, an unterminated block comment, and conflict markers, each
+        // below a namespace recovered from an unclosed `#if`, all three emitting the second
+        // namespace's types under the FIRST namespace's name). Two accumulators make the question
+        // "is there other evidence?" answerable directly instead of by arithmetic on a merged
+        // minimum.
         Node? onlyDeclaration = null;
         var declarationCount = 0;
-        int? suppressFrom = null;
+        int? evidenceFrom = null;
+        int? declarationFrom = null;
         foreach (var node in Descendants(root))
         {
             if (node.Type == FileScopedNamespaceNodeType)
             {
                 declarationCount++;
                 onlyDeclaration = node;
+                declarationFrom = Earliest(declarationFrom, node.StartIndex);
             }
-            else if (!IsLostNamespaceEvidence(node))
+            else if (IsLostNamespaceEvidence(node))
             {
-                continue;
-            }
-
-            if (suppressFrom is null || node.StartIndex < suppressFrom)
-            {
-                suppressFrom = node.StartIndex;
+                evidenceFrom = Earliest(evidenceFrom, node.StartIndex);
             }
         }
 
         if (declarationCount == 1 && CanGovernFile(onlyDeclaration!))
         {
-            var recovered = ReadDeclaration(onlyDeclaration!);
-
             // Evidence of a SECOND lost namespace, elsewhere in the same file, is not cancelled by
-            // having recovered this one. No measured shape produces both -- every shape that leaves a
-            // recoverable declaration leaves no other evidence, and every shape that leaves evidence
-            // destroyed the declaration outright -- so this merge is unexercised by any test, and it
-            // is written down as such rather than presented as a measured behaviour. It is here
-            // because the alternative is silently preferring a recovery over an unrelated loss.
-            var otherEvidence = suppressFrom == onlyDeclaration!.StartIndex ? null : suppressFrom;
+            // having recovered this one -- and unlike the revision described above, this merge is
+            // now exercised: the three shapes named there reach it, and the declarations below the
+            // second loss are dropped rather than labelled with the first namespace's name.
+            var recovered = ReadDeclaration(onlyDeclaration!);
             return recovered with
             {
-                SuppressFromIndex = Earliest(recovered.SuppressFromIndex, otherEvidence),
+                SuppressFromIndex = Earliest(recovered.SuppressFromIndex, evidenceFrom),
             };
         }
 
-        return new NamespaceContext(null, 0, suppressFrom);
+        // Refusing is not silent: a refused declaration's own offset is suppression evidence too,
+        // since a namespace certainly starts there and this parse cannot say which.
+        return new NamespaceContext(null, 0, Earliest(evidenceFrom, declarationFrom));
     }
 
     /// <summary>
@@ -391,19 +439,62 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
     /// <summary>
     /// Whether a <c>file_scoped_namespace_declaration</c> found by the deep search is in a position
-    /// that can govern the file at all. A file-scoped namespace is a member of the compilation unit,
-    /// so the only ancestors allowed between it and the root are preprocessor wrappers
-    /// (<see cref="PreprocessorWrapperNodeTypes"/>), which wrap what they guard without changing its
-    /// scope. A declaration reached through an <c>ERROR</c>, a type declaration or a body is nested
-    /// inside something that cannot contain it -- it governs nothing, and treating it as the file's
-    /// namespace is how <c>[Second.First]A</c> and <c>[Deep]T</c> were fabricated. See
-    /// <see cref="ReadNamespaceContext"/>.
+    /// that can govern the file at all. Two conditions, both necessary.
+    ///
+    /// <para><b>Every ancestor up to the root is a preprocessor conditional.</b> A file-scoped
+    /// namespace is a member of the compilation unit, so a declaration reached through an
+    /// <c>ERROR</c>, a type declaration or a body is nested inside something that cannot contain it
+    /// -- it governs nothing, and treating it as the file's namespace is how <c>[Second.First]A</c>
+    /// and <c>[Deep]T</c> were fabricated.</para>
+    ///
+    /// <para><b>And every one of those conditionals was left UNCLOSED.</b> A previous revision
+    /// stopped at the first condition, on the stated rationale that a preprocessor conditional
+    /// "wraps what it guards without changing its scope". That is a bet on a preprocessor symbol
+    /// dressed as a structural fact, and it is false. Measured, with the real C# compiler, on
+    /// <c>#if DEBUG / namespace A; / #endif / public class T ...</c>:
+    /// <list type="bullet">
+    /// <item>with <c>DEBUG</c> undefined -- the default of any Release build -- a second file
+    /// referencing an unqualified <c>T</c> at global scope COMPILES, so <c>T</c> is in the global
+    /// namespace;</item>
+    /// <item>with <c>DEBUG</c> defined, that same reference fails with <c>CS0246</c>, because
+    /// <c>T</c> is now <c>A.T</c>.</item>
+    /// </list>
+    /// The file is valid C# either way and its answer depends entirely on a symbol this parse does
+    /// not know, so the old rule confidently emitted <c>[A]T, [A.T]M, [A.T]Use</c> for a file whose
+    /// default build puts <c>T</c> nowhere near <c>A</c>. This is the same ignorance
+    /// <see cref="ReadNamespaceContext"/> already refuses to guess through when a <c>#if</c>/<c>#else</c>
+    /// offers two namespaces; with one branch the ignorance is identical and only the confidence
+    /// differed.
+    ///
+    /// An UNCLOSED conditional is a different animal, and that is why the recovery this method
+    /// exists for survives the narrowing. <c>#if DEBUG</c> with no <c>#endif</c> is not a branch the
+    /// build might select -- it is <c>CS1027</c> ("#endif directive expected"), measured in BOTH
+    /// configurations, so there is no build of that file at all. Nothing was conditionally compiled;
+    /// the declaration was merely REPARENTED by error recovery, which is precisely the case
+    /// recovery was added for. So the closed form is refused and the unclosed form is recovered.
+    /// </para>
+    ///
+    /// <para><b>Why <c>IsMissing</c> and not an end-of-file comparison.</b> The obvious spelling of
+    /// "unclosed" -- the wrapper extends to the end of the file -- was measured and does NOT work:
+    /// this grammar ends a <c>preproc_if</c> BEFORE the file's trailing newline, so row 7 of the
+    /// hostile-shape table measures <c>preproc_if [0,67)</c> against a <c>compilation_unit</c> ending
+    /// at 68, and an <c>EndIndex >= root.EndIndex</c> test would refuse the one shape recovery
+    /// exists for. What the grammar does instead is synthesize the missing terminator: an unclosed
+    /// <c>#if</c> still gets an <c>#endif</c> child, zero-width and flagged <c>IsMissing</c>
+    /// (measured on rows 7, R1a, R1g). Asking whether a REAL <c>#endif</c> is present is therefore
+    /// both exact and a direct statement of the question.
+    /// </para>
+    ///
+    /// <para>A <c>preproc_else</c>/<c>preproc_elif</c> carries no <c>#endif</c> child of its own --
+    /// the terminator belongs to the enclosing <c>preproc_if</c> (measured) -- so it passes this test
+    /// vacuously and the enclosing <c>preproc_if</c>, reached on the next turn of the same loop, is
+    /// what actually decides. See <see cref="ReadNamespaceContext"/>.</para>
     /// </summary>
     private static bool CanGovernFile(Node declaration)
     {
         for (var current = declaration.Parent; current?.Parent is not null; current = current.Parent)
         {
-            if (Array.IndexOf(PreprocessorWrapperNodeTypes, current.Type) < 0)
+            if (Array.IndexOf(PreprocessorWrapperNodeTypes, current.Type) < 0 || WasClosed(current))
             {
                 return false;
             }
@@ -411,6 +502,15 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
         return true;
     }
+
+    /// <summary>
+    /// Whether <paramref name="wrapper"/>'s preprocessor region was actually closed in the source: it
+    /// has an <c>#endif</c> child that the grammar read rather than synthesized. See
+    /// <see cref="CanGovernFile"/> for why a synthesized (<c>IsMissing</c>) terminator is the exact
+    /// test and an end-of-file comparison is not.
+    /// </summary>
+    private static bool WasClosed(Node wrapper) =>
+        wrapper.Children.Any(c => c.Type == EndIfNodeType && !c.IsMissing);
 
     /// <summary>
     /// Whether <paramref name="node"/> sits where a <c>file_scoped_namespace_declaration</c> could
