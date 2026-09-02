@@ -660,6 +660,41 @@ public sealed class OkfBundleTools
     private Action? _beforeLateReparseCheckForTest;
 
     /// <summary>
+    /// Validates one <see cref="AppendLog"/> argument, returning the rejection
+    /// message or <see langword="null"/> when it is acceptable.
+    ///
+    /// Both of that method's arguments get the identical three checks, so they
+    /// share one validator rather than two copies that could drift. The
+    /// line-break rejection is the load-bearing one: a newline lets an entry
+    /// forge a fabricated <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet
+    /// that a later <c>ChangeLog.Parse</c> would read back as genuine
+    /// audit-trail history. Rejected outright rather than stripped, so the
+    /// caller learns the write did not happen.
+    /// </summary>
+    /// <param name="value">The argument's value.</param>
+    /// <param name="fieldName">The argument's name, as it appears in the message.</param>
+    private static string? GuardLogField(string value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return $"Error: invalid {fieldName} — it must not be empty.";
+        }
+
+        if (value.Contains('\0'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a null character.";
+        }
+
+        if (value.Contains('\n') || value.Contains('\r'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a line break (this would let it "
+                + "forge fake '## date' or '* entry' lines in log.md).";
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Appends one entry to the bundle root's <c>log.md</c> under today's
     /// (UTC) ISO date, creating the file if it does not yet exist. If a
     /// heading for today's date already exists, the entry is appended to the
@@ -683,36 +718,14 @@ public sealed class OkfBundleTools
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text)
     {
-        if (string.IsNullOrWhiteSpace(kind))
+        if (GuardLogField(kind, "kind") is { } kindError)
         {
-            return "Error: invalid kind — it must not be empty.";
+            return kindError;
         }
 
-        if (kind.Contains('\0'))
+        if (GuardLogField(text, "text") is { } textError)
         {
-            return "Error: invalid kind — it must not contain a null character.";
-        }
-
-        if (kind.Contains('\n') || kind.Contains('\r'))
-        {
-            return "Error: invalid kind — it must not contain a line break (this would let it "
-                + "forge fake '## date' or '* entry' lines in log.md).";
-        }
-
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return "Error: invalid text — it must not be empty.";
-        }
-
-        if (text.Contains('\0'))
-        {
-            return "Error: invalid text — it must not contain a null character.";
-        }
-
-        if (text.Contains('\n') || text.Contains('\r'))
-        {
-            return "Error: invalid text — it must not contain a line break (this would let it "
-                + "forge fake '## date' or '* entry' lines in log.md).";
+            return textError;
         }
 
         return RunTool(() =>

@@ -719,6 +719,65 @@ public sealed class OkfContextProvider : AIContextProvider
         + $"  by: okf4net/{OkfSpec.Version}\n"
         + $"  at: {OkfTimestamp.FormatUtc(now)}\n";
 
+    /// <summary>
+    /// Decides which scope a capture belongs to (arbitration B), or returns
+    /// <see langword="null"/> to say the capture must be skipped — setting
+    /// <see cref="LastMemoryError"/> to why.
+    ///
+    /// Three cases. No <c>ScopeAccessor</c> configured means local mode, and
+    /// the capture goes to the local subtree. With one configured, the scope is
+    /// recovered from the session correlated by a prior
+    /// <c>ProvideAIContextAsync</c>. If it cannot be recovered — no session, no
+    /// prior provide, or the session was provided under MULTIPLE scopes — the
+    /// capture is skipped rather than misfiled: attributing an exchange to the
+    /// wrong tenant or user is worse than losing it, so this path is
+    /// deliberately fail-closed.
+    /// </summary>
+    /// <param name="context">The invocation being captured.</param>
+    private KnowledgeAccessScope? ResolveCaptureScope(InvokedContext context)
+    {
+        if (_options.ScopeAccessor is null)
+        {
+            return KnowledgeAccessScope.Local;
+        }
+
+        if (context.Session is not { } session || !_scopeBySession.TryGetValue(session, out var box))
+        {
+            LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
+            return null;
+        }
+
+        // Snapshot box.Scope/box.Poisoned atomically (locked on the SAME box
+        // instance ProvideScopedAsync writes under), then branch on the copied
+        // locals outside the lock -- no async work happens inside it. Without
+        // this lock, this read could race a concurrent ProvideScopedAsync write
+        // to the same box.
+        KnowledgeAccessScope? cached;
+        bool poisoned;
+        lock (box)
+        {
+            cached = box.Scope;
+            poisoned = box.Poisoned;
+        }
+
+        if (cached is null)
+        {
+            LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
+            return null;
+        }
+
+        if (poisoned)
+        {
+            // FAIL-CLOSED: this session was provided under multiple scopes, so
+            // the capture cannot be safely attributed to one. Skip it entirely
+            // rather than misfiling it under any scope.
+            LastMemoryError = "Scoped capture skipped: this AgentSession was used under multiple scopes.";
+            return null;
+        }
+
+        return cached;
+    }
+
     private async ValueTask StoreScopedAsync(InvokedContext context, CancellationToken ct)
     {
         if (_options.MemoryCapture == MemoryCaptureMode.Disabled)
@@ -738,51 +797,8 @@ public sealed class OkfContextProvider : AIContextProvider
             return;
         }
 
-        // Scope resolution for capture (arbitration B):
-        //  - No ScopeAccessor configured  => local mode; capture to the local subtree.
-        //  - ScopeAccessor configured but we cannot recover the invocation's scope
-        //    (no session, or no prior ProvideAIContextAsync in this session) => SKIP
-        //    the capture and record why, rather than misfiling it into _local.
-        KnowledgeAccessScope scope;
-        if (_options.ScopeAccessor is null)
+        if (ResolveCaptureScope(context) is not { } scope)
         {
-            scope = KnowledgeAccessScope.Local;
-        }
-        else if (context.Session is { } session && _scopeBySession.TryGetValue(session, out var box))
-        {
-            // Snapshot box.Scope/box.Poisoned atomically (locked on the SAME
-            // box instance ProvideScopedAsync writes under), then branch on
-            // the copied locals outside the lock -- no async work happens
-            // inside it. Without this lock, this read could race a concurrent
-            // ProvideScopedAsync write to the same box.
-            KnowledgeAccessScope? cached;
-            bool poisoned;
-            lock (box)
-            {
-                cached = box.Scope;
-                poisoned = box.Poisoned;
-            }
-
-            if (cached is null)
-            {
-                LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
-                return;
-            }
-
-            if (poisoned)
-            {
-                // FAIL-CLOSED: this session was provided under multiple scopes,
-                // so the capture cannot be safely attributed to one. Skip it
-                // entirely rather than misfiling it under any scope.
-                LastMemoryError = "Scoped capture skipped: this AgentSession was used under multiple scopes.";
-                return;
-            }
-
-            scope = cached;
-        }
-        else
-        {
-            LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
             return;
         }
 

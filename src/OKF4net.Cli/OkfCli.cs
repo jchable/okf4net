@@ -858,48 +858,72 @@ public static class OkfCli
         return 0;
     }
 
-    /// <summary>Implements the <c>graph</c> subcommand.</summary>
+    /// <summary>
+    /// Implements the <c>graph</c> subcommand: two independent renderers over
+    /// the same §6 link graph, selected by <c>--dot</c>. They are separate
+    /// methods because they share nothing but the bundle — the shape that was
+    /// obscured while both loop nests sat inline in one <c>if/else</c>.
+    /// </summary>
     private static int CmdGraph(CliArgs parsed, TextWriter stdout)
     {
-        var path = parsed.Positional("<bundle>");
-        var dot = parsed.Has("--dot");
-        var bundle = Load(path);
+        var bundle = Load(parsed.Positional("<bundle>"));
 
-        if (dot)
+        if (parsed.Has("--dot"))
         {
-            stdout.Write("digraph okf {\n");
-            stdout.Write("  rankdir=LR; node [shape=box, fontsize=10];\n");
-            foreach (var c in bundle.Concepts)
-            {
-                foreach (var link in bundle.LinksFrom(c.Id))
-                {
-                    var style = link.Exists ? "" : " [style=dashed, color=red]";
-                    stdout.Write($"  {DebugQuote.Quote(c.Id.ToString())} -> {DebugQuote.Quote(link.Target.ToString())}{style};\n");
-                }
-            }
-
-            stdout.Write("}\n");
+            WriteGraphDot(bundle, stdout);
         }
         else
         {
-            foreach (var c in bundle.Concepts)
-            {
-                var links = bundle.LinksFrom(c.Id);
-                if (links.Count == 0)
-                {
-                    continue;
-                }
-
-                stdout.Write($"{c.Id}\n");
-                foreach (var link in links)
-                {
-                    var mark = link.Exists ? "->" : "-x";
-                    stdout.Write($"  {mark} {link.Target}\n");
-                }
-            }
+            WriteGraphText(bundle, stdout);
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Renders the link graph as Graphviz DOT, broken links dashed and red.
+    /// Byte-for-byte golden-locked (<c>tests/fixtures/golden/graph.dot</c>):
+    /// a diff here is a regression, never a fixture to refresh.
+    /// </summary>
+    private static void WriteGraphDot(Bundle bundle, TextWriter stdout)
+    {
+        stdout.Write("digraph okf {\n");
+        stdout.Write("  rankdir=LR; node [shape=box, fontsize=10];\n");
+        foreach (var c in bundle.Concepts)
+        {
+            foreach (var link in bundle.LinksFrom(c.Id))
+            {
+                var style = link.Exists ? "" : " [style=dashed, color=red]";
+                stdout.Write($"  {DebugQuote.Quote(c.Id.ToString())} -> {DebugQuote.Quote(link.Target.ToString())}{style};\n");
+            }
+        }
+
+        stdout.Write("}\n");
+    }
+
+    /// <summary>
+    /// Renders the link graph as indented plain text: one block per concept
+    /// that has outgoing links, each link marked <c>-&gt;</c> when its target
+    /// resolves and <c>-x</c> when it does not. Concepts with no outgoing links
+    /// are skipped entirely.
+    /// </summary>
+    private static void WriteGraphText(Bundle bundle, TextWriter stdout)
+    {
+        foreach (var c in bundle.Concepts)
+        {
+            var links = bundle.LinksFrom(c.Id);
+            if (links.Count == 0)
+            {
+                continue;
+            }
+
+            stdout.Write($"{c.Id}\n");
+            foreach (var link in links)
+            {
+                var mark = link.Exists ? "->" : "-x";
+                stdout.Write($"  {mark} {link.Target}\n");
+            }
+        }
     }
 
     /// <summary>Implements the <c>render</c> subcommand.</summary>

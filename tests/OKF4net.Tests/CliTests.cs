@@ -444,6 +444,30 @@ public class CliTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
     }
 
+
+    /// <summary>
+    /// `okf graph` without `--dot` had no test at all (issue #14): the golden
+    /// capture covers only the `--dot` renderer, so half the verb's output was
+    /// unpinned. Closing that before refactoring the method, since a refactor
+    /// of an uncovered branch proves nothing.
+    ///
+    /// The expectation is derived from the CLI's documented behaviour, not
+    /// copied from a run: a concept with links prints its id, then one indented
+    /// line per link marked `-&gt;` when the target resolves and `-x` when it
+    /// does not; a concept with no outgoing links is skipped entirely.
+    /// </summary>
+    [Fact]
+    public void Graph_plain_text_lists_links_and_marks_broken_ones()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: A\ndescription: d\n---\n\n[b](/b.md) and [gone](/missing.md)\n");
+        tmp.Write("b.md", "---\ntype: Note\ntitle: B\ndescription: d\n---\n\nno links here\n");
+
+        var r = Run("graph", tmp.Path);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("a\n  -> b\n  -x missing\n", r.Out);
+    }
     [Fact]
     public void Graph_dot_prints_digraph()
     {
