@@ -31,7 +31,10 @@ and this project adheres to
   limit; this is a host guard, because bind/execute/attest are host-plugged code
   that may do unbounded I/O. Elapsing is reported to the model as a normal
   non-displayable outcome rather than thrown at a caller who never asked to
-  stop; `Timeout.InfiniteTimeSpan` disables it.
+  stop; `Timeout.InfiniteTimeSpan` disables it. A value the runtime will not
+  accept as a delay — negative, or past its ~49.7-day ceiling — is reported as
+  an `Error:` string as well, since a misconfiguration is exactly when the
+  never-throw contract is worth most.
 - **`OkfContextProviderOptions.OnInternalError`** — an optional
   `Action<Exception>` sink called with the real exception whenever context
   assembly swallows one (a failed bundle load, a failed knowledge/memory read).

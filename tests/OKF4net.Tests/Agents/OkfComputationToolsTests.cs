@@ -56,6 +56,36 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
+    /// The negative half of that guard is not the whole hole:
+    /// `new CancellationTokenSource(TimeSpan)` also rejects any delay past
+    /// uint.MaxValue - 1 milliseconds (~49.71 days, measured against the
+    /// runtime), so a host setting a very long ceiling got exactly the raw
+    /// ArgumentOutOfRangeException the negative case used to throw. One bound
+    /// checked is not a bound checked.
+    /// </summary>
+    [Fact]
+    public async Task A_timeout_past_the_runtimes_ceiling_is_reported_not_thrown()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })),
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
+        {
+            ComputationTimeout = TimeSpan.FromDays(60),
+        };
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.StartsWith("Error:", rendered, StringComparison.Ordinal);
+        Assert.Contains("ComputationTimeout", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The tool blocked the calling thread with `.GetAwaiter().GetResult()` and
     /// passed no token at all, so `cancellationToken` reached the orchestrator
     /// as `default`. A slow or wedged executor — an HTTP call to a warehouse

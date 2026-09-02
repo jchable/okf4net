@@ -141,7 +141,9 @@ public sealed class OkfBundleTools
     /// Elapsing is reported to the model as a normal non-displayable outcome,
     /// never thrown at the caller — see <see cref="RunComputationAsync"/>.
     /// <see cref="Timeout.InfiniteTimeSpan"/> disables it for a host that does
-    /// its own bounding.
+    /// its own bounding. A value the runtime will not accept as a delay —
+    /// negative, or past its ~49.7-day ceiling — is likewise reported as an
+    /// error, not thrown.
     /// </summary>
     public TimeSpan ComputationTimeout { get; init; } = TimeSpan.FromMinutes(2);
 
@@ -1137,19 +1139,40 @@ public sealed class OkfBundleTools
         // despite the non-nullable static type.
         parameterValues ??= new Dictionary<string, object?>();
 
-        // Validated rather than left to CancellationTokenSource's own throw: it
-        // rejects any negative delay except InfiniteTimeSpan with an
-        // ArgumentOutOfRangeException, and this construction sits outside the
-        // try below, so a host that misconfigured the timeout got a raw
-        // exception out of a tool that promises never to throw at the LLM —
-        // on a misconfiguration, which is exactly when a legible message is
-        // worth most. Caught in review of #65.
+        // Arming the timeout is validated rather than left to
+        // CancellationTokenSource's own throw: it happens outside the try
+        // below, so a host that misconfigured the timeout got a raw exception
+        // out of a tool that promises never to throw at the LLM — on a
+        // misconfiguration, which is exactly when a legible message is worth
+        // most. Caught in review of #65.
+        //
+        // Two guards, for two different reasons. This one is not about the
+        // throw at all: a negative delay between -1ms and 0 is *accepted* and
+        // treated as no timeout, so a host that fat-fingered a negative ceiling
+        // would silently get an unbounded run — the opposite of what it asked
+        // for.
         if (ComputationTimeout < TimeSpan.Zero && ComputationTimeout != Timeout.InfiniteTimeSpan)
         {
             return $"Error: ComputationTimeout must be positive or Timeout.InfiniteTimeSpan, but is {ComputationTimeout}.";
         }
 
-        using var timeoutSource = new CancellationTokenSource(ComputationTimeout);
+        // And this one is about the throw, on every bound the runtime enforces
+        // rather than only the negative one the guard above was written for: a
+        // delay past uint.MaxValue - 1 milliseconds (~49.71 days) is rejected
+        // too, so `ComputationTimeout = TimeSpan.FromDays(60)` blew exactly the
+        // ArgumentOutOfRangeException the negative case used to. Caught by
+        // catching what the runtime actually rejects rather than mirroring its
+        // limits in a constant here, which would go stale the moment they move.
+        using var timeoutSource = new CancellationTokenSource();
+        try
+        {
+            timeoutSource.CancelAfter(ComputationTimeout);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return $"Error: ComputationTimeout is out of the range the runtime accepts (at most about 49.7 days, or Timeout.InfiniteTimeSpan), but is {ComputationTimeout}.";
+        }
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
 
         try
