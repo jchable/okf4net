@@ -282,11 +282,30 @@ append → regenerate → validate → changes-since → get-computation → run
 is untrusted — it comes from files on disk that may have been written by
 another agent or a human contributor — and is never injected into the
 conversation with a `system` role; it only ever reaches the model as tool
-output. The three write-capable tools (`okf_write_concept`, `okf_append_log`
-and `okf_regenerate_indexes`)
-rely entirely on the Agent Framework's own tool-approval mechanism to gate
-execution — `OkfBundleTools` performs no additional confirmation step of its
-own.
+output.
+
+That matters most for the three write-capable tools (`okf_write_concept`,
+`okf_append_log`, `okf_regenerate_indexes`), because an injection carried in a
+concept body is only dangerous if it can reach a persistent write.
+**`GetTools()` returns them ungated**, and nothing asks on your behalf: the
+Agent Framework's approval mechanism is not active by default, so a plain
+`AIFunction` is invoked directly. Choose how they are exposed:
+
+```csharp
+// The model must not write at all:
+var tools = okf.GetTools(OkfToolMode.ReadOnly);
+
+// Or: every tool, but a write needs the host's approval first.
+var tools = okf.GetTools(OkfToolMode.RequireApprovalForWrites);
+```
+
+`RequireApprovalForWrites` wraps exactly the write tools in
+`ApprovalRequiredAIFunction`; read tools stay ungated, since prompting for
+everything trains a user to click through and is how the one approval that
+mattered gets waved past. `OkfBundleTools.WriteToolNames` is the single source
+of truth for which tools count, so a write tool added later cannot slip past a
+host's own filtering either. The parameterless `GetTools()` keeps its
+historical ungated meaning so existing hosts are not changed under them.
 
 The core `OKF4net` library stays dependency-free (BCL only); only
 `OKF4net.Agents` references `Microsoft.Agents.AI` (see

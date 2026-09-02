@@ -10,6 +10,28 @@ and this project adheres to
 
 ### Added
 
+- **`OkfBundleTools.GetTools(OkfToolMode)`** — chooses how the three
+  write-capable tools are exposed. `ReadOnly` omits them; `RequireApprovalForWrites`
+  wraps exactly those in `ApprovalRequiredAIFunction` so the Agent Framework
+  asks the host before a mutation; `ReadWrite` is the historical ungated
+  behaviour and remains what the parameterless `GetTools()` means, so no
+  existing host changes under them. Read tools are never wrapped: prompting for
+  everything trains a user to click through, which is how the one approval that
+  mattered gets waved past. `OkfMcpToolset` now filters through `ReadOnly`
+  rather than re-implementing the same rule against `WriteToolNames`.
+- **`OkfBundleTools.RunComputationAsync`** — the cancellable form of
+  `okf_run_computation`, and what `GetTools()` now exposes under that name.
+  `AIFunctionFactory` binds its `CancellationToken` from the invocation and
+  leaves it out of the generated JSON schema, so the model still sees exactly
+  two parameters (pinned by a characterization test, since the design depends
+  on that upstream behaviour and a change would fail silently). The synchronous
+  `RunComputation` is `[Obsolete]` for one version and now delegates.
+- **`OkfBundleTools.ComputationTimeout`** — a wall-clock ceiling on one run,
+  default two minutes, combined with the caller's own token. §10 sets no time
+  limit; this is a host guard, because bind/execute/attest are host-plugged code
+  that may do unbounded I/O. Elapsing is reported to the model as a normal
+  non-displayable outcome rather than thrown at a caller who never asked to
+  stop; `Timeout.InfiniteTimeSpan` disables it.
 - **`OkfContextProviderOptions.OnInternalError`** — an optional
   `Action<Exception>` sink called with the real exception whenever context
   assembly swallows one (a failed bundle load, a failed knowledge/memory read).
@@ -76,6 +98,18 @@ and this project adheres to
   the spec itself settles.
 
 ### Changed
+
+- **`okf --version` reports the version the build stamped**, read from
+  `AssemblyInformationalVersionAttribute` instead of a hand-maintained constant
+  in `OkfCli.cs`. `-p:Version` — the property `release.yml` derives from the git
+  tag — never touched that constant, so the tag, the NuGet package and the zip
+  filename could all say one version while the binary inside said another; the
+  winget package for 0.2.0 shipped a binary printing `0.1.0-alpha.1`, caught by
+  a Microsoft moderator rather than by CI. Two guards back it up: `release.yml`
+  refuses a tag that disagrees with `Directory.Build.props`, and CI's Native AOT
+  job runs the published binary's version verb, since an in-process test cannot
+  prove the attribute survives AOT. `Directory.Build.props` is now the only
+  version to bump in code.
 
 - **Breaking (0.x): `Source`'s constructor and `Deconstruct` arity changed.**
   The `UsageWindow?` member above is appended last with a default, so every
@@ -172,6 +206,17 @@ and this project adheres to
   `packaging/winget/README.md`.
 
 ### Fixed
+
+- **Cancelling an attested computation works.** Two defects compounded. The
+  orchestrator caught every stage's exception with a bare `catch (Exception)`,
+  so an `OperationCanceledException` from a host-plugged binder/executor/attester
+  was converted into a business outcome — `RunAsync(ct)` with a cancelled token
+  returned a normal-looking result, and a caller could not tell "the stage
+  failed" from "I asked it to stop". Errors-as-data is the contract for
+  failures; a cancellation is not one, and now propagates. And
+  `okf_run_computation` blocked its thread with `.GetAwaiter().GetResult()`
+  while passing **no** token at all, so a slow or wedged executor pinned an
+  Agent Framework worker indefinitely.
 
 - **Raw exception messages no longer cross into the model's context.** Three
   places rendered a .NET exception's own message to the LLM: the context

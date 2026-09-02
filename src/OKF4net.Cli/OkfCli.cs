@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using OKF4net.Internal;
 using OKF4net.Viewer;
@@ -18,8 +19,25 @@ namespace OKF4net.Cli;
 /// </summary>
 public static class OkfCli
 {
-    /// <summary>The CLI version string, echoed by <c>-V</c>/<c>--version</c>.</summary>
-    private const string CliVersion = "0.5.0";
+    /// <summary>
+    /// The CLI version echoed by <c>-V</c>/<c>--version</c>, read from the
+    /// assembly the build stamped rather than maintained by hand beside it.
+    ///
+    /// It was a <c>const</c>, which <c>-p:Version</c> — the property
+    /// <c>release.yml</c> derives from the git tag and passes to
+    /// <c>dotnet publish</c> — does not touch. So the tag, the NuGet package and
+    /// the zip filename could all say one version while the binary inside said
+    /// another; the winget package for 0.2.0 shipped a binary printing
+    /// 0.1.0-alpha.1, caught by a Microsoft moderator rather than by CI. Reading
+    /// the stamp removes the second place to drift instead of guarding it.
+    ///
+    /// AOT-safe: this reads an attribute on a statically-known assembly, not a
+    /// dynamically-discovered one, so nothing here is trimmed away — CI's Native
+    /// AOT job runs the published binary's <c>--version</c> to keep that honest.
+    /// </summary>
+    private static readonly string CliVersion =
+        typeof(OkfCli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? "0.0.0-unknown";
 
     /// <summary>The <c>--help</c> / usage text.</summary>
     private const string Usage =
@@ -82,9 +100,19 @@ public static class OkfCli
         string Summary,
         string[] ValuedFlags,
         string[] ValuelessFlags,
-        string[] OptionLines);
+        string[] OptionLines,
+        Func<CliArgs, TextWriter, int> Run);
 
-    /// <summary>Every subcommand, keyed by name. The single source for dispatch, scanning and per-verb help.</summary>
+    /// <summary>
+    /// Every subcommand, keyed by name — genuinely the single source for
+    /// dispatch, scanning and per-verb help, since each spec carries its own
+    /// handler in <see cref="VerbSpec.Run"/>.
+    ///
+    /// The dispatch used to be a separate <c>switch</c> in <see cref="Run"/>
+    /// beside this table, so a verb added here and forgotten there would fall
+    /// through to "unknown subcommand" despite being fully declared — the exact
+    /// drift this table exists to prevent (caught in review).
+    /// </summary>
     private static readonly Dictionary<string, VerbSpec> Verbs = new(StringComparer.Ordinal)
     {
         ["validate"] = new(
@@ -92,7 +120,8 @@ public static class OkfCli
             "Check a bundle against OKF v0.2 conformance (§11).",
             [AsOfFlag], ["--json"],
             ["    --as-of <date>   Evaluate staleness (§5.5) as of YYYY-MM-DD, not today",
-             "    --json           Machine-readable output"]),
+             "    --json           Machine-readable output"],
+            CmdValidate),
         ["audit"] = new(
             "audit", "okf audit <bundle> [filters] [--as-of <date>] [--json]",
             "Report trust, freshness and lifecycle across the bundle (§5.3–§5.5).",
@@ -102,35 +131,42 @@ public static class OkfCli
              "    --status <s>      Filter by lifecycle status",
              "    --type <t>        Filter by concept type",
              "    --as-of <date>    Evaluate staleness as of YYYY-MM-DD, not today",
-             "    --json            Machine-readable output"]),
+             "    --json            Machine-readable output"],
+            CmdAudit),
         ["info"] = new(
             "info", "okf info <bundle> [--json]",
             "Summarize a bundle (concepts, types, links, version).",
             [], ["--json"],
-            ["    --json           Machine-readable output"]),
+            ["    --json           Machine-readable output"],
+            CmdInfo),
         ["index"] = new(
             "index", "okf index <bundle>",
             "(Re)generate every index.md in the bundle (§8).",
-            [], [], []),
+            [], [], [],
+            CmdIndex),
         ["graph"] = new(
             "graph", "okf graph <bundle> [--dot]",
             "Print the cross-link graph (§6).",
             [], ["--dot"],
-            ["    --dot            Emit Graphviz DOT instead of plain text"]),
+            ["    --dot            Emit Graphviz DOT instead of plain text"],
+            CmdGraph),
         ["parse"] = new(
             "parse", "okf parse <file>",
             "Parse one concept document and print its structure.",
-            [], [], []),
+            [], [], [],
+            CmdParse),
         ["fmt"] = new(
             "fmt", "okf fmt <file> [-w]",
             "Normalize a document by parse + re-serialize.",
             [], ["-w", "--write"],
-            ["    -w, --write      Rewrite the file in place instead of printing to stdout"]),
+            ["    -w, --write      Rewrite the file in place instead of printing to stdout"],
+            CmdFmt),
         ["render"] = new(
             "render", "okf render <bundle> --out <dir>",
             "Generate a browsable HTML site from a bundle.",
             ["--out"], [],
-            ["    --out <dir>      Output directory (required)"]),
+            ["    --out <dir>      Output directory (required)"],
+            CmdRender),
     };
 
     /// <summary>Renders one verb's help: usage line, summary, then its own options plus the universal help flags.</summary>
@@ -207,18 +243,7 @@ public static class OkfCli
                 return 0;
             }
 
-            return cmd switch
-            {
-                "validate" => CmdValidate(parsed, stdout),
-                "audit" => CmdAudit(parsed, stdout),
-                "info" => CmdInfo(parsed, stdout),
-                "index" => CmdIndex(parsed, stdout),
-                "graph" => CmdGraph(parsed, stdout),
-                "parse" => CmdParse(parsed, stdout),
-                "fmt" => CmdFmt(parsed, stdout),
-                "render" => CmdRender(parsed, stdout),
-                _ => UnknownSubcommand(cmd, stderr),
-            };
+            return spec.Run(parsed, stdout);
         }
         catch (CliOperationException e)
         {
