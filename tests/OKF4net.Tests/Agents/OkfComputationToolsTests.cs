@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using OKF4net.Agents;
 using OKF4net.Attestation;
@@ -23,6 +24,66 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
+    /// The tool blocked the calling thread with `.GetAwaiter().GetResult()` and
+    /// passed no token at all, so `cancellationToken` reached the orchestrator
+    /// as `default`. A slow or wedged executor — an HTTP call to a warehouse
+    /// that never answers — pinned an Agent Framework worker with no way out.
+    ///
+    /// AIFunctionFactory binds a CancellationToken parameter automatically and
+    /// excludes it from the JSON schema, so the async tool takes the host's
+    /// token with no change to what the model sees.
+    /// </summary>
+    [Fact]
+    public async Task Run_computation_async_honours_the_callers_token()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        using var cts = new CancellationTokenSource();
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = (_, _, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>(), cts.Token));
+    }
+
+    /// <summary>
+    /// A host that never cancels still needs a floor: an executor that simply
+    /// never returns would otherwise hang the invocation forever. The timeout is
+    /// a host guard, not a §10 rule — §10 says nothing about wall-clock limits.
+    /// </summary>
+    [Fact]
+    public async Task A_computation_past_its_timeout_is_reported_not_hung()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = async (_, _, ct) =>
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new InvalidOperationException("unreachable");
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
+        {
+            ComputationTimeout = TimeSpan.FromMilliseconds(50),
+        };
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        // Reported to the model as a normal non-displayable outcome -- the tool
+        // never throws toward the LLM -- and NOT as a cancellation, which would
+        // wrongly suggest the caller asked for it.
+        Assert.Contains("displayable: no", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+        Assert.Contains("timed out", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A host-plugged runtime's exception was rendered straight to the model —
     /// twice: as `Error: {outcome.Error.Message}` and again inside the
     /// orchestrator's own reason string. Those messages come from code this
@@ -34,7 +95,7 @@ public class OkfComputationToolsTests
     /// crosses into the model's context.
     /// </summary>
     [Fact]
-    public void A_runtime_failure_does_not_render_the_exception_message_to_the_model()
+    public async Task A_runtime_failure_does_not_render_the_exception_message_to_the_model()
     {
         const string secret = "Server=db-prod;Password=hunter2";
         using var tmp = new TempDir();
@@ -47,7 +108,7 @@ public class OkfComputationToolsTests
         });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
 
-        var rendered = tools.RunComputation("c/rev", new Dictionary<string, object?>());
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
 
         Assert.DoesNotContain(secret, rendered, StringComparison.Ordinal);
         // Still useful: the model must learn the run failed, and where.
@@ -115,7 +176,7 @@ public class OkfComputationToolsTests
         });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
         Assert.Contains("okf_run_computation", tools.GetTools().Select(t => t.Name));
-        var s = await Task.FromResult(tools.RunComputation("c/rev", new Dictionary<string, object?>()));
+        var s = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
         Assert.Contains("displayable", s.ToLowerInvariant());
     }
 
@@ -144,7 +205,9 @@ public class OkfComputationToolsTests
         });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
 
+#pragma warning disable CS0618 // The obsolete sync overload is still shipped, so its own null guard stays pinned.
         var s = tools.RunComputation("c/rev", null!);
+#pragma warning restore CS0618
 
         var lower = s.ToLowerInvariant();
         Assert.Contains("displayable: no", lower);

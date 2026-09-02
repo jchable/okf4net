@@ -133,6 +133,19 @@ public sealed class OkfBundleTools
     public string BundleRoot { get; }
 
     /// <summary>
+    /// Wall-clock ceiling on one <see cref="RunComputationAsync"/> run, default
+    /// two minutes. §10 says nothing about time limits; this is a host guard,
+    /// because the bind/execute/attest stages are host-plugged code that may do
+    /// unbounded I/O and an agent invocation cannot wait forever.
+    ///
+    /// Elapsing is reported to the model as a normal non-displayable outcome,
+    /// never thrown at the caller — see <see cref="RunComputationAsync"/>.
+    /// <see cref="Timeout.InfiniteTimeSpan"/> disables it for a host that does
+    /// its own bounding.
+    /// </summary>
+    public TimeSpan ComputationTimeout { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
     /// The current UTC time, consulted by <see cref="AppendLog"/> to compute
     /// "today"'s ISO date heading. Defaults to <see cref="DateTime.UtcNow"/>;
     /// overridable so tests can pin the date deterministically. Internal: an
@@ -233,7 +246,10 @@ public sealed class OkfBundleTools
 
         if (_orchestrator is not null)
         {
-            tools.Add(AIFunctionFactory.Create(RunComputation, "okf_run_computation"));
+            // The async form: AIFunctionFactory binds its CancellationToken from the
+            // invocation and leaves it out of the JSON schema, so the model sees the
+            // same two parameters while the host gains a way to stop a wedged run.
+            tools.Add(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation"));
         }
 
         return tools;
@@ -1015,6 +1031,7 @@ public sealed class OkfBundleTools
     /// "missing required parameter" non-displayable outcome instead of
     /// throwing.
     /// </param>
+    [Obsolete("Use RunComputationAsync: this overload blocks the calling thread and passes no cancellation token, so a slow or wedged host runtime pins the caller with no way out. Kept for one version.")]
     [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
     public string RunComputation(
         [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
@@ -1042,14 +1059,78 @@ public sealed class OkfBundleTools
         // over instead.
         parameterValues ??= new Dictionary<string, object?>();
 
-        return RunTool(() =>
+        return RunComputationAsync(conceptId, parameterValues).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// The §10.5 attested-computation workflow, asynchronous and cancellable —
+    /// the form <see cref="GetTools"/> exposes as <c>okf_run_computation</c>.
+    ///
+    /// This is the only tool here that hands control to host-plugged code
+    /// (<c>IParameterBinder</c>/<c>IComputationExecutor</c>/<c>IAttester</c>),
+    /// which may do real I/O of unbounded duration. The synchronous
+    /// <see cref="RunComputation"/> blocked its thread and passed no token at
+    /// all, so a slow or wedged executor pinned an Agent Framework worker with
+    /// no way out.
+    ///
+    /// <paramref name="cancellationToken"/> is bound automatically by
+    /// <c>AIFunctionFactory</c> and excluded from the generated JSON schema, so
+    /// taking it changes nothing the model sees. It is combined with
+    /// <see cref="ComputationTimeout"/>, so a host that never cancels still has
+    /// a floor.
+    ///
+    /// Never throws for expected errors, like every tool here — with one
+    /// deliberate exception: a cancellation the CALLER requested propagates as
+    /// an <see cref="OperationCanceledException"/>, because a caller that
+    /// withdrew is not waiting for a rendered answer. A timeout is not that: it
+    /// is this tool's own decision, so it is reported as a normal
+    /// non-displayable outcome rather than raised at a caller who asked for
+    /// nothing of the sort.
+    /// </summary>
+    /// <param name="conceptId">The Attested Computation concept id to run.</param>
+    /// <param name="parameterValues">The parameter values for this run (§10.3: values only, never computation code).</param>
+    /// <param name="cancellationToken">The host's token; combined with <see cref="ComputationTimeout"/>.</param>
+    [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
+    public async Task<string> RunComputationAsync(
+        [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
+        [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues,
+        CancellationToken cancellationToken = default)
+    {
+        if (GuardConceptId(conceptId) is { } err)
         {
-            var outcome = _orchestrator
-                .RunAsync(GetBundle(), ConceptId.Parse(conceptId), parameterValues)
-                .GetAwaiter()
-                .GetResult();
+            return err;
+        }
+
+        if (_orchestrator is null)
+        {
+            return "Error: no attestation runtime configured.";
+        }
+
+        // See RunComputation's remarks: an AIFunction-bound call can pass null
+        // despite the non-nullable static type.
+        parameterValues ??= new Dictionary<string, object?>();
+
+        using var timeoutSource = new CancellationTokenSource(ComputationTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+
+        try
+        {
+            var outcome = await _orchestrator
+                .RunAsync(GetBundle(), ConceptId.Parse(conceptId), parameterValues, cancellationToken: linked.Token)
+                .ConfigureAwait(false);
             return FormatOutcome(outcome);
-        });
+        }
+        // Ours, not the caller's: the token fired because ComputationTimeout
+        // elapsed while the caller's own token is still fine. Tell the model,
+        // rather than throwing at a caller who never asked to stop.
+        catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            return $"displayable: no\n\nReasons:\n- the computation timed out after {ComputationTimeout.TotalSeconds:0.###}s\n";
+        }
+        catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 
     /// <summary>

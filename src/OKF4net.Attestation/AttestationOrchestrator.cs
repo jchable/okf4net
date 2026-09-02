@@ -139,7 +139,13 @@ public sealed class AttestationOrchestrator
         {
             bound = await runtime.Binder.BindAsync(contract, resolved, parameterValues, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception e)
+        // Cancellation is control flow, not data: errors-as-data is the contract
+        // for FAILURES, and an OperationCanceledException is not one. Caught by
+        // a bare `catch (Exception)` it became a business outcome, so a caller
+        // that cancelled got a normal-looking result and could not tell "the
+        // stage failed" from "I asked it to stop". Same filter on all three
+        // stages below, matching OkfContextProvider's convention.
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             return Fail([$"binder threw: {e.GetType().Name}"], stale, e);
         }
@@ -150,7 +156,7 @@ public sealed class AttestationOrchestrator
         {
             receipt = await runtime.Executor.ExecuteAsync(bound, contract, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception e)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             return Fail([$"executor threw: {e.GetType().Name}"], stale, e);
         }
@@ -180,7 +186,7 @@ public sealed class AttestationOrchestrator
                     reasons.Add(string.IsNullOrEmpty(failed.Detail) ? "attestation did not pass" : $"attestation did not pass: {failed.Detail}");
                 }
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not OperationCanceledException)
             {
                 error = e;
                 reasons.Add($"attester threw: {e.GetType().Name}");

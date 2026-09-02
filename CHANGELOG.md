@@ -10,6 +10,19 @@ and this project adheres to
 
 ### Added
 
+- **`OkfBundleTools.RunComputationAsync`** — the cancellable form of
+  `okf_run_computation`, and what `GetTools()` now exposes under that name.
+  `AIFunctionFactory` binds its `CancellationToken` from the invocation and
+  leaves it out of the generated JSON schema, so the model still sees exactly
+  two parameters (pinned by a characterization test, since the design depends
+  on that upstream behaviour and a change would fail silently). The synchronous
+  `RunComputation` is `[Obsolete]` for one version and now delegates.
+- **`OkfBundleTools.ComputationTimeout`** — a wall-clock ceiling on one run,
+  default two minutes, combined with the caller's own token. §10 sets no time
+  limit; this is a host guard, because bind/execute/attest are host-plugged code
+  that may do unbounded I/O. Elapsing is reported to the model as a normal
+  non-displayable outcome rather than thrown at a caller who never asked to
+  stop; `Timeout.InfiniteTimeSpan` disables it.
 - **`OkfContextProviderOptions.OnInternalError`** — an optional
   `Action<Exception>` sink called with the real exception whenever context
   assembly swallows one (a failed bundle load, a failed knowledge/memory read).
@@ -172,6 +185,17 @@ and this project adheres to
   `packaging/winget/README.md`.
 
 ### Fixed
+
+- **Cancelling an attested computation works.** Two defects compounded. The
+  orchestrator caught every stage's exception with a bare `catch (Exception)`,
+  so an `OperationCanceledException` from a host-plugged binder/executor/attester
+  was converted into a business outcome — `RunAsync(ct)` with a cancelled token
+  returned a normal-looking result, and a caller could not tell "the stage
+  failed" from "I asked it to stop". Errors-as-data is the contract for
+  failures; a cancellation is not one, and now propagates. And
+  `okf_run_computation` blocked its thread with `.GetAwaiter().GetResult()`
+  while passing **no** token at all, so a slow or wedged executor pinned an
+  Agent Framework worker indefinitely.
 
 - **Raw exception messages no longer cross into the model's context.** Three
   places rendered a .NET exception's own message to the LLM: the context

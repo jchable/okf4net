@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using OKF4net;
 using OKF4net.Attestation;
@@ -43,6 +44,55 @@ public class AttestationOrchestratorTests
         Assert.True(outcome.Verdict!.Value.Passed);
         Assert.True(outcome.ReceiptShapeOk);
         Assert.Null(outcome.Error);
+    }
+
+    /// <summary>
+    /// Cancellation is control flow, not data. Every stage's catch was a bare
+    /// `catch (Exception)`, so an OperationCanceledException raised by a
+    /// host-plugged stage was caught with everything else and converted into a
+    /// business outcome — `RunAsync(ct)` with a cancelled token returned a
+    /// normal-looking result, and a caller could not tell "the executor failed"
+    /// from "I asked it to stop".
+    ///
+    /// Errors-as-data is the contract for FAILURES and stays; an OCE is not one.
+    /// </summary>
+    [Theory]
+    [InlineData("binder")]
+    [InlineData("executor")]
+    [InlineData("attester")]
+    public async Task A_cancelled_stage_propagates_rather_than_becoming_an_outcome(string stage)
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        // Each stage observes the token and honours it, the way a real
+        // implementation awaiting I/O would.
+        var runtime = new FakeRuntime();
+        switch (stage)
+        {
+            case "binder":
+                runtime.BindFunc = (_, _, _, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
+                break;
+            case "executor":
+                runtime.ExecuteFunc = (_, _, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
+                break;
+            default:
+                // Step 8 runs only when the receipt shape is trustworthy, so the
+                // executor has to return the two fields the concept declares --
+                // FakeRuntime's default empty Receipt would skip attestation
+                // entirely and the stage under test would never be reached.
+                runtime.ExecuteFunc = (_, _, _) =>
+                    ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+                runtime.AttestFunc = (_, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
+                break;
+        }
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
     }
 
     [Fact]
