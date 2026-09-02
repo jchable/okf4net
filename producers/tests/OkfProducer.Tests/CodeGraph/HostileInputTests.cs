@@ -281,6 +281,154 @@ public class HostileInputTests : IDisposable
         Assert.Contains(result.Symbols, s => s.Name == "M" && s.Container == "N.T");
     }
 
+    [Fact]
+    public void A_recovered_namespace_never_labels_a_declaration_that_starts_above_it()
+    {
+        // The first revision of the deep search took the FIRST file_scoped_namespace_declaration
+        // found anywhere in the tree and prepended it to EVERY declaration in the file. MEASURED on
+        // this source, it emitted [Second.First]A and [Second.First.A]M -- a container naming no
+        // namespace that exists -- where the code BEFORE recovery existed had emitted the correct
+        // [First]A. It turned a right answer into a fabricated one, which is worse than the defect
+        // recovery was added to fix.
+        //
+        // ReadNamespaceContext's own rule is the fix: a file-scoped namespace covers its own line to
+        // end of file and NOTHING ABOVE IT. That rule was applied to suppression and not to recovery.
+        // It is now applied to both, so `A` and `M` -- which start above the `namespace Second;` line
+        // -- keep the container their own block namespace establishes, and only `B` gets `Second`.
+        var result = ExtractSource(
+            "namespace First\n{\n    public class A { public void M() { } }\n}\n\n#if DEBUG\n\nnamespace Second;\n\npublic class B { }\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Contains(result.Symbols, s => s.Name == "A" && s.Container == "First");
+        Assert.Contains(result.Symbols, s => s.Name == "M" && s.Container == "First.A");
+        Assert.Contains(result.Symbols, s => s.Name == "B" && s.Container == "Second");
+    }
+
+    [Fact]
+    public void A_declaration_above_a_file_scoped_namespace_line_is_not_labelled_with_it()
+    {
+        // The same offset rule, through the ROOT-CHILD fast path rather than the deep search, so the
+        // rule is one rule rather than two. This source does NOT compile -- verified with the real
+        // C# compiler, which rejects it as CS8956 "a file-scoped namespace declaration must precede
+        // all other members in a file" -- so nothing here changes the answer for any valid C# file.
+        // It is pinned anyway because it is the only reachable shape that can tell the two rules
+        // apart, and because a guard whose fast path contradicts its slow path is a guard whose doc
+        // comment is lying about one of them.
+        var result = ExtractSource("public class Above { }\nnamespace N;\npublic class Below { }\n");
+
+        Assert.Contains(result.Symbols, s => s.Name == "Above" && s.Container == string.Empty);
+        Assert.Contains(result.Symbols, s => s.Name == "Below" && s.Container == "N");
+    }
+
+    [Fact]
+    public void More_than_one_recoverable_namespace_is_refused_rather_than_chosen_between()
+    {
+        // COMPILABLE C#, and the first revision of the deep search got it confidently wrong. It
+        // emitted [B]T and [B.T]M -- picking the `#else` branch, not because anything here knows
+        // which branch the build selects, but because Descendants is a stack DFS that visits the
+        // last child subtree first, so "FirstOrDefault" meant last-in-source. A selection rule that
+        // load-bearing must not be an accident of traversal order, and there is no rule available
+        // here that could make it a real one: this parse does not know the build's defined symbols.
+        //
+        // So more than one candidate is a refusal, and the refusal is not silent -- the earliest
+        // declaration's offset becomes suppression evidence, because a namespace certainly starts
+        // there and this parse cannot say which. Dropping the declarations is the same answer this
+        // guard gives every other shape whose container it cannot establish.
+        //
+        // (The `[]` empty-collection-expression argument is load-bearing: it is what sets HasError,
+        // without which ReadNamespaceContext returns before the deep search is reached at all.)
+        var result = ExtractSource(
+            "#if DEBUG\nnamespace A;\n#else\nnamespace B;\n#endif\npublic class T { public void M() { Use([]); } public void Use(int[] a) { } }\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Empty(result.Symbols);
+        Assert.Empty(result.Sites);
+    }
+
+    [Fact]
+    public void A_namespace_nested_where_it_cannot_govern_is_refused_rather_than_recovered()
+    {
+        // MEASURED: `#if X` inside an unclosed class's unclosed method body leaves an intact
+        // file_scoped_namespace_declaration whose ancestor chain is `compilation_unit > ERROR`. The
+        // first revision of the deep search accepted it and labelled the root-level declarations
+        // below with it -- [Deep]Inner, [Deep]T -- a namespace declared inside a method body inside
+        // an unclosed class, attached to code it cannot possibly contain.
+        //
+        // CanGovernFile is the bound: only a root child, or a declaration reached through nothing
+        // but preprocessor wrappers, can govern. Everything else is refused and its offset becomes
+        // suppression evidence.
+        var result = ExtractSource(
+            "public class Leftover\n{\n    void Q()\n    {\n#if X\nnamespace Deep;\n\n        void Inner() { }\n\npublic class T { }\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.DoesNotContain(result.Symbols, s => s.Container.StartsWith("Deep", StringComparison.Ordinal));
+        Assert.Empty(result.Symbols);
+    }
+
+    [Fact]
+    public void The_identifier_arm_does_not_fire_inside_a_method_body()
+    {
+        // The identifier arm's old safety premise was that a node reading exactly `namespace`
+        // "cannot come from valid source at all: it only appears when recovery has re-lexed a real
+        // `namespace` keyword as a name". MEASURED, that is false:
+        //
+        //     public class Leftover { void Q() { namespace Wrong; } }
+        //
+        // parses with NO error node anywhere and HasError FALSE on the whole tree, as
+        // local_declaration_statement -> variable_declaration -> identifier "namespace". The grammar
+        // produces the carrier with no recovery involved. Only the HasError early-out kept the arm
+        // off such files -- and the `[]` grammar gap lifts that early-out on nearly every modern C#
+        // file, which is what this source reproduces.
+        //
+        // MEASURED cost before the bound: [N]T, [N.T]M only -- `Use` and `Take` were DROPPED. The
+        // block namespace N is intact, nothing was lost, and every container in the file was
+        // correct; the guard was firing exactly where its own rule says it must not.
+        var result = ExtractSource(
+            "namespace N\n{\n    public class T\n    {\n        public void M() { namespace Q; }\n"
+            + "        public void Use() { Take([]); }\n        public void Take(int[] a) { }\n    }\n}\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == "N");
+        Assert.Contains(result.Symbols, s => s.Name == "M" && s.Container == "N.T");
+        Assert.Contains(result.Symbols, s => s.Name == "Use" && s.Container == "N.T");
+        Assert.Contains(result.Symbols, s => s.Name == "Take" && s.Container == "N.T");
+    }
+
+    [Fact]
+    public void A_carrier_inside_a_type_body_does_not_suppress_the_rest_of_the_type()
+    {
+        // The compilation-unit bound has two halves -- no `declaration_list` (a type or namespace
+        // body) and no `block` (a statement body) above the carrier -- and the method-body case above
+        // has BOTH in its ancestor chain, so mutating either half alone leaves that test green
+        // (measured: it does). This case exists so the `declaration_list` half is separately
+        // load-bearing: MEASURED chain here is
+        // `... declaration_list > class_declaration > declaration_list > field_declaration >
+        // variable_declaration > variable_declarator` -- a type body, no `block` anywhere.
+        var result = ExtractSource(
+            "namespace N\n{\n    public class T\n    {\n        int F = namespace;\n"
+            + "        public void Use() { Take([]); }\n        public void Take(int[] a) { }\n    }\n}\n");
+
+        Assert.Contains(result.Symbols, s => s.Name == "F" && s.Container == "N.T");
+        Assert.Contains(result.Symbols, s => s.Name == "Use" && s.Container == "N.T");
+        Assert.Contains(result.Symbols, s => s.Name == "Take" && s.Container == "N.T");
+    }
+
+    [Fact]
+    public void A_carrier_inside_a_top_level_block_does_not_suppress_the_declarations_below()
+    {
+        // The other half, isolated the same way: MEASURED chain is
+        // `compilation_unit > global_statement > block > local_declaration_statement >
+        // variable_declaration` -- a statement body, no `declaration_list` anywhere. This file
+        // declares no namespace at all, so "" is the CORRECT container for T here, not a fabricated
+        // one; what the bound protects is that `T`, `M` and `Use` are emitted rather than dropped.
+        var result = ExtractSource(
+            "using System;\n{\n    namespace Wrong;\n}\npublic class T { public void M() { Use([]); } public void Use(int[] a) { } }\n");
+
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == string.Empty);
+        Assert.Contains(result.Symbols, s => s.Name == "M" && s.Container == "T");
+        Assert.Contains(result.Symbols, s => s.Name == "Use" && s.Container == "T");
+    }
+
     [Theory]
     // Damage ABOVE a `namespace N;` line, where the region `using`s, assembly attributes and
     // preprocessor directives live -- so ordinary mid-edit damage lands here at least as often as it
