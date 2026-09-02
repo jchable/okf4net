@@ -51,6 +51,114 @@ public class CliTests
         Assert.Contains("USAGE:", r.Out);
     }
 
+    // Every verb, and every flag each one actually accepts. Kept here rather
+    // than derived from the CLI's own tables so the tests fail if a verb
+    // silently loses a flag.
+    private static readonly string[] AllVerbs =
+        ["validate", "audit", "info", "index", "graph", "parse", "fmt", "render"];
+
+    /// <summary>
+    /// A minimal throwaway bundle for argument-parsing tests. These pass a
+    /// bundle path to EVERY verb including <c>index</c>, which writes: pointed
+    /// at <see cref="BundlePath"/> a parser regression would regenerate
+    /// index.md inside tests/fixtures/ and break the golden captures. It did,
+    /// once, while these tests were red.
+    /// </summary>
+    private static TempDir ScratchBundle()
+    {
+        var tmp = new TempDir();
+        tmp.Write("notes/thing.md", "---\ntype: Note\ntitle: Thing\ndescription: A thing.\n---\n\nbody\n");
+        return tmp;
+    }
+
+    public static TheoryData<string, string> VerbsAndHelpFlags()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var verb in AllVerbs)
+        {
+            data.Add(verb, "-h");
+            data.Add(verb, "--help");
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Asking a verb for help hit the missing-positional guard first, so
+    /// `okf validate --help` answered `error: missing &lt;bundle&gt;` and exited 1
+    /// — the one question a user asks when they do not know what the bundle
+    /// argument is.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(VerbsAndHelpFlags))]
+    public void Verb_help_prints_help_and_succeeds(string verb, string flag)
+    {
+        var r = Run(verb, flag);
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains(verb, r.Out, StringComparison.Ordinal);
+        Assert.Equal("", r.Err);
+    }
+
+    /// <summary>
+    /// Any `-`-prefixed token was accepted and kept, so a typo'd or invented
+    /// flag ran the command with silently different behaviour than asked for:
+    /// `okf validate b --jsonn` printed the human report and exited 0.
+    /// </summary>
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("audit")]
+    [InlineData("info")]
+    [InlineData("index")]
+    [InlineData("graph")]
+    [InlineData("render")]
+    public void Unknown_option_is_rejected(string verb)
+    {
+        // A throwaway bundle, never the shared fixture: `index` WRITES, and a
+        // regression that let the bad option through would otherwise regenerate
+        // index.md inside tests/fixtures/ and corrupt the golden captures.
+        using var tmp = ScratchBundle();
+
+        var r = Run(verb, tmp.Path, "--bogus");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unknown option: --bogus", r.Err, StringComparison.Ordinal);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Only the first positional took the slot; every later one was dropped on
+    /// the floor, so `okf info bundle extra` ignored `extra` and exited 0.
+    /// </summary>
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("audit")]
+    [InlineData("info")]
+    [InlineData("index")]
+    [InlineData("graph")]
+    public void Extra_positional_is_rejected(string verb)
+    {
+        using var tmp = ScratchBundle(); // see Unknown_option_is_rejected
+
+        var r = Run(verb, tmp.Path, "extra");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: extra", r.Err, StringComparison.Ordinal);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// A flag one verb accepts is not thereby accepted everywhere: the rejection
+    /// is per-verb, not one global allowlist.
+    /// </summary>
+    [Fact]
+    public void A_flag_from_another_verb_is_rejected()
+    {
+        // --dot is graph's; --stale is audit's.
+        Assert.Contains("unknown option: --dot", Run("validate", BundlePath, "--dot").Err, StringComparison.Ordinal);
+        Assert.Contains("unknown option: --stale", Run("info", BundlePath, "--stale").Err, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Version_prints_and_succeeds()
     {
@@ -767,15 +875,36 @@ public class CliTests
     /// Everything after `--` is positional, never a flag — that is what the
     /// separator is for. Only the positional scan used to honour it, so a
     /// `--json` sitting after the separator still switched the output format.
+    ///
+    /// The separator no longer swallows the leftovers, though: a token after it
+    /// is a positional like any other, so a SECOND one is `unexpected argument`
+    /// rather than silently dropped. The guarantee this test exists for is
+    /// unchanged and strictly stronger — `--json` after the separator is still
+    /// not a flag, still does not switch the format, and now says why instead
+    /// of vanishing.
     /// </summary>
     [Fact]
     public void Audit_tokens_after_the_separator_are_never_flags()
     {
         var r = Run("audit", "--", V02BundlePath, "--json");
 
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: --json", r.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+    }
+
+    /// <summary>
+    /// The separator's own job, isolated from the surplus-argument rule above:
+    /// a lone token after `--` is the positional even when it starts with `-`,
+    /// which is the whole reason the separator exists.
+    /// </summary>
+    [Fact]
+    public void A_lone_token_after_the_separator_is_the_positional()
+    {
+        var r = Run("audit", "--", V02BundlePath);
+
         Assert.Equal(0, r.Code);
         Assert.StartsWith("bundle:     ", r.Out);
-        Assert.DoesNotContain("\"conceptCount\"", r.Out);
     }
 
     /// <summary>
@@ -794,9 +923,13 @@ public class CliTests
 
         var r = Run("fmt", "--", file, "-w");
 
-        Assert.Equal(0, r.Code);
+        // The point of this test is the file on disk, and it is untouched —
+        // `-w` after the separator is not a flag. It is now also named as a
+        // surplus positional rather than silently dropped, so the verb reports
+        // instead of printing the formatted document.
         Assert.Equal(unformatted, File.ReadAllText(file));
-        Assert.Contains("title: Spaced", r.Out);
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: -w", r.Err, StringComparison.Ordinal);
     }
 
     /// <summary>

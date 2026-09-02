@@ -165,6 +165,27 @@ and this project adheres to
 
 ### Fixed
 
+- **The CLI validates each verb's arguments instead of silently ignoring what it
+  does not understand.** Any `-`-prefixed token was kept as a valueless flag and
+  every positional after the first was dropped, so `okf validate b --jsonn`
+  printed the human report and exited 0, and `okf info b extra` ignored `extra`
+  — a typo ran the command with different behaviour than asked for, with no
+  signal. Each verb now declares the options it accepts; anything else is
+  `error: unknown option: <flag>` and a surplus positional is
+  `error: unexpected argument: <token>`, both exit 1. The allowlist is per-verb,
+  so `okf validate b --dot` is rejected rather than quietly ignored.
+- **`-h`/`--help` works on every verb.** Each command body opens by demanding
+  its positional, so `okf validate --help` answered `error: missing <bundle>`
+  and exited 1 — the one question a user asks when they do not know what that
+  argument is. Help is now answered before dispatch and prints that verb's own
+  usage line, summary and options.
+- **A token after `--` is a positional like any other.** The separator used to
+  let the first token after it override an earlier positional and swallow the
+  rest, so `okf audit -- b --json` resolved `b` and discarded `--json` in
+  silence. The separator's contract is unchanged — nothing after it is ever a
+  flag, so a path starting with `-` still works and `okf fmt -- f -w` still
+  never writes — but the leftovers are now named rather than dropped.
+
 - **`okf index` no longer reports success for a bundle root that does not
   exist.** Every other bundle verb (`validate`/`info`/`graph`/`render`) routes
   through `Bundle.Load`, which rejects a non-directory root; `index` hands its

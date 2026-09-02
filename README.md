@@ -185,6 +185,11 @@ okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes
 okf render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle
 ```
 
+Every verb takes `-h`/`--help` for its own usage and option list. Arguments are
+validated per verb: an option that verb does not define, or a surplus
+positional, is an error rather than silently ignored — so a typo'd flag never
+runs the command with different behaviour than you asked for.
+
 `okf validate` exits non-zero when a bundle is not conformant, so it drops
 straight into CI:
 
