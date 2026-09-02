@@ -182,10 +182,13 @@ What this means for you:
   claim here that it "cannot write those concepts through the link" was too strong.
   `CommitStaging` refuses a destination only when it *leaves* the bundle root. Measured on
   Windows 11 build 26200 / .NET 10.0.8, with a junction at a concept file's path: pointing
-  outside the bundle, the run refused it and recorded a write failure naming the link;
-  pointing back **inside** the bundle, nothing refused it and `File.Move` threw
-  `UnauthorizedAccessException` out of the run. Neither wrote the concept; only the first is
-  a refusal, and the second is a crash. Remove the link.
+  outside the bundle, the run refuses it before attempting the move; pointing back **inside**
+  the bundle, nothing refuses it — the gate is answering "does this escape?", and it does not
+  — and the move itself fails. Either way you get a **write failure naming that one concept**
+  and the run carries on: the id is left out of the manifest, and the failure count
+  disqualifies the run from pruning. The second case used to throw
+  `UnauthorizedAccessException` out of the whole run instead, taking every concept already
+  committed with it; that is fixed. Remove the link.
 - **A bundle root that is itself a link stays fine** — a symlinked project directory, a
   container or WSL bind mount. Only the root's own link is followed, and every path below
   it is measured against the resolved root.

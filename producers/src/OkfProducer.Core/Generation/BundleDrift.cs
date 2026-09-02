@@ -80,13 +80,19 @@ public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsE
     /// <c>BundlePaths.ResolveInsideRoot</c> says it leaves the bundle root; a link that resolves back
     /// INSIDE the root passes that gate. Measured on the host above, with the junction at
     /// <c>code/csharp/n/scanner.md</c> and <c>--update</c>: pointing at a directory outside the bundle,
-    /// the run refused it and recorded the write failure "the path leaves the bundle root through a
-    /// symbolic link or junction" -- 14 concepts written, nothing at the far end; pointing at
-    /// <c>&lt;bundle&gt;/docs</c>, nothing refused it, <c>File.Move</c> onto the junction threw
-    /// <see cref="UnauthorizedAccessException"/>, and the run ended there. So the narrow statement is
-    /// the one to keep: neither shape put the concept in the bundle, only the first is a refusal, and
-    /// the second is a crash rather than a report. Which is why the drift sentence above says what the
-    /// BUNDLE holds and claims nothing about what <c>generate</c> would do next.</para>
+    /// the run refused it before attempting the move and recorded the write failure "the path leaves
+    /// the bundle root through a symbolic link or junction" -- 14 concepts written, nothing at the far
+    /// end; pointing at <c>&lt;bundle&gt;/docs</c>, nothing refused it -- the gate asks whether the
+    /// destination escapes, and it does not -- and the move itself failed.</para>
+    ///
+    /// <para>Both now end as a write failure naming that one concept, with the run carrying on. The
+    /// second used to throw <see cref="UnauthorizedAccessException"/> out of the whole run; that was
+    /// fixed alongside this (<c>CommitStaging</c> catches the move and records a reason), and this
+    /// paragraph is the second thing that had to be corrected when it was, having been written while
+    /// the crash was still the behaviour. What survives unchanged is the narrow statement: neither
+    /// shape puts the concept in the bundle, and the gate is not what stops the second one. Which is
+    /// why the drift sentence above says what the BUNDLE holds and claims nothing about what
+    /// <c>generate</c> would do next.</para>
     ///
     /// <para><b>Measured, on one host, on the two shapes that host can make.</b> Windows 11 build
     /// 26200 on .NET 10.0.8, against the committed golden bundle. A junction at
