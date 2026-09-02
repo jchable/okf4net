@@ -47,16 +47,23 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     [Theory]
     // Well-formed JSON that is not the object -getItem/-getProperty promise. TryGetProperty throws
     // InvalidOperationException on every one of these, not "returns false".
-    [InlineData("[]")]
-    [InlineData("7")]
-    [InlineData("null")]
-    [InlineData("\"Items\"")]
+    [InlineData("[]", "is not an object")]
+    [InlineData("7", "is not an object")]
+    [InlineData("null", "is not an object")]
+    [InlineData("\"Items\"", "is not an object")]
     // The object is right; a group inside it is not. EnumerateObject/EnumerateArray throw here.
-    [InlineData("""{ "Properties": [] }""")]
-    [InlineData("""{ "Items": 7 }""")]
-    [InlineData("""{ "Items": { "Compile": "one-file.cs" } }""")]
-    [InlineData("""{ "Items": { "Compile": [ "one-file.cs" ] } }""")]
-    public void A_malformed_msbuild_answer_degrades_one_project_rather_than_aborting_the_run(string json)
+    [InlineData("""{ "Properties": [] }""", "printed `Properties` as Array rather than Object")]
+    [InlineData("""{ "Items": 7 }""", "printed `Items` as Number rather than Object")]
+    [InlineData("""{ "Items": { "Compile": "one-file.cs" } }""", "printed item group `Compile` as String rather than an array")]
+    [InlineData("""{ "Items": { "Compile": [ "one-file.cs" ] } }""", "printed an entry of item group `Compile` as String rather than an object")]
+    // Item METADATA is not a path anything validated, and a repository-authored target can set
+    // MSBuildSourceProjectFile to whatever it likes. Path.GetFullPath then throws ArgumentException on
+    // a NUL (and PathTooLongException on a 40 KB value), neither of them an MsBuildQueryException, in
+    // the very method the guards above were added to.
+    [InlineData(
+        """{"Items":{"ReferencePath":[{"FullPath":"a.dll","ReferenceSourceTarget":"ProjectReference","MSBuildSourceProjectFile":"x\u0000y"}]}}""",
+        "printed `MSBuildSourceProjectFile` as a value that is not a path")]
+    public void A_malformed_msbuild_answer_degrades_one_project_rather_than_aborting_the_run(string json, string because)
     {
         // The whole point is the exception TYPE, not that it throws. RoslynResolver.QueryProjectClosure
         // catches exactly MsBuildQueryException, deliberately and by its own doc, so anything else
@@ -64,10 +71,16 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // ENTIRE repository -- landing on OkfgenCli.Generate's coarse top-level filter by coincidence.
         // Syntactically invalid JSON was already wrapped; syntactically VALID JSON of the wrong shape
         // was not, and that is the gap these cases hold.
+        //
+        // `because` exists because a refusal that fires for the WRONG reason passes the type assertion
+        // just as happily: five distinct guards stand between this call and a ProjectInputs, and
+        // asserting only the type let any of them answer for any case. The fragments are the guards'
+        // own words, so a case that starts being refused a guard earlier now fails here.
         var ex = Record.Exception(() => MsBuildProjectQuery.ReadInputs("C:/repo/Some.csproj", json));
 
         Assert.IsType<MsBuildQueryException>(ex);
         Assert.Contains("Some.csproj", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(because, ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -93,7 +106,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // spike fell back to Preview, which silently changes parse semantics. The producer must not.
         var inputs = FakeInputs with { LangVersion = "99" };
 
-        var ex = Assert.Throws<UnknownLanguageVersionException>(() => CompilationFactory.Create(inputs));
+        var ex = Assert.Throws<UnknownLanguageVersionException>(() => CompilationFactory.Create(inputs, projectCompilations: null, SourceFileGate.Unbounded, out _));
 
         // Its own type so RoslynResolver can catch THIS rather than every InvalidOperationException a
         // compilation might raise -- but still an InvalidOperationException, which is the contract
@@ -144,7 +157,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // what Directory.Build.props sets, and Microsoft.CodeAnalysis.CSharp 4.14.0 rejects it.
         var inputs = FakeInputs with { LangVersion = "14" };
 
-        Assert.NotNull(CompilationFactory.Create(inputs));
+        Assert.NotNull(CompilationFactory.Create(inputs, projectCompilations: null, SourceFileGate.Unbounded, out _));
     }
 
     // Source for the test below. The ambiguity is inter-type: two same-named methods on unrelated
@@ -323,7 +336,14 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.False(resolver.Owns("src/OKF4net/ConceptId.cs"));
         var report = Assert.Single(resolver.Projects);
         Assert.Equal(RoslynProjectAvailability.MsBuildQueryFailed, report.Availability);
-        Assert.NotEqual(string.Empty, report.Detail);
+
+        // Named, not merely non-empty. `Detail != ""` passed while this case reported "the dotnet CLI
+        // was not found" -- Process.Start throws Win32Exception for a WorkingDirectory that is not
+        // there (measured on this host), and that catch's message blames a missing SDK, sending an
+        // operator hunting for something that is installed. The refusal was right and its reason was
+        // wrong, which is exactly the failure a `NotEqual(string.Empty, ...)` cannot see.
+        Assert.Contains("its directory does not exist", report.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("dotnet CLI was not found", report.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -638,7 +658,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // pass csc no /langversion, and LanguageVersion.Default is by definition what csc does then.
         var inputs = FakeInputs with { LangVersion = string.Empty };
 
-        Assert.NotNull(CompilationFactory.Create(inputs));
+        Assert.NotNull(CompilationFactory.Create(inputs, projectCompilations: null, SourceFileGate.Unbounded, out _));
     }
 
     [Fact]
@@ -672,18 +692,19 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         repository.DeleteLibraryOutput();
 
         // Without the substitution: exactly the failure the spike measured.
-        var unsatisfied = CompilationFactory.Create(applicationInputs, projectCompilations: null, out var missing);
+        var unsatisfied = CompilationFactory.Create(applicationInputs, projectCompilations: null, SourceFileGate.Unbounded, out var missing);
         Assert.NotEmpty(missing);
         Assert.NotEmpty(unsatisfied.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error));
 
         // With it: clean, from a repository that was only ever restored.
-        var library = CompilationFactory.Create(libraryInputs);
+        var library = CompilationFactory.Create(libraryInputs, projectCompilations: null, SourceFileGate.Unbounded, out _);
         var application = CompilationFactory.Create(
             applicationInputs,
             new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>(StringComparer.Ordinal)
             {
                 [repository.LibraryProject] = library,
             },
+            SourceFileGate.Unbounded,
             out var stillMissing);
 
         Assert.Empty(stillMissing);
@@ -746,6 +767,93 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
+    public void A_compile_item_that_is_not_a_path_is_dropped_rather_than_thrown()
+    {
+        // A Compile item's FullPath is a string MSBuild PRINTED, not a path anything validated, and a
+        // repository-authored target can set it to whatever it likes. Measured on this host:
+        // `new FileInfo("x\0y")` throws ArgumentException and a 40 KB path throws PathTooLongException.
+        // Only the second derives from IOException, so only the second was caught -- the first escaped
+        // CompilationFactory, escaped RoslynResolver.Compile, and aborted the run.
+        //
+        // Dropped rather than refused, unlike the reference metadata in ReadReferences: an unreadable
+        // Compile item is the same gap as a missing one, which TryParse already reports by omission and
+        // the caller's zero-errors gate then catches.
+        var inputs = FakeInputs with { CompileFiles = ["x\u0000y.cs", new string('a', 40000) + ".cs"] };
+
+        var compilation = CompilationFactory.Create(inputs, projectCompilations: null, SourceFileGate.Unbounded, out _);
+
+        Assert.Empty(compilation.SyntaxTrees);
+    }
+
+    [Fact]
+    public void An_msbuild_answer_too_large_to_hold_is_refused_rather_than_read()
+    {
+        // The reader used to be a bare ReadToEndAsync on a stream whose SIZE the scanned repository
+        // controls. What was offered as the way to drive that does NOT work: with -getItem/-getProperty
+        // the console log is suppressed, so an injected `-v:diag`, and a target emitting three 100 KB
+        // <Message> lines, each printed 344,326 bytes here -- byte-identical to the clean run. What
+        // does work is the JSON itself. This fixture's Directory.Build.targets declares 10,000 Compile
+        // items with 3,000-character paths and takes the same query to ~100 MB in about three seconds,
+        // from fifteen lines of build logic. It doubles as a live demonstration of the other half of
+        // the threat model: a Directory.Build.targets rewriting the answer the producer asked for.
+        using var repository = new FloodingAnswerRepository();
+
+        var ex = Assert.Throws<MsBuildQueryException>(() => MsBuildProjectQuery.Query(repository.Project));
+
+        // Named, so a refusal that fired for some other reason -- an unrestored project, a missing
+        // dotnet -- cannot pass this. And refused rather than truncated: a truncated answer parses to
+        // nothing useful anyway, and half an item list is the half-answer Query's contract forbids.
+        Assert.Contains("printed more than 32 MiB", ex.Message, StringComparison.Ordinal);
+    }
+
+    [DirectoryLinkFact]
+    public void A_compile_item_from_outside_the_repository_is_not_walked_up_to_the_filesystem_root()
+    {
+        // The bound, and the reason it is a counted depth rather than a string match. The walk used to
+        // stop only on reaching the repository root or running out of parents, so for a Compile item
+        // from OUTSIDE the repository -- `<Compile Include="..\..\Shared\X.cs"/>`, ordinary in real
+        // solutions -- the root was never met and every ancestor up to the filesystem root was probed.
+        // Here the shared tree is reached through a link, which is exactly the shape that made this
+        // matter: on macOS or Linux a shared tree commonly sits under a symlinked ancestor
+        // (/tmp -> /private/tmp), so EVERY such item was dropped.
+        using var repository = new LinkedSourceRepository();
+
+        // Precondition, measured off disk: the item really is reached through a link, and the file
+        // itself is not one -- so anything that refuses it refused it by walking.
+        Assert.NotNull(new DirectoryInfo(repository.OutsideLinkDirectory).LinkTarget);
+        Assert.Null(new FileInfo(repository.OutsideCompileItem).LinkTarget);
+
+        var resolver = RoslynResolver.Create(repository.OutsideRepositoryRoot, [repository.OutsideProject]);
+
+        var report = Assert.Single(resolver.Projects);
+        Assert.Equal(RoslynProjectAvailability.Compiled, report.Availability);
+        Assert.True(resolver.Owns("Caller.cs"), Describe(resolver));
+    }
+
+    [DirectoryLinkFact]
+    public void A_compile_item_behind_a_link_inside_the_repository_is_still_refused()
+    {
+        // The other side of the same bound: within the repository the walk still runs, and still
+        // refuses. Round 1 recorded this branch as read-verified because creating a link "needs
+        // privileges this test run does not have"; that is wrong on this host -- a directory JUNCTION
+        // needs no elevation on Windows, and DirectoryLinkFact falls back to one when
+        // Directory.CreateSymbolicLink is refused. So the branch is executed here, not reasoned about.
+        using var repository = new LinkedSourceRepository();
+
+        Assert.NotNull(new DirectoryInfo(repository.InsideLinkDirectory).LinkTarget);
+
+        var resolver = RoslynResolver.Create(repository.InsideRepositoryRoot, [repository.InsideProject]);
+
+        // Refused by omission, exactly as a missing file is: the type it declares is then undefined at
+        // its use site, the zero-errors gate reports the project unavailable, and the name-matching
+        // baseline carries it.
+        var report = Assert.Single(resolver.Projects);
+        Assert.Equal(RoslynProjectAvailability.CompilationHadErrors, report.Availability);
+        Assert.Contains("CS0246", report.Detail, StringComparison.Ordinal);
+        Assert.False(resolver.Owns("Main.cs"));
+    }
+
+    [Fact]
     public void No_msbuild_skips_the_stage_that_executes_the_scanned_repositorys_build_logic()
     {
         // Lives with the resolver rather than in CliTests because the property under test is a fact
@@ -770,6 +878,13 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // that quietly resolved fewer calls would look exactly like a run that had fewer to resolve.
         Assert.Contains("--no-msbuild", skipped.Error, StringComparison.Ordinal);
         Assert.Contains("name-matching baseline", skipped.Error, StringComparison.Ordinal);
+
+        // Both costs, not just the one the flag is usually described by. §5.1's source-ownership map
+        // comes out of the SAME MSBuild query, so skipping the stage also drops the package ->
+        // namespace level of the containment spine -- and under --update that overwrites the links a
+        // previous run had. Three places used to enumerate this flag's cost as "edges" alone.
+        Assert.Contains("containment link", skipped.Error, StringComparison.Ordinal);
+        Assert.Contains("--update", skipped.Error, StringComparison.Ordinal);
 
         // The rest of the stage still ran: the bundle has code concepts either way.
         Assert.True(Directory.Exists(Path.Combine(workspace.Root, "without", "code")));
@@ -1290,6 +1405,271 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
               <PropertyGroup>
                 <TargetFramework>net10.0</TargetFramework>
               </PropertyGroup>
+            </Project>
+            """;
+    }
+
+    /// <summary>
+    /// A one-project repository whose <c>Directory.Build.targets</c> inflates the answer MSBuild
+    /// prints past the reader's cap -- 10,000 <c>Compile</c> items with 3,000-character paths, which
+    /// measured ~100 MB of stdout in ~3 s on this host against ~344 KB for the same query without it.
+    ///
+    /// <para>
+    /// The declaration is deliberately of files that do not exist: nothing here ever compiles the
+    /// project, only queries it, and materialising 10,000 real files would cost far more than the
+    /// property under test is worth.
+    /// </para>
+    /// </summary>
+    private sealed class FloodingAnswerRepository : ScratchRepository
+    {
+        public FloodingAnswerRepository()
+            : base("flood")
+        {
+            Project = Write("Flood.csproj", ProjectFile);
+            Write("Directory.Build.targets", FloodTargets);
+            Restore(Project);
+        }
+
+        public string Project { get; }
+
+        private const string ProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private const string FloodTargets = """
+            <Project>
+              <Target Name="Flood" BeforeTargets="ResolveReferences">
+                <PropertyGroup>
+                  <P>0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789</P>
+                  <P>$(P)$(P)$(P)$(P)$(P)$(P)$(P)$(P)$(P)$(P)</P>
+                  <P>$(P)$(P)$(P)</P>
+                  <L>a0.cs;a1.cs;a2.cs;a3.cs;a4.cs;a5.cs;a6.cs;a7.cs;a8.cs;a9.cs</L>
+                  <L>$(L);$(L)b;$(L)c;$(L)d;$(L)e;$(L)f;$(L)g;$(L)h;$(L)i;$(L)j</L>
+                  <L>$(L);$(L)B;$(L)C;$(L)D;$(L)E;$(L)F;$(L)G;$(L)H;$(L)I;$(L)J</L>
+                  <L>$(L);$(L)K;$(L)L;$(L)M;$(L)N;$(L)O;$(L)P;$(L)Q;$(L)R;$(L)S</L>
+                </PropertyGroup>
+                <ItemGroup>
+                  <Seed Include="$(L)" />
+                  <Compile Include="@(Seed->'$(P)%(Identity)')" />
+                </ItemGroup>
+              </Target>
+            </Project>
+            """;
+    }
+
+    /// <summary>
+    /// A <see cref="FactAttribute"/> that skips itself when this host cannot create a directory link
+    /// at all, rather than passing vacuously.
+    ///
+    /// <para>
+    /// It skips on very few hosts. <see cref="Directory.CreateSymbolicLink(string, string)"/> works
+    /// unprivileged on Linux and macOS, and on Windows a directory JUNCTION needs no elevation either
+    /// -- measured on this host, where <c>mklink /J</c> succeeds as an ordinary user and
+    /// <see cref="FileSystemInfo.LinkTarget"/> reports its target, which is the only thing
+    /// <c>CompilationFactory</c> reads. Wave 2b round 1 recorded the reparse-point branch as
+    /// unreachable from a test for want of privileges; that was not true, and these two tests are what
+    /// it cost to find out.
+    /// </para>
+    /// </summary>
+    private sealed class DirectoryLinkFactAttribute : FactAttribute
+    {
+        public DirectoryLinkFactAttribute()
+        {
+            if (!DirectoryLinks.Supported)
+            {
+                Skip = "this host can create neither a directory symbolic link nor a junction";
+            }
+        }
+    }
+
+    /// <summary>Creates directory links for the fixtures that need one, by whichever mechanism this host allows.</summary>
+    private static class DirectoryLinks
+    {
+        private static readonly Lazy<bool> Probe = new(ProbeOnce);
+
+        public static bool Supported => Probe.Value;
+
+        /// <summary>Creates <paramref name="target"/>, links <paramref name="link"/> to it, and returns the link's path.</summary>
+        public static string Create(string link, string target)
+        {
+            Directory.CreateDirectory(target);
+            Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+
+            if (!TryLink(link, target))
+            {
+                throw new InvalidOperationException($"could not create a directory link at {link} -> {target}.");
+            }
+
+            return link;
+        }
+
+        private static bool TryLink(string link, string target)
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(link, target);
+                return new DirectoryInfo(link).LinkTarget is not null;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                // Windows without Developer Mode refuses a symbolic link; a junction is still allowed.
+            }
+
+            if (!OperatingSystem.IsWindows())
+            {
+                return false;
+            }
+
+            var startInfo = new ProcessStartInfo("cmd")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add("mklink");
+            startInfo.ArgumentList.Add("/J");
+            startInfo.ArgumentList.Add(link);
+            startInfo.ArgumentList.Add(target);
+
+            try
+            {
+                using var process = Process.Start(startInfo)!;
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
+                process.WaitForExit();
+                stdout.GetAwaiter().GetResult();
+                stderr.GetAwaiter().GetResult();
+            }
+            catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+            {
+                return false;
+            }
+
+            return Directory.Exists(link) && new DirectoryInfo(link).LinkTarget is not null;
+        }
+
+        private static bool ProbeOnce()
+        {
+            var scratch = Path.Combine(Path.GetTempPath(), "okf-producer-linkprobe-" + Guid.NewGuid().ToString("N")[..12]);
+            try
+            {
+                // The target has to exist before the probe: `mklink /J` refuses a missing one, so a
+                // probe without this step would report "unsupported" on a host that supports it fine.
+                Directory.CreateDirectory(Path.Combine(scratch, "target"));
+                return TryLink(Path.Combine(scratch, "link"), Path.Combine(scratch, "target"));
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(scratch, recursive: true);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Two one-project repositories, each reaching a source file through a directory link, laid out to
+    /// separate the two halves of <c>CompilationFactory</c>'s reparse-point check.
+    ///
+    /// <para>
+    /// <c>outside/</c> holds the repository at <c>outside/repo</c> and its shared source at
+    /// <c>outside/shared</c>, a link one level ABOVE that root -- the linked out-of-repository
+    /// <c>Compile</c> item. <c>inside/</c> holds both inside the root, so the walk is bounded and still
+    /// finds the link.
+    /// </para>
+    /// </summary>
+    private sealed class LinkedSourceRepository : ScratchRepository
+    {
+        public LinkedSourceRepository()
+            : base("linked")
+        {
+            // --- The out-of-repository half. Root/outside/repo is the repository; the source lives at
+            // Root/outside/shared/Shared.cs, one level above it and reached through a link.
+            Write("outside/shared-real/Shared.cs", SharedSource);
+            OutsideLinkDirectory = DirectoryLinks.Create(
+                Path.Combine(Root, "outside", "shared"), Path.Combine(Root, "outside", "shared-real"));
+            OutsideCompileItem = Path.Combine(OutsideLinkDirectory, "Shared.cs");
+            OutsideProject = Write("outside/repo/Linked.csproj", OutsideProjectFile);
+            Write("outside/repo/Caller.cs", CallerSource);
+            OutsideRepositoryRoot = Path.Combine(Root, "outside", "repo");
+            Restore(OutsideProject);
+
+            // --- The in-repository half: the same shape, one level DOWN from the root instead of up.
+            Write("inside/real/Hidden.cs", HiddenSource);
+            InsideLinkDirectory = DirectoryLinks.Create(
+                Path.Combine(Root, "inside", "linked"), Path.Combine(Root, "inside", "real"));
+            InsideProject = Write("inside/Linked.csproj", InsideProjectFile);
+            Write("inside/Main.cs", MainSource);
+            InsideRepositoryRoot = Path.Combine(Root, "inside");
+            Restore(InsideProject);
+        }
+
+        public string OutsideRepositoryRoot { get; }
+
+        public string OutsideProject { get; }
+
+        public string OutsideLinkDirectory { get; }
+
+        public string OutsideCompileItem { get; }
+
+        public string InsideRepositoryRoot { get; }
+
+        public string InsideProject { get; }
+
+        public string InsideLinkDirectory { get; }
+
+        private const string SharedSource = """
+            namespace Shared;
+            public class Helper { public int Value() => 7; }
+            """;
+
+        private const string CallerSource = """
+            namespace Linked;
+            public class Caller { public int Go() => new Shared.Helper().Value(); }
+            """;
+
+        private const string HiddenSource = """
+            namespace Linked;
+            public class Hidden { public int Value() => 7; }
+            """;
+
+        private const string MainSource = """
+            namespace Linked;
+            public class Main { public int Go() => new Hidden().Value(); }
+            """;
+
+        private const string OutsideProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="..\shared\Shared.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+
+        private const string InsideProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Main.cs" />
+                <Compile Include="linked\Hidden.cs" />
+              </ItemGroup>
             </Project>
             """;
     }

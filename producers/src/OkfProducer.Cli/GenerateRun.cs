@@ -22,9 +22,9 @@ namespace OkfProducer.Cli;
 /// <param name="MaxFileBytes">§2.3: the per-file size cap the extractor enforces.</param>
 /// <param name="NoMsBuild">
 /// Skip the Roslyn stage, and with it the <c>dotnet msbuild</c> evaluation it is built on, leaving
-/// the name-matching baseline to resolve calls. This is the run's only lever over the fact that
-/// evaluating a repository's MSBuild logic <i>executes</i> that logic; see <see cref="GenerateRun"/>'s
-/// own remarks.
+/// the name-matching baseline to resolve calls and no source-ownership map at all. This is the run's
+/// only lever over the fact that evaluating a repository's MSBuild logic <i>executes</i> that logic;
+/// see <see cref="GenerateRun"/>'s own remarks for what it does and does not buy.
 /// </param>
 internal sealed record GenerateRequest(
     string RepoPath,
@@ -69,13 +69,21 @@ internal sealed record GenerateRequest(
 /// <c>Directory.Build.props</c> and <c>Directory.Build.targets</c>, every <c>Import</c> they reach,
 /// any target hooked on <c>BeforeTargets="ResolveReferences"</c>, and a
 /// <c>RoslynCodeTaskFactory</c> inline <c>&lt;Code&gt;</c> task all run, as the user running
-/// <c>okfgen</c>. That is not a bound this producer can tighten from the outside: it is what MSBuild
-/// evaluation is. <b>Point <c>okfgen</c> only at a repository you would be willing to build.</b>
-/// <c>--no-msbuild</c> is the way out for a repository you would not: it skips this stage entirely,
-/// leaving the name-matching baseline, so no process is spawned and nothing from the scanned tree is
-/// executed. It is off by default deliberately -- making it opt-in would silently degrade the
-/// resolution quality of every run that exists today -- which is why it is stated here and in
-/// <c>producers/README.md</c> rather than left to be discovered.</para>
+/// <c>okfgen</c>. A <c>Directory.Build.rsp</c> in that directory is auto-applied too, so the
+/// repository adds switches to the invocation itself -- measured on this host, an injected
+/// <c>-t:Pwn</c> ran a target the producer never asked for. That is not a bound this producer can
+/// tighten from the outside: it is what MSBuild evaluation is. <b>Point <c>okfgen</c> only at a
+/// repository you would be willing to build.</b></para>
+///
+/// <para><c>--no-msbuild</c> is the way out for a repository you would not: it skips this stage
+/// entirely, leaving the name-matching baseline, so <b>no <c>dotnet msbuild</c> is spawned and no
+/// MSBuild logic from the scanned tree is evaluated</b>. That is the true statement, and narrower
+/// than the one that stood here: this method still spawns <c>git symbolic-ref</c> below, and
+/// <c>ConceptGenerator</c> spawns <c>git show -s</c> and <c>git rev-parse</c>, all three through
+/// <c>GitRevision.RunGit</c> with the scanned repository as their working directory, on every run
+/// including this one. The flag is off by default deliberately -- making it opt-in would silently
+/// degrade the resolution quality of every run that exists today -- which is why it is stated here and
+/// in <c>producers/README.md</c> rather than left to be discovered.</para>
 /// </summary>
 internal static class GenerateRun
 {
@@ -137,10 +145,21 @@ internal static class GenerateRun
                 // Said out loud rather than left to be inferred from a thinner call graph: this run's
                 // links are name matches, and §2.1's whole point is that a name match on an ambiguous
                 // name is refused rather than guessed, so what an operator loses here is edges.
+                //
+                // And the SECOND cost, which this note used to leave to a reader of the generic
+                // "no source-ownership map" note further down: §5.1's ownership map is built from the
+                // Compile item sets this stage asks MSBuild for, so skipping the stage leaves it null
+                // and ConceptGenerator.AttributePackages emits no package -> namespace link at all.
+                // That is a missing level of the containment spine, not a missing edge, and under
+                // --update it overwrites previously-good packages/ concepts with link-less ones.
                 note("--no-msbuild was passed, so no `dotnet msbuild` was spawned and no project was"
-                    + " compiled: every `## Calls` link in this bundle comes from the name-matching"
-                    + " baseline alone, and an inter-type ambiguity it cannot settle is left unlinked."
-                    + " Drop --no-msbuild on a repository you are willing to build to resolve them exactly.");
+                    + " compiled. Two things are lost, not one. (1) Every `## Calls` link in this bundle"
+                    + " comes from the name-matching baseline alone, and an inter-type ambiguity it"
+                    + " cannot settle is left unlinked. (2) There is no source-ownership map either --"
+                    + " it is built from the same MSBuild query -- so NO `packages` -> namespace"
+                    + " containment link is emitted, and under --update that overwrites the ones a"
+                    + " previous run had. Drop --no-msbuild on a repository you are willing to build to"
+                    + " get both back.");
             }
             else if (projectPaths.Count > 0)
             {

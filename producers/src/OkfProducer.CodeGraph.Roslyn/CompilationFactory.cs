@@ -65,16 +65,41 @@ public sealed class UnknownLanguageVersionException : InvalidOperationException
 /// name-matching baseline carries it, rather than an incomplete symbol table resolving calls to the
 /// wrong thing.
 /// </para>
+///
+/// <para><b>That drop is silent, and the tree-sitter half's is not.</b> The extractor answers with a
+/// <c>FileStatus.SkippedTooLarge</c> that reaches <c>RunStatus</c> and makes the run partial; this
+/// gate returns nothing at all. For a file the scanner also walked the two coincide, because the
+/// extractor refuses the same file and counts it. For a <c>Compile</c> item the scanner never saw --
+/// a linked out-of-repository source, a generated file under <c>obj/</c> -- nothing counts it: the
+/// item is dropped here and surfaces, if at all, as an unrelated
+/// <c>"N compilation error(s): CS0246 ..."</c> on this project with no hint that the size cap caused
+/// it. Reporting it needs a channel from here to <c>RoslynProjectReport</c>, which is
+/// <c>RoslynResolver</c>'s to add; <c>producers/README.md</c> is worded to match what actually
+/// happens rather than what would be nicer. A related consequence: if this gate ever refused
+/// <i>every</i> file of a <c>Library</c> project, the empty compilation has zero errors, so the
+/// project is reported <c>Compiled</c> and <c>GenerateRun.ReportProjects</c> prints nothing.</para>
 /// </summary>
 /// <param name="MaxFileBytes">Largest source file to read; a larger one is dropped from the compilation.</param>
 /// <param name="RepositoryRoot">
-/// The root the reparse-point walk stops at, or <see langword="null"/> to check only whether the file
-/// itself is a link. Bounding the walk is what keeps it the same check the extractor makes -- that
+/// The root the reparse-point walk is bounded by, or <see langword="null"/> to check only whether the
+/// file itself is a link. Bounding the walk is what keeps it the same check the extractor makes -- that
 /// one walks up as many levels as the file's repository-relative depth, and no further.
 /// </param>
 public sealed record SourceFileGate(long MaxFileBytes, string? RepositoryRoot)
 {
-    /// <summary>No size bound and no reparse-point walk: what a caller that has no repository gets.</summary>
+    /// <summary>
+    /// No size bound and no reparse-point walk.
+    ///
+    /// <para>
+    /// It exists because the check needs a repository root to bound itself by and a caller can
+    /// legitimately have none -- but it is deliberately the only way to get unbounded reading, and it
+    /// has to be named to be had. <see cref="CompilationFactory.Create"/> takes a gate on every
+    /// overload for exactly that reason: the two convenience overloads that defaulted to this value
+    /// were removed, because a bound you get by not thinking about it is the bound this gate was added
+    /// to stop being. No production call site passes it; the resolver always has a root, so the only
+    /// callers today are the tests that build a <see cref="ProjectInputs"/> by hand.
+    /// </para>
+    /// </summary>
     public static SourceFileGate Unbounded { get; } = new(long.MaxValue, null);
 }
 
@@ -84,25 +109,6 @@ public sealed record SourceFileGate(long MaxFileBytes, string? RepositoryRoot)
 /// </summary>
 public static class CompilationFactory
 {
-    /// <summary>
-    /// Builds the compilation for <paramref name="inputs"/> from files and reference assemblies alone.
-    /// </summary>
-    /// <exception cref="UnknownLanguageVersionException">
-    /// <paramref name="inputs"/>'s <c>LangVersion</c> is not one this Roslyn build knows.
-    /// </exception>
-    public static CSharpCompilation Create(ProjectInputs inputs) =>
-        Create(inputs, projectCompilations: null, SourceFileGate.Unbounded, out _);
-
-    /// <summary>
-    /// As <see cref="Create(ProjectInputs, IReadOnlyDictionary{string, CSharpCompilation}, SourceFileGate, out IReadOnlyList{string})"/>,
-    /// reading every <c>Compile</c> item under <see cref="SourceFileGate.Unbounded"/>.
-    /// </summary>
-    public static CSharpCompilation Create(
-        ProjectInputs inputs,
-        IReadOnlyDictionary<string, CSharpCompilation>? projectCompilations,
-        out IReadOnlyList<string> missingReferences) =>
-        Create(inputs, projectCompilations, SourceFileGate.Unbounded, out missingReferences);
-
     /// <summary>
     /// Builds the compilation for <paramref name="inputs"/>, substituting a from-source
     /// <c>CompilationReference</c> for every <c>ProjectReference</c> whose project appears in
@@ -283,6 +289,16 @@ public static class CompilationFactory
         {
             return null;
         }
+        catch (ArgumentException)
+        {
+            // A Compile item's FullPath is a string MSBuild printed, not a path anything validated, and
+            // a repository-authored target can set it to anything: `new FileInfo("x\0y")` throws
+            // ArgumentException (measured on this host, .NET 10 / Windows 11), which IOException does
+            // not cover. Same drop as a missing file, for the same reason -- an item this method cannot
+            // even name is not one it can read. (An over-long path arrives as PathTooLongException,
+            // which derives from IOException and was already caught; also measured.)
+            return null;
+        }
 
         string text;
         try
@@ -298,19 +314,44 @@ public static class CompilationFactory
     }
 
     /// <summary>
-    /// Whether <paramref name="file"/> is a link, or sits under a directory that is one.
+    /// Whether <paramref name="file"/> is a link, or sits under a directory that is one, walking up no
+    /// further than <paramref name="repositoryRoot"/>.
     ///
     /// <para>
-    /// The walk stops at <paramref name="repositoryRoot"/> rather than at the drive root, which is the
-    /// same bound <c>TreeSitterExtractor</c> gets from counting the separators in a file's
-    /// repository-relative path: a junction somewhere above the repository is the operator's own
-    /// checkout layout, not something the scanned repository chose. A file outside the root -- a
-    /// linked <c>Compile</c> item from elsewhere -- keeps only the check on the file itself, since
-    /// there is no bound to walk within.
+    /// <b>The bound is a counted depth, not a string match, and that is the whole point.</b> The first
+    /// version of this walk terminated only on <c>Path.GetDirectoryName</c> returning null or on the
+    /// current directory comparing equal to the root -- so for a <c>Compile</c> item from outside the
+    /// repository (<c>&lt;Compile Include="..\..\Shared\X.cs"/&gt;</c>, ordinary in real solutions) the
+    /// root was never met and <i>every</i> ancestor up to the filesystem root was probed. That is the
+    /// opposite of what this doc claimed, and on macOS or Linux, where a shared tree commonly sits
+    /// under a symlinked ancestor (<c>/tmp</c> -&gt; <c>/private/tmp</c>), it dropped every such item.
+    /// A case-mismatched root on a case-insensitive filesystem degraded into the same walk.
+    /// </para>
+    ///
+    /// <para>
+    /// Counting instead makes over-walking structurally impossible, which is exactly how
+    /// <c>TreeSitterExtractor.IsUnderReparsePoint</c> is bounded: as many levels as the file's
+    /// repository-relative path has directory segments, and no more. A junction above the repository
+    /// is the operator's own checkout layout, not something the scanned repository chose.
+    /// <see cref="Path.GetRelativePath(string, string)"/> also settles the casing question on the
+    /// platform's own terms rather than by picking a <see cref="StringComparison"/> here (measured on
+    /// this host: <c>GetRelativePath(@"C:\REPO", @"C:\repo\a\x.cs")</c> is <c>a\x.cs</c>).
+    /// </para>
+    ///
+    /// <para>
+    /// A file outside the root keeps only the check on the file itself: there is no bound to walk
+    /// within, and walking anyway is the bug above.
     /// </para>
     /// </summary>
     private static bool IsBehindReparsePoint(FileInfo file, string? repositoryRoot)
     {
+        // MEASURED, contrary to what wave 2b round 1 recorded here. That note said a junction or a
+        // symbolic link needs privileges the test run does not have; it does not -- a directory
+        // junction needs no elevation on Windows. RoslynResolverTests' two DirectoryLinkFact tests now
+        // execute both halves of this method against a real link: the in-repository one reaches the
+        // walk's return-true below, and the out-of-repository one proves the walk does not run at all.
+        // What is still NOT executed is this first branch, a Compile item that is ITSELF a link
+        // (rather than sitting under one), which no fixture builds.
         if (file.LinkTarget is not null)
         {
             return true;
@@ -321,11 +362,10 @@ public static class CompilationFactory
             return false;
         }
 
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repositoryRoot));
+        var depth = DepthUnderRoot(file.FullName, repositoryRoot);
         var directory = file.DirectoryName;
 
-        while (directory is not null
-            && !string.Equals(Path.TrimEndingDirectorySeparator(directory), root, StringComparison.Ordinal))
+        for (var i = 0; i < depth && directory is not null; i++)
         {
             if (new DirectoryInfo(directory).LinkTarget is not null)
             {
@@ -336,6 +376,35 @@ public static class CompilationFactory
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// How many directory levels separate <paramref name="fullPath"/> from
+    /// <paramref name="repositoryRoot"/>, or <c>0</c> when the file is not under that root at all --
+    /// a different drive, or a path that climbs out of it.
+    /// </summary>
+    private static int DepthUnderRoot(string fullPath, string repositoryRoot)
+    {
+        string relative;
+        try
+        {
+            relative = Path.GetRelativePath(Path.GetFullPath(repositoryRoot), fullPath);
+        }
+        catch (ArgumentException)
+        {
+            return 0;
+        }
+
+        // A rooted answer means the two share no root (another drive on Windows); a leading `..`
+        // SEGMENT means the file climbs out of the repository. `..foo` is a directory name, not a
+        // climb, so the segment is matched rather than the prefix.
+        if (Path.IsPathRooted(relative))
+        {
+            return 0;
+        }
+
+        var segments = relative.Split(['/', '\\']);
+        return segments[0] == ".." ? 0 : segments.Length - 1;
     }
 
     private static OutputKind OutputKindFor(string outputType) =>

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 namespace OkfProducer.CodeGraph.Roslyn;
@@ -48,23 +49,39 @@ public sealed class MsBuildQueryException : Exception
 /// from the project's own directory, which is why <see cref="Run"/> sets
 /// <c>WorkingDirectory</c> there), every <c>Import</c> they pull in, any target hooked on
 /// <c>BeforeTargets="ResolveReferences"</c>, and a <c>RoslynCodeTaskFactory</c> inline
-/// <c>&lt;Code&gt;</c> task, which is a C# compiler invocation on source the repository supplies. The
-/// three targets in <see cref="Targets"/> bound what is <i>asked for</i>; they bound nothing about
-/// what evaluation runs on the way.</para>
+/// <c>&lt;Code&gt;</c> task, which is a C# compiler invocation on source the repository supplies.</para>
+///
+/// <para><b>And the repository adds to the request itself, not merely to what runs on the way.</b>
+/// This paragraph used to say the three targets in <see cref="Targets"/> bound what is <i>asked
+/// for</i>. They do not. <c>dotnet msbuild</c> auto-applies a <c>Directory.Build.rsp</c> found in the
+/// project's directory -- the directory <see cref="Run"/> deliberately runs in -- and what that file
+/// holds is command-line switches. Measured on this host: a one-line <c>Directory.Build.rsp</c>
+/// containing <c>-t:Pwn</c> made this exact query run a <c>Pwn</c> target the producer never
+/// requested, which wrote its marker file, alongside the producer's own <c>-t:ResolveReferences</c>.
+/// A repository can therefore turn this query into <c>-t:Build</c>, or add any other switch. Two
+/// things were measured to still hold: an explicit command-line switch wins on conflict, so the
+/// producer's own <c>-nodeReuse:false</c> cannot be flipped from the rsp; and the mitigation below is
+/// unchanged, because it never rested on the target list. It was the enumerated <i>bound</i> that was
+/// untrue, not the conclusion.</para>
 ///
 /// <para>
 /// So <b>only point <c>okfgen</c> at a repository you would be willing to build</b>. That is the whole
 /// mitigation, stated rather than implied, and it is why <c>okfgen generate --no-msbuild</c> exists:
-/// it skips this stage entirely, spawns nothing, and leaves call resolution to the name-matching
-/// baseline. It is off by default because turning it on by default would silently degrade every
-/// existing run's resolution quality -- a documented hazard with a lever beats a quiet downgrade.
+/// it skips this stage entirely, spawns no <c>dotnet msbuild</c>, and leaves call resolution to the
+/// name-matching baseline. It is off by default because turning it on by default would silently
+/// degrade every existing run's resolution quality -- a documented hazard with a lever beats a quiet
+/// downgrade.
 /// </para>
 ///
 /// <para>
-/// Nothing else in this producer executes scanned input: the tree-sitter extractor parses, and
+/// Nothing else in this producer <i>evaluates</i> scanned input: the tree-sitter extractor parses, and
 /// <see cref="CompilationFactory"/> compiles without running generators (see
 /// <see cref="RoslynResolver"/>'s remarks, whose refusal is about not widening this further rather
-/// than about holding a line that this class had already crossed).
+/// than about holding a line that this class had already crossed). It is not the only place a child
+/// process runs, though, and <c>--no-msbuild</c> does not make it so: <c>GitRevision.RunGit</c> spawns
+/// <c>git</c> three times per generate run, in the scanned tree, on every run including that one. Far
+/// less exposure -- none of the three triggers a hook, an fsmonitor, or a pager with stdout redirected
+/// -- but "no process is spawned" is false and <c>producers/README.md</c> no longer says it.
 /// </para>
 /// </summary>
 public static class MsBuildProjectQuery
@@ -180,7 +197,7 @@ public static class MsBuildProjectQuery
             projectPath,
             Property(properties, "AssemblyName") ?? Path.GetFileNameWithoutExtension(projectPath),
             ReadCompileFiles(items),
-            ReadReferences(items),
+            ReadReferences(projectPath, items),
             Property(properties, "DefineConstants") ?? string.Empty,
             Property(properties, "LangVersion") ?? string.Empty,
             string.Equals(Property(properties, "Nullable"), "enable", StringComparison.OrdinalIgnoreCase),
@@ -252,6 +269,20 @@ public static class MsBuildProjectQuery
 
     private static string Run(string projectPath, IReadOnlyList<string> arguments)
     {
+        // Guards Process.Start against a working directory that is not there -- a project directory
+        // that vanished between the scan and this query, or a caller naming a project that never
+        // existed. The codebase's own precedent is GitRevision.RunGit, which checks the same thing for
+        // the same reason. Measured on this host (.NET 10 / Windows 11): Process.Start with a missing
+        // WorkingDirectory throws Win32Exception, which the catch below ALREADY converted -- so this is
+        // not a new escape being closed, it is a wrong DIAGNOSIS being fixed. That catch reports "the
+        // dotnet CLI was not found", which sends an operator hunting for an SDK that is installed.
+        var workingDirectory = Path.GetDirectoryName(projectPath);
+        if (workingDirectory is null || !Directory.Exists(workingDirectory))
+        {
+            throw new MsBuildQueryException(
+                $"could not start `dotnet msbuild` for {projectPath}: its directory does not exist.");
+        }
+
         var startInfo = new ProcessStartInfo("dotnet")
         {
             RedirectStandardOutput = true,
@@ -262,7 +293,7 @@ public static class MsBuildProjectQuery
             // being evaluated means running. See this class's threat-model paragraph -- the choice
             // here is between evaluating the project correctly and evaluating it wrongly, not between
             // running repository logic and not running it.
-            WorkingDirectory = Path.GetDirectoryName(projectPath)!,
+            WorkingDirectory = workingDirectory,
         };
 
         startInfo.ArgumentList.Add("msbuild");
@@ -306,17 +337,22 @@ public static class MsBuildProjectQuery
             // Both streams are drained concurrently, never one ReadToEnd() after the other: MSBuild
             // writes enough to fill a pipe buffer, and a sequential read deadlocks the moment the
             // stream being read second fills up while the process blocks writing to it.
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
+            //
+            // Capped, not ReadToEndAsync: what msbuild prints on stdout is repository-controlled, and
+            // an unbounded read of it is an OutOfMemoryException a scanned repository can ask for. See
+            // ReadCappedAsync for the measurement that sets the caps -- and for the mechanism that does
+            // NOT do it, since the obvious guess is wrong.
+            var stdoutTask = ReadCappedAsync(process.StandardOutput, MaxStdoutChars, timeout.Token);
+            var stderrTask = ReadCappedAsync(process.StandardError, MaxStderrChars, timeout.Token);
 
-            string stdout;
-            string stderr;
+            CappedRead stdoutRead;
+            CappedRead stderrRead;
             int exitCode;
             try
             {
                 process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
-                stdout = stdoutTask.GetAwaiter().GetResult();
-                stderr = stderrTask.GetAwaiter().GetResult();
+                stdoutRead = stdoutTask.GetAwaiter().GetResult();
+                stderrRead = stderrTask.GetAwaiter().GetResult();
                 exitCode = process.ExitCode;
             }
             catch (OperationCanceledException)
@@ -344,15 +380,118 @@ public static class MsBuildProjectQuery
 
             if (exitCode != 0)
             {
+                var detail = stderrRead.Text.Length > 0 ? stderrRead.Text : stdoutRead.Text;
                 throw new MsBuildQueryException(
                     $"`dotnet msbuild` for {projectPath} exited {exitCode}. "
-                    + $"A project that has not been restored fails here. {Truncate(stderr.Length > 0 ? stderr : stdout, 400)}");
+                    + $"A project that has not been restored fails here. {Truncate(detail, 400)}");
             }
 
-            return stdout;
+            if (stdoutRead.Overflowed)
+            {
+                // After the exit code, deliberately: a project that ALSO failed is better described by
+                // its own error than by "it printed too much".
+                throw new MsBuildQueryException(
+                    $"`dotnet msbuild` for {projectPath} printed more than {MaxStdoutChars / (1024 * 1024)} MiB "
+                    + "on stdout, which no legitimate -getItem/-getProperty answer approaches. The answer was "
+                    + "not read.");
+            }
+
+            return stdoutRead.Text;
         }
     }
 
+    /// <summary>
+    /// How much of msbuild's stdout is kept before the answer is refused. A real answer is nowhere
+    /// near this: measured on this host, <c>src/OKF4net.Mcp/OKF4net.Mcp.csproj</c> -- a restored
+    /// project with over a hundred resolved references -- answers in <b>456,364 bytes</b>, and a
+    /// one-file scratch project in <b>344,326</b>. 32 MiB is ~70x the larger of those.
+    /// </summary>
+    private const int MaxStdoutChars = 32 * 1024 * 1024;
+
+    /// <summary>
+    /// How much of msbuild's stderr is kept. Far smaller, because the only use it is ever put to is
+    /// <c>Truncate(stderr, 400)</c> inside a failure message.
+    /// </summary>
+    private const int MaxStderrChars = 1024 * 1024;
+
+    /// <summary>What one capped stream read produced.</summary>
+    /// <param name="Text">The characters kept, up to the cap.</param>
+    /// <param name="Overflowed">Whether the stream held more than the cap and the rest was discarded.</param>
+    private readonly record struct CappedRead(string Text, bool Overflowed);
+
+    /// <summary>
+    /// Reads <paramref name="reader"/> to the end, keeping at most <paramref name="maxChars"/>
+    /// characters and discarding -- but still draining -- anything past that.
+    ///
+    /// <para>
+    /// <b>Draining past the cap is the point, not a detail.</b> Simply stopping would leave the child
+    /// blocked on a full pipe until the two-minute timeout killed it; discarding keeps the process
+    /// moving to its own exit while the producer's memory stays bounded.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>What makes this reachable, measured -- and it is not the obvious mechanism.</b> The escape
+    /// register offered <c>-v:diag</c> injected through a repository's <c>Directory.Build.rsp</c>. That
+    /// does not reproduce: in <c>-getItem</c>/<c>-getProperty</c> mode the console log is suppressed
+    /// entirely, and on this host a query run with <c>-v:diag</c> in the rsp, and one run with a
+    /// <c>Directory.Build.targets</c> emitting three 100 KB high-importance <c>&lt;Message&gt;</c>
+    /// lines, each printed <b>344,326 bytes</b> -- byte-identical to the clean run. What does
+    /// reproduce is the JSON itself, whose size the repository controls: a fifteen-line
+    /// <c>Directory.Build.targets</c> declaring 10,000 <c>Compile</c> items took the same query from
+    /// 344,326 bytes to <b>10,457,323 bytes in 1.1 s</b>. One more doubling level in that file is
+    /// ~100 MB, and it costs the repository nothing.
+    /// </para>
+    /// </summary>
+    private static async Task<CappedRead> ReadCappedAsync(StreamReader reader, int maxChars, CancellationToken token)
+    {
+        var buffer = new char[8192];
+        var kept = new StringBuilder();
+        var overflowed = false;
+
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), token).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            var room = maxChars - kept.Length;
+            if (room >= read)
+            {
+                kept.Append(buffer, 0, read);
+                continue;
+            }
+
+            if (room > 0)
+            {
+                kept.Append(buffer, 0, room);
+            }
+
+            overflowed = true;
+        }
+
+        return new CappedRead(kept.ToString(), overflowed);
+    }
+
+    /// <summary>
+    /// Kills the msbuild process and its workers, or gives up quietly.
+    ///
+    /// <para>
+    /// Both call sites are <i>inside</i> a <c>catch</c> that is about to throw an
+    /// <see cref="MsBuildQueryException"/>, so anything escaping here replaces the wrapped, per-project
+    /// failure with a raw one that <c>RoslynResolver.QueryProjectClosure</c> does not catch -- the
+    /// whole-run abort this class keeps being fixed for. <see cref="Process.Kill(bool)"/> with
+    /// <c>entireProcessTree: true</c> is documented to throw <see cref="AggregateException"/> when part
+    /// of the tree could not be killed, which the two catches below did not cover.
+    /// </para>
+    ///
+    /// <para>
+    /// NOT MEASURED: read-verified against the documented contract only. Arranging a process tree whose
+    /// partial kill fails is not something a test can do deterministically on this host, so no
+    /// executable test reaches the <see cref="AggregateException"/> branch.
+    /// </para>
+    /// </summary>
     private static void TryKill(Process process)
     {
         try
@@ -366,6 +505,11 @@ public static class MsBuildProjectQuery
         catch (Win32Exception)
         {
             // Access denied killing the tree; the process is left to the OS rather than failing the run twice.
+        }
+        catch (AggregateException)
+        {
+            // Part of the tree survived. Same answer as access denied: the survivors are left to the OS,
+            // and the caller's own MsBuildQueryException is the failure that gets reported.
         }
     }
 
@@ -527,7 +671,8 @@ public static class MsBuildProjectQuery
     /// a from-source <c>CompilationReference</c> instead of the <c>bin/</c> assembly that only exists
     /// after a build.
     /// </summary>
-    private static List<ProjectReferenceInput> ReadReferences(Dictionary<string, List<Dictionary<string, string>>> items)
+    private static List<ProjectReferenceInput> ReadReferences(
+        string projectPath, Dictionary<string, List<Dictionary<string, string>>> items)
     {
         var references = new List<ProjectReferenceInput>();
         var seen = new HashSet<string>(PathComparer);
@@ -544,13 +689,50 @@ public static class MsBuildProjectQuery
             var projectFile = isProjectOutput
                 && item.TryGetValue("MSBuildSourceProjectFile", out var project)
                 && project.Length > 0
-                    ? Path.GetFullPath(project)
+                    ? FullPath(projectPath, "MSBuildSourceProjectFile", project)
                     : null;
 
             references.Add(new ProjectReferenceInput(path, projectFile));
         }
 
         return references;
+    }
+
+    /// <summary>
+    /// <see cref="Path.GetFullPath(string)"/> on a value that came out of MSBuild's JSON, refused
+    /// rather than thrown.
+    ///
+    /// <para>
+    /// Item metadata is not a path anything validated: <c>MSBuildSourceProjectFile</c> is a string a
+    /// repository-authored target can set to anything at all. Measured on this host (.NET 10 /
+    /// Windows 11): a value holding a NUL throws <see cref="ArgumentException"/> ("Null character in
+    /// path"), and a 40 KB one throws <see cref="PathTooLongException"/>. Neither is an
+    /// <see cref="MsBuildQueryException"/>, so both escaped <see cref="ReadInputs"/>, escaped
+    /// <see cref="Query"/>, missed <c>RoslynResolver.QueryProjectClosure</c>'s deliberately narrow
+    /// <c>catch (MsBuildQueryException)</c> and aborted generation for the whole repository -- the
+    /// exact shape the shape-guards above were added for, in the method that added them.
+    /// </para>
+    ///
+    /// <para>
+    /// Refused, not skipped, for the reason <see cref="ReadItems"/> gives: a reference item this
+    /// reader cannot read means this project's reference set is unknown, and reading it as "no project
+    /// reference here" is the half-answer <see cref="Query"/>'s contract forbids -- it would send
+    /// <see cref="CompilationFactory"/> to the <c>bin/</c> assembly of a project it could have
+    /// compiled from source, or to nothing at all.
+    /// </para>
+    /// </summary>
+    private static string FullPath(string projectPath, string metadata, string value)
+    {
+        try
+        {
+            return Path.GetFullPath(value);
+        }
+        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            throw new MsBuildQueryException(
+                $"`dotnet msbuild` for {projectPath} printed `{metadata}` as a value that is not a path "
+                + $"({Truncate(value, 200)}).", e);
+        }
     }
 
     private static List<Dictionary<string, string>> Group(

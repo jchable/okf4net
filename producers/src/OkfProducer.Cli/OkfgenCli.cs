@@ -114,9 +114,13 @@ public static class OkfgenCli
                 "Do not run `dotnet msbuild` on the scanned repository, and skip the Roslyn resolver that "
                 + "depends on it. Generating from a repository otherwise EVALUATES its MSBuild logic, which "
                 + "means executing it: Directory.Build.props/targets, whatever they Import, targets hooked on "
-                + "ResolveReferences, and inline code tasks all run as you. Pass this for a repository you would "
-                + "not be willing to build. Call links then come from name matching alone, so an ambiguous name "
-                + "is left unlinked rather than resolved exactly.",
+                + "ResolveReferences, inline code tasks, and any switch a Directory.Build.rsp adds to the "
+                + "invocation, all as you. Pass this for a repository you would not be willing to build. It "
+                + "costs two things: call links then come from name matching alone, so an ambiguous name is "
+                + "left unlinked rather than resolved exactly; and there is no source-ownership map, so NO "
+                + "packages -> namespace containment link is emitted (under --update that overwrites the ones "
+                + "a previous run wrote). It does not make the run process-free: `git` still runs in the "
+                + "scanned tree, as it does on every run.",
         };
 
         var maxFileSizeOption = new Option<long>("--max-file-size")

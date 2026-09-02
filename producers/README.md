@@ -55,8 +55,8 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--include-tests` | off | Walk test projects and `test`/`tests`/`spec` directories too. |
 | `--include-internal` | off | Emit `internal` declarations, not only public ones. |
 | `--no-code` | off | Skip the code-graph stage entirely: `overview`, `packages/` and `docs/` only. |
-| `--no-msbuild` | off | Do not run `dotnet msbuild` on the scanned repository, and skip the Roslyn resolver built on it. Call links then come from name matching alone, so an ambiguous name is left unlinked instead of resolved exactly. **Read the section below before deciding you do not need this.** |
-| `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. A larger one is skipped and counted, which makes the run partial: the concepts it owned are then not pruned. |
+| `--no-msbuild` | off | Do not run `dotnet msbuild` on the scanned repository, and skip the Roslyn resolver built on it. Costs **two** things: call links then come from name matching alone, so an ambiguous name is left unlinked instead of resolved exactly; and the run has no source-ownership map, so **no `packages` → namespace containment link is emitted at all** — under `--update` that overwrites the ones a previous run wrote. **Read the section below before deciding you do not need this.** |
+| `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. The tree-sitter engine skips a larger one *and counts it*, which makes the run partial: the concepts it owned are then not pruned. The Roslyn engine applies the same cap to the `Compile` items MSBuild reports, but drops an over-cap item **silently** — for a file the scan also walked the counted skip covers it, and for one it did not (a linked out-of-repository source, a generated file under `obj/`) nothing reports it: the project simply fails to compile and is named as such. |
 
 ### Generating from a repository runs that repository's build logic
 
@@ -71,10 +71,29 @@ task all run, as the user running `okfgen`. That is a wider door than anything e
 producer: the tree-sitter extractor only parses, and the Roslyn stage deliberately does not
 run source generators.
 
-`--no-msbuild` is the way out. It skips the whole stage: no process is spawned, nothing from
-the scanned tree is executed, and calls are resolved by the name-matching baseline — which
-refuses an ambiguous name rather than guessing it, so what you lose is edges, not
-correctness. The run says so in a note.
+**The repository also adds to the invocation itself.** `dotnet msbuild` auto-applies a
+`Directory.Build.rsp` found in the project's directory — the directory the query deliberately
+runs in — and that file holds command-line switches, not properties. Measured on this host: a
+one-line `Directory.Build.rsp` containing `-t:Pwn` made the producer's own query run a `Pwn`
+target it never requested, alongside `-t:ResolveReferences`. So a repository can turn the
+query into `-t:Build`, or add any other switch. Two things were measured to still hold: an
+explicit command-line switch wins on conflict, so the producer's own `-nodeReuse:false`
+cannot be flipped from the rsp; and the mitigation above is unchanged, because it never
+rested on which targets were asked for.
+
+`--no-msbuild` is the way out. It skips the whole stage: **no `dotnet msbuild` is spawned and
+no MSBuild logic from the scanned tree is evaluated**, and calls are resolved by the
+name-matching baseline — which refuses an ambiguous name rather than guessing it, so the call
+links you lose are edges, not correctness. The run says so in a note.
+
+Two things it is **not**. It does not make the run process-free: `okfgen` runs `git` three
+times in the scanned tree on *every* generate (`git symbolic-ref`, `git show -s`,
+`git rev-parse`, all with the repository as their working directory, reading its
+`.git/config`). Far less exposure than MSBuild — none of the three triggers a hook, an
+fsmonitor, or a pager with stdout redirected — but it is not nothing, and this section used
+to say "no process is spawned". And it is not free of structural cost: the source-ownership
+map comes out of the same MSBuild query, so with the flag on there is **no `packages` →
+namespace containment link at all**, and under `--update` those links are overwritten.
 
 It is **off by default on purpose**. Turning it on by default would silently degrade the
 resolution quality of every run that exists today, which is a worse trade than a documented
@@ -87,8 +106,9 @@ stdout. A note never changes the exit code. The ones worth knowing:
   back to name matching;
 - code containers no package's `Compile` item set claims, so they hang off their own
   parent but off no package concept;
-- no source-ownership map at all (no `dotnet` on `PATH`, or an unrestored repository),
-  so the package → namespace level of the containment spine is missing entirely.
+- no source-ownership map at all (`--no-msbuild`, no `dotnet` on `PATH`, or an
+  unrestored repository), so the package → namespace level of the containment spine is
+  missing entirely.
   Nothing is guessed from the directory tree instead: a project can add, remove and
   link sources across directories, so a directory-derived link would attribute a
   namespace to the wrong package;
