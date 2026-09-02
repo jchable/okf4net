@@ -165,6 +165,27 @@ and this project adheres to
 
 ### Fixed
 
+- **`okf index` no longer reports success for a bundle root that does not
+  exist.** Every other bundle verb (`validate`/`info`/`graph`/`render`) routes
+  through `Bundle.Load`, which rejects a non-directory root; `index` hands its
+  path straight to `IndexGenerator.RegenerateIndexes`, whose documented contract
+  is to return an empty list rather than throw. The CLI rendered that as
+  `no index files written (empty bundle?)` and **exited 0**, so a typo'd path
+  looked like an empty bundle. `index` now runs the same guard and exits 1 with
+  the same message the other verbs produce.
+- **`OkfContextProvider` no longer ignores its `CancellationToken` on the V1
+  path.** The token was forwarded to the scoped (V2) path and then never
+  consulted again: with no resolver and memory store wired, the provider walked
+  the whole bundle off disk and ran the injection loop regardless, so a caller
+  that had already cancelled still paid for a full context assembly.
+- **Captured memory concepts carry a `generated` stamp, not a legacy
+  `timestamp`.** Both capture paths wrote the §13.1 `timestamp` field, so every
+  memory concept the provider created tripped `BundleValidator`'s
+  `LegacyTimestamp` warning the moment the memory bundle was validated — the
+  provider is a producer, and since the v0.2 bump provenance is the §5.2
+  `generated` stamp. Note this could not have been fixed by enabling
+  `BundleConceptWriter.AutoStampGenerated`: both paths write through
+  `AppendToConceptAtomic`, which never runs the auto-stamp.
 - **`stale_after` now reads the spec-conformant timestamp form.** OKF v0.2 §5
   requires every timestamp-valued key to be an ISO 8601 datetime with an
   explicit UTC offset (`2026-06-30T14:00:00Z`). `Lifecycle` previously parsed

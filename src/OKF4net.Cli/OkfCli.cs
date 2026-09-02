@@ -290,6 +290,29 @@ public static class OkfCli
     }
 
     /// <summary>
+    /// Fails into the CLI's error arm when <paramref name="path"/> is not an
+    /// existing directory.
+    ///
+    /// Only <c>index</c> needs this explicitly. Every other bundle verb goes
+    /// through <see cref="Load"/>, and so inherits the identical check
+    /// <see cref="Bundle.Load"/> performs; <c>index</c> hands its path straight
+    /// to <see cref="IndexGenerator.RegenerateIndexes"/>, whose documented
+    /// contract is to return an empty list rather than throw — which the CLI
+    /// used to render as "no index files written (empty bundle?)" and exit 0,
+    /// making <c>index</c> the one verb that reported success for a target that
+    /// does not exist. The wording is deliberately identical to
+    /// <see cref="Bundle.Load"/>'s; <c>CliTests</c> asserts the two verbs emit
+    /// the same stderr so this copy cannot drift from it.
+    /// </summary>
+    private static void RequireBundleRoot(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            throw new CliOperationException($"bundle root is not a directory: {path}");
+        }
+    }
+
+    /// <summary>
     /// Reads a file as strict UTF-8, converting I/O and decode failures into
     /// the CLI's error arm. Shared by the <c>parse</c> and <c>fmt</c> commands.
     /// </summary>
@@ -615,6 +638,8 @@ public static class OkfCli
     {
         var parsed = CliArgs.Scan(args);
         var path = parsed.Positional("<bundle>");
+        RequireBundleRoot(path);
+
         IReadOnlyList<string> written;
         try
         {

@@ -419,19 +419,44 @@ public class CliTests
     }
 
     [Fact]
-    public void Index_with_embedded_nul_path_reports_no_files_written_not_an_error()
+    public void Index_with_embedded_nul_path_exits_one_with_error_prefix()
     {
-        // Deliberately NOT an "error: ..." exit-1 case: RegenerateIndexes
-        // checks whether the bundle root exists first, and Directory.Exists
-        // swallows the underlying failure and simply returns false for a
-        // garbage path, so the function returns an empty result rather than
-        // an I/O error. CmdIndex then reports "no index files written" and
-        // exits 0. Audited (A3) to confirm this command needed no change,
-        // unlike parse/fmt/validate/info/graph.
+        // Was deliberately the one exit-0 case here, on the reasoning that
+        // Directory.Exists merely returns false for a garbage path, so
+        // RegenerateIndexes returns an empty list rather than an I/O error and
+        // CmdIndex had nothing to report. An external audit re-raised it and
+        // the earlier reasoning does not hold: "the check cannot tell you why"
+        // is not a reason to report success for a root that does not exist.
+        // CmdIndex now runs the same RequireBundleRoot guard the other bundle
+        // verbs inherit from Bundle.Load, so index matches parse/fmt/validate/
+        // info/graph instead of standing alone.
         var r = Run("index", "x\0y");
-        Assert.Equal(0, r.Code);
-        Assert.Contains("no index files written", r.Out);
-        Assert.Equal("", r.Err);
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    [Fact]
+    public void Index_on_a_missing_bundle_root_exits_one_like_the_other_bundle_verbs()
+    {
+        // `index` is the only bundle verb that never routes through the shared
+        // Load helper (it goes straight to IndexGenerator), so nothing gave it
+        // Bundle.Load's "root is not a directory" guard: it reported "no index
+        // files written (empty bundle?)" and exited 0 on a target that does not
+        // exist, while validate/info/graph/render all exited 1. Comparing the
+        // two verbs' stderr pins them together, so the separate guard cannot
+        // drift from the message the shared path produces.
+        var missing = Path.Combine(Path.GetTempPath(), "okf-missing-" + Guid.NewGuid().ToString("N"));
+
+        var index = Run("index", missing);
+        var validate = Run("validate", missing);
+
+        Assert.Equal(1, index.Code);
+        Assert.StartsWith("error:", index.Err);
+        Assert.DoesNotContain("at OKF4net", index.Err);
+        Assert.Equal(validate.Err, index.Err);
+        Assert.Equal("", index.Out);
     }
 
     [Fact]

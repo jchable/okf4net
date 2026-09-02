@@ -156,6 +156,28 @@ public class OkfContextProviderTests
         Assert.NotNull(provider);
     }
 
+    /// <summary>
+    /// The V1 path referenced its <c>CancellationToken</c> exactly once — to
+    /// forward it to <c>ProvideScopedAsync</c> when a resolver and memory store
+    /// are wired (the V2 path). With neither wired, control fell through to the
+    /// V1 block, which walked the whole bundle off disk and ran the injection
+    /// loop without ever consulting the token, so a caller that had already
+    /// given up still paid for a full context assembly.
+    /// </summary>
+    [Fact]
+    public async Task Provide_on_the_V1_path_honors_an_already_cancelled_token()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        // No resolver and no memory store: this is the V1 path, not V2.
+        var provider = new OkfContextProvider(tools);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await provider.ProvideForTest(BuildInvokingContext("orders"), cts.Token));
+    }
+
     [Fact]
     public async Task Orders_query_injects_root_index_then_scores_tables_orders_first()
     {
