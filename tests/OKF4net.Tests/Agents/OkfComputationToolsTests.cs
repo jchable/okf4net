@@ -23,6 +23,39 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
+    /// A host-plugged runtime's exception was rendered straight to the model —
+    /// twice: as `Error: {outcome.Error.Message}` and again inside the
+    /// orchestrator's own reason string. Those messages come from code this
+    /// library does not control; a real executor's failure can name a
+    /// connection string, a query, or a row it choked on.
+    ///
+    /// The exception object itself stays on <see cref="AttestationOutcome.Error"/>
+    /// for the host, which is the right audience for it. What changes is what
+    /// crosses into the model's context.
+    /// </summary>
+    [Fact]
+    public void A_runtime_failure_does_not_render_the_exception_message_to_the_model()
+    {
+        const string secret = "Server=db-prod;Password=hunter2";
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.ThrowingExecutor(new InvalidOperationException(secret)),
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        var rendered = tools.RunComputation("c/rev", new Dictionary<string, object?>());
+
+        Assert.DoesNotContain(secret, rendered, StringComparison.Ordinal);
+        // Still useful: the model must learn the run failed, and where.
+        Assert.Contains("displayable: no", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+        Assert.Contains("executor", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Regression test: <see cref="OkfBundleTools.ReadConcept"/>'s Attested-Computation
     /// enrichment must not advertise <c>okf_run_computation</c> when no orchestrator is
     /// wired -- <see cref="OkfBundleTools.GetTools"/> only exposes that tool when

@@ -39,6 +39,19 @@ public sealed class AttestationOrchestrator
     /// declared by <paramref name="conceptId"/> in <paramref name="bundle"/>,
     /// binding <paramref name="parameterValues"/> and gating the result on
     /// <paramref name="policy"/> (or the constructor's default policy).
+    ///
+    /// <para>
+    /// When a host-plugged stage throws, the resulting
+    /// <see cref="AttestationOutcome.Reasons"/> entry names the stage and the
+    /// exception TYPE ("executor threw: TimeoutException"), never its message.
+    /// The exception itself is on <see cref="AttestationOutcome.Error"/>, which
+    /// is where a host reads the detail. The split is deliberate: reasons are
+    /// rendered into an agent's context by <c>OkfBundleTools</c>, and the
+    /// message on an exception from code this library does not control can
+    /// carry a connection string, a query, or the data that broke it. Nothing
+    /// is lost to the host; what changes is what crosses into a model's
+    /// context.
+    /// </para>
     /// </summary>
     /// <param name="bundle">The bundle to load the concept from.</param>
     /// <param name="conceptId">The attested-computation concept to run.</param>
@@ -128,7 +141,7 @@ public sealed class AttestationOrchestrator
         }
         catch (Exception e)
         {
-            return Fail([$"binder threw: {e.Message}"], stale, e);
+            return Fail([$"binder threw: {e.GetType().Name}"], stale, e);
         }
 
         // Step 6: execute.
@@ -139,7 +152,7 @@ public sealed class AttestationOrchestrator
         }
         catch (Exception e)
         {
-            return Fail([$"executor threw: {e.Message}"], stale, e);
+            return Fail([$"executor threw: {e.GetType().Name}"], stale, e);
         }
 
         // Step 7: validate the receipt shape (no declared executor.receipt fields ⇒ trivially ok).
@@ -170,7 +183,7 @@ public sealed class AttestationOrchestrator
             catch (Exception e)
             {
                 error = e;
-                reasons.Add($"attester threw: {e.Message}");
+                reasons.Add($"attester threw: {e.GetType().Name}");
             }
         }
 

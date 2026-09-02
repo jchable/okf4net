@@ -156,6 +156,79 @@ public class OkfContextProviderTests
         Assert.NotNull(provider);
     }
 
+    /// <summary>
+    /// A failed bundle load was reported to the MODEL as
+    /// `bundle unavailable: {ex.Message}` — the raw .NET exception text, which
+    /// for a filesystem failure carries the absolute path (and for an
+    /// UnauthorizedAccessException, OS-level detail besides). Bundle roots are
+    /// host configuration, not something the model needs; it needs to know the
+    /// bundle is unusable, which category says.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_load_does_not_put_the_bundle_path_in_the_model_message()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var provider = new OkfContextProvider(tools);
+
+        // Load once so the failure happens on a RELOAD, then take the root away.
+        tools.GetBundle();
+        tools.InvalidateBundle();
+        Directory.Delete(tmp.Path, recursive: true);
+
+        var result = await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
+
+        var text = Assert.Single(result.Messages!).Text;
+        Assert.Contains("bundle unavailable", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(tmp.Path, text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Sanitizing the model-facing message must not leave the HOST blind: the
+    /// injected context was the only place that detail ever surfaced, so
+    /// removing it there without a replacement channel would trade a leak for
+    /// an undiagnosable failure.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_load_reports_the_real_exception_to_the_host()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var seen = new List<Exception>();
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { OnInternalError = seen.Add });
+
+        tools.GetBundle();
+        tools.InvalidateBundle();
+        Directory.Delete(tmp.Path, recursive: true);
+
+        await provider.ProvideForTest(BuildInvokingContext("orders"), CancellationToken.None);
+
+        var reported = Assert.Single(seen);
+        Assert.Contains(tmp.Path, reported.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The V1 path referenced its <c>CancellationToken</c> exactly once — to
+    /// forward it to <c>ProvideScopedAsync</c> when a resolver and memory store
+    /// are wired (the V2 path). With neither wired, control fell through to the
+    /// V1 block, which walked the whole bundle off disk and ran the injection
+    /// loop without ever consulting the token, so a caller that had already
+    /// given up still paid for a full context assembly.
+    /// </summary>
+    [Fact]
+    public async Task Provide_on_the_V1_path_honors_an_already_cancelled_token()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        // No resolver and no memory store: this is the V1 path, not V2.
+        var provider = new OkfContextProvider(tools);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await provider.ProvideForTest(BuildInvokingContext("orders"), cts.Token));
+    }
+
     [Fact]
     public async Task Orders_query_injects_root_index_then_scores_tables_orders_first()
     {

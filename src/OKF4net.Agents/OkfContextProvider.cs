@@ -212,6 +212,14 @@ public sealed class OkfContextProvider : AIContextProvider
             return ProvideScopedAsync(context, totalBudget, cancellationToken);
         }
 
+        // The V1 path below is synchronous and does real work — a full bundle
+        // walk off disk in GetBundle(), then a file read per injected concept —
+        // so a caller that has already cancelled must not pay for any of it.
+        // Deliberately OUTSIDE the try: the catch arm converts a failed load
+        // into a "bundle unavailable" context, and a cancellation is not a
+        // bundle failure to report to the model, it is the caller withdrawing.
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Everything from here on — the initial (re)load, Browse, the
         // scoring seam, and ReadConcept — is wrapped in the SAME try/catch.
         // Browse and ReadConcept already never throw (they're self-guarded
@@ -280,13 +288,55 @@ public sealed class OkfContextProvider : AIContextProvider
         }
         catch (Exception ex) when (ex is OkfException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
+            ReportInternalError(ex);
             return new(new AIContext
             {
                 Instructions = FixedInstructions,
-                Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {ex.Message}")],
+                Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {FailureCategory(ex)}")],
             });
         }
     }
+
+    /// <summary>
+    /// Hands one swallowed exception to the host's
+    /// <see cref="OkfContextProviderOptions.OnInternalError"/>, if wired.
+    /// Never throws on the caller's behalf: the callback is host code, and an
+    /// exception escaping context assembly would break the never-throw
+    /// contract this method exists to keep intact.
+    /// </summary>
+    private void ReportInternalError(Exception ex)
+    {
+        var sink = _options.OnInternalError;
+        if (sink is null)
+        {
+            return;
+        }
+
+        try
+        {
+            sink(ex);
+        }
+        catch
+        {
+            // A broken telemetry callback must not take the agent down.
+        }
+    }
+
+    /// <summary>
+    /// What the MODEL is told about a failure: a category, never the exception's
+    /// own message. A .NET filesystem exception's message carries the absolute
+    /// path, and an exception from a host-plugged component can carry anything
+    /// at all. Mirrors <c>OkfBundleTools.SkipReason</c>'s vocabulary so the two
+    /// model-facing surfaces describe the same failure the same way.
+    /// </summary>
+    private static string FailureCategory(Exception ex) => ex switch
+    {
+        DecoderFallbackException => "not valid UTF-8",
+        UnauthorizedAccessException => "access denied",
+        IOException => "I/O error",
+        OkfException => "the bundle could not be loaded",
+        _ => "unreadable",
+    };
 
     private async ValueTask<AIContext> ProvideScopedAsync(InvokingContext context, int totalBudget, CancellationToken ct)
     {
@@ -329,7 +379,7 @@ public sealed class OkfContextProvider : AIContextProvider
             knowledge.AddRange(kc.Passages);
         }
         catch (Exception ex) when (ex is OperationCanceledException) { throw; }
-        catch (Exception) { /* errors-as-data: knowledge degrades to empty */ }
+        catch (Exception ex) { ReportInternalError(ex); /* errors-as-data: knowledge degrades to empty */ }
 
         try
         {
@@ -337,7 +387,7 @@ public sealed class OkfContextProvider : AIContextProvider
             memory.AddRange(mr.Passages);
         }
         catch (Exception ex) when (ex is OperationCanceledException) { throw; }
-        catch (Exception) { /* errors-as-data: memory degrades to empty */ }
+        catch (Exception ex) { ReportInternalError(ex); /* errors-as-data: memory degrades to empty */ }
 
         // Split budget with BOTH floors reserved + spillover (spec §6.3: "each
         // a configurable floor + spillover"). Each surface first gets its own
@@ -642,6 +692,33 @@ public sealed class OkfContextProvider : AIContextProvider
         return default;
     }
 
+    /// <summary>
+    /// The frontmatter for a memory concept, used only where the concept is
+    /// being created — both capture paths append to an existing one otherwise.
+    /// One helper rather than a copy per path: the two copies it replaced were
+    /// identical, and both were identically wrong.
+    ///
+    /// Provenance is the §5.2 <c>generated</c> stamp, not the legacy §13.1
+    /// <c>timestamp</c> these paths used to write. The provider is a producer,
+    /// and a <c>timestamp</c> here made every captured concept trip
+    /// <c>BundleValidator</c>'s <c>LegacyTimestamp</c> warning the moment the
+    /// memory bundle was validated. The actor mirrors
+    /// <c>BundleConceptWriter.ProducerActor</c>'s format.
+    ///
+    /// This is the ONLY place the stamp can come from on these paths: both
+    /// write through <c>AppendToConceptAtomic</c>, which reaches
+    /// <c>BuildValidatedContent</c>'s string overload directly and so never
+    /// runs the writer's <c>MaybeStampGenerated</c> — turning on
+    /// <c>AutoStampGenerated</c> would not stamp these concepts.
+    /// </summary>
+    private static string MemoryFrontmatter(string dateStr, DateTime now) =>
+        "type: AgentMemory\n"
+        + $"title: Agent memory {dateStr}\n"
+        + $"description: Captured user/agent exchanges for {dateStr}.\n"
+        + "generated:\n"
+        + $"  by: okf4net/{OkfSpec.Version}\n"
+        + $"  at: {OkfTimestamp.FormatUtc(now)}\n";
+
     private async ValueTask StoreScopedAsync(InvokedContext context, CancellationToken ct)
     {
         if (_options.MemoryCapture == MemoryCaptureMode.Disabled)
@@ -719,12 +796,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = OkfTimestamp.FormatUtc(now);
-        var frontmatter =
-            "type: AgentMemory\n"
-            + $"title: Agent memory {dateStr}\n"
-            + $"description: Captured user/agent exchanges for {dateStr}.\n"
-            + $"timestamp: {timestamp}\n";
+        var frontmatter = MemoryFrontmatter(dateStr, now);
 
         try
         {
@@ -797,12 +869,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = OkfTimestamp.FormatUtc(now);
-        var frontmatterYamlIfCreating =
-            "type: AgentMemory\n"
-            + $"title: Agent memory {dateStr}\n"
-            + $"description: Captured user/agent exchanges for {dateStr}.\n"
-            + $"timestamp: {timestamp}\n";
+        var frontmatterYamlIfCreating = MemoryFrontmatter(dateStr, now);
 
         // currentBody is the concept's CURRENT on-disk body, re-read by
         // AppendToConceptAtomic itself inside its single hold of the shared

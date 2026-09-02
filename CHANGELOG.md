@@ -10,6 +10,14 @@ and this project adheres to
 
 ### Added
 
+- **`OkfContextProviderOptions.OnInternalError`** — an optional
+  `Action<Exception>` sink called with the real exception whenever context
+  assembly swallows one (a failed bundle load, a failed knowledge/memory read).
+  `null` by default, so the never-throw contract is unchanged. This is the
+  counterpart to the error sanitization under *Fixed*: the injected context used
+  to be the only place that detail surfaced at all, so removing it there without
+  a replacement channel would have traded a leak for an undiagnosable failure.
+  The host gets the exception; the model gets the category.
 - **`FixedClock`** — an `IOkfClock` pinned to one instant, alongside `SystemClock`.
   Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
   exists to make staleness (§5.5) reproducible; until now each caller wanting
@@ -165,6 +173,63 @@ and this project adheres to
 
 ### Fixed
 
+- **Raw exception messages no longer cross into the model's context.** Three
+  places rendered a .NET exception's own message to the LLM: the context
+  provider's `bundle unavailable: {ex.Message}`, `okf_run_computation`'s
+  `Error: {outcome.Error.Message}`, and the orchestrator's own
+  `executor threw: {e.Message}` reason string, which the tool then rendered
+  too. A filesystem exception's message carries the absolute path; an exception
+  from a host-plugged attestation runtime can carry a connection string, a
+  query, or the row it choked on. All three now name a category or the
+  exception *type*. Nothing is lost to the host — the exception object is still
+  on `AttestationOutcome.Error` — and `AttestationOutcome.Reasons` is now safe
+  to render into an agent's context, which is what it is for.
+- **The scoped (V2) context path no longer swallows read failures in total
+  silence.** Its knowledge and memory reads degrade to empty by design, but the
+  bare `catch (Exception) { }` left the host with nothing to diagnose from.
+
+- **The CLI validates each verb's arguments instead of silently ignoring what it
+  does not understand.** Any `-`-prefixed token was kept as a valueless flag and
+  every positional after the first was dropped, so `okf validate b --jsonn`
+  printed the human report and exited 0, and `okf info b extra` ignored `extra`
+  — a typo ran the command with different behaviour than asked for, with no
+  signal. Each verb now declares the options it accepts; anything else is
+  `error: unknown option: <flag>` and a surplus positional is
+  `error: unexpected argument: <token>`, both exit 1. The allowlist is per-verb,
+  so `okf validate b --dot` is rejected rather than quietly ignored.
+- **`-h`/`--help` works on every verb.** Each command body opens by demanding
+  its positional, so `okf validate --help` answered `error: missing <bundle>`
+  and exited 1 — the one question a user asks when they do not know what that
+  argument is. Help is now answered before dispatch and prints that verb's own
+  usage line, summary and options.
+- **A token after `--` is a positional like any other.** The separator used to
+  let the first token after it override an earlier positional and swallow the
+  rest, so `okf audit -- b --json` resolved `b` and discarded `--json` in
+  silence. The separator's contract is unchanged — nothing after it is ever a
+  flag, so a path starting with `-` still works and `okf fmt -- f -w` still
+  never writes — but the leftovers are now named rather than dropped.
+
+- **`okf index` no longer reports success for a bundle root that does not
+  exist.** Every other bundle verb (`validate`/`info`/`graph`/`render`) routes
+  through `Bundle.Load`, which rejects a non-directory root; `index` hands its
+  path straight to `IndexGenerator.RegenerateIndexes`, whose documented contract
+  is to return an empty list rather than throw. The CLI rendered that as
+  `no index files written (empty bundle?)` and **exited 0**, so a typo'd path
+  looked like an empty bundle. `index` now runs the same guard and exits 1 with
+  the same message the other verbs produce.
+- **`OkfContextProvider` no longer ignores its `CancellationToken` on the V1
+  path.** The token was forwarded to the scoped (V2) path and then never
+  consulted again: with no resolver and memory store wired, the provider walked
+  the whole bundle off disk and ran the injection loop regardless, so a caller
+  that had already cancelled still paid for a full context assembly.
+- **Captured memory concepts carry a `generated` stamp, not a legacy
+  `timestamp`.** Both capture paths wrote the §13.1 `timestamp` field, so every
+  memory concept the provider created tripped `BundleValidator`'s
+  `LegacyTimestamp` warning the moment the memory bundle was validated — the
+  provider is a producer, and since the v0.2 bump provenance is the §5.2
+  `generated` stamp. Note this could not have been fixed by enabling
+  `BundleConceptWriter.AutoStampGenerated`: both paths write through
+  `AppendToConceptAtomic`, which never runs the auto-stamp.
 - **`stale_after` now reads the spec-conformant timestamp form.** OKF v0.2 §5
   requires every timestamp-valued key to be an ISO 8601 datetime with an
   explicit UTC offset (`2026-06-30T14:00:00Z`). `Lifecycle` previously parsed

@@ -1497,7 +1497,13 @@ public sealed class OkfBundleTools
 
         if (outcome.Error is not null)
         {
-            sb.Append('\n').Append("Error: ").Append(outcome.Error.Message).Append('\n');
+            // The TYPE, never the message. This exception comes from a
+            // host-plugged runtime -- code this library does not control -- and
+            // its message can name a connection string, a query, or the row it
+            // choked on. The exception object stays on outcome.Error for the
+            // host, which is the right audience; this line crosses into the
+            // model's context, which is not.
+            sb.Append('\n').Append("Error: ").Append(outcome.Error.GetType().Name).Append('\n');
         }
 
         return sb.ToString();

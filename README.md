@@ -185,6 +185,11 @@ okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes
 okf render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle
 ```
 
+Every verb takes `-h`/`--help` for its own usage and option list. Arguments are
+validated per verb: an option that verb does not define, or a surplus
+positional, is an error rather than silently ignored — so a typo'd flag never
+runs the command with different behaviour than you asked for.
+
 `okf validate` exits non-zero when a bundle is not conformant, so it drops
 straight into CI:
 
@@ -325,6 +330,7 @@ var response = await agent.RunAsync("What do we know about orders?");
 | `MemoryCapture`       | `MemoryCaptureMode.Disabled` | Opt-in: `MemoryCaptureMode.Enabled` captures exchanges as long-term memory concepts in the bundle after each invocation; `Disabled` writes nothing. |
 | `MemoryDirectory`     | `"memory"`                   | Bundle subdirectory holding memory concepts, as a single `ConceptId` segment (no `/`).                                                                   |
 | `MaxConceptsInjected` | `5`                          | Maximum number of scored concepts injected into a single invocation's context.                                                                           |
+| `OnInternalError`     | `null`                       | Host-side sink for exceptions context assembly swallows (a failed bundle load, a failed knowledge/memory read). The model only ever sees a category. |
 
 **Security note:** as with the tools above, bundle content is untrusted.
 `ProvideAIContextAsync` injects the bundle root index plus the top scored
@@ -332,6 +338,15 @@ concepts (progressive disclosure, budget-bounded) as reference **data in a
 message** — it is never written into `AIContext.Instructions`, so a
 prompt-injection payload smuggled into a concept body cannot reach the
 instructions channel.
+
+Information flows the other way too. When context assembly fails, the model is
+told a category (`bundle unavailable: I/O error`), never the exception's own
+message — a .NET filesystem exception carries the absolute path, and an
+exception from a host-plugged runtime can carry a connection string or a query.
+The same applies to `okf_run_computation`: the outcome rendered to the model
+names the failing stage and the exception *type*, while the exception itself
+stays on `AttestationOutcome.Error` for the host. Wire `OnInternalError` to get
+the detail into your own logs.
 
 **Memory design (v1, deterministic):** `StoreAIContextAsync` captures each
 exchange with no LLM call — the last user message and the agent's final
