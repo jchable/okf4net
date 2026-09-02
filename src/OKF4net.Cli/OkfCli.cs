@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using OKF4net.Internal;
 using OKF4net.Viewer;
@@ -18,8 +19,25 @@ namespace OKF4net.Cli;
 /// </summary>
 public static class OkfCli
 {
-    /// <summary>The CLI version string, echoed by <c>-V</c>/<c>--version</c>.</summary>
-    private const string CliVersion = "0.5.0";
+    /// <summary>
+    /// The CLI version echoed by <c>-V</c>/<c>--version</c>, read from the
+    /// assembly the build stamped rather than maintained by hand beside it.
+    ///
+    /// It was a <c>const</c>, which <c>-p:Version</c> — the property
+    /// <c>release.yml</c> derives from the git tag and passes to
+    /// <c>dotnet publish</c> — does not touch. So the tag, the NuGet package and
+    /// the zip filename could all say one version while the binary inside said
+    /// another; the winget package for 0.2.0 shipped a binary printing
+    /// 0.1.0-alpha.1, caught by a Microsoft moderator rather than by CI. Reading
+    /// the stamp removes the second place to drift instead of guarding it.
+    ///
+    /// AOT-safe: this reads an attribute on a statically-known assembly, not a
+    /// dynamically-discovered one, so nothing here is trimmed away — CI's Native
+    /// AOT job runs the published binary's <c>--version</c> to keep that honest.
+    /// </summary>
+    private static readonly string CliVersion =
+        typeof(OkfCli).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? "0.0.0-unknown";
 
     /// <summary>The <c>--help</c> / usage text.</summary>
     private const string Usage =

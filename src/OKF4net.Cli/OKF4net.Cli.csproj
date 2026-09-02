@@ -9,6 +9,14 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      The version verb reports AssemblyInformationalVersionAttribute, so it
+      comes from whatever -p:Version the build was given and no hand-maintained
+      constant is left to drift from the release tag. By default the SDK appends
+      "+<commit sha>" to that attribute, which would surface in user-facing
+      output; CliTests asserts it does not.
+    -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

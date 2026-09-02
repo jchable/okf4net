@@ -99,6 +99,18 @@ and this project adheres to
 
 ### Changed
 
+- **`okf --version` reports the version the build stamped**, read from
+  `AssemblyInformationalVersionAttribute` instead of a hand-maintained constant
+  in `OkfCli.cs`. `-p:Version` — the property `release.yml` derives from the git
+  tag — never touched that constant, so the tag, the NuGet package and the zip
+  filename could all say one version while the binary inside said another; the
+  winget package for 0.2.0 shipped a binary printing `0.1.0-alpha.1`, caught by
+  a Microsoft moderator rather than by CI. Two guards back it up: `release.yml`
+  refuses a tag that disagrees with `Directory.Build.props`, and CI's Native AOT
+  job runs the published binary's version verb, since an in-process test cannot
+  prove the attribute survives AOT. `Directory.Build.props` is now the only
+  version to bump in code.
+
 - **Breaking (0.x): `Source`'s constructor and `Deconstruct` arity changed.**
   The `UsageWindow?` member above is appended last with a default, so every
   in-repo construction site (positional or named) still compiles unchanged —

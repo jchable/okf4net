@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using OKF4net.Cli;
@@ -166,6 +167,38 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Contains("okf ", r.Out);
         Assert.Contains("OKF spec v0.2", r.Out);
+    }
+
+    /// <summary>
+    /// The version `okf --version` reports must be the one the build stamped,
+    /// not a value maintained by hand beside it.
+    ///
+    /// It used to be `private const string CliVersion`, which `-p:Version` — the
+    /// property release.yml derives from the git tag and passes to `dotnet
+    /// publish` — does not touch. So the tag, the package and the zip filename
+    /// could all say one version while the binary inside said another, and the
+    /// only guard compared the constant to Directory.Build.props, which a
+    /// divergent tag leaves untouched. That is not hypothetical: the winget
+    /// package for 0.2.0 shipped a binary whose `--version` printed
+    /// 0.1.0-alpha.1, caught by a Microsoft moderator rather than by CI.
+    ///
+    /// Reading the assembly's own informational version removes the failure
+    /// mode instead of guarding it: there is no second place left to drift.
+    /// </summary>
+    [Fact]
+    public void Version_is_read_from_the_assembly_not_a_separate_constant()
+    {
+        var stamped = typeof(OkfCli).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion;
+
+        var r = Run("--version");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"okf {stamped} ", r.Out);
+        // A '+' would mean the source-revision suffix leaked into user-facing
+        // output; the csproj disables it.
+        Assert.DoesNotContain("+", stamped, StringComparison.Ordinal);
     }
 
     [Fact]
