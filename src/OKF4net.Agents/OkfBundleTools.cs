@@ -80,7 +80,7 @@ public sealed class OkfBundleTools
     /// The §10.5 attestation orchestrator, if one has been wired for this tool
     /// set. <see langword="null"/> unless the <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>
     /// overload was used with a non-null orchestrator — in that case,
-    /// <see cref="RunComputation"/> is a no-op error and <see cref="GetTools"/>
+    /// <see cref="RunComputation"/> is a no-op error and <see cref="GetTools()"/>
     /// omits <c>okf_run_computation</c> entirely (§10.5 requires a host-supplied
     /// runtime; there is nothing sane to expose without one). <see cref="GetComputation"/>
     /// never depends on this field: reading a computation's contract and
@@ -106,7 +106,7 @@ public sealed class OkfBundleTools
     /// <paramref name="orchestrator"/> is <see langword="null"/>, this is
     /// equivalent to <see cref="OkfBundleTools(string)"/>: <c>okf_get_computation</c>
     /// is still exposed (it is read-only and needs no runtime), but
-    /// <c>okf_run_computation</c> is omitted from <see cref="GetTools"/> and
+    /// <c>okf_run_computation</c> is omitted from <see cref="GetTools()"/> and
     /// <see cref="RunComputation"/> reports a plain-text error instead of
     /// running anything.
     /// </summary>
@@ -186,11 +186,11 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// The tool names among <see cref="GetTools"/>'s output that write to the
+    /// The tool names among <see cref="GetTools()"/>'s output that write to the
     /// bundle: <c>okf_write_concept</c>, <c>okf_append_log</c>, and
     /// <c>okf_regenerate_indexes</c>. A host that wants a read-only tool set
     /// (e.g. a read-only MCP server, or a demo that must never mutate a
-    /// pinned/shared bundle) can filter <see cref="GetTools"/>'s result
+    /// pinned/shared bundle) can filter <see cref="GetTools()"/>'s result
     /// against this set instead of hand-maintaining its own list of tool
     /// names — the single source of truth for "which tools write," so a
     /// future write tool added here can't silently slip past a consumer's
@@ -227,7 +227,25 @@ public sealed class OkfBundleTools
     /// without one, there is nothing for it to run, so it is omitted from the
     /// tool set entirely rather than exposed as an always-erroring tool.
     /// </summary>
-    public IList<AITool> GetTools()
+    public IList<AITool> GetTools() => GetTools(OkfToolMode.ReadWrite);
+
+    /// <summary>
+    /// All OKF tools, with the three write-capable ones exposed according to
+    /// <paramref name="mode"/> — see <see cref="OkfToolMode"/> for what each
+    /// means and why.
+    ///
+    /// <para>
+    /// The parameterless <see cref="GetTools()"/> is
+    /// <see cref="OkfToolMode.ReadWrite"/> and stays that way: flipping the
+    /// default would silently change every host already calling it. This
+    /// overload is how a host opts into something safer, and
+    /// <see cref="WriteToolNames"/> remains the single source of truth for
+    /// which tools count as writes, so a write tool added later cannot slip
+    /// past either path.
+    /// </para>
+    /// </summary>
+    /// <param name="mode">How to expose the write-capable tools.</param>
+    public IList<AITool> GetTools(OkfToolMode mode)
     {
         var tools = new List<AITool>
         {
@@ -252,7 +270,16 @@ public sealed class OkfBundleTools
             tools.Add(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation"));
         }
 
-        return tools;
+        return mode switch
+        {
+            OkfToolMode.ReadOnly =>
+                tools.Where(t => !WriteToolNames.Contains(((AIFunction)t).Name)).ToList(),
+            OkfToolMode.RequireApprovalForWrites =>
+                tools.Select(t => WriteToolNames.Contains(((AIFunction)t).Name)
+                    ? new ApprovalRequiredAIFunction((AIFunction)t)
+                    : t).ToList(),
+            _ => tools,
+        };
     }
 
     /// <summary>
@@ -1010,7 +1037,7 @@ public sealed class OkfBundleTools
     /// and renders the resulting <see cref="AttestationOutcome"/> as
     /// agent-friendly markdown. If no orchestrator was wired, returns a
     /// plain-text error rather than being omitted silently (mirroring
-    /// <see cref="GetTools"/>, which omits <c>okf_run_computation</c>
+    /// <see cref="GetTools()"/>, which omits <c>okf_run_computation</c>
     /// entirely in that case — this direct-call path exists for callers that
     /// invoke the method itself rather than through the tool list). Synchronous
     /// like every other tool method here: the orchestrator's async workflow is
@@ -1064,7 +1091,7 @@ public sealed class OkfBundleTools
 
     /// <summary>
     /// The §10.5 attested-computation workflow, asynchronous and cancellable —
-    /// the form <see cref="GetTools"/> exposes as <c>okf_run_computation</c>.
+    /// the form <see cref="GetTools()"/> exposes as <c>okf_run_computation</c>.
     ///
     /// This is the only tool here that hands control to host-plugged code
     /// (<c>IParameterBinder</c>/<c>IComputationExecutor</c>/<c>IAttester</c>),

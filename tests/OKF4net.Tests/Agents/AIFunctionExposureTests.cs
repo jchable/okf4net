@@ -307,6 +307,73 @@ public class AIFunctionExposureTests
     }
 
     /// <summary>
+    /// `GetTools()` handed back the three mutation tools as bare AIFunctions,
+    /// and the README quick start passed that list straight to `AsAIAgent`, so
+    /// the documented happy path gave the model unconfirmed write access to the
+    /// corpus. Bundle content is untrusted — an injection carried in a concept
+    /// body could reach a persistent write with nothing in between.
+    ///
+    /// `ReadOnly` drops the write tools outright, for a host that must never
+    /// mutate a shared or pinned bundle.
+    /// </summary>
+    [Fact]
+    public void ReadOnly_mode_exposes_no_write_tool()
+    {
+        var names = new OkfBundleTools(BundlePath).GetTools(OkfToolMode.ReadOnly).Select(t => t.Name).ToList();
+
+        Assert.NotEmpty(names);
+        foreach (var write in OkfBundleTools.WriteToolNames)
+        {
+            Assert.DoesNotContain(write, names);
+        }
+
+        // The read tools are all still there -- this filters, it does not gut.
+        Assert.Contains("okf_read_concept", names);
+        Assert.Contains("okf_search", names);
+    }
+
+    /// <summary>
+    /// `RequireApprovalForWrites` keeps every tool but wraps the mutating ones
+    /// so the Agent Framework must obtain the host's approval before invoking
+    /// them. Read tools stay unwrapped: gating them would train a user to
+    /// click through prompts, which is how a real approval gets waved past.
+    /// </summary>
+    [Fact]
+    public void Approval_mode_wraps_exactly_the_write_tools()
+    {
+        var tools = new OkfBundleTools(BundlePath).GetTools(OkfToolMode.RequireApprovalForWrites);
+
+        foreach (var tool in tools.Cast<AIFunction>())
+        {
+            var gated = tool is ApprovalRequiredAIFunction;
+            var shouldBeGated = OkfBundleTools.WriteToolNames.Contains(tool.Name);
+            Assert.True(
+                gated == shouldBeGated,
+                $"{tool.Name}: gated={gated}, expected={shouldBeGated}");
+        }
+
+        // Wrapping must not lose the name the model calls, nor the tool itself.
+        Assert.Equal(
+            new OkfBundleTools(BundlePath).GetTools().Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal),
+            tools.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// The parameterless overload keeps its historical meaning — every tool,
+    /// nothing gated. Changing that default would silently break every host
+    /// already calling it, so the fix is opt-in and this pins it.
+    /// </summary>
+    [Fact]
+    public void The_default_overload_stays_ungated()
+    {
+        var tools = new OkfBundleTools(BundlePath).GetTools();
+
+        Assert.Contains("okf_write_concept", tools.Select(t => t.Name));
+        Assert.DoesNotContain(tools.Cast<AIFunction>(), t => t is ApprovalRequiredAIFunction);
+    }
+
+
+    /// <summary>
     /// A characterization test for an upstream behaviour this design leans on:
     /// <c>AIFunctionFactory</c> binds a <c>CancellationToken</c> parameter from
     /// the invocation and leaves it OUT of the generated JSON schema.

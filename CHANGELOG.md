@@ -10,6 +10,15 @@ and this project adheres to
 
 ### Added
 
+- **`OkfBundleTools.GetTools(OkfToolMode)`** — chooses how the three
+  write-capable tools are exposed. `ReadOnly` omits them; `RequireApprovalForWrites`
+  wraps exactly those in `ApprovalRequiredAIFunction` so the Agent Framework
+  asks the host before a mutation; `ReadWrite` is the historical ungated
+  behaviour and remains what the parameterless `GetTools()` means, so no
+  existing host changes under them. Read tools are never wrapped: prompting for
+  everything trains a user to click through, which is how the one approval that
+  mattered gets waved past. `OkfMcpToolset` now filters through `ReadOnly`
+  rather than re-implementing the same rule against `WriteToolNames`.
 - **`OkfBundleTools.RunComputationAsync`** — the cancellable form of
   `okf_run_computation`, and what `GetTools()` now exposes under that name.
   `AIFunctionFactory` binds its `CancellationToken` from the invocation and
