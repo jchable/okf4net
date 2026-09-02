@@ -161,13 +161,30 @@ What this means for you:
   error, leaving neither the old bundle nor the new one. The refusal happens before the
   first file is deleted; the message names the link. Remove it, or use `--update`.
 - **`--check` neither copies nor compares what a link points at,** and emits one note per
-  link it skipped. A clean result there is a statement about everything else. Earlier it
-  copied *through* a link, which flattened the far side into the comparison and produced
-  notes about files that were never in the bundle. Note that a link is not automatically
-  invisible to the check: put one where the generator writes (`code/<namespace>`) and the
-  regeneration fills that path in its own copy while your bundle has nothing there, so every
-  concept the link displaced is reported as drift and the check exits 1. That is the right
-  answer — `generate` cannot write those concepts through the link either.
+  link it skipped that the differences do not already name. A clean result there is a
+  statement about everything else. Earlier it copied *through* a link, which flattened the
+  far side into the comparison and produced notes about files that were never in the bundle.
+  A link is **not** automatically invisible to the check, and which of the two shapes you
+  have decides what you read:
+  - a link where the generator writes a **directory** of concepts (`code/<namespace>`): the
+    copy fills that path with real concepts while your bundle has nothing there, so each
+    displaced concept is reported as drift, the check exits 1, and the note names the link.
+    Two paths, two true statements.
+  - a link where the generator writes a **file** (`code/<namespace>/<type>.md`): the drift
+    line names the link's own path and says a link is what the bundle holds there. No note is
+    emitted for it — the drift line carries the whole story, and printing both handed you one
+    line calling the path missing from the bundle and another saying it was never compared.
+
+  Either way the exit code is 1, and that is the right answer: the concepts this producer
+  writes at those paths are not in your bundle.
+- **What `generate` does with the same link depends on where it points**, and the earlier
+  claim here that it "cannot write those concepts through the link" was too strong.
+  `CommitStaging` refuses a destination only when it *leaves* the bundle root. Measured on
+  Windows 11 build 26200 / .NET 10.0.8, with a junction at a concept file's path: pointing
+  outside the bundle, the run refused it and recorded a write failure naming the link;
+  pointing back **inside** the bundle, nothing refused it and `File.Move` threw
+  `UnauthorizedAccessException` out of the run. Neither wrote the concept; only the first is
+  a refusal, and the second is a crash. Remove the link.
 - **A bundle root that is itself a link stays fine** — a symlinked project directory, a
   container or WSL bind mount. Only the root's own link is followed, and every path below
   it is measured against the resolved root.

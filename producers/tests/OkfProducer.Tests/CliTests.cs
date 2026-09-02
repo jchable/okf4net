@@ -280,6 +280,55 @@ public class CliTests
     }
 
     [Fact]
+    public void Check_says_one_thing_about_a_link_standing_where_a_concept_file_belongs()
+    {
+        // WHAT THE OPERATOR ACTUALLY READ, before this test existed, about one single path:
+        //
+        //   drift: code/csharp/demo/widget.md: produced by regenerating, but missing from the bundle.
+        //   note:  'code/csharp/demo/widget.md' ... was neither copied nor compared
+        //
+        // Two lines contradicting each other. The suppression that fixes the second half lives in
+        // OkfgenCli.Check (LinksSkipped minus LinksReportedAsDrift), so it needs a test that runs the
+        // command -- CheckTests can only pin the two lists BundleDrift hands over.
+        //
+        // A JUNCTION named `widget.md` stands in for the file symbolic link this shape really is:
+        // Windows will not create one of those without SeCreateSymbolicLinkPrivilege. See
+        // CheckTests.A_link_standing_where_a_concept_file_belongs_is_named_as_the_link_it_is for why
+        // that substitution reaches the same branch, and for the fact that it is an argument from
+        // reading BundleDrift.Descend rather than a second measurement.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        var outside = Path.Combine(workspace.Path, "notes-outside-the-bundle");
+        Directory.CreateDirectory(outside);
+
+        var occupied = ConceptPath(bundle, WidgetConcept);
+        Assert.True(File.Exists(occupied), "the fixture assumes `generate` writes a concept FILE at this exact path.");
+        File.Delete(occupied);
+        ProducerFixture.CreateDirectoryLink(occupied, outside);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--check");
+
+        Assert.Equal(1, result.ExitCode);
+
+        // One drift line about the path, and it says a link is what the bundle holds there.
+        var drift = result.Output.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith("drift: " + WidgetConcept + ".md:", StringComparison.Ordinal))
+            .ToList();
+        var only = Assert.Single(drift);
+        Assert.Contains("symbolic link or junction", only, StringComparison.Ordinal);
+        Assert.DoesNotContain("missing from the bundle", only, StringComparison.Ordinal);
+
+        // And no note repeating the same path with the opposite sense. Asserted over every note line
+        // rather than over the whole of stderr, so a mention of the path inside some other note would
+        // still fail this.
+        Assert.DoesNotContain(
+            NoteLines(result.Error),
+            line => line.Contains(WidgetConcept + ".md", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Check_refuses_to_be_combined_with_no_code()
     {
         // The combination that used to exit 0 over an arbitrarily stale `code/` family. --check

@@ -399,19 +399,25 @@ public static class OkfgenCli
             note("the repository has no HEAD commit to stamp from, so `generated.at` and `revision` on `overview` were excluded from the comparison -- both fall back to the wall clock there and cannot be reproduced by regenerating. Every other field was compared byte for byte, on every file compared.");
         }
 
-        foreach (var link in report.LinksSkipped)
+        foreach (var link in report.LinksSkipped.Except(report.LinksReportedAsDrift, StringComparer.Ordinal))
         {
-            // A note, never a difference: both sides are listed by the same walk and that walk stops
-            // at a reparse point, so the link's own path is in neither file set and counting it would
-            // fail a check over a bundle nobody had touched. What it does change is which property a
-            // clean result asserts, and that is what this says.
+            // A note rather than a difference, for the links no difference already names: both sides
+            // are listed by the same walk and that walk stops at a reparse point, so a link's own path
+            // is absent from the bundle side's file set, and counting every link as drift on that
+            // ground alone would fail a check over a bundle nobody had touched. What it does change is
+            // which property a clean result asserts, and that is what this says.
             //
-            // Not the same as "the link is on both sides", which this comment used to claim and which
-            // is false: the copy never holds the link. When the generator writes at that path the copy
-            // holds real concepts there and the bundle side holds nothing, so the run reports drift and
-            // exits 1 -- correctly, since `generate` cannot write through the link either. See
-            // DriftReport.LinksSkipped.
-            note($"'{link}' is a symbolic link or junction, so it was neither copied nor compared -- what hangs off the far end was never part of this bundle, and `generate` refuses to write through it. A clean result here is a statement about everything else.");
+            // THE EXCEPT IS THE POINT, and it is here because two earlier versions of this comment
+            // were wrong in the same direction. The first claimed the link "is on both sides"; the
+            // second claimed its path could not be reported as a difference at all. Neither holds:
+            // the copy never holds the link, so where the regeneration writes a file at exactly that
+            // path, Compare reports it -- and printing this note beside that line handed the operator
+            // two sentences about one path, one saying it was missing from the bundle and one saying
+            // it was never compared. Those links carry their whole story in the drift line now, so
+            // they are left out here. Links whose CHILDREN differ are not: the note names the
+            // directory, the differences name the files under it, and both are true.
+            // See DriftReport.LinksSkipped and DriftReport.LinksReportedAsDrift.
+            note($"'{link}' is a symbolic link or junction, so it was neither copied nor compared -- what hangs off the far end was never part of this bundle. A clean result here is a statement about everything else.");
         }
 
         return report.ExitCode != 0 || failures.Count > 0 ? 1 : 0;

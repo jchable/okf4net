@@ -47,33 +47,91 @@ public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsE
 {
     /// <summary>
     /// The bundle-relative, <c>/</c>-separated path of every symbolic link and junction the check
-    /// declined to walk into -- neither copied nor compared, on either side.
+    /// declined to walk into -- neither copied nor compared, on either side. Complete: a link whose own
+    /// path also turned up in <see cref="Differences"/> is still listed here, and listed again by
+    /// <see cref="LinksReportedAsDrift"/>.
     ///
-    /// <para><b>Not a difference, and deliberately not one.</b> The bundle side and the regenerated
-    /// side are listed by the same walk, and that walk stops at a reparse point, so the link's own path
-    /// is absent from both file sets and can never be reported as a file one side has and the other
-    /// lacks. Counting it anyway would fail a check over a bundle nobody had touched. It is reported
-    /// for the same reason <see cref="FieldsExcluded"/> is -- it says which property the run just
-    /// verified. A clean report with a non-empty list means "everything I compared matches", over less
-    /// than the whole directory.</para>
+    /// <para><b>Being skipped is not by itself a difference.</b> Both sides are listed by the same
+    /// walk, and that walk stops at a reparse point, so the link's own path is absent from the bundle
+    /// side's file set; counting every link as drift on that ground alone would fail a check over a
+    /// bundle nobody had touched. The list is reported for the same reason <see cref="FieldsExcluded"/>
+    /// is -- it says which property the run just verified. A clean report with a non-empty list means
+    /// "everything I compared matches", over less than the whole directory.</para>
     ///
-    /// <para><b>What that does NOT say is that the two sides are symmetric. They are not.</b> An
-    /// earlier version of this paragraph said "a link in a bundle is not drift: it is there on both
-    /// sides", and that is false by construction. <c>CopyDirectory</c> reproduces directories and
-    /// files and deliberately not the link; the regeneration then writes into the copy; and only then
-    /// is the copy walked. So a link sitting where the generator writes -- <c>code/&lt;namespace&gt;</c>,
-    /// which is the natural place for the very substitution this skip exists to stop -- leaves the copy
-    /// holding real regenerated concepts at paths the bundle side holds nothing at, and each of them is
-    /// reported as "produced by regenerating, but missing from the bundle". That is drift, the check
-    /// exits 1, and it is the correct answer: <c>generate</c> refuses to write through the link, so
-    /// those concepts are genuinely not in the bundle and will not be until the link goes.
+    /// <para><b>Two successive versions of this paragraph drew a false conclusion from that, and both
+    /// were universals.</b> The first said "a link in a bundle is not drift: it is there on both
+    /// sides". The second said the link's own path "can never be reported as a file one side has and
+    /// the other lacks". Both are false, by the same mechanism: the two file sets are not built at the
+    /// same moment. <c>CopyDirectory</c> reproduces directories and files and deliberately not the
+    /// link; the regeneration then writes into the copy; and only then is the copy walked. So where the
+    /// regeneration writes a <b>file</b> at exactly the link's path, the copy holds that file and the
+    /// bundle side holds nothing, and the path IS reported.</para>
+    ///
+    /// <para><b>It is reported, and it should be</b> -- the bundle carries a link where this producer
+    /// puts a concept, and that is drift. What <c>Compare</c> gives it is a sentence saying so,
+    /// rather than the "produced by regenerating, but missing from the bundle" sentence an ordinary
+    /// absence gets; and <see cref="LinksReportedAsDrift"/> tells a caller not to also print its
+    /// skipped-link note, so the operator gets one line about the path instead of two that read as
+    /// contradicting each other.</para>
+    ///
+    /// <para><b>What <c>generate</c> does about the same link, since this paragraph used to say
+    /// "<c>generate</c> refuses to write through the link" and that is a universal the code does not
+    /// support.</b> <c>BundleWriter.CommitStaging</c> refuses a destination only when
+    /// <c>BundlePaths.ResolveInsideRoot</c> says it leaves the bundle root; a link that resolves back
+    /// INSIDE the root passes that gate. Measured on the host above, with the junction at
+    /// <c>code/csharp/n/scanner.md</c> and <c>--update</c>: pointing at a directory outside the bundle,
+    /// the run refused it and recorded the write failure "the path leaves the bundle root through a
+    /// symbolic link or junction" -- 14 concepts written, nothing at the far end; pointing at
+    /// <c>&lt;bundle&gt;/docs</c>, nothing refused it, <c>File.Move</c> onto the junction threw
+    /// <see cref="UnauthorizedAccessException"/>, and the run ended there. So the narrow statement is
+    /// the one to keep: neither shape put the concept in the bundle, only the first is a refusal, and
+    /// the second is a crash rather than a report. Which is why the drift sentence above says what the
+    /// BUNDLE holds and claims nothing about what <c>generate</c> would do next.</para>
+    ///
+    /// <para><b>Measured, on one host, on the two shapes that host can make.</b> Windows 11 build
+    /// 26200 on .NET 10.0.8, against the committed golden bundle. A junction at
+    /// <c>code/csharp/n/scanner</c> -- a path the generator writes a DIRECTORY of concepts under -- is
+    /// listed here, its children are reported as differences, and its own path is not; that shape is
+    /// unchanged and deliberately so, since suppressing differences under a skipped link would let a
+    /// link mask real drift. A junction named <c>code/csharp/n/scanner.md</c> -- a path the generator
+    /// writes a FILE at -- is listed here AND named by one difference. The two runs are
     /// <c>CheckTests.A_link_where_the_generator_writes_is_reported_as_drift_rather_than_passed_over</c>
-    /// pins that; its sibling reaches a clean result only because it puts the link at <c>code/x</c>, a
-    /// path no id this producer emits maps to.</para>
+    /// and
+    /// <c>CheckTests.A_link_standing_where_a_concept_file_belongs_is_named_as_the_link_it_is</c>.
+    /// A third, <c>Check_neither_copies_nor_compares_what_a_link_in_the_bundle_points_at</c>, reaches a
+    /// clean result only because it puts the link at <c>code/x</c>, a path no id this producer emits
+    /// maps to.</para>
+    ///
+    /// <para><b>The shape this repository cannot run, labelled as reasoning rather than as a
+    /// measurement.</b> The natural form of the file case is a FILE symbolic link at
+    /// <c>code/csharp/n/scanner.md</c> -- no privilege needed on Linux or macOS, and "a clone brings
+    /// the link" is the documented threat. <c>File.CreateSymbolicLink</c> fails on this host without
+    /// SeCreateSymbolicLinkPrivilege (checked: it raises "this operation requires an administrator
+    /// privilege"), so no test here creates one, and the junction above stands in. The argument that
+    /// they are the same case is read off one branch and not run: <c>Descend</c> tests
+    /// <c>BundlePaths.IsReparsePoint</c> BEFORE it asks <see cref="Directory.Exists(string)"/>, so
+    /// nothing downstream of that branch is told which kind of reparse point it was.</para>
     ///
     /// <para>Empty for every bundle that holds no link, which is every bundle this producer writes.</para>
     /// </summary>
     public IReadOnlyList<string> LinksSkipped { get; init; } = [];
+
+    /// <summary>
+    /// The subset of <see cref="LinksSkipped"/> whose own path is also named by a sentence in
+    /// <see cref="Differences"/>, because the regeneration wrote a file at exactly that path.
+    ///
+    /// <para><b>Why a caller needs it.</b> A caller that prints one note per skipped link would print,
+    /// for these paths, a note saying the path "was neither copied nor compared" beside a difference
+    /// naming the same path -- two lines about one path that read as contradicting each other. The
+    /// difference carries the whole story for these, so the note is redundant; <c>OkfgenCli</c> notes
+    /// <c>LinksSkipped</c> minus this set.</para>
+    ///
+    /// <para><b>A link at a path the generator writes a DIRECTORY under is not in here</b>, and that is
+    /// the case this distinction exists to leave alone: the differences then name the link's
+    /// <i>children</i> and the note names the link, which are different paths saying different things,
+    /// both true.</para>
+    /// </summary>
+    public IReadOnlyList<string> LinksReportedAsDrift { get; init; } = [];
 
     /// <summary>
     /// Whether the bundle matches what regenerating it produces -- <b>and</b> whether regenerating
@@ -151,8 +209,11 @@ public static class BundleDrift
         + "cannot differ, and the check would report no drift however stale they are). Both "
         + "combinations are rejected with an error rather than run. One more thing is out of reach "
         + "rather than excluded: a symbolic link or junction inside the bundle is neither copied nor "
-        + "compared, on either side, because what hangs off the far end was never the bundle's -- and "
-        + "`generate` already refuses to write through one. Each link skipped is reported as a note.";
+        + "compared, on either side, because what hangs off the far end was never the bundle's. That "
+        + "does not make a link invisible. Where regenerating writes a concept at the link's own path, "
+        + "that path is reported as drift, in a sentence saying a link is what the bundle holds there; "
+        + "where it writes concepts UNDER a linked directory, each of them is reported. Every skipped "
+        + "link the differences do not already name is reported as a note.";
 
     /// <summary>
     /// Copies the bundle at <paramref name="bundlePath"/> into a temporary directory, hands that copy
@@ -225,11 +286,16 @@ public static class BundleDrift
                     + " a run that writes nothing leaves the copy identical to the bundle and every bundle looks clean.");
             }
 
-            differences.AddRange(Compare(bundlePath, copyPath, insideGitRepository));
+            // The link set handed to Compare is the one CopyDirectory just built from the BUNDLE side,
+            // rather than a second walk's: it is the set the caller will render notes from, so the
+            // two decisions -- what to note and what to word as a link -- cannot disagree.
+            var comparison = Compare(bundlePath, copyPath, insideGitRepository, linksSkipped);
+            differences.AddRange(comparison.Differences);
 
             return new DriftReport(differences, !insideGitRepository, regenerated)
             {
                 LinksSkipped = linksSkipped,
+                LinksReportedAsDrift = comparison.LinksNamed,
             };
         }
         finally
@@ -238,18 +304,33 @@ public static class BundleDrift
         }
     }
 
+    /// <summary>What one <see cref="Compare"/> produced.</summary>
+    /// <param name="Differences">One sentence per differing path, ordered <see cref="StringComparer.Ordinal"/>.</param>
+    /// <param name="LinksNamed">
+    /// The skipped links whose own path one of those sentences names, for
+    /// <see cref="DriftReport.LinksReportedAsDrift"/>.
+    /// </param>
+    private sealed record Comparison(IReadOnlyList<string> Differences, IReadOnlyList<string> LinksNamed);
+
     /// <summary>
     /// Every difference between the two directories, in both directions: a file only the bundle has,
     /// a file only the regeneration produced, and a file both have whose bytes differ. Ordered
     /// <see cref="StringComparer.Ordinal"/> by relative path, so two runs over the same drift report
     /// it in the same order.
     /// </summary>
-    private static IReadOnlyList<string> Compare(string bundlePath, string copyPath, bool insideGitRepository)
+    /// <param name="linksSkipped">
+    /// The bundle side's skipped links, from the same <see cref="Walk"/> that built the copy. Used for
+    /// one thing only: telling the two reasons a path can be absent from the bundle's file set apart
+    /// (see below). It never adds or removes a difference.
+    /// </param>
+    private static Comparison Compare(string bundlePath, string copyPath, bool insideGitRepository, IReadOnlyList<string> linksSkipped)
     {
         var original = RelativeFiles(bundlePath);
         var regenerated = RelativeFiles(copyPath);
+        var skipped = new HashSet<string>(linksSkipped, StringComparer.Ordinal);
 
         var differences = new List<string>();
+        var linksNamed = new List<string>();
 
         foreach (var relative in original.Union(regenerated, StringComparer.Ordinal).OrderBy(p => p, StringComparer.Ordinal))
         {
@@ -264,7 +345,22 @@ public static class BundleDrift
 
             if (!inOriginal)
             {
-                differences.Add($"{relative}: produced by regenerating, but missing from the bundle.");
+                // "Absent from the bundle's file set" has two causes and they need different
+                // sentences. Ordinarily the bundle simply has no such file. But Walk records a
+                // reparse point as a link instead of a file, so a link's own path is absent too --
+                // and there the bundle DOES hold something at the path, which is the one fact an
+                // operator needs and which "missing from the bundle" denies. Still a difference
+                // either way: the concept this producer writes there is not in the bundle.
+                if (skipped.Contains(relative))
+                {
+                    linksNamed.Add(relative);
+                    differences.Add($"{relative}: the bundle holds a symbolic link or junction here, not the concept regenerating writes at this path.");
+                }
+                else
+                {
+                    differences.Add($"{relative}: produced by regenerating, but missing from the bundle.");
+                }
+
                 continue;
             }
 
@@ -292,7 +388,7 @@ public static class BundleDrift
             differences.Add($"{relative}: content differs from what regenerating produces.");
         }
 
-        return differences;
+        return new Comparison(differences, linksNamed);
     }
 
     /// <summary>

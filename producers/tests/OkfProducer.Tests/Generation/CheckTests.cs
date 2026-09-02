@@ -302,20 +302,24 @@ public class CheckTests(ITestOutputHelper output)
         Assert.True(report.IsClean, Explain(report));
 
         // Reported rather than passed over in silence: a check that quietly stops looking at part of a
-        // bundle is the failure this whole file is built against. Not a difference -- both sides are
-        // listed by the same walk and it stops at a reparse point, so the link's own path is in
-        // neither file set and counting it would fail a check over a bundle nobody had touched, which
-        // the IsClean assertion above pins.
+        // bundle is the failure this whole file is built against. Being skipped is not by itself a
+        // difference -- both sides are listed by the same walk and it stops at a reparse point, so the
+        // link's own path is absent from the bundle side's file set, and counting every link as drift
+        // on that ground alone would fail a check over a bundle nobody had touched, which the IsClean
+        // assertion above pins.
         //
-        // THE CLEAN RESULT ABOVE DEPENDS ON THE FIXTURE'S CHOICE OF `code/x`, and this comment used to
-        // credit it to a symmetry that does not exist ("a link is on both sides"). The copy never holds
+        // THE CLEAN RESULT ABOVE DEPENDS ON THE FIXTURE'S CHOICE OF `code/x`, and two versions of this
+        // comment credited it to something that is not true. The first said "a link is on both sides";
+        // the second said the link's path could never be reported as a difference. The copy never holds
         // the link: CopyDirectory reproduces directories and files and not links, and the copy is
         // walked only after the regeneration has written into it. `code/x` is clean because no id this
         // producer emits maps to that path, so nothing is written there and the path stays absent from
         // both sides. Move the link to somewhere the generator does write and the same code reports
-        // drift -- which is
-        // A_link_where_the_generator_writes_is_reported_as_drift_rather_than_passed_over, below.
+        // drift, in one of two shapes -- under the link, which is
+        // A_link_where_the_generator_writes_is_reported_as_drift_rather_than_passed_over, or AT the
+        // link, which is A_link_standing_where_a_concept_file_belongs_is_named_as_the_link_it_is.
         Assert.Equal(["code/x"], report.LinksSkipped);
+        Assert.Empty(report.LinksReportedAsDrift);
     }
 
     [Fact]
@@ -331,9 +335,14 @@ public class CheckTests(ITestOutputHelper output)
         // this producer emits maps to. code/csharp/n/scanner is the opposite: the golden bundle has
         // five files under it, so regenerating produces five the linked bundle cannot have.
         //
-        // Clean is the WRONG answer here and drift is the right one: `generate` refuses every
-        // destination that leaves the root, so those concepts are genuinely not in the bundle and will
-        // not be until the link goes.
+        // Clean is the WRONG answer here and drift is the right one: those concepts are genuinely not
+        // in the bundle. (What `generate` would do about the same link depends on where the link
+        // points and is not asserted here -- see DriftReport.LinksSkipped for the two measurements.)
+        //
+        // THE SHAPE HERE IS THE ONE THAT MUST NOT CHANGE. The link is a DIRECTORY the generator writes
+        // under, so the note names the link and the differences name its children: two different paths
+        // saying two different true things. Suppressing differences under a skipped link would let a
+        // link mask real drift, so the assertions below are deliberately about the children.
         using var workspace = ProducerFixture.CopyRepoOutsideGit();
         using var bundle = ProducerFixture.CopyGoldenBundle();
 
@@ -353,6 +362,68 @@ public class CheckTests(ITestOutputHelper output)
             report.Differences,
             d => d.StartsWith("code/csharp/n/scanner/", StringComparison.Ordinal)
                 && d.EndsWith("produced by regenerating, but missing from the bundle.", StringComparison.Ordinal));
+
+        // The link's OWN path is not among them, so its note is not redundant and must still be
+        // printed. Both halves are asserted, because "the note stays" is a claim about this set.
+        Assert.DoesNotContain(report.Differences, d => d.StartsWith("code/csharp/n/scanner:", StringComparison.Ordinal));
+        Assert.Empty(report.LinksReportedAsDrift);
+    }
+
+    [Fact]
+    public void A_link_standing_where_a_concept_file_belongs_is_named_as_the_link_it_is()
+    {
+        // THE CONTRADICTION THIS TEST WAS WRITTEN FOR, made executable. DriftReport.LinksSkipped used
+        // to say the link's own path "can never be reported as a file one side has and the other
+        // lacks". It can, and before this test the operator saw both of these about one path:
+        //
+        //   drift: code/csharp/n/scanner.md: produced by regenerating, but missing from the bundle.
+        //   note:  'code/csharp/n/scanner.md' ... was neither copied nor compared
+        //
+        // Walk records the reparse point in Links and not Files, so the BUNDLE side lacks the path;
+        // CopyDirectory reproduces neither directories-of-links nor links, so the copy starts without
+        // it; the regeneration then writes a real concept file there; and Compare sees a path the copy
+        // has and the bundle does not.
+        //
+        // The fix is NOT to suppress the difference -- the bundle really does not hold that concept --
+        // but to say what is true, and to stop the note from repeating the same path with the opposite
+        // sense. Both halves are asserted below.
+        //
+        // WHICH SHAPE THIS ACTUALLY RUNS, said plainly rather than glossed. The shape at the heart of
+        // the report is a FILE symbolic link named `scanner.md`, which needs no privilege on Linux or
+        // macOS and is exactly what "a clone brings the link" means. Windows refuses to create one
+        // without SeCreateSymbolicLinkPrivilege, which an ordinary test run does not have, so this uses
+        // a JUNCTION whose name ends in `.md` -- legal, unprivileged, and a reparse point sitting where
+        // a concept file belongs. The claim that the two reach the same code is read off one branch and
+        // not run here: BundleDrift.Descend tests IsReparsePoint BEFORE Directory.Exists, so nothing
+        // downstream of that branch is told which kind it was.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+        using var bundle = ProducerFixture.CopyGoldenBundle();
+
+        var outside = Path.Combine(workspace.Path, "notes-outside-the-bundle");
+        Directory.CreateDirectory(outside);
+
+        var occupied = Path.Combine(bundle.Path, "code", "csharp", "n", "scanner.md");
+        Assert.True(File.Exists(occupied), "the fixture assumes the golden bundle writes a concept FILE at this exact path.");
+        File.Delete(occupied);
+        ProducerFixture.CreateDirectoryLink(occupied, outside);
+
+        var report = RunCheck(workspace, bundle.Path);
+
+        Assert.False(report.IsClean);
+        Assert.Equal(["code/csharp/n/scanner.md"], report.LinksSkipped);
+
+        // Still a difference. Suppressing it would let a link stand in for a concept and pass.
+        var named = report.Differences
+            .Where(d => d.StartsWith("code/csharp/n/scanner.md:", StringComparison.Ordinal))
+            .ToList();
+        var line = Assert.Single(named);
+
+        // And it says what the bundle holds, instead of denying that it holds anything.
+        Assert.Contains("symbolic link or junction", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("missing from the bundle", line, StringComparison.Ordinal);
+
+        // The other half: the caller is told this link needs no note, so the two lines cannot come back.
+        Assert.Equal(["code/csharp/n/scanner.md"], report.LinksReportedAsDrift);
     }
 
     [Fact]
