@@ -10,6 +10,14 @@ and this project adheres to
 
 ### Added
 
+- **`OkfContextProviderOptions.OnInternalError`** — an optional
+  `Action<Exception>` sink called with the real exception whenever context
+  assembly swallows one (a failed bundle load, a failed knowledge/memory read).
+  `null` by default, so the never-throw contract is unchanged. This is the
+  counterpart to the error sanitization under *Fixed*: the injected context used
+  to be the only place that detail surfaced at all, so removing it there without
+  a replacement channel would have traded a leak for an undiagnosable failure.
+  The host gets the exception; the model gets the category.
 - **`FixedClock`** — an `IOkfClock` pinned to one instant, alongside `SystemClock`.
   Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
   exists to make staleness (§5.5) reproducible; until now each caller wanting
@@ -164,6 +172,21 @@ and this project adheres to
   `packaging/winget/README.md`.
 
 ### Fixed
+
+- **Raw exception messages no longer cross into the model's context.** Three
+  places rendered a .NET exception's own message to the LLM: the context
+  provider's `bundle unavailable: {ex.Message}`, `okf_run_computation`'s
+  `Error: {outcome.Error.Message}`, and the orchestrator's own
+  `executor threw: {e.Message}` reason string, which the tool then rendered
+  too. A filesystem exception's message carries the absolute path; an exception
+  from a host-plugged attestation runtime can carry a connection string, a
+  query, or the row it choked on. All three now name a category or the
+  exception *type*. Nothing is lost to the host — the exception object is still
+  on `AttestationOutcome.Error` — and `AttestationOutcome.Reasons` is now safe
+  to render into an agent's context, which is what it is for.
+- **The scoped (V2) context path no longer swallows read failures in total
+  silence.** Its knowledge and memory reads degrade to empty by design, but the
+  bare `catch (Exception) { }` left the host with nothing to diagnose from.
 
 - **The CLI validates each verb's arguments instead of silently ignoring what it
   does not understand.** Any `-`-prefixed token was kept as a valueless flag and
