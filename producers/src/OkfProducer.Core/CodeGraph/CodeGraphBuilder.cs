@@ -37,7 +37,8 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     ///
     /// <para>
     /// <b>Both deadlines are checked between files only, never inside one.</b> The loop below tests
-    /// them once per eligible file, immediately before handing it to
+    /// them once per eligible file, after the profile and eligibility checks and before the
+    /// <see cref="ExtractionLimits.MaxDepth"/> check that immediately precedes
     /// <see cref="ILanguageExtractor.Extract"/>; once inside that call there is no further
     /// checkpoint, so an extraction that does not return does not return, whatever the clock says and
     /// whatever the caller does with its token. What this method therefore guarantees is that it
@@ -50,9 +51,22 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// <para>
     /// Extracted symbols are filtered by <see cref="FileEligibility.IsInScope"/> before being
     /// returned, so an out-of-scope member never reaches <see cref="CodeGraph.Symbols"/> -- but each
-    /// <see cref="ISymbolResolver"/> is handed the UNFILTERED set, so that scope narrowing cannot
-    /// erase an ambiguity the resolver needed to see; an edge resolved to an out-of-scope target is
-    /// degraded to <see cref="EdgeConfidence.Unresolved"/> afterwards instead.
+    /// <see cref="ISymbolResolver"/> is handed the set unfiltered by THAT check, so narrowing
+    /// <see cref="ScopeOptions.IncludeInternal"/> cannot erase an ambiguity the resolver needed to
+    /// see; an edge resolved to an out-of-scope target is degraded to
+    /// <see cref="EdgeConfidence.Unresolved"/> afterwards instead.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>"Unfiltered" means unfiltered by the visibility check, and by nothing else.</b>
+    /// <see cref="FileEligibility.IsEligible"/> runs FIRST, in the loop below, and rejects whole
+    /// files before they are opened -- so on the <see cref="ScopeOptions.IncludeTests"/> axis the
+    /// resolver does not see past the filter: a declaration in a test project is absent from the set
+    /// entirely, not merely absent from the output. So are the declarations of every file skipped
+    /// for size, depth, encoding or unreadability, and every one an extractor dropped for want of a
+    /// container. Narrowing scope on that axis therefore CAN turn an unresolved call into a resolved
+    /// one, by removing the competitor that made it ambiguous. See
+    /// <see cref="ISymbolResolver.Resolve"/>, whose contract this qualifies.
     /// </para>
     /// </summary>
     public CodeGraph Build(RepositorySnapshot snapshot, ExtractionLimits limits, ScopeOptions scope, CancellationToken cancellationToken = default)

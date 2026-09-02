@@ -37,6 +37,20 @@ namespace OkfProducer.Core.CodeGraph;
 /// the progress callback; until then an operator's only real bound on a single pathological file is
 /// <see cref="MaxFileBytes"/> and, outside this process, killing the run.
 /// </para>
+///
+/// <para>
+/// <b>That trade has a named expiry, and it is not "when someone gets around to it".</b> It rests
+/// on <c>okfgen</c> being an interactive, local, operator-driven command: Ctrl-C is a real bound
+/// because there is an operator at a terminal to press it, and <see cref="MaxFileBytes"/>' 2 MB cap
+/// keeps the input small enough that a pathological parse is unlikely to reach a human's patience
+/// first. <b>The first time this extraction path runs anywhere non-interactive -- a CI step, an MCP
+/// or agent tool, a scheduled or server-side run -- that operator disappears and an unbounded parse
+/// becomes a hang with nothing to stop it.</b> Treat that as the trigger to close the gap for real,
+/// not as a new occasion to re-document it. The native <c>tree-sitter.dll</c> in this same package
+/// already exports <c>ts_parser_parse_with_options</c>, so the work is in the binding
+/// (a wrapper upgrade that surfaces the progress callback, or replacing the binding), not in the
+/// parser.
+/// </para>
 /// </param>
 public sealed record ExtractionLimits(long MaxFileBytes, int MaxDepth, TimeSpan Timeout)
 {

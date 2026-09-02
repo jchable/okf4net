@@ -34,6 +34,17 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private const string ValueFieldName = "value";
     private const string ModifierNodeType = "modifier";
 
+    /// <summary>
+    /// Node types that, by this grammar, hold nothing but a C# identifier. A node of one of these
+    /// types whose text is exactly <c>namespace</c> cannot come from valid source (the keyword is
+    /// reserved, and its escaped form measures as the text <c>@namespace</c>), so it is evidence that
+    /// error recovery re-lexed a real <c>namespace</c> keyword as a name -- see
+    /// <see cref="ReadNamespaceContext"/>. Not a closed list: it holds the two carriers measured
+    /// against the vendored grammar, and a shape that produces a third would be invisible until it is
+    /// measured and added.
+    /// </summary>
+    private static readonly string[] IdentifierNodeTypes = ["identifier", "implicit_parameter"];
+
     private static readonly string[] TypeDeclarationNodeTypes =
     [
         "class_declaration", "interface_declaration", "struct_declaration", "record_declaration", "enum_declaration",
@@ -89,112 +100,192 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         // ExtractionLimits.Timeout is documented as the between-files deadline it actually is. If
         // the wrapper ever exposes the progress callback, that is the hook to wire a real per-parse
         // bound to -- and the place to revisit ILanguageExtractor.Extract's no-token signature.
+        // ExtractionLimits.Timeout's doc comment records the CONDITION under which this trade
+        // expires: it holds only while okfgen is interactive and local, so an operator's Ctrl-C is a
+        // real bound. First non-interactive caller (CI, an MCP/agent tool, a scheduled run) and this
+        // becomes an unstoppable hang; do not re-document it then, close it.
         using var tree = engine.Parser.Parse(source)!;
 
-        if (!TryReadFileScopedNamespace(tree.RootNode, out var fileScopedNamespaceName))
-        {
-            // The file declares a namespace this parse could not recover, so every container in it
-            // is unknown -- not empty. Emitting the symbols anyway would give each one a
-            // plausible-but-wrong identity (see TryReadFileScopedNamespace for the measurement), and
-            // §2.3's rule is that a wrong identity is worse than a missing one. PartiallyExtracted
-            // is the honest status: the file was visited, its outcome is recorded, and
-            // RunStatus.IsComplete goes false so no consumer treats this run as authoritative about
-            // what the file contains.
-            return new ExtractionResult([], [], FileStatus.PartiallyExtracted);
-        }
-
-        var symbols = ExtractSymbols(source, tree, engine.DeclarationQuery, profile, relativePath, fileScopedNamespaceName);
-        var sites = ExtractCallSites(source, tree, engine.CallQuery, relativePath, fileScopedNamespaceName);
+        var namespaceContext = ReadNamespaceContext(tree.RootNode);
+        var symbols = ExtractSymbols(source, tree, engine.DeclarationQuery, profile, relativePath, namespaceContext);
+        var sites = ExtractCallSites(source, tree, engine.CallQuery, relativePath, namespaceContext);
 
         // §2.3: code that fails to parse is not an error -- tree-sitter recovers around an ERROR
         // node and keeps every declaration outside the malformed region, so the file still counts as
-        // (partially) extracted rather than skipped.
+        // (partially) extracted rather than skipped. This also covers every declaration
+        // ReadNamespaceContext suppressed: suppression only ever runs on a tree that already reports
+        // HasError (see that method), so it can never leave a file claiming Extracted while silently
+        // holding declarations back.
         var status = tree.RootNode.HasError ? FileStatus.PartiallyExtracted : FileStatus.Extracted;
 
         return new ExtractionResult(symbols, sites, status);
     }
 
     /// <summary>
+    /// What one parse can say about the C# file-scoped namespace (<c>namespace N;</c>) the
+    /// declarations in a file sit under.
+    /// </summary>
+    /// <param name="FileScopedName">
+    /// The declared file-scoped namespace, or <see langword="null"/> when the file declares none --
+    /// the ordinary case for a block-namespace or top-level file, where <c>""</c> is a fact about the
+    /// source rather than a lookup that failed.
+    /// </param>
+    /// <param name="SuppressFromIndex">
+    /// The offset of the earliest evidence that this file declares a namespace this parse could not
+    /// recover, or <see langword="null"/> when there is none. Every declaration STARTING at or after
+    /// it is covered by that lost namespace (a file-scoped namespace runs to end of file), so its
+    /// container is unknown and it is dropped; everything before it is untouched.
+    /// </param>
+    private readonly record struct NamespaceContext(string? FileScopedName, int? SuppressFromIndex);
+
+    /// <summary>
     /// Reads the C# file-scoped namespace (<c>namespace N;</c>) every declaration in
-    /// <paramref name="root"/>'s file sits under, distinguishing "this file declares no file-scoped
-    /// namespace" (returns <see langword="true"/> with <paramref name="name"/>
-    /// <see langword="null"/>, the ordinary case for a block-namespace or top-level file) from "this
-    /// file declares one that this parse could not recover" (returns <see langword="false"/>).
+    /// <paramref name="root"/>'s file sits under, and -- where that read fails -- how much of the
+    /// file the failure actually covers.
     ///
     /// <para>
-    /// That distinction is the whole point of this method, and it is not theoretical. A file-scoped
-    /// namespace declaration is a SIBLING of the declarations it covers, so it is read by looking
-    /// among the root's own children rather than by walking up from a declaration -- and when
-    /// tree-sitter's error recovery swallows the <c>namespace</c> keyword into an <c>ERROR</c> node,
+    /// The problem is not theoretical. A file-scoped namespace declaration is a SIBLING of the
+    /// declarations it covers, so it is read by looking among the root's own children rather than by
+    /// walking up from a declaration -- and when tree-sitter's error recovery moves or destroys it,
     /// that lookup finds nothing and is indistinguishable, to the caller, from a file that never had
     /// one. The container then comes out as <c>""</c>: not a crash, not a skip, but a confident claim
     /// that a type lives in the global namespace when the source says otherwise -- and two such files
     /// in one run collide on that same empty container.
     /// </para>
     ///
-    /// <para>
-    /// Measured against the vendored tree-sitter-c-sharp grammar, over eleven shapes. The recovery
-    /// only loses the declaration when the malformed region sits ABOVE the <c>namespace N;</c> line:
-    /// <c>public class Leftover {</c> left unclosed before it yields zero
-    /// <c>file_scoped_namespace_declaration</c> nodes ANYWHERE in the tree (not merely at the root,
-    /// so searching deeper would find nothing) with the <c>namespace</c> keyword and its identifier
-    /// reparented under an <c>ERROR</c>. Malformation BELOW the namespace line -- an unclosed class,
-    /// a stray extra <c>{</c>, a full set of merge-conflict markers, all measured -- leaves the
-    /// declaration intact at the root, so the ordinary mid-edit shape is not affected. The predicate
-    /// used here is therefore an orphaned <c>namespace</c> keyword: one whose parent is neither a
-    /// <c>namespace_declaration</c> nor a <c>file_scoped_namespace_declaration</c>. On those eleven
-    /// shapes it fired on exactly the broken one, and on none of: a clean file-scoped namespace, a
-    /// clean block namespace, nested block namespaces, a file with no namespace at all, a string
-    /// literal containing the text <c>namespace X;</c>, or the empty-collection-expression grammar
-    /// gap that makes <c>HasError</c> true for nearly every modern C# file in this codebase (see
-    /// <c>HostileInputTests</c>) -- which is exactly the false positive that would otherwise have
-    /// made this guard eat the whole repository.
+    /// <para><b>Recover before refusing.</b> The root-children lookup is only a fast path. When it
+    /// finds nothing on a tree that reports <c>HasError</c>, the whole tree is searched for a
+    /// <c>file_scoped_namespace_declaration</c> before any suppression is considered, because the
+    /// declaration is sometimes merely REPARENTED rather than destroyed: <c>#if DEBUG</c> with no
+    /// <c>#endif</c> above the namespace line puts the intact declaration under a <c>preproc_if</c>
+    /// (measured), where the deep search finds it and the correct container <c>N</c> is emitted. That
+    /// is strictly better than both the wrong <c>""</c> and a refusal. An earlier revision of this
+    /// method asserted the opposite -- that searching deeper would find nothing -- on the strength of
+    /// one probed shape; it was wrong, and the fix is this search.
+    /// </para>
+    ///
+    /// <para><b>Suppress locally, never file-wide.</b> Where recovery genuinely fails, what is
+    /// unknown is the container of the declarations the lost namespace would have covered -- which is
+    /// everything from its line to end of file, and nothing above it. So this returns an OFFSET, not
+    /// a verdict on the file: a block namespace closed above the damage keeps its declarations and
+    /// their correct containers. Refusing the whole file (which this method's previous revision did)
+    /// deleted work that was never wrong -- for two block namespaces with the second one's <c>}</c>
+    /// missing, <c>[N]T</c> and <c>[N.T]M</c> were correct before that guard and gone after it.
+    /// </para>
+    ///
+    /// <para><b>What the evidence can be, and what it cannot.</b> Two node-level signals, both
+    /// measured against the vendored tree-sitter-c-sharp grammar:
+    /// <list type="bullet">
+    /// <item>an orphaned <c>namespace</c> KEYWORD node -- one whose parent is neither a
+    /// <c>namespace_declaration</c> nor a <c>file_scoped_namespace_declaration</c>. This is what an
+    /// unclosed <c>public class Leftover {</c> above the namespace line, or a merge conflict wrapping
+    /// a <c>using</c> block, recovers to.</item>
+    /// <item>a node that by grammar can only hold an identifier (<see cref="IdentifierNodeTypes"/>)
+    /// whose text is exactly <c>namespace</c>. C# reserves <c>namespace</c>, and the escaped form is
+    /// spelled <c>@namespace</c> -- which measures as node text <c>"@namespace"</c>, not
+    /// <c>"namespace"</c> -- so such a node cannot come from valid source at all: it only appears when
+    /// recovery has re-lexed a real <c>namespace</c> keyword as a name. <c>using System</c> with no
+    /// semicolon reparses the keyword as a <c>variable_declarator</c>'s <c>identifier</c>; an
+    /// unterminated block comment or a bare set of conflict markers reparses it as an
+    /// <c>implicit_parameter</c>.</item>
+    /// </list>
+    /// Both are node-TYPE tests, deliberately: the text of a <c>comment</c> or a string literal is
+    /// never re-lexed into an identifier, so neither can trip them.
+    /// </para>
+    ///
+    /// <para><b>This does not close the class, and must not be read as if it did.</b> Some shapes
+    /// leave NO node for the lost keyword at all -- <c>global using System</c> with no semicolon, and
+    /// an unterminated string literal inside an assembly attribute, both measured -- because the
+    /// bytes spelling <c>namespace N</c> land inside an <c>ERROR</c> node that exposes no child
+    /// covering them. Nothing in the tree names them, so this walk is structurally blind to them and
+    /// they still emit the wrong <c>""</c> container. Recovering those would mean re-lexing the raw
+    /// text of error regions, which this method deliberately does not do; the line drawn here is that
+    /// the evidence must be a node the grammar itself produced. Any shape reported as still-wrong
+    /// belongs in <c>HostileInputTests</c> alongside the ones that are handled.
     /// </para>
     ///
     /// <para>
-    /// The walk runs only when <paramref name="root"/> reports <c>HasError</c>: on every clean shape
-    /// measured, every <c>namespace</c> keyword was already parented to a namespace node, so a clean
-    /// tree has nothing to find. It is iterative rather than recursive because its depth is bounded
-    /// by hostile input, not by <see cref="ExtractionLimits.MaxDepth"/>, which bounds directory
-    /// nesting and not syntactic nesting.
+    /// The deep walk runs only when <paramref name="root"/> reports <c>HasError</c>: on every clean
+    /// shape measured, every <c>namespace</c> keyword was already parented to a namespace node, so a
+    /// clean tree has nothing to find. That early-out is also what keeps this off the
+    /// empty-collection-expression grammar gap's blast radius -- that gap sets <c>HasError</c> on
+    /// nearly every modern C# file in this codebase (see <c>HostileInputTests</c>), and a rule that
+    /// distrusted the file-scoped name whenever <c>HasError</c> was set would drop most of a real
+    /// repository. The walk is iterative rather than recursive because its depth is bounded by
+    /// hostile input, not by <see cref="ExtractionLimits.MaxDepth"/>, which bounds directory nesting
+    /// and not syntactic nesting.
     /// </para>
     /// </summary>
-    private static bool TryReadFileScopedNamespace(Node root, out string? name)
+    private static NamespaceContext ReadNamespaceContext(Node root)
     {
         var declaration = root.Children.FirstOrDefault(c => c.Type == FileScopedNamespaceNodeType);
-        name = declaration?.GetChildForField(NameFieldName)?.Text;
+
+        if (declaration is null && root.HasError)
+        {
+            declaration = Descendants(root).FirstOrDefault(n => n.Type == FileScopedNamespaceNodeType);
+        }
 
         if (declaration is not null)
         {
+            var name = declaration.GetChildForField(NameFieldName)?.Text;
+
             // A declaration whose name did not survive (`namespace ;` recovers to exactly this shape)
             // is the same failure by a different route: the name reads as empty, and prepending an
-            // empty segment produces a container with a leading dot rather than a real path.
-            return !string.IsNullOrEmpty(name);
+            // empty segment produces a container with a leading dot rather than a real path. The
+            // declaration's own offset is where its coverage starts, so it is also where suppression
+            // starts.
+            return string.IsNullOrEmpty(name)
+                ? new NamespaceContext(null, declaration.StartIndex)
+                : new NamespaceContext(name, null);
         }
 
         if (!root.HasError)
         {
-            return true;
+            return new NamespaceContext(null, null);
         }
 
+        int? suppressFrom = null;
+        foreach (var node in Descendants(root))
+        {
+            if (IsLostNamespaceEvidence(node) && (suppressFrom is null || node.StartIndex < suppressFrom))
+            {
+                suppressFrom = node.StartIndex;
+            }
+        }
+
+        return new NamespaceContext(null, suppressFrom);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="node"/> is evidence of a namespace declaration this parse lost. See
+    /// <see cref="ReadNamespaceContext"/> for the measurement behind both arms and for the shapes
+    /// neither arm can see.
+    /// </summary>
+    private static bool IsLostNamespaceEvidence(Node node) =>
+        node.Type == NamespaceKeywordNodeType
+            ? node.Parent?.Type is not (NamespaceDeclarationNodeType or FileScopedNamespaceNodeType)
+            : Array.IndexOf(IdentifierNodeTypes, node.Type) >= 0
+                && string.Equals(node.Text, NamespaceKeywordNodeType, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Every node at or below <paramref name="root"/>, in no particular order. Iterative rather than
+    /// recursive because its depth is bounded by hostile input, not by
+    /// <see cref="ExtractionLimits.MaxDepth"/>.
+    /// </summary>
+    private static IEnumerable<Node> Descendants(Node root)
+    {
         var pending = new Stack<Node>();
         pending.Push(root);
         while (pending.Count > 0)
         {
             var node = pending.Pop();
-            if (node.Type == NamespaceKeywordNodeType
-                && node.Parent?.Type is not (NamespaceDeclarationNodeType or FileScopedNamespaceNodeType))
-            {
-                return false;
-            }
+            yield return node;
 
             foreach (var child in node.Children)
             {
                 pending.Push(child);
             }
         }
-
-        return true;
     }
 
     /// <summary>
@@ -319,17 +410,28 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     }
 
     private static List<SymbolFact> ExtractSymbols(
-        string source, Tree tree, Query declarationQuery, LanguageProfile profile, string relativePath, string? fileScopedNamespaceName)
+        string source, Tree tree, Query declarationQuery, LanguageProfile profile, string relativePath, NamespaceContext namespaceContext)
     {
         var symbols = new List<SymbolFact>();
 
         foreach (var match in declarationQuery.Execute(tree.RootNode).Matches)
         {
             var decl = match.Captures.First(c => c.Name == "decl").Node;
+
+            // Everything from the lost namespace's line onwards is covered by it, so its container is
+            // unknown -- not empty -- and §2.3's rule is that a wrong identity is worse than a
+            // missing one. A declaration that merely CONTAINS the damage (a leftover class body
+            // holding a stray `namespace Q;`) starts above it and keeps the container its own
+            // ancestors give it.
+            if (namespaceContext.SuppressFromIndex is { } suppressFrom && decl.StartIndex >= suppressFrom)
+            {
+                continue;
+            }
+
             var name = match.Captures.First(c => c.Name == "name").Node.Text;
 
             var kind = IsTypeDeclaration(decl.Type) ? SymbolKind.Type : SymbolKind.Member;
-            var container = ComputeContainerPath(decl, fileScopedNamespaceName);
+            var container = ComputeContainerPath(decl, namespaceContext.FileScopedName);
             var modifiersText = ComputeModifiersText(decl, kind);
             var visibility = profile.VisibilityOf(modifiersText, kind);
             var docComment = ExtractDocComment(decl, profile.DocCommentPrefix);
@@ -376,7 +478,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// type name like <c>"T"</c> collides the moment two namespaces each hold a type named <c>T</c>,
     /// which is ordinary in a real repository.
     /// </summary>
-    private static List<CallSite> ExtractCallSites(string source, Tree tree, Query callQuery, string relativePath, string? fileScopedNamespaceName)
+    private static List<CallSite> ExtractCallSites(string source, Tree tree, Query callQuery, string relativePath, NamespaceContext namespaceContext)
     {
         var sites = new List<CallSite>();
 
@@ -384,7 +486,18 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         {
             var callee = capture.Node;
             var callerMember = FindNearestAncestor(callee, CallerMemberAncestorNodeTypes);
-            var callerContainer = callerMember is not null ? ComputeContainerPath(callerMember, fileScopedNamespaceName) : string.Empty;
+
+            // Suppressed on the same rule, and keyed off the CALLER's own offset rather than the
+            // call's: CallerContainer is the field a lost namespace makes wrong, and it is the
+            // caller's position that decides whether the lost namespace covers it. A call inside a
+            // member declared above the damage keeps a container its ancestors still establish.
+            var callerStart = (callerMember ?? callee).StartIndex;
+            if (namespaceContext.SuppressFromIndex is { } suppressFrom && callerStart >= suppressFrom)
+            {
+                continue;
+            }
+
+            var callerContainer = callerMember is not null ? ComputeContainerPath(callerMember, namespaceContext.FileScopedName) : string.Empty;
 
             // A field/event-field declaration has no name field of its own (its declarators do), so
             // fall back to the nearest enclosing variable_declarator -- the specific name a call inside
@@ -414,6 +527,15 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// method it's nested in) contributes one segment, outermost first. A C# file-scoped namespace
     /// (<c>namespace N;</c>) is a *sibling* of the declarations it covers, not their syntactic
     /// parent, so it never surfaces from the ancestor walk and must be prepended separately.
+    ///
+    /// <para>
+    /// A <c>file_scoped_namespace_declaration</c> met during the ancestor walk contributes no segment
+    /// of its own, so the prepended name can never also be collected here and produce <c>N.N</c>.
+    /// That is a structural guarantee of this method rather than a shape that was measured: on every
+    /// shape probed the declaration was a sibling, but <see cref="ReadNamespaceContext"/> may now
+    /// recover one from anywhere in the tree, and this walk is the only thing standing between a
+    /// reparented one and a doubled segment.
+    /// </para>
     /// </summary>
     private static string ComputeContainerPath(Node decl, string? fileScopedNamespaceName)
     {
@@ -421,7 +543,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         var current = decl.Parent;
         while (current is not null)
         {
-            var nameField = current.GetChildForField(NameFieldName);
+            var nameField = current.Type == FileScopedNamespaceNodeType ? null : current.GetChildForField(NameFieldName);
             if (nameField is not null)
             {
                 segments.Insert(0, nameField.Text);

@@ -250,41 +250,163 @@ public class HostileInputTests : IDisposable
         Assert.Contains(result.Symbols, s => s.Name == "N2");
     }
 
+    /// <summary>
+    /// The bottom of every "damage ABOVE the namespace line" case below: an intact
+    /// <c>namespace N;</c> with one type and one method under it. Whatever the shape prefixed to it
+    /// does to the parse, the truth about these two declarations never changes -- <c>T</c> is
+    /// <c>N.T</c> and <c>M</c> is <c>N.T.M</c> -- so any result containing <c>[]T</c> is the extractor
+    /// asserting the global namespace about code that names a different one.
+    /// </summary>
+    private const string LostNamespaceTail = "namespace N;\n\npublic class T\n{\n    public void M() { }\n}\n";
+
     [Fact]
-    public void A_file_scoped_namespace_lost_to_error_recovery_yields_no_symbols_rather_than_wrong_containers()
+    public void A_file_scoped_namespace_merely_reparented_by_recovery_is_recovered_rather_than_refused()
     {
-        // MEASURED against the vendored grammar, not assumed: an unclosed `public class Leftover {`
-        // sitting ABOVE a `namespace N;` line makes tree-sitter reparent the `namespace` keyword and
-        // its identifier under an ERROR node, leaving ZERO file_scoped_namespace_declaration nodes
-        // anywhere in the tree. The root-children lookup then reads null and is indistinguishable
-        // from a file that genuinely declares no namespace, so before this guard `T` came out with
-        // Container "" and `M` with Container "T" -- a confident claim that they live in the global
-        // namespace. That is the plausible-but-wrong identity §2.3 calls worse than skipping, and it
-        // collides: two malformed files each losing a different namespace land on the same empty
-        // container. Emitting nothing for the file, and saying so through PartiallyExtracted, is the
-        // honest outcome.
-        var result = ExtractSource(
-            "public class Leftover\n{\nnamespace N;\n\npublic class T\n{\n    public void M() { }\n}\n");
+        // MEASURED against the vendored grammar: `#if DEBUG` with no `#endif` above the namespace
+        // line leaves the file_scoped_namespace_declaration INTACT but moves it out of the root's
+        // own children and under a preproc_if, together with the declarations it covers. The
+        // root-children fast path finds nothing, but a search of the whole tree finds the
+        // declaration and reads `N` off it, so the correct container is emitted.
+        //
+        // This case is why the deep search exists. An earlier revision of ReadNamespaceContext
+        // asserted in its own doc comment that a lost declaration is absent from the tree entirely
+        // and that "searching deeper would find nothing" -- true of the one shape that had been
+        // probed, false as a general rule, and it was being used as the rationale for refusing
+        // instead of recovering. Recovering is strictly better than both the wrong "" this shape
+        // produced before and the refusal that would otherwise be the alternative.
+        var result = ExtractSource("#if DEBUG\n\n" + LostNamespaceTail);
 
         Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
-        Assert.Empty(result.Symbols);
-        Assert.Empty(result.Sites);
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == "N");
+        Assert.Contains(result.Symbols, s => s.Name == "M" && s.Container == "N.T");
+    }
+
+    [Theory]
+    // Damage ABOVE a `namespace N;` line, where the region `using`s, assembly attributes and
+    // preprocessor directives live -- so ordinary mid-edit damage lands here at least as often as it
+    // lands below. Each of these MEASURED to destroy the file_scoped_namespace_declaration outright
+    // (the deep search above finds nothing to recover), and each leaves evidence this walk can see:
+    //
+    //   `using System` / `[assembly: X(` / conflict markers around a `using` block
+    //                        -- the keyword is re-lexed as an `identifier` (in the first and last,
+    //                           as a variable_declarator's name -- `using System \n namespace` reads
+    //                           as a using-statement declaring a variable called `namespace`).
+    //   unterminated `/*` comment / bare conflict markers
+    //                        -- re-lexed as an `implicit_parameter`.
+    //   unclosed `public class Leftover {`
+    //                        -- kept AS the `namespace` keyword, orphaned under an ERROR.
+    //
+    // The merge conflict wrapping a `using` block is the one that matters most in practice: it is
+    // the single most common C# merge conflict, and before this round every type in such a file came
+    // out claiming the global namespace, with two conflicted files colliding on that same "".
+    [InlineData("using System\n\n" + LostNamespaceTail)]
+    [InlineData("/* TODO\n\n" + LostNamespaceTail)]
+    [InlineData("[assembly: X(\n\n" + LostNamespaceTail)]
+    [InlineData("<<<<<<< HEAD\n=======\n>>>>>>> other\n\n" + LostNamespaceTail)]
+    [InlineData("<<<<<<< HEAD\nusing System;\n=======\nusing System.Text;\n>>>>>>> other\n\n" + LostNamespaceTail)]
+    [InlineData("public class Leftover\n{\n" + LostNamespaceTail)]
+    public void A_declaration_covered_by_a_namespace_this_parse_lost_is_dropped_rather_than_mislabelled(string source)
+    {
+        var result = ExtractSource(source);
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.DoesNotContain(result.Symbols, s => s.Name is "T" or "M");
+    }
+
+    [Theory]
+    // NOT a guarantee -- the opposite. These two shapes still emit the wrong "" container, and this
+    // test pins that so the day someone closes the gap it is noticed rather than silently changing
+    // what gets pruned.
+    //
+    // MEASURED: in both, the bytes spelling `namespace N` land inside an ERROR node that exposes NO
+    // child covering them (`global using System` with no semicolon puts them in a childless ERROR;
+    // the unterminated string literal leaves them in the untokenised tail of one). Nothing in the
+    // tree names them, so a walk over NODES is structurally blind to them -- the same blindness the
+    // string-literal case below is a scope marker for, except that here it hides a live defect
+    // rather than a hypothetical one. Closing it means re-lexing the raw text of error regions,
+    // which ReadNamespaceContext deliberately does not do; see its doc comment for where that line
+    // is drawn and why.
+    [InlineData("global using System\n\n" + LostNamespaceTail)]
+    [InlineData("[assembly: System.Obsolete(\"oops)]\n\n" + LostNamespaceTail)]
+    public void Two_lost_namespace_shapes_remain_invisible_and_still_emit_the_wrong_container(string source)
+    {
+        var result = ExtractSource(source);
+
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == string.Empty);
+    }
+
+    [Fact]
+    public void Only_the_declarations_the_lost_namespace_covered_are_dropped_not_the_whole_file()
+    {
+        // A lost file-scoped namespace covers its own line to end of file and NOTHING above it, so
+        // the decision is scoped to the declarations it reaches. Here a block namespace `N` is
+        // closed cleanly before a leftover `public class Leftover {` swallows a `namespace Q;`:
+        // `T` and `T.M` sit above the damage and their containers were never in doubt, and
+        // `Leftover` merely CONTAINS it -- its own container comes from its own ancestors.
+        //
+        // A file-global refusal (which the first version of this guard performed) deleted all three.
+        // Nothing about them was wrong, so the "a wrong identity is worse than a missing one" trade
+        // never applied to them; the guard was simply reaching too far.
+        var result = ExtractSource(
+            "namespace N\n{\n    public class T { public void M() { } }\n}\n\npublic class Leftover\n{\nnamespace Q;\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == "N");
+        Assert.Contains(result.Symbols, s => s.Name == "M" && s.Container == "N.T");
+        Assert.Contains(result.Symbols, s => s.Name == "Leftover" && s.Container == string.Empty);
+    }
+
+    [Fact]
+    public void A_second_namespace_lost_below_a_closed_one_keeps_the_first_ones_declarations()
+    {
+        // The same scoping rule on the other common shape: two block namespaces with the second
+        // one's closing `}` missing. `N`'s declarations parse cleanly and completely, and the damage
+        // is entirely below them.
+        //
+        // MEASURED before this round: a file-global refusal returned nothing at all for this file,
+        // while the revision before THAT returned `[N]T, [N.T]M` plus two symbols salvaged out of the
+        // wreck of `namespace U {` with containers that were wrong ("" for U, "U" for P). Keeping the
+        // two correct ones and dropping the two wrong ones is better than either.
+        var result = ExtractSource(
+            "namespace N\n{\n    public class T { public void M() { } }\n}\n\nnamespace U\n{\n    public class P { }\n");
+
+        Assert.Equal(FileStatus.PartiallyExtracted, result.Status);
+        Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == "N");
+        Assert.Contains(result.Symbols, s => s.Name == "M" && s.Container == "N.T");
+        Assert.DoesNotContain(result.Symbols, s => s.Name is "U" or "P");
+    }
+
+    [Fact]
+    public void A_call_site_below_a_lost_namespace_is_dropped_with_its_caller()
+    {
+        // CallSite.CallerContainer is computed from the same lost namespace, so a site whose caller
+        // is dropped must go with it -- otherwise the wrong container survives in the edge table
+        // after being suppressed in the symbol table, and Task 8's (Container, Name) join silently
+        // matches the wrong caller or none at all.
+        var result = ExtractSource(
+            "public class Leftover\n{\nnamespace N;\n\npublic class T\n{\n    public void M() { Helper(); }\n}\n");
+
+        Assert.DoesNotContain(result.Sites, s => s.CallerName == "M");
     }
 
     [Theory]
     // Malformation BELOW the namespace line: MEASURED to leave the file_scoped_namespace_declaration
-    // intact at the root, so the container is still correct and the guard above must not fire. This
-    // is the ordinary mid-edit and merge-conflict shape -- the guard would be worthless if it ate
-    // these, and this is the direction no test covered before.
+    // intact at the root, so the container is still correct and no suppression must happen. This is
+    // the ordinary mid-edit and merge-conflict shape -- the guard would be worthless if it ate these.
     //
     // Each case names the declaration the grammar actually recovers from it, which is not the same
     // one every time: an unclosed class loses the class_declaration node itself and keeps only the
-    // method inside it, while the merge-conflict shape keeps the class. A third shape measured
-    // alongside these -- a stray extra `{` inside a method body -- is deliberately NOT listed: it
-    // recovers no declaration at all, so an assertion over its symbols could not tell the guard
-    // firing apart from the grammar finding nothing, and would pass either way.
+    // method inside it, while the merge-conflict shape keeps the class. The three stray-brace shapes
+    // were previously omitted on the stated grounds that such a shape "recovers no declaration at
+    // all, so an assertion over its symbols would pass either way". That reasoning is the right
+    // pattern but this measurement of it was wrong: RE-MEASURED, `{ { }` and `{{ }` inside a method
+    // body each recover `M` with container `N`, and a stray `{` after a closed method recovers both
+    // `T` and `M`. All three are assertable, so all three are asserted.
     [InlineData("namespace N;\n\npublic class T\n{\n    public void M() { }\n", "M")]
     [InlineData("namespace N;\n\n<<<<<<< HEAD\npublic class T\n{\n    public void M() { }\n}\n=======\npublic class T\n{\n}\n>>>>>>> other\n", "T")]
+    [InlineData("namespace N;\n\npublic class T\n{\n    public void M() { { }\n}\n", "M")]
+    [InlineData("namespace N;\n\npublic class T\n{\n    public void M() {{ }\n}\n", "M")]
+    [InlineData("namespace N;\n\npublic class T\n{\n    public void M() { }\n    {\n}\n", "T")]
     public void Malformed_source_below_the_namespace_line_keeps_its_container(string source, string recoveredName)
     {
         var result = ExtractSource(source);
@@ -305,11 +427,18 @@ public class HostileInputTests : IDisposable
     //                            test below) makes HasError true for nearly every modern C# file in
     //                            this codebase, so that edit drops most of a real repository.
     //   string literal        -- NO single-line edit found that turns this one red. It is a scope
-    //                            marker, not a proof: the word `namespace` inside a string is a
-    //                            `string_literal` node and never a `namespace` keyword node, so the
-    //                            node-type test cannot see it. It would start earning its keep the
-    //                            day someone reimplements the walk over node TEXT, and is kept for
-    //                            that reason alone.
+    //                            marker, not a proof, for TWO reasons, and the second was missed
+    //                            when this note was first written: the word `namespace` inside a
+    //                            string is a `string_literal` node and never a `namespace` keyword
+    //                            node, so the node-type test cannot see it -- AND this source parses
+    //                            with HasError false, so ReadNamespaceContext returns down its fast
+    //                            path and the evidence walk is never reached at all. (Measured: the
+    //                            HasError-distrust edit above leaves this case green, which it could
+    //                            not do if the source had an error region.) It would start earning
+    //                            its keep the day someone reimplements the walk over node TEXT, and
+    //                            is kept for that reason alone. A case meant to constrain the walk
+    //                            has to be built so the walk actually runs -- see
+    //                            An_escaped_namespace_identifier_is_not_mistaken_for_a_re_lexed_keyword.
     [InlineData("namespace N\n{\n    public class T { public void M() { } }\n}\n", "N")]
     [InlineData("namespace N.Deep\n{\n    namespace Inner { public class T { } }\n}\n", "N.Deep.Inner")]
     [InlineData("namespace N;\n\npublic class T { public void M() { Use([]); } public void Use(int[] a) { } }\n", "N")]
@@ -319,6 +448,29 @@ public class HostileInputTests : IDisposable
         var result = ExtractSource(source);
 
         Assert.Contains(result.Symbols, s => s.Name == "T" && s.Container == expectedContainer);
+    }
+
+    [Fact]
+    public void An_escaped_namespace_identifier_is_not_mistaken_for_a_re_lexed_keyword()
+    {
+        // Guards the identifier arm added this round, and it had to be built with care to guard
+        // anything at all. `namespace` is reserved, so the only way it can name a local is escaped,
+        // and the escaped form MEASURES as node text "@namespace" -- which is exactly why an EXACT
+        // text match can treat an identifier reading "namespace" as proof of a re-lexed keyword.
+        //
+        // The obvious way to write this case -- `var @namespace = 1;` under an intact
+        // `namespace N;` -- would have been WORTHLESS, and was measured to be: that source parses
+        // with HasError FALSE and its file-scoped declaration sitting at the root, so
+        // ReadNamespaceContext returns down the fast path and the evidence walk is never reached.
+        // No edit to the walk could turn such a test red. So the escaped identifier is placed where
+        // the walk really does run (no file-scoped declaration to recover, an error region present)
+        // and BEFORE a later declaration, since suppression only ever reaches what follows the
+        // evidence: broadening the arm's exact match to EndsWith("namespace") makes it fire at the
+        // `@namespace` token and swallow `B`. That edit was RUN by hand and turns this test red.
+        var result = ExtractSource(
+            "namespace N\n{\n    public class A { public void M() { var @namespace = 1; @@@ } }\n    public class B { }\n}\n");
+
+        Assert.Contains(result.Symbols, s => s.Name == "B" && s.Container == "N");
     }
 
     [Fact]

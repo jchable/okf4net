@@ -15,6 +15,19 @@ public enum FileStatus
     /// The file was read and parsed, but extraction stopped early (e.g. a timeout), or the parsed
     /// tree contains at least one error region.
     ///
+    /// <para><b>This one value now carries three distinguishable meanings, and a consumer computing
+    /// coverage cannot tell them apart.</b> (1) The file parsed cleanly enough but declares nothing
+    /// this run extracts. (2) Recovery worked around an error region and the symbols returned are a
+    /// partial but honest view of the file. (3) The extractor deliberately WITHHELD declarations it
+    /// could see, because it could not establish their container -- <c>TreeSitterExtractor</c> drops
+    /// every declaration covered by a file-scoped namespace its parse lost, on the rule that a wrong
+    /// identity is worse than a missing one (§2.3). Only the third means "this file certainly holds
+    /// declarations that are absent from the graph"; the other two do not, and nothing on this enum
+    /// says which one occurred. Splitting the value would ripple into the generation stage's pruning
+    /// and reporting, so it is named here rather than modelled: a consumer that needs the
+    /// distinction must get it from a richer channel, not by reading more into this value than it
+    /// carries.</para>
+    ///
     /// <para><b>Measured, not theoretical: this is the steady state for a modern C# 12+ codebase,
     /// not a rare edge case.</b> The vendored tree-sitter-c-sharp grammar (via <c>TreeSitter.DotNet</c>)
     /// cannot parse an <i>empty</i> collection expression <c>[]</c> in any expression position --
