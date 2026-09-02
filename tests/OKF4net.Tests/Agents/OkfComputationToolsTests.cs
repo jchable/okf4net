@@ -24,6 +24,38 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
+    /// Raised in review of #65: the timeout's CancellationTokenSource was
+    /// constructed BEFORE the try, and `new CancellationTokenSource(TimeSpan)`
+    /// throws ArgumentOutOfRangeException for a negative delay other than
+    /// Timeout.InfiniteTimeSpan. A host misconfiguring ComputationTimeout would
+    /// therefore blow a raw exception out of the tool, breaking the "tools never
+    /// throw toward the LLM" invariant that every other guard here maintains —
+    /// and doing it on a misconfiguration, which is exactly when a clear message
+    /// matters most.
+    /// </summary>
+    [Fact]
+    public async Task An_invalid_timeout_is_reported_not_thrown()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })),
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
+        {
+            ComputationTimeout = TimeSpan.FromSeconds(-5),
+        };
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.StartsWith("Error:", rendered, StringComparison.Ordinal);
+        Assert.Contains("ComputationTimeout", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The tool blocked the calling thread with `.GetAwaiter().GetResult()` and
     /// passed no token at all, so `cancellationToken` reached the orchestrator
     /// as `default`. A slow or wedged executor — an HTTP call to a warehouse

@@ -1137,6 +1137,18 @@ public sealed class OkfBundleTools
         // despite the non-nullable static type.
         parameterValues ??= new Dictionary<string, object?>();
 
+        // Validated rather than left to CancellationTokenSource's own throw: it
+        // rejects any negative delay except InfiniteTimeSpan with an
+        // ArgumentOutOfRangeException, and this construction sits outside the
+        // try below, so a host that misconfigured the timeout got a raw
+        // exception out of a tool that promises never to throw at the LLM —
+        // on a misconfiguration, which is exactly when a legible message is
+        // worth most. Caught in review of #65.
+        if (ComputationTimeout < TimeSpan.Zero && ComputationTimeout != Timeout.InfiniteTimeSpan)
+        {
+            return $"Error: ComputationTimeout must be positive or Timeout.InfiniteTimeSpan, but is {ComputationTimeout}.";
+        }
+
         using var timeoutSource = new CancellationTokenSource(ComputationTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
 
