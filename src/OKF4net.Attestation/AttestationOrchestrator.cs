@@ -125,12 +125,19 @@ public sealed class AttestationOrchestrator
             bound = await runtime.Binder.BindAsync(contract, resolved, parameterValues, cancellationToken).ConfigureAwait(false);
         }
         // Cancellation is control flow, not data: errors-as-data is the contract
-        // for FAILURES, and an OperationCanceledException is not one. Caught by
-        // a bare `catch (Exception)` it became a business outcome, so a caller
-        // that cancelled got a normal-looking result and could not tell "the
-        // stage failed" from "I asked it to stop". Same filter on all three
-        // stages below, matching OkfContextProvider's convention.
-        catch (Exception e) when (e is not OperationCanceledException)
+        // for FAILURES, and a cancellation the CALLER asked for is not one.
+        // Caught by a bare `catch (Exception)` it became a business outcome, so
+        // a caller that cancelled got a normal-looking result and could not
+        // tell "the stage failed" from "I asked it to stop".
+        //
+        // But the exception TYPE alone does not identify that: HttpClient
+        // raises TaskCanceledException on its own request timeout with nobody's
+        // token cancelled, and a host executor calling one is the ordinary
+        // case. Filtering on the type alone let that escape as a raw exception
+        // — a downstream timeout is a stage failure like any other. The token's
+        // state is what actually distinguishes the two. Same filter on all
+        // three stages below.
+        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             return Fail([$"binder threw: {e.GetType().Name}"], stale, e);
         }
@@ -141,7 +148,7 @@ public sealed class AttestationOrchestrator
         {
             receipt = await runtime.Executor.ExecuteAsync(bound, contract, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             return Fail([$"executor threw: {e.GetType().Name}"], stale, e);
         }
@@ -206,7 +213,7 @@ public sealed class AttestationOrchestrator
 
             return (verdict, null);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             reasons.Add($"attester threw: {e.GetType().Name}");
             return (null, e);
@@ -258,7 +265,12 @@ public sealed class AttestationOrchestrator
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
                 {
-                    failure = Fail($"computation file '{computation.Path}' could not be read: {e.Message}");
+                    // The exception TYPE, for the same reason as the stage
+                    // failures above: this reason string is rendered into a
+                    // model's context, and an IOException's own message carries
+                    // the absolute host path. computation.Path is bundle-
+                    // relative and safe to name; e.Message is not.
+                    failure = Fail($"computation file '{computation.Path}' could not be read: {e.GetType().Name}");
                     return false;
                 }
 

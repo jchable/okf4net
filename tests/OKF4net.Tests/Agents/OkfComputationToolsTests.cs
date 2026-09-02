@@ -24,6 +24,41 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
+    /// Not every OperationCanceledException means the caller asked to stop.
+    /// HttpClient raises TaskCanceledException on its own request timeout with
+    /// no token of ours cancelled, and a host executor calling one is the
+    /// normal case. The #65 filters (`when (e is not OperationCanceledException)`)
+    /// let that escape the orchestrator, and the tool's catch chain has no arm
+    /// for it either — its OCE handler requires the timeout source to have
+    /// fired, and its general handler does not list OCE. So a routine
+    /// downstream timeout blew a raw exception at the LLM, which the bare
+    /// `catch (Exception)` those filters replaced used to absorb.
+    ///
+    /// Cancellation propagates only when the caller's own token is cancelled.
+    /// </summary>
+    [Fact]
+    public async Task An_executors_own_timeout_is_reported_not_thrown_at_the_caller()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var runtime = new FakeRuntime
+        {
+            // Exactly what HttpClient throws when ITS timeout elapses: an OCE
+            // subclass, with nobody's token cancelled.
+            ExecuteFunc = (_, _, _) => throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing."),
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.Contains("displayable: no", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+        Assert.Contains("executor threw", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Raised in review of #65: the timeout's CancellationTokenSource was
     /// constructed BEFORE the try, and `new CancellationTokenSource(TimeSpan)`
     /// throws ArgumentOutOfRangeException for a negative delay other than
@@ -53,6 +88,37 @@ public class OkfComputationToolsTests
 
         Assert.StartsWith("Error:", rendered, StringComparison.Ordinal);
         Assert.Contains("ComputationTimeout", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Raised in review of #77's pass over this file: the guard rejects
+    /// `&lt; TimeSpan.Zero` while its own message says "must be positive", so
+    /// zero slipped through — and `CancelAfter(TimeSpan.Zero)` fires
+    /// immediately, making EVERY computation report "timed out after 0s"
+    /// instead of naming the misconfiguration. Silently turning a fat-fingered
+    /// setting into a tool that always fails is worse than rejecting it.
+    /// </summary>
+    [Fact]
+    public async Task A_zero_timeout_is_rejected_rather_than_timing_every_run_out()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" })),
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
+        {
+            ComputationTimeout = TimeSpan.Zero,
+        };
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.StartsWith("Error:", rendered, StringComparison.Ordinal);
+        Assert.Contains("ComputationTimeout", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("timed out", rendered, StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -254,7 +254,9 @@ using OKF4net.Agents;
 IChatClient chatClient = /* your IChatClient, e.g. from an OpenAI/Azure client */;
 var tools = new OkfBundleTools("./my_bundle");
 
-AIAgent agent = chatClient.AsAIAgent(tools: tools.GetTools());
+// The write tools need the host's approval before they run. `GetTools()` with
+// no argument returns them ungated — see the security note below.
+AIAgent agent = chatClient.AsAIAgent(tools: tools.GetTools(OkfToolMode.RequireApprovalForWrites));
 var response = await agent.RunAsync("Search the bundle for concepts about refunds.");
 Console.WriteLine(response.Text);
 ```
@@ -334,7 +336,7 @@ var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { Mem
 
 AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
 {
-    ChatOptions = new ChatOptions { Tools = tools.GetTools() },
+    ChatOptions = new ChatOptions { Tools = tools.GetTools(OkfToolMode.RequireApprovalForWrites) },
     AIContextProviders = [provider],
 });
 

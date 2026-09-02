@@ -1160,11 +1160,15 @@ public sealed class OkfBundleTools
         // most. Caught in review of #65.
         //
         // Two guards, for two different reasons. This one is not about the
-        // throw at all: a negative delay between -1ms and 0 is *accepted* and
-        // treated as no timeout, so a host that fat-fingered a negative ceiling
-        // would silently get an unbounded run — the opposite of what it asked
-        // for.
-        if (ComputationTimeout < TimeSpan.Zero && ComputationTimeout != Timeout.InfiniteTimeSpan)
+        // throw at all, but about two settings the runtime silently ACCEPTS and
+        // turns into nonsense: a negative delay between -1ms and 0 is treated
+        // as no timeout, so a fat-fingered negative ceiling silently produces
+        // an unbounded run — the opposite of what it asked for — while zero
+        // fires the token immediately, so every single computation reports
+        // "timed out after 0s". The bound is `<=` for that second case; it was
+        // `<`, which let zero through even though this message already said
+        // "must be positive" (caught in review).
+        if (ComputationTimeout <= TimeSpan.Zero && ComputationTimeout != Timeout.InfiniteTimeSpan)
         {
             return $"Error: ComputationTimeout must be positive or Timeout.InfiniteTimeSpan, but is {ComputationTimeout}.";
         }

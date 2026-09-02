@@ -95,9 +95,12 @@ public sealed class OkfContextProviderOptions
     /// the only place the detail surfaced at all, and the scoped (V2) read path
     /// reported nothing anywhere.
     ///
-    /// Invoked inline on the assembling thread, so it must be cheap and must
-    /// not throw — an exception from this callback propagates out of context
-    /// assembly and breaks the never-throw contract.
+    /// Invoked inline on the assembling thread, so it should be cheap — do the
+    /// real logging work elsewhere. An exception it throws is swallowed rather
+    /// than propagated: a broken telemetry callback must not take the agent
+    /// down, and this sink exists precisely for paths that are already
+    /// degrading. That also means a throwing callback reports nothing and says
+    /// nothing about it, so keep it simple enough not to fail.
     /// </summary>
     public Action<Exception>? OnInternalError { get; init; }
 

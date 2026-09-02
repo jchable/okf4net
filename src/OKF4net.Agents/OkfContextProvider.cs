@@ -191,11 +191,19 @@ public sealed class OkfContextProvider : AIContextProvider
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Never throws: <see cref="OkfContextProviderOptions.TokenBudget"/>
+    /// Throws only for cancellation: <see cref="OkfContextProviderOptions.TokenBudget"/>
     /// <c>&lt;= 0</c> yields an empty <see cref="AIContext"/> (all three
     /// properties <see langword="null"/>); a bundle that fails to (re)load
     /// yields a context whose message is a plain <c>bundle unavailable: &lt;reason&gt;</c>
     /// note instead. See the type-level remarks for the assembly algorithm.
+    ///
+    /// A cancelled <paramref name="cancellationToken"/> raises an
+    /// <see cref="OperationCanceledException"/> — deliberately, since a caller
+    /// that withdrew is not waiting for a context. Note this method is not
+    /// <see langword="async"/>: on the V1 path the exception surfaces
+    /// synchronously from the call itself rather than through the returned
+    /// <see cref="ValueTask"/>, so a caller that stores the task and awaits it
+    /// later must still guard the call.
     /// </remarks>
     protected override ValueTask<AIContext> ProvideAIContextAsync(
         InvokingContext context,
