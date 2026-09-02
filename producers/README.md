@@ -151,10 +151,11 @@ immediately before each write re-checks both the directory's ancestor chain and 
 What this means for you:
 
 - **Do not generate into a bundle that contains a symbolic link or a junction.** The gates
-  make the refusals safe, not the arrangement workable. A run against such a bundle reports
-  write failures for every concept whose path crosses the link, keeps concepts it would
-  otherwise prune, and — if the link is `.okfgen-manifest.json` itself — leaves its
-  ownership record unwritten and says so. Remove the link and re-run.
+  make the refusals safe, not the arrangement workable. A run against such a bundle keeps
+  concepts it would otherwise prune, and — if the link is `.okfgen-manifest.json` itself —
+  leaves its ownership record unwritten and says so. What happens to a concept whose path
+  crosses the link depends on where the link points and is **not** uniformly a write
+  failure — see the `generate` bullet below. Remove the link and re-run.
 - **`--reset` refuses outright** rather than emptying such a bundle. Measured on Windows:
   a recursive delete over a tree holding a junction removes the real files, unlinks the
   junction, and *then* fails — so the unguarded reset destroyed the bundle and returned an
