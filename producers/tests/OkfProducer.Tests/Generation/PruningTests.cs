@@ -601,7 +601,7 @@ public class PruningTests
         // a catch at all.
         //
         // Checked by hand rather than argued: replace the `refused.Add(...)` in CommitStaging's move
-        // catch with `return refused;` and the suite goes 2 RED / 554 green -- this test, and
+        // catch with `return refused;` and the suite goes 2 RED / 561 green -- this test, and
         // The_manifest_is_written_after_the_concepts_it_describes, whose Assert.Single on the failures
         // also fails because an early return leaves `refused` empty. Both die at
         // `Assert.Single() Failure: The collection did not contain any matching items / Collection: []`.
@@ -610,9 +610,11 @@ public class PruningTests
         //
         // THE GREEN HALF OF THAT COUNT IS A MEASUREMENT AND MOVES WHEN THE SUITE DOES. It said "553"
         // for one round, which was the number from BEFORE that same round added a test -- re-run at a
-        // 556-test HEAD and a maintainer gets 554, not 553, and has no way to tell a stale count from a
-        // wrong one. 554 is the number measured on the suite this line ships with (556 total). If you
-        // add a test and do not re-run this mutation, say the count is stale rather than leaving it.
+        // 556-test HEAD a maintainer got 554, not 553, and had no way to tell a stale count from a
+        // wrong one. Then it said "554" and the suite grew to 563. 561 is the number measured on the
+        // suite this line ships with (563 total); the RED half stayed 2 across all of it, which is the
+        // half that carries the meaning. If you add a test and do not re-run this mutation, say the
+        // count is stale rather than leaving it.
         //
         // `a.md` sorts before `b.md` under StringComparer.Ordinal, which is the order CommitStaging
         // walks staging in, so the failure here happens with a concept still unwritten behind it.
@@ -909,18 +911,35 @@ public class PruningTests
                 "File.WriteAllBytes followed a link out of the bundle and overwrote a file outside it.");
         }
 
-        // THERE WAS AN `Assert.True(File.Exists(.../a.md), "the refused manifest write took the rest of
-        // the run down with it.")` HERE, CALLED "the whole mutation witness", AND IT WAS NEITHER. The
-        // priming WriteRun above already wrote `a.md`, so the passing case proves nothing; and the
-        // damage the message names -- WriteAllBytes throwing out of a Write() whose concepts are
-        // already committed -- surfaces as an exception out of the WriteRun two lines up, so in the
-        // failing case the line is never reached. Unfalsifiable both ways. It is deleted rather than
-        // repaired because on this host the throw IS the witness: remove the gate and this test dies
-        // inside WriteRun, which is a stronger signal than any assertion after it could be.
+        // RESTORED, after a round deleted this line as "unfalsifiable both ways". It is inert against
+        // GATE mutations, which is all that round tested it against: with both of WriteTo's gates made
+        // inert this test dies inside the WriteRun above before ever reaching here, and with them in
+        // place the priming WriteRun has already written `a.md`. (Both gates, measured -- inerting only
+        // the `landing == path` equality leaves this test GREEN, because a junction pointing OUT of the
+        // bundle is refused one gate earlier by ResolveInsideRoot and never reaches the write. The
+        // INSIDE twin dies on the equality alone.) But the property the message names is not "the gate
+        // is present". It is "a refused manifest does not take the rest of the run down", and THAT can
+        // break with no throw anywhere. A writer that unwinds what it committed when
+        // `merged.WriteTo` returns false -- deleting the concept files it just wrote, on the reasoning
+        // that a run with no ownership record should leave nothing behind -- reaches this line and
+        // turns it red. That is a production edit implementing exactly the damage the message names, so
+        // the line was falsifiable when it was deleted, and it is the only thing in either
+        // manifest-refusal test that watches the committed concepts survive the refusal.
         //
-        // What survives is falsifiable. A refused manifest is a NOTE and never a FAILURE -- by the
-        // time WriteTo runs the concepts are on disk and the prune has happened -- and turning the
-        // refusal into a failure is a production edit this line goes red for.
+        // RUN BY HAND, not argued. Inside `if (!merged.WriteTo(outPath))` in BundleWriter.Write, ahead
+        // of the notes.Add, a loop deleting `outPath/<id>.md` for every id in `merged.ConceptIds`:
+        // 2 RED / 561 green -- this test and its INSIDE twin, both at this assertion and with this
+        // message, and nothing else in the suite notices. Measured on the suite this line ships with
+        // (563 total); if you add a test and do not re-run it, mark the green half stale rather than
+        // leaving it.
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md")),
+            "the refused manifest write took the rest of the run down with it.");
+
+        // And a refused manifest is a NOTE and never a FAILURE -- by the time WriteTo runs the concepts
+        // are on disk and the prune has happened -- so a production edit that reported the refusal as a
+        // failure turns this line red. A different mutation from the one above, and the reason both
+        // lines are here: the refusal can be mis-handled by over-reporting or by over-reacting, and one
+        // assertion sees only one of those.
         Assert.Empty(result.Failures);
     }
 
@@ -1006,21 +1025,43 @@ public class PruningTests
         }
         else
         {
+            // BOTH OF THESE ARE THE STRONGEST LINE IN THE TEST, not the weakest, and a round called
+            // them weak before measuring them. They pin "the link is still there", which is what
+            // separates refusing the write from removing the obstacle -- and removing the obstacle is
+            // the fix a maintainer staring at an UnauthorizedAccessException actually reaches for.
+            //
+            // MEASURED, not argued. Production edit: in GenerationManifest.WriteTo, on the
+            // `landing != path` branch, delete the reparse point (Directory.Delete / File.Delete)
+            // before returning false -- "clean up the hazard, then refuse", which still emits the note
+            // and still writes no JSON through the link. 1 RED / 562 green on the suite this line ships
+            // with (563 total), and the one red is THIS assertion, at this line, with
+            // `Assert.NotNull() Failure: Value is null`. Every other assertion in both manifest-link
+            // tests stays green under it. Nothing else in the suite notices the bundle quietly losing a
+            // reparse point it did not create, so if this line goes, that edit ships silently.
             Assert.NotNull(new DirectoryInfo(manifestPath).LinkTarget);
         }
 
-        // AN `Assert.True(File.Exists(concept), "the refused manifest write took the rest of the run
-        // down with it.")` AND AN `Assert.Empty(Directory.EnumerateFileSystemEntries(target))` STOOD
-        // HERE, AND NEITHER COULD FAIL. The priming WriteRun above already wrote the concept, so its
-        // passing case proves nothing, and the damage its message names surfaces as a throw out of the
-        // WriteRun above it, so its failing case is never reached. The Empty was worse: with a
-        // DIRECTORY junction at the manifest's name, File.WriteAllBytes can only throw, and there is no
-        // path by which it deposits a file inside `target`. The overwriteShape branch above is where
-        // the real assertion now lives, and it names the concept file, not `target`, because a concept
-        // replaced by manifest JSON is the damage this gate exists for.
+        // THE `Assert.Empty(Directory.EnumerateFileSystemEntries(target))` THAT STOOD HERE IS STILL
+        // GONE, AND IT DESERVED TO BE. With a DIRECTORY junction at the manifest's name,
+        // File.WriteAllBytes can only throw, and there is no path by which it deposits a file inside
+        // `target` -- confirmed by hand on this host, gate removed: the throw happens and the junction's
+        // target directory stays empty. The overwriteShape branch above is where the real assertion for
+        // the overwrite lives, and it names the concept file, not `target`, because a concept replaced
+        // by manifest JSON is the damage this gate exists for.
         //
-        // What is left is falsifiable: a refused manifest is a NOTE and never a FAILURE, and a
-        // production edit that reported it as a failure turns this red.
+        // THE `Assert.True(File.Exists(concept), ...)` NEXT TO IT IS BACK, because it was deleted in the
+        // same breath and for a reason that only holds against GATE mutations -- see the twin of this
+        // comment in The_generation_manifest_is_never_written_through_a_link_that_leaves_the_bundle for
+        // the full argument and the measured mutation. In short: the property is "a refused manifest
+        // does not take the rest of the run down", a writer that unwinds its committed concepts when
+        // `merged.WriteTo` returns false breaks it with no throw at all, and that edit turns this line
+        // red (2 RED / 561 green, this test and its OUTSIDE twin). It holds in both branches here: the
+        // gate keeps the concept whether the platform built a file link over it or a junction.
+        Assert.True(File.Exists(concept), "the refused manifest write took the rest of the run down with it.");
+
+        // And a refused manifest is a NOTE and never a FAILURE: a production edit that reported it as a
+        // failure turns this red. A different mutation from the one above -- over-reporting the refusal
+        // rather than over-reacting to it -- which is why both lines stand.
         Assert.Empty(result.Failures);
     }
 
@@ -1310,14 +1351,23 @@ public class PruningTests
         // THE MUTATION THAT SHOWS IT, named exactly as it was run, because the sentence that stood here
         // named a different one and got its outcome wrong. It is NOT "delete `merged.WriteTo(outPath)`":
         // that removes the write for EVERY run, the priming one included, so it takes the fallback away
-        // along with the thing being tested. Measured on the suite this line ships with (556 total),
-        // `if (!merged.WriteTo(outPath))` -> `if (merged is null)` goes 37 RED / 519 green, and NOT
+        // along with the thing being tested. Measured on the suite this line ships with (563 total),
+        // `if (!merged.WriteTo(outPath))` -> `if (merged is null)` goes 37 RED / 526 green, and NOT
         // "across the file" -- the previous wording said 35 and said "across the file", and both halves
         // were wrong. The 37 span four classes: 32 in PruningTests, 3 in CliTests
         // (Check_forwards_the_note_that_explains_a_drift_the_drift_line_cannot,
         // Dropping_include_internal_does_not_delete_the_concepts_it_stopped_covering,
         // No_code_over_a_code_bundle_deletes_nothing_and_leaves_the_manifest_alone), 1 in CheckTests
-        // (Check_compares_the_generation_manifest_too) and 1 BlastRadiusTests theory case. The mutation
+        // (Check_compares_the_generation_manifest_too) and 1 BlastRadiusTests theory case
+        // (mutation: DeleteMethod).
+        //
+        // THE "32" IS THE ONE FIGURE HERE THAT IS NOT PINNED BY NAME, and it is a class total, so it
+        // moves whenever PruningTests gains or loses a test that touches the manifest write -- which is
+        // most of them. The other five are named and a maintainer can check each one; a maintainer who
+        // re-measures this and gets 33 has almost certainly added a test, not found a discrepancy.
+        // Treat a changed 32 as a re-measurement to record, and only the named five as claims that
+        // could be falsified. Same rule as the green half of N1 above: if you add a test here and do
+        // not re-run this mutation, mark the count stale rather than leaving it. The mutation
         // that isolates this blind spot has to leave successful runs writing normally and skip only the
         // write on a run that had a failure:
         //

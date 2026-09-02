@@ -312,10 +312,13 @@ public sealed record GenerationManifest(
         //     from the mechanism, not from a run. It is stated and NOT asserted anywhere in this
         //     repository's measurements: the outward test does not establish it either -- it also falls
         //     back to a junction on this host, so its byte-comparison of the outside victim is skipped
-        //     too. What changed in this round is that both tests now ATTEMPT the file link first and
-        //     assert the overwrite wherever the platform will build one (Linux will; a privileged
-        //     Windows box will), instead of hardcoding the junction and leaving the worse damage
-        //     unreachable on every host. The same equality below refuses both shapes either way.
+        //     too. What changed in the round that reshaped them is that both tests now ATTEMPT the file
+        //     link first, so that wherever the platform will build one (Linux will; a privileged
+        //     Windows box will) they assert the overwrite's ABSENCE -- that the gate held and the far
+        //     end still holds what it held before -- instead of hardcoding the junction and leaving the
+        //     worse damage unreachable on every host. They assert that the damage did not happen, which
+        //     is the only thing a test of a gate can assert; the overwrite itself is only ever seen by
+        //     mutating the gate away. The same equality below refuses both shapes either way.
         //
         // So: written to `path`, and only once the walk has shown that `path` is where it lands.
         // `landing` is where the walk really arrives; they differ exactly when a link was crossed,

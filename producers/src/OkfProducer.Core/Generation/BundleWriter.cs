@@ -218,24 +218,44 @@ public sealed class BundleWriter : IBundleWriter
                 // it lands somewhere else inside the bundle, or the root itself is a link this process
                 // cannot follow. A note that picked one and asserted it would be wrong for two.
                 //
-                // AND THE CONSEQUENCE IS NARROWED TO WHAT WAS MEASURED. This sentence used to end
-                // "writing this JSON over whatever it points at -- a file outside the bundle, or
-                // another file inside it". The second half named an overwrite that no run on this host
-                // ever produced: the only INWARD shape that can be built here is a directory junction
-                // at the manifest's name, and File.WriteAllBytes does not overwrite through it, it
-                // throws. The overwrite-inside shape needs a FILE symbolic link, which needs
-                // SeCreateSymbolicLinkPrivilege. So the inward case is now described as what it is --
-                // a write redirected off the manifest's own name, which lands on another file there or
-                // fails outright on a directory -- rather than as an overwrite that was asserted and
-                // never seen. The substring "symbolic link or junction" is load-bearing: two tests
-                // match the note on it.
+                // AND THE CONSEQUENCE IS SPLIT BY THE KIND OF LINK, NOT BY THE DIRECTION IT POINTS.
+                // Two earlier versions of this sentence got that wrong in the same way. The first
+                // ended "writing this JSON over whatever it points at -- a file outside the bundle, or
+                // another file inside it", asserting an overwrite in both directions. The second
+                // narrowed the INWARD half to what had been measured and left the OUTWARD half exactly
+                // as it was -- "a link out of the bundle would have had this JSON written over
+                // whatever it points at" -- which is an unconditional claim that is true of one link
+                // kind and false of the other, in either direction. Direction decides who the victim
+                // is; kind decides whether there is one:
+                //
+                //   * a FILE symbolic link is followed by File.WriteAllBytes (it opens the far end
+                //     with FileMode.Create), so the JSON lands on whatever that link names, inside the
+                //     bundle or outside it. STATED FROM THE MECHANISM, NOT EXECUTED ANYWHERE IN THIS
+                //     REPOSITORY: File.CreateSymbolicLink needs SeCreateSymbolicLinkPrivilege, which
+                //     this host does not have, so both tests below take their junction fallback and
+                //     neither reaches this shape. See GenerationManifest.WriteTo.
+                //   * a DIRECTORY symbolic link or junction is not written through at all:
+                //     File.WriteAllBytes throws UnauthorizedAccessException against it, after this
+                //     run's concepts are already committed. EXECUTED in BOTH directions on this host
+                //     (Windows 11 build 26200, net10.0): with BOTH gates in GenerationManifest.WriteTo
+                //     made inert, each of the two tests below dies inside WriteRun at
+                //     File.WriteAllBytes with that exception, and nothing is deposited through the
+                //     junction either way. BOTH gates, and the "both" is the measurement, not a
+                //     flourish: inerting only the landing==path equality leaves the OUTWARD test GREEN,
+                //     because a junction pointing out of the bundle is refused one gate earlier by the
+                //     ResolveInsideRoot containment check and never reaches the write at all.
+                //
+                // The substring "symbolic link or junction" is load-bearing: two tests match the note
+                // on it.
                 notes.Add(
                     $"The generation manifest could not be written to '{outPath}': resolving"
                     + $" '{GenerationManifest.FileName}' under that root did not land on that file. The usual cause is a"
-                    + " symbolic link or junction at that name, which File.WriteAllBytes follows. A link out of the bundle"
-                    + " would have had this JSON written over whatever it points at; a link that stays inside the bundle"
-                    + " redirects this write off the manifest's own name onto some other path there -- another file, or a"
-                    + " directory, where it fails outright. A bundle root that is itself a link this process cannot follow"
+                    + " symbolic link or junction at that name, and what it would have cost depends on the kind of link"
+                    + " rather than on where it points. A file symbolic link is followed by File.WriteAllBytes, so this"
+                    + " JSON would have been written over whatever that link names -- a file outside the bundle, or"
+                    + " another file inside it. A directory symbolic link or junction is not written through at all:"
+                    + " File.WriteAllBytes fails against it in either direction, and it fails after this run's concepts"
+                    + " are already on disk. A bundle root that is itself a link this process cannot follow"
                     + " ends here too. The concepts this run produced"
                     + " were written; what was not written is the record of which ids it owns, so the next run prunes by the"
                     + " previous manifest instead."
