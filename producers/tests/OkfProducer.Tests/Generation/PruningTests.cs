@@ -437,16 +437,16 @@ public class PruningTests
     [Fact]
     public void A_concept_whose_destination_is_a_link_INSIDE_the_bundle_fails_rather_than_ending_the_run()
     {
-        // THE OTHER HALF OF THE GATE BELOW, and the half it does not cover. CommitStaging refuses a
+        // THE OTHER HALF OF THE GATE BELOW, and the half it did not cover. Containment refuses a
         // destination only when ResolveInsideRoot says it LEAVES the bundle root. A reparse point that
-        // resolves back INSIDE the root passes that gate -- correctly, nothing is escaping -- and then
-        // File.Move runs against a path that is a directory reparse point where a file belongs.
+        // resolves back INSIDE the root passes that gate -- correctly, nothing is escaping.
         //
-        // MEASURED before this test existed, Windows 11 build 26200 on .NET 10.0.8: the move threw
-        // UnauthorizedAccessException and it came out of BundleWriter.Write, out of the whole run. Not
+        // MEASURED before this test existed, Windows 11 build 26200 on .NET 10.0.8: File.Move then ran
+        // against a path that is a directory reparse point where a file belongs, threw
+        // UnauthorizedAccessException, and it came out of BundleWriter.Write, out of the whole run. Not
         // a refusal, not a failure, not a note -- the call died, and every concept the run had already
-        // staged went with it. That is strictly worse than the outward case below, which reports the
-        // one destination it could not take and carries on.
+        // staged went with it. That crash is gone twice over now: the catch in CommitStaging would
+        // record it, and the redirect gate refuses this destination before the move is attempted.
         //
         // Same reachability as every other link test here: a bundle a clone brought. It needs no
         // privilege on Linux or macOS, and on Windows a junction is enough, which is what this uses.
@@ -469,13 +469,17 @@ public class PruningTests
         var failure = Assert.Single(result.Failures, f => f.Id.ToString() == A);
         Assert.Contains("code/csharp/n/t/a.md", failure.Error, StringComparison.Ordinal);
 
-        // AND IT MUST NOT BORROW THE OTHER CAUSE'S SENTENCE. The gate's message says the path "leaves
-        // the bundle root" -- which is exactly what did NOT happen here: this link resolves back
-        // inside, the gate passed it, and the move failed for a different reason. Reusing that
-        // sentence would state a cause the run never established, which is the failure mode this
-        // branch exists to stop. The message reports what the platform said instead.
+        // AND IT MUST NOT BORROW THE OTHER CAUSE'S SENTENCE. The containment gate's message says the
+        // path "leaves the bundle root" -- which is exactly what did NOT happen here: this link
+        // resolves back inside, containment passed it. Reusing that sentence would state a cause the
+        // run never established, which is the failure mode this branch exists to stop.
         Assert.DoesNotContain("leaves the bundle root", failure.Error, StringComparison.Ordinal);
-        Assert.Contains("moving it into place failed", failure.Error, StringComparison.Ordinal);
+
+        // What it says instead, and this changed with the redirect gate. It used to report the
+        // platform's exception from the failed move; now nothing is attempted, because the walk shows
+        // the concept would land at `code` rather than at its own path. The message names that.
+        Assert.Contains("crosses a symbolic link or junction", failure.Error, StringComparison.Ordinal);
+        Assert.Contains("'code'", failure.Error, StringComparison.Ordinal);
 
         // A refused id must never be claimed as owned -- a manifest entry is a standing licence to
         // delete whatever later appears at that path -- and a run that could not commit everything
@@ -487,6 +491,145 @@ public class PruningTests
 
         // And the link is still a link: the writer must not have clobbered it on the way past.
         Assert.NotNull(new DirectoryInfo(destination).LinkTarget);
+    }
+
+    [Fact]
+    public void A_concept_whose_DIRECTORY_is_a_link_INSIDE_the_bundle_is_refused_rather_than_written_through()
+    {
+        // THE QUIET VERSION OF THE CRASH ABOVE, and the reason the containment gate needed a second
+        // question beside it. The link there stands at the concept FILE's own path, so File.Move meets
+        // a directory where a file belongs and fails loudly. Move it one component up -- a junction at
+        // the concept DIRECTORY -- and nothing fails at all.
+        //
+        // MEASURED on this host (Windows 11 build 26200, .NET 10.0.8) before the redirect gate existed,
+        // with this exact fixture: ResolveInsideRoot resolved `code/csharp/n/t` through the junction and
+        // said "inside", Directory.CreateDirectory succeeded on the existing junction, File.Move wrote
+        // through it, and the hand-written `code/elsewhere/a.md` came back holding the generated
+        // concept. Zero failures. The manifest claimed `code/csharp/n/t/a`. And the run's own
+        // ReportUnownedFiles printed "'code/elsewhere/a' sits under the owned prefix 'code' but no
+        // manifest claims it" -- the bundle describing the damage without recognising it.
+        //
+        // A silent write to the wrong place, over somebody else's file, in a bundle that then reports
+        // itself clean. Every assertion below is one of those four observations inverted.
+        using var tmp = new TempDir();
+
+        WriteRun(tmp, [A], complete: true);
+
+        // A real directory inside the bundle, holding a file at the same leaf name the concept uses,
+        // so "written through the link" and "left alone" are distinguishable by its bytes.
+        var target = Path.Combine(tmp.Path, "code", "elsewhere");
+        Directory.CreateDirectory(target);
+        var victim = Path.Combine(target, "a.md");
+        File.WriteAllText(victim, "hand-written, not generated\n");
+        var before = File.ReadAllBytes(victim);
+
+        var directory = Path.Combine(tmp.Path, "code", "csharp", "n", "t");
+        Directory.Delete(directory, recursive: true);
+        ProducerFixture.CreateDirectoryLink(directory, target);
+        Assert.True(File.Exists(Path.Combine(directory, "a.md")), "the bundle cannot see through the link, so this fixture proves nothing.");
+
+        // So that `A` is NOT already claimed, which is what puts ReportClaimedFiles' walk in play: it
+        // probes the destination with File.Exists, that follows the junction and answers for the file
+        // at the far end, and without the same redirect gate the run announces it "has taken ownership
+        // of that id and overwritten the file" about a path it is about to refuse. The outward case has
+        // the identical pair of notes pinned one test below; this is the inward one.
+        PlantManifestIds(tmp, Prefix, []);
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        // The observation this test exists for: the file at the far end is untouched.
+        Assert.True(before.AsSpan().SequenceEqual(File.ReadAllBytes(victim)),
+            "File.Move followed a link inside the bundle and overwrote a file the run was never asked to write.");
+
+        // Recorded as a write failure, which is what buys the two consequences below. A note would not:
+        // the id would stay in the manifest and the run would stay eligible to prune.
+        var failure = Assert.Single(result.Failures, f => f.Id.ToString() == A);
+        Assert.Contains("code/csharp/n/t/a.md", failure.Error, StringComparison.Ordinal);
+
+        // The message names where it WOULD have landed, because "refused" without that is a sentence
+        // the operator cannot act on: the offending path is not the one in the error's own subject.
+        Assert.Contains("code/elsewhere/a.md", failure.Error, StringComparison.Ordinal);
+
+        // And not the containment gate's sentence: nothing escaped the bundle here, and saying so
+        // would assert a cause this run did not establish.
+        Assert.DoesNotContain("leaves the bundle root", failure.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(A, GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
+        Assert.Empty(result.Pruned);
+
+        // Reported ONCE, under one prefix, exactly as both other refusals are.
+        Assert.DoesNotContain(result.Notes, n => n.Contains("refused to write", StringComparison.Ordinal));
+
+        // AND NOT THE OPPOSITE NOTE, from ReportClaimedFiles -- see PlantManifestIds above.
+        Assert.DoesNotContain(result.Notes, n => n.Contains("taken ownership", StringComparison.Ordinal));
+
+        // And the link is still a link.
+        Assert.NotNull(new DirectoryInfo(directory).LinkTarget);
+    }
+
+    [Fact]
+    public void A_failure_on_an_earlier_concept_does_not_stop_a_later_one()
+    {
+        // THE PROPERTY THE CATCH IN CommitStaging IS NAMED FOR, which nothing observed until this test.
+        // Its commit message says the escaping exception was "taking every concept already committed in
+        // this loop with it", and the three tests that touch a caught failure all put the failing
+        // concept LAST in the loop's Ordinal order -- so each of them witnesses only that the concepts
+        // before it survived, which is true of a writer that gives up on the first failure too.
+        //
+        // Checked by hand rather than argued: replace the `refused.Add(...)` in CommitStaging's move
+        // catch with `return refused;` and the whole suite stays green except this test.
+        //
+        // `a.md` sorts before `b.md` under StringComparer.Ordinal, which is the order CommitStaging
+        // walks staging in, so the failure here happens with a concept still unwritten behind it.
+        using var tmp = new TempDir();
+
+        // A directory exactly where the FIRST concept's file must land. The parent exists, so
+        // CreateDirectory is fine and it is File.Move that throws -- the catch this test is about.
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "code", "csharp", "n", "t", "a.md"));
+
+        var result = WriteRun(tmp, [A, B], complete: true);
+
+        Assert.Single(result.Failures, f => f.Id.ToString() == A);
+
+        // The point. Written after the failure, not merely staged.
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")),
+            "the commit stopped at the first unwritable destination instead of carrying on.");
+        Assert.Contains(B, GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
+    }
+
+    [Fact]
+    public void A_parent_directory_that_cannot_be_created_is_reported_as_the_directory_it_is()
+    {
+        // NO LINK ANYWHERE, and that is the whole point: the try in CommitStaging used to wrap
+        // Directory.CreateDirectory as well as File.Move behind one message that opened "moving it into
+        // place failed and the concept was not written" and closed by telling the operator to check
+        // whether THAT path is a symbolic link or junction. Both clauses were wrong here.
+        //
+        // MEASURED on this host: an ordinary FILE at `code/csharp/n/t` while the run writes
+        // `code/csharp/n/t/a.md`. Nothing on the path is a reparse point, so both gates pass;
+        // CreateDirectory throws IOException ("Cannot create '...\\t' because a file or directory with
+        // the same name already exists."); the move was never attempted; and the offending path is `t`,
+        // not `a.md`.
+        using var tmp = new TempDir();
+
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "code", "csharp", "n"));
+        File.WriteAllText(Path.Combine(tmp.Path, "code", "csharp", "n", "t"), "an ordinary file, not a directory\n");
+
+        var result = WriteRun(tmp, [A], complete: true);
+
+        var failure = Assert.Single(result.Failures, f => f.Id.ToString() == A);
+
+        // It must not claim the move failed, because the move never ran.
+        Assert.DoesNotContain("moving it into place failed", failure.Error, StringComparison.Ordinal);
+        Assert.Contains("the move was never attempted", failure.Error, StringComparison.Ordinal);
+
+        // And it must name `t`, the path that is actually in the way, not the concept file.
+        Assert.Contains("creating 'code/csharp/n/t'", failure.Error, StringComparison.Ordinal);
+
+        // Nor may it send the operator after a link, which is the cause this run positively excluded.
+        Assert.DoesNotContain("symbolic link", failure.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(A, GenerationManifest.TryRead(tmp.Path)!.ConceptIds);
     }
 
     [Fact]
@@ -986,28 +1129,38 @@ public class PruningTests
         // The replacement is the stronger observation of the two: subtracting the failed id is only
         // possible after the commit has run, so "the manifest does not claim `b`" cannot be true of a
         // manifest written first.
+        //
+        // AND THERE IS NO PRIMING RUN, which there was, and the comment below was false because of it.
+        // It said the two halves together cover "a manifest that was never written" -- but with a first
+        // run in front of them, TryRead came back with the PREVIOUS manifest, whose concept set is
+        // exactly [A]: delete `merged.WriteTo(outPath)` from BundleWriter and all three assertions
+        // stayed green, which is precisely the blind spot the comment invoked. Checked by hand.
+        // The single observed run leaves nothing for TryRead to fall back on, so the NotNull below is
+        // the assertion that mutation now trips.
         using var tmp = new TempDir();
-        WriteRun(tmp, [A], complete: true);
 
-        // A directory sitting exactly where a concept file must land. The move that commits staging
-        // cannot overwrite it, so the failure lands in the one window that distinguishes the two
-        // orderings: after staging succeeded, before the manifest is written.
+        // A directory sitting exactly where a concept file must land, created directly rather than by a
+        // first run. The move that commits staging cannot overwrite it, so the failure lands in the one
+        // window that distinguishes the two orderings: after staging succeeded, before the manifest is
+        // written.
         Directory.CreateDirectory(Path.Combine(tmp.Path, "code", "csharp", "n", "t", "b.md"));
 
         var result = WriteRun(tmp, [A, B], complete: true);
 
         Assert.Single(result.Failures, f => f.Id.ToString() == B);
 
-        // The two halves together, because either alone is weak. "Does not claim B" would pass over a
-        // manifest that was never written; "claims A" would pass over one written before the commit.
-        var claimed = GenerationManifest.TryRead(tmp.Path)!.ConceptIds;
-        Assert.DoesNotContain(B, claimed);
-        Assert.Contains(A, claimed);
+        // Three assertions, each covering the others' blind spot. "Does not claim B" passes over a
+        // manifest that was never written -- NotNull is what catches that. "Claims A" passes over one
+        // written before the commit -- but a manifest written first would carry the run's full id set,
+        // B included, so "does not claim B" is what catches that.
+        var manifest = GenerationManifest.TryRead(tmp.Path);
+        Assert.NotNull(manifest);
+        Assert.DoesNotContain(B, manifest.ConceptIds);
+        Assert.Contains(A, manifest.ConceptIds);
 
         // Deliberately NOT an assertion that the manifest bytes are unchanged, which is what this test
-        // checked before. It would still pass -- the first run claimed exactly [A] and this one lands
-        // exactly [A] again -- but it would pass for a reason that has nothing to do with the ordering,
-        // and it would stay green if the manifest stopped being written at all.
+        // checked before. There is now no earlier manifest for them to be unchanged from, and even with
+        // one it passed for a reason that had nothing to do with the ordering.
         Assert.Empty(Directory.EnumerateDirectories(tmp.Root, ".okfgen-staging-*"));
     }
 

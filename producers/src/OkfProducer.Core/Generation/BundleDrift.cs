@@ -75,24 +75,42 @@ public sealed record DriftReport(IReadOnlyList<string> Differences, bool FieldsE
     /// contradicting each other.</para>
     ///
     /// <para><b>What <c>generate</c> does about the same link, since this paragraph used to say
-    /// "<c>generate</c> refuses to write through the link" and that is a universal the code does not
-    /// support.</b> <c>BundleWriter.CommitStaging</c> refuses a destination only when
-    /// <c>BundlePaths.ResolveInsideRoot</c> says it leaves the bundle root; a link that resolves back
-    /// INSIDE the root passes that gate. Measured on the host above, with the junction at
-    /// <c>code/csharp/n/scanner.md</c> and <c>--update</c>: pointing at a directory outside the bundle,
-    /// the run refused it before attempting the move and recorded the write failure "the path leaves
-    /// the bundle root through a symbolic link or junction" -- 14 concepts written, nothing at the far
-    /// end; pointing at <c>&lt;bundle&gt;/docs</c>, nothing refused it -- the gate asks whether the
-    /// destination escapes, and it does not -- and the move itself failed.</para>
+    /// "<c>generate</c> refuses to write through the link" and that was a universal the code did not
+    /// support at the time.</b> <c>BundleWriter.CommitStaging</c> now asks the component walk two
+    /// questions, not one. <c>BundlePaths.ResolveInsideRoot</c> answers the first -- does the
+    /// destination leave the bundle root? -- and the second is asked of the same answer: is the path
+    /// it really arrives at the path that was asked for? A link resolving back INSIDE the root passes
+    /// the first and fails the second, because following a link replaces the accumulated path with
+    /// the target.</para>
     ///
-    /// <para>Both now end as a write failure naming that one concept, with the run carrying on. The
-    /// second used to throw <see cref="UnauthorizedAccessException"/> out of the whole run; that was
-    /// fixed alongside this (<c>CommitStaging</c> catches the move and records a reason), and this
-    /// paragraph is the second thing that had to be corrected when it was, having been written while
-    /// the crash was still the behaviour. What survives unchanged is the narrow statement: neither
-    /// shape puts the concept in the bundle, and the gate is not what stops the second one. Which is
-    /// why the drift sentence above says what the BUNDLE holds and claims nothing about what
-    /// <c>generate</c> would do next.</para>
+    /// <para>Measured on the host above, with the junction at <c>code/csharp/n/scanner.md</c> and
+    /// <c>--update</c>, before the second question existed: pointing at a directory outside the
+    /// bundle, the run refused it before attempting the move and recorded the write failure "the path
+    /// leaves the bundle root through a symbolic link or junction" -- 14 concepts written, nothing at
+    /// the far end; pointing at <c>&lt;bundle&gt;/docs</c>, nothing refused it -- the gate asked only
+    /// whether the destination escapes, and it does not -- and the move itself failed. That second run
+    /// has not been repeated since; what has been run, in
+    /// <c>PruningTests.A_concept_whose_destination_is_a_link_INSIDE_the_bundle_fails_rather_than_ending_the_run</c>,
+    /// is the same shape at a fixture path, and it is now refused by the second question before
+    /// anything is attempted, with a message naming where the concept would otherwise have landed.</para>
+    ///
+    /// <para>So both shapes end as a write failure naming that one concept, with the run carrying on,
+    /// and in both the refusal is now a gate rather than the filesystem. The inward one used to throw
+    /// <see cref="UnauthorizedAccessException"/> out of the whole run; that was fixed in two steps --
+    /// <c>CommitStaging</c> catches what the move raises and records it, and the second question then
+    /// removed the link shapes from the set of things that can reach the move at all. This paragraph
+    /// has been corrected once per step, having been written while the crash was still the behaviour.
+    /// What survives unchanged across all three versions is the narrow statement: neither shape puts
+    /// the concept in the bundle. Which is why the drift sentence above says what the BUNDLE holds and
+    /// claims nothing about what <c>generate</c> would do next.</para>
+    ///
+    /// <para><b>And there is a third shape, which is why the sentence above is about a link on the
+    /// path and not about a link at the concept's own path.</b> A junction at the concept
+    /// DIRECTORY pointing back inside the bundle used to pass containment, be created through, and be
+    /// written through -- silently, no failure recorded, the concept landing at the far end over
+    /// whatever was there. Measured on this host; see the summary at <c>CommitStaging</c> and
+    /// <c>PruningTests.A_concept_whose_DIRECTORY_is_a_link_INSIDE_the_bundle_is_refused_rather_than_written_through</c>.
+    /// The second question refuses that one too, by the same mechanism.</para>
     ///
     /// <para><b>Measured, on one host, on the two shapes that host can make.</b> Windows 11 build
     /// 26200 on .NET 10.0.8, against the committed golden bundle. A junction at

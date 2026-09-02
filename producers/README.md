@@ -153,9 +153,10 @@ What this means for you:
 - **Do not generate into a bundle that contains a symbolic link or a junction.** The gates
   make the refusals safe, not the arrangement workable. A run against such a bundle keeps
   concepts it would otherwise prune, and — if the link is `.okfgen-manifest.json` itself —
-  leaves its ownership record unwritten and says so. What happens to a concept whose path
-  crosses the link depends on where the link points and is **not** uniformly a write
-  failure — see the `generate` bullet below. Remove the link and re-run.
+  leaves its ownership record unwritten and says so. A concept whose path crosses the link
+  is refused and recorded as a **write failure**; which of the two gates refuses it depends
+  on where the link points, and so does the sentence you get — see the `generate` bullet
+  below. Remove the link and re-run.
 - **`--reset` refuses outright** rather than emptying such a bundle. Measured on Windows:
   a recursive delete over a tree holding a junction removes the real files, unlinks the
   junction, and *then* fails — so the unguarded reset destroyed the bundle and returned an
@@ -178,17 +179,23 @@ What this means for you:
 
   Either way the exit code is 1, and that is the right answer: the concepts this producer
   writes at those paths are not in your bundle.
-- **What `generate` does with the same link depends on where it points**, and the earlier
-  claim here that it "cannot write those concepts through the link" was too strong.
-  `CommitStaging` refuses a destination only when it *leaves* the bundle root. Measured on
-  Windows 11 build 26200 / .NET 10.0.8, with a junction at a concept file's path: pointing
-  outside the bundle, the run refuses it before attempting the move; pointing back **inside**
-  the bundle, nothing refuses it — the gate is answering "does this escape?", and it does not
-  — and the move itself fails. Either way you get a **write failure naming that one concept**
-  and the run carries on: the id is left out of the manifest, and the failure count
-  disqualifies the run from pruning. The second case used to throw
-  `UnauthorizedAccessException` out of the whole run instead, taking every concept already
-  committed with it; that is fixed. Remove the link.
+- **`generate` refuses to write a concept whose path crosses the link**, and reports it as a
+  **write failure naming that one concept** while the run carries on: the id is left out of
+  the manifest, and the failure count disqualifies the run from pruning. Two gates do it, and
+  which one fires decides what you read. `CommitStaging` resolves the destination through the
+  filesystem, then asks (1) does it leave the bundle root, and (2) is the path it really
+  arrives at the path that was asked for. Measured on Windows 11 build 26200 / .NET 10.0.8:
+  a junction at a concept file's path pointing **outside** the bundle fails (1) — "the path
+  leaves the bundle root"; a junction at a concept file's path, or at a concept *directory*,
+  pointing back **inside** the bundle passes (1), because nothing is escaping, and fails (2)
+  — the message names the path the concept would otherwise have landed at.
+
+  Both inward shapes used to get past the gates. The file-path one threw
+  `UnauthorizedAccessException` out of the whole run, taking every concept already committed
+  with it. The directory one was worse: measured on the same host, nothing failed at all —
+  `CreateDirectory` succeeded on the junction, `File.Move` wrote through it, a hand-written
+  file at the far end was replaced by the generated concept, and the manifest claimed an id
+  whose file was not at the path the id names. Both are fixed. Remove the link.
 - **A bundle root that is itself a link stays fine** — a symlinked project directory, a
   container or WSL bind mount. Only the root's own link is followed, and every path below
   it is measured against the resolved root.

@@ -976,15 +976,22 @@ public sealed class BundleWriter : IBundleWriter
         {
             var destination = Path.GetFullPath(Path.Combine(root, Path.GetRelativePath(staging, source)));
 
-            // The SAME gate CommitStaging applies to this same path, one step earlier, because this
-            // method reaches the file too: File.Exists follows a link and answers for whatever is at
-            // the far end, and Overwrite below then reads that with File.ReadAllText. Without it a
-            // bundle carrying `code/x -> ~/notes` got a note saying this run "has taken ownership of
-            // that id and overwritten the file ... its previous body, description and any keys this
-            // producer does not write are gone" about a file outside the bundle -- immediately
-            // followed by the note refusing to write it. Two notes about one path, contradicting each
-            // other, and only the second one true.
-            if (BundlePaths.ResolveInsideRoot(root, destination) is null
+            // BOTH of the gates CommitStaging applies to this same path, one step earlier, because
+            // this method reaches the file too: File.Exists follows a link and answers for whatever is
+            // at the far end, and Overwrite below then reads that with File.ReadAllText. Without the
+            // first, a bundle carrying `code/x -> ~/notes` got a note saying this run "has taken
+            // ownership of that id and overwritten the file ... its previous body, description and any
+            // keys this producer does not write are gone" about a file outside the bundle --
+            // immediately followed by the note refusing to write it. Two notes about one path,
+            // contradicting each other, and only the second one true.
+            //
+            // The second gate is here for exactly the same reason and must move with it: a link
+            // resolving back INSIDE the bundle passes containment, and this walk would then report an
+            // overwrite of the file at the far end -- a real file, so File.Exists says yes -- for a
+            // destination CommitStaging is about to refuse. The two gates are one decision expressed
+            // twice; keep them in step.
+            if (BundlePaths.ResolveInsideRoot(root, destination) is not { } landing
+                || !string.Equals(landing, destination, BundlePaths.PathComparison)
                 || !File.Exists(destination)
                 || !TryConceptIdOf(root, destination, out var id)
                 || !IsUnderPrefix(id, manifest.OwnedPrefix)
@@ -1228,6 +1235,18 @@ public sealed class BundleWriter : IBundleWriter
     /// of the things that have to follow -- the id is dropped from the manifest this run writes, so it
     /// is never claimed as owned, and the run is disqualified from pruning.</para>
     ///
+    /// <para><b>And the resolved path has to be the path it was asked for, not merely one inside the
+    /// bundle.</b> Containment alone let the inward case through: a link pointing back into the bundle
+    /// escapes nothing, so it passed, and the concept was written wherever the link pointed. Measured
+    /// on this host with a junction at the concept directory <c>code/csharp/n/t</c> pointing at
+    /// <c>&lt;bundle&gt;/code/elsewhere</c>: a hand-written <c>a.md</c> at the far end was replaced by
+    /// the generated concept, no failure was recorded, and the manifest claimed an id whose file was
+    /// not at the path the id names. That is the quiet version of the crash this catch was added for,
+    /// which is worse. So a destination whose component walk moves it is refused too, with its own
+    /// sentence -- <see cref="RedirectedReason"/> -- rather than the containment gate's, which would
+    /// assert an escape that did not happen. Pinned by
+    /// <c>PruningTests.A_concept_whose_DIRECTORY_is_a_link_INSIDE_the_bundle_is_refused_rather_than_written_through</c>.</para>
+    ///
     /// <para><b>What runs after this, and gates itself.</b>
     /// <c>IndexGenerator.RegenerateIndexes</c> runs after the commit. An earlier round of this review
     /// recorded here that it walks the bundle with <c>Directory.EnumerateDirectories</c> and so writes
@@ -1283,40 +1302,84 @@ public sealed class BundleWriter : IBundleWriter
             // Resolved BEFORE the directories are created, not after: CreateDirectory follows a
             // reparse point too, so a check that ran afterwards would already have built the caller's
             // directory tree inside somebody else's.
-            if (BundlePaths.ResolveInsideRoot(root, destination) is null)
+            if (BundlePaths.ResolveInsideRoot(root, destination) is not { } landing)
             {
                 refused.Add(new Uncommitted(reported, LeavesRootReason));
                 continue;
             }
 
-            // THE GATE ABOVE IS NOT THE ONLY WAY THIS MOVE CAN FAIL, and until this catch existed the
-            // other ways ended the run. ResolveInsideRoot answers one question -- does the destination
-            // escape the bundle? -- and a reparse point that resolves back INSIDE the root truthfully
-            // answers no, so it passes. File.Move then runs against a path that is a directory reparse
-            // point where a file belongs. MEASURED, Windows 11 build 26200 on .NET 10.0.8, with a
+            // "INSIDE THE BUNDLE" IS NOT THE SAME QUESTION AS "AT THIS PATH", and the gate above only
+            // ever asked the first. A reparse point on the way to `destination` that points back
+            // inside the root resolves to a real path that is inside -- so the gate passes it,
+            // truthfully -- and the move then writes the concept THERE instead. MEASURED on this host
+            // (Windows 11 build 26200, .NET 10.0.8) with a junction at the concept DIRECTORY
+            // `code/csharp/n/t` pointing at `<bundle>/code/elsewhere`, which already held a
+            // hand-written `a.md`: `Directory.CreateDirectory` succeeded on the junction, `File.Move`
+            // wrote through it, the hand-written file was replaced by the generated concept, zero
+            // failures were recorded, and the manifest claimed `code/csharp/n/t/a` -- an id whose
+            // file, read back through the bundle model, is at `code/elsewhere/a`. The run's own
+            // ReportUnownedFiles then said "'code/elsewhere/a' sits under the owned prefix 'code' but
+            // no manifest claims it", which is the bundle reporting the damage without recognising it.
+            //
+            // So the destination has to land where it says it lands. `landing` is where the walk
+            // really arrives; `destination` is the literal path built from the concept id. They differ
+            // exactly when the walk followed a link, because following one replaces the accumulated
+            // path with the target -- and no link can have itself as target, so equality here means no
+            // link was crossed.
+            //
+            // REFUSED rather than followed or merely noted, and the choice is not close. Following it
+            // deliberately would write a concept at a path that no longer matches its id and destroy
+            // whatever the far end holds -- the exact damage measured above, differing only in being
+            // intended. A note would leave the id claimed in the manifest (a standing licence to
+            // delete whatever later appears at the path it names) and would leave the run free to
+            // prune. A write failure is the shape that already carries both consequences, and it is
+            // what the outward case gets for the same underlying reason: this producer does not write
+            // through a link it did not make.
+            if (!string.Equals(landing, destination, BundlePaths.PathComparison))
+            {
+                refused.Add(new Uncommitted(reported, RedirectedReason(root, landing)));
+                continue;
+            }
+
+            // THE GATES ABOVE ARE NOT THE ONLY WAY THIS CAN FAIL, and until this catch existed the
+            // other ways ended the run. MEASURED, Windows 11 build 26200 on .NET 10.0.8, with a
             // junction at `code/csharp/n/t/a.md` pointing at `<bundle>/code`: UnauthorizedAccessException,
             // straight out of BundleWriter.Write and out of the caller's run, taking every concept
-            // already committed in this loop with it.
+            // already committed in this loop with it. (That particular shape is now refused by the
+            // redirect gate above before anything is attempted; the catch remains because the causes
+            // below have nothing to do with links.)
             //
             // Caught per file and recorded, because that is what every other unwritable destination in
             // this class already does: a write failure is a claim about ONE concept, the id is then
             // excluded from the manifest, and a non-zero failure count disqualifies the run from
             // pruning. An exception gets none of those and loses the rest of the commit as well.
+            // Pinned by PruningTests.A_failure_on_an_earlier_concept_does_not_stop_a_later_one.
             //
-            // Deliberately NOT narrowed to the link shape. The exception carries no property saying
-            // "this was a reparse point", so testing for one would mean re-probing the path after the
-            // fact and guessing; and the other things in this catch -- a full disk, a file held open,
-            // a permission the operator does not have -- want the same treatment for the same reason.
-            // What the message must not do is assert a cause it did not establish, so it reports the
-            // platform's own sentence and names the link case as the one to check first.
-            try
+            // TWO try blocks, not one, because one message cannot honestly cover both calls. Wrapping
+            // them together forced a single sentence -- "moving it into place failed and the concept
+            // was not written" -- onto a failure that could equally be CreateDirectory refusing to
+            // build a parent, which is reachable with no link anywhere: an ordinary FILE at
+            // `code/csharp/n/t` while the run writes `code/csharp/n/t/a.md` passes both gates above
+            // (nothing there is a reparse point) and throws IOException out of CreateDirectory.
+            // MEASURED on this host: "Cannot create '...t' because a file or directory with the same
+            // name already exists." The operator was told a move failed that was never attempted, and
+            // was pointed at `a.md` when the offending path is `t`.
+            var directory = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrEmpty(directory))
             {
-                var directory = Path.GetDirectoryName(destination);
-                if (!string.IsNullOrEmpty(directory))
+                try
                 {
                     Directory.CreateDirectory(directory);
                 }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    refused.Add(new Uncommitted(reported, DirectoryFailedReason(root, directory, ex)));
+                    continue;
+                }
+            }
 
+            try
+            {
                 File.Move(source, destination, overwrite: true);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -1344,18 +1407,56 @@ public sealed class BundleWriter : IBundleWriter
         + " Remove the link, or generate into a bundle that does not contain one.";
 
     /// <summary>
-    /// The reason a destination that passed every gate could still not be written.
+    /// The reason a destination inside the bundle is refused because the path to it crosses a
+    /// symbolic link or a junction and therefore arrives somewhere else inside the bundle.
+    /// </summary>
+    /// <param name="root">The resolved bundle root, so the landing path can be reported relative to it.</param>
+    /// <param name="landing">Where the component walk really arrives, absolute.</param>
+    private static string RedirectedReason(string root, string landing)
+    {
+        var relative = BundlePaths.IsInside(root, landing)
+            ? "'" + Path.GetRelativePath(root, landing).Replace(Path.DirectorySeparatorChar, '/') + "'"
+            : "a different path";
+
+        return "the path to it crosses a symbolic link or junction pointing back inside the bundle, so File.Move"
+            + $" would have written the concept to {relative} instead -- over whatever is already there --"
+            + " while the manifest recorded it at the path above."
+            + " Remove the link, or generate into a bundle that does not contain one.";
+    }
+
+    /// <summary>
+    /// The reason the parent directory of a destination could not be created, which is a failure about
+    /// the <b>directory</b> and says so: the offending path is a component of the concept's path, not
+    /// the concept file, and the move it would have preceded was never attempted.
+    /// </summary>
+    /// <param name="root">The resolved bundle root, so the directory can be reported relative to it.</param>
+    /// <param name="directory">The parent directory that could not be created, absolute.</param>
+    /// <param name="ex">What the platform said.</param>
+    private static string DirectoryFailedReason(string root, string directory, Exception ex)
+    {
+        var relative = BundlePaths.IsInside(root, directory)
+            ? "'" + Path.GetRelativePath(root, directory).Replace(Path.DirectorySeparatorChar, '/') + "'"
+            : "its parent directory";
+
+        return $"the directory it belongs in could not be created, so the move was never attempted: creating {relative}"
+            + $" failed -- {ex.Message.TrimEnd()}"
+            + " Check what is at that path; an ordinary file standing where a directory of concepts belongs is enough.";
+    }
+
+    /// <summary>
+    /// The reason a destination that passed every gate could still not be moved into place.
     ///
-    /// <para>States what the platform said and stops there. The likeliest cause on a bundle somebody
-    /// else wrote is a reparse point at that exact path resolving back inside the root -- which the
-    /// containment gate passes, correctly, because nothing is escaping -- so that is named as the first
-    /// thing to check. It is <b>not</b> asserted: the exception does not say, and this producer has
-    /// shipped enough sentences claiming more than was established.</para>
+    /// <para>States what the platform said and stops there. It no longer names a reparse point as the
+    /// first thing to check: a link on this path -- pointing out of the bundle, or back inside it --
+    /// is refused by one of the two gates before the move is attempted, so naming it here would send
+    /// the operator after a cause the run has already excluded. What is left is an ordinary directory
+    /// standing where the concept file belongs, a file held open, a permission the operator does not
+    /// have, a full disk; the exception says which, and this does not guess.</para>
     /// </summary>
     private static string MoveFailedReason(Exception ex) =>
         $"moving it into place failed and the concept was not written -- {ex.Message.TrimEnd()}"
-        + " Check whether that path is a symbolic link or junction; one pointing back inside the bundle"
-        + " passes the containment gate and still cannot be written through.";
+        + " Check what is at that path; a directory standing where the concept file belongs is enough,"
+        + " and so is anything holding the file open.";
 
     /// <summary>
     /// <see cref="WritePolicy.Reset"/>'s deletion, performed at the commit boundary rather than on the
