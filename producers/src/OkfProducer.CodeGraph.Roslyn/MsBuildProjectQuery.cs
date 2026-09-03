@@ -674,25 +674,24 @@ public static class MsBuildProjectQuery
     /// a from-source <c>CompilationReference</c> instead of the <c>bin/</c> assembly that only exists
     /// after a build.
     ///
-    /// <para><b>KNOWN GAP, recorded here because this is where the value is born (remediation wave 2b,
-    /// round 3 -- found, not fixed, because <see cref="CompilationFactory"/> was outside that round's
-    /// scope).</b> The <c>FullPath</c> read on the line below becomes
+    /// <para><b>Repository-controlled, recorded here because this is where the value is born.</b> The
+    /// <c>FullPath</c> read on the line below becomes
     /// <see cref="ProjectReferenceInput.AssemblyPath"/>, and it is the one MSBuild-JSON path value in
     /// this class that does <i>not</i> go through <see cref="FullPath"/> -- <c>projectFile</c> beside
-    /// it does. It is repository-controlled all the same: a <c>Directory.Build.targets</c> can add
-    /// <c>&lt;ReferencePath Include="..." /&gt;</c> to any project it is imported into. Downstream,
-    /// <c>CompilationFactory</c> guards it with <see cref="File.Exists(string)"/>, which makes every
-    /// <i>malformed</i> shape safe (a NUL, an over-long path, a missing file are all simply dropped).
-    /// What <see cref="File.Exists(string)"/> does not catch is an <b>existing non-assembly</b>:
-    /// <c>&lt;ReferencePath Include="$(MSBuildProjectFullPath)" /&gt;</c> points at a real
-    /// <c>.csproj</c>, so <c>MetadataReference.CreateFromFile</c> raises
-    /// <see cref="BadImageFormatException"/>. <c>RoslynResolver.Compile</c> catches only
-    /// <c>UnknownLanguageVersionException</c> and the CLI's exception filter does not list this one, so
-    /// the run dies with a stack trace rather than reporting the project unavailable. The fix belongs
-    /// in <c>CompilationFactory</c> (route the value through a <see cref="FullPath"/> equivalent, and
-    /// catch <see cref="BadImageFormatException"/> around
-    /// <c>MetadataReference.CreateFromFile</c>); nothing here can close it, because the shape this
-    /// class hands over is a valid path either way.</para>
+    /// it does. It does not need to: nothing here dereferences it, and the shape this class hands over
+    /// is a valid path string either way. A <c>Directory.Build.targets</c> can nonetheless add
+    /// <c>&lt;ReferencePath Include="..." /&gt;</c> to any project it is imported into, so what the
+    /// value points at is the scanned repository's choice, and the handling is
+    /// <c>CompilationFactory</c>'s reference loop: <see cref="File.Exists(string)"/> drops the
+    /// malformed shapes measured on this host (it is <c>false</c> for a path holding a NUL, for a 40 KB
+    /// path, for a directory, and for <c>NUL</c>), an
+    /// <see cref="IOException"/> from the read is reported as an unusable reference, and an existing
+    /// <b>non-assembly</b> -- <c>&lt;ReferencePath Include="$(MSBuildProjectFullPath)" /&gt;</c>, a real
+    /// <c>.csproj</c> -- reaches <c>compilation.GetDiagnostics()</c> as CS0009. All three degrade the
+    /// one project. An earlier round recorded that last shape as raising
+    /// <see cref="BadImageFormatException"/> and killing the run; it does not, on this host: Roslyn
+    /// reads the bytes eagerly but the metadata lazily, and turns the format failure into a diagnostic.
+    /// See <c>CompilationFactory.Create</c>'s reference loop for the eight shapes measured.</para>
     /// </summary>
     private static List<ProjectReferenceInput> ReadReferences(
         string projectPath, Dictionary<string, List<Dictionary<string, string>>> items)

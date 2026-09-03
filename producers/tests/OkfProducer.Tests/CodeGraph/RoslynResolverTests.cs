@@ -854,6 +854,63 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
+    public void A_reference_that_exists_but_cannot_be_read_costs_its_own_project_and_not_the_run()
+    {
+        // ReferencePath's FullPath is repository-controlled -- a Directory.Build.targets can add an
+        // item to any project it is imported into -- and File.Exists guarded it, which says nothing
+        // about whether the file can be READ. MetadataReference.CreateFromFile opens it for real, so a
+        // reference held by a concurrent build, denied by an ACL, or deleted just after the check threw
+        // IOException past RoslynResolver.Compile (which catches only UnknownLanguageVersionException)
+        // into OkfgenCli's filter, which lists IOException: one unreadable reference in one project
+        // ended generation for the whole repository, where every other failure here costs one project.
+        using var repository = new InjectedReferenceRepository("$(MSBuildThisFileDirectory)Held.dll");
+
+        // Preconditions, measured rather than assumed from how the fixture was written: MSBuild really
+        // hands the injected item over as a reference, and the file it names really is on disk. Without
+        // both, the report below could be the ordinary absent-reference path wearing the same status.
+        var inputs = MsBuildProjectQuery.Query(repository.Project);
+        Assert.Contains(
+            inputs.References,
+            r => string.Equals(r.AssemblyPath, repository.HeldAssembly, StringComparison.Ordinal));
+        Assert.True(File.Exists(repository.HeldAssembly));
+
+        using var hold = new FileStream(repository.HeldAssembly, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var resolver = RoslynResolver.Create(repository.Root, [repository.Project]);
+
+        var report = Assert.Single(resolver.Projects);
+        Assert.Equal(RoslynProjectAvailability.ReferencesUnresolved, report.Availability);
+        // The fragment that tells THIS cause from the other one ReferencesUnresolved covers. A
+        // reference simply absent from disk reaches the same status with "not on disk", so a test that
+        // asserted only the status would pass on a report that fired for the opposite reason.
+        Assert.Contains("could not be read", report.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("not on disk", report.Detail, StringComparison.Ordinal);
+        Assert.False(resolver.Owns("Caller.cs"));
+    }
+
+    [Fact]
+    public void An_existing_non_assembly_reference_is_a_compilation_error_rather_than_a_crash()
+    {
+        // The shape an earlier round recorded as raising BadImageFormatException and killing the run:
+        // <ReferencePath Include="$(MSBuildProjectFullPath)"/> points at a real .csproj, which
+        // File.Exists is perfectly happy with. It does not raise anything. Roslyn reads the file's
+        // bytes eagerly and its metadata lazily, so CreateFromFile returns and the failure arrives at
+        // compilation.GetDiagnostics() as CS0009 -- an ERROR, which the zero-errors gate already
+        // degrades on. This test is here so that measurement stays measured rather than remembered.
+        using var repository = new InjectedReferenceRepository("$(MSBuildProjectFullPath)");
+
+        var resolver = RoslynResolver.Create(repository.Root, [repository.Project]);
+
+        var report = Assert.Single(resolver.Projects);
+        Assert.Equal(RoslynProjectAvailability.CompilationHadErrors, report.Availability);
+        // Named, so a degradation that fired for some other reason -- an unrestored project, a
+        // reference the run could not read -- cannot pass this. CS0009 is Roslyn's "metadata file could
+        // not be opened", which is the whole claim.
+        Assert.Contains("CS0009", report.Detail, StringComparison.Ordinal);
+        Assert.False(resolver.Owns("Caller.cs"));
+    }
+
+    [Fact]
     public void No_msbuild_skips_the_stage_that_executes_the_scanned_repositorys_build_logic()
     {
         // Lives with the resolver rather than in CliTests because the property under test is a fact
@@ -1457,6 +1514,64 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
                   <Compile Include="@(Seed->'$(P)%(Identity)')" />
                 </ItemGroup>
               </Target>
+            </Project>
+            """;
+    }
+
+    /// <summary>
+    /// A one-project repository whose <c>Directory.Build.targets</c> adds one <c>ReferencePath</c>
+    /// item of the caller's choosing to the answer MSBuild prints -- the same lever
+    /// <see cref="FloodingAnswerRepository"/> pulls, aimed at the reference list instead of the
+    /// <c>Compile</c> list, and the reason <see cref="ProjectReferenceInput.AssemblyPath"/> is a
+    /// repository-controlled value rather than a producer-controlled one.
+    ///
+    /// <para>
+    /// It also drops a real managed assembly at <c>Held.dll</c> inside the repository, so a test can
+    /// aim the injected item at a file that genuinely exists and then make it unreadable. Nothing in
+    /// the fixture reads that copy; it is a file for the test to hold.
+    /// </para>
+    /// </summary>
+    private sealed class InjectedReferenceRepository : ScratchRepository
+    {
+        public InjectedReferenceRepository(string injectedReference)
+            : base("injectedref")
+        {
+            Project = Write("Injected.csproj", ProjectFile);
+            Write("Caller.cs", CallerSource);
+            Write("Directory.Build.targets", Targets(injectedReference));
+
+            HeldAssembly = Path.Combine(Root, "Held.dll");
+            File.Copy(typeof(string).Assembly.Location, HeldAssembly, overwrite: true);
+
+            Restore(Project);
+        }
+
+        public string Project { get; }
+
+        /// <summary>A real managed assembly inside the repository, for the test that makes one unreadable.</summary>
+        public string HeldAssembly { get; }
+
+        private static string Targets(string injectedReference) =>
+            $"""
+            <Project>
+              <Target Name="InjectReference" BeforeTargets="ResolveReferences">
+                <ItemGroup>
+                  <ReferencePath Include="{injectedReference}" />
+                </ItemGroup>
+              </Target>
+            </Project>
+            """;
+
+        private const string CallerSource = """
+            namespace Injected;
+            public class Caller { public int Go() => 1; }
+            """;
+
+        private const string ProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
             </Project>
             """;
     }

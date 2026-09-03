@@ -104,11 +104,31 @@ public sealed record SourceFileGate(long MaxFileBytes, string? RepositoryRoot)
 }
 
 /// <summary>
+/// One <c>ReferencePath</c> item <see cref="CompilationFactory.Create"/> could not turn into a
+/// <see cref="MetadataReference"/>, and why.
+///
+/// <para>
+/// It carries a reason rather than being a bare path because the two ways to get here have different
+/// remedies and, until this record existed, produced the same sentence. A reference that is
+/// <i>absent</i> is a repository that was restored but never built; a reference that is <i>present and
+/// unreadable</i> is a concurrent build holding the file, a denying ACL, or a file deleted between
+/// <see cref="File.Exists(string)"/> and the read. Reporting the second as "exists neither on disk nor
+/// as a project compiled from source" was a false statement about a file that is plainly there.
+/// </para>
+/// </summary>
+/// <param name="AssemblyPath">The path MSBuild resolved this reference to.</param>
+/// <param name="Reason">One line naming what stopped it; see <see cref="CompilationFactory"/>'s reference loop.</param>
+public sealed record UnusableReference(string AssemblyPath, string Reason);
+
+/// <summary>
 /// Turns one project's <see cref="ProjectInputs"/> into a <see cref="CSharpCompilation"/>, with no
 /// <c>MSBuildWorkspace</c> involved.
 /// </summary>
 public static class CompilationFactory
 {
+    /// <summary><see cref="UnusableReference.Reason"/> for a reference MSBuild named that is not on disk.</summary>
+    private const string NotOnDisk = "not on disk";
+
     /// <summary>
     /// Builds the compilation for <paramref name="inputs"/>, substituting a from-source
     /// <c>CompilationReference</c> for every <c>ProjectReference</c> whose project appears in
@@ -125,8 +145,8 @@ public static class CompilationFactory
     /// Compiling the repository's own projects from source and referencing those compilations directly
     /// means a merely-restored checkout still produces an exact graph. When the substitution is
     /// unavailable (a project outside the repository, or one whose own compilation did not come out
-    /// clean), the resolved <c>bin/</c> assembly is used if it is there, and reported through
-    /// <paramref name="missingReferences"/> if it is not.
+    /// clean), the resolved <c>bin/</c> assembly is used if it is there and readable, and reported
+    /// through <paramref name="unusableReferences"/> if it is not.
     /// </para>
     /// </summary>
     /// <param name="inputs">The project's MSBuild-reported inputs.</param>
@@ -134,9 +154,19 @@ public static class CompilationFactory
     /// Already-built compilations keyed by absolute <c>.csproj</c> path, or <see langword="null"/> for
     /// none. Indexed only -- never enumerated -- so its iteration order cannot reach any output.
     /// </param>
-    /// <param name="missingReferences">
-    /// Assembly paths MSBuild resolved that do not exist on disk and had no from-source substitute.
-    /// Non-empty means the compilation is knowingly incomplete and must not be resolved from.
+    /// <param name="unusableReferences">
+    /// References MSBuild resolved that had no from-source substitute and could not be turned into a
+    /// <see cref="MetadataReference"/> -- absent from disk, or present and unreadable. Non-empty means
+    /// the compilation is knowingly incomplete and must not be resolved from.
+    ///
+    /// <para>
+    /// Reported rather than dropped, and that distinction is the whole reason this is an
+    /// <c>out</c> parameter rather than a silent omission. A dropped reference costs errors only where
+    /// its symbols are actually used, so a reference nothing in this project happens to touch would
+    /// leave a compilation with zero errors and a hole in it -- reported <c>Compiled</c>, resolved
+    /// from, and wrong. The caller gates on this list <i>before</i> it looks at diagnostics for exactly
+    /// that reason.
+    /// </para>
     /// </param>
     /// <exception cref="UnknownLanguageVersionException">
     /// <paramref name="inputs"/>'s <c>LangVersion</c> is not one this Roslyn build knows. Never
@@ -155,7 +185,7 @@ public static class CompilationFactory
         ProjectInputs inputs,
         IReadOnlyDictionary<string, CSharpCompilation>? projectCompilations,
         SourceFileGate gate,
-        out IReadOnlyList<string> missingReferences)
+        out IReadOnlyList<UnusableReference> unusableReferences)
     {
         ArgumentNullException.ThrowIfNull(inputs);
         ArgumentNullException.ThrowIfNull(gate);
@@ -173,7 +203,7 @@ public static class CompilationFactory
         }
 
         var references = new List<MetadataReference>(inputs.References.Count);
-        var missing = new List<string>();
+        var unusable = new List<UnusableReference>();
         foreach (var reference in inputs.References)
         {
             // A ProjectReference satisfied from source contributes the CompilationReference INSTEAD of
@@ -187,16 +217,50 @@ public static class CompilationFactory
                 continue;
             }
 
-            if (File.Exists(reference.AssemblyPath))
+            if (!File.Exists(reference.AssemblyPath))
             {
-                references.Add(MetadataReference.CreateFromFile(reference.AssemblyPath));
+                unusable.Add(new UnusableReference(reference.AssemblyPath, NotOnDisk));
                 continue;
             }
 
-            missing.Add(reference.AssemblyPath);
+            // File.Exists having just said yes is not a promise that the file can be READ, and
+            // MetadataReference.CreateFromFile opens it for real: its own XML docs (Microsoft.CodeAnalysis
+            // 5.3.0) say "the method eagerly reads the entire content of the file into native heap" and
+            // list ArgumentNullException, ArgumentException and IOException. Measured on this host
+            // (.NET 10 / Windows 11, Roslyn 5.3.0): a reference deleted between the Exists above and this
+            // line throws FileNotFoundException, one held FileShare.None by another process throws
+            // IOException, and one whose ACL denies read throws IOException too -- carrying
+            // UnauthorizedAccessException's "Access to the path ... is denied." message text, so Roslyn
+            // normalises that denial into the documented type rather than letting it through raw.
+            //
+            // Uncaught, any of them left CompilationFactory, left RoslynResolver.Compile -- which catches
+            // only UnknownLanguageVersionException -- and reached OkfgenCli's filter, which lists
+            // IOException: one momentarily unreadable reference in one project ended generation for the
+            // whole repository, where every other failure in this file costs one project. The
+            // UnauthorizedAccessException clause is the pair TryParse below catches and is NOT executed by
+            // any test here; the IOException clause is.
+            //
+            // BadImageFormatException is deliberately absent, against the expectation that named this
+            // line: an existing NON-assembly does not throw here at all. Eight shapes were tried on this
+            // host -- a real .csproj, an empty file, prose named .dll, a native PE (kernel32.dll), a
+            // truncated managed assembly, one with its second half overwritten, a managed assembly named
+            // .netmodule, and the end-to-end `<ReferencePath Include="$(MSBuildProjectFullPath)"/>`
+            // injection itself -- and every one returned from this call and then surfaced at
+            // compilation.GetDiagnostics() as CS0009, an ERROR, which RoslynResolver's zero-errors gate
+            // already degrades on. The eager read is of bytes, not of metadata; Roslyn parses metadata
+            // lazily and converts the failure into a diagnostic rather than raising it. Catching a type
+            // no test here can make fire would be an unexercised clause standing in for a measurement.
+            try
+            {
+                references.Add(MetadataReference.CreateFromFile(reference.AssemblyPath));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                unusable.Add(new UnusableReference(reference.AssemblyPath, Unreadable(e)));
+            }
         }
 
-        missingReferences = missing;
+        unusableReferences = unusable;
 
         return CSharpCompilation.Create(
             inputs.AssemblyName,
@@ -206,6 +270,21 @@ public static class CompilationFactory
                 .WithNullableContextOptions(inputs.Nullable ? NullableContextOptions.Enable : NullableContextOptions.Disable)
                 .WithAllowUnsafe(inputs.AllowUnsafe));
     }
+
+    /// <summary>
+    /// The <see cref="UnusableReference.Reason"/> for a reference that is on disk but could not be
+    /// read, naming the exception type and its message.
+    ///
+    /// <para>
+    /// Collapsed to one line because <c>RoslynProjectReport.Detail</c> is documented as one, and it is
+    /// printed inside a single <c>GenerateRun.ReportProjects</c> note. Both halves are kept because on
+    /// this host they disagree: an ACL denial arrives as an <see cref="IOException"/> carrying
+    /// <see cref="UnauthorizedAccessException"/>'s "Access to the path ... is denied." text, so the type
+    /// names what was caught and the message names what actually happened.
+    /// </para>
+    /// </summary>
+    private static string Unreadable(Exception e) =>
+        $"could not be read ({e.GetType().Name}: {e.Message.ReplaceLineEndings(" ").Trim()})";
 
     private static CSharpParseOptions ParseOptionsFor(ProjectInputs inputs)
     {

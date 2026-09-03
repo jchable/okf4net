@@ -15,8 +15,17 @@ public enum RoslynProjectAvailability
     MsBuildQueryFailed,
 
     /// <summary>
-    /// MSBuild answered, but a reference it named exists neither as a file on disk nor as a project
-    /// this run compiled from source -- so the compilation would be missing symbols it needs.
+    /// MSBuild answered, but a reference it named could not be turned into metadata and was not a
+    /// project this run compiled from source -- so the compilation would be missing symbols it needs.
+    ///
+    /// <para>
+    /// Two causes, told apart by <see cref="RoslynProjectReport.Detail"/> rather than by two enum
+    /// members, because a caller does the same thing for both: the reference is <i>absent</i> from disk
+    /// (a repository restored but never built), or it is <i>present and unreadable</i> (a concurrent
+    /// build holding it, a denying ACL, a file deleted between the existence check and the read). The
+    /// second used to be no status at all -- it threw <see cref="IOException"/> out through
+    /// <see cref="RoslynResolver.Create"/> and ended the whole run.
+    /// </para>
     /// </summary>
     ReferencesUnresolved,
 

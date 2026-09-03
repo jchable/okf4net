@@ -471,10 +471,10 @@ public sealed class RoslynResolver : ISymbolResolver
             }
 
             CSharpCompilation compilation;
-            IReadOnlyList<string> missingReferences;
+            IReadOnlyList<UnusableReference> unusableReferences;
             try
             {
-                compilation = CompilationFactory.Create(inputs, compiled, gate, out missingReferences);
+                compilation = CompilationFactory.Create(inputs, compiled, gate, out unusableReferences);
             }
             catch (UnknownLanguageVersionException e)
             {
@@ -490,13 +490,17 @@ public sealed class RoslynResolver : ISymbolResolver
                 return;
             }
 
-            if (missingReferences.Count > 0)
+            if (unusableReferences.Count > 0)
             {
+                // The reason is carried through rather than summarised away: "not on disk" and "could
+                // not be read (IOException: ...)" have different remedies, and printing one sentence for
+                // both made a note that fires for either indistinguishable from a note that fires for
+                // the one an operator can act on.
                 reports[projectPath] = new RoslynProjectReport(
                     projectPath,
                     RoslynProjectAvailability.ReferencesUnresolved,
-                    $"{missingReferences.Count} reference(s) exist neither on disk nor as a project compiled from source, "
-                    + $"first: {missingReferences[0]}");
+                    $"{unusableReferences.Count} reference(s) unusable and not compiled from source, "
+                    + $"first: {unusableReferences[0].AssemblyPath} -- {unusableReferences[0].Reason}");
                 return;
             }
 
