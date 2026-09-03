@@ -102,6 +102,17 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking: `okf-mcp` serves a bundle read-only by default.** The three write
+  tools are registered only when `OKF_MCP_WRITABLE=1` is set. Writes used to be
+  the default, which put unconfirmed write access to the corpus behind nothing
+  on the surface most people actually deploy — a desktop client's MCP config —
+  while bundle content is untrusted by design, so an injection carried in a
+  concept body only matters if a write tool is reachable. `OKF_MCP_READONLY=1`
+  is still accepted and still forces read-only; it wins over `OKF_MCP_WRITABLE`
+  when both are set, so an existing configuration keeps working and keeps
+  meaning the same thing. **If you relied on the old default, add
+  `OKF_MCP_WRITABLE=1`.**
+
 - **`okf --version` reports the version the build stamped**, read from
   `AssemblyInformationalVersionAttribute` instead of a hand-maintained constant
   in `OkfCli.cs`. `-p:Version` — the property `release.yml` derives from the git
@@ -210,6 +221,10 @@ and this project adheres to
 
 ### Fixed
 
+- **`OkfContextProvider` also honours cancellation between injected concepts.**
+  The V1 guard shipped only before the bundle walk, because no seam existed to
+  drive a cancellation once the loop had started; the loop reads one concept off
+  disk per iteration, so a caller that withdrew part-way still paid for the rest.
 - **Cancelling an attested computation works.** Two defects compounded. The
   orchestrator caught every stage's exception with a bare `catch (Exception)`,
   so an `OperationCanceledException` from a host-plugged binder/executor/attester

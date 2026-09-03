@@ -27,7 +27,7 @@ const cursorConfigHtml = `{
     <span class="s">"okf"</span>: {
       <span class="s">"command"</span>: <span class="s">"okf-mcp"</span>,
       <span class="s">"args"</span>: [<span class="s">"/path/to/my-bundle"</span>],
-      <span class="s">"env"</span>: { <span class="s">"OKF_MCP_READONLY"</span>: <span class="s">"1"</span> }
+      <span class="s">"env"</span>: { <span class="s">"OKF_MCP_WRITABLE"</span>: <span class="s">"1"</span> }
     }
   }
 }`
@@ -36,8 +36,7 @@ const readOnlyConfigHtml = `{
   <span class="s">"mcpServers"</span>: {
     <span class="s">"okf-docs"</span>: {
       <span class="s">"command"</span>: <span class="s">"okf-mcp"</span>,
-      <span class="s">"args"</span>: [<span class="s">"/path/to/reference-bundle"</span>],
-      <span class="s">"env"</span>: { <span class="s">"OKF_MCP_READONLY"</span>: <span class="s">"1"</span> }
+      <span class="s">"args"</span>: [<span class="s">"/path/to/reference-bundle"</span>]
     }
   }
 }`
@@ -172,8 +171,8 @@ export default function Mcp() {
             the command it runs:
           </p>
           <pre className="block">$ claude mcp add okf -- okf-mcp /path/to/my-bundle</pre>
-          <p>Save it to your user scope so it's available everywhere, and start it read-only by passing an environment variable with <code>-e</code>:</p>
-          <pre className="block">$ claude mcp add --scope user okf -e OKF_MCP_READONLY=1 -- okf-mcp /path/to/my-bundle</pre>
+          <p>That serves the bundle read-only. Save it to your user scope so it's available everywhere, and — only if you want the model to be able to write to the bundle — opt in with <code>-e</code>:</p>
+          <pre className="block">$ claude mcp add --scope user okf -e OKF_MCP_WRITABLE=1 -- okf-mcp /path/to/my-bundle</pre>
           <p>
             <code>claude mcp list</code> shows the registered servers; inside a session, <code>/mcp</code> lists the{' '}
             <code>okf</code> tools it exposes.
@@ -262,12 +261,23 @@ export default function Mcp() {
           </Next>
         </Chapter>
 
-        <Chapter id="read-only" title="Read-only mode" refText="consultation only">
+        <Chapter id="read-only" title="Read-only by default" refText="consultation unless you opt in">
           <p>
-            Set <code>OKF_MCP_READONLY=1</code> and <code>okf-mcp</code> registers only the seven read tools — the
-            three writers (<code>okf_write_concept</code>, <code>okf_append_log</code>,{' '}
-            <code>okf_regenerate_indexes</code>) are left out entirely. Use it for a shared reference bundle you want
-            the model to consult but never edit.
+            <code>okf-mcp</code> registers only the read tools unless you ask for more — the three writers
+            (<code>okf_write_concept</code>, <code>okf_append_log</code>,{' '}
+            <code>okf_regenerate_indexes</code>) are left out entirely. Set <code>OKF_MCP_WRITABLE=1</code> to add
+            them, which you want for a working bundle the model maintains, and do not want for a shared reference
+            bundle it should only consult.
+          </p>
+          <p>
+            The reason the safe setting is the free one: bundle content is untrusted — it comes from files another
+            agent or a human contributor may have written — so a prompt injection smuggled into a concept body can
+            only cause a persistent change if a write tool is reachable in the first place.
+          </p>
+          <p>
+            <strong>Changed in a recent version.</strong> Earlier releases registered the write tools unless{' '}
+            <code>OKF_MCP_READONLY=1</code> was set. That variable is still accepted and still forces read-only —
+            it wins if both are set — so an existing config keeps working unchanged.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: readOnlyConfigHtml }} />
         </Chapter>

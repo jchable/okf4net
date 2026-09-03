@@ -272,6 +272,12 @@ public sealed class OkfContextProvider : AIContextProvider
                     .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, now))
                     .Take(_options.MaxConceptsInjected))
                 {
+                    // Each iteration reads a concept off disk, so a caller that
+                    // withdrew part-way should not pay for the rest. The guard
+                    // before the bundle walk above only covers a token that was
+                    // already cancelled on entry.
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     if (remaining <= 0)
                     {
                         break;

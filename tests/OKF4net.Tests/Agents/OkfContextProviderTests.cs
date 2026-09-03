@@ -229,6 +229,43 @@ public class OkfContextProviderTests
             async () => await provider.ProvideForTest(BuildInvokingContext("orders"), cts.Token));
     }
 
+    /// <summary>
+    /// The V1 injection loop reads one concept off disk per iteration, up to
+    /// MaxConceptsInjected, so a caller that withdrew mid-assembly should not
+    /// pay for the rest. #69 shipped only the guard BEFORE the bundle walk,
+    /// because no seam existed to drive a cancellation once the loop had
+    /// started — this one does it without adding a test-only hook to
+    /// production: the provider's existing UtcNow seam is consulted on the
+    /// statement immediately preceding the loop, so cancelling from inside it
+    /// lands exactly between the two guards.
+    ///
+    /// The assertion that the clock ran is what keeps this honest. Without it,
+    /// moving the UtcNow() call earlier would silently make this test exercise
+    /// the pre-load guard instead, and it would keep passing while covering
+    /// nothing.
+    /// </summary>
+    [Fact]
+    public async Task Provide_stops_between_concepts_when_the_token_is_cancelled_mid_assembly()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var provider = new OkfContextProvider(tools);
+        using var cts = new CancellationTokenSource();
+
+        var clockRan = false;
+        provider.UtcNow = () =>
+        {
+            clockRan = true;
+            cts.Cancel();
+            return new DateTime(2026, 7, 22, 0, 0, 0, DateTimeKind.Utc);
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await provider.ProvideForTest(BuildInvokingContext("orders"), cts.Token));
+
+        Assert.True(clockRan, "the clock seam never ran, so this exercised the pre-load guard, not the loop");
+    }
+
     [Fact]
     public async Task Orders_query_injects_root_index_then_scores_tables_orders_first()
     {
