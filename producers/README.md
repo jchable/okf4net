@@ -103,6 +103,53 @@ It is **off by default on purpose**. Turning it on by default would silently deg
 resolution quality of every run that exists today, which is a worse trade than a documented
 hazard with a lever next to it.
 
+### What a run says about itself
+
+Every `generate` prints one **completeness report** to stderr, prefixed `run: `, whether
+or not anything went wrong. It says how many source files were read and, where they were
+not all extracted, how many fell to each cause; whether the traversal visited every
+eligible file; how many project files were detected, how many of the closure compiled,
+and how many of the analysed files had their calls resolved exactly rather than by name
+matching; and how many of the `code` concepts are reachable from `overview`. A clean run
+over a restored project reads, in full:
+
+```
+run: 42 source file(s) read: 28 extracted, 14 partially extracted; the traversal visited every eligible file; 1 project file(s) detected and 1 of 1 in the compiled closure built cleanly; calls resolved exactly for 42 of 42 analysed file(s), by name matching for the other 0; all 149 `code` concept(s) are reachable from `overview`.
+```
+
+(Measured on this host over `producers/src/OkfProducer.Core`. `partially extracted` is the
+ordinary state of modern C#, not a warning: the vendored tree-sitter grammar mis-parses an
+empty collection expression `[]`, which idiomatic C# 12+ is full of.)
+
+Where a file was skipped **entirely** — never read, so its declarations are simply absent
+from the bundle — the report names it under the line, capped at ten with a remainder
+count. A partially extracted file is not named: it *was* read, and on a real repository
+there are hundreds of them.
+
+**It is unconditional on purpose.** Every other account this producer gives of itself is a
+note gated on its own trigger, and each of those triggers covers a different subset of
+what a run can leave out — so a run printing no note is indistinguishable from a mechanism
+that did not fire. Reproduced on this host, each exiting 0 having printed *nothing at all*
+beyond `Wrote N concept(s)`: a `--max-file-size` below the only source file, which drops
+every `code` concept; a repository with no package manifest and no source-ownership map,
+where every `code` concept is unreachable from `overview` while `okf validate` stays
+silent because nothing dangles; and a walk truncated by a circular junction, which writes
+`overview` alone. A fourth — a repository with no `.csproj` but *with* a package manifest,
+where the whole Roslyn stage sits behind a guard with no `else` — printed the generic "no
+source-ownership map" note and nothing more: true as far as it goes, and silent about the
+stage having been skipped and about every call link being a name match.
+
+The report is on **stderr**, not stdout, so it changes nothing a CI gate reads and nothing
+that lands in the bundle — `--check` compares bundle bytes and is unaffected.
+
+The two numbers it does *not* take on trust: the resolution fraction is asked of the
+resolver file by file (`RoslynResolver.Owns`), so a project reported `Compiled` whose
+`Compile` items were all refused before the compilation was built contributes zero exact
+files rather than all of them; and reachability is walked over the bodies the run actually
+produced with `LinkScanner`, the validator's own scanner, rather than re-derived from the
+spine rule — so a link this producer wrote and the scanner will not see counts as absent
+here exactly as it does for `okf validate`.
+
 Notes — what a run could not do — go to **stderr**, prefixed `note: `; results go to
 stdout. A note never changes the exit code. The ones worth knowing:
 

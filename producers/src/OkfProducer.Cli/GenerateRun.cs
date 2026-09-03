@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
+using OKF4net;
 using OkfProducer.CodeGraph.Roslyn;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
@@ -103,11 +105,25 @@ internal static class GenerateRun
     /// </summary>
     public const string OwnedPrefix = "code";
 
+    /// <summary>The id <c>ConceptGenerator</c> fixes for the repository overview, and the root every reachability walk starts from.</summary>
+    private const string OverviewId = "overview";
+
     /// <summary>
     /// One complete run into <paramref name="request"/>'s output directory.
-    /// <paramref name="note"/> receives the run's own account of what it could not do.
+    /// <paramref name="note"/> receives the run's own account of what it could not do;
+    /// <paramref name="report"/> receives the completeness report, unconditionally.
     /// </summary>
-    public static WriteResult Execute(GenerateRequest request, ProducerServices services, Action<string> note)
+    /// <param name="request">Everything this invocation was asked to do.</param>
+    /// <param name="services">The scan/generate/write services the host resolved.</param>
+    /// <param name="note">Where each individual degradation is reported.</param>
+    /// <param name="report">
+    /// Where the completeness report goes -- <b>every run, degraded or not</b>. A report that only
+    /// appears when something went wrong cannot be told apart from a mechanism that failed to fire,
+    /// which is precisely the defect the individual notes above have: each of them is scoped to a
+    /// different subset of what a run can leave out, and nothing aggregated them. See
+    /// <see cref="Summarize"/>.
+    /// </param>
+    public static WriteResult Execute(GenerateRequest request, ProducerServices services, Action<string> note, Action<string> report)
     {
         var snapshot = services.Scanner.Scan(request.RepoPath);
 
@@ -133,6 +149,14 @@ internal static class GenerateRun
         SourceOwnershipMap? ownership = null;
         IReadOnlyList<LanguageProfile> profiles = [];
 
+        // Hoisted out of the code-stage block below so the completeness report can read them whatever
+        // path the run took. `projectsDetected` is the count of `.csproj` the SCAN found, which is not
+        // the same number as `roslyn.Projects.Count` -- that one covers the queried closure, referenced
+        // projects included -- and the difference is exactly what tells "this repository has no project
+        // file" apart from "its projects would not compile".
+        var projectsDetected = 0;
+        RoslynResolver? roslyn = null;
+
         // Built once and used twice -- by the extraction and by the manifest -- rather than
         // reconstructed at each site. The manifest's copy is what a later run compares its own scope
         // against before it is allowed to delete anything (see GenerationManifest.Scope), so the two
@@ -144,6 +168,7 @@ internal static class GenerateRun
             profiles = [CSharpProfile.Instance];
             var resolvers = new List<ISymbolResolver> { new NameMatchResolver() };
             var projectPaths = CSharpProjectPaths(snapshot);
+            projectsDetected = projectPaths.Count;
 
             // The one cap the two engines have to agree on. The tree-sitter extractor has always
             // enforced it; the Roslyn stage read every Compile item MSBuild listed regardless, which
@@ -175,7 +200,7 @@ internal static class GenerateRun
             {
                 // Later resolvers override earlier ones for the files they own (§2.1), so the exact
                 // resolver goes after the name-matching baseline, never before it.
-                var roslyn = RoslynResolver.Create(request.RepoPath, projectPaths, limits);
+                roslyn = RoslynResolver.Create(request.RepoPath, projectPaths, limits);
                 resolvers.Add(roslyn);
 
                 ReportProjects(roslyn, request.RepoPath, note);
@@ -207,6 +232,15 @@ internal static class GenerateRun
 
         var concepts = services.Generator.Generate(snapshot, graph, options);
 
+        // BEFORE the write, not after it. Everything the report states is settled once the concepts
+        // exist, and the write is the one step here that can throw out of this method -- a full volume,
+        // a bundle root that will not resolve. Reporting first means a run whose write failed has still
+        // said what its analysis found, rather than losing that account to the same exception.
+        foreach (var line in Summarize(request, graph?.Status, projectsDetected, roslyn, concepts))
+        {
+            report(line);
+        }
+
         // Null manifest and null status on the --no-code path, which is what keeps pruning out of a
         // run that analysed no source at all. BundleWriter has a backstop for that case, but a caller
         // that hands over a licence to delete and relies on the callee to refuse it is one refactor
@@ -215,6 +249,263 @@ internal static class GenerateRun
 
         return services.Writer.Write(request.OutPath, concepts, request.Policy, snapshot.RepoPath, manifest, graph?.Status);
     }
+
+    /// <summary>
+    /// The completeness report: what this run read, what it could not read, how much of it was
+    /// resolved exactly, and whether the <c>code</c> family it produced is reachable at all.
+    ///
+    /// <para><b>Why this exists at all, when every degradation above already has a note.</b> Each note
+    /// is scoped to a different subset of what a run can leave out, and each is emitted only when its
+    /// own trigger fires -- so on a run where none of them fires, an operator cannot tell "nothing to
+    /// report" from "the mechanism did not fire". Reproduced on this host, each exiting 0 having printed
+    /// NOTHING AT ALL beyond <c>Wrote N concept(s)</c>: a run whose <c>--max-file-size</c> dropped every
+    /// source file; a repository with no package manifest and no source-ownership map, where 100% of the
+    /// <c>code</c> family is unreachable from <c>overview</c> while <c>okf validate</c> stays silent
+    /// because nothing dangles; and a walk truncated by a circular junction, which writes
+    /// <c>overview</c> alone. A fourth -- a repository with no <c>.csproj</c> but WITH a package
+    /// manifest, where the whole Roslyn stage sits behind a guard with no <c>else</c> -- printed the
+    /// generic "no source-ownership map" note and nothing more, which says nothing about the stage
+    /// having been skipped or about every call link being a name match. This report is emitted on every
+    /// run, in the same shape, whether or not any of that happened.</para>
+    ///
+    /// <para><b>It says counts, not verdicts, and it never guesses.</b> The resolution fraction is
+    /// asked of <paramref name="owns"/> -- the resolver's own answer, file by file -- rather than
+    /// derived from the project verdicts, so a project reported <c>Compiled</c> whose files were all
+    /// refused before the compilation was built contributes zero exact files here, with no second copy
+    /// of that rule. Reachability is walked over the bytes the run actually produced, using
+    /// <see cref="LinkScanner.ExtractLinks"/> -- the validator's own scanner -- rather than re-deriving
+    /// the spine rule, so a link this producer wrote and the scanner will not see (an unbalanced
+    /// backtick in a lifted title, a description line that opens a fence) counts as absent here exactly
+    /// as it does for <c>okf validate</c>.</para>
+    ///
+    /// <para><b>It is not a substitute for the notes.</b> The notes say <i>why</i>, name the project or
+    /// the flag, and prescribe the remedy; this says <i>how much</i>, in one line, always.</para>
+    /// </summary>
+    /// <param name="request">This invocation, for the two flags that change what the report can say.</param>
+    /// <param name="status">This run's extraction outcome, or <see langword="null"/> when the code stage did not run.</param>
+    /// <param name="projectsDetected">How many <c>.csproj</c> the scan found -- zero means the Roslyn stage was never entered.</param>
+    /// <param name="roslyn">The exact resolver, or <see langword="null"/> when no compilation was attempted.</param>
+    /// <param name="concepts">Everything the generator produced, which is what reachability is walked over.</param>
+    private static IReadOnlyList<string> Summarize(
+        GenerateRequest request,
+        RunStatus? status,
+        int projectsDetected,
+        RoslynResolver? roslyn,
+        IReadOnlyList<GeneratedConcept> concepts) =>
+        Summarize(request.NoMsBuild, status, projectsDetected, roslyn?.Projects ?? [], roslyn is null ? null : roslyn.Owns, concepts);
+
+    /// <summary>
+    /// The report itself, over the values rather than over the resolver and the request -- the same
+    /// shape, and for the same reason, as <see cref="ReportProjects(string, IReadOnlyList{RoslynProjectReport}, IReadOnlyList{ProjectInputs}, Func{string, bool}, Action{string})"/>:
+    /// it is pure data, so every branch of it is exercisable without an MSBuild invocation or a
+    /// repository on disk.
+    /// </summary>
+    /// <param name="noMsBuild">Whether <c>--no-msbuild</c> suppressed the exact resolver.</param>
+    /// <param name="status">
+    /// This run's extraction outcome. <see langword="null"/> means the code stage did not run at all,
+    /// which <c>--no-code</c> is the only thing that causes -- <c>Execute</c> assigns the graph
+    /// unconditionally inside its <c>if (!request.NoCode)</c> block and nowhere else -- so the line
+    /// this produces names that flag.
+    /// </param>
+    /// <param name="projectsDetected">How many <c>.csproj</c> the scan found.</param>
+    /// <param name="projects">One availability verdict per project in the compiled closure, which is a superset of the detected set.</param>
+    /// <param name="owns">
+    /// <c>RoslynResolver.Owns</c>, over repository-relative <c>/</c>-separated paths -- the same form
+    /// <see cref="RunStatus.Skipped"/> records. <see langword="null"/> when no compilation was attempted.
+    /// </param>
+    /// <param name="concepts">Everything the generator produced.</param>
+    internal static IReadOnlyList<string> Summarize(
+        bool noMsBuild,
+        RunStatus? status,
+        int projectsDetected,
+        IReadOnlyList<RoslynProjectReport> projects,
+        Func<string, bool>? owns,
+        IReadOnlyList<GeneratedConcept> concepts)
+    {
+        ArgumentNullException.ThrowIfNull(projects);
+        ArgumentNullException.ThrowIfNull(concepts);
+
+        if (status is null)
+        {
+            return ["the code stage did not run (--no-code), so no source file was read, no call was resolved and no `code` concept was generated. Nothing about the rest of this bundle is affected."];
+        }
+
+        var counts = new Dictionary<FileStatus, int>();
+        foreach (var (_, fileStatus) in status.Skipped)
+        {
+            counts[fileStatus] = counts.GetValueOrDefault(fileStatus) + 1;
+        }
+
+        var attempted = status.Skipped.Count;
+        var analysed = counts.GetValueOrDefault(FileStatus.Extracted) + counts.GetValueOrDefault(FileStatus.PartiallyExtracted);
+        var exact = owns is null
+            ? 0
+            : status.Skipped.Count(f => f.Status is FileStatus.Extracted or FileStatus.PartiallyExtracted && owns(f.Path));
+        var compiled = projects.Count(p => p.Availability == RoslynProjectAvailability.Compiled);
+        var owned = concepts.Count(c => IsOwned(c.Id.ToString()));
+        var reachable = ReachableOwnedConcepts(concepts);
+
+        // Enum order, not dictionary order, and only the values this run actually saw: the segment
+        // must be byte-identical for two identical runs, and it must not read "0 skipped, unreadable"
+        // on a healthy repository.
+        var breakdown = string.Join(
+            ", ",
+            Enum.GetValues<FileStatus>()
+                .Where(counts.ContainsKey)
+                .Select(s => $"{Count(counts[s])} {Label(s)}"));
+
+        var files = attempted == 0
+            ? "no source file was read"
+            : counts.GetValueOrDefault(FileStatus.Extracted) == attempted
+                ? $"{Count(attempted)} source file(s) read, all extracted"
+                : $"{Count(attempted)} source file(s) read: {breakdown}";
+
+        // Stated in both directions rather than only when it fails. The false case is the one that
+        // forbids pruning outright, and it is reachable without any file being unreadable: a circular
+        // junction empties the walk's file list (measured on this host -- see the wave-3 report), and
+        // the run then writes `overview` alone and exits 0.
+        var traversal = status.TraversalComplete
+            ? "the traversal visited every eligible file"
+            : "THE TRAVERSAL DID NOT COMPLETE -- some eligible files were never visited, so a symbol may have moved into one of them and nothing was pruned";
+
+        // The two halves are separate facts and both are always stated: how many project files exist
+        // and how many of them yielded a compilation, then how many of the files that were actually
+        // analysed had their calls resolved exactly. The second is asked file by file rather than
+        // inferred from the first, so a project reported `Compiled` that owns none of its own files
+        // lands in the name-matched count where it belongs.
+        var compilations = projectsDetected == 0
+            ? "no project file was detected, so no compilation was built"
+            : noMsBuild
+                ? $"{Count(projectsDetected)} project file(s) detected but none was queried (--no-msbuild)"
+                : $"{Count(projectsDetected)} project file(s) detected and {Count(compiled)} of {Count(projects.Count)} in the compiled closure built cleanly";
+
+        var calls = analysed == 0
+            ? "no file was analysed, so no call was resolved either way"
+            : $"calls resolved exactly for {Count(exact)} of {Count(analysed)} analysed file(s), by name matching for the other {Count(analysed - exact)}";
+
+        var resolution = compilations + "; " + calls;
+
+        var code = owned == 0
+            ? "no `code` concept was generated"
+            : reachable == owned
+                ? $"all {Count(owned)} `code` concept(s) are reachable from `overview`"
+                : $"{Count(reachable)} of {Count(owned)} `code` concept(s) are reachable from `overview` -- the others are in the bundle with nothing linking down to them, which `okf validate` does not report because nothing dangles";
+
+        var lines = new List<string> { string.Join("; ", [files, traversal, resolution, code]) + "." };
+
+        // §2.3 asks the output report to name the unanalysed files with their cause -- that is what
+        // distinguishes "symbol deleted" from "file not read". Only the wholly-skipped ones: a
+        // PartiallyExtracted file WAS read, and it is the steady state of any modern C# repository
+        // (the vendored grammar mis-parses an empty collection expression), so naming those would bury
+        // the ones that matter under hundreds that do not. Capped, because the count is not bounded by
+        // anything: a generated tree can put thousands of files over the cap at once.
+        var unanalysed = status.Skipped
+            .Where(f => f.Status is not (FileStatus.Extracted or FileStatus.PartiallyExtracted))
+            .ToList();
+
+        foreach (var (path, fileStatus) in unanalysed.Take(UnanalysedFilesListed))
+        {
+            lines.Add($"  - {path}: {Label(fileStatus)}");
+        }
+
+        if (unanalysed.Count > UnanalysedFilesListed)
+        {
+            lines.Add($"  - ... and {Count(unanalysed.Count - UnanalysedFilesListed)} more");
+        }
+
+        return lines;
+    }
+
+    /// <summary>How many unanalysed files the report names before it stops and gives a remainder count.</summary>
+    private const int UnanalysedFilesListed = 10;
+
+    /// <summary>
+    /// How many of the <c>code</c> concepts this run produced are reachable from <c>overview</c> by
+    /// following the links the run actually wrote.
+    ///
+    /// <para><b>Walked, not derived.</b> The spine is built one level at a time -- <c>overview</c>
+    /// links only the <c>packages/</c> and <c>docs/</c> concepts, each package links down to the
+    /// namespaces its <c>Compile</c> items declare into, and each of those links one level further --
+    /// so "is the code family reachable" is a question about several hops, not about any single rule
+    /// this method could restate. Restating it is also what would make it wrong: with no
+    /// source-ownership map <b>and</b> no package manifest, the two conditions that break the spine
+    /// completely, no note fires anywhere, and a re-derivation would have to reproduce
+    /// <c>AttributePackages</c>' three §5.1 rules to know it. Following
+    /// <see cref="LinkScanner.ExtractLinks"/> over the produced bodies instead gives the validator's
+    /// own answer over this run's own bytes.</para>
+    /// </summary>
+    /// <param name="concepts">Everything the generator produced.</param>
+    private static int ReachableOwnedConcepts(IReadOnlyList<GeneratedConcept> concepts)
+    {
+        var byId = new Dictionary<string, GeneratedConcept>(StringComparer.Ordinal);
+        foreach (var concept in concepts)
+        {
+            byId[concept.Id.ToString()] = concept;
+        }
+
+        if (!byId.ContainsKey(OverviewId))
+        {
+            return 0;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal) { OverviewId };
+        var queue = new Queue<string>();
+        queue.Enqueue(OverviewId);
+        var reached = 0;
+
+        while (queue.Count > 0)
+        {
+            var id = queue.Dequeue();
+            if (IsOwned(id))
+            {
+                reached++;
+            }
+
+            foreach (var link in LinkScanner.ExtractLinks(byId[id].Document.Body))
+            {
+                // §6.1's bundle-root form is the only one this producer writes, and the only one a
+                // containment link may take; a relative or external target is somebody else's link.
+                if (link.Kind != LinkKind.Absolute)
+                {
+                    continue;
+                }
+
+                var target = link.Target.Trim()[1..];
+                if (byId.ContainsKey(target) && seen.Add(target))
+                {
+                    queue.Enqueue(target);
+                }
+            }
+        }
+
+        return reached;
+    }
+
+    /// <summary>Whether <paramref name="id"/> falls under the prefix this producer owns and prunes.</summary>
+    private static bool IsOwned(string id) =>
+        string.Equals(id, OwnedPrefix, StringComparison.Ordinal)
+        || id.StartsWith(OwnedPrefix + "/", StringComparison.Ordinal);
+
+    /// <summary>One number, culture-invariant, because this report is compared between runs and between hosts.</summary>
+    private static string Count(int value) => value.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The report's name for one file outcome. A member added to <see cref="FileStatus"/> renders as
+    /// its own enum name rather than as a wrong label -- deliberately not a compile break, because the
+    /// value would still be counted and reported honestly, just less readably.
+    /// </summary>
+    /// <param name="status">The outcome to name.</param>
+    private static string Label(FileStatus status) => status switch
+    {
+        FileStatus.Extracted => "extracted",
+        FileStatus.PartiallyExtracted => "partially extracted",
+        FileStatus.SkippedTooLarge => "skipped, over --max-file-size",
+        FileStatus.SkippedEncoding => "skipped, not decodable as text",
+        FileStatus.SkippedDepth => "skipped, too deeply nested",
+        FileStatus.SkippedUnreadable => "skipped, unreadable",
+        FileStatus.SkippedSymlink => "skipped, a symbolic link",
+        _ => status.ToString(),
+    };
 
     /// <summary>
     /// The <c>.csproj</c> files the scan detected, absolute -- the same set the <c>packages/</c>

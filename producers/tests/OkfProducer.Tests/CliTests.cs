@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using OKF4net;
 using OkfProducer.Cli;
 using OkfProducer.CodeGraph.Roslyn;
+using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 using OkfProducer.Tests.Generation;
@@ -681,6 +682,255 @@ public class CliTests
 
         Assert.Empty(notes);
     }
+
+    // ---- the completeness report -------------------------------------------------------------
+
+    [Fact]
+    public void Every_run_reports_what_it_covered_and_does_it_on_stderr()
+    {
+        // The property is UNCONDITIONALITY, which is why this asserts on the ordinary run and not on
+        // a broken one. Every other account this producer gives of itself is a note gated on its own
+        // trigger, so an operator reading a run with no notes cannot tell "nothing to report" from
+        // "the mechanism did not fire". Measured at HEAD, on this fixture: a --max-file-size below
+        // Widget.cs exited 0 having printed nothing at all beyond `Wrote 2 concept(s)`, and the plain
+        // run below printed one generic note about the ownership map and nothing else -- neither said
+        // that no project file was found or that every call link is a name match.
+        //
+        // stderr and not stdout: stdout carries the run's RESULT, which a CI gate reads and which
+        // Check_passes_on_a_bundle_that_matches_its_repository asserts on. The second assertion is
+        // not decoration -- it is the one that keeps this from becoming an output change.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("run: 1 source file(s) read, all extracted", result.Error, StringComparison.Ordinal);
+        Assert.Contains("the traversal visited every eligible file", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("run: ", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_repository_with_no_project_file_says_so_instead_of_leaving_it_to_be_inferred()
+    {
+        // The fixture repository deliberately carries no `.csproj`, which is the shape that used to
+        // pass through the Roslyn stage's `if (projectPaths.Count > 0)` guard with no `else`: every
+        // call edge falls to the name-matching baseline and the run said nothing at all about it.
+        // The fragment asserted is the CAUSE, not merely that something was printed -- "no project
+        // file was detected" and "by name matching for the other 1" would both have to be produced
+        // for the wrong reason to pass this by accident.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("no project file was detected, so no compilation was built", result.Error, StringComparison.Ordinal);
+        Assert.Contains("calls resolved exactly for 0 of 1 analysed file(s), by name matching for the other 1", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_code_family_nothing_links_down_to_is_reported_rather_than_left_for_the_validator()
+    {
+        // The spine fails COMPLETELY here: with no source-ownership map no package links down to a
+        // namespace, so 100% of the `code` family is unreachable from `overview` -- and `okf validate`
+        // stays silent, because an unreachable concept is not a dangling link. The fixture reaches it
+        // with an npm package and no `.csproj`.
+        //
+        // At HEAD this fixture did print the generic "no source-ownership map" note, so it is not the
+        // noteless variant of the shape (that one needs zero package manifests, and prints literally
+        // nothing). What NOTHING said, in either variant, is the consequence asserted below: that the
+        // whole `code` family the run just wrote cannot be reached from `overview`.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("0 of 3 `code` concept(s) are reachable from `overview`", result.Error, StringComparison.Ordinal);
+        Assert.Contains("`okf validate` does not report because nothing dangles", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_file_the_cap_refused_is_named_with_its_cause_and_not_only_counted()
+    {
+        // §2.3: the output report lists the unanalysed files with their cause, because that is what
+        // distinguishes "symbol deleted" from "file not read". A count alone leaves an operator with
+        // a repository of two thousand files and no way to find the one that dropped out.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        var widgetBytes = new FileInfo(Path.Combine(repo, "src", "Widget.cs")).Length;
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--max-file-size", (widgetBytes - 1).ToString());
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("1 source file(s) read: 1 skipped, over --max-file-size", result.Error, StringComparison.Ordinal);
+        Assert.Contains("run:   - src/Widget.cs: skipped, over --max-file-size", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_no_code_run_still_reports_and_says_the_stage_did_not_run()
+    {
+        // A run that analysed nothing is exactly the run whose silence is hardest to read, so it
+        // reports too. It also must not claim a traversal or a resolution it never attempted, which
+        // is what the second assertion pins.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--no-code");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("run: the code stage did not run (--no-code)", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("the traversal", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_healthy_run_reports_one_short_line_and_names_no_file()
+    {
+        // The other edge of the same predicate, and the one a report like this fails on: a note that
+        // fires on a healthy run is worse than the silence it replaces. Driven through the pure
+        // overload because a genuinely healthy run needs a restored project and an MSBuild
+        // invocation, which no test in this file makes.
+        //
+        // The length bound is not decoration either. "Say what the run did" degrades into noise the
+        // moment the clean case is a paragraph, and nothing else in this suite would notice. Measured
+        // on this host, this fixture's line is 298 characters.
+        var status = new RunStatus(true, [("src/A.cs", FileStatus.Extracted), ("src/B.cs", FileStatus.Extracted), ("src/C.cs", FileStatus.Extracted)]);
+
+        var lines = GenerateRun.Summarize(
+            noMsBuild: false,
+            status,
+            projectsDetected: 2,
+            [Compiled("a.csproj"), Compiled("b.csproj")],
+            _ => true,
+            LinkedConcepts());
+
+        var line = Assert.Single(lines);
+        Assert.Contains("3 source file(s) read, all extracted", line, StringComparison.Ordinal);
+        Assert.Contains("the traversal visited every eligible file", line, StringComparison.Ordinal);
+        Assert.Contains("2 project file(s) detected and 2 of 2 in the compiled closure built cleanly", line, StringComparison.Ordinal);
+        Assert.Contains("calls resolved exactly for 3 of 3 analysed file(s), by name matching for the other 0", line, StringComparison.Ordinal);
+        Assert.Contains("all 2 `code` concept(s) are reachable from `overview`", line, StringComparison.Ordinal);
+        Assert.True(line.Length <= 320, $"the healthy-run report has grown to {line.Length} characters: {line}");
+    }
+
+    [Fact]
+    public void A_truncated_traversal_is_reported_even_though_no_file_failed()
+    {
+        // The finding this closes: `RunStatus.TraversalComplete` had exactly one production consumer,
+        // inside `BundleWriter`'s refusal to prune, which `Reconcile` returns short of whenever there
+        // is no previous manifest or no candidate. A first run, a `--reset` run, or any run whose id
+        // set did not shrink therefore COMPUTED the false and threw it away.
+        //
+        // Reachable, measured on this host: a directory junction pointing at one of its own ancestors
+        // makes the code stage's walk throw before it has listed a single file, so the run writes
+        // `overview` alone and exits 0. (Only with a root `*.sln`: without one the SCANNER's own
+        // recursive `.csproj` walk hits the cycle first and the run fails loudly instead. That is a
+        // property of the scanner, not of this report, which is why this test drives the values.)
+        var truncated = GenerateRun.Summarize(
+            noMsBuild: false,
+            new RunStatus(false, []),
+            projectsDetected: 0,
+            [],
+            owns: null,
+            []);
+
+        Assert.Contains("THE TRAVERSAL DID NOT COMPLETE", Assert.Single(truncated), StringComparison.Ordinal);
+
+        // The other half, without which the assertion above would also hold for a build that shouts
+        // it on every run.
+        var complete = Assert.Single(GenerateRun.Summarize(
+            noMsBuild: false,
+            new RunStatus(true, []),
+            projectsDetected: 0,
+            [],
+            owns: null,
+            []));
+
+        Assert.Contains("the traversal visited every eligible file", complete, StringComparison.Ordinal);
+        Assert.DoesNotContain("DID NOT COMPLETE", complete, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_run_that_skipped_msbuild_says_its_projects_were_never_queried()
+    {
+        // `--no-msbuild` already has its own note, and this does not replace it: the note says what
+        // the flag costs and how to get it back, the report says how many projects were left out.
+        // Without this branch the same run would read "1 project file(s) detected and 0 of 0 in the
+        // compiled closure built cleanly", which is true of the numbers and misleading about the run.
+        var lines = GenerateRun.Summarize(
+            noMsBuild: true,
+            new RunStatus(true, [("src/A.cs", FileStatus.Extracted)]),
+            projectsDetected: 1,
+            [],
+            owns: null,
+            []);
+
+        var line = Assert.Single(lines);
+        Assert.Contains("1 project file(s) detected but none was queried (--no-msbuild)", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("built cleanly", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_project_reported_compiled_that_owns_none_of_its_files_counts_as_name_matched()
+    {
+        // The resolution fraction is asked of the resolver file by file rather than derived from the
+        // project verdicts, and this is the case that separates the two: a compilation built from no
+        // syntax tree at all -- every `Compile` item over the cap, behind a link, or absent -- has no
+        // errors, is reported `Compiled`, and resolves nothing. Deriving the fraction from the
+        // verdict would report those two files as exact.
+        var lines = GenerateRun.Summarize(
+            noMsBuild: false,
+            new RunStatus(true, [("src/A.cs", FileStatus.Extracted), ("src/B.cs", FileStatus.PartiallyExtracted)]),
+            projectsDetected: 1,
+            [Compiled("a.csproj")],
+            _ => false,
+            []);
+
+        var line = Assert.Single(lines);
+        Assert.Contains("1 project file(s) detected and 1 of 1 in the compiled closure built cleanly", line, StringComparison.Ordinal);
+        Assert.Contains("calls resolved exactly for 0 of 2 analysed file(s), by name matching for the other 2", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_unanalysed_listing_stops_at_ten_and_says_how_many_it_did_not_name()
+    {
+        // Unbounded is not an option: one generated tree can put thousands of files over the cap at
+        // once, and a report nobody can read is the noise this whole line exists to avoid. The
+        // remainder count is what keeps the truncation from being a second silence.
+        var skipped = Enumerable.Range(0, 12)
+            .Select(i => ($"src/File{i.ToString(System.Globalization.CultureInfo.InvariantCulture)}.cs", FileStatus.SkippedTooLarge))
+            .ToList();
+
+        var lines = GenerateRun.Summarize(
+            noMsBuild: false,
+            new RunStatus(true, skipped),
+            projectsDetected: 0,
+            [],
+            owns: null,
+            []);
+
+        Assert.Equal(12, lines.Count);
+        Assert.Contains("12 source file(s) read: 12 skipped, over --max-file-size", lines[0], StringComparison.Ordinal);
+        Assert.Equal("  - src/File0.cs: skipped, over --max-file-size", lines[1]);
+        Assert.Equal("  - src/File9.cs: skipped, over --max-file-size", lines[10]);
+        Assert.Equal("  - ... and 2 more", lines[11]);
+    }
+
+    /// <summary>A project that built cleanly, which is all these report tests need of one.</summary>
+    private static RoslynProjectReport Compiled(string projectPath) =>
+        new(projectPath, RoslynProjectAvailability.Compiled, string.Empty);
+
+    /// <summary>
+    /// The spine as a healthy run produces it: <c>overview</c> down to a package, the package down to
+    /// a namespace, the namespace down to a type. Three hops, because reachability is walked and not
+    /// re-derived, and a one-hop fixture would pass for a walk that never recursed.
+    /// </summary>
+    private static IReadOnlyList<GeneratedConcept> LinkedConcepts() =>
+    [
+        ReportConcept("overview", "# r\n\n## Contains\n\n- [p](/packages/p)\n"),
+        ReportConcept("packages/p", "# p\n\n## Contains\n\n- [n](/code/csharp/n)\n"),
+        ReportConcept("code/csharp/n", "# n\n\n## Contains\n\n- [t](/code/csharp/n/t)\n"),
+        ReportConcept("code/csharp/n/t", "# t\n"),
+    ];
+
+    private static GeneratedConcept ReportConcept(string id, string body) =>
+        new(ConceptId.Parse(id), OkfDocumentBuilder.ForType("Concept").Title(id).Description("d").Body(body).Build());
 
     [Fact]
     public void Check_help_carries_the_whole_exclusion_list()

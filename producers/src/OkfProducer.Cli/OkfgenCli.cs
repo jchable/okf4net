@@ -35,6 +35,19 @@ public static class OkfgenCli
     private const string NotePrefix = "note: ";
 
     /// <summary>
+    /// The prefix the completeness report carries on stderr, distinct from <see cref="NotePrefix"/>
+    /// because the two answer different questions: a note fires when one specific thing went wrong and
+    /// says what to do about it, while this is emitted on <b>every</b> run and says how much of the
+    /// repository the run actually covered. Greppable apart for the same reason.
+    ///
+    /// <para><b>stderr, not stdout, and that is a compatibility decision.</b> stdout carries the run's
+    /// result, which is what a CI gate reads and what this repository's own tests assert on. Reporting
+    /// there would change the output of every existing invocation. It also must not change what lands
+    /// in the bundle, and a stream cannot.</para>
+    /// </summary>
+    private const string ReportPrefix = "run: ";
+
+    /// <summary>
     /// Parses <paramref name="args"/> and runs the requested verb, writing ordinary output to
     /// <paramref name="output"/> and errors, notes and parse failures to <paramref name="error"/>.
     /// </summary>
@@ -279,6 +292,7 @@ public static class OkfgenCli
     private static int Generate(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error)
     {
         void Note(string text) => error.WriteLine(NotePrefix + text);
+        void Report(string text) => error.WriteLine(ReportPrefix + text);
 
         if (!Directory.Exists(request.RepoPath))
         {
@@ -289,8 +303,8 @@ public static class OkfgenCli
         try
         {
             return request.Check
-                ? Check(request, services, output, error, Note)
-                : Write(request, services, output, error, Note);
+                ? Check(request, services, output, error, Note, Report)
+                : Write(request, services, output, error, Note, Report);
         }
         catch (Exception ex) when (ex is InvalidOperationException or OkfException or IOException or UnauthorizedAccessException)
         {
@@ -299,9 +313,9 @@ public static class OkfgenCli
         }
     }
 
-    private static int Write(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error, Action<string> note)
+    private static int Write(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error, Action<string> note, Action<string> runReport)
     {
-        var result = ExecuteAndReport(request, services, note);
+        var result = ExecuteAndReport(request, services, note, runReport);
 
         output.WriteLine($"Wrote {result.Written.ToString(CultureInfo.InvariantCulture)} concept(s) to {request.OutPath}.");
 
@@ -349,9 +363,9 @@ public static class OkfgenCli
     /// <i>why</i> the run was degraded, not <i>whether</i> anything is wrong. One funnel, so a third
     /// caller cannot reintroduce the drop.</para>
     /// </summary>
-    private static WriteResult ExecuteAndReport(GenerateRequest request, ProducerServices services, Action<string> note)
+    private static WriteResult ExecuteAndReport(GenerateRequest request, ProducerServices services, Action<string> note, Action<string> runReport)
     {
-        var result = GenerateRun.Execute(request, services, note);
+        var result = GenerateRun.Execute(request, services, note, runReport);
 
         foreach (var text in result.Notes)
         {
@@ -361,7 +375,7 @@ public static class OkfgenCli
         return result;
     }
 
-    private static int Check(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error, Action<string> note)
+    private static int Check(GenerateRequest request, ProducerServices services, TextWriter output, TextWriter error, Action<string> note, Action<string> runReport)
     {
         // The regeneration's own write failures, which this used to drop on the floor. `--check` runs
         // a real generation into the copy, so it can fail to write a concept exactly as `generate`
@@ -396,7 +410,7 @@ public static class OkfgenCli
             request.RepoPath,
             copy =>
             {
-                var result = ExecuteAndReport(request with { OutPath = copy }, services, note);
+                var result = ExecuteAndReport(request with { OutPath = copy }, services, note, runReport);
                 failures.AddRange(result.Failures);
                 return result.Written;
             });

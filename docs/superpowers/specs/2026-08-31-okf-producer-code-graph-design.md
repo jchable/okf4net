@@ -99,6 +99,10 @@ L'extracteur ingère du **code source arbitraire**, y compris d'un dépôt qu'on
 
 **La règle qui relie ce tableau au reste du design** : tout fichier ignoré, partiellement analysé ou annulé est **enregistré avec sa cause**, et restreint l'élagage en conséquence (§6.3). Le rapport de sortie liste les fichiers non analysés avec leur cause — c'est ce qui distingue « symbole supprimé » de « fichier non lu ».
 
+> **Livré en remédiation vague 3** (`GenerateRun.Summarize`, préfixe `run: ` sur stderr, §9). Cette phrase décrivait une intention que rien n'implémentait : `RunStatus` n'avait qu'un seul consommateur de production, à l'intérieur du refus d'élaguer de `BundleWriter`, que `Reconcile` court-circuite dès qu'il n'y a pas de manifeste précédent ou pas de candidat. Un premier run, un run `--reset`, ou tout run dont l'ensemble d'ids n'a pas rétréci calculaient donc `TraversalComplete` et chaque `FileStatus` non-`Extracted` puis les jetaient. Mesuré sur cet hôte, exit 0 et rien d'imprimé au-delà de `Wrote N concept(s)` : un `--max-file-size` sous l'unique fichier source, et une jonction circulaire (avec un `*.sln` racine, sans quoi c'est le scanner qui échoue bruyamment d'abord) qui vide la liste de fichiers et n'écrit qu'`overview`.
+>
+> Le rapport nomme les fichiers **entièrement ignorés**, plafonné à dix avec un compte de reste — pas les `PartiallyExtracted`, qui sont l'état normal d'un dépôt C# moderne (voir l'encadré ci-dessous) et noieraient les précédents. Les compteurs par cause, eux, sont toujours donnés.
+
 > **Corrigé à l'implémentation (mesure de la Task 4, ruling R21, appliqué en Task 11).** Le premier jet écrivait ici « un run partiel **n'élague rien** », et c'est trop grossier : cette formulation annule la règle 3 de §6.3 et rend l'élagage inatteignable.
 >
 > Mesuré : la grammaire tree-sitter vendorisée ne parse pas une expression de collection **vide** `[]` en position d'expression — idiome ordinaire du C# 12+, présent dans les sources de ce producer même — et 3 fichiers réels sur 6 échantillonnés reviennent `PartiallyExtracted` pour cette seule raison. `PartiallyExtracted` est donc l'**état normal** d'un dépôt C# moderne, pas un cas rare : la règle grossière aurait désactivé l'élagage pour toujours.
@@ -647,6 +651,16 @@ Drapeaux ajoutés à `okfgen generate` par ce lot :
 `--update` conserve son nom mais change de sémantique sur `code/` (élagage, §6.3).
 
 **En HEAD détaché**, il n'y a pas de nom de branche à mettre dans l'URL : `--rev` devient alors obligatoire pour obtenir des permaliens. À défaut, `--repo-url` est ignoré et on retombe sur les chemins repo-relatifs et leurs warnings (§4.3) — jamais sur un sha implicite, qui ferait churner les 470 concepts au commit suivant.
+
+### 9.1 Le rapport de complétude — ajouté en remédiation vague 3
+
+Chaque `generate` imprime **une ligne** sur stderr, préfixée `run: `, **que quelque chose ait mal tourné ou non** : fichiers lus et, s'ils ne se sont pas tous extraits, la répartition par cause ; traversée complète ou non (§2.3) ; projets détectés, projets compilés dans la clôture, et fichiers dont les appels ont été résolus exactement plutôt que par correspondance de nom (§7.2) ; et combien de concepts `code` sont atteignables depuis `overview` (§5.2). Suivent, le cas échéant, les fichiers **entièrement ignorés**, nommés avec leur cause, plafonnés à dix.
+
+**Le caractère inconditionnel est le point.** Toutes les autres déclarations de ce producer sur lui-même sont des `note:` conditionnées à leur propre déclencheur, et chaque déclencheur couvre un sous-ensemble différent de ce qu'un run peut laisser de côté : un run sans note est donc indiscernable d'un mécanisme qui n'a pas tiré. Rien n'agrégeait. C'est le constat agrégé de la revue finale — *« le bundle sous-décrit silencieusement l'API, et le producer n'a aucune déclaration à l'exécution de ce qu'il a laissé de côté »* — et il ferme trois trous nommés là-bas : `RunStatus` calculé puis jeté (§2.3), l'étage Roslyn court-circuité sans `else` sur un dépôt sans `.csproj` (§7.2), et la colonne vertébrale §5.2 cassée à 100 % sans qu'aucune note ne tire.
+
+Deux chiffres ne sont **pas** pris sur parole : la fraction de résolution est demandée au resolver fichier par fichier (`RoslynResolver.Owns`), donc un projet rapporté `Compiled` dont tous les items `Compile` ont été refusés avant la construction de la compilation compte zéro fichier exact ; et l'atteignabilité est parcourue sur les corps réellement produits avec `LinkScanner` — le scanner du validateur — plutôt que redérivée de la règle §5.1, donc un lien que ce producer a écrit et que le scanner ne voit pas compte comme absent ici exactement comme pour `okf validate`.
+
+Sur **stderr** et pas stdout : stdout porte le résultat du run, que lit une garde CI ; et le rapport ne doit rien changer à ce qui atterrit dans le bundle, ce qu'un flux ne peut pas faire (`--check` compare des octets de bundle).
 
 ---
 
