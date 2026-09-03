@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text.Json;
 using System.Xml.Linq;
+using OkfProducer.Core.Generation;
 
 namespace OkfProducer.Core.Scanning;
 
 /// <summary>
 /// Detects npm (<c>package.json</c>, root only) and NuGet package manifests, and a root
-/// <c>README.md</c>. NuGet projects are resolved from a root <c>*.sln</c>'s project references when
-/// one exists, otherwise by recursively walking the tree (skipping <c>bin</c>/<c>obj</c>/<c>.git</c>/
-/// <c>node_modules</c>). Malformed manifests are skipped, not fatal -- permissive, matching the rest
-/// of this codebase's scan philosophy.
+/// <c>README.md</c>. NuGet projects are resolved from the project references of every <c>*.sln</c>
+/// anywhere in the tree when there is at least one, otherwise by recursively walking for
+/// <c>*.csproj</c>; both walks skip <c>bin</c>/<c>obj</c>/<c>.git</c>/<c>node_modules</c>. Malformed
+/// manifests are skipped, not fatal -- permissive, matching the rest of this codebase's scan
+/// philosophy.
 /// </summary>
 public sealed class RepositoryScanner : IRepositoryScanner
 {
@@ -83,19 +85,43 @@ public sealed class RepositoryScanner : IRepositoryScanner
 
     private static readonly string[] ExcludedDirectoryNames = ["bin", "obj", ".git", "node_modules"];
 
+    /// <summary>
+    /// Every <c>.csproj</c> this repository presents as a package: the union of what its solutions
+    /// reference, or -- only when it has no solution at all -- every <c>.csproj</c> in the tree.
+    ///
+    /// <para><b>Why solutions are looked for at every depth, not just at the root.</b> A root-only
+    /// lookup is not a narrower search, it is a different rule: the first root solution found decides
+    /// the whole answer and silently discards every project belonging to a solution nested below it.
+    /// Measured on the OKF4net repository, that rule detected the 9 projects of <c>OKF4net.sln</c> and
+    /// missed the 8 others, so the 194 <c>code/</c> concepts under the <c>OkfProducer</c> namespace
+    /// belonged to no package concept and formed a component nothing reached from <c>overview</c> --
+    /// which <c>okf validate</c> does not report, because an orphan dangles nothing.</para>
+    ///
+    /// <para>What does NOT change: a <c>.csproj</c> that no solution references is still not a
+    /// package. The recursive <c>.csproj</c> walk stays a fallback for solution-less repositories
+    /// rather than becoming a union with it, so a test fixture or a scratch project sitting outside
+    /// every solution keeps being excluded.</para>
+    /// </summary>
     private static IReadOnlyList<string> ResolveCsprojPaths(string repoPath)
     {
-        var slnPaths = Directory.EnumerateFiles(repoPath, "*.sln", SearchOption.TopDirectoryOnly).ToList();
+        var slnPaths = EnumerateFilesRecursively(repoPath, "*.sln").ToList();
         if (slnPaths.Count == 0)
         {
-            return EnumerateCsprojFilesRecursively(repoPath)
+            return EnumerateFilesRecursively(repoPath, "*.csproj")
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
 
+        // A solution's project paths are relative and may climb out of the repository (`..\..\Shared`).
+        // Such a project has no repository-relative path to publish -- Path.GetRelativePath would emit
+        // a `../..` prefix, which every downstream `resource` and `sources` field would then carry --
+        // so it is not this repository's package to describe.
+        var repoRoot = Path.GetFullPath(repoPath).TrimEnd(Path.DirectorySeparatorChar);
+
         return slnPaths
             .SelectMany(ParseSolutionProjectPaths)
             .Where(File.Exists)
+            .Where(path => BundlePaths.IsInside(repoRoot, path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -131,9 +157,15 @@ public sealed class RepositoryScanner : IRepositoryScanner
         }
     }
 
-    private static IEnumerable<string> EnumerateCsprojFilesRecursively(string directory)
+    /// <summary>
+    /// Every file matching <paramref name="searchPattern"/> at or below <paramref name="directory"/>,
+    /// skipping <see cref="ExcludedDirectoryNames"/>. Shared by the solution walk and the
+    /// <c>.csproj</c> fallback so the two cannot come to disagree about which directories are build
+    /// output.
+    /// </summary>
+    private static IEnumerable<string> EnumerateFilesRecursively(string directory, string searchPattern)
     {
-        foreach (var file in Directory.EnumerateFiles(directory, "*.csproj", SearchOption.TopDirectoryOnly))
+        foreach (var file in Directory.EnumerateFiles(directory, searchPattern, SearchOption.TopDirectoryOnly))
         {
             yield return file;
         }
@@ -142,7 +174,7 @@ public sealed class RepositoryScanner : IRepositoryScanner
         {
             if (!ExcludedDirectoryNames.Contains(Path.GetFileName(subDirectory), StringComparer.OrdinalIgnoreCase))
             {
-                foreach (var file in EnumerateCsprojFilesRecursively(subDirectory))
+                foreach (var file in EnumerateFilesRecursively(subDirectory, searchPattern))
                 {
                     yield return file;
                 }
