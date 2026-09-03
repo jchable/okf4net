@@ -221,6 +221,16 @@ and this project adheres to
 
 ### Fixed
 
+- **Cancelling an attested computation now stops it, whatever the host stage
+  does.** The orchestrator handed its token to each stage and trusted them to
+  observe it; a stage that ignores its token — any client predating cancellation
+  support — meant an already-cancelled run executed every stage and could return
+  a *displayable* success, so a §10 computation ran against a live system after
+  the caller had withdrawn. The token is now checked at each step boundary. A
+  caller's cancellation is also recognised when it arrives wrapped in an
+  `AggregateException` (what `.Result`/`.Wait()` on a cancelled task produces at
+  a plugin boundary) and is re-raised as an `OperationCanceledException`, so it
+  reaches the caller in the shape they catch.
 - **`OkfContextProvider` also honours cancellation between injected concepts.**
   The V1 guard shipped only before the bundle walk, because no seam existed to
   drive a cancellation once the loop had started; the loop reads one concept off

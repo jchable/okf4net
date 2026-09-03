@@ -19,6 +19,9 @@ namespace OKF4net.Attestation;
 /// </summary>
 public sealed class AttestationOrchestrator
 {
+    /// <summary>Message on the <see cref="OperationCanceledException"/> synthesised when a caller's cancellation arrives wrapped.</summary>
+    private const string CancelledMessage = "The attested computation was cancelled.";
+
     private readonly IAttestationRuntimeRegistry _runtimes;
     private readonly IOkfClock _clock;
     private readonly StalePolicy _defaultPolicy;
@@ -119,6 +122,16 @@ public sealed class AttestationOrchestrator
         var staleAdmitted = (policy ?? _defaultPolicy).Admits(frontmatter.Lifecycle, now);
 
         // Step 5: bind.
+        //
+        // Checked here, and again before each stage below, because handing the
+        // token to a host stage is not the same as observing it. A stage whose
+        // underlying client predates cancellation support — or simply forgets —
+        // ignores its token, and an already-cancelled run then executed every
+        // stage and could return a DISPLAYABLE success: for §10 that means a
+        // computation actually ran, possibly against a live warehouse, after
+        // the caller had withdrawn.
+        cancellationToken.ThrowIfCancellationRequested();
+
         BoundComputation bound;
         try
         {
@@ -137,18 +150,36 @@ public sealed class AttestationOrchestrator
         // — a downstream timeout is a stage failure like any other. The token's
         // state is what actually distinguishes the two. Same filter on all
         // three stages below.
-        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        // Caller cancellation arriving WRAPPED is still cancellation, but it has
+        // to reach the caller in the shape they catch. A direct
+        // OperationCanceledException falls through both clauses uncaught, which
+        // keeps its original stack trace.
+        catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
+        {
+            throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
+        }
+        catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
         {
             return Fail([$"binder threw: {e.GetType().Name}"], stale, e);
         }
 
         // Step 6: execute.
+        cancellationToken.ThrowIfCancellationRequested();
+
         Receipt receipt;
         try
         {
             receipt = await runtime.Executor.ExecuteAsync(bound, contract, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        // Caller cancellation arriving WRAPPED is still cancellation, but it has
+        // to reach the caller in the shape they catch. A direct
+        // OperationCanceledException falls through both clauses uncaught, which
+        // keeps its original stack trace.
+        catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
+        {
+            throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
+        }
+        catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
         {
             return Fail([$"executor threw: {e.GetType().Name}"], stale, e);
         }
@@ -169,6 +200,8 @@ public sealed class AttestationOrchestrator
         Exception? error = null;
         if (receiptShapeOk)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var context = new AttestationContext(contract, resolved, bound, parameterValues, receipt);
             (verdict, error) = await AttestAsync(runtime, context, reasons, cancellationToken).ConfigureAwait(false);
         }
@@ -213,7 +246,15 @@ public sealed class AttestationOrchestrator
 
             return (verdict, null);
         }
-        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        // Caller cancellation arriving WRAPPED is still cancellation, but it has
+        // to reach the caller in the shape they catch. A direct
+        // OperationCanceledException falls through both clauses uncaught, which
+        // keeps its original stack trace.
+        catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
+        {
+            throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
+        }
+        catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
         {
             reasons.Add($"attester threw: {e.GetType().Name}");
             return (null, e);
@@ -282,6 +323,41 @@ public sealed class AttestationOrchestrator
                 failure = Fail("attested computation has no computation (neither an inline `# Computation` fence nor a `computation:` path)");
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="e"/> represents the CALLER's cancellation, which
+    /// propagates, rather than a stage failure, which becomes an outcome.
+    ///
+    /// Both halves are needed. The token must actually be cancelled, because
+    /// the exception type alone does not mean the caller withdrew: HttpClient
+    /// raises <see cref="TaskCanceledException"/> on its own request timeout
+    /// with nobody's token cancelled, and a host executor calling one is the
+    /// ordinary case — that is a stage failure like any other.
+    ///
+    /// And the cancellation has to be recognised however it is packaged. A
+    /// stage that blocks on a cancelled task with <c>.Result</c> or
+    /// <c>.Wait()</c> surfaces an <see cref="AggregateException"/> wrapping the
+    /// <see cref="OperationCanceledException"/>, which is a realistic shape at
+    /// a plugin boundary; matching only the top-level type turned the caller's
+    /// own cancellation into an ordinary non-displayable outcome.
+    /// <see cref="AggregateException.Flatten"/> handles nesting.
+    /// </summary>
+    /// <param name="e">The exception a host stage threw.</param>
+    /// <param name="cancellationToken">The token this run was given.</param>
+    private static bool IsCallerCancellation(Exception e, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        return e switch
+        {
+            OperationCanceledException => true,
+            AggregateException aggregate => aggregate.Flatten().InnerExceptions.Any(inner => inner is OperationCanceledException),
+            _ => false,
+        };
     }
 
     private static AttestationOutcome Fail(string reason, StaleState stale = StaleState.Unknown, Exception? error = null)

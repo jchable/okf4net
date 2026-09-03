@@ -47,6 +47,76 @@ public class AttestationOrchestratorTests
     }
 
     /// <summary>
+    /// The orchestrator handed its token to each host stage and then trusted
+    /// them to observe it. A stage that ignores its token is not a hypothetical
+    /// — it is any binder or executor whose underlying client predates
+    /// cancellation support, or simply forgets — and for those, an
+    /// already-cancelled run executed every stage and could return a
+    /// DISPLAYABLE success. For §10 that means a computation actually ran, and
+    /// possibly hit a warehouse, after the caller withdrew.
+    ///
+    /// Passing the token on is not observing it. The orchestrator checks at
+    /// each step boundary, so cancellation is honoured whatever the host does.
+    /// </summary>
+    [Fact]
+    public async Task A_cancelled_run_does_not_execute_stages_that_ignore_their_token()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var executed = false;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        // Ignores its token entirely, like a stage built on a client that has
+        // no cancellation support.
+        runtime.ExecuteFunc = (_, _, _) =>
+        {
+            executed = true;
+            return ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+
+        Assert.False(executed, "the executor ran after the caller had already withdrawn");
+    }
+
+    /// <summary>
+    /// A stage that cancels the supplied token and then faults with the
+    /// cancellation WRAPPED — an AggregateException, which is what
+    /// `.Result`/`.Wait()` on a cancelled task produces, and a realistic shape
+    /// at a plugin boundary — was converted into an ordinary non-displayable
+    /// outcome, because the filter only recognised a top-level
+    /// OperationCanceledException. The caller had cancelled; that is a
+    /// cancellation however it is packaged.
+    /// </summary>
+    [Fact]
+    public async Task A_wrapped_cancellation_still_propagates()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        var runtime = new FakeRuntime
+        {
+            ExecuteFunc = (_, _, _) =>
+            {
+                cts.Cancel();
+                throw new AggregateException(new OperationCanceledException(cts.Token));
+            },
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+    }
+
+    /// <summary>
     /// Cancellation is control flow, not data. Every stage's catch was a bare
     /// `catch (Exception)`, so an OperationCanceledException raised by a
     /// host-plugged stage was caught with everything else and converted into a
