@@ -106,8 +106,10 @@ hazard with a lever next to it.
 Notes — what a run could not do — go to **stderr**, prefixed `note: `; results go to
 stdout. A note never changes the exit code. The ones worth knowing:
 
-Each bullet names the site that emits it, so a documented note can be checked against
-the emitted one by grep rather than from memory.
+Where a bullet names the site that emits it, in parentheses, the documented note can be
+checked against the emitted one by grep rather than from memory. Bullets added or
+corrected since that habit started carry the site; the older ones do not yet, so an
+unlabelled bullet means the mapping has not been checked, not that it holds.
 
 - (`GenerateRun.ReportProjects`) a project the exact (Roslyn) resolver could not compile,
   so calls in its files fell back to name matching;

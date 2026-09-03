@@ -331,8 +331,8 @@ internal static class ProducerFixture
     /// assertions which half of the property it could and could not establish. Returning false and
     /// letting a test quietly assert nothing is the outcome this comment exists to prevent.</para>
     ///
-    /// <para><b>On the development host this returns <see langword="false"/> permanently, not
-    /// pending a measurement.</b> Developer Mode cannot be enabled on this machine (confirmed by its
+    /// <para><b>On the development host this returns <see langword="false"/> under any ordinary
+    /// run, permanently and not pending a measurement.</b> Developer Mode cannot be enabled on this machine (confirmed by its
     /// owner), and there is no other unprivileged route to
     /// <see cref="File.CreateSymbolicLink(string, string)"/> on Windows -- so every
     /// <c>overwriteShape</c> branch guarded by this method's return value goes unexecuted here under
