@@ -106,24 +106,34 @@ hazard with a lever next to it.
 Notes — what a run could not do — go to **stderr**, prefixed `note: `; results go to
 stdout. A note never changes the exit code. The ones worth knowing:
 
-- a project the exact (Roslyn) resolver could not compile, so calls in its files fell
-  back to name matching;
-- a project that *did* compile with zero errors but of which the run owns no file — the
-  same degradation under a report that says otherwise. It happens when every one of a
-  project's `Compile` items was refused before the compilation was built (each over
-  `--max-file-size`, each behind a link, each absent, or none of them inside the
-  repository): the compilation is then empty, and an empty *library* compilation has no
-  errors to report, so `Compiled` overstates it. Rare, and named rather than left to be
-  inferred from links that are approximate for a project the run called compiled;
+Each bullet names the site that emits it, so a documented note can be checked against
+the emitted one by grep rather than from memory.
+
+- (`GenerateRun.ReportProjects`) a project the exact (Roslyn) resolver could not compile,
+  so calls in its files fell back to name matching;
+- (`GenerateRun.ReportProjects`) a project that *did* compile with zero errors but of
+  which the run owns no file — the same degradation under a report that says otherwise.
+  It happens when every one of a project's `Compile` items was refused before the
+  compilation was built (each over `--max-file-size`, each behind a link, each absent, or
+  none of them inside the repository): the compilation is then empty, and an empty
+  *library* compilation has no errors to report, so `Compiled` overstates it. A project
+  that declares no `Compile` item at all is **not** this case and is not reported — it
+  owns nothing because it has nothing, with no refusal behind it and no links to lose;
 - code containers no package's `Compile` item set claims, so they hang off their own
   parent but off no package concept;
-- no source-ownership map at all, so the package → namespace level of the containment
-  spine is missing entirely. Two conditions produce that loss and they raise **two
-  different notes**: under `--no-msbuild` the stage never runs, so the flag's own note is
-  the one printed and it names this loss alongside the call-resolution one; with the stage
-  running but MSBuild able to answer for no project at all (no `dotnet` on `PATH`, a
-  repository that was never restored) a separate note says so and points at
-  `dotnet restore`.
+- (`ConceptGenerator.AttributePackages`) no source-ownership map at all, so the
+  package → namespace level of the containment spine is missing entirely. This note is
+  gated on nothing but the loss itself — no map supplied, at least one package concept,
+  at least one namespace group — so it is what **every** shape of the loss has in common,
+  and it says the same thing in each. Three run shapes leave the map unsupplied
+  (`GenerateRun.Execute` assigns it at exactly one site, inside the branch that queries
+  MSBuild): `--no-msbuild`, which additionally prints its own note naming this loss
+  beside the call-resolution one; the stage running but MSBuild able to answer for no
+  project at all (no `dotnet` on `PATH`, a repository that was never restored), where
+  `GenerateRun.Attribution` additionally points at `dotnet restore`; and a scan that
+  detected no `.csproj` to query at all, where neither of those branches runs and this
+  note is the only signal there is. (`--no-code` leaves the map unsupplied too, but
+  analyses no source, so there is no namespace to attribute and no note.)
   Nothing is guessed from the directory tree instead: a project can add, remove and
   link sources across directories, so a directory-derived link would attribute a
   namespace to the wrong package;

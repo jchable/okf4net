@@ -331,6 +331,17 @@ internal static class GenerateRun
                 continue;
             }
 
+            // Zero `Compile` items is not a refusal, and `Any` cannot tell the two apart: it is false
+            // for an empty set exactly as it is for a set whose every member the gate refused. A
+            // packaging or targets-only project -- Microsoft.Build.NoTargets, or
+            // EnableDefaultCompileItems=false with nothing added back -- declares none, compiles
+            // clean, and owns nothing, all of it healthy. The note below would report a refusal that
+            // never happened and a `## Calls` degradation for a project with no links to lose.
+            if (compiledInputs.CompileFiles.Count == 0)
+            {
+                continue;
+            }
+
             if (compiledInputs.CompileFiles.Any(file => owns(Relative(repoPath, file))))
             {
                 continue;

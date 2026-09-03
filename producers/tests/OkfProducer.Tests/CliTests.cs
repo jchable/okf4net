@@ -661,6 +661,28 @@ public class CliTests
     }
 
     [Fact]
+    public void A_project_with_no_compile_items_at_all_is_not_reported_as_a_refused_compilation()
+    {
+        // The other way to own none of your files: declare none. `Any` is false for an EMPTY
+        // `Compile` set exactly as it is for one the gate refused entirely, and a packaging or
+        // targets-only project -- Microsoft.Build.NoTargets, EnableDefaultCompileItems=false --
+        // legitimately has none, compiles clean, and is healthy. Reporting it would state a refusal
+        // that did not occur and a `## Calls` degradation for a project with no links to lose.
+        var repo = Path.Combine(Path.GetTempPath(), "okfgen-empty-compile-set-fixture");
+        var packaging = Path.Combine(repo, "build", "Packaging.csproj");
+        var notes = new List<string>();
+
+        GenerateRun.ReportProjects(
+            repo,
+            [new RoslynProjectReport(packaging, RoslynProjectAvailability.Compiled, string.Empty)],
+            [Inputs(packaging, [])],
+            _ => false,
+            notes.Add);
+
+        Assert.Empty(notes);
+    }
+
+    [Fact]
     public void Check_help_carries_the_whole_exclusion_list()
     {
         // BundleDrift owns that sentence because §6.2 requires the exclusion list to be closed and
@@ -691,6 +713,17 @@ public class CliTests
         Assert.Contains("but drops an over-cap item silently", help, StringComparison.Ordinal);
         Assert.Contains(
             "It does not make the run process-free: `git` still runs in the scanned tree",
+            help,
+            StringComparison.Ordinal);
+
+        // The clause that used to ride beside the first one, unpinned and false: the sentence ended
+        // "nothing reports it, and the project simply fails to compile", which holds at neither
+        // branch. A dropped file nothing else uses leaves a clean compilation reported `Compiled`,
+        // and a project whose every item was dropped IS reported -- by ReportProjects' second note,
+        // added in the same commit as the sentence denying it. The replacement makes no claim about
+        // the compilation at all, and this pins the refusal to make one.
+        Assert.Contains(
+            "any consequence this run can see is reported by its per-project notes",
             help,
             StringComparison.Ordinal);
     }

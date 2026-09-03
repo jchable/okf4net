@@ -335,9 +335,12 @@ internal static class ProducerFixture
     /// pending a measurement.</b> Developer Mode cannot be enabled on this machine (confirmed by its
     /// owner), and there is no other unprivileged route to
     /// <see cref="File.CreateSymbolicLink(string, string)"/> on Windows -- so every
-    /// <c>overwriteShape</c> branch guarded by this method's return value will never execute here, and
-    /// nothing a future round does to the tests can change that. Closing those branches needs a
-    /// different platform (Linux or macOS, where a file symbolic link is unprivileged), not more
+    /// <c>overwriteShape</c> branch guarded by this method's return value goes unexecuted here under
+    /// any ordinary run, and nothing a future round does to the <i>tests</i> can change that. It is
+    /// not literally unreachable: an <b>elevated</b> <c>dotnet test</c> holds
+    /// SeCreateSymbolicLinkPrivilege and the call succeeds, so those branches would run. Nobody should
+    /// need to run this suite elevated to measure it, which is why the supported way to close them is
+    /// a different platform (Linux or macOS, where a file symbolic link is unprivileged), not more
     /// effort here. What is <i>not</i> unexecuted: the junction shapes. Windows creates a directory
     /// junction with no privilege at all -- <see cref="CreateDirectoryLink"/> falls back to
     /// <c>mklink /J</c> and every test using it runs and asserts on this host. It is only the file
