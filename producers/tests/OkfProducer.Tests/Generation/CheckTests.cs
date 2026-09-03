@@ -541,25 +541,28 @@ public class CheckTests(ITestOutputHelper output)
         // outside CI by decision, so this is the only place they are checked at all.
         //
         // The warning total is pinned rather than merely bounded, and every warning is matched against
-        // the two kinds we have accepted, so a NEW kind cannot hide inside an unchanged total. Both
-        // known kinds are §4.3 consequences, and neither is new to this plan:
+        // the kinds we have accepted, so a NEW kind cannot hide inside an unchanged total. One kind is
+        // left, a §4.3 consequence:
         //
         //  * three "missing recommended frontmatter field `resource`" -- `overview` and the two
         //    container concepts. A container is not declared in one file, so there is no line span to
         //    build a permalink from, and §4.3 admits only a URL there.
-        //  * four "frontmatter path ... not found" on `packages/*` and `docs/*`, which carry a
-        //    repo-relative `resource` (`README.md`, `src/Fixture.csproj`). The validator resolves a
-        //    bare relative resource against the CONCEPT's own directory, not the bundle root, so it
-        //    looks for them inside the bundle and misses. That is the very trap §4.3 made the `code/`
-        //    family avoid by omitting `resource` entirely; the docs/packages families predate this
-        //    plan and still walk into it. Recorded here, where the harness measures it.
+        //
+        // The four "frontmatter path ... not found" this fixture used to carry are gone. `packages/*`
+        // and `docs/*` wrote a repo-relative `resource` AND repeated it in a one-entry `sources` block,
+        // and the validator resolves a bare relative resource against the CONCEPT's own directory, so
+        // both fields missed: two warnings apiece for one fact. This harness supplies
+        // ProducerFixture.RepoUrl and .Rev, so those two families now build the same forge URL the
+        // `code/` family does (the duplicate `sources` entry is gone in every run, URL or not).
+        // Without a repo URL they fall back to the repo-relative path and one of these would come
+        // back per concept -- see ConceptGenerator.FileResource for why that fallback is kept.
         var outcome = ProducerFixture.Validate(ProducerFixture.GoldenBundle);
 
         Assert.Equal(0, outcome.ErrorCount);
         Assert.True(outcome.IsConformant, string.Join("\n", outcome.DiagnosticLines));
         Assert.DoesNotContain(outcome.DiagnosticLines, line => line.Contains("BrokenLink", StringComparison.Ordinal));
 
-        Assert.Equal(7, outcome.WarningCount);
+        Assert.Equal(3, outcome.WarningCount);
         Assert.All(
             outcome.DiagnosticLines.Where(line => line.StartsWith("[warning]", StringComparison.Ordinal)),
             line => Assert.True(

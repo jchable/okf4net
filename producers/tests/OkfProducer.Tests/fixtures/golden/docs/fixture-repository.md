@@ -2,12 +2,9 @@
 type: Documentation
 title: Fixture Repository
 description: Repository documentation file README.md.
-resource: README.md
+resource: https://example.com/acme/fixture/blob/main/README.md
 tags:
   - documentation
-sources:
-  -
-    resource: README.md
 ---
 
 # Fixture Repository

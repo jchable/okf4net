@@ -41,8 +41,11 @@ public class ConceptGeneratorTests
         Assert.Equal("A little library.", packageConcept.Document.Frontmatter.Description);
         Assert.Contains("npm", packageConcept.Document.Frontmatter.Tags);
         Assert.Equal("package.json", packageConcept.Document.Frontmatter.Resource);
-        Assert.Single(packageConcept.Document.Frontmatter.Sources);
-        Assert.Equal("package.json", packageConcept.Document.Frontmatter.Sources[0].Resource);
+
+        // No `sources` block: its one entry used to repeat `resource` verbatim, which is the §4.5 rule
+        // the `code/` family already applies -- and it cost a second FrontmatterPathMissing warning per
+        // concept for a fact already stated one line above.
+        Assert.Empty(packageConcept.Document.Frontmatter.Sources);
     }
 
     [Fact]
@@ -112,8 +115,54 @@ public class ConceptGeneratorTests
         Assert.Equal("My Great Tool", docConcept.Document.Frontmatter.Title);
         Assert.Contains("documentation", docConcept.Document.Frontmatter.Tags);
         Assert.Equal("README.md", docConcept.Document.Frontmatter.Resource);
-        Assert.Single(docConcept.Document.Frontmatter.Sources);
-        Assert.Equal("README.md", docConcept.Document.Frontmatter.Sources[0].Resource);
+        Assert.Empty(docConcept.Document.Frontmatter.Sources);
+    }
+
+    [Fact]
+    public void Generate_gives_packages_and_docs_a_forge_url_resource_when_a_repo_url_and_a_rev_are_supplied()
+    {
+        // The defect this pins. `--repo-url` reached the `code/` family only: these two builders never
+        // took GenerateOptions at all, so on a real run of this repository WITH `--repo-url` -- where
+        // every code concept's `resource` becomes a resolving permalink -- the ten `packages/*` and
+        // `docs/*` concepts still emitted a bare repo-relative path the validator resolves against the
+        // concept's own directory and misses. Measured before the fix: 20 of the 55 remaining warnings.
+        //
+        // No line span, unlike a code concept's: the concept is about the whole file, and there is no
+        // declaration to point a reader at inside it.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "src/Fixture.csproj", "Fixture", "A package.")],
+            [new DocFile("docs/guide.md", "Guide")]);
+
+        var options = GenerateOptions.Default with { RepoUrl = "https://github.com/o/r", Rev = "main" };
+        var concepts = new ConceptGenerator().Generate(snapshot, codeGraph: null, options);
+
+        Assert.Equal(
+            "https://github.com/o/r/blob/main/src/Fixture.csproj",
+            concepts.Single(c => c.Id.ToString() == "packages/fixture").Document.Frontmatter.Resource);
+        Assert.Equal(
+            "https://github.com/o/r/blob/main/docs/guide.md",
+            concepts.Single(c => c.Id.ToString() == "docs/guide").Document.Frontmatter.Resource);
+    }
+
+    [Fact]
+    public void Generate_escapes_a_packages_resource_url_segment_by_segment_and_builds_it_from_the_parsed_uri()
+    {
+        // The two properties BlobUrl carries that a bare concatenation would lose, now that a second
+        // family reaches it: a space in a path becomes %20 rather than breaking the URL, and a query
+        // string on --repo-url is dropped instead of landing mid-path (`.../r?x=1/blob/main/...`),
+        // which the validator would still classify as a Url and pass with no warning -- a silently
+        // wrong link. Asserted here as well as on the code family precisely because the shared helper
+        // is what makes both true, and one family's test alone would not notice it being bypassed.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "src/my dir/Fixture.csproj", "Fixture", "A package.")],
+            []);
+
+        var options = GenerateOptions.Default with { RepoUrl = "https://github.com/o/r?x=1", Rev = "feature/a b" };
+        var concepts = new ConceptGenerator().Generate(snapshot, codeGraph: null, options);
+
+        Assert.Equal(
+            "https://github.com/o/r/blob/feature/a%20b/src/my%20dir/Fixture.csproj",
+            concepts.Single(c => c.Id.ToString() == "packages/fixture").Document.Frontmatter.Resource);
     }
 
     [Fact]

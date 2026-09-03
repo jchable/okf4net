@@ -2,12 +2,9 @@
 type: Package
 title: Fixture
 description: The one package of the producer's fixture repository.
-resource: src/Fixture.csproj
+resource: https://example.com/acme/fixture/blob/main/src/Fixture.csproj
 tags:
   - nuget
-sources:
-  -
-    resource: src/Fixture.csproj
 ---
 
 # Fixture

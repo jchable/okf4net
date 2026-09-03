@@ -225,7 +225,9 @@ En revanche le classifieur **court-circuite sur une URL** (statut `Url`, `Bundle
 
 Sans `--repo-url`, on retombe sur le chemin repo-relatif et on assume les warnings — documenté comme tel.
 
-**Note de conformité amont** : `ROADMAP.md` décrit cette même limitation en disant que le validateur résout `sources[].resource` « relative to the bundle root ». C'est la même imprécision ; à corriger dans ce lot.
+> **Corrigé à l'implémentation (2026-09-03).** La phrase ci-dessus est restée vraie pour `packages/` et `docs/`, mais **pas** pour `code/` : cette famille n'émet aucun champ plutôt qu'un chemin repo-relatif, parce qu'omettre coûte exactement le même nombre de warnings (`resource` est un champ recommandé) et que le corps du concept nomme déjà son fichier dans chaque libellé de span `## Signatures`. Les deux familles sans span n'ont pas cet autre pointeur, donc elles gardent le chemin. Et — le vrai défaut, resté invisible à 607 tests — `BuildPackageConcept`/`BuildDocConcept` ne recevaient pas `GenerateOptions` du tout : **avec** `--repo-url`, où chaque concept `code/` obtenait une URL qui résout, ces deux familles écrivaient encore un chemin nu qui manque. Mesuré sur ce dépôt avant correction : 20 des 55 warnings restants. Elles construisent désormais la même URL (sans span, le concept portant sur le fichier entier), via le même `BlobUrl`. Voir `producers/README.md`, « What `--repo-url` changes ».
+
+**Note de conformité amont** : `ROADMAP.md` décrivait cette limitation en disant que le validateur résout `sources[].resource` « relative to the bundle root ». Imprécision corrigée ; l'entrée y a depuis été réécrite, le bloc `sources` en question n'étant plus émis (§4.5).
 
 ### 4.4 `generated` : `by` partout, `at` sur `overview` seul
 
@@ -243,7 +245,7 @@ Donc : `overview` porte `generated: { by, at }` + `revision: <sha>` ; les concep
 
 - **Pas de section `## Called by`.** `Bundle.Backlinks(id)` est public et calculé au chargement ; matérialiser les liens retour dupliquerait une information dérivable et **doublerait le churn** — ajouter un appel dans un fichier réécrirait aussi le concept de l'appelé.
 - **Les appels non résolus sont du texte, pas des liens.** Le spike a mesuré que **57,5 % des sites d'appel pointent hors du repo** (BCL, NuGet). Les lier produirait autant de `BrokenLink` — des `Info` seulement, mais assez pour noyer `validate`. En code span, ils restent lisibles et greppables sans polluer le graphe.
-- **Pas de bloc `sources`** : il ferait doublon avec `resource` sur 470 concepts.
+- **Pas de bloc `sources`** : il ferait doublon avec `resource` sur 470 concepts. *(2026-09-03 : la règle est désormais tenue par **toutes** les familles. `packages/` et `docs/` émettaient une entrée unique dont le `resource` était la même chaîne que le champ au-dessus — le cas exact que cette règle vise — pour un second warning par concept sur un fait déjà énoncé. Supprimée.)*
 - **Les liens sont absolus** (`/code/...`), la forme recommandée par §6.1 — aucune arithmétique de chemin relatif dans le générateur.
 
 ---
@@ -640,7 +642,7 @@ Drapeaux ajoutés à `okfgen generate` par ce lot :
 
 | Flag | Défaut | Rôle | § |
 |---|---|---|---|
-| `--repo-url <url>` | absent | base des permaliens `resource` ; sans lui, chemins repo-relatifs + warnings assumés | 4.3 |
+| `--repo-url <url>` | absent | base des URL `resource` de **toutes** les familles ; sans lui, `code/` n'émet rien et `packages/`/`docs/` retombent sur le chemin repo-relatif + warnings assumés | 4.3 |
 | `--rev <ref>` | branche courante | ref utilisée dans l'URL des permaliens (jamais un sha par défaut) | 4.3 |
 | `--check` | off | régénère dans un temporaire et compare octet à octet ; sortie non nulle si dérive | 6.2 |
 | `--include-tests` | off | inclut les projets/dossiers de test | 5.4 |

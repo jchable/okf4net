@@ -122,17 +122,22 @@ are the concrete entry points.
     deliberately outside git (so the suite stays at ~16 s and spawns no MSBuild), and the detached
     -HEAD case is covered by the one test that does build a git repository. The auto-detected
     branch name is verified by manual run only.
-- **Known limitation: `packages/` and `docs/` `resource` paths don't resolve against the bundle.**
-  `producers/OkfProducer` records those families' `resource`/`sources[].resource` relative to the
+- **Known limitation: without `--repo-url`, `packages/` and `docs/` `resource` paths don't resolve
+  against the bundle.** `producers/OkfProducer` records those families' `resource` relative to the
   *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct
   provenance reference — but `BundleValidator` resolves a bare relative `resource` against the
   **concept's own directory**, not the bundle root (`Bundle.TryResolveResource`), so
   `packages/okf4net.md` sends the validator looking under `<bundle>/packages/src/OKF4net/…` and it
-  misses by construction: one "path not found" warning apiece (20 on this repository). Decided at
-  merge time: accept the warning rather than embed copies of referenced files in the bundle (a
-  larger, unplanned scope change). The `code/` family is not affected — it omits `resource`
-  entirely unless `--repo-url` and a ref make it an absolute permalink, which is exactly this
-  mechanism's reason. Revisit only if this becomes real friction once the producer has users.
+  misses by construction: one "path not found" warning apiece, 10 on this repository.
+  **`--repo-url` removes all 10**: those families build the same forge URL the `code/` family does,
+  and a URL short-circuits the validator's path classifier. The original entry here recorded 20
+  warnings and framed the only alternative as embedding copies of referenced files in the bundle;
+  both were wrong. Half the 20 came from a one-entry `sources` block repeating `resource` verbatim
+  (deleted — §4.5 already forbade it by name), and the other half needed no scope change at all,
+  only passing `GenerateOptions` to two builders that had never taken it. What remains is the
+  no-`--repo-url` fallback, kept deliberately: omitting the field costs the same 10 warnings
+  (measured, 2026-09-03) and the path is the only pointer those concepts have to their own subject.
+  See `producers/README.md`, "What `--repo-url` changes".
 
 ## Out of scope
 

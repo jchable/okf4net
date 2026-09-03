@@ -209,8 +209,10 @@ public static class OkfgenCli
                 // Refused here rather than tolerated, because the failure downstream is silent: the
                 // generator returns no permalink for a value that is not an absolute http(s) URL, so
                 // `--repo-url github.com/o/r` or `--repo-url git@github.com:o/r` -- the two forms a
-                // forge displays and a user pastes -- would produce a successful-looking run
-                // containing not one `resource`. A detached HEAD gets a note instead of an error
+                // forge displays and a user pastes -- would produce a successful-looking run whose
+                // code concepts carry no `resource` at all and whose `packages/`/`docs/` ones fall
+                // back to a repo-relative path: the no-`--repo-url` output, from a command that named
+                // one. A detached HEAD gets a note instead of an error
                 // because nothing the operator typed is wrong there; here it is.
                 //
                 // Through GenerateOptions.TryPermalinkBase, which is the generator's OWN rule and not

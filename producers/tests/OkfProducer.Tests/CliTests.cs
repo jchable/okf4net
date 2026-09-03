@@ -156,9 +156,15 @@ public class CliTests
         var result = Run("generate", "--repo", repo, "--out", bundle, "--no-code", "--repo-url", "https://example.com/acme/demo", "--rev", "main");
         Assert.Equal(0, result.ExitCode);
 
+        // The reference is built with the SAME --repo-url and --rev the CLI was given, not with
+        // GenerateOptions.Default. `packages/*` and `docs/*` build their `resource` from those two
+        // options as well as `code/*` does, so a default-options reference would now differ from the
+        // run on every one of those concepts -- a difference about this test's own setup rather than
+        // about --no-code, which is the only thing it is here to measure.
         var reference = Path.Combine(workspace.Path, "reference");
         var snapshot = new RepositoryScanner().Scan(repo);
-        new BundleWriter().Write(reference, new ConceptGenerator().Generate(snapshot), WritePolicy.RequireEmpty, repo);
+        var options = GenerateOptions.Default with { RepoUrl = "https://example.com/acme/demo", Rev = "main" };
+        new BundleWriter().Write(reference, new ConceptGenerator().Generate(snapshot, codeGraph: null, options), WritePolicy.RequireEmpty, repo);
 
         AssertSameBytes(reference, bundle);
 
@@ -437,8 +443,10 @@ public class CliTests
     public void A_repo_url_that_is_not_an_absolute_http_url_is_rejected_before_anything_is_written()
     {
         // Both forms a forge displays and a user pastes. Each would otherwise produce a
-        // successful-looking run carrying not one `resource`, since the generator silently returns no
-        // permalink for anything that is not an absolute http(s) URL.
+        // successful-looking run indistinguishable from one given no --repo-url at all -- no
+        // `resource` on any code concept, a repo-relative path on the `packages/`/`docs/` ones --
+        // since the generator silently returns no permalink for anything that is not an absolute
+        // http(s) URL.
         foreach (var malformed in new[] { "github.com/acme/demo", "git@github.com:acme/demo.git", "file:///srv/demo" })
         {
             using var workspace = NewWorkspace(out var repo, out var bundle);

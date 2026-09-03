@@ -6,7 +6,7 @@ tags:
   - repository
 generated:
   by: okfgen/0.1.0
-  at: 2026-09-01T12:29:42Z
+  at: 2026-09-03T12:28:06Z
 ---
 
 # fixture-repo

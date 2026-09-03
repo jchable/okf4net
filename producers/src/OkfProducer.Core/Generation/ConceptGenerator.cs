@@ -157,12 +157,12 @@ public sealed class ConceptGenerator : IConceptGenerator
         {
             results.Add(new GeneratedConcept(
                 id,
-                BuildPackageConcept(manifest, code.ChildrenOf(id), options.ExistingFrontmatter?.Invoke(id))));
+                BuildPackageConcept(manifest, code.ChildrenOf(id), options.ExistingFrontmatter?.Invoke(id), options)));
         }
 
         foreach (var (id, doc) in docs)
         {
-            results.Add(new GeneratedConcept(id, BuildDocConcept(doc, options.ExistingFrontmatter?.Invoke(id))));
+            results.Add(new GeneratedConcept(id, BuildDocConcept(doc, options.ExistingFrontmatter?.Invoke(id), options)));
         }
 
         results.AddRange(code.Concepts);
@@ -297,7 +297,7 @@ public sealed class ConceptGenerator : IConceptGenerator
         return builder.Build();
     }
 
-    private static OkfDocument BuildPackageConcept(PackageManifest package, IReadOnlyList<Child> children, Frontmatter? existing)
+    private static OkfDocument BuildPackageConcept(PackageManifest package, IReadOnlyList<Child> children, Frontmatter? existing, GenerateOptions options)
     {
         var derived = package.Description ?? $"{package.Ecosystem} package {package.Name}.";
         var (description, preserved) = LiftedDescription(derived, existing);
@@ -312,14 +312,13 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Title(package.Name)
             .Description(description)
             .Tags(package.Ecosystem)
-            .Resource(package.RelativePath)
-            .AddSource(resource: package.RelativePath)
+            .Resource(FileResource(package.RelativePath, options))
             .Body(body.ToString());
 
         return WithPreservedSource(builder, preserved).Build();
     }
 
-    private static OkfDocument BuildDocConcept(DocFile doc, Frontmatter? existing)
+    private static OkfDocument BuildDocConcept(DocFile doc, Frontmatter? existing, GenerateOptions options)
     {
         var derived = $"Repository documentation file {doc.RelativePath}.";
         var (description, preserved) = LiftedDescription(derived, existing);
@@ -329,8 +328,7 @@ public sealed class ConceptGenerator : IConceptGenerator
             .Title(doc.Title)
             .Description(description)
             .Tags("documentation")
-            .Resource(doc.RelativePath)
-            .AddSource(resource: doc.RelativePath)
+            .Resource(FileResource(doc.RelativePath, options))
             // The title is lifted straight out of the README's own `# ` heading, where
             // `# [Guide](docs/guide.md)` is an ordinary thing to write -- and a bundle-relative link
             // nobody meant.
@@ -1142,6 +1140,9 @@ public sealed class ConceptGenerator : IConceptGenerator
         }
 
         // §4.5: no `sources` block -- it would duplicate `resource` on every one of ~470 concepts.
+        // No family emits one any more: `packages/` and `docs/` used to write a single entry whose
+        // `resource` was the same string as the field above it, which is this rule's own case and cost
+        // a second warning per concept for one fact.
         builder = builder.Extension(DescriptionResolver.DescriptionSourceKey, new YamlString(descriptionSource));
 
         // §4.4: `by` and never `at`. All ~470 concepts are generated in one pass, so a per-concept
@@ -2172,13 +2173,43 @@ public sealed class ConceptGenerator : IConceptGenerator
             : [fact.Language, KindTag(fact.Kind), VisibilityTag(fact.Visibility)];
 
     /// <summary>
-    /// The forge permalink for one declaration, or <see langword="null"/> when this run has nothing to
-    /// build one from. See <see cref="GenerateOptions.RepoUrl"/> for why the alternative is no field
-    /// at all rather than a repo-relative path. Built segment by segment with escaping, never by raw
-    /// concatenation (§4.3), and the ref keeps its own <c>/</c> separators so <c>feature/x</c> still
-    /// addresses a blob.
+    /// The forge permalink for one declaration -- a <see cref="BlobUrl"/> with the declaration's line
+    /// span appended -- or <see langword="null"/> when this run has nothing to build one from. See
+    /// <see cref="GenerateOptions.RepoUrl"/> for why a <c>code/</c> concept's alternative is no field
+    /// at all rather than a repo-relative path, and <see cref="FileResource"/> for why the
+    /// <c>packages/</c> and <c>docs/</c> families answer that same question the other way.
     /// </summary>
-    private static string? ResourceUrl(SymbolFact declaration, GenerateOptions options)
+    private static string? ResourceUrl(SymbolFact declaration, GenerateOptions options) =>
+        BlobUrl(declaration.RelativePath, options) is { } blob ? blob + LineSpan(declaration) : null;
+
+    /// <summary>
+    /// The <c>resource</c> a whole-file concept carries: the same §4.3 permalink when this run can
+    /// build one, and the repository-relative path when it cannot.
+    ///
+    /// <para><b>Why this differs from the <c>code/</c> family's rule, which omits the field instead.</b>
+    /// The choice turns on what the fallback costs and what it carries, and both differ here. Cost:
+    /// after the duplicate <c>sources</c> entry was dropped, a non-resolving path earns exactly one
+    /// <c>FrontmatterPathMissing</c> warning per concept and omitting the field earns exactly one
+    /// <c>missing recommended frontmatter field</c> -- measured on this repository as 10 and 10 -- so
+    /// keeping it is free. Content: a code concept's body already names its file in every
+    /// <c>## Signatures</c> span label, so dropping <c>resource</c> loses a reader nothing, whereas a
+    /// <c>Package</c> or <c>Documentation</c> concept has no other pointer at all to the single file
+    /// it is about. Tied on cost and ahead on content, so the path stays.</para>
+    /// </summary>
+    private static string FileResource(string relativePath, GenerateOptions options) =>
+        BlobUrl(relativePath, options) ?? relativePath;
+
+    /// <summary>
+    /// The forge blob URL for one repository-relative path, with no line span, or
+    /// <see langword="null"/> when this run has nothing to build one from. The single site the
+    /// permalink rule lives at: <see cref="ResourceUrl"/> appends a declaration's span to it and
+    /// <see cref="FileResource"/> uses it as-is, so the two families cannot drift into different
+    /// escaping or a different base.
+    ///
+    /// <para>Built segment by segment with escaping, never by raw concatenation (§4.3), and the ref
+    /// keeps its own <c>/</c> separators so <c>feature/x</c> still addresses a blob.</para>
+    /// </summary>
+    private static string? BlobUrl(string relativePath, GenerateOptions options)
     {
         if (options.Rev is not { Length: > 0 } rev)
         {
@@ -2203,9 +2234,9 @@ public sealed class ConceptGenerator : IConceptGenerator
         // path, which is exactly the base a blob URL is built on.
         var basePart = parsed.GetLeftPart(UriPartial.Path).TrimEnd('/');
         var revPart = EscapePath(rev);
-        var pathPart = EscapePath(NormalizeSeparators(declaration.RelativePath));
+        var pathPart = EscapePath(NormalizeSeparators(relativePath));
 
-        return $"{basePart}/blob/{revPart}/{pathPart}{LineSpan(declaration)}";
+        return $"{basePart}/blob/{revPart}/{pathPart}";
     }
 
     private static string EscapePath(string path) =>

@@ -49,7 +49,7 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--out <path>` | required | Bundle to write. |
 | `--update` | off | Write into a non-empty `--out`. Concepts this run does not generate are preserved — except under `code`, where a concept the previous run claimed and this one no longer produces is pruned. |
 | `--reset` / `--force` | off | Delete and recreate `--out` first. Refused when `--out` is, or contains, `--repo`, and refused when `--out` holds a symbolic link or junction (see below). The delete happens at the commit boundary, so a run that fails while *generating* leaves the old bundle — but a run interrupted during the commit itself leaves an empty or half-repopulated directory, and unlike every other operation here that costs the hand-written concepts outside `code` too. `--reset` means "throw this bundle away and write it again"; `--update` is the flag with no such window. |
-| `--repo-url <url>` | absent | Permalink base, e.g. `https://github.com/owner/repo`. With a ref, every code concept gets a `resource` link to its declaration. Without both, **no `resource` is emitted at all** — see below. |
+| `--repo-url <url>` | absent | Permalink base, e.g. `https://github.com/owner/repo`. With a ref, every concept gets a forge-URL `resource`: a code concept links to its declaration with a line span, a `packages/`/`docs/` one to the whole file it describes. Without both, a code concept emits **no `resource` at all** and a `packages/`/`docs/` one falls back to its repository-relative path — see below. |
 | `--rev <ref>` | current branch | The ref permalinks point at. Never a commit sha by default: a sha would rewrite every code concept's `resource` on the next commit. On a detached HEAD there is no branch name, so this becomes required for permalinks. |
 | `--check` | off | Regenerate over a copy of the bundle and exit non-zero if anything differs. Never writes to `--out`. Refused with `--reset`/`--force` (it would delete nothing while the operator believed a reset happened) and with `--no-code` (see below). |
 | `--include-tests` | off | Walk test projects and `test`/`tests`/`spec` directories too. |
@@ -284,7 +284,8 @@ keyed on `--check` would stay green for ever. Drop one of the two flags.
 A **malformed** `--repo-url` is not a note but an error: anything that is not an absolute
 `http`/`https` URL (`github.com/o/r`, `git@github.com:o/r` — the two forms a forge shows
 and a user pastes) is rejected before any work, because the alternative is a
-successful-looking run containing not one `resource`.
+successful-looking run whose ~690 code concepts carry no `resource` at all — the
+no-`--repo-url` output, produced by a command that named one.
 
 ### Symbolic links and junctions inside the bundle
 
@@ -400,17 +401,33 @@ behind; choosing "follow" keeps the current behaviour and the current exposure. 
 have a real cost and neither was picked here. A maintainer changing either site should settle
 this first, and change both.
 
-### Why `--repo-url` is all-or-nothing
+### What `--repo-url` changes, and what each family does without it
 
-Without both a repo URL and a ref, code concepts carry **no** `resource` field rather
-than a repository-relative path. That is not a shortcut. `BundleValidator` resolves a
-bare relative `resource` against the **concept's own directory** — so
-`src/Links.cs` on `code/csharp/okf4net/link-scanner/scan` would be looked for under
-`<bundle>/code/csharp/okf4net/link-scanner/src/Links.cs`, a miss for every code
-concept and one warning apiece. Omitting the field costs exactly the same number of
-warnings, and only one of the two is honest. (The `packages/` and `docs/` families do
-still carry repo-relative paths that miss this way — a pre-existing, deliberately
-accepted limitation recorded in `ROADMAP.md`.)
+**With** a repo URL and a ref, there is one rule and no family is exempt: `resource` is a
+forge URL. A code concept points at its declaration with a line span; a `packages/` or
+`docs/` concept points at the whole file it is about, with no span, because there is no
+declaration inside it to land a reader on.
+
+**Without** them the families part company, and the reason is arithmetic rather than
+taste. `BundleValidator` resolves a bare relative `resource` against the **concept's own
+directory** — so `src/Links.cs` on `code/csharp/okf4net/link-scanner/scan` would be looked
+for under `<bundle>/code/csharp/okf4net/link-scanner/src/Links.cs`, a miss, and one
+warning. Omitting the field costs exactly one warning too, since `resource` is a
+recommended field. The two options therefore cost the same, and the tie is broken on what
+each carries:
+
+- **`code/` emits nothing.** A code concept's body already names its file in every
+  `## Signatures` span label, so dropping `resource` loses a reader nothing, and a path
+  that cannot resolve is a claim the bundle cannot honour.
+- **`packages/` and `docs/` keep the repository-relative path.** It is the only pointer
+  those concepts have to the single file they are about, so here the tie breaks the other
+  way. `ConceptGenerator.FileResource` is where this is argued in the code.
+
+Measured on this repository (701 concepts, `okf validate`, 2026-09-03): with
+`--repo-url`, **35** warnings, none of them from `packages/`/`docs/`; without it, **701**
+— 691 code concepts with no `resource`, plus the 10 `packages/`/`docs/` paths that miss.
+Stripping `resource` from those same 10 concepts by hand gives **701** as well, which is
+the "costs the same" claim above, measured rather than assumed.
 
 ## Packaging — a manual release step, not a guarantee
 

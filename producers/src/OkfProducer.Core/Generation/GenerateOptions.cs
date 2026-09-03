@@ -15,8 +15,9 @@ namespace OkfProducer.Core.Generation;
 public sealed record GenerateOptions
 {
     /// <summary>
-    /// The options a run uses when the caller supplies none: no repository URL (so no
-    /// <c>resource</c> is emitted at all -- see <see cref="RepoUrl"/>), no language profiles, no
+    /// The options a run uses when the caller supplies none: no repository URL (so a <c>code/</c>
+    /// concept carries no <c>resource</c> at all and a <c>packages/</c> or <c>docs/</c> one falls back
+    /// to its repository-relative path -- see <see cref="RepoUrl"/>), no language profiles, no
     /// existing bundle to preserve descriptions from, and no source-ownership map (so no
     /// package -> namespace containment link -- see <see cref="SourceOwnership"/>).
     /// </summary>
@@ -25,17 +26,22 @@ public sealed record GenerateOptions
     /// <summary>
     /// Base URL of the repository being scanned (e.g. <c>https://github.com/o/r</c>), from the CLI's
     /// <c>--repo-url</c>. When it and <see cref="Rev"/> are both present and this is an absolute
-    /// <c>http</c>/<c>https</c> URL, every code concept carries a <c>resource</c> pointing at its
-    /// declaration with a line span; otherwise <b>no <c>resource</c> is emitted at all</b>.
+    /// <c>http</c>/<c>https</c> URL, <b>every</b> family's <c>resource</c> is a forge URL: a code
+    /// concept points at its declaration with a line span, and a <c>packages/</c> or <c>docs/</c>
+    /// concept at the whole file it is about. Otherwise the two families part company -- a code
+    /// concept emits <b>no <c>resource</c> at all</b> and the other two fall back to their
+    /// repository-relative path.
     ///
-    /// That "otherwise" is not a shortcut, it is §4.3: the validator resolves a bare relative
-    /// <c>resource</c> against the <i>concept's own directory</i>, not the bundle root
-    /// (<c>Bundle.TryResolveResource</c>), so a repo-relative path such as <c>src/Links.cs</c> carried
-    /// by <c>code/csharp/okf4net/link-scanner/scan.md</c> would be looked for under
-    /// <c>&lt;bundle&gt;/code/csharp/okf4net/link-scanner/src/Links.cs</c> -- a miss for every code
-    /// concept, and one <c>FrontmatterPathMissing</c> warning apiece. Omitting the field costs exactly
-    /// the same number of warnings (<c>resource</c> is a recommended field), so the two options cost
-    /// the same and only one of them is honest.
+    /// That parting is not an oversight, it is §4.3 applied twice with different inputs. The validator
+    /// resolves a bare relative <c>resource</c> against the <i>concept's own directory</i>, not the
+    /// bundle root (<c>Bundle.TryResolveResource</c>), so a repo-relative path such as
+    /// <c>src/Links.cs</c> carried by <c>code/csharp/okf4net/link-scanner/scan.md</c> would be looked
+    /// for under <c>&lt;bundle&gt;/code/csharp/okf4net/link-scanner/src/Links.cs</c> -- a miss, and one
+    /// <c>FrontmatterPathMissing</c> warning apiece. Omitting the field costs exactly the same number
+    /// of warnings (<c>resource</c> is a recommended field), so for a code concept the two options
+    /// cost the same and only one of them is honest. For a whole-file concept they still cost the
+    /// same, but the path is the only pointer that concept has to its own subject, so it is kept --
+    /// see <c>ConceptGenerator.FileResource</c>, which is where that tie-break is argued in full.
     /// </summary>
     public string? RepoUrl { get; init; }
 
