@@ -86,12 +86,16 @@ no MSBuild logic from the scanned tree is evaluated**, and calls are resolved by
 name-matching baseline — which refuses an ambiguous name rather than guessing it, so the call
 links you lose are edges, not correctness. The run says so in a note.
 
-Two things it is **not**. It does not make the run process-free: `okfgen` runs `git` three
-times in the scanned tree on *every* generate (`git symbolic-ref`, `git show -s`,
-`git rev-parse`, all with the repository as their working directory, reading its
-`.git/config`). Far less exposure than MSBuild — none of the three triggers a hook, an
-fsmonitor, or a pager with stdout redirected — but it is not nothing, and this section used
-to say "no process is spawned". And it is not free of structural cost: the source-ownership
+Two things it is **not**. It does not make the run process-free: `okfgen` runs `git` in the
+scanned tree, with the repository as the working directory, reading its `.git/config`. How
+many times depends on the flags, so here is the whole of it rather than a number. `git show
+-s` and `git rev-parse` run on *every* generate — they stamp `overview`'s `generated.at`
+and `revision`. `git symbolic-ref` runs as well, **unless `--rev` already named the ref**, in
+which case the branch is never read. And `--check` runs one further `git rev-parse` in the
+scanned tree before the regeneration it compares against, on top of that regeneration's own.
+Two to four invocations, then. Far less exposure than MSBuild — none of them triggers a hook,
+an fsmonitor, or a pager with stdout redirected — but it is not nothing, and this section
+used to say "no process is spawned". And it is not free of structural cost: the source-ownership
 map comes out of the same MSBuild query, so with the flag on there is **no `packages` →
 namespace containment link at all**, and under `--update` those links are overwritten.
 
@@ -104,11 +108,22 @@ stdout. A note never changes the exit code. The ones worth knowing:
 
 - a project the exact (Roslyn) resolver could not compile, so calls in its files fell
   back to name matching;
+- a project that *did* compile with zero errors but of which the run owns no file — the
+  same degradation under a report that says otherwise. It happens when every one of a
+  project's `Compile` items was refused before the compilation was built (each over
+  `--max-file-size`, each behind a link, each absent, or none of them inside the
+  repository): the compilation is then empty, and an empty *library* compilation has no
+  errors to report, so `Compiled` overstates it. Rare, and named rather than left to be
+  inferred from links that are approximate for a project the run called compiled;
 - code containers no package's `Compile` item set claims, so they hang off their own
   parent but off no package concept;
-- no source-ownership map at all (`--no-msbuild`, no `dotnet` on `PATH`, or an
-  unrestored repository), so the package → namespace level of the containment spine is
-  missing entirely.
+- no source-ownership map at all, so the package → namespace level of the containment
+  spine is missing entirely. Two conditions produce that loss and they raise **two
+  different notes**: under `--no-msbuild` the stage never runs, so the flag's own note is
+  the one printed and it names this loss alongside the call-resolution one; with the stage
+  running but MSBuild able to answer for no project at all (no `dotnet` on `PATH`, a
+  repository that was never restored) a separate note says so and points at
+  `dotnet restore`.
   Nothing is guessed from the directory tree instead: a project can add, remove and
   link sources across directories, so a directory-derived link would attribute a
   namespace to the wrong package;

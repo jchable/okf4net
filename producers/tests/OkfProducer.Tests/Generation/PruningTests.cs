@@ -965,7 +965,8 @@ public class PruningTests
         // '...\\.okfgen-manifest.json' is denied", escaping Write() with `a.md` already on disk. A run
         // that succeeded, reported to the operator as one that threw.
         //
-        // NOT EXECUTED ON THIS HOST, BUT THE TEST NOW REACHES FOR IT: a FILE symbolic link at the
+        // NOT EXECUTED ON THIS HOST -- PERMANENTLY, NOT PENDING -- BUT THE TEST REACHES FOR IT
+        // WHEREVER IT CAN BE BUILT: a FILE symbolic link at the
         // manifest's name pointing at a concept file inside the bundle, where File.WriteAllBytes
         // follows it and replaces that concept with manifest JSON while WriteTo returns true and the
         // run reports success. That is the worse of the two damages. A previous round declined to
@@ -976,6 +977,13 @@ public class PruningTests
         // built and nothing extra where it cannot, which is the opposite of asserting nothing.
         // ProducerFixture.TryCreateFileLink's own doc says so: "Returning false and letting a test
         // quietly assert nothing is the outcome this comment exists to prevent."
+        //
+        // "PERMANENTLY", above, is a property of the HOST and not of the test: Developer Mode cannot
+        // be enabled on this machine (confirmed by its owner), and there is no other unprivileged
+        // route to File.CreateSymbolicLink on Windows. So this branch will never execute here however
+        // many rounds look at it; closing it needs a different platform, where a file symbolic link
+        // costs no privilege. The junction half is not in that position -- it is measured on this
+        // host, every run, because mklink /J needs no privilege at all.
         //
         // The consequence of the shape that was here: this test hardcoded CreateDirectoryLink, so on
         // LINUX -- where a file symbolic link needs no privilege at all -- it still built a DIRECTORY

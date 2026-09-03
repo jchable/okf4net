@@ -330,6 +330,19 @@ internal static class ProducerFixture
     /// something (see <see cref="CreateDirectoryLink"/> for the substitute) and must say in its own
     /// assertions which half of the property it could and could not establish. Returning false and
     /// letting a test quietly assert nothing is the outcome this comment exists to prevent.</para>
+    ///
+    /// <para><b>On the development host this returns <see langword="false"/> permanently, not
+    /// pending a measurement.</b> Developer Mode cannot be enabled on this machine (confirmed by its
+    /// owner), and there is no other unprivileged route to
+    /// <see cref="File.CreateSymbolicLink(string, string)"/> on Windows -- so every
+    /// <c>overwriteShape</c> branch guarded by this method's return value will never execute here, and
+    /// nothing a future round does to the tests can change that. Closing those branches needs a
+    /// different platform (Linux or macOS, where a file symbolic link is unprivileged), not more
+    /// effort here. What is <i>not</i> unexecuted: the junction shapes. Windows creates a directory
+    /// junction with no privilege at all -- <see cref="CreateDirectoryLink"/> falls back to
+    /// <c>mklink /J</c> and every test using it runs and asserts on this host. It is only the file
+    /// symbolic link, and therefore only the overwrite-through-a-link damage, that goes
+    /// unmeasured.</para>
     /// </summary>
     public static bool TryCreateFileLink(string link, string target)
     {

@@ -125,10 +125,18 @@ public static class OkfgenCli
 
         var maxFileSizeOption = new Option<long>("--max-file-size")
         {
+            // The qualification is the whole point of this text and is pinned by
+            // CliTests.The_help_keeps_the_clauses_that_make_its_two_hazard_sentences_true. The
+            // unqualified version ("A larger file is skipped and counted, which makes the run partial")
+            // was false of the Roslyn half of the code stage, and shipped in four places.
             Description =
-                "Largest source file, in bytes, the code stage will read. A larger file is skipped and counted, "
-                + "which makes the run partial: the concepts that file owned are then never pruned, because this "
-                + "run cannot vouch for their absence.",
+                "Largest source file, in bytes, the code stage will read -- by both engines, which enforce it "
+                + "differently. The tree-sitter extractor skips a larger file and counts it, which makes the run "
+                + "partial: the concepts that file owned are then never pruned, because this run cannot vouch for "
+                + "their absence. The Roslyn stage applies the same cap to the Compile items MSBuild reports, but "
+                + "drops an over-cap item silently: for a file the scan also walked the counted skip covers it; "
+                + "for one it did not (a linked out-of-repository source, a generated file under obj/) nothing "
+                + "reports it, and the project simply fails to compile.",
             DefaultValueFactory = _ => ExtractionLimits.Default.MaxFileBytes,
         };
 

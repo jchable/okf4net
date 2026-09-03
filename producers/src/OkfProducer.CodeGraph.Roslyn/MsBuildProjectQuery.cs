@@ -79,9 +79,12 @@ public sealed class MsBuildQueryException : Exception
 /// <see cref="RoslynResolver"/>'s remarks, whose refusal is about not widening this further rather
 /// than about holding a line that this class had already crossed). It is not the only place a child
 /// process runs, though, and <c>--no-msbuild</c> does not make it so: <c>GitRevision.RunGit</c> spawns
-/// <c>git</c> three times per generate run, in the scanned tree, on every run including that one. Far
-/// less exposure -- none of the three triggers a hook, an fsmonitor, or a pager with stdout redirected
-/// -- but "no process is spawned" is false and <c>producers/README.md</c> no longer says it.
+/// <c>git</c> in the scanned tree on every generate run, including that one. How many times is not a
+/// constant -- <c>--rev</c> removes one invocation and <c>--check</c> adds one -- so the exact
+/// breakdown lives in <c>producers/README.md</c> and <c>GenerateRun</c>'s remarks rather than as a
+/// number repeated here. Far less exposure -- none of them triggers a hook, an fsmonitor, or a pager
+/// with stdout redirected -- but "no process is spawned" is false and <c>producers/README.md</c> no
+/// longer says it.
 /// </para>
 /// </summary>
 public static class MsBuildProjectQuery
@@ -670,6 +673,26 @@ public static class MsBuildProjectQuery
     /// including transitive ones, which is what lets <see cref="CompilationFactory"/> replace each with
     /// a from-source <c>CompilationReference</c> instead of the <c>bin/</c> assembly that only exists
     /// after a build.
+    ///
+    /// <para><b>KNOWN GAP, recorded here because this is where the value is born (remediation wave 2b,
+    /// round 3 -- found, not fixed, because <see cref="CompilationFactory"/> was outside that round's
+    /// scope).</b> The <c>FullPath</c> read on the line below becomes
+    /// <see cref="ProjectReferenceInput.AssemblyPath"/>, and it is the one MSBuild-JSON path value in
+    /// this class that does <i>not</i> go through <see cref="FullPath"/> -- <c>projectFile</c> beside
+    /// it does. It is repository-controlled all the same: a <c>Directory.Build.targets</c> can add
+    /// <c>&lt;ReferencePath Include="..." /&gt;</c> to any project it is imported into. Downstream,
+    /// <c>CompilationFactory</c> guards it with <see cref="File.Exists(string)"/>, which makes every
+    /// <i>malformed</i> shape safe (a NUL, an over-long path, a missing file are all simply dropped).
+    /// What <see cref="File.Exists(string)"/> does not catch is an <b>existing non-assembly</b>:
+    /// <c>&lt;ReferencePath Include="$(MSBuildProjectFullPath)" /&gt;</c> points at a real
+    /// <c>.csproj</c>, so <c>MetadataReference.CreateFromFile</c> raises
+    /// <see cref="BadImageFormatException"/>. <c>RoslynResolver.Compile</c> catches only
+    /// <c>UnknownLanguageVersionException</c> and the CLI's exception filter does not list this one, so
+    /// the run dies with a stack trace rather than reporting the project unavailable. The fix belongs
+    /// in <c>CompilationFactory</c> (route the value through a <see cref="FullPath"/> equivalent, and
+    /// catch <see cref="BadImageFormatException"/> around
+    /// <c>MetadataReference.CreateFromFile</c>); nothing here can close it, because the shape this
+    /// class hands over is a valid path either way.</para>
     /// </summary>
     private static List<ProjectReferenceInput> ReadReferences(
         string projectPath, Dictionary<string, List<Dictionary<string, string>>> items)

@@ -618,6 +618,49 @@ public class CliTests
         new(projectPath, Path.GetFileNameWithoutExtension(projectPath), compileFiles, [], string.Empty, "14", true, false, "Library", "net10.0");
 
     [Fact]
+    public void A_project_reported_compiled_that_owns_none_of_its_files_is_named_rather_than_passed_over()
+    {
+        // A Library whose every `Compile` item SourceFileGate refused compiles from NO syntax tree,
+        // and an empty library compilation has zero diagnostics -- so RoslynResolver reports it
+        // Compiled, owns none of its files, and the name-matching baseline carries them exactly as it
+        // carries a failed project's. The reporting used to print nothing for it, which is not a
+        // silent gap but an affirmatively wrong statement about the run. (An Exe would give CS5001
+        // and be reported as CompilationHadErrors; a Library gives nothing.)
+        //
+        // Pure data, like the ownership-join tests above: no MSBuild, no disk, no gate. What is
+        // pinned is the CONCLUSION -- reported compiled, owns none of its own items -- not a second
+        // copy of the gate's rules.
+        var repo = Path.Combine(Path.GetTempPath(), "okfgen-vacuous-compilation-fixture");
+        var refused = Path.Combine(repo, "src", "Big", "Big.csproj");
+        var healthy = Path.Combine(repo, "src", "Small", "Small.csproj");
+        var notes = new List<string>();
+
+        // The `owns` predicate is exactly what the gate leaves behind: the healthy project's file
+        // reached a syntax tree and is owned; the refused project's never did.
+        GenerateRun.ReportProjects(
+            repo,
+            [
+                new RoslynProjectReport(refused, RoslynProjectAvailability.Compiled, string.Empty),
+                new RoslynProjectReport(healthy, RoslynProjectAvailability.Compiled, string.Empty),
+            ],
+            [
+                Inputs(refused, [Path.Combine(repo, "src", "Big", "Big.cs")]),
+                Inputs(healthy, [Path.Combine(repo, "src", "Small", "Small.cs")]),
+            ],
+            path => string.Equals(path, "src/Small/Small.cs", StringComparison.Ordinal),
+            notes.Add);
+
+        Assert.Contains(
+            notes,
+            n => n.Contains("src/Big/Big.csproj", StringComparison.Ordinal)
+                && n.Contains("owns none of its files", StringComparison.Ordinal));
+
+        // The half that keeps this from being satisfied by "note every compiled project": the one
+        // whose file IS owned is not named at all.
+        Assert.DoesNotContain(notes, n => n.Contains("src/Small/Small.csproj", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Check_help_carries_the_whole_exclusion_list()
     {
         // BundleDrift owns that sentence because §6.2 requires the exclusion list to be closed and
@@ -626,6 +669,30 @@ public class CliTests
         var result = Run("generate", "--help");
 
         Assert.Contains(Collapse(BundleDrift.CheckDescription), Collapse(result.Output), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_help_keeps_the_clauses_that_make_its_two_hazard_sentences_true()
+    {
+        // Nothing in this repository pinned user-facing help text, and this branch shipped three
+        // false sentences that lived exactly there -- "no process is spawned", and
+        // --max-file-size's unqualified "a larger file is skipped and counted". A correction to one
+        // of those moved rather than propagated four separate times, because the only thing holding
+        // the text was prose review.
+        //
+        // What is asserted is the CLAUSE that makes each sentence true, not the sentence: a
+        // substring long enough to be specific to the qualification and short enough to survive the
+        // rest being reworded. Dropping the qualification -- back to "A larger file is skipped and
+        // counted, which makes the run partial", or back to "no process is spawned" -- turns this
+        // red. README prose is deliberately NOT pinned here: it changes for good reasons, and a
+        // substring test over it would be noise.
+        var help = Collapse(Run("generate", "--help").Output);
+
+        Assert.Contains("but drops an over-cap item silently", help, StringComparison.Ordinal);
+        Assert.Contains(
+            "It does not make the run process-free: `git` still runs in the scanned tree",
+            help,
+            StringComparison.Ordinal);
     }
 
     private static string Collapse(string text) => Regex.Replace(text, @"\s+", " ").Trim();
