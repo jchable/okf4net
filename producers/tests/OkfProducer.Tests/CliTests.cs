@@ -808,15 +808,17 @@ public class CliTests
     }
 
     [Fact]
-    public void A_healthy_run_reports_one_short_line_and_names_no_file()
+    public void A_healthy_run_reports_one_line_of_five_clauses_and_names_no_file()
     {
         // The other edge of the same predicate, and the one a report like this fails on: a note that
         // fires on a healthy run is worse than the silence it replaces. Driven through the pure
         // overload because a genuinely healthy run needs a restored project and an MSBuild
         // invocation, which no test in this file makes.
         //
-        // The property guarded below is "the clean case must not become a paragraph", and it is pinned
-        // by Assert.Single(lines) plus the SEGMENT count -- not by a character bound, which this test
+        // What is pinned below is one line of exactly five clauses. That is NARROWER than "the clean
+        // case must not become a paragraph": five clauses can each grow without limit and nothing here
+        // notices. What it does catch is a sixth clause, which is the shape a segment gets added in.
+        // It replaced a character bound, which this test
         // carried until round 2 and which did not bound anything. `line.Length <= 320` passed only
         // because this synthetic fixture has single-digit counts (298 characters); the healthy line
         // producers/README.md publishes, measured over OkfProducer.Core, is 326 without the `run: `
@@ -964,8 +966,9 @@ public class CliTests
         // The doc comment claims the walk "gives the validator's own answer". Half that answer is
         // `ConceptLink.Resolve`, which also strips a `#anchor` and a `.md` suffix and normalizes
         // `.`/`..`; the walk used `link.Target.Trim()[1..]`, which does none of it. This producer writes
-        // only the bare `](/{id})` form today, so there was no divergence to observe and no test could
-        // have caught the substitution -- which is exactly why the claim was over-strong rather than
+        // only the bare `](/{id})` form today, so no test built from its own output could separate the
+        // two -- this one is built from link forms it does not emit, which is why the claim was
+        // over-strong rather than
         // wrong. The link forms below are ones `okf validate` resolves and the strip does not, so this
         // pins the claim instead of the current output shape: with the strip, the targets read
         // `code/csharp/n/t.md` and `code/csharp/n#types`, neither of which is a concept id, and the two

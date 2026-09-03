@@ -508,7 +508,8 @@ internal static class GenerateRun
     /// <see cref="ConceptLink.Resolve"/>, not by stripping the leading <c>/</c>: <c>Resolve</c> also
     /// drops a <c>#anchor</c>, normalizes <c>.</c>/<c>..</c> segments, strips a <c>.md</c> suffix and
     /// returns nothing for a directory link. This producer writes only the bare <c>](/{id})</c> form
-    /// today, so there is no divergence to observe -- but the claim above is "the validator's own
+    /// today, so the two agree on every link it emits -- an anchor or a <c>.md</c> suffix separates
+    /// them, and a test builds exactly those two shapes. The claim above is "the validator's own
     /// answer", and half of that answer is the resolver. Using it costs one call and makes the
     /// sentence true rather than nearly true.</para>
     /// </summary>
