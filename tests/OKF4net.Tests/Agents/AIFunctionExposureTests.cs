@@ -9,13 +9,14 @@ using OKF4net.Tests.Attestation;
 namespace OKF4net.Tests.Agents;
 
 /// <summary>
-/// Tests <see cref="OkfBundleTools.GetTools"/>: the ten tool methods exposed
-/// as Agent Framework <see cref="AIFunction"/>s (via <see cref="AITool"/>)
-/// when no attestation orchestrator is wired (so <c>okf_run_computation</c>
-/// is omitted; see <see cref="OkfComputationToolsTests"/> for the wired
-/// case), with no LLM involved — everything is verified at the
-/// <see cref="AIFunction"/> level, including a real end-to-end invocation
-/// that proves argument binding from a plain dictionary works.
+/// Tests <see cref="OkfBundleTools.GetTools"/>: the eleven tool methods
+/// exposed as Agent Framework <see cref="AIFunction"/>s (via
+/// <see cref="AITool"/>) when no attestation orchestrator is wired (so
+/// <c>okf_run_computation</c> is omitted; see
+/// <see cref="OkfComputationToolsTests"/> for the wired case), with no LLM
+/// involved — everything is verified at the <see cref="AIFunction"/> level,
+/// including a real end-to-end invocation that proves argument binding from
+/// a plain dictionary works.
 /// </summary>
 public class AIFunctionExposureTests
 {
@@ -27,6 +28,7 @@ public class AIFunctionExposureTests
         "okf_browse",
         "okf_graph",
         "okf_search",
+        "okf_audit",
         "okf_write_concept",
         "okf_append_log",
         "okf_regenerate_indexes",
@@ -36,14 +38,14 @@ public class AIFunctionExposureTests
     ];
 
     [Fact]
-    public void GetTools_returns_exactly_ten_tools()
+    public void GetTools_returns_exactly_eleven_tools()
     {
         var tools = new OkfBundleTools(BundlePath);
-        Assert.Equal(10, tools.GetTools().Count);
+        Assert.Equal(11, tools.GetTools().Count);
     }
 
     [Fact]
-    public void GetTools_names_are_the_ten_snake_case_names_in_stable_order()
+    public void GetTools_names_are_the_eleven_snake_case_names_in_stable_order()
     {
         var tools = new OkfBundleTools(BundlePath);
         var names = tools.GetTools().Cast<AIFunction>().Select(f => f.Name).ToList();
@@ -85,6 +87,38 @@ public class AIFunctionExposureTests
         var function = GetFunction(new OkfBundleTools(BundlePath), "okf_read_concept");
         var required = RequiredProperties(function);
         Assert.Contains("conceptId", required);
+    }
+
+    /// <summary>
+    /// Every parameter of <c>okf_audit</c> is optional, and <c>stale</c>
+    /// defaults to true -- calling it with no arguments must therefore mean
+    /// "the stale worklist", which is the whole point of the tool's default.
+    /// A schema that marked any parameter required, or dropped the default,
+    /// would change what a bare call means without any C# signature changing.
+    /// </summary>
+    [Fact]
+    public void okf_audit_schema_is_all_optional_and_leaves_stale_unset()
+    {
+        var function = GetFunction(new OkfBundleTools(BundlePath), "okf_audit");
+        var properties = function.JsonSchema.GetProperty("properties");
+
+        foreach (var name in new[] { "stale", "trust", "status", "type" })
+        {
+            Assert.True(properties.TryGetProperty(name, out _), $"schema should declare a '{name}' property.");
+        }
+
+        Assert.Empty(RequiredProperties(function));
+
+        // `stale` is nullable and defaults to null, not to true: unset means
+        // "follow the CLI's rule" — the stale worklist when nothing else is
+        // filtered, no staleness constraint once another filter is given. A
+        // schema that pinned it to `true` would resurrect the trap where
+        // asking for unverified concepts silently also demanded staleness.
+        var stale = properties.GetProperty("stale");
+        Assert.Equal(
+            ["boolean", "null"],
+            stale.GetProperty("type").EnumerateArray().Select(t => t.GetString()));
+        Assert.Equal(JsonValueKind.Null, stale.GetProperty("default").ValueKind);
     }
 
     [Fact]
@@ -271,6 +305,102 @@ public class AIFunctionExposureTests
         Assert.Equal(42, ((JsonElement)captured!["threshold"]!).GetInt32());
         Assert.Equal("q3", ((JsonElement)captured!["label"]!).GetString());
     }
+
+    /// <summary>
+    /// `GetTools()` handed back the three mutation tools as bare AIFunctions,
+    /// and the README quick start passed that list straight to `AsAIAgent`, so
+    /// the documented happy path gave the model unconfirmed write access to the
+    /// corpus. Bundle content is untrusted — an injection carried in a concept
+    /// body could reach a persistent write with nothing in between.
+    ///
+    /// `ReadOnly` drops the write tools outright, for a host that must never
+    /// mutate a shared or pinned bundle.
+    /// </summary>
+    [Fact]
+    public void ReadOnly_mode_exposes_no_write_tool()
+    {
+        var names = new OkfBundleTools(BundlePath).GetTools(OkfToolMode.ReadOnly).Select(t => t.Name).ToList();
+
+        Assert.NotEmpty(names);
+        foreach (var write in OkfBundleTools.WriteToolNames)
+        {
+            Assert.DoesNotContain(write, names);
+        }
+
+        // The read tools are all still there -- this filters, it does not gut.
+        Assert.Contains("okf_read_concept", names);
+        Assert.Contains("okf_search", names);
+    }
+
+    /// <summary>
+    /// `RequireApprovalForWrites` keeps every tool but wraps the mutating ones
+    /// so the Agent Framework must obtain the host's approval before invoking
+    /// them. Read tools stay unwrapped: gating them would train a user to
+    /// click through prompts, which is how a real approval gets waved past.
+    /// </summary>
+    [Fact]
+    public void Approval_mode_wraps_exactly_the_write_tools()
+    {
+        var tools = new OkfBundleTools(BundlePath).GetTools(OkfToolMode.RequireApprovalForWrites);
+
+        foreach (var tool in tools.Cast<AIFunction>())
+        {
+            var gated = tool is ApprovalRequiredAIFunction;
+            var shouldBeGated = OkfBundleTools.WriteToolNames.Contains(tool.Name);
+            Assert.True(
+                gated == shouldBeGated,
+                $"{tool.Name}: gated={gated}, expected={shouldBeGated}");
+        }
+
+        // Wrapping must not lose the name the model calls, nor the tool itself.
+        Assert.Equal(
+            new OkfBundleTools(BundlePath).GetTools().Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal),
+            tools.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// The parameterless overload keeps its historical meaning — every tool,
+    /// nothing gated. Changing that default would silently break every host
+    /// already calling it, so the fix is opt-in and this pins it.
+    /// </summary>
+    [Fact]
+    public void The_default_overload_stays_ungated()
+    {
+        var tools = new OkfBundleTools(BundlePath).GetTools();
+
+        Assert.Contains("okf_write_concept", tools.Select(t => t.Name));
+        Assert.DoesNotContain(tools.Cast<AIFunction>(), t => t is ApprovalRequiredAIFunction);
+    }
+
+
+    /// <summary>
+    /// A characterization test for an upstream behaviour this design leans on:
+    /// <c>AIFunctionFactory</c> binds a <c>CancellationToken</c> parameter from
+    /// the invocation and leaves it OUT of the generated JSON schema.
+    ///
+    /// <c>okf_run_computation</c> became async and took a token precisely
+    /// because it hands control to host-plugged code that may run unbounded. If
+    /// a future Microsoft.Agents.AI ever surfaced that parameter instead, the
+    /// model would be shown a knob it must not touch and could be coaxed into
+    /// filling it. Normally the framework's own mechanics are its maintainers'
+    /// tests to write; this one is pinned because our signature choice depends
+    /// on it and the failure would be silent.
+    /// </summary>
+    [Fact]
+    public void okf_run_computation_does_not_expose_its_cancellation_token_to_the_model()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: fake\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["fake"] = new FakeRuntime() });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        var properties = GetFunction(tools, "okf_run_computation").JsonSchema.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("conceptId", out _), "schema should declare 'conceptId'.");
+        Assert.True(properties.TryGetProperty("parameterValues", out _), "schema should declare 'parameterValues'.");
+        Assert.False(properties.TryGetProperty("cancellationToken", out _), "the cancellation token must stay invisible to the model.");
+    }
+
 
     private static AIFunction GetFunction(OkfBundleTools tools, string name) =>
         tools.GetTools().Cast<AIFunction>().Single(f => f.Name == name);

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Linq;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using OKF4net.Cli;
 
 namespace OKF4net.Tests;
@@ -18,6 +21,9 @@ public class CliTests
     // TestPaths.RepoRoot, walking up from the test assembly to the .sln)
     // rather than assumed relative to the process's current directory.
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
+
+    private static readonly string V02BundlePath =
+        Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02");
 
     private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
 
@@ -46,6 +52,114 @@ public class CliTests
         Assert.Contains("USAGE:", r.Out);
     }
 
+    // Every verb, and every flag each one actually accepts. Kept here rather
+    // than derived from the CLI's own tables so the tests fail if a verb
+    // silently loses a flag.
+    private static readonly string[] AllVerbs =
+        ["validate", "audit", "info", "index", "graph", "parse", "fmt", "render"];
+
+    /// <summary>
+    /// A minimal throwaway bundle for argument-parsing tests. These pass a
+    /// bundle path to EVERY verb including <c>index</c>, which writes: pointed
+    /// at <see cref="BundlePath"/> a parser regression would regenerate
+    /// index.md inside tests/fixtures/ and break the golden captures. It did,
+    /// once, while these tests were red.
+    /// </summary>
+    private static TempDir ScratchBundle()
+    {
+        var tmp = new TempDir();
+        tmp.Write("notes/thing.md", "---\ntype: Note\ntitle: Thing\ndescription: A thing.\n---\n\nbody\n");
+        return tmp;
+    }
+
+    public static TheoryData<string, string> VerbsAndHelpFlags()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var verb in AllVerbs)
+        {
+            data.Add(verb, "-h");
+            data.Add(verb, "--help");
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Asking a verb for help hit the missing-positional guard first, so
+    /// `okf validate --help` answered `error: missing &lt;bundle&gt;` and exited 1
+    /// — the one question a user asks when they do not know what the bundle
+    /// argument is.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(VerbsAndHelpFlags))]
+    public void Verb_help_prints_help_and_succeeds(string verb, string flag)
+    {
+        var r = Run(verb, flag);
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains(verb, r.Out, StringComparison.Ordinal);
+        Assert.Equal("", r.Err);
+    }
+
+    /// <summary>
+    /// Any `-`-prefixed token was accepted and kept, so a typo'd or invented
+    /// flag ran the command with silently different behaviour than asked for:
+    /// `okf validate b --jsonn` printed the human report and exited 0.
+    /// </summary>
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("audit")]
+    [InlineData("info")]
+    [InlineData("index")]
+    [InlineData("graph")]
+    [InlineData("render")]
+    public void Unknown_option_is_rejected(string verb)
+    {
+        // A throwaway bundle, never the shared fixture: `index` WRITES, and a
+        // regression that let the bad option through would otherwise regenerate
+        // index.md inside tests/fixtures/ and corrupt the golden captures.
+        using var tmp = ScratchBundle();
+
+        var r = Run(verb, tmp.Path, "--bogus");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unknown option: --bogus", r.Err, StringComparison.Ordinal);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Only the first positional took the slot; every later one was dropped on
+    /// the floor, so `okf info bundle extra` ignored `extra` and exited 0.
+    /// </summary>
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("audit")]
+    [InlineData("info")]
+    [InlineData("index")]
+    [InlineData("graph")]
+    public void Extra_positional_is_rejected(string verb)
+    {
+        using var tmp = ScratchBundle(); // see Unknown_option_is_rejected
+
+        var r = Run(verb, tmp.Path, "extra");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: extra", r.Err, StringComparison.Ordinal);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// A flag one verb accepts is not thereby accepted everywhere: the rejection
+    /// is per-verb, not one global allowlist.
+    /// </summary>
+    [Fact]
+    public void A_flag_from_another_verb_is_rejected()
+    {
+        // --dot is graph's; --stale is audit's.
+        Assert.Contains("unknown option: --dot", Run("validate", BundlePath, "--dot").Err, StringComparison.Ordinal);
+        Assert.Contains("unknown option: --stale", Run("info", BundlePath, "--stale").Err, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Version_prints_and_succeeds()
     {
@@ -55,12 +169,161 @@ public class CliTests
         Assert.Contains("OKF spec v0.2", r.Out);
     }
 
+    /// <summary>
+    /// The version `okf --version` reports must be the one the build stamped,
+    /// not a value maintained by hand beside it.
+    ///
+    /// It used to be `private const string CliVersion`, which `-p:Version` — the
+    /// property release.yml derives from the git tag and passes to `dotnet
+    /// publish` — does not touch. So the tag, the package and the zip filename
+    /// could all say one version while the binary inside said another, and the
+    /// only guard compared the constant to Directory.Build.props, which a
+    /// divergent tag leaves untouched. That is not hypothetical: the winget
+    /// package for 0.2.0 shipped a binary whose `--version` printed
+    /// 0.1.0-alpha.1, caught by a Microsoft moderator rather than by CI.
+    ///
+    /// Reading the assembly's own informational version removes the failure
+    /// mode instead of guarding it: there is no second place left to drift.
+    /// </summary>
+    [Fact]
+    public void Version_is_read_from_the_assembly_not_a_separate_constant()
+    {
+        var stamped = typeof(OkfCli).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion;
+
+        var r = Run("--version");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"okf {stamped} ", r.Out);
+        // A '+' would mean the source-revision suffix leaked into user-facing
+        // output; the csproj disables it.
+        Assert.DoesNotContain("+", stamped, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Version_matches_the_build_version()
+    {
+        // OkfCli.CliVersion is hand-maintained, separate from <Version> in
+        // Directory.Build.props. The two drifted once and the winget package
+        // for 0.2.0 shipped a binary whose `--version` printed 0.1.0-alpha.1
+        // (caught by a Microsoft moderator, not by us). Fail the build here
+        // instead: Version_prints_and_succeeds only checks the "okf " prefix.
+        var props = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "Directory.Build.props"));
+        var declared = Regex.Match(props, @"<Version>\s*([^<\s]+)\s*</Version>");
+        Assert.True(declared.Success, "no <Version> element in Directory.Build.props");
+
+        var r = Run("--version");
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"okf {declared.Groups[1].Value} ", r.Out);
+    }
+
     [Fact]
     public void Validate_conformant_bundle_exits_zero()
     {
         var r = Run("validate", BundlePath);
         Assert.Equal(0, r.Code);
         Assert.Contains("conformant with OKF v0.2", r.Out);
+    }
+
+    /// <summary>
+    /// §5.5's staleness warning depends on what "today" is, so without a way
+    /// to pin the date `okf validate`'s output was not reproducible: the same
+    /// bundle validated clean before a concept's stale_after and warned after
+    /// it, with no way to assert either in CI. `okf audit` gained `--as-of`
+    /// first; this closes the asymmetry on the verb that reports the warning.
+    /// </summary>
+    [Fact]
+    public void Validate_as_of_pins_the_staleness_warning()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/dau.md",
+            "---\ntype: Metric\ntitle: Daily Active Users\ndescription: Count.\nstale_after: 2026-06-01\n---\n");
+
+        var before = Run("validate", tmp.Path, "--as-of", "2026-05-31");
+        var onTheDay = Run("validate", tmp.Path, "--as-of", "2026-06-01");
+
+        // §5.5 is `now >= stale_after`, and both sides here are midnight UTC
+        // (--as-of pins one, a date-only stale_after normalizes to one), so the
+        // boundary date is already stale.
+        Assert.DoesNotContain("concept is stale", before.Out);
+        Assert.Contains("concept is stale (stale_after 2026-06-01)", onTheDay.Out);
+
+        // Staleness is a warning, not a conformance error: both still exit 0.
+        Assert.Equal(0, before.Code);
+        Assert.Equal(0, onTheDay.Code);
+    }
+
+    /// <summary>
+    /// `--as-of` exists so a CI job's verdict is reproducible; an archived
+    /// report that does not say which date it was evaluated against cannot be
+    /// told apart from an unpinned run, so the date belongs in the document.
+    /// </summary>
+    [Fact]
+    public void Validate_json_records_the_date_it_was_evaluated_against()
+    {
+        var pinned = Run("validate", BundlePath, "--as-of", "2026-06-01", "--json");
+        using var pinnedDoc = JsonDocument.Parse(pinned.Out);
+        Assert.Equal("2026-06-01", pinnedDoc.RootElement.GetProperty("asOf").GetString());
+
+        // Unpinned runs report the date they actually used, rather than omitting it.
+        var unpinned = Run("validate", BundlePath, "--json");
+        using var unpinnedDoc = JsonDocument.Parse(unpinned.Out);
+        Assert.False(string.IsNullOrEmpty(unpinnedDoc.RootElement.GetProperty("asOf").GetString()));
+    }
+
+    /// <summary>
+    /// One document, one spelling: a consumer grouping findings by trust tier
+    /// must be able to look that tier straight up in the counts object.
+    /// </summary>
+    [Fact]
+    public void Audit_json_spells_trust_tiers_the_same_way_in_counts_and_findings()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01", "--json");
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var counts = doc.RootElement.GetProperty("trust");
+        var finding = doc.RootElement.GetProperty("findings").EnumerateArray().Single();
+
+        Assert.Equal(["unverified", "machine-confirmed", "human-reviewed"], counts.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(1, counts.GetProperty(finding.GetProperty("trust").GetString()!).GetInt32());
+    }
+
+    /// <summary>
+    /// A blank `--type` is "no type filter", not a filter for the empty string:
+    /// §11 forbids an empty frontmatter type, so filtering for one could only
+    /// ever select nothing.
+    /// </summary>
+    [Fact]
+    public void Audit_a_blank_type_filter_selects_every_concept()
+    {
+        var r = Run("audit", V02BundlePath, "--type", "");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Validate_rejects_an_invalid_as_of_date()
+    {
+        var r = Run("validate", BundlePath, "--as-of", "2026-13-01");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: --as-of is not a valid YYYY-MM-DD date: \"2026-13-01\"\n", r.Err);
+    }
+
+    /// <summary>
+    /// Regression guard: `--as-of` must be declared as a valued flag on
+    /// `validate` too, or its value is mistaken for the bundle path.
+    /// </summary>
+    [Fact]
+    public void Validate_as_of_before_the_positional_resolves_the_bundle()
+    {
+        var r = Run("validate", "--as-of", "2026-06-01", BundlePath);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
     }
 
     [Fact]
@@ -181,6 +444,30 @@ public class CliTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
     }
 
+
+    /// <summary>
+    /// `okf graph` without `--dot` had no test at all (issue #14): the golden
+    /// capture covers only the `--dot` renderer, so half the verb's output was
+    /// unpinned. Closing that before refactoring the method, since a refactor
+    /// of an uncovered branch proves nothing.
+    ///
+    /// The expectation is derived from the CLI's documented behaviour, not
+    /// copied from a run: a concept with links prints its id, then one indented
+    /// line per link marked `-&gt;` when the target resolves and `-x` when it
+    /// does not; a concept with no outgoing links is skipped entirely.
+    /// </summary>
+    [Fact]
+    public void Graph_plain_text_lists_links_and_marks_broken_ones()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: A\ndescription: d\n---\n\n[b](/b.md) and [gone](/missing.md)\n");
+        tmp.Write("b.md", "---\ntype: Note\ntitle: B\ndescription: d\n---\n\nno links here\n");
+
+        var r = Run("graph", tmp.Path);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("a\n  -> b\n  -x missing\n", r.Out);
+    }
     [Fact]
     public void Graph_dot_prints_digraph()
     {
@@ -297,18 +584,558 @@ public class CliTests
     }
 
     [Fact]
-    public void Index_with_embedded_nul_path_reports_no_files_written_not_an_error()
+    public void Index_with_embedded_nul_path_exits_one_with_error_prefix()
     {
-        // Deliberately NOT an "error: ..." exit-1 case: RegenerateIndexes
-        // checks whether the bundle root exists first, and Directory.Exists
-        // swallows the underlying failure and simply returns false for a
-        // garbage path, so the function returns an empty result rather than
-        // an I/O error. CmdIndex then reports "no index files written" and
-        // exits 0. Audited (A3) to confirm this command needed no change,
-        // unlike parse/fmt/validate/info/graph.
+        // Was deliberately the one exit-0 case here, on the reasoning that
+        // Directory.Exists merely returns false for a garbage path, so
+        // RegenerateIndexes returns an empty list rather than an I/O error and
+        // CmdIndex had nothing to report. An external audit re-raised it and
+        // the earlier reasoning does not hold: "the check cannot tell you why"
+        // is not a reason to report success for a root that does not exist.
+        // CmdIndex now runs the same RequireBundleRoot guard the other bundle
+        // verbs inherit from Bundle.Load, so index matches parse/fmt/validate/
+        // info/graph instead of standing alone.
         var r = Run("index", "x\0y");
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    [Fact]
+    public void Index_on_a_missing_bundle_root_exits_one_like_the_other_bundle_verbs()
+    {
+        // `index` is the only bundle verb that never routes through the shared
+        // Load helper (it goes straight to IndexGenerator), so nothing gave it
+        // Bundle.Load's "root is not a directory" guard: it reported "no index
+        // files written (empty bundle?)" and exited 0 on a target that does not
+        // exist, while validate/info/graph/render all exited 1. Comparing the
+        // two verbs' stderr pins them together, so the separate guard cannot
+        // drift from the message the shared path produces.
+        var missing = Path.Combine(Path.GetTempPath(), "okf-missing-" + Guid.NewGuid().ToString("N"));
+
+        var index = Run("index", missing);
+        var validate = Run("validate", missing);
+
+        Assert.Equal(1, index.Code);
+        Assert.StartsWith("error:", index.Err);
+        Assert.DoesNotContain("at OKF4net", index.Err);
+        Assert.Equal(validate.Err, index.Err);
+        Assert.Equal("", index.Out);
+    }
+
+    [Fact]
+    public void Render_writes_a_site_and_reports_success()
+    {
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "site");
+
+        var r = Run("render", BundlePath, "--out", outDir);
+
         Assert.Equal(0, r.Code);
-        Assert.Contains("no index files written", r.Out);
         Assert.Equal("", r.Err);
+        Assert.True(File.Exists(Path.Combine(outDir, "index.html")));
+    }
+
+    [Fact]
+    public void Render_without_out_fails()
+    {
+        var r = Run("render", BundlePath);
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out", r.Err);
+    }
+
+    [Fact]
+    public void Render_without_a_bundle_fails()
+    {
+        var r = Run("render");
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+    }
+
+    [Fact]
+    public void Render_into_the_bundle_itself_fails()
+    {
+        // Regression guard: if this check ever weakens, `dotnet test` would
+        // write generated HTML straight into whatever bundle path is passed
+        // here. Use a throwaway bundle in a TempDir -- never BundlePath,
+        // which is the byte-exact golden fixture tests/fixtures/appendix_a --
+        // so a regression can never corrupt the real goldens the
+        // golden-parity tests depend on.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+
+        var r = Run("render", tmp.Path, "--out", Path.Combine(tmp.Path, "site"));
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+
+        // Regression guard for the .NET ArgumentException(paramName) leaking
+        // its " (Parameter 'outDir')" framework-noise suffix into CLI output
+        // meant for humans -- HtmlWriter.Write is a library API and correctly
+        // keeps throwing with paramName set; the CLI must strip it before
+        // printing.
+        Assert.DoesNotContain("Parameter", r.Err);
+    }
+
+    [Fact]
+    public void Render_with_out_flag_missing_its_value_after_the_bundle_fails_with_out_message()
+    {
+        var r = Run("render", BundlePath, "--out");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out requires a value", r.Err);
+    }
+
+    [Fact]
+    public void Render_with_bare_out_flag_and_no_bundle_fails_with_out_message_not_missing_bundle()
+    {
+        // Same "--out present but unvalued" failure as the test above, just
+        // with the bundle positional also absent. Before the fix this order
+        // dependency made the message flip to "missing <bundle>" (Positional
+        // ran first and hit the empty slot before FlagValue's bounds check
+        // ever fired) -- deterministic now: FlagValue's check always wins.
+        var r = Run("render", "--out");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("--out requires a value", r.Err);
+        Assert.DoesNotContain("missing <bundle>", r.Err);
+    }
+
+    [Fact]
+    public void Usage_mentions_the_render_verb()
+    {
+        var r = Run("--help");
+        Assert.Equal(0, r.Code);
+        Assert.Contains("render", r.Out);
+    }
+
+    [Fact]
+    public void Render_with_only_out_and_no_bundle_fails_rather_than_treating_the_out_dir_as_the_bundle()
+    {
+        // --out is the CLI's first VALUED option -- every other verb's flags
+        // are valueless (--dot, --json, -w) -- so the naive Positional()
+        // scan (first arg not starting with '-') would previously return the
+        // *value* of --out as the bundle path when the bundle itself is
+        // omitted. Guard against silently rendering the output directory as
+        // if it were the bundle.
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "site");
+
+        var r = Run("render", "--out", outDir);
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("error:", r.Err);
+        Assert.False(Directory.Exists(outDir));
+    }
+
+    // ----------------------------------------------------------------
+    // audit
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Audit_report_mode_prints_summary_and_worklist()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("as of:      2099-06-01\n", r.Out);
+        Assert.Contains("concepts:   2\n", r.Out);
+        Assert.Contains("     1  human-reviewed\n", r.Out);
+        Assert.Contains("     1  unverified\n", r.Out);
+        Assert.Contains("     2  stable\n", r.Out);
+        Assert.Contains("stale:      1 of 2 past stale_after\n", r.Out);
+        Assert.Contains("needs attention (1):\n", r.Out);
+        Assert.Contains("  metrics/dau  stale 2099-01-01  human-reviewed  stable\n", r.Out);
+    }
+
+    [Fact]
+    public void Audit_query_mode_prints_bare_lines_only()
+    {
+        var r = Run("audit", V02BundlePath, "--stale", "--as-of", "2099-06-01");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("metrics/dau  stale 2099-01-01  human-reviewed  stable\n", r.Out);
+    }
+
+    [Fact]
+    public void Audit_without_flags_selects_the_same_set_as_stale()
+    {
+        var report = Run("audit", V02BundlePath, "--as-of", "2099-06-01");
+        var query = Run("audit", V02BundlePath, "--stale", "--as-of", "2099-06-01");
+
+        var reportIds = report.Out
+            .Split('\n')
+            .Where(l => l.StartsWith("  metrics/", StringComparison.Ordinal))
+            .Select(l => l.Trim().Split("  ")[0])
+            .ToList();
+        var queryIds = query.Out
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Split("  ")[0])
+            .ToList();
+
+        Assert.Equal(queryIds, reportIds);
+    }
+
+    [Fact]
+    public void Audit_empty_selection_prints_nothing()
+    {
+        var r = Run("audit", V02BundlePath, "--status", "deprecated");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Positive-selection coverage for <c>--type</c>: both fixture concepts
+    /// are <c>type: Metric</c>, so the exact-case value must select both, and
+    /// the lowercase variant must select none -- pinning the documented
+    /// ordinal, case-sensitive rule (§ Audit.cs <c>AuditQuery.Type</c>) at the
+    /// CLI boundary. Without this, transposing <c>Type</c>/<c>Status</c> in
+    /// <c>ParseAuditQuery</c> would leave the suite green.
+    /// </summary>
+    [Fact]
+    public void Audit_type_filter_selects_matching_concepts_case_sensitively()
+    {
+        var match = Run("audit", V02BundlePath, "--type", "Metric");
+        Assert.Equal(0, match.Code);
+        Assert.Equal(2, match.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+
+        var noMatch = Run("audit", V02BundlePath, "--type", "metric");
+        Assert.Equal(0, noMatch.Code);
+        Assert.Equal("", noMatch.Out);
+    }
+
+    /// <summary>
+    /// Positive-selection coverage for <c>--status</c>: both fixture concepts
+    /// resolve to <c>status: stable</c> (one explicitly, one via
+    /// <c>Lifecycle.From</c>'s fallback for the unknown "retired" value), so
+    /// this must select both.
+    /// </summary>
+    [Fact]
+    public void Audit_status_filter_selects_matching_concepts()
+    {
+        var r = Run("audit", V02BundlePath, "--status", "stable");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Audit_three_tier_idiom_returns_every_concept()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "unverified,machine-confirmed,human-reviewed");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal(2, r.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_invalid_as_of_date()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2026-13-01");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: --as-of is not a valid YYYY-MM-DD date: \"2026-13-01\"\n", r.Err);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_unknown_trust_tier()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "foo");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal(
+            "error: unknown trust tier \"foo\"; expected unverified, machine-confirmed or human-reviewed\n",
+            r.Err);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_unknown_status()
+    {
+        var r = Run("audit", V02BundlePath, "--status", "retired");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown status \"retired\"; expected draft, stable or deprecated\n", r.Err);
+    }
+
+    [Fact]
+    public void Audit_rejects_an_empty_trust_entry_but_absorbs_duplicates()
+    {
+        var empty = Run("audit", V02BundlePath, "--trust", "unverified,,human-reviewed");
+        Assert.Equal(1, empty.Code);
+        Assert.Contains("unknown trust tier", empty.Err);
+
+        var duplicated = Run("audit", V02BundlePath, "--trust", "unverified,unverified");
+        var single = Run("audit", V02BundlePath, "--trust", "unverified");
+        Assert.Equal(0, duplicated.Code);
+        Assert.Equal(single.Out, duplicated.Out);
+    }
+
+    /// <summary>
+    /// Regression guard: valued flags must be declared to <c>Positional</c>, or
+    /// their value is mistaken for the bundle path when they precede it.
+    /// </summary>
+    [Theory]
+    [InlineData("--as-of", "2099-06-01")]
+    [InlineData("--trust", "unverified")]
+    [InlineData("--status", "stable")]
+    [InlineData("--type", "Metric")]
+    public void Audit_valued_flags_before_the_positional_resolve_the_bundle(string flag, string value)
+    {
+        var r = Run("audit", flag, value, V02BundlePath);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+    }
+
+    /// <summary>
+    /// A valued flag left without a value must name itself, even when it is the
+    /// only argument -- otherwise the user is told the bundle is missing and the
+    /// real mistake is hidden. This is why CmdAudit validates flag values before
+    /// resolving the positional.
+    /// </summary>
+    [Theory]
+    [InlineData("--as-of")]
+    [InlineData("--trust")]
+    [InlineData("--status")]
+    [InlineData("--type")]
+    public void Audit_reports_a_valued_flag_left_without_a_value(string flag)
+    {
+        var r = Run("audit", flag);
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal($"error: {flag} requires a value\n", r.Err);
+    }
+
+    /// <summary>
+    /// A token consumed as a valued flag's value is that value and nothing
+    /// else — it must not also register as a flag. Before the arguments were
+    /// scanned once, presence and value were independent scans of the raw
+    /// array, so `--type --stale` set the stale filter as well as the type.
+    /// </summary>
+    [Fact]
+    public void Audit_a_flag_name_used_as_a_value_is_not_also_a_flag()
+    {
+        var r = Run("audit", V02BundlePath, "--type", "--stale", "--json");
+
+        Assert.Equal(0, r.Code);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var query = doc.RootElement.GetProperty("query");
+
+        Assert.Equal("--stale", query.GetProperty("type").GetString());
+        Assert.False(query.GetProperty("stale").GetBoolean());
+    }
+
+    /// <summary>
+    /// Everything after `--` is positional, never a flag — that is what the
+    /// separator is for. Only the positional scan used to honour it, so a
+    /// `--json` sitting after the separator still switched the output format.
+    ///
+    /// The separator no longer swallows the leftovers, though: a token after it
+    /// is a positional like any other, so a SECOND one is `unexpected argument`
+    /// rather than silently dropped. The guarantee this test exists for is
+    /// unchanged and strictly stronger — `--json` after the separator is still
+    /// not a flag, still does not switch the format, and now says why instead
+    /// of vanishing.
+    /// </summary>
+    [Fact]
+    public void Audit_tokens_after_the_separator_are_never_flags()
+    {
+        var r = Run("audit", "--", V02BundlePath, "--json");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: --json", r.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+    }
+
+    /// <summary>
+    /// The separator's own job, isolated from the surplus-argument rule above:
+    /// a lone token after `--` is the positional even when it starts with `-`,
+    /// which is the whole reason the separator exists.
+    /// </summary>
+    [Fact]
+    public void A_lone_token_after_the_separator_is_the_positional()
+    {
+        var r = Run("audit", "--", V02BundlePath);
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith("bundle:     ", r.Out);
+    }
+
+    /// <summary>
+    /// The `--` rule is the CLI's, not audit's: on every verb, a token after the
+    /// separator is positional and never a flag. This pins it on `fmt`, whose
+    /// `-w` is the one flag with a side effect on disk — before the arguments
+    /// were scanned once, only the positional lookup honoured the separator, so
+    /// `-w` sitting after it still rewrote the file.
+    /// </summary>
+    [Fact]
+    public void Fmt_a_write_flag_after_the_separator_is_not_a_flag()
+    {
+        using var tmp = new TempDir();
+        const string unformatted = "---\ntype: Note\ntitle:   Spaced\n---\n\nbody\n";
+        var file = tmp.Write("note.md", unformatted);
+
+        var r = Run("fmt", "--", file, "-w");
+
+        // The point of this test is the file on disk, and it is untouched —
+        // `-w` after the separator is not a flag. It is now also named as a
+        // surplus positional rather than silently dropped, so the verb reports
+        // instead of printing the formatted document.
+        Assert.Equal(unformatted, File.ReadAllText(file));
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: -w", r.Err, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A `--` with nothing after it still ends the option scan, but it does not
+    /// discard a positional that came before: `okf audit b --` resolves `b`.
+    /// This is the case that distinguishes "clear the positionals at the
+    /// separator" from "only override when the separator has a token after it".
+    /// </summary>
+    [Fact]
+    public void Audit_a_trailing_separator_keeps_the_earlier_positional()
+    {
+        var r = Run("audit", V02BundlePath, "--");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"bundle:     {V02BundlePath}", r.Out);
+    }
+
+    /// <summary>
+    /// A repeated flag resolves to its FIRST occurrence, the rule every verb
+    /// inherited from the original `Array.IndexOf` lookup and which the design
+    /// spec (§4.1) documents. The later occurrence still consumes its own
+    /// value, so that value never lands in the positional slot.
+    /// </summary>
+    [Fact]
+    public void Audit_a_repeated_flag_resolves_to_its_first_occurrence()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "human-reviewed", "--trust", "unverified", "--json");
+
+        Assert.Equal(0, r.Code);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var trust = doc.RootElement.GetProperty("query").GetProperty("trust")
+            .EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Equal(["human-reviewed"], trust);
+    }
+
+    [Fact]
+    public void Audit_as_of_alone_stays_in_report_mode()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01");
+
+        Assert.Contains("needs attention", r.Out);
+    }
+
+    /// <summary>
+    /// Report mode's empty-worklist branch: <c>--as-of</c> pinned before
+    /// <c>metrics/dau</c>'s <c>stale_after</c> (2099-01-01) leaves nothing
+    /// stale, so <c>WriteAuditReport</c> takes its early-return branch and
+    /// prints the "none" line instead of a "needs attention (N):" worklist.
+    /// </summary>
+    [Fact]
+    public void Audit_report_mode_prints_none_when_nothing_is_stale()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2026-01-01");
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains("stale:      0 of 2 past stale_after\n", r.Out);
+        Assert.Contains("needs attention: none\n", r.Out);
+        Assert.DoesNotContain("needs attention (", r.Out);
+    }
+
+    /// <summary>
+    /// <c>metrics/legacy</c> has no <c>stale_after</c> at all, so
+    /// <c>FormatAuditFinding</c> takes its "no-stale-after" branch rather than
+    /// "stale "/"fresh " + a date. <c>--trust unverified</c> selects exactly
+    /// this concept (it has no <c>verified</c> entries), independent of
+    /// <c>--as-of</c>/the system clock.
+    /// </summary>
+    [Fact]
+    public void Audit_finding_line_reports_no_stale_after_when_the_field_is_absent()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "unverified");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("metrics/legacy  no-stale-after  unverified  stable\n", r.Out);
+    }
+
+    [Fact]
+    public void Help_lists_audit_right_after_validate()
+    {
+        var r = Run("--help");
+
+        Assert.Equal(0, r.Code);
+        var lines = r.Out.Split('\n').Select(l => l.TrimStart()).ToList();
+        var validateIndex = lines.FindIndex(l => l.StartsWith("validate ", StringComparison.Ordinal));
+        var auditIndex = lines.FindIndex(l => l.StartsWith("audit ", StringComparison.Ordinal));
+
+        Assert.True(validateIndex >= 0 && auditIndex == validateIndex + 1);
+    }
+
+    [Fact]
+    public void Audit_json_carries_counts_query_and_findings()
+    {
+        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01", "--json");
+
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out);
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var root = doc.RootElement;
+
+        Assert.Equal("2099-06-01", root.GetProperty("asOf").GetString());
+        Assert.Equal(2, root.GetProperty("conceptCount").GetInt32());
+        Assert.Equal(1, root.GetProperty("staleCount").GetInt32());
+
+        // Report mode selects what --stale selects, so the replayed query says so.
+        Assert.True(root.GetProperty("query").GetProperty("stale").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("query").GetProperty("trust").ValueKind);
+
+        Assert.Equal(1, root.GetProperty("trust").GetProperty("human-reviewed").GetInt32());
+        Assert.Equal(1, root.GetProperty("trust").GetProperty("unverified").GetInt32());
+        Assert.Equal(2, root.GetProperty("status").GetProperty("stable").GetInt32());
+
+        var finding = root.GetProperty("findings").EnumerateArray().Single();
+        Assert.Equal("metrics/dau", finding.GetProperty("conceptId").GetString());
+        Assert.Equal("Metric", finding.GetProperty("type").GetString());
+        Assert.Equal("Daily Active Users", finding.GetProperty("title").GetString());
+        Assert.Equal("human-reviewed", finding.GetProperty("trust").GetString());
+        // Verbatim raw frontmatter, not the parsed instant: the fixture carries
+        // the §5 conformant form, so the JSON echoes it unchanged.
+        Assert.Equal("2099-01-01T00:00:00Z", finding.GetProperty("staleAfter").GetString());
+        Assert.True(finding.GetProperty("stale").GetBoolean());
+    }
+
+    [Fact]
+    public void Audit_json_serializes_trust_query_in_ladder_order()
+    {
+        var r = Run("audit", V02BundlePath, "--trust", "human-reviewed,unverified", "--json");
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var trust = doc.RootElement.GetProperty("query").GetProperty("trust")
+            .EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Equal(["unverified", "human-reviewed"], trust);
+    }
+
+    [Fact]
+    public void Audit_json_keeps_a_malformed_stale_after_raw_and_not_stale()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\nstale_after: not-a-date\n---\n");
+
+        var r = Run("audit", tmp.Path, "--trust", "unverified", "--json");
+
+        using var doc = JsonDocument.Parse(r.Out);
+        var finding = doc.RootElement.GetProperty("findings").EnumerateArray().Single();
+
+        Assert.Equal("not-a-date", finding.GetProperty("staleAfter").GetString());
+        Assert.False(finding.GetProperty("stale").GetBoolean());
     }
 }

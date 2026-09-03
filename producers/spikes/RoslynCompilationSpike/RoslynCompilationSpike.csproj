@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>roslyn-compilation-spike</AssemblyName>
+    <RootNamespace>OkfProducer.Spikes.RoslynCompilation</RootNamespace>
+    <!-- A spike, not shipped code: exempt from the repo's warnings-as-errors. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Deliberately absent: Microsoft.CodeAnalysis.Workspaces.MSBuild.
+         Whether it is needed is the question this spike answers. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+  </ItemGroup>
+
+</Project>

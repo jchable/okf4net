@@ -60,6 +60,32 @@ header.bar {
 }
 .bar-in .gh:hover { background: var(--blue); text-decoration: none; }
 
+/* mobile nav toggle: drawn from the same 1.5px hairline + right-angle
+   vocabulary as .toggle / .doc-window, not a borrowed icon font. */
+.nav-toggle {
+  display: none; width: 40px; height: 40px; align-self: center;
+  align-items: center; justify-content: center; margin-left: 14px;
+  border: 1.5px solid var(--ink); background: var(--white); padding: 0; cursor: pointer;
+}
+.nav-toggle:hover { background: var(--blue-soft); }
+.nav-toggle-bars,
+.nav-toggle-bars::before,
+.nav-toggle-bars::after {
+  content: ""; display: block; width: 16px; height: 2px; background: var(--ink);
+}
+.nav-toggle-bars { position: relative; }
+.nav-toggle-bars::before, .nav-toggle-bars::after { position: absolute; left: 0; transition: transform .15s, top .15s, opacity .15s; }
+.nav-toggle-bars::before { top: -5px; }
+.nav-toggle-bars::after { top: 5px; }
+.nav-toggle[aria-expanded="true"] .nav-toggle-bars { background: transparent; }
+.nav-toggle[aria-expanded="true"] .nav-toggle-bars::before { top: 0; transform: rotate(45deg); }
+.nav-toggle[aria-expanded="true"] .nav-toggle-bars::after { top: 0; transform: rotate(-45deg); }
+
+/* mobile nav panel: the desktop tab strip, re-laid vertically rather than
+   reinvented — same mono labels, hairlines, and the .tree current-item
+   accent used by the docs sidebar. */
+.nav-mobile { display: none; }
+
 .frame { max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 3.5vw, 48px); }
 
 /* ---------- the document window ---------- */
@@ -267,6 +293,20 @@ footer.colophon .links { font-family: var(--mono); font-size: 12.5px; margin-bot
 
 @media (max-width: 960px) {
   .bar-in nav { display: none; }
+  .nav-toggle { display: inline-flex; }
+  .nav-mobile.open {
+    display: block; border-top: 1px solid var(--hair);
+    max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 3.5vw, 48px);
+  }
+  .nav-mobile a {
+    display: flex; align-items: center; font-family: var(--mono); font-size: 14px;
+    color: var(--gray); padding: 15px 4px; border-bottom: 1px solid var(--hair);
+  }
+  .nav-mobile a:hover, .nav-mobile a:focus-visible { color: var(--ink); background: var(--blue-soft); text-decoration: none; }
+  .nav-mobile a[aria-current="page"] {
+    color: var(--ink); font-weight: 700; background: var(--blue-soft);
+    box-shadow: inset 3px 0 0 var(--blue);
+  }
   .hero-doc { padding: 40px 0 36px; }
   .page-doc { padding: 32px 0 0; }
   .rendered { padding: 24px 20px 32px; }
@@ -280,6 +320,7 @@ footer.colophon .links { font-family: var(--mono); font-size: 12.5px; margin-bot
 /* mobile: full-bleed — the frame drops its margins, text keeps a 16px inset */
 @media (max-width: 720px) {
   .frame { padding: 0; }
+  .nav-mobile.open { padding: 0 16px; }
   .hero-doc { padding: 0 0 28px; }
   .page-doc { padding: 0; }
   .doc-window { border-left: none; border-right: none; border-top: none; }

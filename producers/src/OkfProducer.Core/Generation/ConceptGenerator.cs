@@ -59,16 +59,41 @@ public sealed class ConceptGenerator : IConceptGenerator
             };
         }
 
-        var candidate = $"{prefix}/{baseSlug}";
-        var suffix = 2;
-        while (!usedIds.Add(candidate))
+        // A concept id segment ending in ".md" would double up when BundleConceptWriter appends its
+        // own ".md" extension to serialize the file (e.g. a doc literally titled "README.md" would
+        // otherwise become "docs/readme.md.md"). Scoped to docs only: for a doc, the id is derived
+        // straight from a human-facing title, so trimming a redundant ".md" is a harmless, expected
+        // normalization. For a package, the id is derived from an ecosystem identifier (e.g. a NuGet
+        // PackageId such as "Foo.Md") where ".md" can be a meaningful, distinguishing part of the
+        // name -- silently stripping it would make the strip invisible in the id and could collide an
+        // unrelated sibling package named "Foo" into "packages/foo-2". A package whose id ends in
+        // ".md" still risks the same double-extension filename on write, but that's the lesser, more
+        // honest failure mode: the id itself stays a faithful, non-colliding representation of the
+        // package name.
+        if (prefix == "docs" && baseSlug.Length > ".md".Length
+            && baseSlug.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
         {
-            candidate = $"{prefix}/{baseSlug}-{suffix}";
+            baseSlug = baseSlug[..^".md".Length];
+        }
+
+        // "index"/"log" are reserved concept ids (BundleConceptWriter.WriteConcept rejects them --
+        // they'd collide with the bundle's own index.md/log.md). Treat a name that slugifies to one of
+        // these the same as an ordinary collision: fall through to the numeric-suffix loop below
+        // instead of producing an id that write time would reject.
+        var segment = baseSlug;
+        var suffix = 2;
+        while (IsReservedSegment(segment) || !usedIds.Add($"{prefix}/{segment}"))
+        {
+            segment = $"{baseSlug}-{suffix}";
             suffix++;
         }
 
-        return ConceptId.Parse(candidate);
+        return ConceptId.Parse($"{prefix}/{segment}");
     }
+
+    private static bool IsReservedSegment(string segment) =>
+        string.Equals(segment, "index", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(segment, "log", StringComparison.OrdinalIgnoreCase);
 
     private static OkfDocument BuildOverview(RepositorySnapshot snapshot)
     {

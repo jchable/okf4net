@@ -116,7 +116,11 @@ them a re-capture from the (removed) Rust binary:
     `attester` resources resolving to real files under
     `computations/references/`, `generated`/`verified`/`sources`, and a
     future `stale_after`), plus its `# Computation` fenced SQL block.
-    Contributes zero diagnostics.
+    Contributes exactly two diagnostics, both deliberate: its `stale_after`
+    and its `sources[].last_modified` keep the legacy date-only form on
+    purpose, so each raises a `LegacyDateOnlyTimestamp` warning — see
+    "Temporal form (§5)" below, which is where that choice is explained.
+    It contributed none before the §5 work of 2026-08-31.
   - `computations/revenue-file.md` — the **file-based** variant
     (`computation: references/computations/revenue.sql`, no fence).
     Contributes zero diagnostics.
@@ -192,3 +196,67 @@ them a re-capture from the (removed) Rust binary:
     (same diagnostic construction, different caught exception type), so
     the risk of it being wrong is low, but it remains unexercised by an
     automated test.
+
+## `okf audit` goldens (2026-08-21)
+
+- `golden/audit-v02.out`, `golden/audit-v02.json` — output of
+  `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01` (and its `--json`
+  form). **Hand-authored**, verified against the spec text (§5.3 trust tiers,
+  §5.4 statuses, §5.5 staleness) rather than captured from the reference CLI:
+  `audit` is an OKF4net verb with no upstream counterpart. The `--as-of` date
+  is pinned so the output cannot drift with the calendar.
+
+## Temporal form (§5) (2026-08-31)
+
+OKF v0.2 §5 requires every timestamp-valued key to be an ISO 8601 datetime with
+an explicit UTC offset (`2026-06-30T14:00:00Z`). OKF4net reads the legacy
+date-only form as a fallback and warns (`LegacyDateOnlyTimestamp`), in the same
+way it handles the §13.1 legacy fields.
+
+These two fixtures deliberately cover both paths and **must not be made
+uniform** — making either match the other silently drops a covered path:
+
+- `okf_v02/metrics/dau.md` carries the **conformant** form on every
+  timestamp-valued key it has — `stale_after`, `sources[].last_modified` and
+  both `usage_window` bounds. Revised on 2026-08-31 from the previous date-only
+  values, under the CLAUDE.md exception for a deliberate spec change, citing §5.
+- `okf_v02_computation/computations/revenue.md` keeps the **legacy** date-only
+  form on purpose, on both its `stale_after` and its `sources[].last_modified`,
+  so `validate-computation.out` captures the fallback warning reaching two
+  different keys rather than only the one everybody thinks of (`stale_after`).
+  The golden pins the rendered text, which is all `Diagnostic.ToString()` emits
+  — severity, path and message. The typed `Field` that tells the two apart is
+  pinned by `ValidateTests.A_legacy_date_only_usage_window_warns_once_per_bound`
+  (and its `last_modified` / `stale_after` neighbours), which assert on `.Field`
+  and `.Code` directly; no golden can, since neither reaches the rendered line.
+
+§5 reaches every timestamp-valued key, not just `stale_after`: §5.1 makes
+`usage_window` a "`{ from, to }` datetime range" and `last_modified` a recency
+timestamp. §9 is the deliberate exception — `log.md` date headings MUST stay
+bare `YYYY-MM-DD`, and no fixture here should ever give one a time.
+
+Two goldens moved with that revision, both re-derived and inspected line by line
+rather than blanket-regenerated:
+
+- `golden/validate-computation.out` now carries **two** `[warning]` lines for
+  `computations/revenue.md` — one for its date-only `stale_after` and one for
+  its date-only `sources[].last_modified` — and its summary reads
+  `5 warning(s)`, up from the pre-§5 `3 warning(s)`. Two lines rather than one
+  is deliberate: it shows the §5 check reaching both keys on one concept, and
+  each line naming the key it is about. It does **not** show the diagnostic's
+  `Field`: `Diagnostic.ToString()` renders severity, path and message only, so
+  neither `Field` nor `Code` ever reaches a golden. Those are asserted directly
+  in `tests/OKF4net.Tests/ValidateTests.cs` (the `A_legacy_date_only_*` tests).
+  `validate-computation.exitcode` stays
+  `0`: the diagnostic is a `Warning`, and §5 form sits outside the §11
+  conformance floor.
+- `golden/audit-v02.json`'s `findings[0].staleAfter` goes `"2099-01-01"` →
+  `"2099-01-01T00:00:00Z"`. That field is the **verbatim raw frontmatter
+  value** (`Lifecycle.StaleAfterRaw`), so it echoes the fixture edit directly.
+  Nothing else in the JSON moved — `staleCount`, `stale` and `asOf` are
+  unchanged, i.e. `okf audit` reaches the same verdict.
+
+`golden/audit-v02.out` (the text form) is deliberately **unchanged**:
+`AuditVocabulary.Freshness` renders the *parsed* date as `yyyy-MM-dd`, so it
+still reads `stale 2099-01-01` for the now-conformant value. That is the
+invariant to preserve if this rendering is ever revisited.

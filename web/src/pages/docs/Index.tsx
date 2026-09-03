@@ -73,7 +73,7 @@ export default function DocsIndex() {
                 concept: <Link to="/docs/cli">cli</Link>,
                 desc: (
                   <>
-                    The six <code>okf</code> commands — flags, exit codes, and copy-paste transcripts.
+                    The seven <code>okf</code> commands — flags, exit codes, and copy-paste transcripts.
                   </>
                 ),
               },

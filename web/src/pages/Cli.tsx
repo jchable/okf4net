@@ -40,7 +40,7 @@ export default function Cli() {
   return (
     <Layout
       title="The okf CLI — OKF4net"
-      description="The okf command-line tool: validate, info, index, graph, parse and fmt — a self-contained Native AOT binary that drops straight into CI."
+      description="The okf command-line tool: validate, info, index, graph, parse, fmt and render — a self-contained Native AOT binary that drops straight into CI."
       current="cli"
     >
       <PageDoc
@@ -52,7 +52,7 @@ export default function Cli() {
         type="Reference"
         title={
           <>
-            Six commands, <em>one binary.</em>
+            Eight commands, <em>one binary.</em>
           </>
         }
         lede={
@@ -69,6 +69,13 @@ export default function Cli() {
             head={['Command', 'Does']}
             rows={[
               ['okf validate <bundle>', 'Check a bundle against OKF v0.2 conformance (§11); exits non-zero on failure'],
+              [
+                'okf audit <bundle>',
+                <>
+                  Report trust (§5.3), lifecycle (§5.4) and staleness (§5.5) across the bundle; filter with{' '}
+                  <code>--stale</code>, <code>--trust</code>, <code>--status</code>, <code>--type</code>
+                </>,
+              ],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],
               ['okf index <bundle>', '(Re)generate every index.md in the bundle (§8)'],
               [
@@ -83,6 +90,10 @@ export default function Cli() {
                 <>
                   Normalize a document by parse + re-serialize (<code>-w</code> writes in place)
                 </>,
+              ],
+              [
+                'okf render <bundle> --out <dir>',
+                'Generate a self-contained, browsable static HTML site from the bundle',
               ],
             ]}
           />

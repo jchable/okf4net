@@ -1,3 +1,4 @@
 tests/fixtures/** -text
 bundles/acme_retail/** -text
 bundles/ga4/** -text
+docs/spec/SPEC.md -text

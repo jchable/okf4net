@@ -32,7 +32,10 @@ const string SystemInstructions =
     + "the okf_* tools to answer questions -- do not guess at bundle "
     + "content. Attested Computations can be inspected with "
     + "okf_get_computation (their contract and sanctioned SQL) but this "
-    + "sample cannot run them.";
+    + "sample cannot run them. Questions about the bundle as a whole -- "
+    + "which concepts are stale, unverified, deprecated, or of a given type -- "
+    + "are answered by a single okf_audit call, never by reading concepts "
+    + "one at a time.";
 
 var tools = new OkfBundleTools(bundleRoot);
 var contextProvider = new OkfContextProvider(tools);

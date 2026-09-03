@@ -1,0 +1,18 @@
+bundle:     tests/fixtures/okf_v02
+as of:      2099-06-01
+concepts:   2
+
+trust:
+     1  human-reviewed
+     0  machine-confirmed
+     1  unverified
+
+status:
+     0  draft
+     2  stable
+     0  deprecated
+
+stale:      1 of 2 past stale_after
+
+needs attention (1):
+  metrics/dau  stale 2099-01-01  human-reviewed  stable

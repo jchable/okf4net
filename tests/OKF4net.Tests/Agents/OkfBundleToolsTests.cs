@@ -53,12 +53,13 @@ public class OkfBundleToolsTests
             .Where(name => !OkfBundleTools.WriteToolNames.Contains(name))
             .ToHashSet();
 
-        Assert.Equal(7, readOnlyNames.Count);
+        Assert.Equal(8, readOnlyNames.Count);
         Assert.DoesNotContain("okf_write_concept", readOnlyNames);
         Assert.DoesNotContain("okf_append_log", readOnlyNames);
         Assert.DoesNotContain("okf_regenerate_indexes", readOnlyNames);
         Assert.Contains("okf_read_concept", readOnlyNames);
         Assert.Contains("okf_get_computation", readOnlyNames);
+        Assert.Contains("okf_audit", readOnlyNames);
     }
 
     /// <summary>

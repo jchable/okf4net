@@ -14,6 +14,27 @@ are the concrete entry points.
 
 ## Next
 
+- **`okf audit` shipped** — a corpus-level query over a bundle's trust (§5.3),
+  lifecycle (§5.4) and staleness (§5.5) signals: counts plus a filterable
+  worklist, across the CLI verb and the read-only `okf_audit` agent tool,
+  backed by the shared `ConceptAudit`/`AuditVocabulary` model in `OKF4net`.
+  Motivated by ["OKF v0.2 Quietly Admits the Folder Has a Ceiling"](https://medium.com/@davidroliver/okf-v0-2-quietly-admits-the-folder-has-a-ceiling-the-way-up-is-a-library-25fa54e872f9)
+  — see [its design spec](docs/superpowers/specs/2026-08-21-okf-audit-design.md).
+- **Per-verb `--help` for the CLI.** `okf audit --help` today prints
+  `error: missing <bundle>`, and so do `okf validate --help` and every other
+  verb: the CLI has one global usage block and no per-verb help, so a verb's
+  own flags are only discoverable by reading OPTIONS or this repo. `audit`
+  makes it visible (six optional flags, none of which fit on its COMMANDS
+  line), but the gap is CLI-wide and should be closed for all eight verbs at
+  once — intercepting `--help` inside each command before its positional is
+  resolved, which also changes those invocations from exit 1 to exit 0.
+- **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
+  builder can now write a *per-entry* §5.1 override (`AddSource(…,
+  usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal
+  case, the one that frames every `usage_count` in a document — has no typed
+  setter: a producer must hand-build its `{ from, to }` mapping and pass it
+  through `Extension("usage_window", …)`. The builder currently makes the
+  exception easier to write than the rule.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
 - `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source
@@ -23,10 +44,20 @@ are the concrete entry points.
   MCP story is read-only-focused; this would exercise write/append and
   `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
 - Performance baselines for large bundle loads.
-- Bundle viewer: browse a bundle interactively (static HTML render + local live
-  server) — implementation approach (zero-dep `HttpListener`, ASP.NET Core, or a
-  standalone web tool) still open, see
-  [#40](https://github.com/jchable/okf4net/issues/40).
+- Bundle viewer: **static render shipped** as `okf render` (`OKF4net.Viewer`).
+  The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
+  remains open — it is what unlocks full-text search in the viewer, since a
+  server can run `ConceptSearch` directly instead of mirroring its weights in
+  JavaScript. Its implementation approach (zero-dep `HttpListener`, ASP.NET
+  Core, or a standalone web tool) is still open.
+  - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
+    xunit runs on .NET and cannot execute JavaScript, so
+    `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
+    source-text markers — it stays green even if the sanitizer is gutted.
+    `tools/viewer-security-check/` (Node/jsdom, run against the real vendored
+    marked) is the actual guard, and CI runs it as the `viewer sanitizer (JS)`
+    job. Re-vendoring `marked.min.js` is the change most likely to regress the
+    defense, and that job is what catches it.
 
 ## Later
 
@@ -70,12 +101,14 @@ are the concrete entry points.
 - **`producers/OkfProducer` walking skeleton shipped** (repo scanner → OKF v0.2 bundle generator,
   `generate`/`validate` commands, npm/NuGet/README detection only — see
   [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md) and
-  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)). Two follow-ups noted at
-  merge time, not yet acted on:
-  - **No CI coverage.** `producers/` is deliberately outside `OKF4net.sln`/`ci.yml`, so nothing
-    verifies it still builds after an `src/OKF4net` API change — it can rot silently. Either add a
-    lightweight build+test job for `producers/OkfProducer.sln`, or treat "does `producers/` still
-    build" as an explicit step whenever a public `OKF4net` API changes.
+  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)).
+  - **Out of CI, by decision — not a follow-up.** `producers/` sits outside `OKF4net.sln` and
+    `ci.yml`, and stays there. The trade-off is real (nothing verifies it still builds after an
+    `src/OKF4net` API change, so it can rot silently) and is paid manually: running
+    `dotnet test producers/OkfProducer.sln` is an explicit step whenever a public `OKF4net` API
+    changes, and part of the release preflight. This is recorded here because the earlier
+    "either add a CI job, or…" wording read as an open question and was re-raised by an external
+    audit; it is settled.
   - **Undocumented.** Not mentioned in `README.md`/`CLAUDE.md`/`CONTRIBUTING.md`. Add pointers once
     the producer grows past this first walking-skeleton slice (more ecosystems, LLM enrichment).
 - **Known limitation: generated `sources[].resource` paths don't resolve against the bundle.**

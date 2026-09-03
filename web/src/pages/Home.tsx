@@ -97,11 +97,13 @@ export default function Home() {
             <tbody>
               <tr><th>Command</th><th>Does</th></tr>
               <tr><td>okf validate &lt;bundle&gt;</td><td>Conformance check (§11), non-zero exit on failure</td></tr>
+              <tr><td>okf audit &lt;bundle&gt;</td><td>Trust, freshness and lifecycle across the bundle (§5.3–§5.5)</td></tr>
               <tr><td>okf info &lt;bundle&gt;</td><td>Concepts, types, links, version</td></tr>
               <tr><td>okf index &lt;bundle&gt;</td><td>(Re)generate every index.md (§8)</td></tr>
               <tr><td>okf graph &lt;bundle&gt;</td><td>Cross-link graph, <code>--dot</code> for Graphviz</td></tr>
               <tr><td>okf parse &lt;file&gt;</td><td>One document's structure</td></tr>
               <tr><td>okf fmt &lt;file&gt;</td><td>Normalize by parse + re-serialize (-w writes)</td></tr>
+              <tr><td>okf render &lt;bundle&gt; --out &lt;dir&gt;</td><td>Self-contained, browsable static HTML site</td></tr>
             </tbody>
           </table>
           <pre className="block" dangerouslySetInnerHTML={{ __html: cliSessionHtml }} />

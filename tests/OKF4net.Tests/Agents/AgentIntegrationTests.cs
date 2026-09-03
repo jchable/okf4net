@@ -126,4 +126,76 @@ public class AgentIntegrationTests
         Assert.Contains("✓ conformant", scriptedClient.ObservedFunctionResults[2]);
         Assert.DoesNotContain("✗", scriptedClient.ObservedFunctionResults[2]);
     }
+
+    /// <summary>
+    /// The read-only counterpart of the write scenario, and the question the
+    /// audit surface exists for: "which concepts are past stale_after and were
+    /// never verified by a human?". It is the only test that
+    /// drives <c>okf_audit</c> through the framework's real function-invoking
+    /// pipeline rather than calling the C# method directly, so it is what
+    /// proves the JSON argument binding works: the scripted "model" passes a
+    /// boolean and a comma-separated tier list as JSON, and the framework
+    /// must bind them to the method's <c>bool</c> and <c>string?</c>
+    /// parameters for the filter to take effect.
+    ///
+    /// The bundle is built inline so the observation date can be pinned via
+    /// the <c>UtcNow</c> seam: <c>metrics/orphan</c> is stale AND unverified
+    /// (the answer), while <c>metrics/dau</c> is equally stale but
+    /// human-reviewed (the concept the trust filter must exclude). A binding
+    /// failure that silently dropped the <c>trust</c> argument would return
+    /// both and fail here.
+    /// </summary>
+    [Fact]
+    public async Task Agent_audits_the_bundle_for_stale_never_human_verified_concepts()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/dau.md",
+            "---\ntype: Metric\ntitle: Daily Active Users\nstale_after: 2026-01-01\n"
+            + "verified:\n  - { by: human:ada, at: 2026-01-01T00:00:00Z }\n---\n");
+        tmp.Write(
+            "metrics/orphan.md",
+            "---\ntype: Metric\ntitle: Orphaned Metric\nstale_after: 2026-01-01\n---\n");
+
+        var tools = new OkfBundleTools(tmp.Path)
+        {
+            UtcNow = () => new DateTime(2026, 8, 21, 0, 0, 0, DateTimeKind.Utc),
+        };
+
+        const string auditAnswer = "One concept is stale and was never verified by a human: metrics/orphan.";
+
+        var scriptedClient = new ScriptedChatClient(
+        [
+            ScriptStep.Call("okf_audit", new Dictionary<string, object?>
+            {
+                ["stale"] = true,
+                ["trust"] = "unverified,machine-confirmed",
+            }),
+            ScriptStep.Answer(auditAnswer),
+        ]);
+
+        AIAgent agent = scriptedClient.AsAIAgent(tools: tools.GetTools());
+
+        var response = await agent.RunAsync(
+            "Quels concepts ont dépassé leur stale_after sans avoir jamais été vérifiés par un humain ?");
+
+        Assert.Equal(auditAnswer, response.Text);
+
+        // Two round-trips: the tool-call turn and the final-answer turn.
+        Assert.Equal(2, scriptedClient.TurnsTaken);
+
+        var auditResult = Assert.Single(scriptedClient.ObservedFunctionResults);
+
+        // The filters bound and took effect: the stale, unverified concept is
+        // listed under the worklist heading; the stale but human-reviewed one
+        // is not.
+        Assert.Contains("needs attention (1):", auditResult);
+        Assert.Contains("metrics/orphan  stale 2026-01-01  unverified", auditResult);
+        Assert.DoesNotContain("metrics/dau", auditResult);
+
+        // The counters still describe the whole bundle, not the selection --
+        // the distinction the audit surface is built on.
+        Assert.Contains("concepts:   2", auditResult);
+        Assert.Contains("stale:      2 of 2 past stale_after", auditResult);
+    }
 }

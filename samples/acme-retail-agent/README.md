@@ -51,6 +51,36 @@ OKF_CHAT_BASE_URL=http://localhost:11434/v1 OKF_CHAT_MODEL=llama3 \
 (or pipe a prompt via stdin instead of `--prompt`). Type `exit` or `quit` to
 leave the interactive REPL.
 
+## Questions worth asking
+
+Grounded answers about one concept — these go through
+`okf_search`/`okf_read_concept`:
+
+- *What is Acme's FY2026 revenue recognition policy?*
+- *How is gross margin defined, and what does it depend on?*
+
+Questions about the bundle **as a whole** — these go through `okf_audit`, in
+one call rather than by opening concepts one at a time:
+
+- *Which concepts have never been verified by a human?* — the interesting
+  one today: eight of the nine concepts carry a `human:` verifier, so the
+  answer is `skills/run-on-bq`. Note that asking about trust alone does not
+  quietly also demand staleness: `okf_audit` only defaults to the stale
+  worklist when it is called with no other filter, mirroring the CLI, where
+  `okf audit <bundle>` reports the worklist but `--trust unverified` filters
+  on trust alone.
+- *How healthy is this knowledge base — how much of it is human-reviewed,
+  and how much is stale?*
+- *Is anything deprecated?*
+
+Note on the freshness question specifically: no concept in this bundle is
+past its `stale_after` date *yet*, so "what is stale?" correctly answers
+"nothing" today. Most concepts carry `stale_after: 2026-12-31`, so this
+sample starts reporting seven stale concepts on 2027-01-01 — which is the
+point the bundle is making, not a bug in it. To see the stale path before
+then, the CLI can pin the date: `okf audit bundles/acme_retail --as-of
+2027-06-01`.
+
 ## What it does
 
 Wires `OkfBundleTools` (constructed without an `AttestationOrchestrator`, so
@@ -61,6 +91,13 @@ budget-bounded context injection) into one `ChatClientAgent`. The
 interactive mode keeps one `AgentSession` across turns; one-shot mode runs a
 single turn and exits. Each response prints a `[tools: ...]` line naming any
 `okf_*` tools the agent called, for visibility into what it did.
+
+Two kinds of question are demonstrated, and they use the tools differently.
+Retrieval questions (`okf_search`, `okf_read_concept`, `okf_graph`) pull one
+concept, or a few. Corpus-level questions about trust, freshness and
+lifecycle go to `okf_audit`, which answers them in one call by reading every
+concept's §5.3–§5.5 frontmatter — the `[tools: ...]` line is what shows you
+which path the model actually took.
 
 "Read-only" is enforced by construction, not just by convention:
 `Program.cs` filters `okf_write_concept`, `okf_append_log`, and

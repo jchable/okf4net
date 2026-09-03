@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Linq;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
@@ -64,6 +65,43 @@ public class OkfContextProviderMemoryTests
     private static string MemoryFilePath(TempDir tmp, string date) =>
         Path.Combine(tmp.Path, "memory", $"{date}.md");
 
+    /// <summary>
+    /// A captured memory concept carried <c>timestamp</c> — the legacy §13.1
+    /// field — so every concept the provider wrote tripped
+    /// <see cref="DiagnosticCode.LegacyTimestamp"/> the moment the bundle was
+    /// validated. Since the v0.2 bump provenance is the <c>generated</c> stamp,
+    /// and the provider is a producer: it must write the current form.
+    ///
+    /// Asserting on the validator's diagnostics rather than on the frontmatter
+    /// text is deliberate — it is the same check a user running
+    /// <c>okf validate</c> over their memory bundle performs, and it is what
+    /// nothing covered before.
+    /// </summary>
+    [Fact]
+    public async Task Captured_memory_carries_a_generated_stamp_not_a_legacy_timestamp()
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tools.UtcNow = () => new DateTime(2026, 7, 22, 10, 15, 30, DateTimeKind.Utc);
+        var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.Enabled });
+
+        await provider.StoreForTest(BuildInvokedContext("What tables exist?", "There is tables/orders."));
+        Assert.Null(provider.LastMemoryError);
+
+        var doc = OkfDocument.Parse(File.ReadAllText(MemoryFilePath(tmp, "2026-07-22")));
+        Assert.Equal("2026-07-22T10:15:30Z", doc.Frontmatter.Generated?.At);
+        Assert.False(string.IsNullOrWhiteSpace(doc.Frontmatter.Generated?.By?.Raw));
+
+        // Scoped to the concept the provider wrote: the appendix_a fixture
+        // itself carries v0.1 concepts with a legacy `timestamp`, and those are
+        // not this test's business.
+        var report = BundleValidator.Validate(tools.GetBundle());
+        Assert.DoesNotContain(
+            report.Diagnostics,
+            d => d.Code == DiagnosticCode.LegacyTimestamp
+                 && d.Concept?.ToString() == "memory/2026-07-22");
+    }
+
     [Fact]
     public async Task Capture_creates_a_new_memory_concept_and_log_entry_and_invalidates_the_cache()
     {
@@ -86,7 +124,10 @@ public class OkfContextProviderMemoryTests
         Assert.Equal("AgentMemory", doc.Frontmatter.Type);
         Assert.Equal("Agent memory 2026-07-22", doc.Frontmatter.Title);
         Assert.False(string.IsNullOrWhiteSpace(doc.Frontmatter.Description));
-        Assert.False(string.IsNullOrWhiteSpace(doc.Frontmatter.Timestamp));
+        // Provenance is the §5.2 `generated` stamp; `timestamp` is the legacy
+        // §13.1 field this path used to write. See
+        // Captured_memory_carries_a_generated_stamp_not_a_legacy_timestamp.
+        Assert.False(string.IsNullOrWhiteSpace(doc.Frontmatter.GeneratedAt));
 
         Assert.Contains("## 10:15:30 UTC", doc.Body, StringComparison.Ordinal);
         Assert.Contains("**User:**", doc.Body, StringComparison.Ordinal);

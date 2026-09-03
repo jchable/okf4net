@@ -33,6 +33,10 @@ everything is checked *before* the tag exists.
 - **Local verification** (catches problems before they burn a tag):
   `dotnet test OKF4net.sln -c Release` and
   `dotnet format OKF4net.sln --verify-no-changes`.
+- **`dotnet test producers/OkfProducer.sln`.** `producers/` is deliberately
+  outside `OKF4net.sln`/`ci.yml` (a settled decision, see `ROADMAP.md`), so CI
+  never builds it: a public `OKF4net` API change can break it silently. This
+  manual run is the whole trade-off for keeping it out of CI — do not skip it.
 - First release only: the nuget.org **Trusted Publishing policy** must exist
   (owner `jchable`, repo `okf4net`, workflow file `release.yml` — file name
   only) and the `NUGET_USER` GitHub secret must contain the nuget.org
@@ -62,17 +66,18 @@ ask the user rather than guessing — the version number is a public contract.
 On main (worktree), synchronize **every user-visible version with the tag**:
 
 1. `Directory.Build.props` → `<Version>X.Y.Z</Version>`. This is the local
-  default package/assembly version for every project. CI overrides it from
-  the tag at pack time, but keeping it synchronized makes local builds,
-  metadata, and the tag agree.
-2. `src/OKF4net.Cli/OkfCli.cs` → `CliVersion = "X.Y.Z"`. The CLI has an
-  explicit version string, so changing MSBuild metadata alone does not
-  update `okf --version`.
-3. Any user-facing version sample, currently
+  default package/assembly version for every project, and now the **only**
+  version to bump in code. CI overrides it from the tag at pack time, and
+  `release.yml` refuses to build a tag that disagrees with it — so getting this
+  one wrong stops the release rather than shipping a mislabelled artifact.
+  `okf --version` reads the assembly's stamped version, so there is no separate
+  CLI constant to keep in sync any more (there was, and it drifted: the winget
+  package for 0.2.0 shipped a binary printing `0.1.0-alpha.1`).
+2. Any user-facing version sample, currently
   `web/src/pages/docs/Cli.tsx` (`versionHtml`), must show the same `X.Y.Z`.
   Search the tracked source tree for the previous version before committing
   to catch further copies: `git grep -n "<previous-version>" -- ':!bin' ':!obj'`.
-4. `CHANGELOG.md` (Keep a Changelog format):
+3. `CHANGELOG.md` (Keep a Changelog format):
    - Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`.
    - Re-create an empty `## [Unreleased]` section above it.
    - Update the link definitions at the bottom (`[Unreleased]` compare link,
@@ -89,19 +94,19 @@ On main (worktree), synchronize **every user-visible version with the tag**:
      already-published preview's section, though that tag's tree never
      contained the file). New work always goes in `[Unreleased]`, to be
      captured whenever this release process next runs.
-5. `README.md`'s **"OKF4net version ↔ OKF spec version" table** (near the
+4. `README.md`'s **"OKF4net version ↔ OKF spec version" table** (near the
    bottom) gets a new row: `| [X.Y.Z](CHANGELOG.md#anchor) | vN.N | <highlights> |`.
    GitHub's heading-anchor slugifier strips periods and brackets, lowercases,
    and turns each space into a hyphen, so `## [X.Y.Z] - YYYY-MM-DD` becomes
    `#xyz---yyyy-mm-dd` (e.g. `[0.4.0] - 2026-07-30` → `#040---2026-07-30`).
    This table is easy to miss because, unlike the version-sample search in
-   step 3 above, there is no previous-version STRING to grep for that would
+   step 2 above, there is no previous-version STRING to grep for that would
    reveal the gap — it just silently stops growing release after release.
    Check it every time, not only when something reminds you (missed for two
    releases running on this repo before it was caught).
-6. **Check for new top-level directories since the last tag** — a whole new
+5. **Check for new top-level directories since the last tag** — a whole new
    project or sample has no previous-version STRING to grep for (same blind
-   spot as step 5's README table) and is easy to lose inside a large commit
+   spot as step 4's README table) and is easy to lose inside a large commit
    log dominated by `docs(plans)`/`docs(specs)` noise: `git diff --stat
    <last-tag>..HEAD -- ':!tests' ':!docs'`, or `git log --oneline
    <last-tag>..HEAD --diff-filter=A -- '*/*.csproj' '*.sln'`, then confirm
@@ -111,7 +116,7 @@ On main (worktree), synchronize **every user-visible version with the tag**:
    new standalone project (missed once on this repo for a whole new
    producer CLI and a new sample — both existed in the tagged tree but
    were undocumented everywhere until the next release caught it).
-7. **Minor/major releases only** (new features, new CLI verbs, new public
+6. **Minor/major releases only** (new features, new CLI verbs, new public
    API — the same test used in step 2 to pick minor over patch): invoke the
    `update-website` skill now, using the CHANGELOG section you just wrote as
    its primary source of ground truth, and fold any resulting `web/` edits
@@ -121,7 +126,7 @@ On main (worktree), synchronize **every user-visible version with the tag**:
    touches code, so `ci.yml`'s full matrix runs regardless of whether `web/`
    also changed. Skip this step for patch releases (fixes/docs/CI only) —
    `update-website`'s full audit is overkill when nothing user-facing shipped
-   beyond what step 3.3 already syncs (the version sample).
+   beyond what step 3.2 already syncs (the version sample).
 
 Before committing, prove the externally-visible CLI version matches the
 release version:

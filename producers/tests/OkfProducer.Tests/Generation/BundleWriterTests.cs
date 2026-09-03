@@ -123,6 +123,32 @@ public class BundleWriterTests
     }
 
     [Fact]
+    public void Write_reports_a_reserved_concept_id_as_a_failure_without_stopping_the_rest()
+    {
+        var outPath = CreateTempDir();
+        var concepts = new List<GeneratedConcept>
+        {
+            SampleConcept("overview"),
+            new(ConceptId.Parse("index"),
+                OkfDocumentBuilder.ForType("Documentation").Title("t").Description("d").Body("# t\n").Build()),
+        };
+        try
+        {
+            var result = new BundleWriter().Write(outPath, concepts, WritePolicy.RequireEmpty, UnrelatedRepoPath());
+
+            Assert.Equal(1, result.Written);
+            var failure = Assert.Single(result.Failures);
+            Assert.Equal("index", failure.Id.ToString());
+            Assert.Contains("reserved concept id", failure.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(Path.Combine(outPath, "overview.md")));
+        }
+        finally
+        {
+            Directory.Delete(outPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Write_Reset_refuses_to_delete_the_repository_it_scanned_when_out_equals_repo()
     {
         var outPath = CreateTempDir();

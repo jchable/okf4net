@@ -158,6 +158,27 @@ public class ConceptIdTests
             () => ConceptId.FromPath(@"C:\bundle", @"C:\other\tables\users.md"));
 
     [Fact]
+    public void FromPath_outside_bundle_root_error_includes_the_bundle_root()
+    {
+        var ex = Assert.Throws<ConceptIdException>(
+            () => ConceptId.FromPath(@"C:\bundle", @"C:\other\tables\users.md"));
+        // Both paths are DebugQuote'd, like every other ConceptIdException
+        // message in ConceptId.cs -- the message concatenates two
+        // caller-supplied paths, so without quoting a path containing spaces
+        // (or control characters) makes the sentence ambiguous.
+        Assert.Contains(@"""C:\\other\\tables\\users.md""", ex.Message);
+        Assert.Contains(@"""C:\\bundle""", ex.Message);
+    }
+
+    [Fact]
+    public void FromPath_outside_bundle_root_error_quotes_paths_containing_spaces()
+    {
+        var ex = Assert.Throws<ConceptIdException>(
+            () => ConceptId.FromPath(@"C:\my bundle", @"C:\other root\a.md"));
+        Assert.Contains(@"""C:\\other root\\a.md"" is not under bundle root ""C:\\my bundle""", ex.Message);
+    }
+
+    [Fact]
     public void FromPath_throws_when_path_equals_root_exactly()
         // relative part is empty -> zero segments -> New()'s "at least one segment" rule
         => Assert.Throws<ConceptIdException>(

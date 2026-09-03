@@ -26,11 +26,13 @@ AIAgent agent = chatClient.AsAIAgent(
 var response = await agent.RunAsync("Summarize the concepts in this bundle.");
 ```
 
-## The nine tools
+## The eleven tools
 
-`okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`,
+`okf_read_concept`, `okf_browse`, `okf_graph`, `okf_search`, `okf_audit`,
 `okf_write_concept`, `okf_append_log`, `okf_regenerate_indexes`,
-`okf_validate_bundle`, `okf_changes_since`.
+`okf_validate_bundle`, `okf_changes_since`, `okf_get_computation` — plus a
+twelfth, `okf_run_computation`, only when the tool set is constructed with an
+`OKF4net.Attestation` orchestrator wired in.
 
 All tools return agent-friendly markdown/plain text and never throw for
 expected errors (unknown ids, invalid paths, malformed input) — the agent

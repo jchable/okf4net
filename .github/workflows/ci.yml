@@ -56,6 +56,30 @@ jobs:
       - name: Verify formatting
         run: dotnet format OKF4net.sln --verify-no-changes
 
+  viewer-security:
+    # The viewer's XSS defence lives in JavaScript (src/OKF4net.Viewer/Assets/viewer.js),
+    # which the xunit suite cannot execute -- its tests there are source-text smoke checks
+    # that stay green even if the sanitizer is gutted. This job is the only automated
+    # guard on that control, and it matters most when marked.min.js is re-vendored.
+    name: viewer sanitizer (JS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/viewer-security-check/package-lock.json
+
+      - name: Install harness dependencies
+        working-directory: tools/viewer-security-check
+        run: npm ci
+
+      - name: Run hostile-payload harness
+        working-directory: tools/viewer-security-check
+        run: npm test
+
   aot-publish:
     name: Native AOT publish smoke test
     runs-on: ubuntu-latest
@@ -73,3 +97,18 @@ jobs:
         run: |
           BIN=$(find src/OKF4net.Cli/bin/Release -type f -name okf -path '*publish*' | head -1)
           "$BIN" validate tests/fixtures/appendix_a
+
+      # `okf --version` reads AssemblyInformationalVersionAttribute at runtime.
+      # The in-process CliTests cannot prove that survives Native AOT, so the
+      # published binary is asked directly here: a trimmed-away attribute would
+      # print the "0.0.0-unknown" fallback and this fails.
+      - name: Published binary reports the build version
+        run: |
+          BIN=$(find src/OKF4net.Cli/bin/Release -type f -name okf -path '*publish*' | head -1)
+          DECLARED=$(sed -n 's/.*<Version>\([^<]*\)<\/Version>.*/\1/p' Directory.Build.props)
+          ACTUAL=$("$BIN" --version)
+          echo "declared=$DECLARED actual=$ACTUAL"
+          case "$ACTUAL" in
+            "okf $DECLARED "*) ;;
+            *) echo "::error::published binary reports '$ACTUAL', expected version $DECLARED"; exit 1 ;;
+          esac

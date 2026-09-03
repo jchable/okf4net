@@ -128,7 +128,8 @@ public sealed class ConceptId : IEquatable<ConceptId>, IComparable<ConceptId>, I
         }
         else
         {
-            throw new ConceptIdException($"{path} is not under bundle root");
+            throw new ConceptIdException(
+                $"{DebugQuote.Quote(path)} is not under bundle root {DebugQuote.Quote(bundleRoot)}");
         }
 
         // Non-leading "." segments are normalized away (filtered out here).

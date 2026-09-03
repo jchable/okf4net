@@ -19,7 +19,9 @@ Do not publish anything until the onramp is in place. Current state:
 - [x] README contributor callout + `## Contributing & roadmap` section merged
 - [x] `CONTRIBUTING.md` "Where to start" pointer merged
 - [x] GitHub Discussions enabled with a welcome post (discussions/4)
-- [x] Onramp issues filed: **6 `good first issue` + 4 `help wanted`** (#5–#14)
+- [x] Onramp issues filed: **6 `good first issue` + 4 `help wanted`** (#5–#14) — #10
+  (`ConceptId.FromPath` error message) has since shipped and was closed; its draft was
+  removed from `issues/`, which now holds the 9 still open.
 - [ ] **Maintainer follow-up:** create the GitHub Projects board (Now/Next/Later) — the
   automation token lacked the `project` scope. Run `gh auth refresh -s project,read:project`
   then `gh project create --owner jchable --title "OKF4net Roadmap"`, or make it in the web UI.
