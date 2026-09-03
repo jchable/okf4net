@@ -260,6 +260,16 @@ public class CliTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("No drift", result.Output, StringComparison.Ordinal);
 
+        // The completeness report fires on --check too, and until round 2 nothing said so: `Report` was
+        // passed into `Check` and none of this file's --check invocations asserted `run: `, so replacing
+        // it with `_ => { }` was a production edit no assertion could break -- on the one path where
+        // "the report must not change bundle bytes" is load-bearing. Asserted HERE rather than in a test
+        // of its own, because the byte-for-byte comparison below is the other half of the same property:
+        // the report is emitted, and the bundle is still untouched. stdout stays clear of it for the
+        // same reason as on the ordinary path -- that is what a CI gate reads.
+        Assert.Contains("run: ", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("run: ", result.Output, StringComparison.Ordinal);
+
         // --check reports, it does not repair: the bundle it was pointed at is untouched.
         var after = ProducerFixture.SnapshotFiles(bundle);
         Assert.Equal(before.Keys.OrderBy(k => k, StringComparer.Ordinal), after.Keys.OrderBy(k => k, StringComparer.Ordinal));
@@ -704,7 +714,7 @@ public class CliTests
         var result = Run("generate", "--repo", repo, "--out", bundle);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("run: 1 source file(s) read, all extracted", result.Error, StringComparison.Ordinal);
+        Assert.Contains("run: 1 source file(s) visited, all extracted", result.Error, StringComparison.Ordinal);
         Assert.Contains("the traversal visited every eligible file", result.Error, StringComparison.Ordinal);
         Assert.DoesNotContain("run: ", result.Output, StringComparison.Ordinal);
     }
@@ -724,7 +734,7 @@ public class CliTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("no project file was detected, so no compilation was built", result.Error, StringComparison.Ordinal);
-        Assert.Contains("calls resolved exactly for 0 of 1 analysed file(s), by name matching for the other 1", result.Error, StringComparison.Ordinal);
+        Assert.Contains("the exact resolver covered 0 of 1 analysed file(s), and the other 1 fell to name matching", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -745,6 +755,7 @@ public class CliTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("0 of 3 `code` concept(s) are reachable from `overview`", result.Error, StringComparison.Ordinal);
+        Assert.Contains("nothing reaches the others from `overview`", result.Error, StringComparison.Ordinal);
         Assert.Contains("`okf validate` does not report because nothing dangles", result.Error, StringComparison.Ordinal);
     }
 
@@ -760,7 +771,13 @@ public class CliTests
         var result = Run("generate", "--repo", repo, "--out", bundle, "--max-file-size", (widgetBytes - 1).ToString());
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("1 source file(s) read: 1 skipped, over --max-file-size", result.Error, StringComparison.Ordinal);
+        // "visited", not "read", and this fixture is exactly why the noun matters: RunStatus.Skipped
+        // records every ATTEMPTED file's outcome, so the count includes a file the cap refused to open.
+        // The line used to read "1 source file(s) read: 1 skipped, over --max-file-size" -- it claimed
+        // to have read the one file it had just said it did not, on the degraded run the report exists
+        // for, and in the direction that flatters the run.
+        Assert.Contains("1 source file(s) visited: 1 skipped, over --max-file-size", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("source file(s) read", result.Error, StringComparison.Ordinal);
         Assert.Contains("run:   - src/Widget.cs: skipped, over --max-file-size", result.Error, StringComparison.Ordinal);
     }
 
@@ -770,6 +787,15 @@ public class CliTests
         // A run that analysed nothing is exactly the run whose silence is hardest to read, so it
         // reports too. It also must not claim a traversal or a resolution it never attempted, which
         // is what the second assertion pins.
+        //
+        // The third and fourth assertions close a clause that was FALSE. This line used to end
+        // "Nothing about the rest of this bundle is affected." Measured end to end: generate, then
+        // rerun with --update --no-code, and `packages/demo.md` loses the `## Contains` section the
+        // first run wrote. With no graph, ConceptGenerator takes its CodeFamily.Empty branch, so
+        // AttributePackages -- which owns the only note that would mention the loss -- is never called
+        // at all, and every package concept is built with an empty child list. That is the same hazard
+        // --no-msbuild's help text spells out, and --check --no-code is refused while --update
+        // --no-code is not.
         using var workspace = NewWorkspace(out var repo, out var bundle);
 
         var result = Run("generate", "--repo", repo, "--out", bundle, "--no-code");
@@ -777,6 +803,8 @@ public class CliTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("run: the code stage did not run (--no-code)", result.Error, StringComparison.Ordinal);
         Assert.DoesNotContain("the traversal", result.Error, StringComparison.Ordinal);
+        Assert.Contains("The rest of the bundle is NOT unaffected", result.Error, StringComparison.Ordinal);
+        Assert.Contains("under --update that overwrites the links a previous run wrote", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -787,9 +815,16 @@ public class CliTests
         // overload because a genuinely healthy run needs a restored project and an MSBuild
         // invocation, which no test in this file makes.
         //
-        // The length bound is not decoration either. "Say what the run did" degrades into noise the
-        // moment the clean case is a paragraph, and nothing else in this suite would notice. Measured
-        // on this host, this fixture's line is 298 characters.
+        // The property guarded below is "the clean case must not become a paragraph", and it is pinned
+        // by Assert.Single(lines) plus the SEGMENT count -- not by a character bound, which this test
+        // carried until round 2 and which did not bound anything. `line.Length <= 320` passed only
+        // because this synthetic fixture has single-digit counts (298 characters); the healthy line
+        // producers/README.md publishes, measured over OkfProducer.Core, is 326 without the `run: `
+        // prefix, so the guard and the documented reality already disagreed. It also pinned the wrong
+        // quantity: characters move with count MAGNITUDE, not with clause count, so a four-digit file
+        // count plus a four-digit concept count adds ~10 characters to the identical five clauses and
+        // would fail on a large repository for a reason that has nothing to do with noise. A sixth
+        // clause is the thing worth catching, and that is what this counts.
         var status = new RunStatus(true, [("src/A.cs", FileStatus.Extracted), ("src/B.cs", FileStatus.Extracted), ("src/C.cs", FileStatus.Extracted)]);
 
         var lines = GenerateRun.Summarize(
@@ -801,12 +836,12 @@ public class CliTests
             LinkedConcepts());
 
         var line = Assert.Single(lines);
-        Assert.Contains("3 source file(s) read, all extracted", line, StringComparison.Ordinal);
+        Assert.Contains("3 source file(s) visited, all extracted", line, StringComparison.Ordinal);
         Assert.Contains("the traversal visited every eligible file", line, StringComparison.Ordinal);
         Assert.Contains("2 project file(s) detected and 2 of 2 in the compiled closure built cleanly", line, StringComparison.Ordinal);
-        Assert.Contains("calls resolved exactly for 3 of 3 analysed file(s), by name matching for the other 0", line, StringComparison.Ordinal);
+        Assert.Contains("the exact resolver covered 3 of 3 analysed file(s), and the other 0 fell to name matching", line, StringComparison.Ordinal);
         Assert.Contains("all 2 `code` concept(s) are reachable from `overview`", line, StringComparison.Ordinal);
-        Assert.True(line.Length <= 320, $"the healthy-run report has grown to {line.Length} characters: {line}");
+        Assert.Equal(5, line.Split("; ", StringSplitOptions.None).Length);
     }
 
     [Fact]
@@ -830,7 +865,18 @@ public class CliTests
             owns: null,
             []);
 
-        Assert.Contains("THE TRAVERSAL DID NOT COMPLETE", Assert.Single(truncated), StringComparison.Ordinal);
+        var truncatedLine = Assert.Single(truncated);
+        Assert.Contains("THE TRAVERSAL DID NOT COMPLETE", truncatedLine, StringComparison.Ordinal);
+
+        // The other four clauses of this exact line, which nothing asserted until round 2: grepped
+        // across producers/tests, producers/README.md and docs/, all three of the fragments below had
+        // ZERO occurrences, so any of them could have been reworded to something false with the suite
+        // staying green. This is the showcase degraded output -- the shape the whole report exists for
+        // -- and only its shout was witnessed.
+        Assert.Contains("no source file was visited", truncatedLine, StringComparison.Ordinal);
+        Assert.Contains("no project file was detected, so no compilation was built", truncatedLine, StringComparison.Ordinal);
+        Assert.Contains("no file was analysed, so no call was resolved either way", truncatedLine, StringComparison.Ordinal);
+        Assert.Contains("no `code` concept was generated", truncatedLine, StringComparison.Ordinal);
 
         // The other half, without which the assertion above would also hold for a build that shouts
         // it on every run.
@@ -884,7 +930,7 @@ public class CliTests
 
         var line = Assert.Single(lines);
         Assert.Contains("1 project file(s) detected and 1 of 1 in the compiled closure built cleanly", line, StringComparison.Ordinal);
-        Assert.Contains("calls resolved exactly for 0 of 2 analysed file(s), by name matching for the other 2", line, StringComparison.Ordinal);
+        Assert.Contains("the exact resolver covered 0 of 2 analysed file(s), and the other 2 fell to name matching", line, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -906,10 +952,38 @@ public class CliTests
             []);
 
         Assert.Equal(12, lines.Count);
-        Assert.Contains("12 source file(s) read: 12 skipped, over --max-file-size", lines[0], StringComparison.Ordinal);
+        Assert.Contains("12 source file(s) visited: 12 skipped, over --max-file-size", lines[0], StringComparison.Ordinal);
         Assert.Equal("  - src/File0.cs: skipped, over --max-file-size", lines[1]);
         Assert.Equal("  - src/File9.cs: skipped, over --max-file-size", lines[10]);
         Assert.Equal("  - ... and 2 more", lines[11]);
+    }
+
+    [Fact]
+    public void Reachability_uses_the_validators_own_resolver_and_not_a_hand_rolled_prefix_strip()
+    {
+        // The doc comment claims the walk "gives the validator's own answer". Half that answer is
+        // `ConceptLink.Resolve`, which also strips a `#anchor` and a `.md` suffix and normalizes
+        // `.`/`..`; the walk used `link.Target.Trim()[1..]`, which does none of it. This producer writes
+        // only the bare `](/{id})` form today, so there was no divergence to observe and no test could
+        // have caught the substitution -- which is exactly why the claim was over-strong rather than
+        // wrong. The link forms below are ones `okf validate` resolves and the strip does not, so this
+        // pins the claim instead of the current output shape: with the strip, the targets read
+        // `code/csharp/n/t.md` and `code/csharp/n#types`, neither of which is a concept id, and the two
+        // leaves below drop out of the count.
+        var lines = GenerateRun.Summarize(
+            noMsBuild: false,
+            new RunStatus(true, [("src/A.cs", FileStatus.Extracted)]),
+            projectsDetected: 0,
+            [],
+            owns: null,
+            [
+                ReportConcept("overview", "# r\n\n## Contains\n\n- [p](/packages/p)\n"),
+                ReportConcept("packages/p", "# p\n\n## Contains\n\n- [n](/code/csharp/n#types)\n"),
+                ReportConcept("code/csharp/n", "# n\n\n## Contains\n\n- [t](/code/csharp/n/t.md)\n"),
+                ReportConcept("code/csharp/n/t", "# t\n"),
+            ]);
+
+        Assert.Contains("all 2 `code` concept(s) are reachable from `overview`", Assert.Single(lines), StringComparison.Ordinal);
     }
 
     /// <summary>A project that built cleanly, which is all these report tests need of one.</summary>

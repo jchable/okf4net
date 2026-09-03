@@ -111,17 +111,27 @@ internal static class GenerateRun
     /// <summary>
     /// One complete run into <paramref name="request"/>'s output directory.
     /// <paramref name="note"/> receives the run's own account of what it could not do;
-    /// <paramref name="report"/> receives the completeness report, unconditionally.
+    /// <paramref name="report"/> receives the completeness report.
     /// </summary>
     /// <param name="request">Everything this invocation was asked to do.</param>
     /// <param name="services">The scan/generate/write services the host resolved.</param>
     /// <param name="note">Where each individual degradation is reported.</param>
     /// <param name="report">
-    /// Where the completeness report goes -- <b>every run, degraded or not</b>. A report that only
-    /// appears when something went wrong cannot be told apart from a mechanism that failed to fire,
-    /// which is precisely the defect the individual notes above have: each of them is scoped to a
-    /// different subset of what a run can leave out, and nothing aggregated them. See
-    /// <see cref="Summarize"/>.
+    /// Where the completeness report goes -- on <b>every run that reaches the generation stage</b>,
+    /// degraded or not, and therefore on <b>every run that exits 0</b>. A report that only appears
+    /// when something went wrong cannot be told apart from a mechanism that failed to fire, which is
+    /// precisely the defect the individual notes above have: each of them is scoped to a different
+    /// subset of what a run can leave out, and nothing aggregated them. See <see cref="Summarize"/>.
+    ///
+    /// <para><b>The bound is exact, and this doc comment used to overstate it as "every run".</b> A run
+    /// that throws before generation prints <c>error:</c> and exits 1 having reported nothing -- and
+    /// that is reachable, not theoretical: a circular junction in a repository with no root
+    /// <c>*.sln</c> makes <c>RepositoryScanner</c>'s own recursive <c>.csproj</c> walk throw, which
+    /// <c>OkfgenCli.Generate</c> catches. Everything downstream of the scan is covered, because the
+    /// report is emitted BEFORE the write: a run whose write failed has still said what its analysis
+    /// found. And nothing can exit 0 without passing here -- <c>Write</c> reaches its return only
+    /// through this method, and <c>Check</c> only through the callback <c>BundleDrift.Check</c> invokes
+    /// unconditionally once the bundle directory exists.</para>
     /// </param>
     public static WriteResult Execute(GenerateRequest request, ProducerServices services, Action<string> note, Action<string> report)
     {
@@ -251,8 +261,20 @@ internal static class GenerateRun
     }
 
     /// <summary>
-    /// The completeness report: what this run read, what it could not read, how much of it was
-    /// resolved exactly, and whether the <c>code</c> family it produced is reachable at all.
+    /// The completeness report: what this run <i>visited</i>, what it could not read, how much of it
+    /// the exact resolver covered, and whether the <c>code</c> family it produced is reachable at all.
+    ///
+    /// <para><b>"Visited", not "read", and the distinction is the whole honesty of the first clause.</b>
+    /// The count comes from <see cref="RunStatus.Skipped"/>, which despite its name records
+    /// <i>every attempted file's outcome, including <see cref="FileStatus.Extracted"/></i> -- see
+    /// <c>CodeGraphBuilder</c>'s own comment at the site that builds it. Five of the seven
+    /// <see cref="FileStatus"/> values mean the file was NOT read: <see cref="FileStatus.SkippedTooLarge"/>'s
+    /// own doc comment says "was not read" in as many words, and the same holds for
+    /// <see cref="FileStatus.SkippedEncoding"/>, <see cref="FileStatus.SkippedDepth"/>,
+    /// <see cref="FileStatus.SkippedUnreadable"/> and <see cref="FileStatus.SkippedSymlink"/>. This
+    /// clause said "read" until round 2, which made the degraded shape it exists for read
+    /// <c>1 source file(s) read: 1 skipped, over --max-file-size</c> -- self-contradictory, on exactly
+    /// the run the line exists for, and in the direction that flatters the run.</para>
     ///
     /// <para><b>Why this exists at all, when every degradation above already has a note.</b> Each note
     /// is scoped to a different subset of what a run can leave out, and each is emitted only when its
@@ -268,11 +290,22 @@ internal static class GenerateRun
     /// having been skipped or about every call link being a name match. This report is emitted on every
     /// run, in the same shape, whether or not any of that happened.</para>
     ///
-    /// <para><b>It says counts, not verdicts, and it never guesses.</b> The resolution fraction is
+    /// <para><b>The resolution clause is COVERAGE, not exactness, and it says so.</b> It reads "the
+    /// exact resolver covered X of Y analysed file(s)", because that is the quantity
+    /// <paramref name="owns"/> answers: <c>RoslynResolver.Owns</c> is true for a file belonging to a
+    /// project that compiled with zero errors, and nothing finer. Inside a covered file, a call site
+    /// Roslyn cannot <i>attach</i> is omitted from <c>Resolve</c> and the name-matching verdict
+    /// survives -- so name-matched edges live inside the covered files too, and the earlier phrasing
+    /// ("resolved exactly for X ... by name matching for the other Z") asserted a partition that does
+    /// not hold. Attachment is 100% on this repository today, so the live error is near zero; the
+    /// over-claim was inherited from <c>RoslynProjectReport</c>'s own summary and is corrected here
+    /// only, since that type is not this project's to edit.</para>
+    ///
+    /// <para><b>It says counts, not verdicts, and it never guesses.</b> The coverage fraction is
     /// asked of <paramref name="owns"/> -- the resolver's own answer, file by file -- rather than
     /// derived from the project verdicts, so a project reported <c>Compiled</c> whose files were all
-    /// refused before the compilation was built contributes zero exact files here, with no second copy
-    /// of that rule. Reachability is walked over the bytes the run actually produced, using
+    /// refused before the compilation was built contributes zero covered files here, with no second
+    /// copy of that rule. Reachability is walked over the bytes the run actually produced, using
     /// <see cref="LinkScanner.ExtractLinks"/> -- the validator's own scanner -- rather than re-deriving
     /// the spine rule, so a link this producer wrote and the scanner will not see (an unbalanced
     /// backtick in a lifted title, a description line that opens a fence) counts as absent here exactly
@@ -280,6 +313,19 @@ internal static class GenerateRun
     ///
     /// <para><b>It is not a substitute for the notes.</b> The notes say <i>why</i>, name the project or
     /// the flag, and prescribe the remedy; this says <i>how much</i>, in one line, always.</para>
+    ///
+    /// <para><b>WHAT THIS LINE STILL CANNOT SAY, and a reader of it has no other way to learn.</b> It
+    /// states what the run <i>visited</i> and how it <i>resolved</i> -- never what it chose not to
+    /// <i>emit</i>. A file read in full, extracted cleanly, and covered by the exact resolver still
+    /// contributes no concept for its indexers, its operators, its conversion operators or its enum
+    /// members: those are declarations the extractor does not produce, so a fully healthy line above
+    /// is compatible with a bundle that under-describes the API. The aggregate premise this report
+    /// answers ("the producer has no runtime statement of what it left out") is therefore only PARTLY
+    /// closed. It is not closable here: the producer cannot count what it never extracted, so the
+    /// per-symbol dimension needs the extractor to report its own omissions first, and inventing a
+    /// number in this method would be the very defect this line exists to end. Said out loud in
+    /// <c>producers/README.md</c>'s "What a run says about itself", beside the line itself, because
+    /// that is where a reader of the line goes to find out what it means.</para>
     /// </summary>
     /// <param name="request">This invocation, for the two flags that change what the report can say.</param>
     /// <param name="status">This run's extraction outcome, or <see langword="null"/> when the code stage did not run.</param>
@@ -327,7 +373,17 @@ internal static class GenerateRun
 
         if (status is null)
         {
-            return ["the code stage did not run (--no-code), so no source file was read, no call was resolved and no `code` concept was generated. Nothing about the rest of this bundle is affected."];
+            // The last sentence used to read "Nothing about the rest of this bundle is affected." It is
+            // false, and measured false end to end: generate, then rerun with --update --no-code, and
+            // `packages/demo.md` loses the `## Contains` section -- `- [Demo.Core](/code/csharp/demo/core)`
+            // -- that the first run wrote. With no graph, ConceptGenerator takes its `CodeFamily.Empty`
+            // branch, so BuildCodeConcepts (and with it AttributePackages, which owns the only note that
+            // would mention the loss) is never called at all, and every package concept is built with an
+            // empty child list. The `code/` concepts themselves are kept, so the run leaves precisely the
+            // shape the last clause of the ordinary line exists to report: a code family `overview` no
+            // longer reaches. This is the same hazard --no-msbuild's own help text spells out, and note
+            // that --check --no-code is refused while --update --no-code is not.
+            return ["the code stage did not run (--no-code), so no source file was visited, no call was resolved and no `code` concept was generated. The rest of the bundle is NOT unaffected: every `packages/` concept is written with no namespace containment link below it -- there is no namespace left to link to -- and under --update that overwrites the links a previous run wrote."];
         }
 
         var counts = new Dictionary<FileStatus, int>();
@@ -336,9 +392,14 @@ internal static class GenerateRun
             counts[fileStatus] = counts.GetValueOrDefault(fileStatus) + 1;
         }
 
-        var attempted = status.Skipped.Count;
+        // `visited`, not `read`: RunStatus.Skipped is every ATTEMPTED file's outcome, and five of the
+        // seven FileStatus values mean the file was never read at all. See this method's doc comment.
+        var visited = status.Skipped.Count;
         var analysed = counts.GetValueOrDefault(FileStatus.Extracted) + counts.GetValueOrDefault(FileStatus.PartiallyExtracted);
-        var exact = owns is null
+
+        // Files the exact resolver COVERS -- i.e. owns -- not sites it resolved exactly. Naming the
+        // local for the quantity keeps the string from drifting back to the stronger claim.
+        var covered = owns is null
             ? 0
             : status.Skipped.Count(f => f.Status is FileStatus.Extracted or FileStatus.PartiallyExtracted && owns(f.Path));
         var compiled = projects.Count(p => p.Availability == RoslynProjectAvailability.Compiled);
@@ -354,11 +415,11 @@ internal static class GenerateRun
                 .Where(counts.ContainsKey)
                 .Select(s => $"{Count(counts[s])} {Label(s)}"));
 
-        var files = attempted == 0
-            ? "no source file was read"
-            : counts.GetValueOrDefault(FileStatus.Extracted) == attempted
-                ? $"{Count(attempted)} source file(s) read, all extracted"
-                : $"{Count(attempted)} source file(s) read: {breakdown}";
+        var files = visited == 0
+            ? "no source file was visited"
+            : counts.GetValueOrDefault(FileStatus.Extracted) == visited
+                ? $"{Count(visited)} source file(s) visited, all extracted"
+                : $"{Count(visited)} source file(s) visited: {breakdown}";
 
         // Stated in both directions rather than only when it fails. The false case is the one that
         // forbids pruning outright, and it is reachable without any file being unreadable: a circular
@@ -370,18 +431,22 @@ internal static class GenerateRun
 
         // The two halves are separate facts and both are always stated: how many project files exist
         // and how many of them yielded a compilation, then how many of the files that were actually
-        // analysed had their calls resolved exactly. The second is asked file by file rather than
-        // inferred from the first, so a project reported `Compiled` that owns none of its own files
-        // lands in the name-matched count where it belongs.
+        // analysed the exact resolver covered. The second is asked file by file rather than inferred
+        // from the first, so a project reported `Compiled` that owns none of its own files lands
+        // outside the covered count where it belongs.
         var compilations = projectsDetected == 0
             ? "no project file was detected, so no compilation was built"
             : noMsBuild
                 ? $"{Count(projectsDetected)} project file(s) detected but none was queried (--no-msbuild)"
                 : $"{Count(projectsDetected)} project file(s) detected and {Count(compiled)} of {Count(projects.Count)} in the compiled closure built cleanly";
 
+        // "covered ... fell to name matching", never "resolved exactly ... by name matching for the
+        // other N": `owns` is a per-FILE predicate, and inside a covered file a site Roslyn could not
+        // attach keeps the name-matching verdict, so the two sets are not a partition of the edges.
+        // No `; ` inside a clause -- the segment count is what the healthy-run test holds the line to.
         var calls = analysed == 0
             ? "no file was analysed, so no call was resolved either way"
-            : $"calls resolved exactly for {Count(exact)} of {Count(analysed)} analysed file(s), by name matching for the other {Count(analysed - exact)}";
+            : $"the exact resolver covered {Count(covered)} of {Count(analysed)} analysed file(s), and the other {Count(analysed - covered)} fell to name matching";
 
         var resolution = compilations + "; " + calls;
 
@@ -389,7 +454,12 @@ internal static class GenerateRun
             ? "no `code` concept was generated"
             : reachable == owned
                 ? $"all {Count(owned)} `code` concept(s) are reachable from `overview`"
-                : $"{Count(reachable)} of {Count(owned)} `code` concept(s) are reachable from `overview` -- the others are in the bundle with nothing linking down to them, which `okf validate` does not report because nothing dangles";
+                // "nothing reaches them from `overview`", not "nothing linking down to them": the count
+                // is a REACHABILITY count and the walk follows every absolute link, `## Calls` included,
+                // so a concept an unreachable sibling calls lands in this number with a link pointing at
+                // it. Claiming containment here would be the one clause contradicting the honest half of
+                // its own sentence.
+                : $"{Count(reachable)} of {Count(owned)} `code` concept(s) are reachable from `overview` -- nothing reaches the others from `overview`, which `okf validate` does not report because nothing dangles";
 
         var lines = new List<string> { string.Join("; ", [files, traversal, resolution, code]) + "." };
 
@@ -433,6 +503,14 @@ internal static class GenerateRun
     /// <c>AttributePackages</c>' three §5.1 rules to know it. Following
     /// <see cref="LinkScanner.ExtractLinks"/> over the produced bodies instead gives the validator's
     /// own answer over this run's own bytes.</para>
+    ///
+    /// <para><b>The validator's scanner AND its resolver.</b> The target is turned into an id by
+    /// <see cref="ConceptLink.Resolve"/>, not by stripping the leading <c>/</c>: <c>Resolve</c> also
+    /// drops a <c>#anchor</c>, normalizes <c>.</c>/<c>..</c> segments, strips a <c>.md</c> suffix and
+    /// returns nothing for a directory link. This producer writes only the bare <c>](/{id})</c> form
+    /// today, so there is no divergence to observe -- but the claim above is "the validator's own
+    /// answer", and half of that answer is the resolver. Using it costs one call and makes the
+    /// sentence true rather than nearly true.</para>
     /// </summary>
     /// <param name="concepts">Everything the generator produced.</param>
     private static int ReachableOwnedConcepts(IReadOnlyList<GeneratedConcept> concepts)
@@ -456,12 +534,13 @@ internal static class GenerateRun
         while (queue.Count > 0)
         {
             var id = queue.Dequeue();
+            var concept = byId[id];
             if (IsOwned(id))
             {
                 reached++;
             }
 
-            foreach (var link in LinkScanner.ExtractLinks(byId[id].Document.Body))
+            foreach (var link in LinkScanner.ExtractLinks(concept.Document.Body))
             {
                 // §6.1's bundle-root form is the only one this producer writes, and the only one a
                 // containment link may take; a relative or external target is somebody else's link.
@@ -470,7 +549,16 @@ internal static class GenerateRun
                     continue;
                 }
 
-                var target = link.Target.Trim()[1..];
+                // The validator's own resolver, not a hand-rolled `[1..]`: it also strips a `#anchor`,
+                // normalizes `.`/`..`, drops a `.md` suffix and refuses a directory link. Resolve takes
+                // the containing concept's id because a relative target needs it; an absolute one does
+                // not, and this branch has already excluded every other kind.
+                if (link.Resolve(concept.Id) is not { } resolved)
+                {
+                    continue;
+                }
+
+                var target = resolved.ToString();
                 if (byId.ContainsKey(target) && seen.Add(target))
                 {
                     queue.Enqueue(target);

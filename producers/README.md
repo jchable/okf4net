@@ -105,31 +105,63 @@ hazard with a lever next to it.
 
 ### What a run says about itself
 
-Every `generate` prints one **completeness report** to stderr, prefixed `run: `, whether
-or not anything went wrong. It says how many source files were read and, where they were
-not all extracted, how many fell to each cause; whether the traversal visited every
+Every `generate` that reaches the generation stage prints one **completeness report** to
+stderr, prefixed `run: `. It says how many source files were **visited** and, where they
+were not all extracted, how many fell to each cause; whether the traversal visited every
 eligible file; how many project files were detected, how many of the closure compiled,
-and how many of the analysed files had their calls resolved exactly rather than by name
-matching; and how many of the `code` concepts are reachable from `overview`. A clean run
-over a restored project reads, in full:
+and how many of the analysed files the exact resolver covered; and how many of the `code`
+concepts are reachable from `overview`. A clean run over a restored project reads, in full:
 
 ```
-run: 42 source file(s) read: 28 extracted, 14 partially extracted; the traversal visited every eligible file; 1 project file(s) detected and 1 of 1 in the compiled closure built cleanly; calls resolved exactly for 42 of 42 analysed file(s), by name matching for the other 0; all 149 `code` concept(s) are reachable from `overview`.
+run: 42 source file(s) visited: 28 extracted, 14 partially extracted; the traversal visited every eligible file; 1 project file(s) detected and 1 of 1 in the compiled closure built cleanly; the exact resolver covered 42 of 42 analysed file(s), and the other 0 fell to name matching; all 149 `code` concept(s) are reachable from `overview`.
 ```
 
 (Measured on this host over `producers/src/OkfProducer.Core`. `partially extracted` is the
 ordinary state of modern C#, not a warning: the vendored tree-sitter grammar mis-parses an
 empty collection expression `[]`, which idiomatic C# 12+ is full of.)
 
+**"Visited", not "read", and the two are different on exactly the runs this line exists
+for.** The count comes from `RunStatus.Skipped`, which records *every attempted file's
+outcome, including the ones that extracted cleanly* — and five of the seven `FileStatus`
+values mean the file was never read at all. This clause said "read" until round 2, which
+made a `--max-file-size` run print `1 source file(s) read: 1 skipped, over
+--max-file-size`: it claimed to have read the one file it had just said it had not, on a
+degraded run, in the direction that flatters the run.
+
+**"Covered", not "resolved exactly", for the same kind of reason.** `RoslynResolver.Owns`
+is a per-*file* predicate meaning only "belongs to a project that compiled with zero
+errors". Inside a covered file, a call site Roslyn cannot *attach* is omitted from
+`Resolve` and the name-matching verdict survives — so name-matched edges live inside the
+covered files too, and the older phrasing ("resolved exactly for X … by name matching for
+the other N") asserted a partition that does not hold. Attachment is 100% on this
+repository today, so the live error is near zero; the over-claim was inherited.
+
 Where a file was skipped **entirely** — never read, so its declarations are simply absent
 from the bundle — the report names it under the line, capped at ten with a remainder
 count. A partially extracted file is not named: it *was* read, and on a real repository
 there are hundreds of them.
 
-**It is unconditional on purpose.** Every other account this producer gives of itself is a
-note gated on its own trigger, and each of those triggers covers a different subset of
-what a run can leave out — so a run printing no note is indistinguishable from a mechanism
-that did not fire. Reproduced on this host, each exiting 0 having printed *nothing at all*
+**What the line still cannot tell you.** It states what the run *visited* and how it
+*resolved* — never what it chose not to *emit*. A file read in full, extracted cleanly and
+covered by the exact resolver still contributes no concept for its indexers, its
+operators, its conversion operators or its enum members: those are declarations the
+extractor does not produce. So a fully healthy line above is compatible with a bundle that
+under-describes the API, and this report closes only *part* of the gap it was written for.
+It is not closable here — the producer cannot count what it never extracted, so the
+per-symbol dimension needs the extractor to report its own omissions first, and inventing
+a number would be the very defect this line exists to end.
+
+**It is unconditional within a stated bound, and the bound is not "every run".** A run that
+throws *before* generation prints `error:` and exits 1 having reported nothing — reachable,
+not theoretical: a circular junction in a repository with no root `*.sln` makes the
+scanner's own recursive `.csproj` walk throw. What holds is: **every run that reaches the
+generation stage, and therefore every run that exits 0**. The report is emitted before the
+write, so even a run whose write failed has said what its analysis found.
+
+Why it is emitted at all: every other account this producer gives of itself is a note gated
+on its own trigger, and each of those triggers covers a different subset of what a run can
+leave out — so a run printing no note is indistinguishable from a mechanism that did not
+fire. Reproduced on this host, each exiting 0 having printed *nothing at all*
 beyond `Wrote N concept(s)`: a `--max-file-size` below the only source file, which drops
 every `code` concept; a repository with no package manifest and no source-ownership map,
 where every `code` concept is unreachable from `overview` while `okf validate` stays
@@ -142,13 +174,28 @@ stage having been skipped and about every call link being a name match.
 The report is on **stderr**, not stdout, so it changes nothing a CI gate reads and nothing
 that lands in the bundle — `--check` compares bundle bytes and is unaffected.
 
-The two numbers it does *not* take on trust: the resolution fraction is asked of the
+The two numbers it does *not* take on trust: the coverage fraction is asked of the
 resolver file by file (`RoslynResolver.Owns`), so a project reported `Compiled` whose
-`Compile` items were all refused before the compilation was built contributes zero exact
+`Compile` items were all refused before the compilation was built contributes zero covered
 files rather than all of them; and reachability is walked over the bodies the run actually
-produced with `LinkScanner`, the validator's own scanner, rather than re-derived from the
-spine rule — so a link this producer wrote and the scanner will not see counts as absent
-here exactly as it does for `okf validate`.
+produced with `LinkScanner` and `ConceptLink.Resolve`, the validator's own scanner and
+resolver, rather than re-derived from the spine rule — so a link this producer wrote and
+the scanner will not see counts as absent here exactly as it does for `okf validate`.
+
+That last count is about **reachability**, not containment, and the line says so: the walk
+follows every absolute link, `## Calls` included, so a code concept the containment spine
+misses can still be reached by a call edge from one the spine reaches. The degraded clause
+therefore reads "nothing reaches the others from `overview`" and never "nothing links down
+to them".
+
+**`--no-code` gets its own line**, and it does *not* claim the rest of the bundle is
+untouched — it used to, and that was false. With no graph the generator takes its empty
+code-family branch, so `AttributePackages` (which owns the only note that would mention the
+loss) is never called, and every `packages/` concept is written with no namespace
+containment link below it. Under `--update` that overwrites the links a previous run wrote,
+while the `code/` concepts themselves are kept — leaving exactly the unreachable code family
+the ordinary line's last clause exists to report. Same hazard as `--no-msbuild`, and note
+that `--check --no-code` is refused while `--update --no-code` is not.
 
 Notes — what a run could not do — go to **stderr**, prefixed `note: `; results go to
 stdout. A note never changes the exit code. The ones worth knowing:
