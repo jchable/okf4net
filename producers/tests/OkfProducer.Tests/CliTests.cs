@@ -1158,6 +1158,65 @@ public class CliTests
         Assert.Null(GitRevision.CurrentBranch(repoPath));
     }
 
+
+    [Fact]
+    public void The_validate_verb_reports_a_conformant_bundle_and_exits_zero()
+    {
+        // Nothing in the solution called Run("validate", ...) at all, so everything the composition
+        // root wires for this verb -- the option name, the diagnostic lines, the count line, the
+        // IsConformant ternary and the BundleLoadException branch -- was held by no test, while this
+        // class's own doc claimed it exercises "the shipped composition, in process".
+        // BundleValidationRunnerTests covers the runner; these four cover the CLI around it.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        var result = Run("validate", "--okf", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("0 error(s)", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_validate_verb_exits_one_on_a_bundle_that_is_not_conformant()
+    {
+        // The other side of the ternary, so inverting it fails one of the two rather than neither.
+        // A concept with no `type` is the one thing §11 hard-requires, so this is an error and not a
+        // warning -- warnings leave the bundle conformant and would not separate the branches.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+        File.WriteAllText(Path.Combine(bundle, "broken.md"), "---\ntitle: t\n---\n\nbody\n");
+
+        var result = Run("validate", "--okf", bundle);
+
+        Assert.Equal(1, result.ExitCode);
+    }
+
+    [Fact]
+    public void The_validate_verb_reports_an_unloadable_bundle_on_stderr_and_exits_one()
+    {
+        // The catch (BundleLoadException) branch. Dropping it turns a missing bundle from a reported
+        // error into an unhandled exception, and no test noticed.
+        using var workspace = NewWorkspace(out _, out var bundle);
+
+        var result = Run("validate", "--okf", Path.Combine(bundle, "does-not-exist"));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_validate_verb_names_its_bundle_option_okf()
+    {
+        // Pins the option NAME. The bundle is generated first, and that is the whole fixture: without
+        // it, `--bundle` on a path that does not exist exits non-zero whether the option is recognised
+        // or not, so the assertion holds under the rename it claims to catch -- measured, after the
+        // first version of this test did exactly that.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        Assert.NotEqual(0, Run("validate").ExitCode);
+        Assert.NotEqual(0, Run("validate", "--bundle", bundle).ExitCode);
+    }
     // ---- assertions -------------------------------------------------------------------------
 
     private sealed record CliResult(int ExitCode, string Output, string Error);

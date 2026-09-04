@@ -1718,6 +1718,36 @@ public class PruningTests
         Assert.Equal(new ScopeOptions(IncludeTests: true, IncludeInternal: false), GenerationManifest.TryRead(tmp.Path)?.Scope);
     }
 
+    [Fact]
+    public void The_directory_ladder_stops_at_the_owned_prefix_root_and_not_above_it()
+    {
+        // `IsWithinPrefixRoot` is the only thing between RemoveEmptyDirectories' walk and the bundle
+        // root, and no test put it on the critical path: every other fixture here leaves a sibling
+        // directory that breaks the loop after one rung, so the walk never climbs far enough for the
+        // guard to be what stops it.
+        //
+        // The prefix is two segments deep on purpose. With `code`, the rung above the prefix root is
+        // the bundle root, which `overview.md` already protects through the files check -- so deleting
+        // the guard changes nothing observable and a test written that way proves nothing. With
+        // `code/csharp`, the rung above is `code`, which is empty by then and has no file and no
+        // sibling to protect it. The guard is the only reason it survives.
+        using var tmp = new TempDir();
+
+        WriteRun(tmp, [A], complete: true, ownedPrefix: "code/csharp");
+        var codeDirectory = Path.Combine(tmp.Path, "code");
+        Assert.True(Directory.Exists(Path.Combine(codeDirectory, "csharp", "n", "t")));
+
+        var result = WriteRun(tmp, [], complete: true, ownedPrefix: "code/csharp");
+
+        // The ladder did climb -- without this the assertion below would pass over a walk that never
+        // ran at all, which is the failure mode the finding is about.
+        Assert.Contains(A, result.Pruned.Select(id => id.ToString()));
+        Assert.False(Directory.Exists(Path.Combine(codeDirectory, "csharp")));
+
+        // And it stopped where it had to.
+        Assert.True(Directory.Exists(codeDirectory));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------------------------------
