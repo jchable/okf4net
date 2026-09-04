@@ -159,10 +159,17 @@ public class HostileInputTests : IDisposable
     public void The_size_check_never_loads_an_oversized_file_into_memory()
     {
         // The file's declared length alone must decide SkippedTooLarge -- the extractor is never
-        // given a chance to read its bytes at all. A file that reports itself too large but whose
-        // actual bytes (if ever read) would decode fine still gets rejected on length.
+        // given a chance to read its bytes at all.
+        //
+        // The bytes are INVALID UTF-8 on purpose, and that is the whole point of the fixture. With
+        // content that decodes cleanly, this test asserts nothing an implementation could fail:
+        // checking the length first and reading first both end at SkippedTooLarge, so the ordering
+        // the test is named for is invisible to it. Undecodable bytes separate the two -- length
+        // first still yields SkippedTooLarge, while a regression that reads before it measures
+        // yields SkippedEncoding, because the decode throws before the size is ever consulted.
         using var tmp = new TempDir();
-        var path = tmp.Write("big.cs", "namespace N;\npublic class T {}");
+        var path = Path.Combine(tmp.Path, "big.cs");
+        File.WriteAllBytes(path, [0x6E, 0x73, 0xFF, 0xFE, 0x00, 0x41]);
 
         var result = Extract(path, ExtractionLimits.Default with { MaxFileBytes = 1 });
 

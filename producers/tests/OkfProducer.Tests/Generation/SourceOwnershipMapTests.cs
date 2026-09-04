@@ -40,6 +40,15 @@ public class SourceOwnershipMapTests
 
         Assert.Null(map.OwnerOf(outside));
         Assert.Empty(map.ClaimantsOf(outside.Replace('\\', '/')));
+
+        // The spelling the guard's REMOVAL produces, and the only one that separates the two
+        // behaviours. Both assertions above query the ABSOLUTE form; Relativize does not store that
+        // form under any branch, so deleting the escape guard leaves the entry keyed as
+        // `../elsewhere/Far.cs` and both of them stay green over a map that did keep the file.
+        var relativized = Path.GetRelativePath(root, outside).Replace('\\', '/');
+        Assert.StartsWith("../", relativized, StringComparison.Ordinal);
+        Assert.Null(map.OwnerOf(relativized));
+        Assert.Empty(map.ClaimantsOf(relativized));
     }
 
     [Fact]

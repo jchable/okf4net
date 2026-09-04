@@ -10,6 +10,33 @@ and this project adheres to
 
 ### Added
 
+- **`okfgen` gains a C# code-graph stage** (`producers/OkfProducer`, outside
+  `OKF4net.sln` and outside CI by decision). `generate` now emits one `code/`
+  concept per namespace, type and member, with resolved `## Calls` links. Two
+  engines behind one contract: tree-sitter extracts symbols and call sites
+  language-agnostically, and Roslyn resolves C# call sites exactly — without
+  `MSBuildWorkspace`, querying project inputs through a bounded `msbuild -getItem`
+  subprocess — with a name-match resolver covering what Roslyn cannot reach. Call
+  sites are identified by UTF-8 byte offset, since the two engines natively speak
+  UTF-16.
+- **`okfgen generate` prints a completeness report** to stderr, prefixed `run: `,
+  on every run that reaches the generation stage: files visited and how many fell
+  to each cause, whether the traversal was complete, projects detected and how
+  many of the closure compiled, exact-resolver coverage, and how many `code`
+  concepts are reachable from `overview`. It exists because every other account a
+  run gives of itself is a note gated on its own trigger, so a run printing
+  nothing was indistinguishable from a mechanism that did not fire. On stderr, so
+  no CI gate reading stdout changes and nothing lands in the bundle.
+- **`okfgen generate --check`** compares a regenerated bundle against the one on
+  disk, over a copy, and reports drift without writing. Backed by a golden
+  fixture.
+- **Project detection follows every `*.sln` in the tree**, not only one at the
+  repository root. A root-only lookup let the first root solution decide the whole
+  answer: measured on this repository, 9 of 17 `.csproj` were detected, and the
+  194 `code` concepts of the undetected projects belonged to no package concept
+  and were unreachable from `overview` — which `okf validate` does not report,
+  because an orphan dangles nothing. A `.csproj` that no solution references is
+  still not a package.
 - **`ConceptSearch.TopDiversified`** — picks the top N of a scored result set
   while rotating across top-level id families, so one family cannot take every
   slot in a truncated window. `ConceptSearch.Search` is unchanged; this is an

@@ -172,11 +172,24 @@ public static class FileEligibility
             return (xml.Root?.Descendants().Where(e => e.Name.LocalName == "PackageReference") ?? [])
                 .Any(e => string.Equals((string?)e.Attribute("Include"), TestSdkPackageId, StringComparison.OrdinalIgnoreCase));
         }
-        catch (System.Xml.XmlException)
-        {
-            return false;
-        }
-        catch (IOException)
+        // Every way XDocument.Load can fail on a path that existed a moment ago, not just the two
+        // that were listed here. This method is called from CodeGraphBuilder.Build's per-file loop,
+        // which deliberately does NOT wrap its body -- so an exception escaping here does not degrade
+        // one file, it aborts the whole repository's run. `File.Exists` above narrows nothing: it
+        // answers for the instant it was asked, and it returns false for a directory, so the
+        // interesting failures are the ones it cannot see -- an ACL that denies read, a path the
+        // platform rejects, a file deleted between the two calls.
+        //
+        // NOT covered by an executable test, and that is a real gap rather than an oversight:
+        // UnauthorizedAccessException and SecurityException cannot be provoked here portably (a
+        // read-denying ACL is Windows-specific and needs elevation the suite does not have), and the
+        // two that CAN be provoked -- XmlException, IOException -- were already caught before this
+        // change. Covering the rest needs a loader seam on this type; see the register entry.
+        catch (Exception e) when (e is System.Xml.XmlException
+            or IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException
+            or NotSupportedException)
         {
             return false;
         }
