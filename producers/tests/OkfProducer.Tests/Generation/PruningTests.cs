@@ -1748,6 +1748,38 @@ public class PruningTests
         Assert.True(Directory.Exists(codeDirectory));
     }
 
+    [Fact]
+    public void A_rename_prunes_the_old_id_and_writes_the_new_one_in_the_same_run()
+    {
+        // The one destructive interaction no test ran. §6.3's "not visited AND not on disk" inference
+        // was accepted partly on the claim that a rename is covered; it was not. It is also the shape
+        // this producer causes on itself: any change to the id scheme renames every concept it touches,
+        // so the run that follows such a change IS this test.
+        //
+        // Ordering is what makes it safe and what makes it worth pinning: Reconcile runs AFTER
+        // CommitStaging, and its candidates exclude this run's own ids -- so the new file is on disk
+        // before the old one is considered for deletion, and a scheme where the new id sorted before
+        // the old could not delete the new one by mistake.
+        using var tmp = new TempDir();
+
+        WriteRun(tmp, [A], complete: true);
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
+
+        var result = WriteRun(tmp, [B], complete: true);
+
+        // Both directions, because a writer that deleted everything would satisfy the first alone and a
+        // writer that deleted nothing would satisfy the second alone.
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
+        Assert.Equal([A], result.Pruned.Select(id => id.ToString()));
+
+        // And the manifest tracks the rename rather than accumulating: a manifest still claiming the old
+        // id would make the NEXT run treat it as a candidate all over again.
+        var claimed = GenerationManifest.TryRead(tmp.Path)!.ConceptIds.Select(id => id.ToString()).ToList();
+        Assert.Contains(B, claimed);
+        Assert.DoesNotContain(A, claimed);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------------------------------

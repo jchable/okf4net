@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
 using System.Text;
 using OkfProducer.Core.CodeGraph;
 using TreeSitter;
@@ -742,9 +743,9 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
                 continue;
             }
 
-            var name = match.Captures.First(c => c.Name == "name").Node.Text;
-
             var kind = IsTypeDeclaration(decl.Type) ? SymbolKind.Type : SymbolKind.Member;
+            var name = QualifyName(match.Captures.First(c => c.Name == "name").Node.Text, decl, kind);
+
             var container = ComputeContainerPath(decl, namespaceContext.NameCovering(decl.StartIndex));
             var modifiersText = ComputeModifiersText(decl, kind);
             var visibility = profile.VisibilityOf(modifiersText, kind);
@@ -836,6 +837,60 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
     private static bool IsTypeDeclaration(string nodeType) =>
         Array.IndexOf(TypeDeclarationNodeTypes, nodeType) >= 0;
+
+    /// <summary>The node holding a generic declaration's type parameters, when it has any.</summary>
+    private const string TypeParameterListNodeType = "type_parameter_list";
+
+    /// <summary>One type parameter inside a <see cref="TypeParameterListNodeType"/>.</summary>
+    private const string TypeParameterNodeType = "type_parameter";
+
+    /// <summary>
+    /// The node naming the interface an explicitly-implemented member belongs to
+    /// (<c>void IFoo.Bar()</c>), when there is one.
+    /// </summary>
+    private const string ExplicitInterfaceSpecifierNodeType = "explicit_interface_specifier";
+
+    /// <summary>
+    /// The name a declaration is known by once two shapes the grammar's <c>name</c> field cannot tell
+    /// apart are separated.
+    ///
+    /// <para><b>Generic arity, on TYPES only.</b> <c>Foo</c>, <c>Foo&lt;T&gt;</c> and
+    /// <c>Foo&lt;T, U&gt;</c> in one namespace all report <c>name</c> as <c>Foo</c>, so they collapsed
+    /// into one symbol group and were rendered as overloads of a single member. §3.2's merge rule was
+    /// written for method overloads, where merging is the point; extending it to unrelated types was
+    /// never intended by the spec. The suffix is <c>_N</c> and not <c>-N</c> deliberately: the registry
+    /// already appends <c>-2</c> to disambiguate two concepts that want one id, and a reader must be
+    /// able to tell "arity 1" from "second thing called Foo" at a glance.
+    ///
+    /// <b>Members are deliberately left alone</b>, generic ones included. A call site captures its
+    /// callee as the bare identifier (<c>Bar&lt;T&gt;()</c> yields <c>Bar</c>), so qualifying a generic
+    /// METHOD would stop every call to it from matching by name -- trading a merged concept for a lost
+    /// edge, which is the worse of the two.</para>
+    ///
+    /// <para><b>Explicit interface implementations.</b> <c>public void Bar()</c> and
+    /// <c>void IFoo.Bar()</c> on one type also both report <c>Bar</c>, and collapsed into one concept
+    /// carrying one description -- the first declaration's -- and both signatures. The qualified form
+    /// takes the interface as a dotted prefix, which is how C# writes it. Name matching no longer
+    /// reaches the explicit member, and that is correct rather than a cost: it is not callable as
+    /// <c>Bar()</c> on the type, so a call that used to bind to it was binding to the wrong member.</para>
+    /// </summary>
+    private static string QualifyName(string name, Node decl, SymbolKind kind)
+    {
+        if (kind == SymbolKind.Type)
+        {
+            var arity = decl.Children
+                .FirstOrDefault(c => c.Type == TypeParameterListNodeType)
+                ?.Children.Count(c => c.Type == TypeParameterNodeType) ?? 0;
+
+            return arity == 0 ? name : $"{name}_{arity.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        var explicitInterface = decl.Children
+            .FirstOrDefault(c => c.Type == ExplicitInterfaceSpecifierNodeType)
+            ?.Text.TrimEnd('.');
+
+        return string.IsNullOrEmpty(explicitInterface) ? name : $"{explicitInterface}.{name}";
+    }
 
     /// <summary>
     /// Builds the dotted <c>N.Outer.Inner</c> path above <paramref name="decl"/>: every ancestor

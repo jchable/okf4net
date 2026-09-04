@@ -491,6 +491,66 @@ public class TreeSitterExtractorTests : IDisposable
         Assert.Equal(first.Sites.Select(s => s.CalledName), second.Sites.Select(s => s.CalledName));
     }
 
+    [Fact]
+    public void Generic_types_of_different_arity_are_distinct_symbols()
+    {
+        // `Foo`, `Foo<T>` and `Foo<T, U>` all report `name` as `Foo`, so they used to collapse into one
+        // symbol group and render as overloads of a single member -- §3.2's merge rule, written for
+        // method overloads, silently extended to unrelated types. The suffix is `_N` and not `-N`
+        // because the registry already appends `-2` to disambiguate two concepts wanting one id, and
+        // "arity 1" must not read as "second thing called Foo".
+        var result = ExtractSource("""
+            namespace N;
+            public class Foo { }
+            public class Foo<T> { }
+            public class Foo<T, U> { }
+            """);
+
+        Assert.Equal(
+            ["Foo", "Foo_1", "Foo_2"],
+            result.Symbols.Where(s => s.Kind == SymbolKind.Type).Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void A_generic_method_keeps_its_bare_name_so_calls_still_match_it()
+    {
+        // The deliberate asymmetry, and the reason it is not an oversight. A call site captures its
+        // callee as the bare identifier -- `Bar<int>()` yields `Bar` -- so suffixing a generic METHOD
+        // would stop every call to it from matching by name. That trades a merged concept for a lost
+        // edge, which is the worse of the two, so arity is a TYPE rule only.
+        var result = ExtractSource("""
+            namespace N;
+            public class T { public void Bar<U>() { } }
+            """);
+
+        Assert.Contains("Bar", result.Symbols.Select(s => s.Name));
+    }
+
+    [Fact]
+    public void An_explicit_interface_implementation_is_named_apart_from_the_public_member()
+    {
+        // Both report `name` as `Bar`, so the two collapsed into one concept carrying ONE description
+        // -- the first declaration's -- and both signatures, for two deliberately different
+        // implementations. The qualified form takes the interface as a dotted prefix, which is how C#
+        // writes it.
+        //
+        // Name matching no longer reaches the explicit member, and that is the correct outcome rather
+        // than a cost: it is not callable as `Bar()` on the type, so a call that used to bind to it was
+        // binding to the wrong member.
+        var result = ExtractSource("""
+            namespace N;
+            public interface IFoo { void Bar(); }
+            public class Impl : IFoo
+            {
+                public void Bar() { }
+                void IFoo.Bar() { }
+            }
+            """);
+
+        var names = result.Symbols.Where(s => s.Container == "N.Impl").Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal);
+        Assert.Equal(["Bar", "IFoo.Bar"], names);
+    }
+
     private ExtractionResult ExtractSource(string source, string relativePath = "T.cs")
     {
         var directory = Directory.CreateTempSubdirectory("okfproducer-treesitter-").FullName;
