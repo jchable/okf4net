@@ -237,7 +237,10 @@ public static class BundleDrift
         + "does not make a link invisible. Where regenerating writes a concept at the link's own path, "
         + "that path is reported as drift, in a sentence saying a link is what the bundle holds there; "
         + "where it writes concepts UNDER a linked directory, each of them is reported. Every skipped "
-        + "link the differences do not already name is reported as a note.";
+        + "link the differences do not already name is reported as a note. One case a clean result "
+        + "does NOT cover: `revision` names the committed HEAD, never the working tree, so with "
+        + "uncommitted local edits both sides carry the same revision and the check can report no "
+        + "drift for a bundle neither side was generated from.";
 
     /// <summary>
     /// Copies the bundle at <paramref name="bundlePath"/> into a temporary directory, hands that copy

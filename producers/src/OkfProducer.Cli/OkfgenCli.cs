@@ -101,7 +101,9 @@ public static class OkfgenCli
             Description =
                 "The git ref --repo-url permalinks are built against. Defaults to the current branch name, never "
                 + "a commit sha -- a sha would rewrite every code concept's `resource` on the next commit. On a "
-                + "detached HEAD there is no branch name to read, so this becomes required for permalinks.",
+                + "detached HEAD there is no branch name to read, so this becomes required for permalinks. "
+                + "The recorded revision names the COMMITTED HEAD, not the working tree: with uncommitted local "
+                + "edits it names a commit this bundle was not generated from.",
         };
 
         var checkOption = new Option<bool>("--check") { Description = BundleDrift.CheckDescription };

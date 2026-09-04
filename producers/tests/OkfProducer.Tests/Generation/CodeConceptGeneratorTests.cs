@@ -301,14 +301,24 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void The_registry_spans_the_code_family_as_well_as_packages_and_docs()
+    public void A_doc_titled_overview_coexists_with_the_overview_concept()
     {
-        // §3.4: one registry, one allocation record for the whole run. Being exact about what that
-        // means, because the tempting claim is false: the four families use disjoint prefixes, so a doc
-        // titled "overview" lands on `docs/overview` and CANNOT collide with the bare `overview` id --
-        // they coexist, which is what this asserts. What the shared registry buys is that `code/` is in
-        // the same record as the rest (the old Generate-local usedIds never covered it) and that
-        // `overview` is allocated rather than assumed.
+        // NAMED FOR WHAT IT PINS, after a review found the old name
+        // (`The_registry_spans_the_code_family_as_well_as_packages_and_docs`) promising something no
+        // assertion here could fail on: the graph is empty, so no `code/` id is produced at all and
+        // reverting the code family to a `Generate`-local `usedIds` leaves both assertions green.
+        //
+        // Adding code concepts would not fix that, and the reason is worth stating rather than
+        // rediscovering. §3.4's "one registry" has no observable consequence through this surface: the
+        // four families use DISJOINT PREFIXES by construction (`overview`, `docs/`, `packages/`,
+        // `code/`), so a cross-family collision cannot be built, and a code-local registry would
+        // disambiguate code ids among themselves exactly as the shared one does. The property is
+        // structural -- it is why a whole class of collision is impossible -- not behavioural, and a
+        // test cannot separate it from its absence without changing the id scheme itself.
+        //
+        // What this DOES pin, and what a regression could break: a doc titled "overview" lands on
+        // `docs/overview` and the bare `overview` id is allocated rather than assumed, so the two
+        // coexist instead of one overwriting the other.
         var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("O.md", "overview")]);
 
         var ids = Ids(new ConceptGenerator().Generate(snapshot, GraphOf(), Options()));

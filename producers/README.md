@@ -103,6 +103,23 @@ It is **off by default on purpose**. Turning it on by default would silently deg
 resolution quality of every run that exists today, which is a worse trade than a documented
 hazard with a lever next to it.
 
+### What `revision` on `overview` does and does not say
+
+`overview` carries a `revision` field holding the exact HEAD sha, and it names the
+**committed HEAD — never the working tree**. Both `git show -s` and `git rev-parse` report
+the commit currently checked out regardless of any uncommitted change to the source the run
+actually scanned, so on a dirty tree `revision` names a commit this bundle was **not**, byte
+for byte, generated from. There is no attempt to detect that and no fabricated value in its
+place: a sha is either the checked-out one or absent.
+
+Two consequences worth stating rather than discovering. A reader treating `revision` as
+"check out this commit and you get this bundle" is right only when the tree was clean at
+generation time. And `--check` cannot see the difference either: both sides carry the same
+revision, so a bundle generated from uncommitted edits can be reported as having no drift.
+
+Generating from a clean tree is what makes the field mean what it appears to mean.
+
+
 ### What a run says about itself
 
 Every `generate` that reaches the generation stage prints one **completeness report** to

@@ -26,12 +26,21 @@ namespace OkfProducer.CodeGraph.Roslyn;
 ///
 /// <para><b>Degradation.</b> A project that cannot be compiled cleanly is reported unavailable and its
 /// files are not <see cref="Owns"/>ed, so <see cref="NameMatchResolver"/>'s baseline stands for them
-/// untouched. This resolver never resolves from a compilation that has errors. <see cref="Projects"/>,
-/// <see cref="IsAvailable"/> and <see cref="IsComplete"/> are what let a caller distinguish "ran, and
-/// resolved nothing" from "could not run" -- the difference between a repository with no internal
-/// calls and one whose call graph is only approximate. That distinction is a question a caller can
-/// ask, not a pruning gate: see <see cref="IsComplete"/>'s own doc comment for why it cannot be one,
-/// and for the fact that only <see cref="Projects"/> reaches the run's report today.</para>
+/// untouched. This resolver never resolves from a compilation that has errors. <see cref="Projects"/>
+/// is what lets a caller distinguish "ran, and resolved nothing" from "could not run" -- the
+/// difference between a repository with no internal calls and one whose call graph is only
+/// approximate -- and it reports that per project, naming each one and why, rather than as a
+/// boolean.
+///
+/// <para>Two summary properties, <c>IsAvailable</c> and <c>IsComplete</c>, used to sit here.
+/// Remediation wave 2b established that nothing in <c>producers/src</c> read either one: the run's
+/// report comes from <c>GenerateRun.ReportProjects</c> iterating <see cref="Projects"/>, and §7.2 had
+/// claimed otherwise. That wave chose to correct the claims and keep the properties; this one removed
+/// them instead. The reasoning for keeping them was that a host embedding the resolver would ask
+/// exactly that question -- but no host does, this is not a published library, and a property whose
+/// only readers are the tests asserting on it is a shape this branch has already been burned by. A
+/// caller wanting the summary derives it from <see cref="Projects"/> in one line, which is what the
+/// tests now do.</para>
 ///
 /// <para><b>Loud, but never fatal to the run.</b> An unknown <c>LangVersion</c> is refused rather
 /// than degraded to a preview language version (correction 3) -- but the refusal is scoped to the one
@@ -137,64 +146,6 @@ public sealed class RoslynResolver : ISymbolResolver
     /// projects they reference -- with the outcome for each, sorted by path (<see cref="StringComparer.Ordinal"/>).
     /// </summary>
     public IReadOnlyList<RoslynProjectReport> Projects { get; }
-
-    /// <summary>
-    /// Whether at least one project compiled, i.e. whether this resolver can settle anything at all.
-    ///
-    /// <para><b>Nothing in <c>producers/src</c> reads this, or <see cref="IsComplete"/>.</b> Grepped,
-    /// not assumed: the only readers are this project's tests. See <see cref="IsComplete"/> for what
-    /// the run's report actually feeds from and why that was left as it is.</para>
-    /// </summary>
-    public bool IsAvailable => Projects.Any(p => p.Availability == RoslynProjectAvailability.Compiled);
-
-    /// <summary>
-    /// Whether this resolver covered the repository completely: at least one project, and every one of
-    /// them compiled. <see langword="false"/> means some C# was resolved by name alone, so this run's
-    /// call graph is approximate and an operator should be told.
-    ///
-    /// <para><b>It is not the pruning gate, and an earlier version of this comment said it was.</b>
-    /// Task 11 settled it against the code: which concepts exist is decided entirely by extraction --
-    /// <c>CodeGraphBuilder</c> builds <c>CodeGraph.Symbols</c> from <see cref="ILanguageExtractor"/>
-    /// output filtered by <see cref="FileEligibility.IsInScope"/>, and no resolver contributes a symbol
-    /// to it. A resolver decides only whether a call site renders as a link or as a code span. So a
-    /// degraded resolver cannot make a symbol <i>absent</i>, which is the only way an incomplete
-    /// picture could turn into a wrong deletion. Gating on it would also make pruning dead code on this
-    /// very repository -- <c>src/OKF4net.Cli</c> uses a source generator and does not compile here, so
-    /// this property is <see langword="false"/> on an ordinary checkout -- which is the same trap
-    /// <see cref="RunStatus.IsComplete"/> sets, for the same shape of reason. What DOES gate pruning is
-    /// <see cref="RunStatus.TraversalComplete"/> plus the per-file <see cref="FileStatus"/>; see
-    /// <c>BundleWriter</c>.</para>
-    ///
-    /// <para>
-    /// The <c>Count &gt; 0</c> clause is the whole point of this property, not a formality.
-    /// <c>Projects.All(...)</c> over an empty list is vacuously <see langword="true"/>, so a resolver
-    /// constructed with no projects at all -- which is precisely the state in which EVERY call in the
-    /// repository fell back to name matching -- would otherwise report itself complete. That state is
-    /// reachable rather than theoretical: finding no <c>.csproj</c> in a C# repository is a known gap
-    /// in this producer, and it yields an empty project list, not an error.
-    /// </para>
-    ///
-    /// <para>
-    /// What that clause protects is a caller who asks this question. Claiming completeness would tell
-    /// one the call graph is exact when every edge in it was in fact guessed from a name -- and a wrong
-    /// <c>## Calls</c> link reads as confidently as a right one. It forbids nothing, gates nothing, and
-    /// blocks no deletion; see the paragraph above for why it cannot.
-    /// </para>
-    ///
-    /// <para><b>It does not feed the run's report, and this comment used to say it did -- as did
-    /// 7.2.</b> Grepped across <c>producers/src</c>: nothing reads this property or
-    /// <see cref="IsAvailable"/>; the only readers are this project's tests. What the operator
-    /// actually sees is <c>GenerateRun.ReportProjects</c> iterating <see cref="Projects"/> and
-    /// emitting one note per project that did not compile, naming the project, the
-    /// <see cref="RoslynProjectAvailability"/> and the detail. That is strictly more than a single
-    /// boolean says, which is why the fix was to correct this claim and 7.2's rather than to wire a
-    /// second, coarser channel alongside a working one. Both properties stay: they are the question a
-    /// host embedding this resolver would ask, and the fixture in <c>RoslynResolverTests</c> asserts
-    /// on <see cref="IsComplete"/> to prove its own scratch repository really compiled -- a test that
-    /// would otherwise measure nothing.</para>
-    /// </summary>
-    public bool IsComplete =>
-        Projects.Count > 0 && Projects.All(p => p.Availability == RoslynProjectAvailability.Compiled);
 
     /// <summary>
     /// Compiles <paramref name="projectPaths"/>, plus every project they reference that lives under
