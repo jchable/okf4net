@@ -537,6 +537,7 @@ public sealed class ConceptGenerator : IConceptGenerator
             .ToList();
 
         DisambiguateSharedRawPaths(groups);
+        DisambiguateNamespacesAgainstTypes(groups, language => ProfileFor(language, options, profiles));
 
         // A call site names its caller as (container, name) and its target as (container, name) -- and
         // CallSite carries no language at all. Both joins below are therefore language-agnostic, which is
@@ -1275,7 +1276,7 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// the split direction only and a title is prose, not an id.
     /// </summary>
     private static string ContainerTitle(string[] segments) =>
-        segments.Length <= MinimumContainerDepth ? segments[^1] : $"{segments[^2]}.{segments[^1]}";
+        segments.Length <= MinimumContainerDepth ? SegmentName(segments[^1]) : $"{SegmentName(segments[^2])}.{SegmentName(segments[^1])}";
 
     /// <summary>
     /// A container rendered as a <see cref="SymbolFact"/> <b>for the description chain only</b>, so a
@@ -1297,8 +1298,8 @@ public sealed class ConceptGenerator : IConceptGenerator
     private static SymbolFact ContainerFact(string[] segments) => new(
         SymbolKind.Namespace,
         Language: segments[1],
-        Container: string.Join('.', segments[2..^1]),
-        Name: segments[^1],
+        Container: string.Join('.', segments[2..^1].Select(SegmentName)),
+        Name: SegmentName(segments[^1]),
         Signature: string.Empty,
         SymbolVisibility.Public,
         RelativePath: string.Empty,
@@ -1927,7 +1928,7 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         if (registeredByRawPath.TryGetValue(RawKey(segments[..^1]), out var parentId))
         {
-            foreach (var candidate in new[] { segments[^1], ContainerToken })
+            foreach (var candidate in new[] { SegmentName(segments[^1]), ContainerToken })
             {
                 try
                 {
@@ -2002,6 +2003,23 @@ public sealed class ConceptGenerator : IConceptGenerator
     private static string RawKey(IEnumerable<string> segments) => string.Join(char.MinValue, segments);
 
     /// <summary>
+    /// A raw segment with any <see cref="RawPathDiscriminator"/> suffix cut off -- the name it denotes,
+    /// as against the key it is.
+    ///
+    /// <para>Every place that turns a raw segment back into something a reader sees goes through this,
+    /// which is what makes the discriminator a pure keying device. That was already true of a GROUP's
+    /// segments by accident rather than by design: a group's id and title come from its
+    /// <see cref="SymbolFact"/>, so nothing read its leaf segment as a name. It is not true of a
+    /// synthesized container, whose id, title and description-chain fact are all derived from the
+    /// segments themselves -- so a discriminator on a container segment would have reached output.</para>
+    /// </summary>
+    private static string SegmentName(string segment)
+    {
+        var cut = segment.IndexOf(RawPathDiscriminator, StringComparison.Ordinal);
+        return cut < 0 ? segment : segment[..cut];
+    }
+
+    /// <summary>
     /// The character appended to a leaf raw segment to tell two groups apart that
     /// <see cref="RawSegments"/> would otherwise give the same path. Never NUL, which
     /// <see cref="RawKey"/> joins on and <see cref="IsProperAncestor"/>'s prefix test depends on, and
@@ -2044,6 +2062,88 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// where before it was contradictory: both concepts listed the same children while one of them had no
     /// parent.</para>
     /// </summary>
+    /// <summary>The marker a namespace segment carries when a type of the same name occupies its path.</summary>
+    private const string NamespaceMarker = "ns";
+
+    /// <summary>
+    /// Separates a namespace from a type that occupies the same raw path, so the namespace's contents
+    /// stop being emitted as though they were nested inside the type.
+    ///
+    /// <para><b>The shape.</b> A class <c>Bar</c> in namespace <c>Foo</c>, and a class <c>Baz</c> in
+    /// namespace <c>Foo.Bar</c>. Both reduce to the raw path <c>[code, csharp, Foo, Bar]</c> for their
+    /// parent, so the container was never synthesized (a group already claimed the path) and
+    /// <c>Baz</c> registered under the TYPE's id: measured as <c>code/csharp/foo/bar/baz</c>, a
+    /// top-level type rendered as a nested one, with the namespace having no concept at all. §3.3
+    /// enumerated two residual collisions; this was a third, and it had no test.</para>
+    ///
+    /// <para><b>Why a flat container string cannot decide it, and what can.</b>
+    /// <see cref="SymbolFact.Container"/> is dotted and flat, so a type nested in <c>Bar</c> and a
+    /// top-level type in <c>Foo.Bar</c> both report <c>"Foo.Bar"</c>. What separates them is
+    /// <see cref="SymbolFact.ContainerNamespace"/>: a group's parent is a namespace exactly when the
+    /// parent's depth equals the namespace's. The four cases, on the fixture above --
+    /// <c>Bar</c> (parent depth 3, namespace depth 3, so a namespace), its member <c>M</c> (4 against
+    /// 3, so a type), <c>Baz</c> in <c>Foo.Bar</c> (4 against 4, a namespace) and a <c>Baz</c> nested
+    /// inside <c>Bar</c> (4 against 3, a type) -- have two rows whose segments are IDENTICAL and whose
+    /// parents differ. That is precisely what the depth decides and the string cannot.</para>
+    ///
+    /// <para><b>What it does not do.</b> A group whose <see cref="SymbolFact.ContainerNamespace"/> is
+    /// <see langword="null"/> -- every fixture in this solution, and any future extractor that does not
+    /// record one -- is left exactly as it was, so this pass is inert rather than guessing. And a
+    /// group never discriminates its own full path, only the namespace prefixes ABOVE it: the type
+    /// keeps the undecorated path it already had, so no existing type's id moves.</para>
+    /// </summary>
+    private static void DisambiguateNamespacesAgainstTypes(
+        List<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)> groups,
+        Func<string, LanguageProfile> profileFor)
+    {
+        var typePaths = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            if (group.Declarations[0].Kind == SymbolKind.Type)
+            {
+                typePaths.Add(RawKey(group.RawSegments));
+            }
+        }
+
+        if (typePaths.Count == 0)
+        {
+            return;
+        }
+
+        for (var i = 0; i < groups.Count; i++)
+        {
+            var (key, declarations, segments) = groups[i];
+            if (declarations[0].ContainerNamespace is not { } containerNamespace)
+            {
+                continue;
+            }
+
+            // Two for `code` and the language tag, which every raw path starts with.
+            var namespaceDepth = 2 + profileFor(key.Language).SplitContainer(containerNamespace).Count;
+            var deepest = Math.Min(namespaceDepth, segments.Length - 1);
+
+            string[]? rewritten = null;
+            for (var depth = MinimumContainerDepth; depth <= deepest; depth++)
+            {
+                // Against the REWRITTEN prefix once a shallower level has been marked: a marked prefix
+                // no longer matches any type path, which is the point -- one mark separates the whole
+                // branch below it rather than every level repeating the same separation.
+                if (!typePaths.Contains(RawKey((rewritten ?? segments)[..depth])))
+                {
+                    continue;
+                }
+
+                rewritten ??= (string[])segments.Clone();
+                rewritten[depth - 1] = SegmentName(rewritten[depth - 1]) + RawPathDiscriminator + NamespaceMarker;
+            }
+
+            if (rewritten is not null)
+            {
+                groups[i] = (key, declarations, rewritten);
+            }
+        }
+    }
+
     private static void DisambiguateSharedRawPaths(
         List<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)> groups)
     {

@@ -953,6 +953,70 @@ public class CodeConceptGeneratorTests
 
     private static CodeGraphModel GraphOf(params SymbolFact[] symbols) => new(symbols, [], RunStatus.Complete);
 
+    [Fact]
+    public void A_namespace_and_a_type_of_the_same_name_get_separate_concepts()
+    {
+        // A class `Bar` in namespace `Foo`, and a class `Baz` in namespace `Foo.Bar`. Both reduce to
+        // the raw path [code, csharp, Foo, Bar] for their parent, so the container was never
+        // synthesized and Baz registered under the TYPE's id. MEASURED before the fix, with exactly
+        // this fixture: overview, code/csharp/foo, code/csharp/foo/bar, code/csharp/foo/bar/baz,
+        // code/csharp/foo/bar/m, code/csharp/foo/bar/baz/q -- a top-level type rendered as a nested
+        // one, and the namespace with no concept at all.
+        //
+        // ContainerNamespace is what separates them: the parent is a namespace exactly when its depth
+        // equals the namespace's. Two of the four facts below have IDENTICAL raw segments and
+        // different parents, which is what no flat container string can express.
+        var graph = GraphOf(
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo", "Bar", "public class Bar",
+                SymbolVisibility.Public, "src/Bar.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo.Bar", "M", "public void M()",
+                SymbolVisibility.Public, "src/Bar.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo.Bar", "Baz", "public class Baz",
+                SymbolVisibility.Public, "src/Baz.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo.Bar" },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo.Bar.Baz", "Q", "public void Q()",
+                SymbolVisibility.Public, "src/Baz.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo.Bar" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        // The TYPE keeps the path it already had -- only the namespace moves, so no existing type's id
+        // shifts under this change.
+        Assert.Contains("code/csharp/foo/bar", ids);
+        Assert.Contains("code/csharp/foo/bar/m", ids);
+
+        // The namespace is a concept of its own now, and its contents hang off IT.
+        Assert.Contains("code/csharp/foo/bar-2", ids);
+        Assert.Contains("code/csharp/foo/bar-2/baz", ids);
+        Assert.Contains("code/csharp/foo/bar-2/baz/q", ids);
+
+        // The assertion that fails without the fix.
+        Assert.DoesNotContain("code/csharp/foo/bar/baz", ids);
+    }
+
+    [Fact]
+    public void A_type_nested_in_another_type_still_hangs_off_it()
+    {
+        // The control for the test above, and the reason the fix is a depth comparison rather than a
+        // rule about names. `Baz` here has the SAME raw segments as the `Baz` above -- container
+        // "Foo.Bar", name "Baz" -- and must land in the opposite place, because its namespace stops one
+        // level higher. A fix that keyed on the container string alone would move this one too.
+        var graph = GraphOf(
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo", "Bar", "public class Bar",
+                SymbolVisibility.Public, "src/Bar.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo.Bar", "Baz", "public class Baz",
+                SymbolVisibility.Public, "src/Bar.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Contains("code/csharp/foo/bar/baz", ids);
+        Assert.DoesNotContain("code/csharp/foo/bar-2", ids);
+    }
+
     private static SymbolFact Type(string container, string name, string path, string? doc = null) =>
         new(SymbolKind.Type, "csharp", container, name, $"public class {name}",
             SymbolVisibility.Public, path, 0, 1, 1, 2, doc);

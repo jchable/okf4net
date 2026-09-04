@@ -777,6 +777,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
                 // stops short of the declaration it names. Where there is no body at all
                 // (`public record Foo(int X);`), the declaration's own last line is its header's.
                 HeaderEndLine = (bodyStart?.StartPosition.Row ?? decl.EndPosition.Row) + 1,
+                ContainerNamespace = ComputeContainerNamespace(decl, namespaceContext.NameCovering(decl.StartIndex)),
             });
         }
 
@@ -908,6 +909,34 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// reparented one and a doubled segment.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The namespace part of the path <see cref="ComputeContainerPath"/> builds -- the same walk,
+    /// keeping only the <c>namespace</c> ancestors -- or <see langword="null"/> when there are none.
+    ///
+    /// <para>Always a dotted PREFIX of the container path, because a namespace can only enclose a type
+    /// and never the reverse, so the generator can compare depths rather than re-parse either string.
+    /// A block-scoped <c>namespace Foo.Bar { }</c> contributes its whole dotted name as one ancestor,
+    /// exactly as it does over there, so the two stay in step.</para>
+    /// </summary>
+    private static string? ComputeContainerNamespace(Node decl, string? fileScopedNamespaceName)
+    {
+        var segments = new List<string>();
+        for (var current = decl.Parent; current is not null; current = current.Parent)
+        {
+            if (current.Type == NamespaceDeclarationNodeType && current.GetChildForField(NameFieldName) is { } nameField)
+            {
+                segments.Insert(0, nameField.Text);
+            }
+        }
+
+        if (fileScopedNamespaceName is not null)
+        {
+            segments.Insert(0, fileScopedNamespaceName);
+        }
+
+        return segments.Count == 0 ? null : string.Join(".", segments);
+    }
+
     private static string ComputeContainerPath(Node decl, string? fileScopedNamespaceName)
     {
         var segments = new List<string>();

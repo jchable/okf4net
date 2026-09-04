@@ -74,4 +74,28 @@ public sealed record SymbolFact(
     /// header line recorded, so use the full span".</para>
     /// </summary>
     public int? HeaderEndLine { get; init; }
+
+    /// <summary>
+    /// The namespace part of <see cref="Container"/> -- a dotted prefix of it -- or
+    /// <see langword="null"/> when the extractor did not record one.
+    ///
+    /// <para><b>What it separates, and why <see cref="Container"/> alone cannot.</b>
+    /// <c>Container</c> is a flat dotted string, so a type nested inside <c>Bar</c> and a top-level
+    /// type in the namespace <c>Foo.Bar</c> both report <c>"Foo.Bar"</c> -- two structurally different
+    /// parents spelled identically. The consequence was measured: with a class <c>Bar</c> in namespace
+    /// <c>Foo</c> and a class <c>Baz</c> in namespace <c>Foo.Bar</c>, <c>Baz</c> was emitted at
+    /// <c>code/csharp/foo/bar/baz</c>, as though it were nested inside the type. §3.3 enumerated two
+    /// residual collisions; this was a third.
+    ///
+    /// The extractor knows the difference -- it walks ancestors and sees a namespace node in one case
+    /// and a type node in the other -- and the flattening threw it away. Recording where the namespace
+    /// STOPS is enough to recover it: a group's parent is a namespace exactly when the parent's depth
+    /// equals the namespace's.</para>
+    ///
+    /// <para>An <c>init</c> property defaulting to <see langword="null"/> for the same reason as
+    /// <see cref="HeaderEndLine"/>: every fixture in this solution constructs a <see cref="SymbolFact"/>
+    /// positionally with no syntax tree to read this from, and <see langword="null"/> means "not
+    /// recorded", which the generator treats exactly as it behaved before this existed.</para>
+    /// </summary>
+    public string? ContainerNamespace { get; init; }
 }

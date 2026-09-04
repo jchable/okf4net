@@ -145,6 +145,21 @@ Effet de bord bienvenu : les `partial class` réparties sur plusieurs fichiers f
 
 - **Segments réservés.** `BundleConceptWriter` rejette les concepts nommés `index` ou `log` (ils écraseraient les fichiers propres du bundle) — vérifié dans `src/OKF4net/BundleConceptWriter.cs`. Une propriété nommée `Index` est parfaitement plausible ; on **réutilise** `IsReservedSegment` de `ConceptGenerator.cs` au lieu d'en écrire un second.
 - **Collision résiduelle** (casse seule — `Parse` vs `parse` — ou type imbriqué homonyme d'un membre) : départage déterministe par **ordre Ordinal du nom d'origine**, le premier garde le slug nu, les suivants prennent `-2`, `-3`. Ordinal **sur le nom** et non sur (fichier, ligne), pour que le départage survive à un déplacement de fichier ou à un décalage de lignes. Mesuré à **0 occurrence** sur ce repo ; la règle existe pour Go et JS, où c'est courant.
+
+> **Correction apportée à l'implémentation (dépilage des findings Important, 2026-09-04) : une TROISIÈME collision résiduelle existait, non listée ici.** Une classe `Bar` dans le namespace `Foo` et une classe `Baz` dans le namespace `Foo.Bar` se réduisent au même chemin brut `[code, csharp, Foo, Bar]` pour leur parent. Le conteneur n'était donc jamais synthétisé — un groupe réclamait déjà le chemin — et `Baz` s'enregistrait sous l'identifiant du **type**. Mesuré sur cette fixture exacte avant correctif : `code/csharp/foo/bar/baz`, c'est-à-dire un type de premier niveau rendu comme un type imbriqué, le namespace n'ayant aucun concept.
+>
+> `SymbolFact.Container` ne peut pas trancher : c'est une chaîne pointée aplatie, et une classe imbriquée dans `Bar` comme une classe de premier niveau dans `Foo.Bar` y rapportent toutes deux `"Foo.Bar"`. L'extracteur, lui, connaît la différence — il descend les ancêtres et voit un nœud namespace dans un cas, un nœud type dans l'autre — et l'aplatissement la jetait.
+>
+> `SymbolFact.ContainerNamespace` (propriété `init`, défaut `null`, même forme que `HeaderEndLine`) porte désormais la partie namespace du conteneur. La règle : **le parent d'un groupe est un namespace exactement quand sa profondeur égale celle du namespace.** Deux lignes du tableau ci-dessous ont des segments identiques et des parents différents, ce qui est précisément ce qu'aucune règle sur la chaîne ne peut exprimer.
+>
+> | déclaration | segments | profondeur ns | parent |
+> |---|---|---|---|
+> | `Bar`, type dans ns `Foo` | `[code,csharp,Foo,Bar]` | 3 | namespace `Foo` |
+> | `M`, membre de `Bar` | `[code,csharp,Foo,Bar,M]` | 3 | type `Bar` |
+> | `Baz`, type dans ns `Foo.Bar` | `[code,csharp,Foo,Bar,Baz]` | 4 | namespace `Foo.Bar` |
+> | `Baz`, imbriquée dans `Bar` | `[code,csharp,Foo,Bar,Baz]` | 3 | type `Bar` |
+>
+> Le namespace reçoit un chemin brut marqué et donc son propre identifiant (`code/csharp/foo/bar-2`) ; **le type garde le chemin qu'il avait**, donc aucun identifiant de type existant ne bouge. Un groupe dont `ContainerNamespace` est `null` — toute fixture de test, tout futur extracteur qui ne l'enregistre pas — est laissé exactement tel quel : la passe est inerte plutôt que devinatrice.
 - **Profondeur.** Un type devient à la fois le fichier `link-scanner.md` et le dossier `link-scanner/`. C'est légal, et `IndexGenerator` les liste dans deux rubriques distinctes du parent (document / `Subdirectories`). Conséquence assumée : **un `index.md` par dossier de type** (~170 sur ce repo). Sur un projet Java profond (`com/example/…`), les chemins s'allongent — **à surveiller vis-à-vis de `MAX_PATH` sous Windows**.
 
 ### 3.4 Un registre d'ids unique
