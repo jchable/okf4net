@@ -80,7 +80,7 @@ public sealed class OkfBundleTools
     /// The §10.5 attestation orchestrator, if one has been wired for this tool
     /// set. <see langword="null"/> unless the <see cref="OkfBundleTools(string, AttestationOrchestrator?)"/>
     /// overload was used with a non-null orchestrator — in that case,
-    /// <see cref="RunComputation"/> is a no-op error and <see cref="GetTools"/>
+    /// <see cref="RunComputation"/> is a no-op error and <see cref="GetTools()"/>
     /// omits <c>okf_run_computation</c> entirely (§10.5 requires a host-supplied
     /// runtime; there is nothing sane to expose without one). <see cref="GetComputation"/>
     /// never depends on this field: reading a computation's contract and
@@ -106,7 +106,7 @@ public sealed class OkfBundleTools
     /// <paramref name="orchestrator"/> is <see langword="null"/>, this is
     /// equivalent to <see cref="OkfBundleTools(string)"/>: <c>okf_get_computation</c>
     /// is still exposed (it is read-only and needs no runtime), but
-    /// <c>okf_run_computation</c> is omitted from <see cref="GetTools"/> and
+    /// <c>okf_run_computation</c> is omitted from <see cref="GetTools()"/> and
     /// <see cref="RunComputation"/> reports a plain-text error instead of
     /// running anything.
     /// </summary>
@@ -133,6 +133,21 @@ public sealed class OkfBundleTools
     public string BundleRoot { get; }
 
     /// <summary>
+    /// Wall-clock ceiling on one <see cref="RunComputationAsync"/> run, default
+    /// two minutes. §10 says nothing about time limits; this is a host guard,
+    /// because the bind/execute/attest stages are host-plugged code that may do
+    /// unbounded I/O and an agent invocation cannot wait forever.
+    ///
+    /// Elapsing is reported to the model as a normal non-displayable outcome,
+    /// never thrown at the caller — see <see cref="RunComputationAsync"/>.
+    /// <see cref="Timeout.InfiniteTimeSpan"/> disables it for a host that does
+    /// its own bounding. A value the runtime will not accept as a delay —
+    /// negative, or past its ~49.7-day ceiling — is likewise reported as an
+    /// error, not thrown.
+    /// </summary>
+    public TimeSpan ComputationTimeout { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
     /// The current UTC time, consulted by <see cref="AppendLog"/> to compute
     /// "today"'s ISO date heading. Defaults to <see cref="DateTime.UtcNow"/>;
     /// overridable so tests can pin the date deterministically. Internal: an
@@ -140,8 +155,12 @@ public sealed class OkfBundleTools
     /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
-    /// <summary>Today's date, derived from <see cref="UtcNow"/> — the shared seam behind <see cref="ReadConcept"/>'s and <see cref="Search"/>'s staleness checks.</summary>
-    private DateOnly Today => DateOnly.FromDateTime(UtcNow().Date);
+    /// <summary>
+    /// The current instant, derived from <see cref="UtcNow"/> — the shared seam
+    /// behind <see cref="ReadConcept"/>'s and <see cref="Search"/>'s staleness
+    /// checks. §5 makes <c>stale_after</c> an instant, so these compare instants.
+    /// </summary>
+    private DateTimeOffset Now => new(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <summary>
     /// Returns the loaded bundle, loading it from <see cref="BundleRoot"/> on
@@ -169,11 +188,11 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// The tool names among <see cref="GetTools"/>'s output that write to the
+    /// The tool names among <see cref="GetTools()"/>'s output that write to the
     /// bundle: <c>okf_write_concept</c>, <c>okf_append_log</c>, and
     /// <c>okf_regenerate_indexes</c>. A host that wants a read-only tool set
     /// (e.g. a read-only MCP server, or a demo that must never mutate a
-    /// pinned/shared bundle) can filter <see cref="GetTools"/>'s result
+    /// pinned/shared bundle) can filter <see cref="GetTools()"/>'s result
     /// against this set instead of hand-maintaining its own list of tool
     /// names — the single source of truth for "which tools write," so a
     /// future write tool added here can't silently slip past a consumer's
@@ -210,7 +229,25 @@ public sealed class OkfBundleTools
     /// without one, there is nothing for it to run, so it is omitted from the
     /// tool set entirely rather than exposed as an always-erroring tool.
     /// </summary>
-    public IList<AITool> GetTools()
+    public IList<AITool> GetTools() => GetTools(OkfToolMode.ReadWrite);
+
+    /// <summary>
+    /// All OKF tools, with the three write-capable ones exposed according to
+    /// <paramref name="mode"/> — see <see cref="OkfToolMode"/> for what each
+    /// means and why.
+    ///
+    /// <para>
+    /// The parameterless <see cref="GetTools()"/> is
+    /// <see cref="OkfToolMode.ReadWrite"/> and stays that way: flipping the
+    /// default would silently change every host already calling it. This
+    /// overload is how a host opts into something safer, and
+    /// <see cref="WriteToolNames"/> remains the single source of truth for
+    /// which tools count as writes, so a write tool added later cannot slip
+    /// past either path.
+    /// </para>
+    /// </summary>
+    /// <param name="mode">How to expose the write-capable tools.</param>
+    public IList<AITool> GetTools(OkfToolMode mode)
     {
         var tools = new List<AITool>
         {
@@ -229,10 +266,22 @@ public sealed class OkfBundleTools
 
         if (_orchestrator is not null)
         {
-            tools.Add(AIFunctionFactory.Create(RunComputation, "okf_run_computation"));
+            // The async form: AIFunctionFactory binds its CancellationToken from the
+            // invocation and leaves it out of the JSON schema, so the model sees the
+            // same two parameters while the host gains a way to stop a wedged run.
+            tools.Add(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation"));
         }
 
-        return tools;
+        return mode switch
+        {
+            OkfToolMode.ReadOnly =>
+                tools.Where(t => !WriteToolNames.Contains(((AIFunction)t).Name)).ToList(),
+            OkfToolMode.RequireApprovalForWrites =>
+                tools.Select(t => WriteToolNames.Contains(((AIFunction)t).Name)
+                    ? new ApprovalRequiredAIFunction((AIFunction)t)
+                    : t).ToList(),
+            _ => tools,
+        };
     }
 
     /// <summary>
@@ -265,7 +314,7 @@ public sealed class OkfBundleTools
             var fm = concept.Document.Frontmatter;
             var lc = fm.Lifecycle;
             var trust = fm.TrustTier;
-            var stale = lc.IsStale(Today);
+            var stale = lc.IsStale(Now);
             if (lc.Status != ConceptStatus.Stable || trust != TrustTier.Unverified || stale)
             {
                 sb.Append("> status: ").Append(StatusLabel(lc.Status))
@@ -434,7 +483,7 @@ public sealed class OkfBundleTools
                     : $"No results for query '{query}' with tag '{effectiveTag}'.";
             }
 
-            return FormatSearchResults(query, effectiveTag, scored, Today);
+            return FormatSearchResults(query, effectiveTag, scored, Now);
         });
     }
 
@@ -464,7 +513,7 @@ public sealed class OkfBundleTools
     /// instead.
     /// </summary>
     /// <param name="stale">
-    /// Keep only concepts past their <c>stale_after</c> date. Left unset it
+    /// Keep only concepts past their <c>stale_after</c> instant. Left unset it
     /// follows the CLI's rule: the stale worklist when nothing else is
     /// filtered, no staleness constraint as soon as another filter is given.
     /// Without that, "which concepts were never verified by a human?" would
@@ -476,7 +525,7 @@ public sealed class OkfBundleTools
     /// <param name="type">Keep only concepts with this frontmatter type (exact match).</param>
     [Description("Audit the bundle's trust, freshness and lifecycle signals: counts by trust tier and status over the whole bundle, plus the concepts the filters select. Called bare it returns the stale worklist; combined with trust/status/type it stops constraining staleness unless you pass stale explicitly.")]
     public string Audit(
-        [Description("Only concepts past their stale_after date. Leave unset for the default: the stale worklist when no other filter is given, no staleness constraint when one is.")] bool? stale = null,
+        [Description("Only concepts past their stale_after instant. Leave unset for the default: the stale worklist when no other filter is given, no staleness constraint when one is.")] bool? stale = null,
         [Description("Comma-separated trust tiers to include: unverified, machine-confirmed, human-reviewed.")] string? trust = null,
         [Description("Only concepts with this lifecycle status: draft, stable or deprecated.")] string? status = null,
         [Description("Only concepts with this frontmatter type (exact match).")] string? type = null)
@@ -522,10 +571,10 @@ public sealed class OkfBundleTools
                 GetBundle(),
                 new AuditQuery(staleOnly, tiers, parsedStatus, type),
 
-                // Pinned to Today -- the same UtcNow seam ReadConcept and
+                // Pinned to Now -- the same UtcNow seam ReadConcept and
                 // Search use -- so the tool's output never depends on the day
                 // it runs.
-                new FixedClock(Today));
+                new FixedClock(Now));
 
             return RenderAudit(report, staleOnly);
         });
@@ -613,6 +662,41 @@ public sealed class OkfBundleTools
     private Action? _beforeLateReparseCheckForTest;
 
     /// <summary>
+    /// Validates one <see cref="AppendLog"/> argument, returning the rejection
+    /// message or <see langword="null"/> when it is acceptable.
+    ///
+    /// Both of that method's arguments get the identical three checks, so they
+    /// share one validator rather than two copies that could drift. The
+    /// line-break rejection is the load-bearing one: a newline lets an entry
+    /// forge a fabricated <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet
+    /// that a later <c>ChangeLog.Parse</c> would read back as genuine
+    /// audit-trail history. Rejected outright rather than stripped, so the
+    /// caller learns the write did not happen.
+    /// </summary>
+    /// <param name="value">The argument's value.</param>
+    /// <param name="fieldName">The argument's name, as it appears in the message.</param>
+    private static string? GuardLogField(string value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return $"Error: invalid {fieldName} — it must not be empty.";
+        }
+
+        if (value.Contains('\0'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a null character.";
+        }
+
+        if (value.Contains('\n') || value.Contains('\r'))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a line break (this would let it "
+                + "forge fake '## date' or '* entry' lines in log.md).";
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Appends one entry to the bundle root's <c>log.md</c> under today's
     /// (UTC) ISO date, creating the file if it does not yet exist. If a
     /// heading for today's date already exists, the entry is appended to the
@@ -636,36 +720,14 @@ public sealed class OkfBundleTools
         [Description("Entry kind, e.g. 'Update' or 'Creation'.")] string kind,
         [Description("The entry text.")] string text)
     {
-        if (string.IsNullOrWhiteSpace(kind))
+        if (GuardLogField(kind, "kind") is { } kindError)
         {
-            return "Error: invalid kind — it must not be empty.";
+            return kindError;
         }
 
-        if (kind.Contains('\0'))
+        if (GuardLogField(text, "text") is { } textError)
         {
-            return "Error: invalid kind — it must not contain a null character.";
-        }
-
-        if (kind.Contains('\n') || kind.Contains('\r'))
-        {
-            return "Error: invalid kind — it must not contain a line break (this would let it "
-                + "forge fake '## date' or '* entry' lines in log.md).";
-        }
-
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return "Error: invalid text — it must not be empty.";
-        }
-
-        if (text.Contains('\0'))
-        {
-            return "Error: invalid text — it must not contain a null character.";
-        }
-
-        if (text.Contains('\n') || text.Contains('\r'))
-        {
-            return "Error: invalid text — it must not contain a line break (this would let it "
-                + "forge fake '## date' or '* entry' lines in log.md).";
+            return textError;
         }
 
         return RunTool(() =>
@@ -992,7 +1054,7 @@ public sealed class OkfBundleTools
     /// and renders the resulting <see cref="AttestationOutcome"/> as
     /// agent-friendly markdown. If no orchestrator was wired, returns a
     /// plain-text error rather than being omitted silently (mirroring
-    /// <see cref="GetTools"/>, which omits <c>okf_run_computation</c>
+    /// <see cref="GetTools()"/>, which omits <c>okf_run_computation</c>
     /// entirely in that case — this direct-call path exists for callers that
     /// invoke the method itself rather than through the tool list). Synchronous
     /// like every other tool method here: the orchestrator's async workflow is
@@ -1013,6 +1075,7 @@ public sealed class OkfBundleTools
     /// "missing required parameter" non-displayable outcome instead of
     /// throwing.
     /// </param>
+    [Obsolete("Use RunComputationAsync: this overload blocks the calling thread and passes no cancellation token, so a slow or wedged host runtime pins the caller with no way out. Kept for one version.")]
     [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
     public string RunComputation(
         [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
@@ -1040,14 +1103,115 @@ public sealed class OkfBundleTools
         // over instead.
         parameterValues ??= new Dictionary<string, object?>();
 
-        return RunTool(() =>
+        return RunComputationAsync(conceptId, parameterValues).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// The §10.5 attested-computation workflow, asynchronous and cancellable —
+    /// the form <see cref="GetTools()"/> exposes as <c>okf_run_computation</c>.
+    ///
+    /// This is the only tool here that hands control to host-plugged code
+    /// (<c>IParameterBinder</c>/<c>IComputationExecutor</c>/<c>IAttester</c>),
+    /// which may do real I/O of unbounded duration. The synchronous
+    /// <see cref="RunComputation"/> blocked its thread and passed no token at
+    /// all, so a slow or wedged executor pinned an Agent Framework worker with
+    /// no way out.
+    ///
+    /// <paramref name="cancellationToken"/> is bound automatically by
+    /// <c>AIFunctionFactory</c> and excluded from the generated JSON schema, so
+    /// taking it changes nothing the model sees. It is combined with
+    /// <see cref="ComputationTimeout"/>, so a host that never cancels still has
+    /// a floor.
+    ///
+    /// Never throws for expected errors, like every tool here — with one
+    /// deliberate exception: a cancellation the CALLER requested propagates as
+    /// an <see cref="OperationCanceledException"/>, because a caller that
+    /// withdrew is not waiting for a rendered answer. A timeout is not that: it
+    /// is this tool's own decision, so it is reported as a normal
+    /// non-displayable outcome rather than raised at a caller who asked for
+    /// nothing of the sort.
+    /// </summary>
+    /// <param name="conceptId">The Attested Computation concept id to run.</param>
+    /// <param name="parameterValues">The parameter values for this run (§10.3: values only, never computation code).</param>
+    /// <param name="cancellationToken">The host's token; combined with <see cref="ComputationTimeout"/>.</param>
+    [Description("Run an Attested Computation (§10.5: bind, execute, attest, gate on staleness) via the configured attestation runtime, and return the resulting outcome (displayable, verdict, receipt, reasons).")]
+    public async Task<string> RunComputationAsync(
+        [Description("The concept id, e.g. 'computations/monthly-revenue'.")] string conceptId,
+        [Description("Parameter values for this run, by name (§10.3: values only, never computation code).")] IReadOnlyDictionary<string, object?> parameterValues,
+        CancellationToken cancellationToken = default)
+    {
+        if (GuardConceptId(conceptId) is { } err)
         {
-            var outcome = _orchestrator
-                .RunAsync(GetBundle(), ConceptId.Parse(conceptId), parameterValues)
-                .GetAwaiter()
-                .GetResult();
+            return err;
+        }
+
+        if (_orchestrator is null)
+        {
+            return "Error: no attestation runtime configured.";
+        }
+
+        // See RunComputation's remarks: an AIFunction-bound call can pass null
+        // despite the non-nullable static type.
+        parameterValues ??= new Dictionary<string, object?>();
+
+        // Arming the timeout is validated rather than left to
+        // CancellationTokenSource's own throw: it happens outside the try
+        // below, so a host that misconfigured the timeout got a raw exception
+        // out of a tool that promises never to throw at the LLM — on a
+        // misconfiguration, which is exactly when a legible message is worth
+        // most. Caught in review of #65.
+        //
+        // Two guards, for two different reasons. This one is not about the
+        // throw at all, but about two settings the runtime silently ACCEPTS and
+        // turns into nonsense: a negative delay between -1ms and 0 is treated
+        // as no timeout, so a fat-fingered negative ceiling silently produces
+        // an unbounded run — the opposite of what it asked for — while zero
+        // fires the token immediately, so every single computation reports
+        // "timed out after 0s". The bound is `<=` for that second case; it was
+        // `<`, which let zero through even though this message already said
+        // "must be positive" (caught in review).
+        if (ComputationTimeout <= TimeSpan.Zero && ComputationTimeout != Timeout.InfiniteTimeSpan)
+        {
+            return $"Error: ComputationTimeout must be positive or Timeout.InfiniteTimeSpan, but is {ComputationTimeout}.";
+        }
+
+        // And this one is about the throw, on every bound the runtime enforces
+        // rather than only the negative one the guard above was written for: a
+        // delay past uint.MaxValue - 1 milliseconds (~49.71 days) is rejected
+        // too, so `ComputationTimeout = TimeSpan.FromDays(60)` blew exactly the
+        // ArgumentOutOfRangeException the negative case used to. Caught by
+        // catching what the runtime actually rejects rather than mirroring its
+        // limits in a constant here, which would go stale the moment they move.
+        using var timeoutSource = new CancellationTokenSource();
+        try
+        {
+            timeoutSource.CancelAfter(ComputationTimeout);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return $"Error: ComputationTimeout is out of the range the runtime accepts (at most about 49.7 days, or Timeout.InfiniteTimeSpan), but is {ComputationTimeout}.";
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+
+        try
+        {
+            var outcome = await _orchestrator
+                .RunAsync(GetBundle(), ConceptId.Parse(conceptId), parameterValues, cancellationToken: linked.Token)
+                .ConfigureAwait(false);
             return FormatOutcome(outcome);
-        });
+        }
+        // Ours, not the caller's: the token fired because ComputationTimeout
+        // elapsed while the caller's own token is still fine. Tell the model,
+        // rather than throwing at a caller who never asked to stop.
+        catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            return $"displayable: no\n\nReasons:\n- the computation timed out after {ComputationTimeout.TotalSeconds:0.###}s\n";
+        }
+        catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 
     /// <summary>
@@ -1127,9 +1291,9 @@ public sealed class OkfBundleTools
     /// families, and the printed scores therefore do not descend monotonically.
     /// Each hit is annotated with a trailing <c>[deprecated]</c> marker when its lifecycle status is
     /// <see cref="ConceptStatus.Deprecated"/> and/or a <c>[stale]</c> marker when it is stale as of
-    /// <paramref name="today"/>.
+    /// <paramref name="now"/>.
     /// </summary>
-    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<ScoredConcept> scored, DateOnly today)
+    private static string FormatSearchResults(string query, string? tag, IReadOnlyList<ScoredConcept> scored, DateTimeOffset now)
     {
         const int MaxResults = 20;
 
@@ -1159,7 +1323,7 @@ public sealed class OkfBundleTools
                 sb.Append(" [deprecated]");
             }
 
-            if (lc.IsStale(today))
+            if (lc.IsStale(now))
             {
                 sb.Append(" [stale]");
             }
@@ -1503,7 +1667,13 @@ public sealed class OkfBundleTools
 
         if (outcome.Error is not null)
         {
-            sb.Append('\n').Append("Error: ").Append(outcome.Error.Message).Append('\n');
+            // The TYPE, never the message. This exception comes from a
+            // host-plugged runtime -- code this library does not control -- and
+            // its message can name a connection string, a query, or the row it
+            // choked on. The exception object stays on outcome.Error for the
+            // host, which is the right audience; this line crosses into the
+            // model's context, which is not.
+            sb.Append('\n').Append("Error: ").Append(outcome.Error.GetType().Name).Append('\n');
         }
 
         return sb.ToString();

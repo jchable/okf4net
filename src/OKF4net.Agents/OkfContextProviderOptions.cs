@@ -81,6 +81,30 @@ public sealed class OkfContextProviderOptions
     public StalePolicy StalePolicy { get; init; } = StalePolicy.Use;
 
     /// <summary>
+    /// Called with the real exception whenever context assembly swallows one:
+    /// a bundle that fails to (re)load, or a knowledge/memory read that fails.
+    /// <see langword="null"/> (the default) discards them, preserving the
+    /// never-throw contract exactly as before.
+    ///
+    /// This is the host's channel, deliberately separate from the model's. The
+    /// model is told only a category ("bundle unavailable: I/O error") because
+    /// a raw .NET exception message carries absolute paths, and for a
+    /// host-plugged runtime can carry a connection string or a query. Removing
+    /// that from the injected context without adding this would have traded a
+    /// leak for an undiagnosable failure: the injected message was previously
+    /// the only place the detail surfaced at all, and the scoped (V2) read path
+    /// reported nothing anywhere.
+    ///
+    /// Invoked inline on the assembling thread, so it should be cheap — do the
+    /// real logging work elsewhere. An exception it throws is swallowed rather
+    /// than propagated: a broken telemetry callback must not take the agent
+    /// down, and this sink exists precisely for paths that are already
+    /// degrading. That also means a throwing callback reports nothing and says
+    /// nothing about it, so keep it simple enough not to fail.
+    /// </summary>
+    public Action<Exception>? OnInternalError { get; init; }
+
+    /// <summary>
     /// The <see cref="OKF4net.Catalog.KnowledgeQuery.FairnessQuota"/> to
     /// attach to the knowledge query this provider issues;
     /// <see langword="null"/> (the default) attaches none, deferring to

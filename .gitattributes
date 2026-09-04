@@ -1,6 +1,7 @@
 tests/fixtures/** -text
 bundles/acme_retail/** -text
 bundles/ga4/** -text
+docs/spec/SPEC.md -text
 
 # The producer's golden bundle and the fixture repository it is generated from are compared BYTE FOR
 # BYTE by `producers/tests/OkfProducer.Tests/Generation/CheckTests.cs`. Without -text, git would

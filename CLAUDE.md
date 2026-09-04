@@ -49,6 +49,19 @@ Requires .NET SDK 10.0+. CI (ci.yml) runs build+test on Linux/Windows/macOS, `do
 
 Two validation levels exist by design: `OkfDocument.ValidateConformance()` enforces only what §11 requires (non-empty `type`); `OkfDocument.Validate()` is the stricter producer-side check (`type`, `title`, `description` — `Frontmatter.RequiredKeys`). `timestamp` is a *legacy* §13.1 field since the v0.2 bump: provenance is the `generated` stamp, which `BundleConceptWriter` auto-stamps on writes that omit it *when its opt-in `AutoStampGenerated` flag is set* — it is not unconditional for every write. The two §13.1 renames (`timestamp`→`generated.at`, body `# Citations`→frontmatter `sources`) are both v0.2-conformant fallbacks (a v0.2 consumer reads the new form, falling back to the legacy one; a v0.1 bundle loads unchanged) and both surface as a `Warning` in `BundleValidator.Validate` — kept equally weighted rather than treating `timestamp` as a quieter "simple rename" (see `docs/superpowers/specs/2026-07-27-okf-v0.2-upgrade-design.md`, item 10).
 
+**`docs/spec/SPEC.md` is the OKF v0.2 specification itself**, vendored verbatim
+(Copyright Google LLC, Apache-2.0, upstream commit `62432a0`) so every `§`
+citation in this repo resolves locally instead of against whatever upstream
+`main` says today. **Read it before answering any conformance question, and
+never edit it** — it is not ours. To adopt a newer spec version, re-download it
+and update the whole provenance table (commit, date, `sha256`, size) in
+`docs/spec/README.md`; `.gitattributes` marks it `-text` so the checksum stays
+verifiable on every platform. Deliberate divergences are recorded in
+`docs/spec-conformance/`, never by editing the spec. Note that upstream's own
+sample bundles can drift from it: `bundles/acme_retail/` (also a verbatim copy)
+violates §5's timestamp rule, and `okf validate` correctly warns about it —
+that is upstream drift to report upstream, not a local fix.
+
 `docs/design/` holds historical migration specs/plans — context only; the code and README are authoritative.
 
 `bundles/` holds sample OKF bundles for manual testing/demos (e.g.

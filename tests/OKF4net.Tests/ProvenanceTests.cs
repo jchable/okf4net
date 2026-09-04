@@ -58,6 +58,134 @@ public class ProvenanceTests
     }
 
     [Fact]
+    public void ParseSources_reads_per_entry_usage_window_with_both_bounds()
+    {
+        var s = Provenance.ParseSources(Yaml(
+            "- resource: r\n" +
+            "  usage_window:\n" +
+            "    from: '2026-01-01T00:00:00Z'\n" +
+            "    to: '2026-01-31T00:00:00Z'\n"));
+        Assert.Single(s);
+        Assert.NotNull(s[0].UsageWindow);
+        Assert.Equal("2026-01-01T00:00:00Z", s[0].UsageWindow!.Value.From);
+        Assert.Equal("2026-01-31T00:00:00Z", s[0].UsageWindow!.Value.To);
+    }
+
+    [Fact]
+    public void ParseSources_entry_with_no_usage_window_is_null()
+    {
+        var s = Provenance.ParseSources(Yaml("- resource: r\n"));
+        Assert.Single(s);
+        Assert.Null(s[0].UsageWindow);
+    }
+
+    [Fact]
+    public void ParseSources_entry_usage_window_not_a_mapping_is_null()
+    {
+        var s = Provenance.ParseSources(Yaml("- resource: r\n  usage_window: hello\n"));
+        Assert.Single(s);
+        Assert.Null(s[0].UsageWindow);
+    }
+
+    [Fact]
+    public void ParseSources_entry_usage_window_with_only_from_leaves_to_null()
+    {
+        var s = Provenance.ParseSources(Yaml(
+            "- resource: r\n" +
+            "  usage_window:\n" +
+            "    from: '2026-01-01T00:00:00Z'\n"));
+        Assert.Single(s);
+        Assert.NotNull(s[0].UsageWindow);
+        Assert.Equal("2026-01-01T00:00:00Z", s[0].UsageWindow!.Value.From);
+        Assert.Null(s[0].UsageWindow!.Value.To);
+    }
+
+    [Fact]
+    public void ParseSources_entry_usage_window_with_only_to_leaves_from_null()
+    {
+        // The mirror of the `only from` case above: neither bound is required
+        // by §5.1, and the two are read by separate `m.Get` calls, so a
+        // one-bound window must survive in either direction.
+        var s = Provenance.ParseSources(Yaml(
+            "- resource: r\n" +
+            "  usage_window:\n" +
+            "    to: '2026-01-31T00:00:00Z'\n"));
+        Assert.Single(s);
+        Assert.NotNull(s[0].UsageWindow);
+        Assert.Null(s[0].UsageWindow!.Value.From);
+        Assert.Equal("2026-01-31T00:00:00Z", s[0].UsageWindow!.Value.To);
+    }
+
+    [Fact]
+    public void ToYaml_writes_a_present_usage_window_after_last_modified()
+    {
+        var yaml = Provenance.ToYaml([
+            new Source(Id: null, Resource: "r", Title: null, Author: null, UsageCount: null, LastModified: "2026-01-01",
+                UsageWindow: new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z")),
+        ]);
+
+        var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+        Assert.Equal(["resource", "last_modified", "usage_window"], entry.Keys.ToList());
+        var windowMap = Assert.IsType<YamlMapping>(entry.Get("usage_window"));
+        Assert.Equal("2026-01-01T00:00:00Z", windowMap.Get("from")!.AsString());
+        Assert.Equal("2026-01-31T00:00:00Z", windowMap.Get("to")!.AsString());
+    }
+
+    [Fact]
+    public void ToYaml_omits_usage_window_key_entirely_when_null()
+    {
+        var yaml = Provenance.ToYaml([new Source(Id: null, Resource: "r", Title: null, Author: null, UsageCount: null, LastModified: null, UsageWindow: null)]);
+
+        var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+        Assert.False(entry.ContainsKey("usage_window"));
+    }
+
+    [Fact]
+    public void ToYaml_writes_a_present_but_empty_usage_window_as_an_empty_mapping_not_absent()
+    {
+        var yaml = Provenance.ToYaml([new Source(Id: null, Resource: "r", Title: null, Author: null, UsageCount: null, LastModified: null, UsageWindow: new UsageWindow(null, null))]);
+
+        var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
+        Assert.True(entry.ContainsKey("usage_window"));
+        var windowMap = Assert.IsType<YamlMapping>(entry.Get("usage_window"));
+        Assert.True(windowMap.IsEmpty);
+    }
+
+    [Fact]
+    public void ToYaml_ParseSources_round_trip_preserves_a_present_usage_window()
+    {
+        var sources = new List<Source>
+        {
+            new(Id: null, Resource: "r", Title: null, Author: null, UsageCount: null, LastModified: null,
+                UsageWindow: new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z")),
+        };
+
+        var roundTripped = Provenance.ParseSources(Provenance.ToYaml(sources));
+
+        Assert.Equal(sources[0], roundTripped[0]);
+        Assert.NotNull(roundTripped[0].UsageWindow);
+        Assert.Equal("2026-01-01T00:00:00Z", roundTripped[0].UsageWindow!.Value.From);
+        Assert.Equal("2026-01-31T00:00:00Z", roundTripped[0].UsageWindow!.Value.To);
+    }
+
+    [Fact]
+    public void ToYaml_ParseSources_round_trip_preserves_a_present_but_empty_usage_window_as_present_not_null()
+    {
+        var sources = new List<Source>
+        {
+            new(Id: null, Resource: "r", Title: null, Author: null, UsageCount: null, LastModified: null,
+                UsageWindow: new UsageWindow(null, null)),
+        };
+
+        var roundTripped = Provenance.ParseSources(Provenance.ToYaml(sources));
+
+        Assert.Equal(sources[0], roundTripped[0]);
+        Assert.NotNull(roundTripped[0].UsageWindow);
+        Assert.Null(roundTripped[0].UsageWindow!.Value.From);
+        Assert.Null(roundTripped[0].UsageWindow!.Value.To);
+    }
+
+    [Fact]
     public void ToYaml_round_trips_through_ParseSources_in_order()
     {
         var sources = new List<Source>
@@ -92,10 +220,13 @@ public class ProvenanceTests
     [Fact]
     public void ToYaml_uses_canonical_per_entry_key_order()
     {
-        var yaml = Provenance.ToYaml([new Source(Id: "x", Resource: "y", Title: "z", Author: Actor.Parse("process:p"), UsageCount: 1, LastModified: "2026-01-01")]);
+        var yaml = Provenance.ToYaml([
+            new Source(Id: "x", Resource: "y", Title: "z", Author: Actor.Parse("process:p"), UsageCount: 1, LastModified: "2026-01-01",
+                UsageWindow: new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z")),
+        ]);
 
         var entry = Assert.IsType<YamlMapping>(yaml.Items[0]);
-        Assert.Equal(["id", "resource", "title", "author", "usage_count", "last_modified"], entry.Keys.ToList());
+        Assert.Equal(["id", "resource", "title", "author", "usage_count", "last_modified", "usage_window"], entry.Keys.ToList());
     }
 
     [Fact]

@@ -97,3 +97,18 @@ jobs:
         run: |
           BIN=$(find src/OKF4net.Cli/bin/Release -type f -name okf -path '*publish*' | head -1)
           "$BIN" validate tests/fixtures/appendix_a
+
+      # `okf --version` reads AssemblyInformationalVersionAttribute at runtime.
+      # The in-process CliTests cannot prove that survives Native AOT, so the
+      # published binary is asked directly here: a trimmed-away attribute would
+      # print the "0.0.0-unknown" fallback and this fails.
+      - name: Published binary reports the build version
+        run: |
+          BIN=$(find src/OKF4net.Cli/bin/Release -type f -name okf -path '*publish*' | head -1)
+          DECLARED=$(sed -n 's/.*<Version>\([^<]*\)<\/Version>.*/\1/p' Directory.Build.props)
+          ACTUAL=$("$BIN" --version)
+          echo "declared=$DECLARED actual=$ACTUAL"
+          case "$ACTUAL" in
+            "okf $DECLARED "*) ;;
+            *) echo "::error::published binary reports '$ACTUAL', expected version $DECLARED"; exit 1 ;;
+          esac

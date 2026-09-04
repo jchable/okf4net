@@ -194,7 +194,15 @@ export default function Library() {
               [
                 'Sources → IReadOnlyList<Source> · UsageWindow → UsageWindow?',
                 <>
-                  The §5.1 <code>sources</code> list and its sibling <code>usage_window</code>.
+                  The §5.1 <code>sources</code> list and its shared sibling <code>usage_window</code>.
+                </>,
+              ],
+              [
+                'EffectiveUsageWindow(Source) → UsageWindow?',
+                <>
+                  The §5.1 window framing one entry's <code>usage_count</code>: that entry's own{' '}
+                  <code>usage_window</code> if it has one, else the shared sibling — the entry wins whole-object,
+                  never per-bound.
                 </>,
               ],
               [
@@ -253,14 +261,16 @@ export default function Library() {
                 </>,
               ],
               [
-                'Source(Id, Resource, Title, Author, UsageCount, LastModified) · UsageWindow(From, To)',
+                'Source(Id, Resource, Title, Author, UsageCount, LastModified, UsageWindow) · UsageWindow(From, To)',
                 <>
-                  One §5.1 <code>sources[]</code> entry, and the sibling <code>usage_window</code> that frames{' '}
-                  <code>usage_count</code>.
+                  One §5.1 <code>sources[]</code> entry, and the <code>usage_window</code> that frames{' '}
+                  <code>usage_count</code> — shared as a sibling of <code>sources</code>, or carried by a single
+                  entry as its own override. The override replaces the shared window whole, so read it through{' '}
+                  <code>Frontmatter.EffectiveUsageWindow</code>.
                 </>,
               ],
               [
-                'Provenance.ToYaml(IEnumerable&lt;Source&gt;) → YamlSequence',
+                'Provenance.ToYaml(IEnumerable<Source>) → YamlSequence',
                 <>
                   The serialize direction of <code>Frontmatter.Sources</code>' parse — for a producer building{' '}
                   <code>sources</code> from scratch rather than editing an existing document.
@@ -269,8 +279,11 @@ export default function Library() {
               [
                 'Lifecycle(Status, StatusIsKnown, StaleAfterRaw, StaleAfter) · ConceptStatus',
                 <>
-                  §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>; <code>IsStale(DateOnly)</code> is{' '}
-                  <code>today &gt;= stale_after</code>.
+                  §5.4/§5.5. Absent <code>status</code> ⇒ <code>Stable</code>;{' '}
+                  <code>IsStale(DateTimeOffset)</code> is <code>now &gt;= stale_after</code>. §5 makes{' '}
+                  <code>stale_after</code> an absolute instant, so <code>StaleAfter</code> is a{' '}
+                  <code>DateTimeOffset?</code>; the legacy date-only form is still read, normalized to
+                  midnight UTC and flagged by <code>StaleAfterIsLegacyDate</code>.
                 </>,
               ],
               [
@@ -278,15 +291,20 @@ export default function Library() {
                 <>
                   A consumer's policy for stale concepts: <code>Use</code> (admit everything, the default),{' '}
                   <code>Strict</code> (exclude), <code>Tolerate(graceDays)</code>.{' '}
-                  <code>Admits(Lifecycle, DateOnly)</code> is the one method both <code>Agents</code> and{' '}
+                  <code>Admits(Lifecycle, DateTimeOffset)</code> is the one method both <code>Agents</code> and{' '}
                   <code>Catalog</code> call.
                 </>,
               ],
               [
                 'IOkfClock · SystemClock · FixedClock',
                 <>
-                  <code>DateOnly Today</code>, injected wherever "now" matters — <code>SystemClock</code> for real
-                  time, <code>FixedClock(DateOnly)</code> to pin it. Every API taking a clock (
+                  <code>DateTimeOffset Now</code> and <code>DateOnly Today</code>, injected wherever "now" matters.
+                  Staleness compares <code>Now</code> (§5 makes <code>stale_after</code> an instant);{' '}
+                  <code>Today</code> is for display, such as an audit report's stamp. <code>Now</code> is a default
+                  interface member derived from <code>Today</code>, so a clock written before it existed still
+                  compiles. <code>SystemClock</code> for real time, <code>FixedClock</code> to pin it — it takes
+                  either a <code>DateTimeOffset</code> or a <code>DateOnly</code> (which pins midnight UTC). Every
+                  API taking a clock (
                   <code>BundleValidator.Validate</code>, <code>ConceptAudit.Run</code>) exists so staleness (§5.5)
                   can be made reproducible, in your own code as much as in ours.
                 </>,

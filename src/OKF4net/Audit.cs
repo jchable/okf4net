@@ -14,7 +14,7 @@ namespace OKF4net;
 /// not use an <see cref="AuditQuery"/> as a dictionary key: the record struct is
 /// for <c>with</c> and <c>ToString</c>, not for its equality.
 /// </remarks>
-/// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> date.</param>
+/// <param name="StaleOnly">Keep only concepts past their <c>stale_after</c> instant.</param>
 /// <param name="Trust">Keep only concepts whose derived tier is in this set; null keeps every tier.</param>
 /// <param name="Status">Keep only concepts with this lifecycle status; null keeps every status.</param>
 /// <param name="Type">
@@ -48,7 +48,13 @@ public readonly record struct AuditQuery(
 /// <param name="Title">The frontmatter <c>title</c>, or null when absent.</param>
 /// <param name="Trust">The derived trust tier (§5.3).</param>
 /// <param name="Lifecycle">The lifecycle fields (§5.4/§5.5).</param>
-/// <param name="IsStale">Whether the concept is stale as of the report's <see cref="AuditReport.AsOf"/>.</param>
+/// <param name="IsStale">
+/// Whether the concept is stale at the instant the report was run (§5.5:
+/// <c>now &gt;= stale_after</c>). Not derived from <see cref="AuditReport.AsOf"/>,
+/// which is that instant's date only: two concepts under one <c>AsOf</c> can
+/// differ here, because a <c>stale_after</c> falling later the same day is still
+/// in the future.
+/// </param>
 public readonly record struct AuditFinding(
     ConceptId Id,
     string Path,
@@ -81,7 +87,11 @@ public sealed class AuditReport
         Findings = findings;
     }
 
-    /// <summary>The observation date staleness was evaluated against.</summary>
+    /// <summary>
+    /// The UTC date of the instant the report was run at -- a display stamp,
+    /// not the comparison input: staleness itself is evaluated against that
+    /// instant, see <see cref="AuditFinding.IsStale"/>.
+    /// </summary>
     public DateOnly AsOf { get; }
 
     /// <summary>The number of concepts in the bundle (not in the selection).</summary>
@@ -206,9 +216,14 @@ public static class AuditVocabulary
     /// literals outside this method.
     /// </summary>
     /// <param name="lifecycle">The concept's lifecycle fields.</param>
-    /// <param name="isStale">Whether the concept is stale as of the report's <c>AsOf</c> date.</param>
+    /// <param name="isStale">
+    /// Whether the concept is stale at the instant the report was run -- an
+    /// instant comparison, not a comparison against the report's <c>AsOf</c>
+    /// date. Pass <see cref="AuditFinding.IsStale"/> through rather than
+    /// recomputing it.
+    /// </param>
     public static string Freshness(Lifecycle lifecycle, bool isStale) =>
-        lifecycle.StaleAfter is { } date
+        lifecycle.StaleAfterDate is { } date
             ? (isStale ? "stale " : "fresh ") + date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
             : "no-stale-after";
 }
@@ -224,10 +239,17 @@ public static class ConceptAudit
     /// <summary>Runs <paramref name="query"/> over <paramref name="bundle"/>.</summary>
     /// <param name="bundle">The loaded bundle.</param>
     /// <param name="query">The selection predicates; <c>default</c> selects everything.</param>
-    /// <param name="clock">Supplies "today" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
+    /// <param name="clock">Supplies "now" for staleness (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static AuditReport Run(Bundle bundle, AuditQuery query = default, IOkfClock? clock = null)
     {
-        var asOf = (clock ?? new SystemClock()).Today;
+        // Staleness is an instant comparison (§5/§5.5); AsOf stays a date
+        // because it is the report's display stamp, not the comparison input.
+        // Both come from ONE read of the clock: reading Now and Today
+        // separately lets a run that crosses UTC midnight evaluate staleness
+        // at one date and report another, and lets an inconsistent custom
+        // clock disagree with itself.
+        var now = (clock ?? new SystemClock()).Now;
+        var asOf = DateOnly.FromDateTime(now.UtcDateTime);
 
         // Seeded from the vocabulary rather than from a hand-written list of
         // members: a tier or status added to the enum without a matching line
@@ -245,7 +267,7 @@ public static class ConceptAudit
             var frontmatter = concept.Document.Frontmatter;
             var tier = frontmatter.TrustTier;
             var lifecycle = frontmatter.Lifecycle;
-            var isStale = lifecycle.IsStale(asOf);
+            var isStale = lifecycle.IsStale(now);
 
             trustCounts[tier]++;
             statusCounts[lifecycle.Status]++;

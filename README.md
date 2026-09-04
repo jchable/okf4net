@@ -185,6 +185,11 @@ okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes
 okf render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle
 ```
 
+Every verb takes `-h`/`--help` for its own usage and option list. Arguments are
+validated per verb: an option that verb does not define, or a surplus
+positional, is an error rather than silently ignored — so a typo'd flag never
+runs the command with different behaviour than you asked for.
+
 `okf validate` exits non-zero when a bundle is not conformant, so it drops
 straight into CI:
 
@@ -207,7 +212,8 @@ summary form; with any filter flag it prints one line per matching concept, so
 the output pipes. `--json` always emits the full document.
 
 `--as-of <YYYY-MM-DD>` pins the date staleness is evaluated against, on both
-`okf audit` and `okf validate`. Without it, anything touching `stale_after`
+`okf audit` and `okf validate`; it pins to midnight UTC on that date, since §5
+makes `stale_after` an instant. Without it, anything touching `stale_after`
 (§5.5) depends on the day it runs — including `okf validate`'s
 `concept is stale` warning, which is why a CI job that wants a reproducible
 verdict should pin the date rather than let the calendar move under it. Note the counts
@@ -248,7 +254,9 @@ using OKF4net.Agents;
 IChatClient chatClient = /* your IChatClient, e.g. from an OpenAI/Azure client */;
 var tools = new OkfBundleTools("./my_bundle");
 
-AIAgent agent = chatClient.AsAIAgent(tools: tools.GetTools());
+// The write tools need the host's approval before they run. `GetTools()` with
+// no argument returns them ungated — see the security note below.
+AIAgent agent = chatClient.AsAIAgent(tools: tools.GetTools(OkfToolMode.RequireApprovalForWrites));
 var response = await agent.RunAsync("Search the bundle for concepts about refunds.");
 Console.WriteLine(response.Text);
 ```
@@ -276,11 +284,30 @@ append → regenerate → validate → changes-since → get-computation → run
 is untrusted — it comes from files on disk that may have been written by
 another agent or a human contributor — and is never injected into the
 conversation with a `system` role; it only ever reaches the model as tool
-output. The three write-capable tools (`okf_write_concept`, `okf_append_log`
-and `okf_regenerate_indexes`)
-rely entirely on the Agent Framework's own tool-approval mechanism to gate
-execution — `OkfBundleTools` performs no additional confirmation step of its
-own.
+output.
+
+That matters most for the three write-capable tools (`okf_write_concept`,
+`okf_append_log`, `okf_regenerate_indexes`), because an injection carried in a
+concept body is only dangerous if it can reach a persistent write.
+**`GetTools()` returns them ungated**, and nothing asks on your behalf: the
+Agent Framework's approval mechanism is not active by default, so a plain
+`AIFunction` is invoked directly. Choose how they are exposed:
+
+```csharp
+// The model must not write at all:
+var tools = okf.GetTools(OkfToolMode.ReadOnly);
+
+// Or: every tool, but a write needs the host's approval first.
+var tools = okf.GetTools(OkfToolMode.RequireApprovalForWrites);
+```
+
+`RequireApprovalForWrites` wraps exactly the write tools in
+`ApprovalRequiredAIFunction`; read tools stay ungated, since prompting for
+everything trains a user to click through and is how the one approval that
+mattered gets waved past. `OkfBundleTools.WriteToolNames` is the single source
+of truth for which tools count, so a write tool added later cannot slip past a
+host's own filtering either. The parameterless `GetTools()` keeps its
+historical ungated meaning so existing hosts are not changed under them.
 
 The core `OKF4net` library stays dependency-free (BCL only); only
 `OKF4net.Agents` references `Microsoft.Agents.AI` (see
@@ -309,7 +336,7 @@ var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { Mem
 
 AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
 {
-    ChatOptions = new ChatOptions { Tools = tools.GetTools() },
+    ChatOptions = new ChatOptions { Tools = tools.GetTools(OkfToolMode.RequireApprovalForWrites) },
     AIContextProviders = [provider],
 });
 
@@ -324,6 +351,7 @@ var response = await agent.RunAsync("What do we know about orders?");
 | `MemoryCapture`       | `MemoryCaptureMode.Disabled` | Opt-in: `MemoryCaptureMode.Enabled` captures exchanges as long-term memory concepts in the bundle after each invocation; `Disabled` writes nothing. |
 | `MemoryDirectory`     | `"memory"`                   | Bundle subdirectory holding memory concepts, as a single `ConceptId` segment (no `/`).                                                                   |
 | `MaxConceptsInjected` | `5`                          | Maximum number of scored concepts injected into a single invocation's context.                                                                           |
+| `OnInternalError`     | `null`                       | Host-side sink for exceptions context assembly swallows (a failed bundle load, a failed knowledge/memory read). The model only ever sees a category. |
 
 **Security note:** as with the tools above, bundle content is untrusted.
 `ProvideAIContextAsync` injects the bundle root index plus the top scored
@@ -331,6 +359,15 @@ concepts (progressive disclosure, budget-bounded) as reference **data in a
 message** — it is never written into `AIContext.Instructions`, so a
 prompt-injection payload smuggled into a concept body cannot reach the
 instructions channel.
+
+Information flows the other way too. When context assembly fails, the model is
+told a category (`bundle unavailable: I/O error`), never the exception's own
+message — a .NET filesystem exception carries the absolute path, and an
+exception from a host-plugged runtime can carry a connection string or a query.
+The same applies to `okf_run_computation`: the outcome rendered to the model
+names the failing stage and the exception *type*, while the exception itself
+stays on `AttestationOutcome.Error` for the host. Wire `OnInternalError` to get
+the detail into your own logs.
 
 **Memory design (v1, deterministic):** `StoreAIContextAsync` captures each
 exchange with no LLM call — the last user message and the agent's final
@@ -514,8 +551,9 @@ Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
 { "mcpServers": { "okf": { "command": "okf-mcp", "args": ["/path/to/bundle"] } } }
 ```
 
-See [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for read-only mode
-and the full tool list, or the
+`okf-mcp` serves the bundle **read-only by default**; set `OKF_MCP_WRITABLE=1`
+to register the three write tools as well. See
+[`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for the full tool list, or the
 [MCP setup guide on the site](https://jchable.github.io/okf4net/docs/mcp/).
 
 ## Mapping to the spec

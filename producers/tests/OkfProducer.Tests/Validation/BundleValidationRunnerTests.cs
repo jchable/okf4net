@@ -68,8 +68,12 @@ public class BundleValidationRunnerTests
             var before = new BundleValidationRunner().Validate(bundleRoot, new FixedClock(new DateOnly(2026, 1, 1)));
             var after = new BundleValidationRunner().Validate(bundleRoot, new FixedClock(new DateOnly(2027, 1, 1)));
 
-            Assert.DoesNotContain(before.DiagnosticLines, line => line.Contains("stale", StringComparison.Ordinal));
-            Assert.Contains(after.DiagnosticLines, line => line.Contains("stale", StringComparison.Ordinal));
+            // Matched on the §5.5 message itself, not on the bare word "stale". Since `dev`'s §5
+            // work, a date-only `stale_after` also earns a LegacyDateOnlyTimestamp warning that
+            // quotes the field name, so a substring match on "stale" is satisfied by a diagnostic
+            // that reads no clock at all -- which is exactly the seam this test exists to pin.
+            Assert.DoesNotContain(before.DiagnosticLines, line => line.Contains("concept is stale", StringComparison.Ordinal));
+            Assert.Contains(after.DiagnosticLines, line => line.Contains("concept is stale", StringComparison.Ordinal));
         }
         finally
         {

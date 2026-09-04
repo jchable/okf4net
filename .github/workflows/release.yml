@@ -23,6 +23,20 @@ jobs:
       - name: Derive version from tag
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
+      # The tag drives every artifact's version via -p:Version, while
+      # Directory.Build.props drives local builds and is what the test suite
+      # checks against. A tag that disagrees with it means the release skill's
+      # version bump was missed or mistyped, and every artifact would ship
+      # labelled with a version the repository never recorded. Cheaper to stop
+      # here than to yank a published package.
+      - name: Tag must match Directory.Build.props
+        run: |
+          DECLARED=$(sed -n 's/.*<Version>\([^<]*\)<\/Version>.*/\1/p' Directory.Build.props)
+          if [ "$DECLARED" != "$VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} implies version '$VERSION' but Directory.Build.props declares '$DECLARED'"
+            exit 1
+          fi
+
       - name: Test
         run: dotnet test OKF4net.sln -c Release
 

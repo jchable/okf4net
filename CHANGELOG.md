@@ -20,6 +20,95 @@ and this project adheres to
   they first appear rather than re-sorted by score, so the two orderings compose
   instead of one silently undoing the other. Pass `items.Count` for a full
   reordering when what bounds the list is a budget rather than a slot count.
+- **`OkfBundleTools.GetTools(OkfToolMode)`** — chooses how the three
+  write-capable tools are exposed. `ReadOnly` omits them; `RequireApprovalForWrites`
+  wraps exactly those in `ApprovalRequiredAIFunction` so the Agent Framework
+  asks the host before a mutation; `ReadWrite` is the historical ungated
+  behaviour and remains what the parameterless `GetTools()` means, so no
+  existing host changes under them. Read tools are never wrapped: prompting for
+  everything trains a user to click through, which is how the one approval that
+  mattered gets waved past. `OkfMcpToolset` now filters through `ReadOnly`
+  rather than re-implementing the same rule against `WriteToolNames`.
+- **`OkfBundleTools.RunComputationAsync`** — the cancellable form of
+  `okf_run_computation`, and what `GetTools()` now exposes under that name.
+  `AIFunctionFactory` binds its `CancellationToken` from the invocation and
+  leaves it out of the generated JSON schema, so the model still sees exactly
+  two parameters (pinned by a characterization test, since the design depends
+  on that upstream behaviour and a change would fail silently). The synchronous
+  `RunComputation` is `[Obsolete]` for one version and now delegates.
+- **`OkfBundleTools.ComputationTimeout`** — a wall-clock ceiling on one run,
+  default two minutes, combined with the caller's own token. §10 sets no time
+  limit; this is a host guard, because bind/execute/attest are host-plugged code
+  that may do unbounded I/O. Elapsing is reported to the model as a normal
+  non-displayable outcome rather than thrown at a caller who never asked to
+  stop; `Timeout.InfiniteTimeSpan` disables it. A value the runtime will not
+  accept as a delay — negative, or past its ~49.7-day ceiling — is reported as
+  an `Error:` string as well, since a misconfiguration is exactly when the
+  never-throw contract is worth most.
+- **`OkfContextProviderOptions.OnInternalError`** — an optional
+  `Action<Exception>` sink called with the real exception whenever context
+  assembly swallows one (a failed bundle load, a failed knowledge/memory read).
+  `null` by default, so the never-throw contract is unchanged. This is the
+  counterpart to the error sanitization under *Fixed*: the injected context used
+  to be the only place that detail surfaced at all, so removing it there without
+  a replacement channel would have traded a leak for an undiagnosable failure.
+  The host gets the exception; the model gets the category.
+- **`FixedClock`** — an `IOkfClock` pinned to one instant, alongside `SystemClock`.
+  Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
+  exists to make staleness (§5.5) reproducible; until now each caller wanting
+  that had to write the same four-line type, and three copies of it had
+  accumulated inside this repo alone.
+- **`okf audit`** — a corpus-level query over a bundle's trust (§5.3), lifecycle
+  (§5.4) and staleness (§5.5) signals: counts plus a filterable worklist, with
+  `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by
+  the new `ConceptAudit` in the core library and exposed to agents as the
+  read-only `okf_audit` tool.
+- **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
+  HTML site from a bundle: one page per concept (frontmatter table + rendered
+  body), a generated index, navigable cross-links with broken links flagged,
+  and backlinks. Backed by the new zero-dependency `OKF4net.Viewer` project.
+  Markdown renders client-side via a vendored copy of marked (MIT); raw HTML
+  is neutralized by sanitizing the parsed DOM in `viewer.js` (element
+  allowlist, per-tag attribute allowlist, URL-scheme validation) rather than
+  by patching marked's renderer hooks, which cannot bound the attack surface
+  in general (see `CLAUDE.md`). GFM task list items survive sanitization as
+  real `<input type="checkbox" disabled>` elements with correct checked
+  state, so a screen reader announces them as checkboxes rather than as
+  decorative text. No full-text search yet — that lands with the planned
+  `okf serve` companion.
+- **A `sources[]` entry can now carry its own `usage_window` override
+  (§5.1).** `Provenance.ParseSources` reads a per-entry `usage_window`
+  through the same `ParseUsageWindow` the shared, top-level one already
+  used, `Validate` checks its bounds through the same `CheckTemporal` machinery
+  as the other §5 timestamp keys (reusing `UsageWindowInvalidFrom`/
+  `UsageWindowInvalidTo`, with `Diagnostic.Field` telling the two positions
+  apart — `sources.usage_window.from`/`.to` vs. `usage_window.from`/`.to`; no
+  new `DiagnosticCode`), and the new `Frontmatter.EffectiveUsageWindow(Source)`
+  resolves the two into the one value a consumer actually wants. This closes
+  **S5.1-3**, recorded as "Missing" in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md:204`, where an
+  annotation beside that finding now names the branch that implements it and
+  points to the design doc.
+
+  This was never a data-loss bug: `okf fmt` already round-tripped a per-entry
+  `usage_window` before this change, because `Frontmatter` re-serializes an
+  order-preserving `YamlMapping` and the lossy path, `Provenance.ToYaml`, has
+  exactly one caller — the producer builder — which `fmt` never goes through.
+  The gap was that the library could not *see* the value: no typed access, no
+  §5 validation, no way for a consumer to obtain it. `Source` gains an
+  optional `UsageWindow?` member and `OkfDocumentBuilder.AddSource` a matching
+  optional parameter, so a per-entry override is also writable through the
+  producer builder. The *shared*, top-level `usage_window` — §5.1's normal
+  case — still has no typed builder method and can only be written through
+  `Extension("usage_window", …)`; that gap is tracked in `ROADMAP.md`.
+
+  The override is **whole-object, not per-field**: an entry writing
+  `usage_window: { from: X }` yields a window whose `to` is `null` — it does
+  not inherit the shared sibling's `to`. §5.1 (`SPEC.md:332-334`) says an
+  entry MAY carry its own `usage_window` "to override the shared one" and
+  stops there — a per-field merge would be inventing a rule the spec does not
+  state, so this is a deliberate interpretation on our part, not something
+  the spec itself settles.
 
 ### Changed
 
@@ -48,32 +137,68 @@ and this project adheres to
   `FileMemoryStore` concatenates one ranked list per tier in its read order, so a
   family rotation there would interleave the tiers and override that precedence.
 
-- **`FixedClock`** — an `IOkfClock` pinned to one date, alongside `SystemClock`.
-  Every API taking a clock (`BundleValidator.Validate`, `ConceptAudit.Run`)
-  exists to make staleness (§5.5) reproducible; until now each caller wanting
-  that had to write the same four-line type, and three copies of it had
-  accumulated inside this repo alone.
-- **`okf audit`** — a corpus-level query over a bundle's trust (§5.3), lifecycle
-  (§5.4) and staleness (§5.5) signals: counts plus a filterable worklist, with
-  `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by
-  the new `ConceptAudit` in the core library and exposed to agents as the
-  read-only `okf_audit` tool.
-- **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
-  HTML site from a bundle: one page per concept (frontmatter table + rendered
-  body), a generated index, navigable cross-links with broken links flagged,
-  and backlinks. Backed by the new zero-dependency `OKF4net.Viewer` project.
-  Markdown renders client-side via a vendored copy of marked (MIT); raw HTML
-  is neutralized by sanitizing the parsed DOM in `viewer.js` (element
-  allowlist, per-tag attribute allowlist, URL-scheme validation) rather than
-  by patching marked's renderer hooks, which cannot bound the attack surface
-  in general (see `CLAUDE.md`). GFM task list items survive sanitization as
-  real `<input type="checkbox" disabled>` elements with correct checked
-  state, so a screen reader announces them as checkboxes rather than as
-  decorative text. No full-text search yet — that lands with the planned
-  `okf serve` companion.
+- **Breaking: `okf-mcp` serves a bundle read-only by default.** The three write
+  tools are registered only when `OKF_MCP_WRITABLE=1` is set. Writes used to be
+  the default, which put unconfirmed write access to the corpus behind nothing
+  on the surface most people actually deploy — a desktop client's MCP config —
+  while bundle content is untrusted by design, so an injection carried in a
+  concept body only matters if a write tool is reachable. `OKF_MCP_READONLY=1`
+  is still accepted and still forces read-only; it wins over `OKF_MCP_WRITABLE`
+  when both are set, so an existing configuration keeps working and keeps
+  meaning the same thing. **If you relied on the old default, add
+  `OKF_MCP_WRITABLE=1`.**
 
-### Changed
+- **`okf --version` reports the version the build stamped**, read from
+  `AssemblyInformationalVersionAttribute` instead of a hand-maintained constant
+  in `OkfCli.cs`. `-p:Version` — the property `release.yml` derives from the git
+  tag — never touched that constant, so the tag, the NuGet package and the zip
+  filename could all say one version while the binary inside said another; the
+  winget package for 0.2.0 shipped a binary printing `0.1.0-alpha.1`, caught by
+  a Microsoft moderator rather than by CI. Two guards back it up: `release.yml`
+  refuses a tag that disagrees with `Directory.Build.props`, and CI's Native AOT
+  job runs the published binary's version verb, since an in-process test cannot
+  prove the attribute survives AOT. `Directory.Build.props` is now the only
+  version to bump in code.
 
+- **Breaking (0.x): `Source`'s constructor and `Deconstruct` arity changed.**
+  The `UsageWindow?` member above is appended last with a default, so every
+  in-repo construction site (positional or named) still compiles unchanged —
+  but the shape is not binary-compatible for anything built against the
+  previous six-member `Source`, and it also breaks at **source** level for
+  external code that deconstructs a `Source` positionally (`var (id, resource,
+  title, author, usageCount, lastModified) = source;`) or pattern-matches on
+  its members, since `Deconstruct` now yields seven values. Nothing in this
+  repository does either. Consistent with this release's other 0.x breaks (see
+  `Lifecycle.StaleAfter` below).
+
+- **Breaking (0.x): staleness is compared on instants, not dates.**
+  `Lifecycle.StaleAfter` is now a `DateTimeOffset?` rather than a `DateOnly?`,
+  and `Lifecycle.IsStale` / `StalePolicy.Admits` take a `DateTimeOffset` — the
+  `DateOnly` overloads are **not** kept. Two comparison semantics for one
+  question is a footgun: a `DateOnly` caller silently gets midnight-UTC
+  semantics and can read a concept as fresh for up to ~24h after it went stale.
+  Callers thread a `DateTimeOffset` (typically `IOkfClock.Now`); code that
+  rendered `StaleAfter` as a date uses the new `Lifecycle.StaleAfterDate`.
+  `AuditReport.AsOf` stays a `DateOnly` — it is the report's display stamp, not
+  the comparison input — so `okf audit --json` is unaffected. The mirror
+  consequence applies to `StaleMode.Tolerate`, which measures grace from the
+  parsed instant: a date-only `stale_after` now anchors that grace at midnight
+  UTC, so `Tolerate(n)` admits the concept for up to ~24h less than the previous
+  day-granular comparison did (`Tolerate(1)` on `stale_after: 2026-01-01` now
+  ends at `2026-01-02T00:00:00Z`, where it used to cover all of 2026-01-02).
+- `IOkfClock` gains `Now` (a `DateTimeOffset`) as a **default interface member**
+  derived from `Today`, so existing implementers that define only `Today` keep
+  compiling and working. `FixedClock` gains a `DateTimeOffset` constructor
+  beside the `DateOnly` one; note that a target-typed `new FixedClock(new(y, m,
+  d))` is now ambiguous and must name the type (`new DateOnly(y, m, d)`).
+- **`Lifecycle`'s rewritten parser widened only where §5 required it.** Teaching
+  `stale_after` to read instants (see *Fixed* below) meant choosing what the new
+  zoneless fallback would accept. It reads an explicit ISO format list rather
+  than `DateTime.TryParse`, which *would* have started accepting `01/02/2026` or
+  a bare year — values the previous `DateOnly.TryParseExact` parser already
+  reported as malformed and which stay malformed. Recorded because widening
+  "malformed" into "legacy, assumed UTC" was the silent, easy way to write that
+  rewrite, and this notes it was not taken; nothing regressed here.
 - **`ConceptId.FromPath`'s "not under bundle root" error now names the root, and
   quotes both paths.** It previously reported only the offending path, leaving a
   caller deriving ids against several bundles to guess which root rejected it.
@@ -130,6 +255,150 @@ and this project adheres to
   `packaging/winget/README.md`.
 
 ### Fixed
+
+- **Cancelling an attested computation now stops it, whatever the host stage
+  does.** The orchestrator handed its token to each stage and trusted them to
+  observe it; a stage that ignores its token — any client predating cancellation
+  support — meant an already-cancelled run executed every stage and could return
+  a *displayable* success, so a §10 computation ran against a live system after
+  the caller had withdrawn. The token is now checked at each step boundary. A
+  caller's cancellation is also recognised when it arrives wrapped in an
+  `AggregateException` (what `.Result`/`.Wait()` on a cancelled task produces at
+  a plugin boundary) and is re-raised as an `OperationCanceledException`, so it
+  reaches the caller in the shape they catch.
+- **`OkfContextProvider` also honours cancellation between injected concepts.**
+  The V1 guard shipped only before the bundle walk, because no seam existed to
+  drive a cancellation once the loop had started; the loop reads one concept off
+  disk per iteration, so a caller that withdrew part-way still paid for the rest.
+- **Cancelling an attested computation works.** Two defects compounded. The
+  orchestrator caught every stage's exception with a bare `catch (Exception)`,
+  so an `OperationCanceledException` from a host-plugged binder/executor/attester
+  was converted into a business outcome — `RunAsync(ct)` with a cancelled token
+  returned a normal-looking result, and a caller could not tell "the stage
+  failed" from "I asked it to stop". Errors-as-data is the contract for
+  failures; a cancellation is not one, and now propagates. And
+  `okf_run_computation` blocked its thread with `.GetAwaiter().GetResult()`
+  while passing **no** token at all, so a slow or wedged executor pinned an
+  Agent Framework worker indefinitely.
+
+- **Raw exception messages no longer cross into the model's context.** Three
+  places rendered a .NET exception's own message to the LLM: the context
+  provider's `bundle unavailable: {ex.Message}`, `okf_run_computation`'s
+  `Error: {outcome.Error.Message}`, and the orchestrator's own
+  `executor threw: {e.Message}` reason string, which the tool then rendered
+  too. A filesystem exception's message carries the absolute path; an exception
+  from a host-plugged attestation runtime can carry a connection string, a
+  query, or the row it choked on. All three now name a category or the
+  exception *type*. Nothing is lost to the host — the exception object is still
+  on `AttestationOutcome.Error` — and `AttestationOutcome.Reasons` is now safe
+  to render into an agent's context, which is what it is for.
+- **The scoped (V2) context path no longer swallows read failures in total
+  silence.** Its knowledge and memory reads degrade to empty by design, but the
+  bare `catch (Exception) { }` left the host with nothing to diagnose from.
+
+- **The CLI validates each verb's arguments instead of silently ignoring what it
+  does not understand.** Any `-`-prefixed token was kept as a valueless flag and
+  every positional after the first was dropped, so `okf validate b --jsonn`
+  printed the human report and exited 0, and `okf info b extra` ignored `extra`
+  — a typo ran the command with different behaviour than asked for, with no
+  signal. Each verb now declares the options it accepts; anything else is
+  `error: unknown option: <flag>` and a surplus positional is
+  `error: unexpected argument: <token>`, both exit 1. The allowlist is per-verb,
+  so `okf validate b --dot` is rejected rather than quietly ignored.
+- **`-h`/`--help` works on every verb.** Each command body opens by demanding
+  its positional, so `okf validate --help` answered `error: missing <bundle>`
+  and exited 1 — the one question a user asks when they do not know what that
+  argument is. Help is now answered before dispatch and prints that verb's own
+  usage line, summary and options.
+- **A token after `--` is a positional like any other.** The separator used to
+  let the first token after it override an earlier positional and swallow the
+  rest, so `okf audit -- b --json` resolved `b` and discarded `--json` in
+  silence. The separator's contract is unchanged — nothing after it is ever a
+  flag, so a path starting with `-` still works and `okf fmt -- f -w` still
+  never writes — but the leftovers are now named rather than dropped.
+
+- **`okf index` no longer reports success for a bundle root that does not
+  exist.** Every other bundle verb (`validate`/`info`/`graph`/`render`) routes
+  through `Bundle.Load`, which rejects a non-directory root; `index` hands its
+  path straight to `IndexGenerator.RegenerateIndexes`, whose documented contract
+  is to return an empty list rather than throw. The CLI rendered that as
+  `no index files written (empty bundle?)` and **exited 0**, so a typo'd path
+  looked like an empty bundle. `index` now runs the same guard and exits 1 with
+  the same message the other verbs produce.
+- **`OkfContextProvider` no longer ignores its `CancellationToken` on the V1
+  path.** The token was forwarded to the scoped (V2) path and then never
+  consulted again: with no resolver and memory store wired, the provider walked
+  the whole bundle off disk and ran the injection loop regardless, so a caller
+  that had already cancelled still paid for a full context assembly.
+- **Captured memory concepts carry a `generated` stamp, not a legacy
+  `timestamp`.** Both capture paths wrote the §13.1 `timestamp` field, so every
+  memory concept the provider created tripped `BundleValidator`'s
+  `LegacyTimestamp` warning the moment the memory bundle was validated — the
+  provider is a producer, and since the v0.2 bump provenance is the §5.2
+  `generated` stamp. Note this could not have been fixed by enabling
+  `BundleConceptWriter.AutoStampGenerated`: both paths write through
+  `AppendToConceptAtomic`, which never runs the auto-stamp.
+- **`stale_after` now reads the spec-conformant timestamp form.** OKF v0.2 §5
+  requires every timestamp-valued key to be an ISO 8601 datetime with an
+  explicit UTC offset (`2026-06-30T14:00:00Z`). `Lifecycle` previously parsed
+  `stale_after` only as a bare `YYYY-MM-DD`, so a conformant value was reported
+  as malformed and **staleness was never computed for it** — a concept past its
+  expiry silently read as fresh, in `okf audit`, `okf validate`, the agent
+  tools, the catalog resolvers and §10.6's attestation gate alike. The legacy
+  date-only form is still accepted and now raises a `LegacyDateOnlyTimestamp`
+  warning, matching how the §13.1 legacy fields are handled. The same warning
+  covers `generated.at` and `verified[].at`. A datetime with no offset is read
+  as UTC and flagged the same way.
+- **`sources[].last_modified` and `usage_window.from`/`.to` no longer reject the
+  conformant form.** §5.1 makes `last_modified` a timestamp-valued key and
+  `usage_window` a "`{ from, to }` datetime range", so §5's rule covers all
+  three — but they were checked against `YYYY-MM-DD`, so a spec-conformant
+  `2026-06-30T14:00:00Z` was reported *invalid*. This is the mirror of the
+  `stale_after` bug and the more damaging half: rather than missing a signal, it
+  told producers their correct data was wrong and pushed them toward the legacy
+  form. All three now accept the §5 form silently, warn
+  `LegacyDateOnlyTimestamp` on the date-only one, and keep their existing
+  `SourceInvalidLastModified` / `UsageWindowInvalid*` codes for values that are
+  not timestamps at all. §9 `log.md` date headings are **unchanged** — §9 pins
+  those to bare `YYYY-MM-DD`, and `ChangeLog.IsIsoDate` still backs them.
+- **A §5 timestamp that carries an explicit UTC offset but is not spelled ISO
+  8601 now warns.** Once the two fixes above routed all six §5 keys through
+  the shared `OkfTimestamp` parser, the conformance decision was made by a
+  permissive `DateTimeOffset.TryParse`: `2026-6-3T14:00:00Z` (unpadded
+  month/day), a lowercase `z` designator, and a basic-format offset (`+0200`
+  instead of `+02:00`) all parsed successfully and passed with no diagnostic
+  at all, across `generated.at`, `verified[].at`, `sources[].last_modified`,
+  `usage_window.from`/`.to` and `stale_after`. The grammar is now checked
+  against the exact spelling ISO 8601 requires — fixed component widths, an
+  uppercase `Z`, no mixing of basic and extended offset forms, and no negative
+  zero offset (`-00:00` and `-00` are RFC 3339 spellings that ISO 8601 forbids,
+  and the spec cites no RFC; `Z` and `+00:00` are the conformant ones) —
+  verified against every timestamp literal `docs/spec/SPEC.md` itself writes, so
+  it cannot reject a spelling the spec uses. Still read as the parsed instant
+  either way (§11); only the spelling now raises a new `NonIso8601Timestamp`
+  warning. `stale_after` now shares the same `CheckTemporal` check as the
+  other five keys rather than a separate path, so a spelling cannot be
+  conformant in one field and not another.
+- **A value that is not a timestamp at all is no longer told it is "not an
+  ISO-8601 datetime".** That claim is false of a whole class of value: the
+  readability gate is `DateTimeOffset.TryParse`, which cannot read several
+  genuine ISO 8601 datetimes carrying an explicit UTC offset — the wholly-basic
+  `20200630T140000Z`, a leap second (`…T23:59:60Z`), a week date
+  (`2026-W27-1T…`), an ordinal date (`2026-181T…`). They are not
+  read (so they are never evaluated for staleness), and the diagnostic now says
+  only that: `<label> could not be read as a timestamp: "<value>"`. The
+  `DiagnosticCode` for each field is unchanged, so `--json` consumers matching
+  on `code` are unaffected; only the rendered message moved, and no golden
+  captured it.
+- **The `okf_audit` tool told the model `stale_after` was a date.** Its `stale`
+  parameter carries two descriptions: an XML doc comment, which never leaves the
+  IDE, and a `[Description]` attribute, which is the text handed to the model in
+  the function-tool schema. The instant-semantics work above corrected the first
+  and left the second, so the only description that ships was also the wrong
+  one. No behaviour changed — the filter was already instant-based — but an
+  agent driving `okf_audit` kept a date-grained model of it, wrong exactly at
+  the boundary this work exists to pin: a `stale_after` falling later the same
+  day is not yet stale.
 
 - The CLI's `--version` is now checked against `<Version>` in
   `Directory.Build.props` by a test. The two are maintained separately and had
