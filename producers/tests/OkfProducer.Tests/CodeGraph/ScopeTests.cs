@@ -221,4 +221,37 @@ public class ScopeTests : IDisposable
         var package = new PackageManifest("nuget", csprojRelativePath, projectName, null);
         return new RepositorySnapshot(repoPath, "test-repo", [package], []);
     }
+
+    [Fact]
+    public void An_unreadable_project_file_leaves_the_run_going_instead_of_ending_it()
+    {
+        // ReferencesTestSdk is reached from CodeGraphBuilder.Build's per-file loop, whose body is
+        // deliberately NOT wrapped -- so an exception escaping this call does not skip one file, it
+        // ends the whole repository's run. UnauthorizedAccessException is the reachable case (an ACL
+        // that denies read on a .csproj), and it cannot be provoked on a real file without an
+        // elevation this suite does not have: that is why the read is a seam and this reader is a
+        // double rather than a chmod.
+        var snapshot = SnapshotWithTestProject(projectDirectory: "integration/OKF4net.Verify");
+
+        var eligible = FileEligibility.IsEligible(
+            "integration/OKF4net.Verify/AuditTests.cs", snapshot, ScopeOptions.Default, new DenyingReader());
+
+        // Unreadable means "not demonstrably owned by a test project", so the file stays in scope.
+        // That direction is deliberate: the alternative -- treating an unreadable .csproj as a test
+        // project -- would silently drop real source on a permissions accident.
+        Assert.True(eligible);
+    }
+
+    /// <summary>
+    /// Reports every path as present and then refuses to open it: the shape of an ACL that grants
+    /// metadata and denies read. Remove the matching <c>catch</c> from
+    /// <c>FileEligibility.ReferencesTestSdk</c> and the test above throws instead of failing, which is
+    /// exactly the production behaviour it exists to forbid.
+    /// </summary>
+    private sealed class DenyingReader : IFileSystemReader
+    {
+        public long? TryGetLength(string absolutePath) => 1;
+
+        public Stream OpenRead(string absolutePath) => throw new UnauthorizedAccessException(absolutePath);
+    }
 }

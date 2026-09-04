@@ -158,22 +158,39 @@ public class HostileInputTests : IDisposable
     [Fact]
     public void The_size_check_never_loads_an_oversized_file_into_memory()
     {
-        // The file's declared length alone must decide SkippedTooLarge -- the extractor is never
-        // given a chance to read its bytes at all.
-        //
-        // The bytes are INVALID UTF-8 on purpose, and that is the whole point of the fixture. With
-        // content that decodes cleanly, this test asserts nothing an implementation could fail:
-        // checking the length first and reading first both end at SkippedTooLarge, so the ordering
-        // the test is named for is invisible to it. Undecodable bytes separate the two -- length
-        // first still yields SkippedTooLarge, while a regression that reads before it measures
-        // yields SkippedEncoding, because the decode throws before the size is ever consulted.
+        // The claim is about an operation that does NOT happen, so no FileStatus can carry it:
+        // rejecting on the declared length and reading first then rejecting both end at
+        // SkippedTooLarge. Before the reader seam existed this test asserted only that status, and
+        // MEASURED green with `File.ReadAllBytes` hoisted above the length check -- it named an
+        // ordering it could not see. The recording reader is what turns the claim into an assertion.
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "big.cs");
-        File.WriteAllBytes(path, [0x6E, 0x73, 0xFF, 0xFE, 0x00, 0x41]);
+        var path = tmp.Write("big.cs", "namespace N;\npublic class T {}");
+        var reader = new RecordingReader();
+        using var extractor = new TreeSitterExtractor(reader);
 
-        var result = Extract(path, ExtractionLimits.Default with { MaxFileBytes = 1 });
+        var result = extractor.Extract(
+            "big.cs", path, CSharpProfile.Instance, ExtractionLimits.Default with { MaxFileBytes = 1 });
 
         Assert.Equal(FileStatus.SkippedTooLarge, result.Status);
+        Assert.False(reader.Opened);
+    }
+
+    /// <summary>
+    /// An <see cref="IFileSystemReader"/> over the real filesystem that records whether the bytes were
+    /// ever opened. Length still comes from disk, so the size decision under test is the production
+    /// one.
+    /// </summary>
+    private sealed class RecordingReader : IFileSystemReader
+    {
+        public bool Opened { get; private set; }
+
+        public long? TryGetLength(string absolutePath) => SystemFileReader.Instance.TryGetLength(absolutePath);
+
+        public Stream OpenRead(string absolutePath)
+        {
+            Opened = true;
+            return SystemFileReader.Instance.OpenRead(absolutePath);
+        }
     }
 
     [Fact]

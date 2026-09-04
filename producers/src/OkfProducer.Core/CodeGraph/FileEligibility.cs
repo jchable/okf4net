@@ -33,7 +33,7 @@ public static class FileEligibility
     /// -- the same treatment <see cref="CodeGraphBuilder.Build"/> already gives a file matching no
     /// <see cref="LanguageProfile"/>.
     /// </summary>
-    public static bool IsEligible(string relativePath, RepositorySnapshot snapshot, ScopeOptions scope)
+    public static bool IsEligible(string relativePath, RepositorySnapshot snapshot, ScopeOptions scope, IFileSystemReader? reader = null)
     {
         var directorySegments = DirectorySegments(relativePath);
 
@@ -58,7 +58,7 @@ public static class FileEligibility
             }
         }
 
-        return !IsOwnedByTestProject(relativePath, snapshot);
+        return !IsOwnedByTestProject(relativePath, snapshot, reader ?? SystemFileReader.Instance);
     }
 
     /// <summary>
@@ -104,7 +104,7 @@ public static class FileEligibility
     /// resolved path back off disk, rather than adding raw project data to
     /// <see cref="RepositorySnapshot"/>, keeps that record's shape unchanged for every other consumer.
     /// </summary>
-    private static bool IsOwnedByTestProject(string relativePath, RepositorySnapshot snapshot)
+    private static bool IsOwnedByTestProject(string relativePath, RepositorySnapshot snapshot, IFileSystemReader reader)
     {
         var fileDirectory = DirectorySegments(relativePath);
 
@@ -134,7 +134,7 @@ public static class FileEligibility
         }
 
         var absoluteCsprojPath = Path.Combine(snapshot.RepoPath, bestProjectPath.Replace('/', Path.DirectorySeparatorChar));
-        return ReferencesTestSdk(absoluteCsprojPath);
+        return ReferencesTestSdk(absoluteCsprojPath, reader);
     }
 
     // Ordinal, not OrdinalIgnoreCase: every other path comparison in this codebase (§6.2's "never a
@@ -159,16 +159,17 @@ public static class FileEligibility
         return true;
     }
 
-    private static bool ReferencesTestSdk(string absoluteCsprojPath)
+    private static bool ReferencesTestSdk(string absoluteCsprojPath, IFileSystemReader reader)
     {
-        if (!File.Exists(absoluteCsprojPath))
+        if (reader.TryGetLength(absoluteCsprojPath) is null)
         {
             return false;
         }
 
         try
         {
-            var xml = XDocument.Load(absoluteCsprojPath);
+            using var stream = reader.OpenRead(absoluteCsprojPath);
+            var xml = XDocument.Load(stream);
             return (xml.Root?.Descendants().Where(e => e.Name.LocalName == "PackageReference") ?? [])
                 .Any(e => string.Equals((string?)e.Attribute("Include"), TestSdkPackageId, StringComparison.OrdinalIgnoreCase));
         }

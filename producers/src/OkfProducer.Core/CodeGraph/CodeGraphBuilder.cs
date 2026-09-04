@@ -11,7 +11,7 @@ namespace OkfProducer.Core.CodeGraph;
 /// site's relative path and offset), so a missing or non-owning resolver degrades precision, never
 /// the shape of the output (§2.1).
 /// </summary>
-public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList<LanguageProfile> profiles, IReadOnlyList<ISymbolResolver> resolvers)
+public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList<LanguageProfile> profiles, IReadOnlyList<ISymbolResolver> resolvers, IFileSystemReader? reader = null)
 {
     /// <summary>
     /// Extracts every eligible file in <paramref name="snapshot"/>'s repository, concatenates and
@@ -126,7 +126,7 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
                 continue;
             }
 
-            if (!FileEligibility.IsEligible(relativePath, snapshot, scope))
+            if (!FileEligibility.IsEligible(relativePath, snapshot, scope, reader))
             {
                 continue;
             }

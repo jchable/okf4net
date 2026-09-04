@@ -24,6 +24,32 @@ namespace OkfProducer.CodeGraph.TreeSitter;
 /// </remarks>
 public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 {
+    private readonly IFileSystemReader _reader;
+
+    /// <summary>
+    /// Reads <paramref name="stream"/> to its end, pre-sized from the length already measured so the
+    /// common case allocates once. <paramref name="expectedLength"/> is a hint and never a bound: the
+    /// bound is <see cref="ExtractionLimits.MaxFileBytes"/>, checked before this is reached.
+    /// </summary>
+    private static byte[] ReadFully(Stream stream, long expectedLength)
+    {
+        using var buffer = new MemoryStream(expectedLength is > 0 and <= int.MaxValue ? (int)expectedLength : 0);
+        stream.CopyTo(buffer);
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Creates an extractor reading through <paramref name="reader"/>, or the real filesystem when it
+    /// is <see langword="null"/>.
+    ///
+    /// <para>The seam exists so a test can observe WHETHER a file was read, which no
+    /// <see cref="FileStatus"/> can report: the guarantee that a file's declared length alone decides
+    /// <see cref="FileStatus.SkippedTooLarge"/> is about an operation that did not happen, and only a
+    /// collaborator can witness that. Reparse-point detection is NOT routed through it -- see
+    /// <c>TryReadSource</c>.</para>
+    /// </summary>
+    public TreeSitterExtractor(IFileSystemReader? reader = null) => _reader = reader ?? SystemFileReader.Instance;
+
     private const string CommentNodeType = "comment";
     private const string FileScopedNamespaceNodeType = "file_scoped_namespace_declaration";
     private const string NamespaceDeclarationNodeType = "namespace_declaration";
@@ -590,30 +616,38 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// <paramref name="source"/> to the decoded text when every guard passes; otherwise returns the
     /// <see cref="FileStatus"/> to report and sets <paramref name="source"/> to <see cref="string.Empty"/>.
     /// </summary>
-    private static FileStatus? TryReadSource(string relativePath, string absolutePath, ExtractionLimits limits, out string source)
+    private FileStatus? TryReadSource(string relativePath, string absolutePath, ExtractionLimits limits, out string source)
     {
         source = string.Empty;
 
         byte[] bytes;
         try
         {
+            // The link check stays on the real FileInfo and is deliberately NOT behind the reader
+            // seam. It is a containment decision, and a seam able to answer it is a seam able to
+            // waive it -- a test double could then let a symlink through a check whose whole purpose
+            // is that nothing does.
             var fileInfo = new FileInfo(absolutePath);
             if (fileInfo.LinkTarget is not null || IsUnderReparsePoint(absolutePath, relativePath))
             {
                 return FileStatus.SkippedSymlink;
             }
 
-            if (!fileInfo.Exists)
+            // Length BEFORE any read, and the seam is what lets a test say so: a status cannot
+            // distinguish "rejected on its declared length" from "read, then rejected", and those are
+            // the same outcome for a caller and a very different one for memory.
+            if (_reader.TryGetLength(absolutePath) is not { } length)
             {
                 return FileStatus.SkippedUnreadable;
             }
 
-            if (fileInfo.Length > limits.MaxFileBytes)
+            if (length > limits.MaxFileBytes)
             {
                 return FileStatus.SkippedTooLarge;
             }
 
-            bytes = File.ReadAllBytes(absolutePath);
+            using var stream = _reader.OpenRead(absolutePath);
+            bytes = ReadFully(stream, length);
         }
         catch (IOException)
         {
