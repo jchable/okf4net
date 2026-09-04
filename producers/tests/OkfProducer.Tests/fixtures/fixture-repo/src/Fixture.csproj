@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Fixture</PackageId>
+    <Description>The one package of the producer's fixture repository.</Description>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>

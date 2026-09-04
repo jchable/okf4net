@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      5.3.0 is not "the latest"; it is the version whose LanguageVersionFacts knows LangVersion 14,
+      the value this repository's own Directory.Build.props sets. The spike measured
+      Microsoft.CodeAnalysis.CSharp 4.14.0 FAILING LanguageVersionFacts.TryParse("14", ...) and
+      silently falling back to LanguageVersion.Preview, which changes parse semantics without saying
+      so. CompilationFactory now throws rather than degrade that way, so this pin is what keeps the
+      throw from firing on ordinary C# 14 source. It matches the compiler the local SDK ships
+      (10.0.204 -> Roslyn 5.3.0-2), which is the only version guaranteed to accept every LangVersion
+      that SDK's MSBuild will report. Bumping the SDK past a language-version boundary means bumping
+      this too; CompilationFactory's exception message says exactly that when it happens.
+
+      Deliberately absent: Microsoft.CodeAnalysis.Workspaces.MSBuild. Avoiding it, and driving the
+      compilation from `dotnet msbuild`'s own item/property query output instead, is the point of
+      this project (design 7.2, proven by producers/spikes/RoslynCompilationSpike at 0 errors on three
+      real projects). Also deliberately absent: any reference to OkfProducer.CodeGraph.TreeSitter,
+      whose native grammars weigh ~590 MB; the offset conversion both extractors share lives in
+      OkfProducer.Core instead.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OkfProducer.Core\OkfProducer.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    So MsBuildProjectQuery.ReadInputs can be tested without spawning `dotnet msbuild`. Every branch
+    that handles a malformed MSBuild answer is unreachable from a real msbuild, which is precisely why
+    an InvalidOperationException escaping from one of them went unnoticed long enough to be able to
+    abort a whole run. An internal seam, not a public one: nothing outside this assembly should be
+    reading MSBuild JSON.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="OkfProducer.Tests" />
+  </ItemGroup>
+
+</Project>

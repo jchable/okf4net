@@ -18,8 +18,31 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!--
+    fixtures/ holds a fixture REPOSITORY of real .cs files and a real .csproj (see
+    fixtures/README.md). Without these removals MSBuild's default globs would compile
+    fixtures/repo/src/*.cs into this test assembly - the fixture's `Scanner`, `Registry` and
+    `Formatter` would become live types here, and an edit to the fixture source could break the
+    build of the very suite that reads it as data. They are inputs to a test, never code of it.
+  -->
+  <ItemGroup>
+    <Compile Remove="fixtures/**" />
+    <EmbeddedResource Remove="fixtures/**" />
+    <None Remove="fixtures/**" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\OkfProducer.Core\OkfProducer.Core.csproj" />
+    <ProjectReference Include="..\..\src\OkfProducer.CodeGraph.TreeSitter\OkfProducer.CodeGraph.TreeSitter.csproj" />
+    <ProjectReference Include="..\..\src\OkfProducer.CodeGraph.Roslyn\OkfProducer.CodeGraph.Roslyn.csproj" />
+
+    <!--
+      The CLI is referenced so CliTests drives the SHIPPED composition in-process rather than a
+      re-assembled copy of it: the three defects Task 13 fixed (a missing existing-frontmatter
+      reader, a manifest handed to a code-less run, a notes sink wired to nothing) all live in the
+      wiring, and a test that composes its own pipeline cannot see any of them.
+    -->
+    <ProjectReference Include="..\..\src\OkfProducer.Cli\OkfProducer.Cli.csproj" />
   </ItemGroup>
 
 </Project>

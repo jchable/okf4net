@@ -98,27 +98,53 @@ are the concrete entry points.
   broaden `ValidateSegment` needs its own design pass (cross-platform Unicode
   normalization, golden-fixture impact).
 
-- **`producers/OkfProducer` walking skeleton shipped** (repo scanner → OKF v0.2 bundle generator,
-  `generate`/`validate` commands, npm/NuGet/README detection only — see
-  [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md) and
-  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)).
-  - **Out of CI, by decision — not a follow-up.** `producers/` sits outside `OKF4net.sln` and
-    `ci.yml`, and stays there. The trade-off is real (nothing verifies it still builds after an
-    `src/OKF4net` API change, so it can rot silently) and is paid manually: running
-    `dotnet test producers/OkfProducer.sln` is an explicit step whenever a public `OKF4net` API
-    changes, and part of the release preflight. This is recorded here because the earlier
-    "either add a CI job, or…" wording read as an open question and was re-raised by an external
-    audit; it is settled.
-  - **Undocumented.** Not mentioned in `README.md`/`CLAUDE.md`/`CONTRIBUTING.md`. Add pointers once
-    the producer grows past this first walking-skeleton slice (more ecosystems, LLM enrichment).
-- **Known limitation: generated `sources[].resource` paths don't resolve against the bundle.**
-  `producers/OkfProducer`'s `ConceptGenerator` records `sources[].resource` relative to the
-  *scanned repository* (e.g. `package.json`), which is the semantically correct provenance
-  reference — but `BundleValidator` resolves `sources[].resource` relative to the *bundle root*,
-  so every generated package/doc concept gets a "path not found" warning by construction. Decided
-  at merge time: accept the warning rather than embed copies of referenced files in the bundle
-  (which would be a larger, unplanned scope change). Revisit only if this becomes a real friction
-  point once the producer has actual users.
+- **`producers/OkfProducer` shipped** (repo scanner → OKF v0.2 bundle generator, `generate`/
+  `validate` commands, npm/NuGet/README detection, and a C# code-graph stage: one concept per
+  namespace, type and member, with resolved `## Calls` links — see
+  [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md), the
+  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md) and the
+  [code-graph design](docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md)).
+  Two things a reader should not mistake for open questions:
+  - **No CI coverage — decided, not pending.** On 2026-08-01 it was settled that `producers/` does
+    **not** go into CI: it stays outside `OKF4net.sln`/`ci.yml`. Two consequences, both accepted.
+    The guarantee is local and it is one command, stated at the top of
+    [`producers/README.md`](producers/README.md): `dotnet test producers/OkfProducer.sln`, run
+    before touching the producer and after any public `OKF4net` API change. And the per-RID
+    packaging smoke test cannot be a guarantee without CI, so it is a **documented manual step at
+    release time**, described as such rather than implied to be covered.
+  - **Documented.** [`producers/README.md`](producers/README.md) carries the flag surface, the
+    verification command, the packaging step and the project layout.
+
+  Open follow-ups, still open:
+  - **More ecosystems.** Package detection is npm and NuGet only, and the code stage is C# only.
+    The architecture is multi-language by construction (one `LanguageProfile` per language, one
+    `ISymbolResolver` per precision level); a second profile would test the generality of that
+    seam rather than chase coverage.
+  - **Per-RID package weight.** A RID-specific `dotnet tool` package measures 80.7–87.6 MB
+    installed (11.5–13.3 MB to download). Most of it is tree-sitter grammars this producer never
+    loads — `verilog` 17.3 MB, `razor` 10.5 MB, `cpp` 5.1 MB — which cannot be removed one file
+    at a time, because `deps.json` is what feeds `NATIVE_DLL_SEARCH_DIRECTORIES`. Getting the
+    installed size below ~40 MB is a follow-up, not a v1 promise.
+  - **No test covers `--rev`'s branch auto-detection happy path.** Every CLI fixture repository is
+    deliberately outside git (so the suite stays at ~16 s and spawns no MSBuild), and the detached
+    -HEAD case is covered by the one test that does build a git repository. The auto-detected
+    branch name is verified by manual run only.
+- **Known limitation: without `--repo-url`, `packages/` and `docs/` `resource` paths don't resolve
+  against the bundle.** `producers/OkfProducer` records those families' `resource` relative to the
+  *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct
+  provenance reference — but `BundleValidator` resolves a bare relative `resource` against the
+  **concept's own directory**, not the bundle root (`Bundle.TryResolveResource`), so
+  `packages/okf4net.md` sends the validator looking under `<bundle>/packages/src/OKF4net/…` and it
+  misses by construction: one "path not found" warning apiece, 10 on this repository.
+  **`--repo-url` removes all 10**: those families build the same forge URL the `code/` family does,
+  and a URL short-circuits the validator's path classifier. The original entry here recorded 20
+  warnings and framed the only alternative as embedding copies of referenced files in the bundle;
+  both were wrong. Half the 20 came from a one-entry `sources` block repeating `resource` verbatim
+  (deleted — §4.5 already forbade it by name), and the other half needed no scope change at all,
+  only passing `GenerateOptions` to two builders that had never taken it. What remains is the
+  no-`--repo-url` fallback, kept deliberately: omitting the field costs the same 10 warnings
+  (measured, 2026-09-03) and the path is the only pointer those concepts have to their own subject.
+  See `producers/README.md`, "What `--repo-url` changes".
 
 ## Out of scope
 

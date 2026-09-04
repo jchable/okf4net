@@ -7,12 +7,14 @@
 - **Prior art** : **okf-rs**, producer Rust qui extrait types, fonctions, méthodes et un graphe d'appels sur 11 langages via tree-sitter. Sert de référence de capacité et de repère de comparaison ; aucun code repris.
 - **Spike de faisabilité** : worktree `spike-treesitter-dotnet`. Résultats en annexe A — **provenance cassée, chiffres non reproductibles**, voir l'avertissement en tête d'annexe.
 
-> ## ⚠ Statut : ce design n'est **pas** prêt pour un plan d'implémentation
+> ## ✅ Statut : les deux verrous sont levés — le design est prêt pour un plan d'implémentation
 >
-> Deux audits indépendants (interne et externe, 2026-08-31) ont chacun trouvé des défauts porteurs. Les révisions rédactionnelles sont appliquées. Des deux blocages, **le premier est levé** :
+> Deux audits indépendants (interne et externe, 2026-08-31) ont chacun trouvé des défauts porteurs. Les révisions rédactionnelles sont appliquées, et les deux blocages sont traités :
 >
-> 1. ~~**L'étage Roslyn n'est pas démontré**~~ → **LEVÉ le 2026-08-31.** Le prototype `producers/spikes/RoslynCompilationSpike/` atteint **zéro erreur de compilation** sur trois projets réels sans `MSBuildWorkspace`. Il corrige au passage trois hypothèses de §7.2 — dont la plus lourde : le dépôt doit être **construit**, pas seulement restauré.
-> 2. **Le critère d'exploitabilité échoue, et le correctif n'est pas encore implémenté** (§8.7). Sur un corpus représentatif de 395 concepts, les concepts curatés n'obtiennent qu'**une place sur 55** dans le top 5 injecté à l'agent, et 5 requêtes sur 11 n'en ramènent aucun dans le top 20. Réduire la portée ne corrige rien. **Décision prise** : trier par diversification dans `OKF4net.Agents` (issue 1 de §8.7). Planifié dans `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md`, tâches 1-2 ; reste à exécuter.
+> 1. ~~**L'étage Roslyn n'est pas démontré**~~ → **LEVÉ le 2026-08-31.** Le prototype atteint **zéro erreur de compilation** sur trois projets réels sans `MSBuildWorkspace` (mesure et protocole en §7.2 ; code jetable, conservé dans l'historique au commit `0db6e9a`). Il corrige au passage trois hypothèses de §7.2 — dont la plus lourde : le dépôt doit être **construit**, pas seulement restauré.
+> 2. ~~**Le critère d'exploitabilité échoue**~~ → **LEVÉ le 2026-08-31.** `ConceptSearch.TopDiversified` fait tourner la sélection entre familles d'ids, branché dans `okf_search` et `OkfContextProvider`. Sur le même corpus, les places curatées dans le top 5 passent de **1/55 à 23/55**, et les requêtes sans aucun curaté dans le top 20 de **5/11 à 0/11** (§8.7).
+>
+> Reste à écrire : le plan d'implémentation du générateur lui-même, dont la séquence est donnée en fin de `docs/superpowers/plans/2026-08-31-okf-producer-code-graph-gates.md`.
 >
 > Corrigé depuis le premier jet : résolution de `resource` (§4.3), granularité de `generated.at` (§6.1), unités de colonne entre les deux moteurs (§2.1), politique d'entrée hostile (§2.3), transactionnalité de l'élagage (§6.3), définition de `--check` (§6.2), appartenance des fichiers à un projet (§5.1), provenance du spike (annexe A).
 
@@ -55,9 +57,17 @@ RepositoryScanner ──→ RepositorySnapshot { Packages, Docs }
 
 **Les resolvers sont chaînés, pas exclusifs.** `NameMatchResolver` produit un verdict de base pour tous les langages ; `RoslynResolver` écrase ensuite les verdicts des fichiers dont il est propriétaire, à identité de site d'appel. Propriété qui en découle et qui est la raison du découpage : un resolver absent dégrade la **précision**, jamais la **forme** de la sortie.
 
-**L'identité du site d'appel ne peut pas être `(fichier, ligne, colonne)` naïf** — les deux moteurs ne comptent pas dans la même unité. La `column` d'un `Point` tree-sitter est un nombre d'**octets** depuis le début de ligne ; Roslyn positionne en **UTF-16**, l'unité des `string` .NET. Les deux coïncident tant que la ligne est pure ASCII et divergent dès le premier caractère non-ASCII qui précède l'appel — un identifiant accentué, un littéral avec un emoji, un caractère hors du plan de base. Un raccrochage silencieusement faux est pire qu'un raccrochage absent : il attribue un appel au mauvais symbole.
+**L'identité du site d'appel ne peut pas être `(fichier, ligne, colonne)` naïf** — les deux moteurs ne sont pas garantis de compter dans la même unité, et ça ne se suppose pas, ça se mesure. Roslyn positionne en **UTF-16**, l'unité des `string` .NET — ça, c'est un contrat documenté. Côté tree-sitter, en revanche, **la Tâche 3 a mesuré autre chose que ce que cette section affirmait initialement** : le binding `TreeSitter.DotNet` 1.3.0 ne restitue pas la sémantique brute de l'API C native (où la `column` d'un `Point` compte des octets). Quand on parse une `string` .NET — la seule entrée que son API publique accepte, il n'existe pas de surcharge `Parse(byte[])` — `Node.StartIndex`/`EndIndex` (et `Point.Column`) sont en réalité des offsets **UTF-16**, identiques à l'index dans la chaîne .NET d'origine, pas des offsets UTF-8 bruts. Mesuré, pas supposé :
 
-Règle : l'identité est **l'offset absolu dans le fichier, normalisé en UTF-8**, converti explicitement à la frontière de chaque moteur ; la ligne/colonne ne sert qu'à l'affichage. La conversion est un point de test obligatoire (§8.4), avec au minimum `var café = Foo();`, un emoji, un caractère astral, et un fichier en CRLF.
+| source | index UTF-16 de `Foo` | `Node.StartIndex` observé | offset UTF-8 attendu |
+|---|---|---|---|
+| `var café = Foo();` | 11 | 11 | 12 |
+| `var x = "🎯"; Foo();` | 14 | 14 | 16 |
+| `var naïve = 1;\r\nFoo();` | 16 | 16 | 17 |
+
+Les deux moteurs divergent bien dès le premier caractère non-ASCII qui précède l'appel — un identifiant accentué, un littéral avec un emoji, un caractère hors du plan de base — mais pas dans le sens que cette section affirmait : ici, c'est Roslyn qui rejoint nativement la sortie de ce binding, ce n'est pas tree-sitter qui donne des octets gratuitement. Un raccrochage silencieusement faux reste pire qu'un raccrochage absent : il attribue un appel au mauvais symbole.
+
+Règle, conclusion inchangée mais fondement corrigé : l'identité reste **l'offset absolu dans le fichier, normalisé en UTF-8** ; la ligne/colonne ne sert qu'à l'affichage. Ce n'est plus une propriété que tree-sitter fournirait gratuitement pour ce binding — c'est `TreeSitterExtractor` qui convertit explicitement chaque offset via `Utf8Offsets.ToUtf8` avant de construire un `SymbolFact`/`CallSite`, exactement comme le fait l'extracteur Roslyn (Tâche 6) pour ses propres offsets UTF-16. Ne pas supprimer cette conversion sous prétexte que les deux moteurs coïncident aujourd'hui pour ce binding précis : cette égalité est un artefact de la façon dont le binding est nourri (une `string` .NET plutôt que des octets), pas un contrat — une montée de version du binding, ou un futur chemin de parsing par octets, la casserait silencieusement, et dans le sens où l'échec est un mauvais raccrochage plutôt qu'un raccrochage absent. La conversion explicite coûte deux appels et rien d'autre. La conversion est un point de test obligatoire (§8.4), avec au minimum `var café = Foo();`, un emoji, un caractère astral, et un fichier en CRLF — désormais vérifié contre l'extracteur réel, pas seulement contre `Utf8Offsets` isolément (voir Tâche 3, `task-3-report.md`).
 
 ### 2.2 Découpage en projets
 
@@ -78,7 +88,7 @@ L'extracteur ingère du **code source arbitraire**, y compris d'un dépôt qu'on
 
 | Cas | Règle |
 |---|---|
-| Fichier volumineux ou minifié sur une ligne | plafond de taille par fichier (défaut 2 Mo, `--max-file-size`) ; au-delà, fichier **ignoré et compté**, jamais tronqué — un parse partiel produirait des spans faux |
+| Fichier volumineux ou minifié sur une ligne | plafond de taille par fichier (défaut 2 Mo, `--max-file-size`) ; au-delà, fichier ignoré par **les deux** moteurs, jamais tronqué — un parse partiel produirait des spans faux. L'extracteur tree-sitter le **compte** (run partiel) ; la porte Roslyn (`SourceFileGate`) le laisse tomber **silencieusement** (remédiation vague 2b, round 3 : « ignoré et compté » sans réserve était faux de la moitié Roslyn de l'étape code) |
 | Encodage | UTF-8 (avec ou sans BOM) et UTF-16 avec BOM ; tout autre encodage ou toute séquence invalide → fichier ignoré et compté |
 | Arbre tree-sitter contenant des nœuds `ERROR` | les symboles hors de la région en erreur sont conservés, la région est signalée ; le fichier compte comme **partiellement analysé** |
 | Profondeur d'imbrication pathologique | limite de profondeur de parcours ; au-delà, fichier ignoré et compté |
@@ -87,7 +97,17 @@ L'extracteur ingère du **code source arbitraire**, y compris d'un dépôt qu'on
 | Code qui ne compile pas | normal, pas une erreur : tree-sitter reste tolérant, Roslyn dégrade vers `NameMatchResolver` |
 | Run trop long | timeout global et `CancellationToken` ; une annulation rend le run **partiel** |
 
-**La règle qui relie ce tableau au reste du design** : tout fichier ignoré, partiellement analysé ou annulé rend le run **partiel**, et un run partiel **n'élague rien** (§6.3). Le rapport de sortie liste les fichiers non analysés avec leur cause — c'est ce qui distingue « symbole supprimé » de « fichier non lu ».
+**La règle qui relie ce tableau au reste du design** : tout fichier ignoré, partiellement analysé ou annulé est **enregistré avec sa cause**, et restreint l'élagage en conséquence (§6.3). Le rapport de sortie liste les fichiers non analysés avec leur cause — c'est ce qui distingue « symbole supprimé » de « fichier non lu ».
+
+> **Livré en remédiation vague 3** (`GenerateRun.Summarize`, préfixe `run: ` sur stderr, §9). Cette phrase décrivait une intention que rien n'implémentait : `RunStatus` n'avait qu'un seul consommateur de production, à l'intérieur du refus d'élaguer de `BundleWriter`, que `Reconcile` court-circuite dès qu'il n'y a pas de manifeste précédent ou pas de candidat. Un premier run, un run `--reset`, ou tout run dont l'ensemble d'ids n'a pas rétréci calculaient donc `TraversalComplete` et chaque `FileStatus` non-`Extracted` puis les jetaient. Mesuré sur cet hôte, exit 0 et rien d'imprimé au-delà de `Wrote N concept(s)` : un `--max-file-size` sous l'unique fichier source, et une jonction circulaire (avec un `*.sln` racine, sans quoi c'est le scanner qui échoue bruyamment d'abord) qui vide la liste de fichiers et n'écrit qu'`overview`.
+>
+> Le rapport nomme les fichiers **entièrement ignorés**, plafonné à dix avec un compte de reste — pas les `PartiallyExtracted`, qui sont l'état normal d'un dépôt C# moderne (voir l'encadré ci-dessous) et noieraient les précédents. Les compteurs par cause, eux, sont toujours donnés.
+
+> **Corrigé à l'implémentation (mesure de la Task 4, ruling R21, appliqué en Task 11).** Le premier jet écrivait ici « un run partiel **n'élague rien** », et c'est trop grossier : cette formulation annule la règle 3 de §6.3 et rend l'élagage inatteignable.
+>
+> Mesuré : la grammaire tree-sitter vendorisée ne parse pas une expression de collection **vide** `[]` en position d'expression — idiome ordinaire du C# 12+, présent dans les sources de ce producer même — et 3 fichiers réels sur 6 échantillonnés reviennent `PartiallyExtracted` pour cette seule raison. `PartiallyExtracted` est donc l'**état normal** d'un dépôt C# moderne, pas un cas rare : la règle grossière aurait désactivé l'élagage pour toujours.
+>
+> La règle exacte sépare deux formes d'échec que ce paragraphe confondait. Une **traversée tronquée** (racine absente ou illisible, échec d'énumération, annulation ou timeout — `RunStatus.TraversalComplete` faux) interdit tout élagage, pour une raison sans rapport avec la qualité du parse : un symbole a pu se **déplacer** vers un fichier jamais visité, et supprimer son ancien concept le perdrait sans remplacement. Une traversée **complète** dont certains fichiers se sont mal extraits est au contraire exactement connue : chaque fichier visité a un `FileStatus` enregistré, donc l'élagage est sûr pour les ids possédés par les fichiers `Extracted` et interdit pour ceux des autres — c'est la règle 3 de §6.3, et rien de plus.
 
 ---
 
@@ -205,7 +225,9 @@ En revanche le classifieur **court-circuite sur une URL** (statut `Url`, `Bundle
 
 Sans `--repo-url`, on retombe sur le chemin repo-relatif et on assume les warnings — documenté comme tel.
 
-**Note de conformité amont** : `ROADMAP.md` décrit cette même limitation en disant que le validateur résout `sources[].resource` « relative to the bundle root ». C'est la même imprécision ; à corriger dans ce lot.
+> **Corrigé à l'implémentation (2026-09-03).** La phrase ci-dessus est restée vraie pour `packages/` et `docs/`, mais **pas** pour `code/` : cette famille n'émet aucun champ plutôt qu'un chemin repo-relatif, parce qu'omettre coûte exactement le même nombre de warnings (`resource` est un champ recommandé) et que le corps du concept nomme déjà son fichier dans chaque libellé de span `## Signatures`. Les deux familles sans span n'ont pas cet autre pointeur, donc elles gardent le chemin. Et — le vrai défaut, resté invisible à 607 tests — `BuildPackageConcept`/`BuildDocConcept` ne recevaient pas `GenerateOptions` du tout : **avec** `--repo-url`, où chaque concept `code/` obtenait une URL qui résout, ces deux familles écrivaient encore un chemin nu qui manque. Mesuré sur ce dépôt avant correction : 20 des 55 warnings restants. Elles construisent désormais la même URL (sans span, le concept portant sur le fichier entier), via le même `BlobUrl`. Voir `producers/README.md`, « What `--repo-url` changes ».
+
+**Note de conformité amont** : `ROADMAP.md` décrivait cette limitation en disant que le validateur résout `sources[].resource` « relative to the bundle root ». Imprécision corrigée ; l'entrée y a depuis été réécrite, le bloc `sources` en question n'étant plus émis (§4.5).
 
 ### 4.4 `generated` : `by` partout, `at` sur `overview` seul
 
@@ -223,7 +245,7 @@ Donc : `overview` porte `generated: { by, at }` + `revision: <sha>` ; les concep
 
 - **Pas de section `## Called by`.** `Bundle.Backlinks(id)` est public et calculé au chargement ; matérialiser les liens retour dupliquerait une information dérivable et **doublerait le churn** — ajouter un appel dans un fichier réécrirait aussi le concept de l'appelé.
 - **Les appels non résolus sont du texte, pas des liens.** Le spike a mesuré que **57,5 % des sites d'appel pointent hors du repo** (BCL, NuGet). Les lier produirait autant de `BrokenLink` — des `Info` seulement, mais assez pour noyer `validate`. En code span, ils restent lisibles et greppables sans polluer le graphe.
-- **Pas de bloc `sources`** : il ferait doublon avec `resource` sur 470 concepts.
+- **Pas de bloc `sources`** : il ferait doublon avec `resource` sur 470 concepts. *(2026-09-03 : la règle est désormais tenue par **toutes** les familles. `packages/` et `docs/` émettaient une entrée unique dont le `resource` était la même chaîne que le champ au-dessus — le cas exact que cette règle vise — pour un second warning par concept sur un fait déjà énoncé. Supprimée.)*
 - **Les liens sont absolus** (`/code/...`), la forme recommandée par §6.1 — aucune arithmétique de chemin relatif dans le générateur.
 
 ---
@@ -331,6 +353,8 @@ Correction : **le générateur possède le sous-arbre `code/`** et le réconcili
 Trois règles, qui tiennent ensemble :
 
 1. **Transactionnel.** La génération va d'abord dans un staging ; le commit vers le bundle et l'élagage n'ont lieu qu'**après un run intégralement réussi**. Un run partiel ou dégradé écrit ses concepts mais **ne supprime rien** et le signale en sortie.
+
+   > **Précision apportée à l'implémentation (Task 11).** « Intégralement réussi » se lit au niveau de la *porte* du run — traversée complète, au moins un fichier tenté, aucun concept en échec d'écriture, dépôt présent — et **pas** « chaque fichier parfaitement extrait » (voir la correction en §2.3 : ce serait `RunStatus.IsComplete`, faux sur du C# ordinaire). La qualité par fichier s'applique candidat par candidat, à la règle 3. Deux points que le texte ne disait pas et que l'implémentation fixe : le manifeste est écrit **en dernier**, après le déplacement du dernier fichier stagé, pour qu'une interruption laisse le manifeste *précédent* plutôt qu'un manifeste décrivant un état jamais atteint ; et le commit déplace les fichiers **un par un** au lieu de renommer le staging par-dessus le bundle, parce que ce renommage exige de supprimer le bundle vivant d'abord — un crash à cet instant détruit aussi les concepts écrits à la main hors du préfixe possédé, ce qu'aucun run suivant ne répare.
 2. **Un manifeste, pas un préfixe.** Le run précédent laisse un manifeste des ids qu'il a produits (et des fichiers analysés). L'élagage ne porte **que sur les ids de ce manifeste** — jamais sur un fichier inconnu. Un concept écrit à la main sous `code/` n'est donc pas effacé, il est laissé en place, et un avertissement signale qu'il n'est pas possédé.
 3. **Périmètre restreint aux propriétaires ayant réussi.** Si l'extraction a échoué sur un fichier, les ids que ce fichier possédait sont exclus de l'élagage de ce run, même si le reste a réussi.
 
@@ -372,7 +396,9 @@ Pas de Native AOT : Roslyn, `System.CommandLine` et le Generic Host l'excluent, 
 
 ### 7.2 L'étage Roslyn — question rouverte
 
-> **✅ Section validée par mesure le 2026-08-31.** Le premier jet affirmait cette conclusion sur la foi d'une inférence non testée ; un audit l'a signalé ; le prototype a été écrit, commité et exécuté. Le verdict confirme la direction et **corrige trois hypothèses**. Prototype : `producers/spikes/RoslynCompilationSpike/` (commandes et résultats dans `producers/spikes/README.md`).
+> **✅ Section validée par mesure le 2026-08-31.** Le premier jet affirmait cette conclusion sur la foi d'une inférence non testée ; un audit l'a signalé ; le prototype a été écrit, exécuté, puis retiré de l'arbre de travail comme le jetable qu'il est.
+>
+> **Reproduire la mesure** : le prototype vit dans l'historique au commit `0db6e9a` (`producers/spikes/RoslynCompilationSpike/`). `git show 0db6e9a --stat` le liste ; `git checkout 0db6e9a -- producers/spikes` le restaure. Tout ce dont dépendent les conclusions ci-dessous — la commande MSBuild exacte, le protocole des trois projets, les compteurs d'erreurs — est reproduit dans cette section, de sorte qu'elle se lit sans lui.
 
 **Verdict : oui, une `CSharpCompilation` correcte se construit depuis les requêtes MSBuild, sans `MSBuildWorkspace`.** Zéro erreur sur les trois projets sondés, choisis par difficulté croissante :
 
@@ -398,11 +424,85 @@ dotnet msbuild <proj> \
 
 **Correction 2 — « restauré » ne suffit pas, il faut **construit**.** C'est la correction la plus importante, et elle contredit ce que cette section affirmait. Les `ProjectReference` se résolvent vers `bin/<config>/<tfm>/*.dll`, qui n'existe qu'après une build. Mesuré en simulant un dépôt restauré-mais-non-construit (`--drop-project-refs`) : `OKF4net.Mcp` passe de 0 à **4 erreurs** — `CS0234` sur le namespace `OKF4net.Agents`, `CS0246`/`CS0103` sur `OkfBundleTools`. Les symboles du projet référencé disparaissent entièrement.
 
-Conséquence pour le design : la voie `CompilationReference` — compiler nous-mêmes les projets du dépôt et les lier entre eux depuis les sources — n'est plus une préférence, elle devient **obligatoire** si l'on veut fonctionner sur un dépôt seulement restauré. À défaut, dégradation propre vers `NameMatchResolver` seul, **et l'élagage est désactivé** pour ce run (§6.3).
+Conséquence pour le design : la voie `CompilationReference` — compiler nous-mêmes les projets du dépôt et les lier entre eux depuis les sources — n'est plus une préférence, elle devient **obligatoire** si l'on veut fonctionner sur un dépôt seulement restauré. À défaut, dégradation propre vers `NameMatchResolver` seul. ~~Et l'élagage est désactivé pour ce run (§6.3).~~ **Faux, corrigé à l'implémentation — voir l'encadré en fin de §7.2 : la disponibilité du resolver ne conditionne pas l'élagage.**
 
 **Correction 3 — le paquet Roslyn doit suivre la version de langage du SDK.** `Microsoft.CodeAnalysis.CSharp` 4.14.0 ne connaît pas `LangVersion 14` : `LanguageVersionFacts.TryParse("14", …)` échoue. Le prototype se rabat sur `Preview` et atteint quand même zéro erreur, mais ce repli **change silencieusement la sémantique d'analyse**. Le producer doit soit épingler un Roslyn qui connaît la version du SDK, soit échouer bruyamment — jamais dégrader en silence.
 
 **Ce que le prototype n'établit pas**, et que le resolver de production devra traiter : projets multi-TFM, générateurs de source contribuant des items `Compile`, et des chaînes `Directory.Build.props` autres que celle de ce dépôt. Une seule machine, un seul SDK, une seule configuration (`Debug`).
+
+#### Traité depuis, par mesure (Task 6)
+
+Deux des trois angles morts ci-dessus ont été mesurés puis corrigés dans `RoslynResolver` :
+
+- **Multi-TFM.** La *outer build* d'un projet multi-cible n'a **pas de cible `ResolveReferences` du tout** — MSBuild répond `MSB4057`, la requête échoue entièrement. `MsBuildProjectQuery` réessaie donc avec `-p:TargetFramework=<premier listé>` après un échec (optimiste d'abord : aucun aller-retour supplémentaire dans le cas mono-TFM courant ; un projet non restauré échoue aussi la sonde et c'est son erreur d'origine, plus utile, qui remonte). *Premier listé* plutôt que *le plus récent* : une règle lisible dans le fichier projet, là où « le plus récent » ferait silencieusement changer l'ensemble des symboles le jour où quelqu'un ajoute un TFM.
+- **`LangVersion` absente.** `LanguageVersionFacts.TryParse("")` renvoie **false**. Confondre « absente » et « inconnue » ferait donc partir l'échec bruyant de la correction 3 sur n'importe quel projet qui n'épingle simplement pas de version. Or une propriété absente est exactement le cas où le SDK ne passe **aucun** `/langversion` à csc, et `LanguageVersion.Default` est par définition ce que csc fait alors. Seule une version *spécifiée* et non reconnue échoue — et cet échec est **scopé au projet** (`RoslynProjectAvailability.UnknownLanguageVersion`), pas au run : le danger que nomme la correction 3 est un repli *silencieux* vers `Preview`, et ne pas compiler ce projet-là y répond complètement ; faire tomber le run en plus sacrifierait la résolution exacte de tous les autres projets pour rien.
+
+#### Limitation documentée : les générateurs de source Roslyn ne s'exécutent pas
+
+La correction 1 récupère bien les fichiers générés **par le SDK** (`*.GlobalUsings.g.cs`, `*.AssemblyInfo.cs`) — ce sont des items `Compile`. Mais un **générateur de source Roslyn** s'exécute *dans le compilateur* et ne contribue **aucun** item `Compile` : ses membres sont donc purement et simplement absents d'une compilation construite depuis la requête MSBuild.
+
+**Mesuré sur ce dépôt** : `src/OKF4net.Cli` utilise le générateur `System.Text.Json` et produit **6 erreurs** — `CS0534` ×2 (`CliJsonContext` n'implémente pas `JsonSerializerContext.GetTypeInfo(Type)` ni `GeneratedSerializerOptions`), `CS7036` (constructeur `JsonSerializerContext(JsonSerializerOptions?)`), `CS0117` ×3 (`CliJsonContext` ne contient pas de définition pour `Default`) — toutes sur les membres que le générateur aurait émis. Les **sept autres** projets `src/` compilent à zéro erreur.
+
+**Décision : ne pas exécuter les générateurs.** Ce n'est pas un oubli ni un bug à corriger au passage. Les exécuter signifie charger et exécuter des assemblys d'analyseurs **choisis par le dépôt analysé** : du code arbitraire, issu exactement de l'entrée que §2.3 traite comme hostile, à l'intérieur d'un outil dont le métier est de lire des sources non fiables. Échanger la posture de sécurité du producer contre une meilleure résolution sur certains projets n'est pas un arbitrage à faire en silence.
+
+> **Correction apportée à l'implémentation (remédiation vague 2b) : la posture à laquelle ce refus faisait appel n'existe pas, et n'a jamais existé.** `MsBuildProjectQuery.Run` lance `dotnet msbuild` sur chaque projet, `WorkingDirectory` positionné dans le répertoire du projet lui-même. Une **évaluation** MSBuild *est* l'exécution de logique écrite par le dépôt : `Directory.Build.props`/`.targets`, chaque `Import` qu'ils atteignent, toute cible accrochée à `BeforeTargets="ResolveReferences"`, et une tâche `RoslynCodeTaskFactory` `<Code>` en ligne — tout cela s'exécute sous l'identité de qui lance `okfgen`. C'est une porte **plus large** qu'un générateur de source, ouverte un fichier plus loin, avant que le resolver ne voie le moindre symbole. Ni le ledger, ni le plan, ni ce document ne traitaient MSBuild comme vecteur d'exécution.
+>
+> **La décision R22 ne change pas** — ne pas exécuter les générateurs reste juste ; c'est sa justification qui était fausse. Formulation honnête : viser `okfgen` sur un dépôt, c'est déjà accepter d'évaluer sa build, donc **ne scanner qu'un dépôt qu'on accepterait de builder**. Ajouter un hôte de générateurs par-dessus étendrait cette exécution de l'évaluation MSBuild jusqu'au processus du compilateur, sans aucun bac à sable — un pas de plus, pas une ligne préservée.
+>
+> **Levier ajouté : `okfgen generate --no-msbuild`.** Il saute entièrement l'étape Roslyn/MSBuild : **aucun `dotnet msbuild` lancé et aucune logique MSBuild de l'arbre scanné évaluée**, résolution des appels laissée à la baseline par correspondance de noms (une ambiguïté inter-types est alors laissée sans lien plutôt que devinée), et une note le dit dans le rapport du run. **Le défaut ne change pas** : le rendre opt-in dégraderait silencieusement la qualité de résolution de tous les runs existants. Un danger documenté avec un levier vaut mieux qu'une dégradation muette.
+>
+> **Correction (remédiation vague 2b, round 2) — deux affirmations de l'encadré ci-dessus étaient trop fortes, et une troisième manquait.**
+>
+> 1. **« aucun processus lancé, rien d'exécuté depuis l'arbre scanné » est faux**, et c'était un *élargissement* d'une phrase déjà correcte (la note du CLI dit « aucun `dotnet msbuild` lancé », qui est juste). `ConceptGenerator` lance `git show -s --format=%cI HEAD` puis `git rev-parse HEAD` à **chaque** run, `--no-msbuild` compris ; `GenerateRun.Execute` lance `git symbolic-ref` **sauf si `--rev` a déjà nommé la ref** (`request.Rev ?? GitRevision.CurrentBranch(...)` court-circuite) ; et `--check` lance un `git rev-parse HEAD` de plus (`BundleDrift.Check`) dans l'arbre scanné, avant la régénération à laquelle il compare. Tous via `GitRevision.RunGit`, `WorkingDirectory` positionné sur le dépôt scanné. **Deux à quatre invocations selon les drapeaux, pas trois** — le round 2 avait écrit « les trois … à chaque run », énumération transcrite depuis `GenerateRun` + `ConceptGenerator` au lieu des sites d'appel, que l'on obtient par `grep -rn "GitRevision\." producers/src --include=*.cs` — lancé, il rend les quatre sites (`GenerateRun.cs:114`, `BundleDrift.cs:288`, `ConceptGenerator.cs:150`, `ConceptGenerator.cs:151`) plus trois lignes de commentaire. Un grep de `RunGit` ne convient pas — la méthode est privée, les appelants passent par les publiques — et un grep de `HeadSha|CurrentBranch` non plus : il manque `ConceptGenerator.cs:150`, qui appelle `HeadCommitInstant`. L'exposition est bien moindre (aucune de ces commandes ne déclenche de hook, de fsmonitor, ni de pager avec stdout redirigé), mais une divulgation de sécurité doit être exactement vraie. Formulation retenue partout : « aucun `dotnet msbuild` lancé, aucune logique MSBuild du dépôt évaluée ».
+>
+> 2. **« les trois cibles de `Targets` bornent ce qui est *demandé* » est faux.** Mesuré sur cet hôte (SDK 10.0.204) : `dotnet msbuild` applique automatiquement un `Directory.Build.rsp` présent dans le répertoire du projet — le répertoire où la requête s'exécute délibérément — et ce fichier contient des **switches**. Un `-t:Pwn` injecté a fait tourner une cible que le producer n'a jamais demandée (fichier témoin écrit), à côté de son propre `-t:ResolveReferences`. Le dépôt ajoute donc à la requête elle-même, pas seulement à ce qui tourne au passage : il peut la transformer en `-t:Build`. Deux faits atténuants, mesurés eux aussi : un switch de ligne de commande l'emporte en cas de conflit (le `-nodeReuse:false` du producer n'est pas retournable depuis le rsp), et la **conclusion** — « ne scanner qu'un dépôt qu'on accepterait de builder » — reste la bonne atténuation. C'est la borne énumérée qui était fausse, pas la conclusion.
+>
+> 3. **`--no-msbuild` a un second coût, énoncé nulle part.** La carte de propriété des sources de §5.1 est construite à partir des ensembles d'items `Compile` que cette même requête MSBuild fournit. Sans l'étape, `ownership` reste `null` et `ConceptGenerator.AttributePackages` n'émet **aucun** lien `packages` → namespace : c'est un niveau manquant de la colonne vertébrale de containment, pas une arête manquante — et sous `--update`, les concepts `packages/` précédemment corrects sont écrasés par des versions sans lien. Trois endroits énuméraient le coût du flag comme « des arêtes » ; ils disent maintenant les deux.
+>
+> Une note distincte, non résolue ici : **`--v:diag` n'est pas un vecteur d'amplification.** Le registre d'échappement proposait d'inonder le `ReadToEnd` non borné via un `-v:diag` injecté par rsp. Mesuré : en mode `-getItem`/`-getProperty` le log console est entièrement supprimé — une requête avec `-v:diag` dans le rsp, et une avec un `Directory.Build.targets` émettant trois `<Message>` de 100 Ko, ont chacune imprimé **344 326 octets**, identiques au run propre. Ce qui amplifie vraiment, c'est le JSON lui-même : un `Directory.Build.targets` de quinze lignes déclarant 10 000 items `Compile` a fait passer la même requête de 344 326 à **10 457 323 octets en 1,1 s**. La lecture de stdout est donc désormais plafonnée (32 Mio, ~70× la plus grosse réponse réelle mesurée sur ce dépôt : 456 364 octets pour `src/OKF4net.Mcp`), en continuant à drainer le tube pour ne pas bloquer l'enfant.
+
+> **Correction (remédiation vague 2b, round 3) — une correction du round 2 était fausse dans l'autre sens, et un rapport de projet affirmait quelque chose de faux.**
+>
+> 1. **Le décompte `git` du round 2 (« trois, à chaque run ») était lui-même faux**, corrigé en place dans le point 1 ci-dessus. Mécanisme : l'énumération avait été transcrite depuis les fichiers regardés (`GenerateRun` + `ConceptGenerator`) et non depuis les sites d'appel ; c'est `grep -rn "GitRevision\." producers/src --include=*.cs` qui les rend tous les quatre. Formulation retenue : conditionnelle et complète (README, `GenerateRun`), ou sans chiffre du tout (`MsBuildProjectQuery`, aide du CLI).
+>
+>    **Deux recettes fausses ont été écrites ici avant celle-là, et le mécanisme vaut plus que le résultat.** Le round 3 nommait `grep -rn RunGit producers/src`, qui ne trouve pas `BundleDrift.cs:288` : `RunGit` est privé et les appelants passent par les méthodes publiques. Le round 4 l'a remplacé par `grep -rn "HeadSha\|CurrentBranch" …`, qui n'en rend que **trois** — il manque `ConceptGenerator.cs:150`, qui appelle `HeadCommitInstant`. Cette seconde erreur est passée parce que le grep avait été **consigné avec un bloc élidé** (« déclarations/doc »), ce qui faisait ressembler une sortie à trois sites à une sortie à quatre. D'où la règle, plus forte que « consigner le grep » : **le grep consigné est l'artefact, et il doit l'être intégralement — l'élision est précisément où l'erreur se cache.**
+>
+> 2. **`--max-file-size` : la qualification n'avait été propagée qu'à un seul endroit.** Le round 2 avait corrigé la ligne du README ; le texte d'aide (`okfgen generate --help`), la doc du paramètre `MaxFileBytes` et les deux tableaux de ce document disaient toujours « ignoré et compté » sans réserve — faux de la moitié Roslyn de l'étape code, qui laisse tomber l'item **silencieusement**. Les quatre sont corrigés, et **la clause qualifiante est désormais épinglée par un test** (`CliTests.The_help_keeps_the_clauses_that_make_its_two_hazard_sentences_true`) : rien dans ce dépôt n'épinglait le texte d'aide, alors que trois phrases fausses de cette branche y vivaient. Précédent suivi : `BundleDrift.CheckDescription`.
+>
+> 3. **CORRIGÉ — un projet dont la porte a refusé tous les fichiers était rapporté `Compiled`.** `CSharpCompilation.Create` sans arbre de syntaxe, en `DynamicallyLinkedLibrary`, n'a aucun diagnostic (un `Exe` donnerait CS5001) : la compilation vide passe le seuil « zéro erreur », `RoslynProjectAvailability.Compiled` est rapporté, et `GenerateRun.ReportProjects` n'imprimait rien. Ce n'est pas un trou silencieux mais une **affirmation fausse** sur le run — le resolver ne possède aucun de ses fichiers, donc la baseline par correspondance de noms les porte exactement comme ceux d'un projet en échec. Le test « rapporté `Compiled` mais ne possède aucun de ses propres items `Compile` » est calculable dans `GenerateRun` seul (`RoslynResolver.QueriedProjects` porte les `CompileFiles`, `Owns` répond pour les fichiers), sans canal supplémentaire depuis `CompilationFactory`. Épinglé en données pures, sans MSBuild ni disque.
+>
+> 4. **ENREGISTRÉ, non corrigé — `CompilationFactory.cs:190-192`, hors périmètre de ce round.** `reference.AssemblyPath` est le `FullPath` de l'item `ReferencePath`, contrôlé par le dépôt, et le seul chemin issu du JSON MSBuild qui ne passe pas par `FullPath()`. `File.Exists` rend inoffensives toutes les formes *malformées*, mais pas un **non-assembly existant** : `<ReferencePath Include="$(MSBuildProjectFullPath)"/>` dans un `Directory.Build.targets` fait lever `BadImageFormatException` à `MetadataReference.CreateFromFile`. `RoslynResolver.Compile` n'attrape que `UnknownLanguageVersionException` et le filtre du CLI ne liste pas celle-là : c'est un **crash non rattrapé, avec pile d'appels**. Consigné dans la doc de `MsBuildProjectQuery.ReadReferences`, là où la valeur naît.
+>
+> 5. **ENREGISTRÉ — contrainte d'hôte désormais permanente.** Le Developer Mode ne peut pas être activé sur cette machine (confirmé par son propriétaire), donc `File.CreateSymbolicLink` n'y réussira jamais et les branches `if (overwriteShape)` ne s'y exécuteront jamais : ce n'est pas une mesure en attente, et les fermer exige une autre plateforme. À ne pas surestimer : les formes **jonction** *sont* mesurées ici (`mklink /J` ne demande aucun privilège) ; seul l'écrasement par lien symbolique de **fichier** reste non exécuté.
+
+**Conséquence, assumée et visible plutôt que découverte** : tout projet utilisant un générateur de source (`System.Text.Json`, `GeneratedRegex`, `LoggerMessage`, l'essentiel d'ASP.NET) a une compilation en erreur, `RoslynResolver` se déclare indisponible pour lui (`CompilationHadErrors`), ne le possède pas (`Owns` → `false`), et `NameMatchResolver` le porte au niveau *baseline*. Le **rapport de sortie** le dit à l'opérateur, projet par projet (voir la correction vague 2b ci-dessous : ce n'est pas `IsComplete` qui l'alimente). C'est la dégradation propre — jamais une résolution depuis une table de symboles trouée, qui n'échouerait pas à résoudre les appels mais les attribuerait au mauvais symbole.
+
+> **Correction apportée à l'implémentation (Task 11) : `RoslynResolver.IsComplete` ne conditionne pas l'élagage, et ce document affirmait le contraire à deux endroits (§7.2 correction 2, et cette phrase même).**
+>
+> L'élagage agit sur une **absence** : un id que le manifeste précédent revendique et que ce run n'a pas produit. Or aucun resolver ne contribue de symbole à `CodeGraph.Symbols` — `CodeGraphBuilder` les construit depuis `ILanguageExtractor` filtré par `FileEligibility.IsInScope`, et un resolver ne décide que du rendu d'un site d'appel (lien `## Calls` ou span de code `## Calls (unresolved)`). Un resolver dégradé ne peut donc **pas** rendre un concept absent, donc pas provoquer une suppression fautive.
+>
+> Et le conditionner dessus rendrait l'élagage **mort sur ce dépôt même** : `src/OKF4net.Cli` utilise un générateur de source et ne compile pas ici, donc `IsComplete` est faux sur un checkout ordinaire. C'est exactement le piège que `RunStatus.IsComplete` tend une propriété plus loin (voir la correction en §2.3), pour la même raison de forme.
+>
+> Ce qui conditionne l'élagage : `RunStatus.TraversalComplete` (porte du run) plus le `FileStatus` par fichier (périmètre, règle 3 de §6.3). `IsComplete` du resolver reste ce qu'il a toujours été utilement : la distinction « a tourné et n'a rien résolu » / « n'a pas pu tourner ».
+
+> **Correction apportée à l'implémentation (remédiation vague 2b) : `IsComplete` et `IsAvailable` n'alimentent aucun rapport, et ce document l'affirmait deux fois** (la phrase « `IsComplete` passe à `false`, ce que le **rapport de sortie** doit dire à l'opérateur » ci-dessus, et « rapportée à l'opérateur » juste avant, dont la mention a été retirée).
+>
+> Vérifié par `grep` sur tout `producers/src` : aucun lecteur de production pour l'une ou l'autre propriété ; les seuls lecteurs sont les tests. Ce que l'opérateur voit vient de `GenerateRun.ReportProjects`, qui itère `RoslynResolver.Projects` et émet **une note par projet non compilé**, en nommant le projet, sa `RoslynProjectAvailability` et le détail. C'est strictement plus d'information qu'un booléen.
+>
+> Arbitrage retenu : **corriger le document et les commentaires plutôt que câbler une seconde voie**. Câbler `IsComplete` dans le rapport ajouterait une ligne agrégée à côté d'une voie par projet qui fonctionne déjà et qui dit davantage. Les deux propriétés restent : c'est la question qu'un hôte intégrant le resolver pose, et le fixture de `RoslynResolverTests` s'appuie sur `IsComplete` pour prouver que son dépôt scratch a réellement compilé.
+
+**Rayon d'impact — il déborde du projet en échec.** C'est le point le moins intuitif et il doit être écrit noir sur blanc. Un projet qui ne compile pas ne coûte pas seulement la précision *sur ses propres fichiers* :
+
+- **Dans le projet A en échec** : ses fichiers ne sont pas `Owns()`és, donc chacun de ses appels retombe sur la baseline. Attendu.
+- **Dans les projets propres qui appellent A** : ils compilent, eux, mais contre le **`bin/`** de A — donc un appel B → A se lie à un symbole de *métadonnées*, pas de source, et n'est pas résoluble exactement. La précision se dégrade sur tout le **cône de dépendances inverses** de A, pas seulement dans A.
+
+Et ce second cas était initialement traité *à l'envers* : un symbole de métadonnées était rendu `Unresolved`, ce qui est juste pour une cible réellement externe (BCL, NuGet — la supposition par nom de la baseline y est fausse et la rétracter est un gain) mais **destructeur** pour une cible qui est un projet du dépôt : le concept existe (l'extracteur a lu la source de A, que Roslyn ait su compiler A ou non) et l'arête `ByName` de la baseline était correcte. Un seul projet en échec faisait donc disparaître des arêtes justes dans tous les projets qui l'appellent.
+
+Les deux cas sont désormais distingués par la **provenance MSBuild** — l'assembly de la cible est remontée à la `MetadataReference` dont elle vient, dont le chemin est cherché parmi les items `ReferencePath` que MSBuild a marqués `ReferenceSourceTarget=ProjectReference` avec un `MSBuildSourceProjectFile` sous la racine du dépôt. Jamais par nom de fichier ou d'assembly : un paquet NuGet peut porter le nom d'un projet du dépôt, et `OutputPath` peut rediriger une sortie n'importe où. Quand la cible est un projet du dépôt non compilé, le resolver **ne dit rien** et laisse la verdict de la baseline en place.
+
+**Chemin futur possible** : un *hôte de générateurs en bac à sable*. C'est cela, et non un `CSharpGeneratorDriver` non gardé, qui lèverait la limitation.
+
+La limitation est épinglée par un test (`A_project_completed_by_a_source_generator_degrades_rather_than_resolving_from_a_hole`, sur une fixture dédiée plutôt que sur `OKF4net.Cli` lui-même) pour qu'elle ne change pas silencieusement dans un sens ou dans l'autre.
 
 **Et `MSBuildWorkspace` n'avait pas à être écarté aussi catégoriquement**, même si la question est désormais sans objet : [roslyn#80127](https://github.com/dotnet/roslyn/issues/80127) est toujours ouverte, mais la difficulté est conditionnée — un outil qui en dépend doit **livrer le BuildHost**, et depuis Roslyn 4.9 `MSBuildLocator` n'est en général plus nécessaire. La formulation « inutilisable pour un outil distribué sur nuget.org » était trop forte.
 
@@ -491,13 +591,48 @@ Sur « bundle », les dix premiers résultats sont des membres d'`OkfBundleTools
 
 **Contrefactuel mesuré** — restreindre la portée aux types (147 concepts, membres retirés) : top 5 **1 / 55**, inchangé ; top 20 : 23 / 220 au lieu de 18. Réduire le volume **ne corrige pas** le problème, parce que la cause est l'ordre, pas le nombre.
 
-**Conséquence.** Le critère d'acceptation — les concepts curatés restent atteignables dans le top 5 injecté et le top 20 recherché — **n'est pas rempli**, et il ne le sera pas en jouant sur la portée. Il reste trois issues, et le choix est ouvert :
+**Décision prise, et implémentée le 2026-08-31 :** rotation par famille dans le sélecteur partagé (`ConceptSearch.TopDiversified`), branchée dans les points de troncature. Les deux autres issues envisagées — sortir les concepts de code dans un bundle séparé, ou assumer un bundle non cherchable — sont écartées : la première coûte la navigation d'un seul tenant, la seconde rend l'auto-injection de contexte inutilisable.
 
-1. **Trier ou filtrer dans `OKF4net.Agents`** (par `tag`, que les concepts de code portent déjà, ou en séparant les surfaces connaissance/code). Traite la cause. `OKF4net.Agents` est un projet distinct de `src/OKF4net`, donc la contrainte « zéro modification de la bibliothèque » (§11) tient toujours — mais la revendication doit être reformulée.
-2. **Ne pas générer les concepts de code dans le bundle principal** — un bundle séparé, monté à côté. Préserve la recherche existante, au prix de la navigation d'un seul tenant.
-3. **Assumer** que ce bundle se parcourt (`okf_browse`) et se traverse (`okf graph`) plutôt qu'il ne se cherche, et l'écrire noir sur blanc — y compris que l'auto-injection de contexte deviendra inutilisable sur ce bundle.
+**Une hypothèse intermédiaire a été essayée et mesurée fausse**, et cela vaut d'être consigné parce que c'est contre-intuitif : diversifier *à l'intérieur* d'une bande de score ne suffit pas. Sur « bundle », un membre généré littéralement nommé `Bundle` matche le terme dans son titre, sa description et son corps et score le maximum (6), tandis que le concept curaté qui répond réellement à la question ne le mentionne que dans sa description (2). Ils sont dans des bandes différentes : aucune rotation intra-bande ne rend le curaté atteignable. La sélection doit donc **traverser les bandes**, en donnant son tour à chaque famille — au prix assumé qu'un concept mieux scoré soit déplacé par un moins bien scoré d'une famille non représentée.
 
-Le benchmark lui-même devient un **test permanent** du producer, avec ses seuils, quelle que soit l'issue retenue.
+**Résultat, même corpus, avant → après :**
+
+| Mesure | Avant | Après |
+|---|---|---|
+| Places curatées dans le top 5 | 1 / 55 | **23 / 55** |
+| Places curatées dans le top 20 | 18 / 220 | **34 / 220** |
+| Requêtes sans aucun curaté dans le top 20 | 5 / 11 | **0 / 11** |
+| Rang du premier curaté sur « bundle » | #74 | **#2** |
+| Rang du premier curaté sur « concept » | #83 | **#2** |
+
+Le critère d'acceptation est rempli. Le benchmark est devenu un **test permanent** (`tests/OKF4net.Tests/SearchScaleTests.cs`), assorti d'un test de contrôle sur le même corpus : sans diversification, `Take(5)` ne ramène aucun concept curaté — ce qui atteste que le corpus **discrimine** réellement les deux ordres, et donc que le vert des tests au-dessus veut dire quelque chose.
+
+**Correction du 2026-09-01 — il n'y avait pas deux points de troncature, mais trois.** Cette section affirmait que la rotation était branchée dans « les deux **seuls** points de troncature ». C'était faux, et dans le sens le plus gênant : le troisième était le chemin *recommandé*.
+
+`OkfContextProvider` a deux chemins de lecture. Le constructeur V1 (`OkfBundleTools`) tronque à `MaxConceptsInjected` — c'est celui qui avait été corrigé. Le constructeur V2 « scopé » (`IKnowledgeResolver` + `IMemoryStore`), lui, ne tronque pas à un nombre de slots : `ProvideScopedAsync` → `AppendPassages` rend un **préfixe contigu** de la liste de passages jusqu'à épuisement du budget de tokens. C'est une troncature, simplement bornée par un budget plutôt que par un compteur — et le chemin V1 porte un `[Obsolete]` sur `MemoryDirectory` qui pousse explicitement les hôtes vers V2. La correction avait donc atterri sur le chemin déprécié et manqué le chemin recommandé.
+
+`KnowledgeQuery.FairnessQuota` ne couvre pas ce cas : il fait tourner les **sources** du catalogue, pas les familles d'ids à l'intérieur d'une source.
+
+**Mesuré le 2026-09-01, pas supposé.** Corpus §8.7 avec les descriptions générées partageant le vocabulaire curaté (ce que produit réellement okfgen à partir des commentaires de doc), une source de catalogue, options par défaut (`TokenBudget` 2000, part connaissance 0,6) :
+
+| Requête | passages rendus / disponibles | curatés rendus | rang du premier curaté |
+|---|---|---|---|
+| validation | 83 / 336 | **0** | #333 |
+| bundle | 38 / 336 | **0** | #333 |
+| concept | 38 / 334 | **0** | #333 |
+| yaml | 40 / 335 | **0** | #333 |
+| catalog | 38 / 334 | **0** | #47 |
+| search | 38 / 336 | **0** | #333 |
+
+Zéro concept curaté injecté sur 6 requêtes larges sur 7 (la septième, `index`, ne ramène que 2 hits en tout et tient entièrement dans le budget). Le chemin scopé est donc corrigé lui aussi.
+
+Il l'est avec une **variante** du sélecteur, `ConceptSearch.TopDiversifiedBy`, et la différence n'est pas cosmétique : `TopDiversified` re-dérive l'ordre des familles depuis les scores, ce qui écraserait silencieusement l'entrelacement inter-sources que `FairnessQuota` vient d'appliquer en amont (vérifié : cela fait rougir `OkfContextProviderFusionTests.A_merged_ranking_with_a_fairness_quota_surfaces_both_sources`). `TopDiversifiedBy` visite les familles dans leur **ordre de première apparition**, donc les deux mécanismes se composent au lieu de se disputer. Sur une liste triée par score les deux ordres coïncident, `ConceptId` comparant segment par segment en ordinal.
+
+La surface mémoire n'est **pas** diversifiée, et c'est délibéré : `FileMemoryStore` concatène une liste classée par tier dans son ordre de lecture, et préfixe les ids par le tier — une rotation par famille y entrelacerait les tiers et écraserait cette précédence au lieu de répartir des slots à l'intérieur.
+
+Enfin, les tests d'acceptation passent désormais par les **types de production** (`OkfBundleTools.Search`, les deux constructeurs d'`OkfContextProvider`) et non plus seulement par `ConceptSearch.TopDiversified` appelé directement : la version précédente restait verte si l'on remettait un `.Take(...)` aux deux points de branchement.
+
+**La revendication §11 doit être lue précisément** : `src/OKF4net` n'est pas modifié dans son comportement — `ConceptSearch.Search` est inchangé, `TopDiversified` est une méthode ajoutée que seuls les consommateurs appellent. Mais le comportement d'`OKF4net.Agents`, lui, change délibérément.
 
 ---
 
@@ -507,17 +642,35 @@ Drapeaux ajoutés à `okfgen generate` par ce lot :
 
 | Flag | Défaut | Rôle | § |
 |---|---|---|---|
-| `--repo-url <url>` | absent | base des permaliens `resource` ; sans lui, chemins repo-relatifs + warnings assumés | 4.3 |
+| `--repo-url <url>` | absent | base des URL `resource` de **toutes** les familles ; sans lui, `code/` n'émet rien et `packages/`/`docs/` retombent sur le chemin repo-relatif + warnings assumés | 4.3 |
 | `--rev <ref>` | branche courante | ref utilisée dans l'URL des permaliens (jamais un sha par défaut) | 4.3 |
 | `--check` | off | régénère dans un temporaire et compare octet à octet ; sortie non nulle si dérive | 6.2 |
 | `--include-tests` | off | inclut les projets/dossiers de test | 5.4 |
 | `--include-internal` | off | descend sous la visibilité publique | 5.4 |
 | `--no-code` | off | désactive l'étage graphe de code (comportement actuel) | 5.4 |
-| `--max-file-size <n>` | 2 Mo | plafond par fichier source ; au-delà, fichier ignoré et compté (run partiel) | 2.3 |
+| `--max-file-size <n>` | 2 Mo | plafond par fichier source, appliqué par les deux moteurs ; au-delà, l'extracteur ignore **et compte** (run partiel), la porte Roslyn laisse tomber l'item `Compile` **silencieusement** | 2.3 |
 
 `--update` conserve son nom mais change de sémantique sur `code/` (élagage, §6.3).
 
 **En HEAD détaché**, il n'y a pas de nom de branche à mettre dans l'URL : `--rev` devient alors obligatoire pour obtenir des permaliens. À défaut, `--repo-url` est ignoré et on retombe sur les chemins repo-relatifs et leurs warnings (§4.3) — jamais sur un sha implicite, qui ferait churner les 470 concepts au commit suivant.
+
+### 9.1 Le rapport de complétude — ajouté en remédiation vague 3
+
+Chaque `generate` **qui atteint l'étape de génération** imprime **une ligne** sur stderr, préfixée `run: ` : fichiers **visités** et, s'ils ne se sont pas tous extraits, la répartition par cause ; traversée complète ou non (§2.3) ; projets détectés, projets compilés dans la clôture, et fichiers **couverts** par le resolver exact (§7.2) ; et combien de concepts `code` sont atteignables depuis `overview` (§5.2). Suivent, le cas échéant, les fichiers **entièrement ignorés**, nommés avec leur cause, plafonnés à dix.
+
+**Le caractère inconditionnel est le point** — mais la borne exacte n'est pas « chaque run ». Un run qui lève **avant** la génération imprime `error:` et sort en 1 sans avoir rien rapporté ; c'est atteignable et non théorique (jonction circulaire dans un dépôt sans `*.sln` racine : c'est le parcours récursif `.csproj` du scanner lui-même qui lève). L'invariant qui tient est : **tout run qui atteint l'étape de génération, et donc tout run qui sort en 0** — le rapport est émis *avant* l'écriture, si bien qu'un run dont l'écriture a échoué a tout de même dit ce que son analyse avait trouvé. Cela posé : toutes les autres déclarations de ce producer sur lui-même sont des `note:` conditionnées à leur propre déclencheur, et chaque déclencheur couvre un sous-ensemble différent de ce qu'un run peut laisser de côté ; un run sans note est donc indiscernable d'un mécanisme qui n'a pas tiré. Rien n'agrégeait. C'est le constat agrégé de la revue finale — *« le bundle sous-décrit silencieusement l'API, et le producer n'a aucune déclaration à l'exécution de ce qu'il a laissé de côté »* — et il ferme trois trous nommés là-bas : `RunStatus` calculé puis jeté (§2.3), l'étage Roslyn court-circuité sans `else` sur un dépôt sans `.csproj` (§7.2), et la colonne vertébrale §5.2 cassée à 100 % sans qu'aucune note ne tire.
+
+**« Visités », pas « lus » — corrigé en remédiation round 2.** Le compte vient de `RunStatus.Skipped`, qui enregistre *l'issue de chaque fichier tenté, y compris ceux extraits proprement*, et cinq des sept valeurs de `FileStatus` signifient que le fichier n'a **pas** été lu. La clause disait « read » : sur un run `--max-file-size`, elle imprimait `1 source file(s) read: 1 skipped, over --max-file-size` — elle prétendait avoir lu le fichier qu'elle venait de dire n'avoir pas lu, sur précisément le run dégradé pour lequel la ligne existe, et dans le sens qui flatte le run.
+
+**« Couvert », pas « résolu exactement » — même nature d'erreur.** `RoslynResolver.Owns` est un prédicat par *fichier* qui signifie seulement « appartient à un projet compilé sans erreur ». À l'intérieur d'un fichier couvert, un site d'appel que Roslyn ne parvient pas à *raccrocher* est omis de `Resolve` et le verdict par correspondance de nom subsiste : des arêtes name-matched vivent donc aussi dans les fichiers « couverts », et l'ancienne formulation (« resolved exactly for X … by name matching for the other N ») affirmait une partition qui n'existe pas. Le raccrochage est à 100 % sur ce dépôt aujourd'hui, donc l'erreur vive est quasi nulle ; la sur-affirmation était héritée de `RoslynProjectReport`.
+
+Deux chiffres ne sont **pas** pris sur parole : la fraction de couverture est demandée au resolver fichier par fichier (`RoslynResolver.Owns`), donc un projet rapporté `Compiled` dont tous les items `Compile` ont été refusés avant la construction de la compilation compte zéro fichier couvert ; et l'atteignabilité est parcourue sur les corps réellement produits avec `LinkScanner` **et `ConceptLink.Resolve`** — le scanner *et* le resolver du validateur — plutôt que redérivée de la règle §5.1, donc un lien que ce producer a écrit et que le scanner ne voit pas compte comme absent ici exactement comme pour `okf validate`. Ce dernier compte porte sur l'**atteignabilité**, pas sur la containment : le parcours suit tout lien absolu, `## Calls` compris, donc la clause dégradée dit « nothing reaches the others from `overview` » et jamais « nothing links down to them ».
+
+**`--no-code` a sa propre ligne, et elle n'affirme plus que le reste du bundle est intact** — elle le faisait, et c'était faux. Sans graphe, le générateur prend sa branche `CodeFamily.Empty`, donc `AttributePackages` (qui porte la seule note qui mentionnerait la perte) n'est jamais appelé, et chaque concept `packages/` est écrit sans lien de containment vers ses namespaces. Sous `--update` cela écrase les liens qu'un run précédent avait écrits, tandis que les concepts `code/` sont conservés — laissant exactement la famille `code` inatteignable que la dernière clause de la ligne ordinaire existe pour signaler. Même danger que `--no-msbuild` ; et `--check --no-code` est refusé alors que `--update --no-code` ne l'est pas.
+
+**Ce que la ligne ne dit toujours pas.** Elle énonce ce que le run a *visité* et comment il a *résolu* — jamais ce qu'il a choisi de ne pas *émettre*. Un fichier lu intégralement, extrait proprement et couvert par le resolver exact ne produit toujours aucun concept pour ses indexeurs, ses opérateurs, ses opérateurs de conversion ou ses membres d'énumération : ce sont des déclarations que l'extracteur ne produit pas. Une ligne parfaitement saine est donc compatible avec un bundle qui sous-décrit l'API, et ce rapport ne ferme que **partiellement** le constat agrégé cité plus haut. Non clôturable ici : le producer ne peut pas compter ce qu'il n'a jamais extrait, donc la dimension par symbole exige d'abord que l'extracteur déclare ses propres omissions — inventer un nombre ici serait exactement le défaut que cette ligne existe pour clore. Dit à voix haute dans `producers/README.md`, à côté de la ligne elle-même.
+
+Sur **stderr** et pas stdout : stdout porte le résultat du run, que lit une garde CI ; et le rapport ne doit rien changer à ce qui atterrit dans le bundle, ce qu'un flux ne peut pas faire (`--check` compare des octets de bundle).
 
 ---
 

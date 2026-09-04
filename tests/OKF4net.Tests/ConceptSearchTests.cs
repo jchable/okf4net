@@ -6,7 +6,8 @@ namespace OKF4net.Tests;
 /// tag/description vs. body weighting, multi-term OR/additive scoring, tie
 /// ordering by ascending <see cref="ConceptId"/>, the tag filter, the
 /// empty-query no-op, and <see cref="ConceptSearch.Excerpt"/>'s
-/// first-matching-line behaviour. Mirrors the scoring cases already covered
+/// first-matching-line behaviour, plus <see cref="ConceptSearch.TopDiversified"/>'s
+/// within-band rotation across top-level id families. Mirrors the scoring cases already covered
 /// end-to-end (through <c>OkfBundleTools.Search</c>'s formatted output) by
 /// <c>OkfSearchTests</c>, but exercises <see cref="ConceptSearch"/> directly
 /// against in-memory <see cref="Concept"/> values, without a bundle on disk.
@@ -186,5 +187,189 @@ public class ConceptSearchTests
         var body = "   Leading and trailing whitespace around orders.   \n";
 
         Assert.Equal("Leading and trailing whitespace around orders.", ConceptSearch.Excerpt(body, "orders"));
+    }
+
+    // ---- TopDiversified: scarce slots across top-level id families ---------
+
+    /// <summary>
+    /// Builds one score band without touching the filesystem: ids only, all at
+    /// the same score, in the order <see cref="ConceptSearch.Search"/> would
+    /// return them (ascending ordinal by id).
+    /// </summary>
+    private static IReadOnlyList<ScoredConcept> Band(int score, params string[] ids) =>
+        [.. ids.Select(id => new ScoredConcept(MakeConcept(id), score))];
+
+    [Fact]
+    public void TopDiversified_rotates_slots_across_top_level_segments_within_a_band()
+    {
+        var scored = Band(6,
+            "code/csharp/a", "code/csharp/b", "code/csharp/c", "code/csharp/d",
+            "docs/readme",
+            "overview",
+            "packages/okf4net");
+
+        var top = ConceptSearch.TopDiversified(scored, 4);
+
+        Assert.Equal(
+            ["code/csharp/a", "docs/readme", "overview", "packages/okf4net"],
+            top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_puts_the_best_scoring_concept_first()
+    {
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "code/csharp/a", "code/csharp/b"));
+        scored.AddRange(Band(3, "docs/readme"));
+
+        Assert.Equal("code/csharp/a", ConceptSearch.TopDiversified(scored, 3)[0].Concept.Id.ToString());
+    }
+
+    [Fact]
+    public void TopDiversified_reaches_a_lower_scoring_family_rather_than_filling_up_with_the_best_one()
+    {
+        // The measured failure this whole method exists for: a generated member
+        // literally named "Bundle" scores the maximum while the curated concept
+        // that answers the question only mentions it in its description. They
+        // are in different score bands, so the curated one is reachable only by
+        // giving each family a turn.
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "code/csharp/a", "code/csharp/b", "code/csharp/c"));
+        scored.AddRange(Band(2, "packages/okf4net"));
+
+        var top = ConceptSearch.TopDiversified(scored, 2);
+
+        Assert.Equal(["code/csharp/a", "packages/okf4net"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_preserves_input_order_inside_a_family()
+    {
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "code/a"));
+        scored.AddRange(Band(4, "code/b"));
+        scored.AddRange(Band(2, "code/c"));
+
+        var top = ConceptSearch.TopDiversified(scored, 3);
+
+        Assert.Equal(["code/a", "code/b", "code/c"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_returns_everything_when_fewer_results_than_requested()
+        => Assert.Equal(2, ConceptSearch.TopDiversified(Band(6, "code/csharp/a", "docs/readme"), 20).Count);
+
+    [Fact]
+    public void TopDiversified_degrades_to_plain_score_order_for_a_single_family()
+    {
+        var scored = Band(6, "code/csharp/a", "code/csharp/b", "code/csharp/c");
+
+        var top = ConceptSearch.TopDiversified(scored, 2);
+
+        Assert.Equal(["code/csharp/a", "code/csharp/b"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    /// <summary>
+    /// The rotation order is pinned to an EXPECTED sequence, not to a second
+    /// call's output: comparing two calls in one process on one input is
+    /// satisfied by any stable implementation, a plain <c>Take</c> included,
+    /// and cannot see a family order that depends on hash iteration. Here the
+    /// input is deliberately NOT in id order, so only the documented
+    /// (score, then segment ordinal) family order produces this sequence.
+    /// </summary>
+    [Fact]
+    public void TopDiversified_orders_tied_families_by_segment_ordinal_not_by_input_order()
+    {
+        var scored = Band(6, "packages/x", "code/a", "docs/y", "code/b", "overview");
+
+        var top = ConceptSearch.TopDiversified(scored, 3);
+
+        Assert.Equal(["code/a", "docs/y", "overview"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_visits_families_best_scoring_first()
+    {
+        // `packages` holds the single best result, so its family leads the
+        // rotation even though `code` sorts before it ordinally.
+        var scored = new List<ScoredConcept>();
+        scored.AddRange(Band(6, "packages/x"));
+        scored.AddRange(Band(4, "code/a", "code/b"));
+
+        var top = ConceptSearch.TopDiversified(scored, 3);
+
+        Assert.Equal(["packages/x", "code/a", "code/b"], top.Select(s => s.Concept.Id.ToString()));
+    }
+
+    [Fact]
+    public void TopDiversified_returns_empty_for_an_empty_input()
+        => Assert.Empty(ConceptSearch.TopDiversified([], 5));
+
+    [Fact]
+    public void TopDiversified_returns_empty_for_a_non_positive_count()
+        => Assert.Empty(ConceptSearch.TopDiversified(Band(6, "code/a"), 0));
+
+    // ---- TopDiversifiedBy: the same rotation over a caller-ordered list ----
+
+    private static string FamilyOf(string id)
+    {
+        var slash = id.IndexOf('/');
+        return slash < 0 ? id : id[..slash];
+    }
+
+    /// <summary>
+    /// The one behaviour that distinguishes it from <see cref="ConceptSearch.TopDiversified"/>,
+    /// and the reason both exist: the caller's list is already ordered by
+    /// something the scores cannot express (a catalog resolver's source
+    /// interleave), so families are visited as they first appear rather than
+    /// re-sorted by score. Feeding this same input to
+    /// <see cref="ConceptSearch.TopDiversified"/> would lead with <c>docs/a</c>
+    /// and undo the caller's ordering.
+    /// </summary>
+    [Fact]
+    public void TopDiversifiedBy_visits_families_in_first_appearance_order()
+    {
+        string[] ids = ["code/a", "docs/a", "code/b", "code/c", "docs/b"];
+
+        var top = ConceptSearch.TopDiversifiedBy(ids, FamilyOf, 4);
+
+        Assert.Equal(["code/a", "docs/a", "code/b", "docs/b"], top);
+    }
+
+    [Fact]
+    public void TopDiversifiedBy_preserves_the_incoming_order_inside_a_family()
+    {
+        string[] ids = ["code/c", "code/a", "code/b"];
+
+        Assert.Equal(ids, ConceptSearch.TopDiversifiedBy(ids, FamilyOf, 3));
+    }
+
+    /// <summary>
+    /// The shape the scoped context provider uses: <c>count = items.Count</c>
+    /// is a full reordering, not a truncation, because what bounds its list is
+    /// a token budget spent top-down rather than a slot count.
+    /// </summary>
+    [Fact]
+    public void TopDiversifiedBy_reorders_the_whole_list_when_count_covers_it()
+    {
+        string[] ids = ["code/a", "code/b", "code/c", "docs/a"];
+
+        Assert.Equal(
+            ["code/a", "docs/a", "code/b", "code/c"],
+            ConceptSearch.TopDiversifiedBy(ids, FamilyOf, ids.Length));
+    }
+
+    [Fact]
+    public void TopDiversifiedBy_returns_empty_for_an_empty_input_or_a_non_positive_count()
+    {
+        Assert.Empty(ConceptSearch.TopDiversifiedBy(Array.Empty<string>(), FamilyOf, 5));
+        Assert.Empty(ConceptSearch.TopDiversifiedBy(["code/a"], FamilyOf, 0));
+    }
+
+    [Fact]
+    public void TopDiversifiedBy_rejects_null_arguments()
+    {
+        Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversifiedBy<string>(null!, FamilyOf, 1));
+        Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversifiedBy(["code/a"], null!, 1));
     }
 }
