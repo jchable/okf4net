@@ -80,9 +80,27 @@ jobs:
         working-directory: tools/viewer-security-check
         run: npm test
 
+  # Exercises the real release-packaging script (packaging/Publish-Cli.ps1) on
+  # every CI run, not just on a tag push, so a broken archive/permission bug
+  # is caught here instead of on the first real release. This covers
+  # linux-x64, osx-arm64 and win-x64 -- linux-arm64 and osx-x64 have no
+  # matching free-tier runner label available to a CI job on every push, so
+  # they stay release-only (built for real in release.yml's cli-binaries
+  # matrix, just not double-checked here). That is a known residual gap, not
+  # an oversight.
   aot-publish:
-    name: Native AOT publish smoke test
-    runs-on: ubuntu-latest
+    name: Native AOT publish smoke test (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
+          - os: windows-latest
+            rid: win-x64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
@@ -90,25 +108,70 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Publish okf CLI (Native AOT)
-        run: dotnet publish src/OKF4net.Cli -c Release
+      - name: Derive declared version
+        shell: pwsh
+        run: |
+          $declared = (Select-String -Path Directory.Build.props -Pattern '<Version>([^<]*)</Version>').Matches[0].Groups[1].Value
+          echo "DECLARED=$declared" >> $env:GITHUB_ENV
+
+      - name: Publish + archive (packaging/Publish-Cli.ps1)
+        shell: pwsh
+        run: packaging/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:DECLARED -OutDir dist
+
+      - name: Archive exists, is non-empty, and (on Unix) its binary is executable
+        shell: pwsh
+        run: |
+          $isWin = '${{ matrix.rid }}'.StartsWith('win-')
+          $ext = if ($isWin) { 'zip' } else { 'tar.gz' }
+          $archive = "dist/okf-$env:DECLARED-${{ matrix.rid }}.$ext"
+          if (-not (Test-Path $archive)) { throw "archive not found: $archive" }
+          $len = (Get-Item $archive).Length
+          if ($len -eq 0) { throw "archive is empty: $archive" }
+          if (-not (Test-Path "$archive.sha256")) { throw "sha256 sidecar not found: $archive.sha256" }
+          Write-Host "OK: $archive ($len bytes)"
+
+          if (-not $isWin) {
+            # The bug this whole packaging change exists to prevent:
+            # Compress-Archive does not preserve the Unix executable bit, so a
+            # naively-zipped Unix binary would extract non-executable. tar
+            # preserves file mode, so extract the *archived* binary here and
+            # check its permission bit directly, rather than trusting that
+            # what went into the archive is what comes out.
+            $extractDir = "dist/extract-${{ matrix.rid }}"
+            New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+            tar xzf $archive -C $extractDir
+            if ($LASTEXITCODE -ne 0) { throw "tar extract failed for $archive" }
+            $mode = [System.IO.File]::GetUnixFileMode("$extractDir/okf")
+            if (($mode -band [System.IO.UnixFileMode]::UserExecute) -eq 0) {
+              throw "okf extracted from $archive is not executable (mode: $mode)"
+            }
+            Write-Host "OK: okf extracted from archive is executable ($mode)"
+          }
+
+      - name: Locate published binary
+        shell: pwsh
+        run: |
+          $name = if ('${{ matrix.rid }}'.StartsWith('win-')) { 'okf.exe' } else { 'okf' }
+          $bin = Get-ChildItem -Recurse -Path src/OKF4net.Cli/bin/Release -Filter $name |
+            Where-Object { $_.FullName -match '[\\/]publish[\\/]' } | Select-Object -First 1
+          if (-not $bin) { throw "published binary $name not found" }
+          echo "BIN=$($bin.FullName)" >> $env:GITHUB_ENV
 
       - name: Run published binary
+        shell: pwsh
         run: |
-          BIN=$(find src/OKF4net.Cli/bin/Release -type f -name okf -path '*publish*' | head -1)
-          "$BIN" validate tests/fixtures/appendix_a
+          & $env:BIN validate tests/fixtures/appendix_a
+          if ($LASTEXITCODE -ne 0) { throw "okf validate failed" }
 
       # `okf --version` reads AssemblyInformationalVersionAttribute at runtime.
       # The in-process CliTests cannot prove that survives Native AOT, so the
       # published binary is asked directly here: a trimmed-away attribute would
       # print the "0.0.0-unknown" fallback and this fails.
       - name: Published binary reports the build version
+        shell: pwsh
         run: |
-          BIN=$(find src/OKF4net.Cli/bin/Release -type f -name okf -path '*publish*' | head -1)
-          DECLARED=$(sed -n 's/.*<Version>\([^<]*\)<\/Version>.*/\1/p' Directory.Build.props)
-          ACTUAL=$("$BIN" --version)
-          echo "declared=$DECLARED actual=$ACTUAL"
-          case "$ACTUAL" in
-            "okf $DECLARED "*) ;;
-            *) echo "::error::published binary reports '$ACTUAL', expected version $DECLARED"; exit 1 ;;
-          esac
+          $actual = & $env:BIN --version
+          Write-Host "declared=$env:DECLARED actual=$actual"
+          if ($actual -notlike "okf $env:DECLARED *") {
+            throw "published binary reports '$actual', expected version $env:DECLARED"
+          }

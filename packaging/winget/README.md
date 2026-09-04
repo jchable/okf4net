@@ -5,16 +5,19 @@ Distributes the `okf` CLI as the winget package **`Coderise.OKF4net`**
 
 ## How it works
 
-On every `v*` tag, `.github/workflows/release.yml`:
+On every `v*` tag, `.github/workflows/release.yml`'s `cli-binaries` job
+builds Native AOT binaries for six RIDs on their native runners via
+`packaging/Publish-Cli.ps1` (shared with the Linux/macOS builds — it is no
+longer winget-specific, hence living one level up from this directory).
+Only the two Windows RIDs feed winget:
 
-1. Builds Native AOT binaries on native runners — `win-x64`
-   (`windows-latest`) and `win-arm64` (`windows-11-arm`) — via
-   `Publish-Cli.ps1`, producing `okf-<version>-<rid>.zip` (each containing a
-   single `okf.exe`).
-2. Creates the GitHub Release and attaches the two zips + `checksums.txt`.
+1. `win-x64` (`windows-latest`) and `win-arm64` (`windows-11-arm`) each
+   produce `okf-<version>-<rid>.zip` (containing a single `okf.exe`); the
+   other four RIDs produce `.tar.gz` archives that this package ignores.
+2. Creates the GitHub Release and attaches every archive + `checksums.txt`.
 3. Generates the winget v1.12.0 manifests via `Generate-Manifests.ps1` (SHA256
-   read from the built artifacts) and attaches `Coderise.OKF4net*.yaml` to the
-   Release.
+   read from the two Windows `.zip.sha256` files) and attaches
+   `Coderise.OKF4net*.yaml` to the Release.
 4. Opens the update PR at `microsoft/winget-pkgs` (`winget-submit` job) —
    inert until the prerequisites below are met, see *Automated submission*.
 
@@ -53,8 +56,9 @@ pwsh Generate-Manifests.ps1 -Version <v> `
 ```
 
 SHA256 values come from the Release's `checksums.txt`, or from the local
-`okf-<v>-<rid>.zip.sha256` files produced when you run `Publish-Cli.ps1`
-yourself (these `.sha256` sidecars are not attached to the Release itself).
+`okf-<v>-win-x64.zip.sha256` / `okf-<v>-win-arm64.zip.sha256` files produced
+when you run `../Publish-Cli.ps1` yourself (these `.sha256` sidecars are not
+attached to the Release itself).
 
 ## Automated submission
 

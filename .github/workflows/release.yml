@@ -103,6 +103,18 @@ jobs:
             runner: windows-latest
           - rid: win-arm64
             runner: windows-11-arm
+          - rid: linux-x64
+            runner: ubuntu-latest
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+          # macos-13 (the last Intel-standard-runner image) was retired by
+          # GitHub in December 2025; macos-15-intel is its replacement for
+          # standard (non-"large") runners and is documented to remain
+          # available until Fall 2027. See actions/runner-images.
+          - rid: osx-x64
+            runner: macos-15-intel
+          - rid: osx-arm64
+            runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -112,9 +124,9 @@ jobs:
       - name: Derive version from tag
         shell: pwsh
         run: echo "VERSION=$($env:GITHUB_REF_NAME -replace '^v','')" >> $env:GITHUB_ENV
-      - name: Publish + zip
+      - name: Publish + archive
         shell: pwsh
-        run: packaging/winget/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:VERSION -OutDir dist
+        run: packaging/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:VERSION -OutDir dist
       - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.rid }}
@@ -135,13 +147,14 @@ jobs:
       - name: Build checksums.txt
         run: |
           cd dist
-          sha256sum okf-*.zip > checksums.txt
+          sha256sum okf-*.zip okf-*.tar.gz > checksums.txt
           cat checksums.txt
       - name: Create/attach Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/okf-*.zip
+            dist/okf-*.tar.gz
             dist/checksums.txt
 
   winget-manifests:
