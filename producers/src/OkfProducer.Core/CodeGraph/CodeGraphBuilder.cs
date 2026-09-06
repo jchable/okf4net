@@ -164,10 +164,18 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
 
         var sites = results.SelectMany(r => r.Result.Sites).ToList();
 
+        // (path, offset) is a call site's identity -- the same key both engines match on -- so two
+        // sites sharing one would be two calls at the same byte, which the grammar cannot produce:
+        // an `invocation_expression`'s callee node starts where no other callee node starts. Seeded
+        // with `Add` rather than the indexer so that stops being an assumption: if a future grammar or
+        // profile ever emits two, this throws here instead of silently keeping whichever came last and
+        // dropping a call from the graph with nothing to show for it.
         var verdicts = new Dictionary<(string RelativePath, int Offset), ResolvedEdge>();
         foreach (var site in sites)
         {
-            verdicts[(site.RelativePath, site.Offset)] = new ResolvedEdge(site, TargetContainer: null, TargetName: null, EdgeConfidence.Unresolved);
+            verdicts.Add(
+                (site.RelativePath, site.Offset),
+                new ResolvedEdge(site, TargetContainer: null, TargetName: null, EdgeConfidence.Unresolved));
         }
 
         foreach (var resolver in resolvers)
@@ -191,7 +199,17 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             // are handled after the fact, by the degrade-to-Unresolved pass below.
             foreach (var edge in resolver.Resolve(ownedSites, declared))
             {
-                verdicts[(edge.Site.RelativePath, edge.Site.Offset)] = edge;
+                // Only over a site the EXTRACTOR emitted. `verdicts[key] = edge` accepted anything a
+                // resolver handed back, so a resolver returning an edge for a site nobody extracted --
+                // a stale offset, a file it read itself, an off-by-one -- added a phantom call to the
+                // graph, and a phantom edge is a `## Calls` link to a caller that does not exist. The
+                // dictionary is seeded from `sites` above, so membership IS the contract
+                // `ISymbolResolver.Resolve` states and never enforced: an edge answers a site it was
+                // given, or it is not an answer.
+                if (verdicts.ContainsKey((edge.Site.RelativePath, edge.Site.Offset)))
+                {
+                    verdicts[(edge.Site.RelativePath, edge.Site.Offset)] = edge;
+                }
             }
         }
 

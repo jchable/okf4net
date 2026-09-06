@@ -295,4 +295,46 @@ public class CodeGraphBuilderTests
 
         return new RepositorySnapshot(repoPath, "test-repo", [], []);
     }
+
+    /// <summary>Answers a site nobody gave it, which is precisely what <see cref="ISymbolResolver.Resolve"/>'s contract forbids.</summary>
+    private sealed class PhantomResolver(CallSite phantom) : ISymbolResolver
+    {
+        public bool Owns(string relativePath) => true;
+
+        public IReadOnlyList<ResolvedEdge> Resolve(IReadOnlyList<CallSite> sites, IReadOnlyList<SymbolFact> symbols) =>
+            [new ResolvedEdge(phantom, "T", phantom.CalledName, EdgeConfidence.Exact)];
+    }
+
+    [Fact]
+    public void An_edge_for_a_site_the_extractor_never_emitted_is_dropped()
+    {
+        // The verdict dictionary used to take whatever a resolver handed back -- `verdicts[key] = edge`
+        // with no membership test -- so an edge naming a site nobody extracted was added to the graph.
+        // A stale offset, a file the resolver read for itself, an off-by-one in an engine's own
+        // conversion: any of them produced a `## Calls` link attributed to a caller that does not exist,
+        // and the contract Resolve states ("answer the sites you were given") was enforced nowhere.
+        //
+        // The phantom differs from the real site only by OFFSET, and its caller is a REAL declared
+        // symbol -- both deliberate. An unknown caller is already filtered later, by the invariant that
+        // no edge may name a caller absent from Symbols, so a phantom with a made-up caller would be
+        // caught by machinery that has nothing to do with this contract and the test would pass over a
+        // missing guard. Measured: the first version of this fixture did exactly that.
+        // Offset is also the identity half an engine is most likely to get wrong, and the half no
+        // name-based assertion would notice.
+        var real = new CallSite("T", "Caller", "Callee", "A.cs", 42);
+        var phantom = new CallSite("T", "Caller", "Callee", "A.cs", 999);
+
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(Member("T", "Caller"), Member("T", "Callee")) { Sites = [real] },
+            CSharpProfiles,
+            [new PhantomResolver(phantom)]);
+
+        var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        // The real site is still there, unresolved -- the phantom did not displace it either.
+        var edge = Assert.Single(graph.Edges);
+        Assert.Equal(42, edge.Site.Offset);
+        Assert.Equal("Caller", edge.Site.CallerName);
+        Assert.Equal(EdgeConfidence.Unresolved, edge.Confidence);
+    }
 }

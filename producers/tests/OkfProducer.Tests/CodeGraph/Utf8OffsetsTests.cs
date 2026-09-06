@@ -115,4 +115,43 @@ public class Utf8OffsetsTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => Utf8Offsets.ToUtf16("abc", 4));
     }
+
+    [Fact]
+    public void An_offset_that_splits_a_surrogate_pair_is_refused_rather_than_converted()
+    {
+        // The failure mode this type exists to prevent is a PLAUSIBLE WRONG NUMBER, not a missing one:
+        // it is the join key between two engines, so a bad conversion credits a call to whatever sits a
+        // few bytes away rather than dropping it (§2.1).
+        //
+        // Measured before the guard: `GetByteCount` over a span ending on a lone high surrogate runs it
+        // through the replacement fallback and scores 3 bytes -- neither the 0 of the codepoint's start
+        // nor the 4 of its end. Exactly the shape of answer that looks usable and is not.
+        const string Text = "A\U0001D11EB";   // A, a four-byte musical symbol (two UTF-16 units), B
+
+        Assert.Equal(1, Utf8Offsets.ToUtf8(Text, 1));   // the boundary before the pair
+        Assert.Equal(5, Utf8Offsets.ToUtf8(Text, 3));   // the boundary after it
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => Utf8Offsets.ToUtf8(Text, 2));
+    }
+
+    [Fact]
+    public void A_utf8_offset_inside_a_sequence_is_refused_rather_than_rounded_up()
+    {
+        // The other direction, and the one that was silently wrong rather than merely undefined: the
+        // walk tested `utf8Count >= utf8Offset`, so an offset one byte into the four-byte codepoint
+        // returned the index AFTER it -- a real UTF-16 index, for a different position than the caller
+        // asked about.
+        const string Text = "A\U0001D11EB";
+
+        Assert.Equal(1, Utf8Offsets.ToUtf16(Text, 1));   // the boundary before the codepoint
+        Assert.Equal(3, Utf8Offsets.ToUtf16(Text, 5));   // the boundary after it
+
+        foreach (var inside in new[] { 2, 3, 4 })
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => Utf8Offsets.ToUtf16(Text, inside));
+        }
+
+        // And the two mistakes are still told apart, so the guard did not swallow the pre-existing one.
+        Assert.Throws<ArgumentOutOfRangeException>(() => Utf8Offsets.ToUtf16(Text, 99));
+    }
 }
