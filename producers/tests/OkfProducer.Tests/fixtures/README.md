@@ -8,6 +8,12 @@ Two directories:
 `CheckTests` regenerates `golden/` over a copy of itself and compares the bytes; `BlastRadiusTests`
 mutates a copy of `fixture-repo/` and asserts exactly which concepts move.
 
+**The committed `golden/` is this solution's only CROSS-PROCESS determinism oracle**, and that is
+worth knowing before deleting it as redundant with `DeterminismTests`. Those two runs happen in one
+process, so they share the per-process string hash seed: any ordering that leaked from a dictionary
+compares equal to itself and the test stays green. The bytes here were written by a different
+process on a different day, so they do not.
+
 ## Read this first: the discipline here is the OPPOSITE of `tests/fixtures/`
 
 The repository's other golden directory, `tests/fixtures/`, holds **byte-exact captures of the

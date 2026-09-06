@@ -262,7 +262,15 @@ public sealed class BundleWriter : IBundleWriter
                     + " Remove the link, or generate into a bundle that does not contain one.");
             }
 
-            ReportUnownedFiles(outPath, manifest.OwnedPrefix, manifest, previous, notes);
+            // `merged`, not `manifest`: the difference is exactly the ids that FAILED to write, and
+            // handing over the pre-merge set made this method treat each of them as owned. A file
+            // sitting at a failed id's path -- which is where a hand-written concept is most likely to
+            // be, since the failure is often the filesystem refusing to overwrite it -- was therefore
+            // the one file §6.3 rule 2 exists to report and the one this report stayed silent about.
+            //
+            // Same set the manifest records, for the same reason it records it: ownership is what
+            // authorizes deletion, so anything not owned is what an operator needs named.
+            ReportUnownedFiles(outPath, merged.OwnedPrefix, merged, previous, notes);
         }
 
         // Not gated HERE, and it does not need to be: IndexGenerator gates itself. A previous round of
