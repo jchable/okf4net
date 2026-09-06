@@ -44,11 +44,19 @@ public class CodeConceptGeneratorTests
     {
         // 54-58% of call sites have no declaration in the repo. Linking them
         // would emit that many BrokenLink diagnostics and drown `validate`.
+        //
+        // THE CALLEE IS A BARE IDENTIFIER, and that is the fixture rather than a detail. This used to
+        // say `string.Substring`, a shape `CSharpProfile.CallQuery` cannot produce: an UNRESOLVED
+        // entry renders `edge.Site.CalledName`, which is the identifier as written at the call, and
+        // the query captures the name node alone -- the golden proves it, where `int.Parse(raw)` in
+        // `Registry.cs` comes out as `- ``Parse`` `, not `int.Parse`. A dotted name reaches this
+        // section only down the defensive branch, from a RESOLVED target. So the old assertions
+        // guarded the rendering of a string that could never arrive.
         var body = Single(Generate(), "code/csharp/n/scanner/scan").Document.Body;
 
         Assert.Contains("## Calls (unresolved)", body, StringComparison.Ordinal);
-        Assert.Contains("`string.Substring`", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("[string.Substring]", body, StringComparison.Ordinal);
+        Assert.Contains("`Substring`", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Substring]", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -61,10 +69,18 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void With_repo_url_the_resource_is_a_url_and_earns_no_path_warning()
+    public void With_repo_url_the_resource_is_an_absolute_url_with_a_line_span()
     {
         // §4.3: a bare relative resource resolves against the CONCEPT directory,
         // not the bundle root, so it would miss for every code concept.
+        //
+        // This was called `..._and_earns_no_path_warning`, which named a VALIDATOR verdict. No
+        // validator runs here -- this reads one frontmatter field off one document -- so that half of
+        // the name was a promise the body could not keep, and it is dropped rather than left to be
+        // trusted. The verdict itself is covered where a validator actually runs:
+        // `CheckTests.The_golden_bundle_validates_with_no_error_and_only_the_warnings_we_know_about`
+        // puts the real `BundleValidator` over a real bundle generated with a repo URL, and enumerates
+        // the warnings it is allowed to have.
         var fm = Single(Generate(repoUrl: "https://github.com/o/r", rev: "main"), "code/csharp/n/scanner/scan").Document.Frontmatter;
 
         Assert.StartsWith("https://github.com/o/r/blob/main/", fm.Resource, StringComparison.Ordinal);
@@ -111,8 +127,21 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void A_signature_line_names_the_file_with_forward_slashes_and_a_line_span()
+    public void A_signature_line_names_the_file_and_a_line_span()
     {
+        // This was called `..._with_forward_slashes_and_a_line_span`, and that half of the name was a
+        // claim this test cannot make: every fixture path here is the literal `src/Scanner.cs`, so a
+        // forward slash goes in and a forward slash comes out whatever the generator does with
+        // separators. Deleting `ConceptGenerator.NormalizeSeparators` from the signature line would
+        // leave it green.
+        //
+        // WHERE THE PROPERTY ACTUALLY LIVES, since dropping the name should not lose the fact:
+        // `CodeGraphBuilder.EnumerateFiles` normalizes once, at the only place a separator is ever
+        // chosen -- `Path.GetRelativePath` against the walk -- so everything downstream, this
+        // generator included, already receives `/`. It is covered, and by execution rather than by
+        // name: deleting that `Replace` turns six tests red, across `HostileInputTests` and
+        // `CliTests` (measured, on Windows, where `GetRelativePath` returns backslashes). The call in
+        // this file is a second belt on an already-normalized value.
         var body = Single(Generate(), "code/csharp/n/scanner/scan").Document.Body;
 
         Assert.Contains("## Signatures", body, StringComparison.Ordinal);
@@ -851,10 +880,19 @@ public class CodeConceptGeneratorTests
     {
         // An already-escaped bracket must be copied through, not escaped again: `\\]` renders a visible
         // backslash, which would be this fix corrupting the very text it exists to preserve.
+        //
+        // The two assertions below are both about what must NOT appear, and between them they left a
+        // gap: a producer that DELETED the author's backslash -- shipping `Keep [a]` -- satisfies
+        // both. `[a]` on its own is not a link, so the scanner still finds none, and with the
+        // backslash gone there is no `\\]` either. "Copied through" is a claim about the exact bytes,
+        // so it is now asserted as exact bytes, and that is what makes the deletion visible. MEASURED:
+        // with the guard rewritten to swallow the author's backslash, the exact-bytes assertion goes
+        // red and the two below stay green on their own.
         var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "Keep [a\\] and [b](c)."));
 
         var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
 
+        Assert.Contains("Keep [a\\] and [b\\](c).", body, StringComparison.Ordinal);
         Assert.Empty(LinkScanner.ExtractLinks(body));
         Assert.DoesNotContain("\\\\]", body, StringComparison.Ordinal);
     }
@@ -961,8 +999,14 @@ public class CodeConceptGeneratorTests
 
     /// <summary>
     /// The fixture graph: <c>N.Scanner.Scan</c> calls <c>N.Other.Callee</c> exactly (twice, from two
-    /// sites, so the dedup is exercised) and <c>string.Substring</c> not at all; <c>N.T.Validate</c> is
+    /// sites, so the dedup is exercised) and <c>Substring</c> not at all; <c>N.T.Validate</c> is
     /// two overloads on one concept and reaches <c>N.Other.Helper</c> by name only.
+    ///
+    /// <para><b>Every <c>CalledName</c> here is what the extractor would really hand over.</b> The
+    /// unresolved one is a bare identifier because that is all <c>CSharpProfile.CallQuery</c>
+    /// captures; the dotted <c>Other.Callee</c> on the exact edges never reaches any output -- a
+    /// resolved entry is rendered from the TARGET's title -- so it is left as documentation of which
+    /// call the site stands for.</para>
     /// </summary>
     private static CodeGraphModel Graph() => new(
         [
@@ -984,7 +1028,7 @@ public class CodeConceptGeneratorTests
                 "N.Other", "Callee", EdgeConfidence.Exact),
             new ResolvedEdge(new CallSite("N.Scanner", "Scan", "Other.Callee", "src/Scanner.cs", 140),
                 "N.Other", "Callee", EdgeConfidence.Exact),
-            new ResolvedEdge(new CallSite("N.Scanner", "Scan", "string.Substring", "src/Scanner.cs", 180),
+            new ResolvedEdge(new CallSite("N.Scanner", "Scan", "Substring", "src/Scanner.cs", 180),
                 null, null, EdgeConfidence.Unresolved),
             new ResolvedEdge(new CallSite("N.T", "Validate", "Helper", "src/T.cs", 60),
                 "N.Other", "Helper", EdgeConfidence.ByName),

@@ -20,10 +20,16 @@ namespace OkfProducer.Tests.Generation;
 /// <see cref="CheckTests"/> and <see cref="BlastRadiusTests"/> go through, and the golden bundle beside
 /// it is what holds its output still.</para>
 ///
-/// <para><b>It is not the shipped composition.</b> The CLI does not compose the code-graph stage yet
-/// (Task 13 owns its flags), so this is the producer's pipeline assembled here, from the same
-/// production types. What it verifies is those types; what it cannot verify is a CLI that wires them
-/// differently -- which is why <see cref="ExistingBundleFrontmatter"/> lives in
+/// <para><b>It is not the shipped composition.</b> This used to say the CLI did not compose the
+/// code-graph stage yet and that Task 13 owned its flags; that task landed, and <c>GenerateRun</c>
+/// composes the stage today. The divergence is now a deliberate one rather than a gap waiting to
+/// close: this fixture runs tree-sitter and <c>NameMatchResolver</c> and stops there, because
+/// composing the Roslyn stage would put a <c>dotnet msbuild</c> evaluation -- SDK- and
+/// network-dependent -- inside every golden comparison (the reason is stated again at
+/// <see cref="Run"/>, at the line that omits it). So this is the producer's pipeline assembled here,
+/// from the same production types, minus one stage on purpose. What it verifies is those types; what
+/// it cannot verify is a CLI that wires them differently -- which is why
+/// <see cref="ExistingBundleFrontmatter"/> lives in
 /// <c>OkfProducer.Core</c> rather than in this file: it is the one piece a CLI could forget and
 /// silently destroy hand-written descriptions with, so it is production code that both callers share
 /// rather than a helper only the tests have.</para>

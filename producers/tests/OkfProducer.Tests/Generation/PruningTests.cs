@@ -1451,18 +1451,40 @@ public class PruningTests
     {
         // Handed in reverse, so the sort chain is what puts it right: delete either OrderBy in
         // GenerationManifest.Normalized and this goes red rather than passing by luck.
+        //
+        // THE PAIRS ARE THE TEST. This used to hand in `a`/`b` and `src/A.cs`/`src/Z.cs`, which sort
+        // the same way under every comparer there is -- so it measured SORTEDNESS and called it
+        // Ordinal. Swapping every `StringComparer.Ordinal` in `Normalized` for `CurrentCulture` left
+        // it green, though §6.2 pins Ordinal, and the reason it is pinned is that this file is
+        // compared byte for byte by `--check`: a linguistic sort makes the bytes depend on the
+        // machine's locale, so a bundle generated under one culture reports drift under another with
+        // nothing in the source changed.
+        //
+        // Both pairs below were MEASURED to invert between the two, against `InvariantCulture` as
+        // well as `CurrentCulture`, so this discriminates wherever it runs rather than only under the
+        // author's locale:
+        //
+        //   ids:   `_` is 0x5F and `0` is 0x30, so Ordinal puts `m0` first; a linguistic comparer
+        //          weighs punctuation below digits and puts `m_1` first.
+        //   paths: `Z` is 0x5A and `a` is 0x61, so Ordinal puts `Z.cs` first; a linguistic comparer
+        //          treats case as a tertiary difference and puts `a.cs` first.
+        //
+        // Each is handed in the LINGUISTIC order, which is the order a culture-sensitive sort would
+        // leave untouched -- so that mutation cannot pass by leaving the input alone.
+        const string firstId = "code/csharp/n/t/m0";
+        const string secondId = "code/csharp/n/t/m_1";
         using var tmp = new TempDir();
         new GenerationManifest(
                 Prefix,
-                [new ManifestConcept(B, ["src/Z.cs", "src/A.cs"]), new ManifestConcept(A, [])],
-                ["src/Z.cs", "src/A.cs"],
+                [new ManifestConcept(secondId, ["src/a.cs", "src/Z.cs"]), new ManifestConcept(firstId, [])],
+                ["src/a.cs", "src/Z.cs"],
                 ScopeOptions.Default)
             .WriteTo(tmp.Path);
 
         var text = File.ReadAllText(Path.Combine(tmp.Path, GenerationManifest.FileName));
 
-        Assert.True(text.IndexOf($"\"{A}\"", StringComparison.Ordinal) < text.IndexOf($"\"{B}\"", StringComparison.Ordinal));
-        Assert.True(text.IndexOf("src/A.cs", StringComparison.Ordinal) < text.IndexOf("src/Z.cs", StringComparison.Ordinal));
+        Assert.True(text.IndexOf($"\"{firstId}\"", StringComparison.Ordinal) < text.IndexOf($"\"{secondId}\"", StringComparison.Ordinal));
+        Assert.True(text.IndexOf("src/Z.cs", StringComparison.Ordinal) < text.IndexOf("src/a.cs", StringComparison.Ordinal));
     }
 
     [Fact]

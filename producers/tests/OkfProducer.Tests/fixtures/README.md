@@ -82,7 +82,7 @@ and a diff nobody can read is not a test.
 | a type | `Scanner`, `Registry`, `Formatter` | `code/csharp/n/scanner`, … |
 | a merged overload pair (§3.2) | `Registry.Register` ×2 | `code/csharp/n/registry/register` |
 | a resolved call (§4.5) | `Register` → `Scanner.Normalize` | `## Calls` on `register` |
-| an unresolved call | `Count` → `int.Parse` | `## Calls (unresolved)` on `count` |
+| an unresolved call | `Count` → `int.Parse(raw)`, rendered `` `Parse` `` | `## Calls (unresolved)` on `count` |
 | a description from a doc comment | most members | `description_source: doc-comment` |
 | a description from a signature | `Registry.Count` | `description_source: generated` |
 | a private member, which gets no concept (§5.4) | `Scanner.Cache` | — none, deliberately |
