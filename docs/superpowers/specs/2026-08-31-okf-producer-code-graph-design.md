@@ -205,6 +205,16 @@ Scans a concept body for §6 markdown links, returning them in source order.
 - `Enumerable.Where`
 ```
 
+> **Correction apportée à l'implémentation (dépilage des findings Minor, 2026-09-06) : deux comportements livrés n'apparaissaient dans aucune section de cette spec.**
+>
+> **1. Le plafond d'en-tête sur un `resource` de TYPE (R48).** L'exemple ci-dessus est un *membre*, et un membre garde son span complet `StartLine..EndLine` — c'est utile, un permalien vers son corps entier. Un **type**, lui, voit son span coupé à la fin de son en-tête. La raison est la promesse de rayon d'impact de §8.3 : le span d'une déclaration de type court jusqu'à son accolade fermante, donc *toute* édition dans le corps — ajouter un membre privé, ajouter une surcharge, supprimer une méthode — déplacerait `EndLine` et réécrirait le concept du type. Ce serait du churn causé par la position de l'édition et non par ce que le type déclare, ce qui falsifie « ajouter un membre privé ne change aucun concept ».
+>
+> Une édition *au-dessus* du type le déplace encore, et c'est correct : la déclaration a réellement bougé. `SymbolFact.HeaderEndLine` porte la ligne, et `producers/tests/.../fixtures/golden` contient depuis 2026-09-04 un type dont l'en-tête tient sur trois lignes — sans lui, le plafond aurait produit un golden identique s'il retournait `StartLine + 1`.
+>
+> Le finding qui a relevé cette omission ajoutait que le plafond « contredit l'exemple de §4.1 ». Vérifié : il ne le contredit pas, l'exemple étant un membre.
+>
+> **2. La neutralisation du texte repris.** Une `description` dérivée d'un commentaire de documentation est du texte écrit par autrui qui atterrit dans un document markdown, et rien ici ne le disait. Ce qui est appliqué : les liens markdown sont neutralisés, un marqueur de bloc en début de ligne est échappé, une fence **non fermée** est défusée (une fence équilibrée est laissée telle quelle), le contenu d'un bloc `<code>` est **jeté** — c'est de la source, pas de la prose, le même argument que le sanitizer du viewer fait pour `<script>`/`<style>` — tandis que `<c>` inline est conservé parce qu'il fait partie de la phrase. Un run non fermé qui *ressemble* à une balise est laissé verbatim, par la règle qui garde `List<T> of results` intact.
+
 ### 4.2 `description` : une chaîne de sources, pas un LLM
 
 tree-sitter capture le nœud de commentaire précédant la déclaration ; on en extrait le `<summary>` en C#, le JSDoc en TS, la docstring en Python, le doc comment en Go. **C'est l'avantage net sur okf-rs**, qui a besoin de `generate --enrich` et d'un endpoint OpenAI pour remplir ce champ.
