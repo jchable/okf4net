@@ -173,7 +173,24 @@ On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
 winget install Coderise.OKF4net
 ```
 
-On any OS, build from source — see [Building & testing](#building--testing).
+On Linux or macOS, install a release binary with the install script:
+
+```sh
+curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh
+```
+
+It detects your OS/architecture, downloads the matching archive from the
+latest [GitHub Release](https://github.com/jchable/okf4net/releases),
+verifies its SHA-256 checksum, and installs to `/usr/local/bin` (falling back
+to `~/.local/bin` when that isn't writable — it never calls `sudo`). Pass
+`--bin okf-render` to install the site generator instead of `okf`, `--version
+<tag>` to pin a release, `--dir <path>` to override the destination, or
+`--dry-run` to see what it would do without touching disk or network beyond
+resolving the version. Run it with `-h` for the full option list; see
+[`packaging/install.sh`](packaging/install.sh) for the implementation.
+
+On any OS, you can also build from source — see
+[Building & testing](#building--testing).
 
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
@@ -243,9 +260,11 @@ okf-render bundles/ga4 --out /tmp/ga4-site
 
 The generated site is self-contained and opens straight off the filesystem —
 no server needed. It is read-only; full-text search arrives with the planned
-`okf serve` companion. `okf-render` is not currently packaged for winget —
-grab a prebuilt archive from a [GitHub Release](https://github.com/jchable/okf4net/releases)
-or build it from source as shown above.
+`okf serve` companion. `okf-render` is not currently packaged for winget — on
+Linux or macOS, install it with the same script as `okf` above (`--bin
+okf-render`), or on any OS grab a prebuilt archive from a [GitHub
+Release](https://github.com/jchable/okf4net/releases) or build it from source
+as shown above.
 
 ### Using OKF4net with Microsoft Agent Framework
 
