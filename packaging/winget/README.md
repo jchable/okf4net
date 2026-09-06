@@ -7,13 +7,18 @@ Distributes the `okf` CLI as the winget package **`Coderise.OKF4net`**
 
 On every `v*` tag, `.github/workflows/release.yml`'s `cli-binaries` job
 builds Native AOT binaries for six RIDs on their native runners via
-`packaging/Publish-Cli.ps1` (shared with the Linux/macOS builds — it is no
-longer winget-specific, hence living one level up from this directory).
-Only the two Windows RIDs feed winget:
+`packaging/Publish-Cli.ps1` (shared across binaries and OSes — it is no
+longer winget- or `okf`-specific, hence living one level up from this
+directory), calling it once per binary per RID: `okf` (`OKF4net.Cli`) and
+`okf-render` (`OKF4net.Render`, static HTML site generation — out of scope
+for winget packaging here). Only `okf`'s two Windows RIDs feed winget:
 
 1. `win-x64` (`windows-latest`) and `win-arm64` (`windows-11-arm`) each
-   produce `okf-<version>-<rid>.zip` (containing a single `okf.exe`); the
-   other four RIDs produce `.tar.gz` archives that this package ignores.
+   produce `okf-<version>-<rid>.zip` (containing a single `okf.exe`); every
+   other archive — `okf`'s four non-Windows `.tar.gz`s, and all six of
+   `okf-render`'s archives — is ignored by this package. `winget-submit`'s
+   `installers-regex` is anchored and requires a digit right after `okf-` so
+   it cannot also match `okf-render-<version>-win-*.zip`.
 2. Creates the GitHub Release and attaches every archive + `checksums.txt`.
 3. Generates the winget v1.12.0 manifests via `Generate-Manifests.ps1` (SHA256
    read from the two Windows `.zip.sha256` files) and attaches

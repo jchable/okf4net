@@ -3,15 +3,17 @@ using System.Globalization;
 using System.Reflection;
 using System.Text;
 using OKF4net.Internal;
-using OKF4net.Viewer;
 
 namespace OKF4net.Cli;
 
 /// <summary>
-/// The <c>okf</c> command-line tool. Eight subcommands (<c>validate</c>,
+/// The <c>okf</c> command-line tool. Seven subcommands (<c>validate</c>,
 /// <c>audit</c>, <c>info</c>, <c>index</c>, <c>graph</c>, <c>parse</c>,
-/// <c>fmt</c>, <c>render</c>) over hand-rolled argument parsing -- no
-/// third-party dependencies.
+/// <c>fmt</c>) over hand-rolled argument parsing -- no third-party
+/// dependencies. (The <c>render</c> verb — static HTML site generation —
+/// lives in the separate <c>okf-render</c> binary, <c>OKF4net.Render</c>, so
+/// this CI-facing validator does not carry the vendored viewer JavaScript it
+/// never executes.)
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// CLI in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -54,13 +56,11 @@ public static class OkfCli
         "    graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)\n" +
         "    parse    <file>      Parse one concept document and print its structure\n" +
         "    fmt      <file>      Normalize a document by parse + re-serialize (-w writes)\n" +
-        "    render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle\n" +
         "\n" +
         "OPTIONS:\n" +
         "    -h, --help           Show this help\n" +
         "    -V, --version        Show version\n" +
         "        --json           Machine-readable output for validate/info/audit\n" +
-        "        --out <dir>      Output directory for `render`\n" +
         "        --as-of <date>   Pin today's date (YYYY-MM-DD) for validate/audit\n" +
         "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
         "                         Filter `audit`'s worklist";
@@ -161,12 +161,6 @@ public static class OkfCli
             [], ["-w", "--write"],
             ["    -w, --write      Rewrite the file in place instead of printing to stdout"],
             CmdFmt),
-        ["render"] = new(
-            "render", "okf render <bundle> --out <dir>",
-            "Generate a browsable HTML site from a bundle.",
-            ["--out"], [],
-            ["    --out <dir>      Output directory (required)"],
-            CmdRender),
     };
 
     /// <summary>Renders one verb's help: usage line, summary, then its own options plus the universal help flags.</summary>
@@ -371,10 +365,7 @@ public static class OkfCli
         /// <param name="token">The valued flag.</param>
         private int TakeValuedFlag(string[] args, int i, string token)
         {
-            // The separator is not a value: swallowing it would hide
-            // "requires a value" and cancel the separator's contract for
-            // everything that follows.
-            var hasValue = i + 1 < args.Length && args[i + 1] != "--";
+            var hasValue = CliArgScanning.HasFollowingValue(args, i);
 
             // First occurrence wins. A later one still consumes its own value,
             // so that value can never be read as the positional.
@@ -454,32 +445,6 @@ public static class OkfCli
             _positional ?? throw new CliOperationException($"missing {what}");
     }
 
-    /// <summary>
-    /// Renders an exception's message for a human reading <c>error: ...</c>
-    /// on a terminal, stripping .NET's <c>" (Parameter 'x')"</c> suffix that
-    /// <see cref="ArgumentException"/> appends whenever
-    /// <see cref="ArgumentException.ParamName"/> is set. That suffix is
-    /// framework noise -- correct and useful for a library caller catching
-    /// the exception (so <see cref="OKF4net.Viewer.HtmlWriter.Write"/> keeps
-    /// throwing it unchanged), but out of place in CLI output meant for
-    /// humans. Every catch site that would otherwise surface an
-    /// <see cref="ArgumentException"/>'s <c>Message</c> to the CLI funnels
-    /// through here instead, so no verb can leak it.
-    /// </summary>
-    private static string UserMessage(Exception e)
-    {
-        if (e is ArgumentException { ParamName: not null } argEx)
-        {
-            var suffix = $" (Parameter '{argEx.ParamName}')";
-            if (argEx.Message.EndsWith(suffix, StringComparison.Ordinal))
-            {
-                return argEx.Message[..^suffix.Length];
-            }
-        }
-
-        return e.Message;
-    }
-
     /// <summary>Loads a bundle, converting a failure into the CLI's error arm.</summary>
     private static Bundle Load(string path)
     {
@@ -534,8 +499,10 @@ public static class OkfCli
             // (embedded NUL, reserved device names, ...) with ArgumentException
             // or NotSupportedException rather than an I/O exception, so both
             // must be caught here too or they escape as unhandled exceptions
-            // instead of a clean CLI error.
-            throw new CliOperationException(UserMessage(e));
+            // instead of a clean CLI error. CliArgScanning.UserMessage strips
+            // ArgumentException's " (Parameter 'x')" framework-noise suffix,
+            // shared with okf-render's identical need.
+            throw new CliOperationException(CliArgScanning.UserMessage(e));
         }
 
         try
@@ -558,7 +525,7 @@ public static class OkfCli
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             // See ReadFileStrict above: same funnel, same rationale.
-            throw new CliOperationException(UserMessage(e));
+            throw new CliOperationException(CliArgScanning.UserMessage(e));
         }
     }
 
@@ -924,47 +891,6 @@ public static class OkfCli
                 stdout.Write($"  {mark} {link.Target}\n");
             }
         }
-    }
-
-    /// <summary>Implements the <c>render</c> subcommand.</summary>
-    private static int CmdRender(CliArgs parsed, TextWriter stdout)
-    {
-        // Validate "--out"'s value shape before resolving the bundle, so the
-        // reported error is deterministic regardless of argument order:
-        //   1. "--out" present but unvalued          -> "--out requires a value"
-        //   2. bundle positional missing              -> "missing <bundle>"
-        //   3. "--out" absent entirely                -> "render requires --out <dir>"
-        // Value() itself throws (1) when the flag is present with nothing
-        // after it, whether or not the bundle was given -- e.g. bare
-        // "okf render --out" used to report "missing <bundle>" (the positional
-        // was resolved first and hit the empty slot); asking for the value
-        // first makes both value-missing spellings agree.
-        //
-        // Declaring "--out" to the scan is what keeps its value from being
-        // mistaken for the bundle path whenever the bundle is omitted.
-        var outDir = parsed.Value("--out");
-        var path = parsed.Positional("<bundle>");
-
-        if (outDir is null)
-        {
-            throw new CliOperationException("render requires --out <dir>");
-        }
-
-        var bundle = Load(path);
-        var site = SiteModel.Build(bundle);
-
-        IReadOnlyList<string> written;
-        try
-        {
-            written = HtmlWriter.Write(site, outDir);
-        }
-        catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
-        {
-            throw new CliOperationException(UserMessage(e));
-        }
-
-        stdout.Write($"wrote {written.Count} files to {outDir}\n");
-        return 0;
     }
 
     /// <summary>Implements the <c>parse</c> subcommand.</summary>

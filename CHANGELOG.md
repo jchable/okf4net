@@ -63,19 +63,25 @@ and this project adheres to
   `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by
   the new `ConceptAudit` in the core library and exposed to agents as the
   read-only `okf_audit` tool.
-- **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
-  HTML site from a bundle: one page per concept (frontmatter table + rendered
-  body), a generated index, navigable cross-links with broken links flagged,
-  and backlinks. Backed by the new zero-dependency `OKF4net.Viewer` project.
-  Markdown renders client-side via a vendored copy of marked (MIT); raw HTML
-  is neutralized by sanitizing the parsed DOM in `viewer.js` (element
+- **A new `okf-render <bundle> --out <dir>` binary** generates a
+  self-contained, browsable HTML site from a bundle: one page per concept
+  (frontmatter table + rendered body), a generated index, navigable
+  cross-links with broken links flagged, and backlinks. Backed by the new
+  zero-dependency `OKF4net.Viewer` project, consumed by the new
+  `OKF4net.Render` project rather than by `okf` itself — `okf` is meant to
+  stay the small, dependency-free CI validator winget distributes, and the
+  viewer's vendored JavaScript is dead weight in a binary that never executes
+  it. Markdown renders client-side via a vendored copy of marked (MIT); raw
+  HTML is neutralized by sanitizing the parsed DOM in `viewer.js` (element
   allowlist, per-tag attribute allowlist, URL-scheme validation) rather than
   by patching marked's renderer hooks, which cannot bound the attack surface
   in general (see `CLAUDE.md`). GFM task list items survive sanitization as
   real `<input type="checkbox" disabled>` elements with correct checked
   state, so a screen reader announces them as checkboxes rather than as
   decorative text. No full-text search yet — that lands with the planned
-  `okf serve` companion.
+  `okf serve` companion. (This started life as `okf`'s `render` verb; it
+  moved to its own binary before ever shipping in a release, so there is no
+  deprecated verb or shim to call out here.)
 - **A `sources[]` entry can now carry its own `usage_window` override
   (§5.1).** `Provenance.ParseSources` reads a per-entry `usage_window`
   through the same `ParseUsageWindow` the shared, top-level one already
@@ -318,7 +324,7 @@ and this project adheres to
   never writes — but the leftovers are now named rather than dropped.
 
 - **`okf index` no longer reports success for a bundle root that does not
-  exist.** Every other bundle verb (`validate`/`info`/`graph`/`render`) routes
+  exist.** Every other bundle verb (`validate`/`info`/`graph`) routes
   through `Bundle.Load`, which rejects a non-directory root; `index` hands its
   path straight to `IndexGenerator.RegenerateIndexes`, whose documented contract
   is to return an empty list rather than throw. The CLI rendered that as

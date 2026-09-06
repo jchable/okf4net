@@ -69,8 +69,9 @@ other project layers a specific integration on top and points back to it.
 | Project                  | NuGet package             | Responsibility                                                              | Deep dive                                                     |
 |--------------------------|---------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------|
 | `OKF4net`                | `OKF4net`                 | Zero-dependency core library: parse, validate, index, graph OKF bundles.   | [Library overview](#library-overview)                        |
-| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`info`/`index`/`graph`/`parse`/`fmt`/`render`). | [As a CLI](#as-a-cli)                                    |
-| `OKF4net.Viewer`         | — (ships inside the `okf` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs the `okf render` verb. | [As a CLI](#as-a-cli)                                        |
+| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`audit`/`info`/`index`/`graph`/`parse`/`fmt`). | [As a CLI](#as-a-cli)                                    |
+| `OKF4net.Render`         | — (Native AOT `okf-render` binary, no PackageId) | Standalone CLI: generates a browsable HTML site from a bundle. | [As a CLI](#as-a-cli)                                        |
+| `OKF4net.Viewer`         | — (ships inside the `okf-render` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs `okf-render`. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
@@ -172,7 +173,24 @@ On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
 winget install Coderise.OKF4net
 ```
 
-On any OS, build from source — see [Building & testing](#building--testing).
+On Linux or macOS, install a release binary with the install script:
+
+```sh
+curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh
+```
+
+It detects your OS/architecture, downloads the matching archive from the
+latest [GitHub Release](https://github.com/jchable/okf4net/releases),
+verifies its SHA-256 checksum, and installs to `/usr/local/bin` (falling back
+to `~/.local/bin` when that isn't writable — it never calls `sudo`). Pass
+`--bin okf-render` to install the site generator instead of `okf`, `--version
+<tag>` to pin a release, `--dir <path>` to override the destination, or
+`--dry-run` to see what it would do without touching disk or network beyond
+resolving the version. Run it with `-h` for the full option list; see
+[`packaging/install.sh`](packaging/install.sh) for the implementation.
+
+On any OS, you can also build from source — see
+[Building & testing](#building--testing).
 
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
@@ -182,7 +200,6 @@ okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
 okf parse    <file>      Parse one concept document and print its structure
 okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes)
-okf render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle
 ```
 
 Every verb takes `-h`/`--help` for its own usage and option list. Arguments are
@@ -220,21 +237,34 @@ verdict should pin the date rather than let the calendar move under it. Note the
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 
-Generate a browsable HTML site from a bundle:
+`okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
+single-file binary — no .NET runtime installation required on the target
+machine. Full command reference with real output samples:
+[CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
+
+#### `okf-render` — generate a static HTML site
+
+Static HTML site generation lives in a **separate** binary, `okf-render`
+(`OKF4net.Render`), not in `okf` itself — `okf` is meant to be the small,
+dependency-free CI validator winget distributes, and the site generator pulls
+in a vendored copy of [marked](https://github.com/markedjs/marked) (MIT) that
+a CI job running `okf validate` never executes. `OKF4net.Mcp` already
+established the pattern this follows: a leaf executable owns the dependencies
+its one job needs, instead of pushing them into the shared core.
 
 ```sh
-okf render bundles/ga4 --out /tmp/ga4-site
+dotnet publish src/OKF4net.Render -c Release   # Native AOT, self-contained okf-render binary
+okf-render bundles/ga4 --out /tmp/ga4-site
 # then open /tmp/ga4-site/index.html
 ```
 
 The generated site is self-contained and opens straight off the filesystem —
 no server needed. It is read-only; full-text search arrives with the planned
-`okf serve` companion.
-
-`okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
-single-file binary — no .NET runtime installation required on the target
-machine. Full command reference with real output samples:
-[CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
+`okf serve` companion. `okf-render` is not currently packaged for winget — on
+Linux or macOS, install it with the same script as `okf` above (`--bin
+okf-render`), or on any OS grab a prebuilt archive from a [GitHub
+Release](https://github.com/jchable/okf4net/releases) or build it from source
+as shown above.
 
 ### Using OKF4net with Microsoft Agent Framework
 
@@ -607,9 +637,10 @@ no framework to learn before you can help.
 ## Building & testing
 
 ```sh
-dotnet build OKF4net.sln           # core library + okf CLI + test project
+dotnet build OKF4net.sln           # core library + okf CLI + okf-render + test project
 dotnet test OKF4net.sln            # unit + integration tests (incl. golden CLI comparisons)
-dotnet publish src/OKF4net.Cli -c Release  # Native AOT, self-contained okf binary
+dotnet publish src/OKF4net.Cli -c Release     # Native AOT, self-contained okf binary
+dotnet publish src/OKF4net.Render -c Release  # Native AOT, self-contained okf-render binary
 ```
 
 Just want the `okf` binary on Windows, not a source build? `winget install

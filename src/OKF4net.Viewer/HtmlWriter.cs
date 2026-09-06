@@ -80,7 +80,7 @@ public static class HtmlWriter
     /// Windows junction, so an <c>outDir</c> that IS one (or sits behind one)
     /// can lexically look nowhere near <paramref name="bundleRoot"/> while the
     /// OS silently redirects every write into it -- e.g. <c>mklink /J
-    /// out-dir bundle\generated-site</c> followed by <c>okf render bundle
+    /// out-dir bundle\generated-site</c> followed by <c>okf-render bundle
     /// --out out-dir</c>. <see cref="ResolveThroughReparsePoints"/> follows
     /// that redirect and this method also checks the resolved location, so
     /// this only ever ADDS a refusal on top of the lexical check above --
