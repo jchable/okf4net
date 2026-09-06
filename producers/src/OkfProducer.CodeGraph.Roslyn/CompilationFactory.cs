@@ -346,6 +346,30 @@ public static class CompilationFactory
     /// it produces no <see cref="CallSite"/> for anything in it and there is nothing for a shifted
     /// offset to mis-attach to.
     /// </para>
+    ///
+    /// <para>
+    /// <b>The one condition identical decoding does not buy, said here because everything else on this
+    /// page argues that offsets are comparable.</b> This is the SECOND read of the file. The extractor
+    /// read it earlier, in its own pass, and recorded its offsets against the bytes it saw then; this
+    /// reads the bytes again, now. Spec §2.3 calls for "lecture unique en snapshot", and this pipeline
+    /// does not have one -- it has two independent reads at two different times, with the whole
+    /// tree-sitter pass between them. A file edited inside that window is decoded identically by both
+    /// engines and still yields offsets that do not line up, which is the failure this type exists to
+    /// prevent: not a lost call, a call credited to whatever now sits at that offset.
+    /// </para>
+    ///
+    /// <para>
+    /// It is a KNOWN, ACCEPTED window rather than an oversight, and the accounting is worth being
+    /// plain about. Nothing detects it: §2.3 also asks for the hash of each file's read content in the
+    /// manifest, and <c>GenerationManifest</c> records at its own summary that no hash is computed
+    /// anywhere in this pipeline, so there is no artefact a later run could compare. Closing it is not
+    /// a local fix -- the extractor decodes the text and drops it (<c>ExtractionResult</c> carries
+    /// symbols, sites and a status, never bytes), so a real snapshot means carrying the decoded text
+    /// from the first read through to here and parsing THAT, which is a change to the contract between
+    /// the two engines rather than to this method. Until then the exposure is bounded by what actually
+    /// runs the producer: a one-shot CLI over a checkout, where the window is one repository scan long
+    /// and an edit inside it is a developer saving a file mid-run.
+    /// </para>
     /// </summary>
     private static SyntaxTree? TryParse(string path, CSharpParseOptions parseOptions, SourceFileGate gate)
     {

@@ -1027,6 +1027,16 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// <see cref="ComputeSignature"/> so the signature text and
     /// <see cref="SymbolFact.HeaderEndLine"/> are cut at the same node by construction; see that
     /// property for why the line matters.
+    ///
+    /// <para><b>These three strings are a contract with the vendored grammar, and the concern was that
+    /// nothing would notice it breaking.</b> A grammar bump renaming any of the fields makes the
+    /// lookup return <see langword="null"/> silently, and the header then falls back to the
+    /// declaration's own last line -- which is the pre-R48 churn defect, where every edit inside a
+    /// type's body rewrote the type's own concept. MEASURED, one rename at a time, against the whole
+    /// suite: <c>body</c> turns 12 tests red (the golden included, through <c>CheckTests</c>, plus two
+    /// <c>BlastRadiusTests</c> rows), <c>accessors</c> turns 8 red, <c>value</c> turns 1 red. Covered
+    /// by execution rather than by name, and the golden's enrichment -- one occurrence of each
+    /// declaration shape -- is what carries most of it.</para>
     /// </summary>
     private static Node? HeaderEndNode(Node decl) =>
         decl.GetChildForField(BodyFieldName)
