@@ -51,6 +51,12 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// </summary>
     public TreeSitterExtractor(IFileSystemReader? reader = null) => _reader = reader ?? SystemFileReader.Instance;
 
+    /// <summary>
+    /// This engine's §6.2 token for <c>overview</c>'s <c>generated.by</c>, read from the binding
+    /// assembly this extractor actually loads rather than from a version string written by hand.
+    /// </summary>
+    public static string EngineVersion { get; } = Core.CodeGraph.EngineVersions.Token("tree-sitter", typeof(Parser).Assembly);
+
     private const string CommentNodeType = "comment";
     private const string FileScopedNamespaceNodeType = "file_scoped_namespace_declaration";
     private const string NamespaceDeclarationNodeType = "namespace_declaration";

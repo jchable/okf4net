@@ -151,7 +151,7 @@ public sealed class ConceptGenerator : IConceptGenerator
         var revision = GitRevision.HeadSha(snapshot.RepoPath);
         results.Add(new GeneratedConcept(
             overviewId,
-            BuildOverview(snapshot, overviewChildren, generatedAt, revision, options.ExistingFrontmatter?.Invoke(overviewId))));
+            BuildOverview(snapshot, overviewChildren, generatedAt, revision, options.ExistingFrontmatter?.Invoke(overviewId), options.EngineVersions)));
 
         foreach (var (id, manifest) in packages)
         {
@@ -249,7 +249,8 @@ public sealed class ConceptGenerator : IConceptGenerator
         IReadOnlyList<Child> children,
         string generatedAt,
         string? revision,
-        Frontmatter? existing)
+        Frontmatter? existing,
+        IReadOnlyList<string> engineVersions)
     {
         var derived = snapshot.Packages.Count switch
         {
@@ -279,8 +280,14 @@ public sealed class ConceptGenerator : IConceptGenerator
         // generated in one pass, and a per-concept timestamp would store the same fact hundreds of
         // times over, rewriting every file's `generated.at` on every regeneration regardless of what in
         // the code actually changed.
+        // §6.2: the extraction engines are named here and nowhere else in the bundle. Determinism holds
+        // at a FIXED extractor version, not absolutely -- a grammar or Roslyn bump can move symbols,
+        // spans and descriptions over unchanged source -- so a golden that moved is uninterpretable
+        // unless the artefact says which engines produced it. A run given none (every fixture, and
+        // --no-code) emits the producer token alone.
         var generated = new YamlMapping();
-        generated.Insert("by", new YamlString(ProducerActor));
+        generated.Insert("by", new YamlString(
+            engineVersions.Count == 0 ? ProducerActor : $"{ProducerActor} {string.Join(' ', engineVersions)}"));
         generated.Insert("at", new YamlString(generatedAt));
         builder = builder.Extension("generated", generated);
 

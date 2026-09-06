@@ -104,6 +104,28 @@ public sealed record GenerateOptions
     public Action<string>? Note { get; init; }
 
     /// <summary>
+    /// The extraction engines this run used, each already spelled <c>name/version</c>, appended to
+    /// <c>overview</c>'s <c>generated.by</c> after the producer's own token -- §6.2's
+    /// <c>okfgen/0.1.0 tree-sitter/x.y.z roslyn/a.b.c</c>.
+    ///
+    /// <para><b>Why the artefact carries them.</b> §6.2's determinism holds <i>at a fixed extractor
+    /// version</i>, not absolutely: a tree-sitter grammar or Roslyn bump can change symbols, spans or
+    /// descriptions over unchanged source. Locking the versions (<c>packages.lock.json</c>) makes the
+    /// bump deliberate; recording them makes a diff INTERPRETABLE, which is the half a lock file
+    /// cannot supply. Without them, a golden that moved says only that something changed.</para>
+    ///
+    /// <para><b>Supplied by the composition root, not read here.</b> <c>OkfProducer.Core</c> references
+    /// neither engine, and should not: each engine names its own version, and the CLI -- the one
+    /// project that references everything -- passes them through. A run with none (every test fixture,
+    /// and <c>--no-code</c>) emits the producer token alone, exactly as before this existed.</para>
+    ///
+    /// <para><b>On <c>overview</c> alone</b>, like <c>at</c> and for the same reason (§6.1): the
+    /// engines are a fact about the run, and repeating them on every one of hundreds of <c>code/</c>
+    /// concepts would rewrite every file on a version bump that changed nothing else.</para>
+    /// </summary>
+    public IReadOnlyList<string> EngineVersions { get; init; } = [];
+
+    /// <summary>
     /// Whether <paramref name="repoUrl"/> is something §4.3's <c>resource</c> permalink can actually
     /// be built from -- present, absolute, and <c>http</c> or <c>https</c> -- handing back the parsed
     /// <see cref="Uri"/> so the one caller that needs it does not re-parse.

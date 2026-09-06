@@ -890,6 +890,46 @@ public class CodeConceptGeneratorTests
         Assert.Equal(["overview"], ids);
     }
 
+    [Fact]
+    public void The_engine_versions_reach_overviews_generated_by()
+    {
+        // Spec 6.2: determinism holds at a FIXED extractor version, not absolutely, so the artefact has
+        // to say which engines produced it -- a golden that moved is otherwise uninterpretable, and a
+        // lock file pins the versions without recording them. The shape is the spec's own:
+        // `okfgen/0.1.0 tree-sitter/x.y.z roslyn/a.b.c`.
+        var options = Options() with { EngineVersions = ["tree-sitter/1.3.0", "roslyn/5.3.0"] };
+
+        var by = Single(new ConceptGenerator().Generate(Snapshot(), GraphOf(), options), "overview")
+            .Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+
+        Assert.Equal($"{ConceptGenerator.ProducerActor} tree-sitter/1.3.0 roslyn/5.3.0", by);
+    }
+
+    [Fact]
+    public void With_no_engine_versions_overview_carries_the_producer_token_alone()
+    {
+        // The --no-code path, and every caller that supplies none. Emitting a trailing space, or engine
+        // tokens for engines that never ran, would attach a determinism claim to an artefact no engine
+        // produced.
+        var by = Single(Generate(), "overview")
+            .Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+
+        Assert.Equal(ConceptGenerator.ProducerActor, by);
+    }
+
+    [Fact]
+    public void A_code_concept_does_not_repeat_the_engine_versions()
+    {
+        // On `overview` alone, like `at` and for the same reason (6.1): the engines are a fact about the
+        // RUN, and repeating them on hundreds of `code/` concepts would rewrite every file on a version
+        // bump that changed nothing else in them.
+        var options = Options() with { EngineVersions = ["tree-sitter/1.3.0", "roslyn/5.3.0"] };
+        var by = Single(new ConceptGenerator().Generate(Snapshot(), Graph(), options), "code/csharp/n/scanner/scan")
+            .Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+
+        Assert.Equal(ConceptGenerator.ProducerActor, by);
+    }
+
     // -- fixture ----------------------------------------------------------------------------------
 
     private static IReadOnlyList<GeneratedConcept> Generate(

@@ -4,6 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- Spec section 6.2: determinism holds at a FIXED extractor version, so the engine versions are locked
+         rather than floated. A grammar or Roslyn bump can move symbols, spans and descriptions
+         over unchanged source; locking makes that bump a deliberate migration instead of a drift
+         a rebuild suffers. The versions are ALSO recorded in overview.generated.by, which is what
+         makes a golden diff interpretable, which a lock file alone cannot say. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>

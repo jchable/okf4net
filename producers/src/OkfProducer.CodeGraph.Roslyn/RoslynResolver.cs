@@ -148,6 +148,13 @@ public sealed class RoslynResolver : ISymbolResolver
     public IReadOnlyList<RoslynProjectReport> Projects { get; }
 
     /// <summary>
+    /// This engine's §6.2 token for <c>overview</c>'s <c>generated.by</c>, read from the compiler
+    /// assembly this resolver actually loads rather than from a version string written by hand.
+    /// </summary>
+    public static string EngineVersion { get; } =
+        EngineVersions.Token("roslyn", typeof(CSharpCompilation).Assembly);
+
+    /// <summary>
     /// Compiles <paramref name="projectPaths"/>, plus every project they reference that lives under
     /// <paramref name="repositoryPath"/>, and returns a resolver over whichever of them came out clean.
     ///

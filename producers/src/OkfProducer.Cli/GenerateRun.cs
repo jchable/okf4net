@@ -238,6 +238,14 @@ internal static class GenerateRun
                 : null,
             SourceOwnership = ownership,
             Note = note,
+
+            // §6.2: named only when the code stage actually ran. Under --no-code no engine touched the
+            // repository, so claiming a tree-sitter and a Roslyn version would attach a determinism
+            // guarantee to an artefact none of them produced -- the same reason that path passes a null
+            // manifest rather than an empty one.
+            EngineVersions = request.NoCode
+                ? []
+                : [TreeSitterExtractor.EngineVersion, RoslynResolver.EngineVersion],
         };
 
         var concepts = services.Generator.Generate(snapshot, graph, options);
