@@ -324,7 +324,7 @@ and this project adheres to
   never writes — but the leftovers are now named rather than dropped.
 
 - **`okf index` no longer reports success for a bundle root that does not
-  exist.** Every other bundle verb (`validate`/`info`/`graph`/`render`) routes
+  exist.** Every other bundle verb (`validate`/`info`/`graph`) routes
   through `Bundle.Load`, which rejects a non-directory root; `index` hands its
   path straight to `IndexGenerator.RegenerateIndexes`, whose documented contract
   is to return an empty list rather than throw. The CLI rendered that as

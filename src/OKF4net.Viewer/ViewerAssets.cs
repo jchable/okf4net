@@ -5,7 +5,11 @@ namespace OKF4net.Viewer;
 
 /// <summary>
 /// The viewer's static assets, embedded in the assembly so the Native AOT
-/// <c>okf</c> binary stays self-contained (no files to ship alongside it).
+/// <c>okf-render</c> binary (<c>OKF4net.Render</c>) stays self-contained (no
+/// files to ship alongside it). <c>okf</c> itself does not reference this
+/// assembly at all -- static-site generation was split into its own binary
+/// so the CI-facing validator does not carry this vendored viewer
+/// JavaScript, which it never executes.
 /// </summary>
 public static class ViewerAssets
 {
