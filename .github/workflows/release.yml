@@ -272,13 +272,25 @@ jobs:
     needs: winget-manifests
     runs-on: ubuntu-latest
     steps:
-      - name: Check for a winget token
+      - name: Check for a winget token and a published package
         id: gate
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          # Flip to "true" ONLY after Coderise.OKF4net.Render's first manifest
+          # has actually been merged into microsoft/winget-pkgs. winget-releaser
+          # UPDATES an existing package -- it cannot create one -- so running it
+          # before that first manual submission fails the release, and the
+          # artifacts it would need to submit are produced by that very release.
+          # That chicken-and-egg is why this second gate exists on top of the
+          # token check; Coderise.OKF4net needs no equivalent because it is
+          # already published.
+          RENDER_PUBLISHED: ${{ vars.WINGET_RENDER_PUBLISHED }}
         run: |
           if [ -z "$WINGET_TOKEN" ]; then
             echo "::notice::No WINGET_TOKEN secret; skipping the winget-pkgs PR. The manifests are attached to the Release -- submit them with \`wingetcreate submit\`."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ "$RENDER_PUBLISHED" != "true" ]; then
+            echo "::notice::Coderise.OKF4net.Render is not published to winget-pkgs yet, so there is nothing to update. Submit this release's manifests manually (they are attached to the Release), then set the repository variable WINGET_RENDER_PUBLISHED=true so future releases submit automatically."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
