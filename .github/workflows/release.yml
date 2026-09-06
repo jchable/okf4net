@@ -94,7 +94,7 @@ jobs:
           --skip-duplicate
 
   cli-binaries:
-    name: build okf (${{ matrix.rid }})
+    name: build okf + okf-render (${{ matrix.rid }})
     strategy:
       fail-fast: false
       matrix:
@@ -124,9 +124,18 @@ jobs:
       - name: Derive version from tag
         shell: pwsh
         run: echo "VERSION=$($env:GITHUB_REF_NAME -replace '^v','')" >> $env:GITHUB_ENV
-      - name: Publish + archive
+      # Two binaries, same RID, same runner: okf-render (OKF4net.Render)
+      # needs the identical native-AOT publish-and-archive steps, and running
+      # both here reuses the runner .NET/AOT toolchain setup this matrix
+      # already pays for per RID, rather than doubling the job count --
+      # costly for the scarce runners in this matrix (windows-11-arm,
+      # macos-15-intel).
+      - name: Publish + archive okf
         shell: pwsh
-        run: packaging/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:VERSION -OutDir dist
+        run: packaging/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:VERSION -OutDir dist -ProjectDir src/OKF4net.Cli -BinName okf
+      - name: Publish + archive okf-render
+        shell: pwsh
+        run: packaging/Publish-Cli.ps1 -Rid ${{ matrix.rid }} -Version $env:VERSION -OutDir dist -ProjectDir src/OKF4net.Render -BinName okf-render
       - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.rid }}
@@ -144,6 +153,8 @@ jobs:
           pattern: cli-*
           path: dist
           merge-multiple: true
+      # Globs on the "okf-" prefix, so this covers both okf's and
+      # okf-render's archives without listing each binary separately.
       - name: Build checksums.txt
         run: |
           cd dist
@@ -220,6 +231,17 @@ jobs:
           identifier: Coderise.OKF4net
           # `version` is left to the action's default: the release tag with
           # its leading `v` stripped.
-          installers-regex: 'okf-.*-win-(x64|arm64)\.zip$'
+          #
+          # Anchored, and requires a digit right after "okf-": the Release
+          # now also carries okf-render-<version>-win-(x64|arm64).zip (a
+          # second Native AOT binary, out of scope for winget), and the
+          # unanchored `okf-.*-win-...` this used to be would match that too
+          # -- "okf-" + ".*" swallows "render-<version>" just as happily as
+          # "<version>". A released version is always a semver string
+          # starting with a digit, so requiring that digit is what tells
+          # `okf-0.6.0-...` and `okf-render-0.6.0-...` apart; getting this
+          # wrong would submit okf-render's binary to winget as if it were
+          # okf.
+          installers-regex: '^okf-[0-9].*-win-(x64|arm64)\.zip$'
           release-tag: ${{ github.ref_name }}
           token: ${{ secrets.WINGET_TOKEN }}
