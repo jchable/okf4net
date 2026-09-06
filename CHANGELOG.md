@@ -78,8 +78,9 @@ and this project adheres to
   in general (see `CLAUDE.md`). GFM task list items survive sanitization as
   real `<input type="checkbox" disabled>` elements with correct checked
   state, so a screen reader announces them as checkboxes rather than as
-  decorative text. No full-text search yet — that lands with the planned
-  `okf serve` companion. (This started life as `okf`'s `render` verb; it
+  decorative text. No full-text search: a static site has no server to run
+  the shared `ConceptSearch` scorer, and mirroring its weights in JavaScript
+  would fork it. (This started life as `okf`'s `render` verb; it
   moved to its own binary before ever shipping in a release, so there is no
   deprecated verb or shim to call out here.)
 - **A `sources[]` entry can now carry its own `usage_window` override
