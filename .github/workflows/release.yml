@@ -181,16 +181,30 @@ jobs:
           pattern: cli-*
           path: dist
           merge-multiple: true
-      - name: Generate manifests
+      - name: Generate manifests (Coderise.OKF4net)
         shell: pwsh
         run: |
           $ver = $env:GITHUB_REF_NAME -replace '^v',''
           $base = "https://github.com/${env:GITHUB_REPOSITORY}/releases/download/${env:GITHUB_REF_NAME}"
           $shaX64 = (Get-Content "dist/okf-$ver-win-x64.zip.sha256" -Raw).Trim()
           $shaArm = (Get-Content "dist/okf-$ver-win-arm64.zip.sha256" -Raw).Trim()
-          packaging/winget/Generate-Manifests.ps1 -Version $ver `
+          packaging/winget/Generate-Manifests.ps1 -PackageIdentifier Coderise.OKF4net -Version $ver `
             -UrlX64 "$base/okf-$ver-win-x64.zip" -Sha256X64 $shaX64 `
             -UrlArm64 "$base/okf-$ver-win-arm64.zip" -Sha256Arm64 $shaArm `
+            -OutDir manifests
+      # Same shas/URLs, read from okf-render's own sidecars: Publish-Cli.ps1
+      # names every archive "$BinName-$Version-$Rid.<ext>", so the render
+      # sidecars follow the identical convention with an "okf-render" prefix.
+      - name: Generate manifests (Coderise.OKF4net.Render)
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME -replace '^v',''
+          $base = "https://github.com/${env:GITHUB_REPOSITORY}/releases/download/${env:GITHUB_REF_NAME}"
+          $shaX64 = (Get-Content "dist/okf-render-$ver-win-x64.zip.sha256" -Raw).Trim()
+          $shaArm = (Get-Content "dist/okf-render-$ver-win-arm64.zip.sha256" -Raw).Trim()
+          packaging/winget/Generate-Manifests.ps1 -PackageIdentifier Coderise.OKF4net.Render -Version $ver `
+            -UrlX64 "$base/okf-render-$ver-win-x64.zip" -Sha256X64 $shaX64 `
+            -UrlArm64 "$base/okf-render-$ver-win-arm64.zip" -Sha256Arm64 $shaArm `
             -OutDir manifests
       - name: Attach manifests to Release
         uses: softprops/action-gh-release@v3
@@ -209,7 +223,7 @@ jobs:
   # published in winget-pkgs, so the manifests attached above stay the
   # metadata source of truth for the initial submission and metadata edits.
   winget-submit:
-    name: submit winget update PR
+    name: submit winget update PR (Coderise.OKF4net)
     needs: winget-manifests
     runs-on: ubuntu-latest
     steps:
@@ -234,14 +248,56 @@ jobs:
           #
           # Anchored, and requires a digit right after "okf-": the Release
           # now also carries okf-render-<version>-win-(x64|arm64).zip (a
-          # second Native AOT binary, out of scope for winget), and the
-          # unanchored `okf-.*-win-...` this used to be would match that too
-          # -- "okf-" + ".*" swallows "render-<version>" just as happily as
-          # "<version>". A released version is always a semver string
-          # starting with a digit, so requiring that digit is what tells
-          # `okf-0.6.0-...` and `okf-render-0.6.0-...` apart; getting this
-          # wrong would submit okf-render's binary to winget as if it were
-          # okf.
+          # second Native AOT binary, its own winget-submit-render job
+          # below), and the unanchored `okf-.*-win-...` this used to be would
+          # match that too -- "okf-" + ".*" swallows "render-<version>" just
+          # as happily as "<version>". A released version is always a semver
+          # string starting with a digit, so requiring that digit is what
+          # tells `okf-0.6.0-...` and `okf-render-0.6.0-...` apart; getting
+          # this wrong would submit okf-render's binary to winget as if it
+          # were okf.
           installers-regex: '^okf-[0-9].*-win-(x64|arm64)\.zip$'
+          release-tag: ${{ github.ref_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
+
+  # Mirrors winget-submit above exactly, one package identifier and regex
+  # over. Same two prerequisites, same skip-with-notice behaviour when
+  # WINGET_TOKEN is absent -- see packaging/winget/README.md. The first
+  # submission of Coderise.OKF4net.Render must still be done by hand
+  # (winget-releaser updates an existing package, it does not create one);
+  # this job stays inert until that manual submission has landed in
+  # winget-pkgs, regardless of whether WINGET_TOKEN is set.
+  winget-submit-render:
+    name: submit winget update PR (Coderise.OKF4net.Render)
+    needs: winget-manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for a winget token
+        id: gate
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "$WINGET_TOKEN" ]; then
+            echo "::notice::No WINGET_TOKEN secret; skipping the winget-pkgs PR. The manifests are attached to the Release -- submit them with \`wingetcreate submit\`."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Submit to microsoft/winget-pkgs
+        if: steps.gate.outputs.go == 'true'
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Coderise.OKF4net.Render
+          # `version` is left to the action's default: the release tag with
+          # its leading `v` stripped.
+          #
+          # Anchored, and requires the literal "okf-render-" prefix (not
+          # just "okf-"): the Release also carries
+          # okf-<version>-win-(x64|arm64).zip for the *other* package, and
+          # `installers-regex` is per-job, so this job must reject those --
+          # matching them here would submit okf's binary to winget under the
+          # Coderise.OKF4net.Render identifier. See winget-submit above for
+          # the matching concern in the other direction.
+          installers-regex: '^okf-render-[0-9].*-win-(x64|arm64)\.zip$'
           release-tag: ${{ github.ref_name }}
           token: ${{ secrets.WINGET_TOKEN }}

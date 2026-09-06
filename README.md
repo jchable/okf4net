@@ -260,11 +260,15 @@ okf-render bundles/ga4 --out /tmp/ga4-site
 
 The generated site is self-contained and opens straight off the filesystem —
 no server needed. It is read-only; full-text search arrives with the planned
-`okf serve` companion. `okf-render` is not currently packaged for winget — on
-Linux or macOS, install it with the same script as `okf` above (`--bin
-okf-render`), or on any OS grab a prebuilt archive from a [GitHub
-Release](https://github.com/jchable/okf4net/releases) or build it from source
-as shown above.
+`okf serve` companion. `okf-render` has its own winget package,
+**`Coderise.OKF4net.Render`**, built and attached to each Release the same way
+as `okf`'s — but its *first* submission to `winget-pkgs` is a manual, one-time
+step (see [`packaging/winget/README.md`](packaging/winget/README.md)) that has
+not happened yet, so `winget install Coderise.OKF4net.Render` will not resolve
+until it does. Until then, on Linux or macOS install it with the same script
+as `okf` above (`--bin okf-render`), or on any OS grab a prebuilt archive from
+a [GitHub Release](https://github.com/jchable/okf4net/releases) or build it
+from source as shown above.
 
 ### Using OKF4net with Microsoft Agent Framework
 
