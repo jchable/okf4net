@@ -48,10 +48,15 @@ are the concrete entry points.
   binary (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf`
   itself so the CI-facing validator does not carry the viewer's JavaScript.
   The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
-  remains open — it is what unlocks full-text search in the viewer, since a
-  server can run `ConceptSearch` directly instead of mirroring its weights in
-  JavaScript. Its implementation approach (zero-dep `HttpListener`, ASP.NET
-  Core, or a standalone web tool) is still open.
+  was **dropped, and the issue closed** — the interactive, always-fresh
+  viewing it was meant to provide is being pursued as the VS Code extension
+  below instead, which reaches the same goal from inside the editor without
+  a local HTTP server, and reaches full-text search by the same route (an
+  extension host is a process, so it can have the .NET side run
+  `ConceptSearch` rather than mirroring its weights in JavaScript). What the
+  server would have added over `okf-render` alone was one saved command
+  invocation per edit; search was the only capability that genuinely
+  required it, and the extension gets that too.
   - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
     xunit runs on .NET and cannot execute JavaScript, so
     `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
@@ -99,7 +104,9 @@ are the concrete entry points.
     page. Better fit: `SiteModel.Build` is a pure `Bundle` → model projection
     with no I/O, so a JSON output mode emitting exactly the `{ body, links }`
     payload for one concept would let the extension re-render a single page
-    per save, and shares its plumbing with the live-server half of #40 above.
+    per save. That JSON payload mode is now the *only* consumer of this
+    plumbing, since the live-server half of #40 was dropped in favour of
+    this extension.
     `HtmlWriter` and `HtmlSafeJson` do not transfer at all: output layout and
     write-containment guards are static-site concerns, and a webview receives
     the payload by `postMessage` as a real object rather than escaping it
