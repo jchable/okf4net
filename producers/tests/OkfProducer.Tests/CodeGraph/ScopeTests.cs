@@ -89,15 +89,22 @@ public class ScopeTests : IDisposable
     public void Project_ownership_matching_is_case_sensitive()
     {
         // M-1: a case-sensitive filesystem can hold both src/Foo and src/foo as genuinely distinct
-        // directories. Every other path comparison in this codebase is Ordinal (§6.2's "never a
-        // culture-dependent comparison" rule) -- matching a file's owning project with
-        // OrdinalIgnoreCase instead could pick the wrong project for a file that only differs in
-        // case from that project's own directory.
+        // directories, so a file in one is not owned by a project in the other.
+        //
+        // ON A PLATFORM WHERE THAT IS TRUE. This test used to assert `true` unconditionally, which is
+        // a platform-independent claim about a platform-dependent fact: on Windows the two paths name
+        // ONE directory, so the file really is owned by that project and excluding it is correct. It
+        // passed there only because the production comparison was blind in the same way -- and that
+        // blindness is B1-3, where a `.sln` entry cased differently from disk made a test project go
+        // unrecognised and its files silently INCLUDED with `--include-tests` off.
+        //
+        // `BundlePaths.PathComparison` is the rule both findings actually want, and this assertion is
+        // now the rule rather than one operating system's answer to it.
         var snapshot = SnapshotWithTestProject(projectDirectory: "src/Foo");
 
-        // "src/foo/Bar.cs" differs from the test project's own "src/Foo" only by case -- it must not
-        // be treated as owned by that project.
-        Assert.True(FileEligibility.IsEligible("src/foo/Bar.cs", snapshot, ScopeOptions.Default));
+        Assert.Equal(
+            !OperatingSystem.IsWindows(),
+            FileEligibility.IsEligible("src/foo/Bar.cs", snapshot, ScopeOptions.Default));
     }
 
     [Theory]
@@ -223,6 +230,28 @@ public class ScopeTests : IDisposable
         return new RepositorySnapshot(repoPath, "test-repo", [package], []);
     }
 
+
+    [Fact]
+    public void A_test_project_named_with_a_different_case_in_the_solution_is_still_excluded()
+    {
+        // The two sides of this comparison come from different places, which is what the old flat
+        // Ordinal missed. A file's path is walked off disk; the project's comes from
+        // `PackageManifest.RelativePath`, which `RepositoryScanner` may have read out of a `.sln`'s
+        // TEXT and never normalised against disk. On Windows a differently-cased entry there still
+        // passes `File.Exists`, so the project was found and its `.csproj` read -- and then the path
+        // comparison rejected it, silently INCLUDING a test project with `--include-tests` off.
+        //
+        // On a case-sensitive filesystem the two really are different directories, so the file is
+        // genuinely not owned by that project and staying included is correct. The assertion is
+        // therefore conditioned on the platform, which is what `BundlePaths.PathComparison` encodes:
+        // this test pins the rule, not one operating system's answer to it.
+        var snapshot = SnapshotWithTestProject(projectDirectory: "integration/OKF4net.Verify");
+        var differentlyCased = "Integration/OKF4net.Verify/AuditTests.cs";
+
+        var eligible = FileEligibility.IsEligible(differentlyCased, snapshot, ScopeOptions.Default);
+
+        Assert.Equal(!OperatingSystem.IsWindows(), eligible);
+    }
     [Fact]
     public void An_unreadable_project_file_leaves_the_run_going_instead_of_ending_it()
     {

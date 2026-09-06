@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Xml.Linq;
+using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 
 namespace OkfProducer.Core.CodeGraph;
@@ -137,10 +138,21 @@ public static class FileEligibility
         return ReferencesTestSdk(absoluteCsprojPath, reader);
     }
 
-    // Ordinal, not OrdinalIgnoreCase: every other path comparison in this codebase (§6.2's "never a
-    // culture-dependent comparison" rule) is Ordinal, and a case-sensitive filesystem can genuinely
-    // hold both src/Foo and src/foo as distinct directories -- OrdinalIgnoreCase here could pick the
-    // wrong one as a file's owning project.
+    // Case-insensitively on Windows and ordinally elsewhere -- BundlePaths.PathComparison, the
+    // codebase's one answer to "are these the same path", rather than a second rule written here.
+    //
+    // This was a flat Ordinal, argued for on the grounds that a case-sensitive filesystem can hold
+    // both src/Foo and src/foo as distinct directories, which is true and is exactly what
+    // PathComparison already encodes. What the argument missed is where the two sides come from. A
+    // file's path is walked off disk; the project's comes from `PackageManifest.RelativePath`, which
+    // RepositoryScanner may have read out of a `.sln`'s TEXT and never normalised against disk. On
+    // Windows a differently-cased entry there still passes `File.Exists`, so the project was found,
+    // its `.csproj` was read, and then this comparison rejected it -- and a test project in a
+    // non-conventionally-named directory was silently INCLUDED with `--include-tests` off, which is
+    // the one direction §5.4 cannot afford to get wrong.
+    //
+    // Still never culture-dependent, which is what §6.2 forbids: OrdinalIgnoreCase is not a
+    // linguistic comparison.
     private static bool IsAncestorOrSame(string[] directory, string[] descendant)
     {
         if (directory.Length > descendant.Length)
@@ -150,7 +162,7 @@ public static class FileEligibility
 
         for (var i = 0; i < directory.Length; i++)
         {
-            if (!string.Equals(directory[i], descendant[i], StringComparison.Ordinal))
+            if (!string.Equals(directory[i], descendant[i], BundlePaths.PathComparison))
             {
                 return false;
             }
