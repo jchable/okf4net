@@ -1788,6 +1788,30 @@ public class PruningTests
         Assert.DoesNotContain(A, claimed);
     }
 
+    [Fact]
+    public void The_manifest_is_staged_and_moved_leaving_no_temporary_behind()
+    {
+        // `File.WriteAllBytes` truncates first and fills after, so a process dying between the two left
+        // a manifest that was present, short, and not JSON -- the one truncate-then-write in a design
+        // whose whole point is that a bundle is never observed half-written. It is staged and moved now,
+        // like every concept file.
+        //
+        // The damage was bounded rather than absent, which is why this is a Minor: `TryRead` answers
+        // null for anything it cannot parse, and null downstream means "own nothing, delete nothing".
+        // A crash therefore cost a silent pruning-free run, not a wrong deletion.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A], complete: true);
+
+        // The staged file must not survive the write. A leftover would accumulate one per run in the
+        // user's bundle, and `ReportUnownedFiles` would have nothing to say about it -- it is not a
+        // concept and not under the owned prefix.
+        Assert.Empty(Directory.EnumerateFiles(tmp.Path, "*.tmp", SearchOption.AllDirectories));
+
+        // And the manifest that landed is readable, so the move is what completed rather than the
+        // staging having been left in place under another name.
+        Assert.NotNull(GenerationManifest.TryRead(tmp.Path));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------------------------------

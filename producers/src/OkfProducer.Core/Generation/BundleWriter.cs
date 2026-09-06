@@ -424,7 +424,18 @@ public sealed class BundleWriter : IBundleWriter
             {
                 // No owner means no way to tell a deleted symbol from an unread file, and the safe
                 // reading of "I cannot tell" is always "keep".
+                //
+                // SAID, where it used to be done silently. The sibling branch immediately above notes
+                // its carry and this one did not, so the two identical outcomes were distinguishable
+                // only by which of them the operator heard about. And this is not a shape only a
+                // hand-edited manifest can reach: `ReadStrings` answers `[]` for a truncated or
+                // malformed sources list rather than rejecting the manifest, so a run interrupted while
+                // writing one leaves every candidate looking source-less on the next run -- a bundle
+                // that quietly stops pruning, with nothing said.
                 carried.Add(candidate);
+                notes.Add(
+                    $"'{candidate.Id}' records no source file in the previous manifest, so this run cannot"
+                    + " tell a deleted symbol from an unread file; it was kept.");
                 continue;
             }
 

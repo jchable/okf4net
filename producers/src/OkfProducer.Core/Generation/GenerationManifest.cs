@@ -328,8 +328,48 @@ public sealed record GenerationManifest(
             return false;
         }
 
-        File.WriteAllBytes(path, Serialize(Normalized()));
+        // Staged and moved, like every other write this producer makes. `File.WriteAllBytes` truncates
+        // first and fills after, so a process that dies between the two leaves a manifest that is
+        // present, shorter than it should be, and not JSON -- the one truncate-then-write left in a
+        // design whose whole point is that a bundle is never observed half-written.
+        //
+        // The damage was bounded rather than absent: `TryRead` answers null for anything it cannot
+        // parse, and null downstream means "this run owns nothing, delete nothing", so the next run
+        // prunes nothing instead of pruning wrongly. That is the safe direction, and it is still a
+        // silent pruning-free run caused by a crash that need not have cost one.
+        //
+        // The temp name carries a GUID rather than a fixed `.tmp` suffix: `.okfgen-manifest.json` is a
+        // fixed name at a known root, and the gate above exists because something can be planted at a
+        // predictable path there. A name chosen at write time cannot be waited for.
+        var staged = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.WriteAllBytes(staged, Serialize(Normalized()));
+
+        try
+        {
+            File.Move(staged, path, overwrite: true);
+        }
+        catch
+        {
+            TryDelete(staged);
+            throw;
+        }
+
         return true;
+    }
+
+    /// <summary>Removes a staged manifest that never became one, without turning cleanup into the failure a caller sees.</summary>
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     /// <summary>

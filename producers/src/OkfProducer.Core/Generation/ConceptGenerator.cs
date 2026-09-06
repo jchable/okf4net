@@ -1236,7 +1236,19 @@ public sealed class ConceptGenerator : IConceptGenerator
                 // Defensive: CodeGraph guarantees a resolved target exists in Symbols, so the lookup
                 // above cannot miss. If it ever did, rendering text is the safe direction -- a link to
                 // a concept that was never generated is a broken link in the user's bundle.
-                unresolved.Add($"- {CodeSpan(edge.Site.CalledName)}");
+                //
+                // The RESOLVED name where there is one, not the call site's. Both are available here,
+                // and they are not equally useful: `CalledName` is the bare identifier as written at
+                // the call (`Get`), while a resolver that got far enough to name a target knows which
+                // `Get` it meant. Falling back to the less informative of the two, in the branch that
+                // only runs when something has already gone wrong, throws away the diagnosis exactly
+                // where a reader needs it most.
+                unresolved.Add($"- {CodeSpan(
+                    edge.Confidence != EdgeConfidence.Unresolved && edge.TargetName is { } resolvedName
+                        ? edge.TargetContainer is { Length: > 0 } resolvedContainer
+                            ? $"{resolvedContainer}.{resolvedName}"
+                            : resolvedName
+                        : edge.Site.CalledName)}");
             }
         }
 
