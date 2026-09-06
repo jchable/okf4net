@@ -1931,4 +1931,46 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             process.ExitCode == 0,
             $"`dotnet {verb} {projectPath}` exited {process.ExitCode}: {stdout.GetAwaiter().GetResult()} {stderr.GetAwaiter().GetResult()}");
     }
+
+    [Fact]
+    public void A_missing_dotnet_cli_degrades_one_project_rather_than_ending_the_run()
+    {
+        // The "MSBuild absent" path, reachable until now only by uninstalling the SDK. What matters is
+        // not that it fails but HOW: as MsBuildQueryException, the one type RoslynResolver catches, so
+        // the project is reported unavailable and the name-matching baseline carries it. Anything else
+        // escaping here skips per-project degradation and takes generation down for the whole
+        // repository -- which is exactly what C2-1 was, and this absent test is why it went unnoticed.
+        using var repo = new OkfProducer.Tests.Generation.ProducerFixture.TempDir();
+        var project = Path.Combine(repo.Path, "Absent.csproj");
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+
+        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, "okfgen-no-such-executable", TimeSpan.FromMinutes(2)));
+
+        Assert.IsType<MsBuildQueryException>(ex);
+        Assert.Contains("Absent.csproj", ex.Message, StringComparison.Ordinal);
+
+        // The MESSAGE, not just the type: `Run` guards a missing working directory separately and
+        // reports that instead, and both refusals are MsBuildQueryException. Asserting only the type
+        // let either answer for the other -- and the wrong one sends an operator hunting for an SDK
+        // that is installed.
+        Assert.Contains("dotnet CLI was not found", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_query_that_outruns_its_deadline_is_killed_and_reported_as_a_timeout()
+    {
+        // The other branch spawning hid: reachable before only by waiting two minutes. The executable
+        // is a real one that does not exit on its own, so the deadline is what ends it rather than the
+        // process finishing early and the test passing for the wrong reason.
+        using var repo = new OkfProducer.Tests.Generation.ProducerFixture.TempDir();
+        var project = Path.Combine(repo.Path, "Slow.csproj");
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+
+        var sleeper = OperatingSystem.IsWindows() ? "powershell" : "sleep";
+
+        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, sleeper, TimeSpan.FromMilliseconds(200)));
+
+        Assert.IsType<MsBuildQueryException>(ex);
+        Assert.Contains("did not finish within", ex.Message, StringComparison.Ordinal);
+    }
 }
