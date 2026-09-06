@@ -1033,6 +1033,11 @@ public class CliTests
         // Compared with whitespace collapsed, since the help renderer wraps to the console width.
         var result = Run("generate", "--help");
 
+        // `--help` is a successful invocation, not a refused one, and this file's every other test
+        // says so about its own run. Both `--help` tests here asserted only the text, so a regression
+        // that printed the whole help and then exited non-zero -- a shell script's `okfgen --help ||
+        // exit 1` breaking for nobody's benefit -- had nothing to fail.
+        Assert.Equal(0, result.ExitCode);
         Assert.Contains(Collapse(BundleDrift.CheckDescription), Collapse(result.Output), StringComparison.Ordinal);
     }
 
@@ -1051,8 +1056,10 @@ public class CliTests
         // counted, which makes the run partial", or back to "no process is spawned" -- turns this
         // red. README prose is deliberately NOT pinned here: it changes for good reasons, and a
         // substring test over it would be noise.
-        var help = Collapse(Run("generate", "--help").Output);
+        var result = Run("generate", "--help");
+        var help = Collapse(result.Output);
 
+        Assert.Equal(0, result.ExitCode);
         Assert.Contains("but drops an over-cap item silently", help, StringComparison.Ordinal);
         Assert.Contains(
             "It does not make the run process-free: `git` still runs in the scanned tree",
