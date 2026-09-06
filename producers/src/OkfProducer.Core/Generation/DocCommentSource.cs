@@ -135,6 +135,22 @@ public sealed class DocCommentSource : IDescriptionSource
 
                 if (token.IsTag)
                 {
+                    // A `<code>` BLOCK's content is source, not prose, and this field is documented to
+                    // hold "a complete sentence, not a fragment". Flowing it through left a multi-line
+                    // example collapsed onto one line by CollapseWhitespaceRuns below -- `var a = 1;
+                    // var b = 2;` reading as if it were a sentence -- which is neither the code nor a
+                    // description. The same argument the viewer's sanitizer makes for `<script>` and
+                    // `<style>`: an opaque tag's content is dropped rather than kept as text.
+                    //
+                    // `<c>` is deliberately NOT in this set. Inline code is part of the sentence
+                    // (`returns <c>null</c> when...`), and dropping it would delete the words the
+                    // sentence is about.
+                    if (IsOpaqueTagOpener(token.Markup))
+                    {
+                        i = SkipToCloser(comment, tokens, ref next, token, "code");
+                        continue;
+                    }
+
                     result.Append(Substitution(token.Markup));
                 }
                 else
@@ -706,6 +722,58 @@ public sealed class DocCommentSource : IDescriptionSource
     /// here at all -- it is simply left in the stream, which is what makes an unrecognised paired tag
     /// degrade to its inner text for free.
     /// </summary>
+    /// <summary>
+    /// Whether <paramref name="markup"/> opens a <c>&lt;code&gt;</c> block -- the one tag whose CONTENT
+    /// this producer drops rather than keeps as text. Not <c>&lt;c&gt;</c>: an inline code span is part
+    /// of the sentence, and a self-closing <c>&lt;code/&gt;</c> encloses nothing to drop.
+    /// </summary>
+    private static bool IsOpaqueTagOpener(string markup)
+    {
+        if (markup.StartsWith('/') || markup.EndsWith('/'))
+        {
+            return false;
+        }
+
+        var end = 0;
+        while (end < markup.Length && !char.IsWhiteSpace(markup[end]))
+        {
+            end++;
+        }
+
+        return markup.AsSpan(0, end).Equals("code", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Advances <paramref name="next"/> past every token up to and including the closer matching
+    /// <paramref name="opener"/>, and returns the comment index rendering should resume at.
+    ///
+    /// <para><b>The end-of-comment return is a backstop, not the unclosed-opener policy</b>, and this
+    /// paragraph said otherwise until it was measured. An opener nothing closed is never marked as a
+    /// tag in the first place, so it does not reach this method at all: it falls through to the
+    /// tag-shaped-but-unpaired branch and is emitted verbatim, by the same rule that keeps
+    /// <c>List&lt;T&gt; of results</c> intact. That is the right answer on arbitrary repositories,
+    /// where a lone <c>&lt;code&gt;</c> is likelier to be prose than a block whose content should
+    /// vanish, and <c>DescriptionTests.An_unclosed_code_opener_is_prose_by_the_same_rule_that_protects_a_generic</c>
+    /// pins it.</para>
+    /// </summary>
+    private static int SkipToCloser(string comment, List<Token> tokens, ref int next, Token opener, string name)
+    {
+        while (next < tokens.Count)
+        {
+            var candidate = tokens[next];
+            next++;
+
+            if (candidate.IsTag
+                && candidate.Markup.StartsWith('/')
+                && candidate.Markup.AsSpan(1).Trim().Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                return candidate.End + 1;
+            }
+        }
+
+        return comment.Length;
+    }
+
     private static string Substitution(string markup)
     {
         if (markup.StartsWith('/'))

@@ -430,6 +430,56 @@ public class DescriptionTests
     public void Unwrapping_a_tag_does_not_leave_a_double_space_behind()
         => Assert.Equal("Scans a body.", Resolver.Resolve(Member("T", "Scan", "Scans a <para></para> body."), existing: null).Text);
 
+    [Fact]
+    public void A_code_block_contributes_nothing_to_the_description()
+    {
+        // `IDescriptionSource.Describe` documents its Text as "a complete sentence, not a fragment".
+        // A `<code>` block's content is source, and it used to flow through and be collapsed onto one
+        // line: `var a = 1; var b = 2;` reading as if it were the tail of a sentence -- neither the code
+        // nor a description. Same argument the viewer's sanitizer makes for `<script>` and `<style>`:
+        // an opaque tag's content is dropped, not kept as text.
+        var described = new DocCommentSource().Describe(Member("N.T", "Register", """
+            Registers a scanner.
+            <code>
+            var a = 1;
+            var b = 2;
+            </code>
+            """));
+
+        Assert.NotNull(described);
+        Assert.Equal("Registers a scanner.", described.Value.Text);
+    }
+
+    [Fact]
+    public void An_inline_code_span_stays_in_the_description()
+    {
+        // The other half of the rule, and the reason `<c>` is deliberately not in the opaque set:
+        // inline code is part of the sentence, and dropping its content would delete the words the
+        // sentence is about -- "returns when the file is missing" instead of "returns `null`".
+        var described = new DocCommentSource().Describe(Member("N.T", "Register", "Returns <c>null</c> when the file is missing."));
+
+        Assert.NotNull(described);
+        Assert.Equal("Returns null when the file is missing.", described.Value.Text);
+    }
+
+    [Fact]
+    public void An_unclosed_code_opener_is_prose_by_the_same_rule_that_protects_a_generic()
+    {
+        // MEASURED, after this test first asserted truncation and was simply wrong about the code. An
+        // opener nothing ever closed is not marked as a tag at all, so the opaque-content rule never
+        // sees it and it comes out verbatim -- the same branch that keeps `List<T> of results` intact
+        // instead of eating `T`.
+        //
+        // That is the right answer here too, for the same reason: this producer reads arbitrary
+        // repositories, where a `<code>` with no closer is far likelier to be prose that happens to look
+        // like markup than a block whose content should vanish. Dropping to the end of the comment on a
+        // lone opener would delete real sentences.
+        var described = new DocCommentSource().Describe(Member("N.T", "Register", "Registers a scanner. <code>var a = 1;"));
+
+        Assert.NotNull(described);
+        Assert.Equal("Registers a scanner. <code>var a = 1;", described.Value.Text);
+    }
+
     private static SymbolFact Member(string container, string name, string? doc = null, string path = "A.cs") =>
         new(SymbolKind.Member, "csharp", container, name, $"public void {name}()",
             SymbolVisibility.Public, path, 0, 10, 1, 1, doc);
