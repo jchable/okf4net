@@ -4,6 +4,16 @@
     <ProjectReference Include="..\..\..\src\OKF4net\OKF4net.csproj" />
   </ItemGroup>
 
+  <!--
+    DocCommentSource.UnwrapXmlDocTags reports a scan-cost step count that the public Describe path has
+    no way to expose. That count is the executable guard on ScanTokens' early-out, which is
+    behaviour-neutral and therefore invisible to any assertion about the text a description comes out
+    as; without this the only evidence for it would be a wall-clock number in a comment.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="OkfProducer.Tests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

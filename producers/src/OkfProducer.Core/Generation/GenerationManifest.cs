@@ -1,0 +1,555 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Buffers;
+using System.Text.Json;
+using OkfProducer.Core.CodeGraph;
+
+namespace OkfProducer.Core.Generation;
+
+/// <summary>
+/// One concept a generation run produced, together with the repository files it was derived from --
+/// the join §6.3's third rule needs and the only reason this is a record rather than a bare id string.
+///
+/// <para><b>Why the owning files are recorded and not re-derived.</b> Pruning asks, of an id the
+/// previous run produced and this one did not: "is the symbol gone, or was its file simply not read?"
+/// Nothing in the bundle answers that -- a code concept carries a <c>resource</c> URL at best, and a
+/// URL is not a path this producer can match against <see cref="RunStatus.Skipped"/>. Recomputing the
+/// mapping from the id would mean re-deriving <see cref="CodeConceptIds"/>' slug rules and the
+/// registry's collision suffixes outside the generator, i.e. forking the one piece of logic whose
+/// drift silently deletes the wrong file. So the run that knows writes it down.</para>
+/// </summary>
+/// <param name="Id">The concept id, in its canonical <see cref="OKF4net.ConceptId.ToString"/> form.</param>
+/// <param name="SourceFiles">
+/// Every repository-relative, <c>/</c>-separated source path that contributed a declaration to this
+/// concept, sorted <see cref="StringComparer.Ordinal"/>. Empty for a concept derived from something
+/// other than extracted source (<c>overview</c>, <c>packages/*</c>, <c>docs/*</c>) -- and an entry
+/// with no source file is never pruned, because there is nothing to check its owner against.
+/// </param>
+public sealed record ManifestConcept(string Id, IReadOnlyList<string> SourceFiles);
+
+/// <summary>
+/// The record a generation run leaves in the bundle (<see cref="FileName"/>) of what it produced and
+/// what it analysed -- §6.3's second rule, "a manifest, not a prefix".
+///
+/// <para><b>What it is for.</b> <see cref="WritePolicy.Update"/> used to preserve everything it did
+/// not generate, which meant a deleted method kept its concept for ever, pointing at code that no
+/// longer exists. Pruning fixes that, but "absent from this run" has two indistinguishable causes --
+/// the symbol was deleted, or its file could not be read -- so the deletion has to be keyed on
+/// something narrower than "everything under <c>code/</c> that this run did not write". That
+/// something is this file: <see cref="BundleWriter"/> deletes <b>only</b> ids the previous manifest
+/// claims, so a concept a human hand-wrote under the owned prefix is never this producer's to delete.
+/// It is warned about instead.</para>
+///
+/// <para><b>Why it is not discovered as a concept.</b> <c>Bundle.Load</c> collects <c>*.md</c>; this
+/// file is <c>.json</c>, so it is inert to the bundle model, to <c>IndexGenerator</c> (which lists
+/// markdown children only) and to <c>okf validate</c>.</para>
+///
+/// <para><b>It is written output, so it is byte-stable.</b> <see cref="WriteTo"/> normalizes before it
+/// serializes -- every list sorted <see cref="StringComparer.Ordinal"/> and de-duplicated, two-space
+/// indentation, <c>\n</c> line endings, a trailing newline -- so two runs over identical input produce
+/// identical bytes and the bundle's <c>git diff</c> shows what changed in the code (§6.2).</para>
+///
+/// <para><b>What is deliberately NOT here.</b> The spec's §2.3 table also asks for the hash of each
+/// file's read content, so a file modified mid-run is detectable. Nothing in the pipeline surfaces
+/// one today (<see cref="ExtractionResult"/> carries symbols, sites and a status; the extractor reads
+/// the bytes and drops them), so adding the field would mean recording a hash this producer never
+/// computes. It is left out rather than faked -- see this task's report.</para>
+/// </summary>
+/// <param name="OwnedPrefix">
+/// The concept-id prefix this producer claims, e.g. <c>code</c>. Two distinct jobs: nothing outside it
+/// is ever pruned even if the manifest names it (a defence in depth behind the manifest itself), and
+/// it is the subtree scanned for the "present under the owned prefix but not owned by this producer"
+/// warning §6.3 asks for.
+/// </param>
+/// <param name="Concepts">Every concept the run wrote, with the files each was derived from.</param>
+/// <param name="ExtractedFiles">
+/// The repository-relative paths this run read and parsed in full (<see cref="FileStatus.Extracted"/>).
+/// <b>Written for the operator, never read back as a gate</b>: the pruning decision keys off the
+/// <see cref="RunStatus"/> of the run doing the pruning, not off what some earlier run managed to
+/// read, so no one should wire this field into a safety check on the strength of it being here.
+/// </param>
+/// <param name="Scope">
+/// The <see cref="ScopeOptions"/> the run was given, and -- unlike <see cref="ExtractedFiles"/> --
+/// <b>read back as a gate</b>.
+///
+/// <para><b>Why it has to be recorded.</b> <c>FileEligibility</c> filters tests at the FILE level and
+/// visibility at the SYMBOL level, and only the first of those is safe to forget. Drop
+/// <c>--include-tests</c> and the owning file is never visited, so it is absent from
+/// <see cref="RunStatus.Skipped"/>, still on disk, and <c>BundleWriter</c>'s per-candidate settled
+/// check keeps its concepts. Drop <c>--include-internal</c> and the owning file <i>is</i> visited and
+/// comes back <see cref="FileStatus.Extracted"/> -- so every internal symbol's concept looks settled
+/// and gets deleted, taking any hand-written description with it, while the run reports the deletion
+/// as a symbol gone from the repository. Nothing in a run's own output distinguishes "this symbol was
+/// deleted" from "this symbol is no longer in scope"; only the previous run's scope does, so the
+/// previous run writes it down.</para>
+///
+/// <para><see langword="null"/> only for a manifest that was hand-assembled or hand-edited without
+/// one -- <see cref="ForRun"/> always sets it. A null is treated as "unknown", which refuses pruning,
+/// because the whole point of the field is that its absence cannot be assumed benign.</para>
+///
+/// <para><b>Editing it by hand is as dangerous as editing the id list, and in one respect worse.</b>
+/// The same trust model applies -- this is a file in a directory the user controls, and
+/// <c>BundleWriter</c> re-derives nothing from it -- but the id list only says WHICH concepts may be
+/// considered, while this field is the only thing standing between a wide run's concepts and
+/// deletion. Write <c>"scope": { "includeTests": false, "includeInternal": false }</c> over a manifest
+/// produced by a <c>--include-internal</c> run and the next ordinary <c>--update</c> sees no
+/// narrowing, finds every internal symbol's concept settled, and deletes it with any hand-written
+/// description on it -- reporting the deletion as a symbol gone from the repository. That is why
+/// <c>BundleWriter</c> widens this field when it carries entries forward instead of recording the
+/// narrow run's own value: the manifest must never describe a scope narrower than the set it
+/// claims.</para>
+///
+/// <para><b>It has no <c>= null</c> default, deliberately.</b> A default is the one shape that makes a
+/// forgotten scope invisible at the call site, and the paragraph above is about what a wrong scope
+/// deletes: three-argument construction used to compile silently and mean "prune nothing for ever".
+/// Callers that genuinely have no scope to record pass <see langword="null"/> and say so where a
+/// reader can see it.</para>
+/// </param>
+public sealed record GenerationManifest(
+    string OwnedPrefix,
+    IReadOnlyList<ManifestConcept> Concepts,
+    IReadOnlyList<string> ExtractedFiles,
+    ScopeOptions? Scope)
+{
+    /// <summary>
+    /// The manifest's file name inside the bundle. A leading dot and a <c>.json</c> extension: the
+    /// extension is what keeps it out of concept discovery, the dot is only convention.
+    /// </summary>
+    public const string FileName = ".okfgen-manifest.json";
+
+    /// <summary>
+    /// The schema version this code writes and is the only one it reads. A manifest carrying anything
+    /// else is treated exactly like a missing one -- ignored, and nothing is pruned -- because the one
+    /// thing a manifest from an unknown future must not do is authorize deletions under rules this
+    /// build does not know.
+    ///
+    /// <para><b>2 rather than 1 because <see cref="Scope"/> is a gate, not a field.</b> A version-1
+    /// manifest records no scope, and this build cannot tell whether the run that wrote it covered a
+    /// wider one -- so reading it as if it did would be exactly the deletion the field exists to stop.
+    /// Bumping makes an old manifest ignored once: that run prunes nothing, writes a version-2
+    /// manifest, and every run after it prunes normally. The alternative -- reading a version-1
+    /// manifest and defaulting its scope -- silently assumes the narrowest answer for a question the
+    /// file does not answer.</para>
+    /// </summary>
+    public const int SchemaVersion = 2;
+
+    /// <summary>
+    /// The ids in <see cref="Concepts"/>, in the order they are held. Convenience for callers that
+    /// only need the id set; the owning files are what pruning actually joins on.
+    /// </summary>
+    public IReadOnlyList<string> ConceptIds => [.. Concepts.Select(c => c.Id)];
+
+    /// <summary>
+    /// The manifest describing one finished generation run: every concept it produced, paired with the
+    /// source files those concepts were derived from, and the files it read in full.
+    ///
+    /// <para><see cref="ExtractedFiles"/> is derived from <paramref name="status"/> here rather than
+    /// taken from the caller, so the persisted record cannot disagree with the run it claims to
+    /// describe. That derivation is exact only because <see cref="RunStatus.Skipped"/> records every
+    /// attempted file including the clean ones -- and it is exact only when
+    /// <see cref="RunStatus.TraversalComplete"/> is true, which is why the pruning gate checks that
+    /// first and this method makes no safety claim at all.</para>
+    /// </summary>
+    /// <param name="ownedPrefix">The concept-id prefix the run claims.</param>
+    /// <param name="concepts">Every concept the run produced.</param>
+    /// <param name="status">The run's extraction outcome.</param>
+    /// <param name="scope">
+    /// The scope the run was given. Required rather than defaulted: see <see cref="Scope"/> for what a
+    /// forgotten scope deletes, and a default would be the one value that makes the omission invisible.
+    /// </param>
+    /// <exception cref="ArgumentException"><paramref name="ownedPrefix"/> is null, empty or whitespace.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="concepts"/>, <paramref name="status"/> or <paramref name="scope"/> is null.</exception>
+    public static GenerationManifest ForRun(
+        string ownedPrefix,
+        IReadOnlyList<GeneratedConcept> concepts,
+        RunStatus status,
+        ScopeOptions scope)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownedPrefix);
+        ArgumentNullException.ThrowIfNull(concepts);
+        ArgumentNullException.ThrowIfNull(status);
+        ArgumentNullException.ThrowIfNull(scope);
+
+        var entries = concepts
+            .Select(c => new ManifestConcept(c.Id.ToString(), NormalizePaths(c.SourceFiles)))
+            .ToList();
+
+        var extracted = status.Skipped
+            .Where(s => s.Status == FileStatus.Extracted)
+            .Select(s => s.Path);
+
+        return new GenerationManifest(ownedPrefix.Trim(), entries, NormalizePaths(extracted), scope).Normalized();
+    }
+
+    /// <summary>
+    /// The same manifest with every list sorted <see cref="StringComparer.Ordinal"/> and
+    /// de-duplicated. Applied on construction by <see cref="ForRun"/>, on read, and again immediately
+    /// before serialization -- the last of those is the one that matters, because it is what makes the
+    /// bytes on disk independent of the order a caller happened to hand things in.
+    /// </summary>
+    public GenerationManifest Normalized() => new(
+        OwnedPrefix,
+        [.. (Concepts ?? [])
+            .Where(c => c is not null && !string.IsNullOrEmpty(c.Id))
+            .GroupBy(c => c.Id, StringComparer.Ordinal)
+            .Select(g => new ManifestConcept(g.Key, NormalizePaths(g.SelectMany(c => c.SourceFiles ?? []))))
+            .OrderBy(c => c.Id, StringComparer.Ordinal)],
+        NormalizePaths(ExtractedFiles ?? []),
+        Scope);
+
+    /// <summary>
+    /// Writes this manifest into <paramref name="bundleRoot"/>, normalized (see
+    /// <see cref="Normalized"/>) and byte-stable. Overwrites any manifest already there.
+    ///
+    /// <para><b>Unless <see cref="FileName"/> is a symbolic link or a junction, in which case nothing
+    /// is written at all.</b> <see cref="File.WriteAllBytes(string, byte[])"/> follows a link exactly
+    /// as <c>File.Move</c> and <c>File.Delete</c> do, and it opens the far end with
+    /// <c>FileMode.Create</c> -- so a bundle whose <c>.okfgen-manifest.json</c> points somewhere else
+    /// had that file replaced by this JSON on every <c>--update</c>, at an attacker-chosen path. A
+    /// bundle committed beside a repository is content a clone brings with it, which is what makes it
+    /// reachable rather than theoretical. The containment question is asked of the filesystem through
+    /// <see cref="BundlePaths.ResolveInsideRoot"/>, the same walk the delete and commit sides use; no
+    /// comparison of path strings can answer it, because <see cref="Path.GetFullPath(string)"/>
+    /// resolves <c>.</c> and <c>..</c> and no reparse point.</para>
+    ///
+    /// <para><b>The READ side (<see cref="TryRead"/>, <see cref="IsPresent"/>) is deliberately not
+    /// gated, and stays that way -- but the argument for it establishes less than it was written to
+    /// claim, so here it is at its real width.</b> What it establishes is about AUTHORITY: reading
+    /// through a link grants nothing writing through one grants. Anyone who can plant that link in the
+    /// bundle can equally write a hostile manifest into the bundle directly; the manifest is already a
+    /// file in a directory the user controls, from which <c>BundleWriter</c> re-derives nothing; and
+    /// what it authorizes -- deletions -- is bounded elsewhere, by <c>BundleWriter</c> resolving every
+    /// id it is about to delete back inside the bundle. Gating the read buys no property there, and
+    /// would make a bundle whose manifest is a deliberate link un-prunable rather than safer.</para>
+    ///
+    /// <para><b>What that does not reach is the ACT of reading, which is a channel a refused write is
+    /// not.</b> <see cref="File.Exists(string)"/> and <see cref="File.ReadAllBytes(string)"/> open a
+    /// path somebody else chose. A symbolic link to a FIFO makes the open block with no timeout; one
+    /// to a UNC path turns an existence probe into an outbound authentication attempt. Neither
+    /// escalates anything -- they hang the run or leak a connection attempt, they do not delete or
+    /// overwrite -- which is why the conclusion above is unchanged; they are simply not covered by it.
+    /// <b>Stated as the shape of the exposure and NOT as an observation:</b> neither was executed, on
+    /// this host or any other.</para>
+    ///
+    /// <para><b>Both need a FILE symbolic link at <see cref="FileName"/>, which puts them out of reach
+    /// on an ordinary Windows box -- and this part was measured.</b>
+    /// <see cref="File.CreateSymbolicLink(string, string)"/> fails there without
+    /// SeCreateSymbolicLinkPrivilege ("the client does not have a required privilege"), and the
+    /// junction that substitutes for a symbolic link elsewhere in these tests cannot substitute here:
+    /// <see cref="File.Exists(string)"/> answers FALSE for a directory reparse point, so
+    /// <see cref="TryRead"/> returns null without opening anything at all.</para>
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> when the manifest was written. <see langword="false"/> when it was
+    /// refused because the path leaves the bundle root, because it lands somewhere inside the bundle
+    /// other than <see cref="FileName"/> itself, or because the root itself is a link this process
+    /// cannot follow -- callers that care report it; callers that do not compile unchanged,
+    /// and get the safe outcome either way, since a manifest that was not written leaves the previous
+    /// one in place and the next run prunes by that instead.
+    ///
+    /// <para><b>All three refusals arrive as the same bare <see langword="false"/>, so the caller's
+    /// note has to name the likely cause instead of the established one</b> (see
+    /// <c>BundleWriter.Write</c>). If an operator ever needs to be told WHICH, the fix is a
+    /// <c>TryWriteTo(string, out string? refusal)</c> overload beside this method -- source-compatible,
+    /// no call site forced to change, and this one becomes a two-line forwarder. Recorded here with
+    /// its real cost because a previous round filed it as "means changing the return type", which
+    /// overstated it: this assembly is not published to NuGet and this method has four call sites.
+    /// Not done in this round; not expensive when it is.</para>
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> is null or empty.</exception>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    /// <exception cref="UnauthorizedAccessException">
+    /// The manifest's own path could not be opened for writing -- an ACL that denies this process, or
+    /// a read-only file at <see cref="FileName"/>. <b>Listed because it is real and was not, not
+    /// because this round introduced it.</b> It escapes <c>BundleWriter.Write()</c> exactly the way
+    /// the reparse-point cases used to, after the concepts are committed and the prune has run: the
+    /// same escape class the gate above closes for links, still open for permissions. Nothing here
+    /// catches it, and this doc no longer implies <see cref="IOException"/> is the only way out.
+    /// </exception>
+    public bool WriteTo(string bundleRoot)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(bundleRoot);
+
+        if (BundlePaths.ResolveRoot(bundleRoot) is not { } root)
+        {
+            return false;
+        }
+
+        // Joined onto the RESOLVED root, which is ResolveInsideRoot's precondition: it walks the
+        // relative path from the root it was given, so a candidate built from the caller's spelling of
+        // a linked bundle would send the walk climbing components that have nothing to do with the
+        // bundle. Same reasoning, and the same fix, as BundleWriter.CommitStaging.
+        var path = Path.Combine(root, FileName);
+        if (BundlePaths.ResolveInsideRoot(root, path) is not { } landing)
+        {
+            return false;
+        }
+
+        // THE SECOND HALF OF THE SAME GATE THE COMMIT SIDE HAS, and this file went a round without it
+        // while carrying a comment that said the opposite -- that "a manifest linked to another name
+        // INSIDE the bundle is contained, and following the link is what the operator asked for", and
+        // that "the commit side writes its unresolved destination for the same reason". The second
+        // clause was true of an older commit side and is not true of this one: BundleWriter.CommitStaging
+        // writes its unresolved destination only after proving the walk landed on that exact path, and
+        // its own comment says a link back inside the bundle is "REFUSED rather than followed" because
+        // following it "would write a concept at a path that no longer matches its id and destroy
+        // whatever the far end holds". Two comments in one file pair cannot justify opposite behaviours
+        // by citing each other; this one was the wrong half.
+        //
+        // What containment alone allows through, and it is not hypothetical. `.okfgen-manifest.json` is
+        // a fixed name at the bundle root, so a link planted there redirects this write and nothing
+        // else. Both reachable shapes were run by hand on Windows 11 build 26200, .NET 10.0.8:
+        //
+        //   - a DIRECTORY junction at the manifest's name pointing at a directory inside the bundle
+        //     resolves inside, passes containment, and File.WriteAllBytes then throws
+        //     UnauthorizedAccessException OUT of BundleWriter.Write -- after the concepts are committed
+        //     and the prune has run. A successful generation reported to the operator as a failed one.
+        //     EXECUTED; it is what the test below asserts on this host.
+        //   - a FILE symbolic link at the manifest's name pointing at a concept file inside the bundle
+        //     resolves inside, passes containment, and File.WriteAllBytes FOLLOWS it and replaces that
+        //     concept with manifest JSON -- WriteTo returning true and the run reporting success. NOT
+        //     EXECUTED HERE: a file symbolic link needs SeCreateSymbolicLinkPrivilege, which this host
+        //     does not have (ProducerFixture.TryCreateFileLink returned false), so this shape is stated
+        //     from the mechanism, not from a run. It is stated and NOT asserted anywhere in this
+        //     repository's measurements: the outward test does not establish it either -- it also falls
+        //     back to a junction on this host, so its byte-comparison of the outside victim is skipped
+        //     too. What changed in the round that reshaped them is that both tests now ATTEMPT the file
+        //     link first, so that wherever the platform will build one (Linux will; a privileged
+        //     Windows box will) they assert the overwrite's ABSENCE -- that the gate held and the far
+        //     end still holds what it held before -- instead of hardcoding the junction and leaving the
+        //     worse damage unreachable on every host. They assert that the damage did not happen, which
+        //     is the only thing a test of a gate can assert; the overwrite itself is only ever seen by
+        //     mutating the gate away. The same equality below refuses both shapes either way.
+        //
+        // So: written to `path`, and only once the walk has shown that `path` is where it lands.
+        // `landing` is where the walk really arrives; they differ exactly when a link was crossed,
+        // because no reparse point can have its own path as its target.
+        if (!string.Equals(landing, path, BundlePaths.PathComparison))
+        {
+            return false;
+        }
+
+        File.WriteAllBytes(path, Serialize(Normalized()));
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the manifest in <paramref name="bundleRoot"/>, or <see langword="null"/> when there is
+    /// none, it cannot be read, it is not valid JSON, or it carries a
+    /// <see cref="SchemaVersion"/> this build does not know.
+    ///
+    /// <para><b>Every failure is <see langword="null"/>, never an exception.</b> A manifest is the
+    /// permission slip for deletions: the safe reading of "I cannot understand this file" is "this run
+    /// owns nothing, delete nothing", which is exactly what a null does downstream. Throwing would be
+    /// strictly worse in both directions -- it would abort a write that was otherwise fine, and it
+    /// would make a corrupt manifest a denial of service on regenerating the bundle.</para>
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> is null or empty.</exception>
+    public static GenerationManifest? TryRead(string bundleRoot)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(bundleRoot);
+
+        var path = Path.Combine(bundleRoot, FileName);
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+            return Deserialize(document.RootElement)?.Normalized();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="bundleRoot"/> holds a manifest file at all, whatever this build can make
+    /// of its contents.
+    ///
+    /// <para><b>Why a caller needs this beside <see cref="TryRead"/>.</b> A null from
+    /// <see cref="TryRead"/> deliberately flattens three very different situations: no manifest was
+    /// ever written here, one is here and is corrupt, and one is here and carries a
+    /// <see cref="SchemaVersion"/> this build does not read -- which every bundle produced before the
+    /// version-2 bump does. For the deletion decision that flattening is right (all three mean "own
+    /// nothing"). For what a run TELLS its operator it is not: "no manifest ever claimed this file" is
+    /// a statement about the file, and it is simply false when the manifest is sitting right there
+    /// unread. Callers that report use this to say which of the two happened.</para>
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="bundleRoot"/> is null or empty.</exception>
+    public static bool IsPresent(string bundleRoot)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(bundleRoot);
+
+        try
+        {
+            return File.Exists(Path.Combine(bundleRoot, FileName));
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static GenerationManifest? Deserialize(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("version", out var version)
+            || version.ValueKind != JsonValueKind.Number
+            || !version.TryGetInt32(out var schema)
+            || schema != SchemaVersion
+            || !root.TryGetProperty("ownedPrefix", out var prefix)
+            || prefix.ValueKind != JsonValueKind.String
+            || prefix.GetString() is not { Length: > 0 } ownedPrefix)
+        {
+            return null;
+        }
+
+        var concepts = new List<ManifestConcept>();
+        if (root.TryGetProperty("concepts", out var conceptArray) && conceptArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in conceptArray.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object
+                    || !entry.TryGetProperty("id", out var id)
+                    || id.ValueKind != JsonValueKind.String
+                    || id.GetString() is not { Length: > 0 } conceptId)
+                {
+                    continue;
+                }
+
+                concepts.Add(new ManifestConcept(conceptId, ReadStrings(entry, "sources")));
+            }
+        }
+
+        return new GenerationManifest(ownedPrefix, concepts, ReadStrings(root, "extractedFiles"), ReadScope(root));
+    }
+
+    /// <summary>
+    /// The <c>scope</c> object, or <see langword="null"/> when it is missing, is not an object, or does
+    /// not carry both booleans. Null rather than a default, and the whole manifest is <b>not</b>
+    /// rejected for it: a scope-less manifest still bounds deletion by id and prefix, and
+    /// <c>BundleWriter</c> reads the null as "unknown scope, prune nothing" -- strictly safer than
+    /// throwing the id list away, which would leave the concepts orphaned instead.
+    /// </summary>
+    private static ScopeOptions? ReadScope(JsonElement root)
+    {
+        if (!root.TryGetProperty("scope", out var scope) || scope.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return TryReadBool(scope, "includeTests") is { } tests && TryReadBool(scope, "includeInternal") is { } internals
+            ? new ScopeOptions(tests, internals)
+            : null;
+    }
+
+    private static bool? TryReadBool(JsonElement parent, string property) =>
+        parent.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : null;
+
+    private static IReadOnlyList<string> ReadStrings(JsonElement parent, string property)
+    {
+        if (!parent.TryGetProperty(property, out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var values = new List<string>();
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } value)
+            {
+                values.Add(value);
+            }
+        }
+
+        return values;
+    }
+
+    private static byte[] Serialize(GenerationManifest manifest)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+
+        // `NewLine` is set explicitly rather than left to default to Environment.NewLine: this file is
+        // committed alongside the bundle, and a manifest whose line endings depend on which OS
+        // regenerated it would churn in `git diff` for no reason at all.
+        using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = true, NewLine = "\n" }))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("version", SchemaVersion);
+            writer.WriteString("ownedPrefix", manifest.OwnedPrefix);
+
+            // Omitted entirely rather than written as `null` when unknown: the reader treats a missing
+            // and a malformed scope the same way (prune nothing), so one spelling of "not recorded" is
+            // enough, and a JSON null would read as a value that was chosen.
+            if (manifest.Scope is { } scope)
+            {
+                writer.WriteStartObject("scope");
+                writer.WriteBoolean("includeTests", scope.IncludeTests);
+                writer.WriteBoolean("includeInternal", scope.IncludeInternal);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteStartArray("extractedFiles");
+            foreach (var file in manifest.ExtractedFiles)
+            {
+                writer.WriteStringValue(file);
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("concepts");
+            foreach (var concept in manifest.Concepts)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("id", concept.Id);
+                writer.WriteStartArray("sources");
+                foreach (var source in concept.SourceFiles)
+                {
+                    writer.WriteStringValue(source);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        var json = buffer.WrittenSpan;
+        var bytes = new byte[json.Length + 1];
+        json.CopyTo(bytes);
+        bytes[^1] = (byte)'\n';
+        return bytes;
+    }
+
+    /// <summary>
+    /// Normalized (<see cref="SourceOwnershipMap.Normalize"/> -- <c>\</c> to <c>/</c>, a leading
+    /// <c>./</c> dropped), de-duplicated and sorted <see cref="StringComparer.Ordinal"/>. The
+    /// separator rule is borrowed rather than restated: these paths are joined against
+    /// <see cref="SymbolFact.RelativePath"/> and <see cref="RunStatus.Skipped"/>, and a join whose two
+    /// sides normalize by different rules is one that silently returns nothing -- here that would mean
+    /// "no owner recorded", which reads as "safe to delete".
+    /// </summary>
+    private static IReadOnlyList<string> NormalizePaths(IEnumerable<string> paths) =>
+    [
+        .. paths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(SourceOwnershipMap.Normalize)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal)
+    ];
+}

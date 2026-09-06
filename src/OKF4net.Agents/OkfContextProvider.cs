@@ -29,7 +29,11 @@ namespace OKF4net.Agents;
 /// generated listing), then concepts scored against the last user message in
 /// the invocation's messages (the shared <see cref="OkfBundleTools.ScoreConceptsFor"/>
 /// seam also used by <see cref="OkfBundleTools.Search"/>), each rendered via
-/// <see cref="OkfBundleTools.ReadConcept"/>. Everything is whole-line
+/// <see cref="OkfBundleTools.ReadConcept"/>. Which concepts get the scarce
+/// slots is decided by <see cref="ConceptSearch.TopDiversified"/>, not by a
+/// plain take of the highest scores — on both this path and the scoped one
+/// below, so that one large id family (a generated <c>code/</c> subtree, say)
+/// cannot spend the whole window. Everything is whole-line
 /// truncated to fit its allotted share of the budget, with a trailing
 /// <c>… (truncated)</c> marker when it was. The result is a single
 /// <see cref="ChatMessage"/> of delimited <c>&lt;okf-context id="..."&gt;</c>
@@ -261,16 +265,29 @@ public sealed class OkfContextProvider : AIContextProvider
             sb.Append(rootBlock);
             remaining -= rootUsed;
 
-            // (b) Concepts scored against the last user message, highest
-            // first, each capped to whatever budget remains. Stops (rather
-            // than skipping ahead) at the first concept that doesn't fit at
-            // all, since every following concept has the same or less room.
+            // (b) Concepts scored against the last user message and then
+            // family-rotated (see below) -- so the best-scoring concept is
+            // first, but the rest is NOT plain descending score. Each is
+            // capped to whatever budget remains. Stops (rather than skipping
+            // ahead) at the first concept that doesn't fit at all, since every
+            // following concept has the same or less room.
             if (query is not null)
             {
                 var now = new DateTimeOffset(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
-                foreach (var (concept, _) in _tools!.ScoreConceptsFor(query)
+
+                // Diversified rather than a plain Take, and applied after the
+                // stale filter so the injection window is spent on admitted
+                // concepts. With only MaxConceptsInjected slots (5 by default),
+                // a bundle carrying a generated `code/` subtree would otherwise
+                // inject nothing but members: measured at 1 curated concept
+                // across 55 slots (design §8.7). This covers THIS path only --
+                // the scoped (V2) path has its own selection site in
+                // ProvideScopedAsync, diversified separately.
+                var admitted = _tools!.ScoreConceptsFor(query)
                     .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, now))
-                    .Take(_options.MaxConceptsInjected))
+                    .ToList();
+
+                foreach (var (concept, _) in ConceptSearch.TopDiversified(admitted, _options.MaxConceptsInjected))
                 {
                     // Each iteration reads a concept off disk, so a caller that
                     // withdrew part-way should not pay for the rest. The guard
@@ -415,12 +432,37 @@ public sealed class OkfContextProvider : AIContextProvider
         var kFloor = (int)(totalBudget * _options.KnowledgeBudgetShare);
         var mFloor = (int)(totalBudget * _options.MemoryBudgetShare);
 
+        // Family-rotate the knowledge passages before any of them is rendered.
+        // AppendPassages spends the budget down a CONTIGUOUS PREFIX, so a
+        // bundle carrying a generated `code/` subtree otherwise fills the whole
+        // prefix with members: measured on the §8.7 corpus, with every
+        // generated member sharing the curated vocabulary as real okfgen output
+        // does, at 38 of 336 passages rendered and ZERO curated concepts
+        // reaching the context on 6 of 7 broad queries, the first curated
+        // passage sitting at rank #333.
+        //
+        // TopDiversifiedBy, not TopDiversified: the list arrives already
+        // ordered by the resolver, possibly interleaved across sources by
+        // KnowledgeQuery.FairnessQuota, and re-deriving the order from scores
+        // would throw that interleave away. Ordering families by first
+        // appearance keeps it.
+        //
+        // count = Count is a full reordering, not a truncation: what bounds
+        // this list is the token budget below, not a slot count.
+        //
+        // Knowledge only. `memory` is NOT a single ranked list -- FileMemoryStore
+        // concatenates one ranked list per tier in its own read order, and its
+        // passage ids are tier-prefixed, so a family rotation there would
+        // interleave the tiers and override that precedence rather than spread
+        // slots within it.
+        var rankedKnowledge = ConceptSearch.TopDiversifiedBy(knowledge, FamilyOf, knowledge.Count);
+
         var sb = new StringBuilder();
-        var (kCount1, kUsed1) = AppendPassages(sb, knowledge, "knowledge", kFloor);
+        var (kCount1, kUsed1) = AppendPassages(sb, rankedKnowledge, "knowledge", kFloor);
         var (mCount1, mUsed1) = AppendPassages(sb, memory, "memory", mFloor);
 
         var remaining = totalBudget - kUsed1 - mUsed1;
-        var (_, kUsed2) = AppendPassages(sb, knowledge.Skip(kCount1), "knowledge", remaining);
+        var (_, kUsed2) = AppendPassages(sb, rankedKnowledge.Skip(kCount1), "knowledge", remaining);
         remaining -= kUsed2;
         AppendPassages(sb, memory.Skip(mCount1), "memory", remaining);
 
@@ -434,6 +476,18 @@ public sealed class OkfContextProvider : AIContextProvider
             Instructions = FixedInstructions,
             Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
         };
+    }
+
+    /// <summary>
+    /// The top-level id segment of a passage's concept id — the "family" the
+    /// scoped path rotates over. Mirrors <c>ConceptSearch.TopDiversified</c>'s
+    /// <c>Concept.Id.Segments[0]</c>, reached through the id string because a
+    /// <see cref="KnowledgePassage"/> carries the id, not the concept.
+    /// </summary>
+    private static string FamilyOf(KnowledgePassage passage)
+    {
+        var slash = passage.ConceptId.IndexOf('/');
+        return slash < 0 ? passage.ConceptId : passage.ConceptId[..slash];
     }
 
     /// <returns>How many passages were rendered (a contiguous prefix of <paramref name="passages"/>), and the total token estimate they used.</returns>

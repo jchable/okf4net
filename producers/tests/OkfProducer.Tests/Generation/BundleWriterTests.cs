@@ -189,4 +189,59 @@ public class BundleWriterTests
             Directory.Delete(outPath, recursive: true);
         }
     }
+
+    [Fact]
+    public void Write_Reset_refuses_a_bundle_holding_a_link_rather_than_emptying_it_and_then_throwing()
+    {
+        // MEASURED on Windows 11 build 26200 / .NET 10.0.8, six runs out of six:
+        // Directory.Delete(outPath, recursive: true) over a tree containing a junction deletes the
+        // real files, unlinks the junction, leaves the far end alone -- and THEN throws
+        // UnauthorizedAccessException("Access to the path 'sub' is denied"). So the unguarded reset
+        // emptied the bundle and threw out of Write before CommitStaging could put anything back, and
+        // the operator was left with neither the old bundle nor the new one. That is the exact outcome
+        // IBundleWriter's transactional guarantee says cannot happen.
+        //
+        // Both halves are asserted, because the guard is only worth having for the second: the
+        // exception type says it was refused deliberately, and stale.md says the bundle survived the
+        // refusal. Delete the FirstLinkUnder block in ResetBundle and both go red -- the throw becomes
+        // an UnauthorizedAccessException and stale.md is gone by the time it arrives.
+        var outPath = CreateTempDir();
+        var outside = Path.Combine(Path.GetTempPath(), "okfproducer-write-outside-" + Guid.NewGuid());
+        Directory.CreateDirectory(Path.Combine(outPath, "code"));
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "victim.md"), "---\ntype: Note\n---\n\nnot the bundle's\n");
+        File.WriteAllText(Path.Combine(outPath, "stale.md"), "---\ntype: Note\n---\n\nstale\n");
+
+        var link = Path.Combine(outPath, "code", "sub");
+        ProducerFixture.CreateDirectoryLink(link, outside);
+
+        try
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                new BundleWriter().Write(outPath, [SampleConcept()], WritePolicy.Reset, UnrelatedRepoPath()));
+
+            Assert.Contains("Refusing to reset", ex.Message);
+            Assert.Contains("code/sub", ex.Message);
+
+            Assert.True(File.Exists(Path.Combine(outPath, "stale.md")), "the reset emptied the bundle before it failed.");
+            Assert.False(File.Exists(Path.Combine(outPath, "overview.md")), "nothing was committed, so no concept should have landed either.");
+            Assert.NotNull(new DirectoryInfo(link).LinkTarget);
+            Assert.True(File.Exists(Path.Combine(outside, "victim.md")), "the far side of the link is not this producer's to touch.");
+        }
+        finally
+        {
+            // Unlinked before the recursive delete, for the reason under test.
+            if (Directory.Exists(link))
+            {
+                Directory.Delete(link);
+            }
+
+            if (Directory.Exists(outPath))
+            {
+                Directory.Delete(outPath, recursive: true);
+            }
+
+            Directory.Delete(outside, recursive: true);
+        }
+    }
 }

@@ -1,45 +1,199 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
+using System.Text;
 using OKF4net;
+using OKF4net.Yaml;
+using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Scanning;
+
+// In any namespace with a sibling `CodeGraph` NAMESPACE in scope -- OkfProducer.Core.Generation has
+// OkfProducer.Core.CodeGraph, and OkfProducer.Tests.Generation has OkfProducer.Tests.CodeGraph -- the
+// bare name binds to that namespace before it can bind to the type of the same name a `using` brought
+// in (CS0118), so the type needs an alias. Not a workaround for a naming mistake here: the type is
+// named after what it is, and its namespace after what it holds.
+using CodeGraphModel = OkfProducer.Core.CodeGraph.CodeGraph;
 
 namespace OkfProducer.Core.Generation;
 
 /// <summary>
-/// Maps a <see cref="RepositorySnapshot"/> to concepts via <see cref="OkfDocumentBuilder"/>: one
-/// repository overview (fixed id <c>overview</c>), one <c>packages/&lt;slug&gt;</c> concept per
-/// detected package, and one <c>docs/&lt;slug&gt;</c> concept per detected doc. A concept id
-/// collision (two names slugifying to the same segment) is disambiguated with a numeric suffix
-/// (<c>-2</c>, <c>-3</c>, ...) -- <see cref="ConceptId.Slugify"/> itself never deduplicates, that
-/// responsibility belongs to its caller (this class).
+/// Maps a <see cref="RepositorySnapshot"/> -- and, on the code path, a
+/// <see cref="OkfProducer.Core.CodeGraph.CodeGraph"/> -- to concepts via <see cref="OkfDocumentBuilder"/>:
+/// one repository overview (fixed id <c>overview</c>), one <c>packages/&lt;slug&gt;</c> concept per
+/// detected package, one <c>docs/&lt;slug&gt;</c> concept per detected doc, and one
+/// <c>code/&lt;language&gt;/&lt;container...&gt;/&lt;name&gt;</c> concept per extracted symbol (§3.1).
+///
+/// Every id, in all four families, is allocated through a single <see cref="ConceptIdRegistry"/>
+/// (§3.4), so a collision between families is seen rather than silently producing two concepts that
+/// want the same file. A collision is disambiguated with a numeric suffix (<c>-2</c>, <c>-3</c>, ...)
+/// -- <see cref="ConceptId.Slugify"/> itself never deduplicates, that responsibility belongs to its
+/// caller (this class).
 /// </summary>
 public sealed class ConceptGenerator : IConceptGenerator
 {
-    /// <inheritdoc/>
-    public IReadOnlyList<GeneratedConcept> Generate(RepositorySnapshot snapshot)
+    /// <summary>
+    /// The §7 actor this producer writes into <c>generated.by</c>. Derived from the assembly version
+    /// rather than hard-coded so it cannot drift from the version the tool actually ships as; the
+    /// informational version (which can carry a git hash) is deliberately not used, because it would
+    /// churn every concept on every build.
+    ///
+    /// <para><b>Not every concept carries it</b>, and the summary used to say otherwise. It is written
+    /// by <see cref="BuildOverview"/> (with <c>at</c>) and by the <c>code/</c> family --
+    /// <see cref="BuildCodeConcept"/> and <see cref="BuildContainerConcept"/>, <c>by</c> alone.
+    /// <c>packages/*</c> and <c>docs/*</c> carry no <c>generated</c> block at all: they are a projection
+    /// of a manifest and a file listing, and the run that produced them is already named on
+    /// <c>overview</c>.</para>
+    /// </summary>
+    public static string ProducerActor { get; } =
+        $"okfgen/{typeof(ConceptGenerator).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"}";
+
+    /// <summary>
+    /// §4.2's chain, in order: a doc comment wins outright (the code stays the source of truth), and
+    /// <see cref="SignatureSource"/> is the terminal fallback that always produces something. A future
+    /// LLM enrichment step is one more <see cref="IDescriptionSource"/> appended here and nothing else.
+    /// </summary>
+    private static readonly DescriptionResolver Descriptions = new([new DocCommentSource(), new SignatureSource()]);
+
+    /// <summary>
+    /// §4.2's chain for a container concept, which is a different chain because neither of the sources
+    /// above can describe one: nothing declared a container, so there is no doc comment and no
+    /// signature, and <see cref="SignatureSource"/> would have to name one of
+    /// <see cref="SymbolKind"/>'s three nouns where the honest answer is the neutral one
+    /// (see <see cref="ContainerToken"/>). The <i>resolver</i> is the same type, deliberately: §4.2's
+    /// field preservation is its rule, so a hand-written description on a namespace concept survives
+    /// regeneration exactly as it does on every other concept, with no second copy of that rule.
+    /// </summary>
+    private static readonly DescriptionResolver ContainerDescriptions = new([new ContainerSource()]);
+
+    /// <summary>
+    /// The one description source a container has: its own name and its owner, said in the neutral
+    /// vocabulary <see cref="ContainerToken"/> explains. Labelled <c>generated</c>, like
+    /// <see cref="SignatureSource"/>, so it is re-derived on every run rather than mistaken for a human
+    /// edit.
+    /// </summary>
+    private sealed class ContainerSource : IDescriptionSource
     {
-        var results = new List<GeneratedConcept>
-        {
-            new(ConceptId.Parse("overview"), BuildOverview(snapshot)),
-        };
+        /// <inheritdoc/>
+        public (string Text, string Source)? Describe(SymbolFact fact) =>
+            (fact.Container.Length == 0
+                ? $"{fact.Name}, a top-level code container."
+                : $"{fact.Name}, a code container in {fact.Container}.",
+                SignatureSource.SourceLabel);
+    }
 
-        var usedIds = new HashSet<string>(StringComparer.Ordinal) { "overview" };
+    /// <inheritdoc/>
+    public IReadOnlyList<GeneratedConcept> Generate(RepositorySnapshot snapshot) =>
+        Generate(snapshot, codeGraph: null, GenerateOptions.Default);
 
+    /// <summary>
+    /// Generates every concept for <paramref name="snapshot"/>, each paired with its concept id. When
+    /// <paramref name="codeGraph"/> is non-null, the <c>code/</c> family is generated too, from its
+    /// symbols and resolved edges; when it is <see langword="null"/> (the <c>--no-code</c> path, and
+    /// what <see cref="Generate(RepositorySnapshot)"/> calls) the output is exactly what it always was.
+    ///
+    /// Relies on -- and does not re-check -- <see cref="OkfProducer.Core.CodeGraph.CodeGraph"/>'s own
+    /// invariant that no edge references a symbol absent from
+    /// <see cref="OkfProducer.Core.CodeGraph.CodeGraph.Symbols"/>: an edge whose caller was
+    /// scope-filtered is already dropped, and one whose target was filtered is already degraded to
+    /// <see cref="EdgeConfidence.Unresolved"/>.
+    /// </summary>
+    public IReadOnlyList<GeneratedConcept> Generate(RepositorySnapshot snapshot, CodeGraphModel? codeGraph, GenerateOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(options);
+
+        // §3.4: one registry for all four families -- one allocation record for the whole run, keyed on
+        // the full `prefix/segment`. Being precise about what that does and does not buy, because the
+        // obvious claim is false: today's four families sit under disjoint prefixes, so a doc that
+        // slugifies to "overview" lands on `docs/overview` and CANNOT collide with the bare `overview`
+        // id -- the two coexist, and a test says so. What the single registry actually buys is that the
+        // `code/` family, which the old `Generate`-local `usedIds` never covered at all, now shares one
+        // record with the other three; that `overview` is allocated rather than assumed, so it is not a
+        // magic string that could drift out of sync with the set; and that a family added later under an
+        // existing prefix is checked by construction instead of needing a second mechanism.
+        var registry = new ConceptIdRegistry();
+
+        // Every id is allocated before any body is written, in all four families and not just within
+        // `code/` -- §5.2's containment spine makes `overview` and each `packages/*` concept link one
+        // level down, so their bodies now depend on ids the registry only finalises later in the run.
+        var overviewId = registry.Register(string.Empty, "overview");
+
+        var packages = new List<(ConceptId Id, PackageManifest Manifest)>(snapshot.Packages.Count);
         foreach (var package in snapshot.Packages)
         {
-            var id = UniqueConceptId("packages", package.Name, usedIds);
-            results.Add(new GeneratedConcept(id, BuildPackageConcept(package)));
+            packages.Add((UniqueConceptId("packages", package.Name, registry), package));
         }
 
+        var docs = new List<(ConceptId Id, DocFile Doc)>(snapshot.Docs.Count);
         foreach (var doc in snapshot.Docs)
         {
-            var id = UniqueConceptId("docs", doc.Title, usedIds);
-            results.Add(new GeneratedConcept(id, BuildDocConcept(doc)));
+            docs.Add((UniqueConceptId("docs", doc.Title, registry), doc));
         }
+
+        var code = codeGraph is null
+            ? CodeFamily.Empty
+            : BuildCodeConcepts(codeGraph, registry, options, packages);
+
+        var results = new List<GeneratedConcept>(1 + packages.Count + docs.Count + code.Concepts.Count);
+
+        // §5.2: one level down, and nothing further. `overview` naming all ~480 concepts would be
+        // rewritten by the addition of a single type; naming the ~10 it directly contains is rewritten
+        // only when a package or a doc appears or disappears.
+        var overviewChildren = packages
+            .Select(p => new Child(p.Id, p.Manifest.Name))
+            .Concat(docs.Select(d => new Child(d.Id, d.Doc.Title)))
+            .ToList();
+
+        // §6.1: resolved once per run, not once per concept -- and only `overview` ever sees either
+        // value (see BuildOverview). `generatedAt` is the HEAD commit's own instant, so a
+        // source-identical run reproduces the same bytes; `revision` is the exact sha, distinct from
+        // GenerateOptions.Rev's branch name (a later task builds permalinks from that one).
+        var generatedAt = GitRevision.HeadCommitInstant(snapshot.RepoPath);
+        var revision = GitRevision.HeadSha(snapshot.RepoPath);
+        results.Add(new GeneratedConcept(
+            overviewId,
+            BuildOverview(snapshot, overviewChildren, generatedAt, revision, options.ExistingFrontmatter?.Invoke(overviewId))));
+
+        foreach (var (id, manifest) in packages)
+        {
+            results.Add(new GeneratedConcept(
+                id,
+                BuildPackageConcept(manifest, code.ChildrenOf(id), options.ExistingFrontmatter?.Invoke(id), options)));
+        }
+
+        foreach (var (id, doc) in docs)
+        {
+            results.Add(new GeneratedConcept(id, BuildDocConcept(doc, options.ExistingFrontmatter?.Invoke(id), options)));
+        }
+
+        results.AddRange(code.Concepts);
 
         return results;
     }
 
-    private static ConceptId UniqueConceptId(string prefix, string name, HashSet<string> usedIds)
+    /// <summary>
+    /// One descending containment edge: the id a parent concept links to, and the link text it shows.
+    /// </summary>
+    private readonly record struct Child(ConceptId Id, string Title);
+
+    /// <summary>
+    /// What the <c>code/</c> pass hands back: its own concepts, plus the one thing the non-code
+    /// families cannot work out for themselves -- which namespaces each package concept links down to
+    /// (§5.1). Keyed on the package id's string form rather than on <see cref="ConceptId"/>, which has
+    /// no ordering to key a dictionary on safely; nothing enumerates this map, it is only indexed.
+    /// </summary>
+    private sealed record CodeFamily(
+        IReadOnlyList<GeneratedConcept> Concepts,
+        IReadOnlyDictionary<string, List<Child>> PackageChildren)
+    {
+        /// <summary>The families a run with no code graph produces: no code concepts, no package children.</summary>
+        public static CodeFamily Empty { get; } = new([], new Dictionary<string, List<Child>>(StringComparer.Ordinal));
+
+        /// <summary>The namespaces (or, with no namespace anywhere, the top-level symbols) <paramref name="packageId"/> contains.</summary>
+        public IReadOnlyList<Child> ChildrenOf(ConceptId packageId) =>
+            PackageChildren.TryGetValue(packageId.ToString(), out var children) ? children : [];
+    }
+
+    private static ConceptId UniqueConceptId(string prefix, string name, ConceptIdRegistry registry)
     {
         string baseSlug;
         try
@@ -49,7 +203,7 @@ public sealed class ConceptGenerator : IConceptGenerator
         catch (ConceptIdException)
         {
             // `name` normalized to nothing (e.g. entirely non-ASCII, or empty) -- fall back to a
-            // generic slug derived from the prefix; the collision loop below still disambiguates
+            // generic slug derived from the prefix; the registry's collision loop still disambiguates
             // multiple equally-unnameable entries under the same prefix with a numeric suffix.
             baseSlug = prefix switch
             {
@@ -76,68 +230,2131 @@ public sealed class ConceptGenerator : IConceptGenerator
             baseSlug = baseSlug[..^".md".Length];
         }
 
-        // "index"/"log" are reserved concept ids (BundleConceptWriter.WriteConcept rejects them --
-        // they'd collide with the bundle's own index.md/log.md). Treat a name that slugifies to one of
-        // these the same as an ordinary collision: fall through to the numeric-suffix loop below
-        // instead of producing an id that write time would reject.
-        var segment = baseSlug;
-        var suffix = 2;
-        while (IsReservedSegment(segment) || !usedIds.Add($"{prefix}/{segment}"))
-        {
-            segment = $"{baseSlug}-{suffix}";
-            suffix++;
-        }
-
-        return ConceptId.Parse($"{prefix}/{segment}");
+        return registry.Register(prefix, baseSlug);
     }
 
-    private static bool IsReservedSegment(string segment) =>
+    /// <summary>
+    /// True when <paramref name="segment"/> would collide with a concept id
+    /// <see cref="OKF4net.BundleConceptWriter"/> reserves for the bundle's own
+    /// <c>index.md</c>/<c>log.md</c>. Internal (not private) so <see cref="ConceptIdRegistry"/> --
+    /// the single registry spanning all four id families -- can reuse this rule instead of forking a
+    /// second copy of it.
+    /// </summary>
+    internal static bool IsReservedSegment(string segment) =>
         string.Equals(segment, "index", StringComparison.OrdinalIgnoreCase)
         || string.Equals(segment, "log", StringComparison.OrdinalIgnoreCase);
 
-    private static OkfDocument BuildOverview(RepositorySnapshot snapshot)
+    private static OkfDocument BuildOverview(
+        RepositorySnapshot snapshot,
+        IReadOnlyList<Child> children,
+        string generatedAt,
+        string? revision,
+        Frontmatter? existing)
     {
-        var description = snapshot.Packages.Count switch
+        var derived = snapshot.Packages.Count switch
         {
             0 => $"Repository {snapshot.RepoName}.",
             1 => $"Repository {snapshot.RepoName}, containing 1 detected package.",
-            var n => $"Repository {snapshot.RepoName}, containing {n} detected packages.",
+            var n => $"Repository {snapshot.RepoName}, containing {n.ToString(CultureInfo.InvariantCulture)} detected packages.",
         };
 
-        return OkfDocumentBuilder
+        var (description, preserved) = LiftedDescription(derived, existing);
+
+        var body = new StringBuilder();
+        body.Append("# ").Append(LiftedBodyText(snapshot.RepoName)).Append("\n\n")
+            .Append(LiftedBodyParagraph(description, preserved)).Append('\n');
+        AppendContains(body, children);
+
+        var builder = OkfDocumentBuilder
             .ForType("Repository")
             .Title(snapshot.RepoName)
             .Description(description)
             .Tags("repository")
-            .Body($"# {snapshot.RepoName}\n\n{description}\n")
-            .Build();
+            .Body(body.ToString());
+
+        builder = WithPreservedSource(builder, preserved);
+
+        // §6.1: `overview` is the one concept that carries `at` -- code and container concepts keep
+        // `by` alone (see BuildCodeConcept/BuildContainerConcept), because all ~480 of them are
+        // generated in one pass, and a per-concept timestamp would store the same fact hundreds of
+        // times over, rewriting every file's `generated.at` on every regeneration regardless of what in
+        // the code actually changed.
+        var generated = new YamlMapping();
+        generated.Insert("by", new YamlString(ProducerActor));
+        generated.Insert("at", new YamlString(generatedAt));
+        builder = builder.Extension("generated", generated);
+
+        // `revision` is the exact sha, a sibling of `generated` rather than nested inside it -- distinct
+        // from the branch name a permalink `resource` URL is built against (GenerateOptions.Rev), which
+        // stays stable as the branch moves while this names one precise commit. Omitted outside a git
+        // repository: there is no sha to report, and writing a fabricated one would be worse than
+        // nothing.
+        if (revision is { Length: > 0 })
+        {
+            builder = builder.Extension("revision", new YamlString(revision));
+        }
+
+        return builder.Build();
     }
 
-    private static OkfDocument BuildPackageConcept(PackageManifest package)
+    private static OkfDocument BuildPackageConcept(PackageManifest package, IReadOnlyList<Child> children, Frontmatter? existing, GenerateOptions options)
     {
-        var description = package.Description ?? $"{package.Ecosystem} package {package.Name}.";
+        var derived = package.Description ?? $"{package.Ecosystem} package {package.Name}.";
+        var (description, preserved) = LiftedDescription(derived, existing);
 
-        return OkfDocumentBuilder
+        var body = new StringBuilder();
+        body.Append("# ").Append(LiftedBodyText(package.Name)).Append("\n\n")
+            .Append(LiftedBodyParagraph(description, preserved)).Append('\n');
+        AppendContains(body, children);
+
+        var builder = OkfDocumentBuilder
             .ForType("Package")
             .Title(package.Name)
             .Description(description)
             .Tags(package.Ecosystem)
-            .Resource(package.RelativePath)
-            .AddSource(resource: package.RelativePath)
-            .Body($"# {package.Name}\n\n{description}\n")
-            .Build();
+            .Resource(FileResource(package.RelativePath, options))
+            .Body(body.ToString());
+
+        return WithPreservedSource(builder, preserved).Build();
     }
 
-    private static OkfDocument BuildDocConcept(DocFile doc)
+    private static OkfDocument BuildDocConcept(DocFile doc, Frontmatter? existing, GenerateOptions options)
     {
-        return OkfDocumentBuilder
+        var derived = $"Repository documentation file {doc.RelativePath}.";
+        var (description, preserved) = LiftedDescription(derived, existing);
+
+        var builder = OkfDocumentBuilder
             .ForType("Documentation")
             .Title(doc.Title)
-            .Description($"Repository documentation file {doc.RelativePath}.")
+            .Description(description)
             .Tags("documentation")
-            .Resource(doc.RelativePath)
-            .AddSource(resource: doc.RelativePath)
-            .Body($"# {doc.Title}\n\nSee `{doc.RelativePath}` in the repository.\n")
-            .Build();
+            .Resource(FileResource(doc.RelativePath, options))
+            // The title is lifted straight out of the README's own `# ` heading, where
+            // `# [Guide](docs/guide.md)` is an ordinary thing to write -- and a bundle-relative link
+            // nobody meant.
+            //
+            // The path goes through CodeSpan rather than a hand-written pair of backticks, which is
+            // what that helper exists for: a repository path may legally contain a backtick on either
+            // platform, and a naive fence lets its own content close the span early -- after which the
+            // rest of the path is prose again, and a lifted string has manufactured a real link.
+            .Body($"# {LiftedBodyText(doc.Title)}\n\nSee {CodeSpan(doc.RelativePath)} in the repository.\n");
+
+        return WithPreservedSource(builder, preserved).Build();
     }
+
+    /// <summary>
+    /// §4.2's field preservation for the three families whose description is a projection of repository
+    /// metadata rather than of anything bundle-authored: <c>overview</c>, <c>packages/*</c> and
+    /// <c>docs/*</c>. Returns the description to write and, when one was preserved, the
+    /// <c>description_source</c> label the author had set.
+    ///
+    /// <para><b>Why these families needed wiring at all.</b> Preservation reached the <c>code/</c> family
+    /// alone; here <paramref name="derived"/> was recomputed unconditionally and the writer then rewrote
+    /// the file whole. So a hand-written description on <c>packages/okf4net</c> -- the concept a human is
+    /// most likely to write, since the derived text is only the <c>.csproj</c> <c>&lt;Description&gt;</c>
+    /// -- was destroyed on the next <c>generate --update</c>, and marking it
+    /// <c>description_source: manual</c> did not help, because the key was never read here. The reading
+    /// that these families "never reach" a bundle-authored description is true of what this producer
+    /// WRITES and false of what a user may EDIT, which is the situation §4.2 exists for.</para>
+    ///
+    /// <para><b>The rule itself is not reimplemented.</b> It is <see cref="DescriptionResolver"/>'s, run
+    /// over a one-source chain that yields <paramref name="derived"/>, so "which labels are re-derived"
+    /// has exactly one definition in this codebase rather than a second copy here that could drift from
+    /// it -- the same reason <c>ContainerFact</c> exists for the container family.</para>
+    ///
+    /// <para><b>A derived description writes no <c>description_source</c> at all, and that asymmetry with
+    /// <c>code/*</c> is load-bearing rather than an oversight.</b> The resolver re-derives on exactly two
+    /// labels (<see cref="DocCommentSource.SourceLabel"/>, <see cref="SignatureSource.SourceLabel"/>) and
+    /// preserves every other value, so a label of this family's own -- <c>package-manifest</c>, say --
+    /// would be read back on the next run as something to PRESERVE, freezing a description whose entire
+    /// job is to track the manifest. Absent means "derive normally", which is the behaviour these
+    /// families want; the label is written back only when there is an author's value to keep, and it must
+    /// be written back then, or the next run would find no key and re-derive over the text it just
+    /// preserved.</para>
+    ///
+    /// <para><b>Which of the two happened is asked of the resolver, not inferred from the label it
+    /// returned.</b> Comparing that label to <see cref="LiftedMetadataSource.SourceLabel"/> reads
+    /// "derived" off a string an author can also type, and both directions of that were wrong: a human
+    /// who writes <c>description_source: repository-metadata</c> had their description kept but its key
+    /// dropped, so the next run found no key and re-derived over it -- preservation lasting exactly one
+    /// run, silently -- while <c>Repository-Metadata</c> took the other branch, because that comparison
+    /// was ordinal and <see cref="DescriptionResolver"/>'s, which had already decided the text was worth
+    /// preserving, is deliberately not. <see cref="DescriptionResolver.PreservesDescription"/> is the
+    /// same predicate <c>Resolve</c> itself branched on, so the two cannot disagree and no spelling of
+    /// any label is load-bearing here.</para>
+    /// </summary>
+    private static (string Description, string? PreservedSource) LiftedDescription(string derived, Frontmatter? existing)
+    {
+        var (text, source) = new DescriptionResolver([new LiftedMetadataSource(derived)]).Resolve(MetadataFact, existing);
+
+        return (text, DescriptionResolver.PreservesDescription(existing) ? source : null);
+    }
+
+    /// <summary>Adds the author's <c>description_source</c> back to a concept whose description was preserved, and nothing at all otherwise.</summary>
+    private static OkfDocumentBuilder WithPreservedSource(OkfDocumentBuilder builder, string? preservedSource) =>
+        preservedSource is null
+            ? builder
+            : builder.Extension(DescriptionResolver.DescriptionSourceKey, new YamlString(preservedSource));
+
+    /// <summary>
+    /// A <see cref="LiftedBodyParagraph"/> that respects <paramref name="preservedSource"/>: text this
+    /// producer derived is neutralized, text the author wrote in the bundle is left as written apart from
+    /// an unclosed fence. The same rule <see cref="BodyDescription"/> applies to the <c>code/</c> family,
+    /// keyed the same way, so two concepts with identical text cannot behave differently.
+    /// </summary>
+    private static string LiftedBodyParagraph(string text, string? preservedSource) =>
+        preservedSource is null ? LiftedBodyParagraph(text) : DefuseLeadingFenceOnly(text);
+
+    /// <summary>
+    /// The description source for a family whose text is a projection of repository metadata: it always
+    /// produces, and the label it produces is dropped rather than written (see
+    /// <see cref="LiftedDescription"/>), because absent is what makes these families re-derive.
+    ///
+    /// <para>The label is <b>not</b> a sentinel that has to be unguessable. <see cref="LiftedDescription"/>
+    /// asks <see cref="DescriptionResolver.PreservesDescription"/> which branch was taken rather than
+    /// comparing against this string, so an author who happens to write this exact value in frontmatter
+    /// is preserved on the same terms as any other -- their spelling and all.</para>
+    /// </summary>
+    private sealed class LiftedMetadataSource(string derived) : IDescriptionSource
+    {
+        /// <summary>The label this source produces, which <see cref="LiftedDescription"/> drops.</summary>
+        public const string SourceLabel = "repository-metadata";
+
+        /// <inheritdoc/>
+        public (string Text, string Source)? Describe(SymbolFact fact) => (derived, SourceLabel);
+    }
+
+    /// <summary>
+    /// The stand-in <see cref="SymbolFact"/> <see cref="LiftedDescription"/> hands the resolver.
+    /// <see cref="LiftedMetadataSource"/> ignores it entirely -- it is the resolver's signature, not an
+    /// input -- and, exactly as <c>ContainerFact</c> warns, it is not a declaration: it must never reach
+    /// <see cref="ResourceUrl"/> or anything else that would read a path or an offset off it.
+    /// </summary>
+    private static readonly SymbolFact MetadataFact = new(
+        SymbolKind.Namespace,
+        Language: string.Empty,
+        Container: string.Empty,
+        Name: string.Empty,
+        Signature: string.Empty,
+        SymbolVisibility.Public,
+        RelativePath: string.Empty,
+        StartOffset: 0,
+        EndOffset: 0,
+        StartLine: 0,
+        EndLine: 0,
+        DocComment: null);
+
+    // ---------------------------------------------------------------------------------------------
+    // §4: the code family.
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>The key one code concept is built from: overloads collapse onto it (§3.2).</summary>
+    private readonly record struct SymbolKey(string Language, string Container, string Name);
+
+    /// <summary>
+    /// The shortest raw segment path that names a container concept: <c>code</c>, the language, and at
+    /// least one container segment. <c>[code, csharp]</c> is the language root -- a directory in the
+    /// bundle, never a concept -- so nothing shorter than this is ever registered.
+    /// </summary>
+    private const int MinimumContainerDepth = 3;
+
+    /// <summary>
+    /// The word this producer uses for a code container, in its tag and as the id segment a container
+    /// falls back to when its own name cannot form one (§2.3: unusual input degrades the output, it
+    /// never aborts the run).
+    ///
+    /// <para><b>"container" and not "namespace", and that is a measured choice, not a hedge.</b> §5.1
+    /// asks for a concept per namespace; what this pass can actually identify is a level of the path
+    /// tree that no extracted declaration claims, which is a namespace <i>most</i> of the time and
+    /// demonstrably not always. Measured against this repository, <b>11 of the 28</b> synthesized
+    /// containers are types, not namespaces -- <c>YamlParser</c>, <c>YamlParser.BlockParser</c>,
+    /// <c>OkfContextProvider.ScopeBox</c>, <c>HtmlSafeJson</c> and seven more -- private or internal
+    /// declarations the default visibility scope excludes while their members survive it. Labelling
+    /// those "C# Namespace" would put a plainly false statement about the code into a knowledge bundle
+    /// 39% of the time; "C# Container" is true of a namespace, of a
+    /// module, and of a type alike. The inference that would recover "namespace" precisely -- a
+    /// container with a member child is a type -- is right for C# and wrong for the next profile, where
+    /// a module's members are functions, so it is not taken. If the scope filter is ever fixed to drop
+    /// the members of a type it excluded, every synthesized container becomes a real namespace and this
+    /// choice is worth revisiting.</para>
+    /// </summary>
+    private const string ContainerToken = "container";
+
+    /// <summary>
+    /// Builds the <c>code/</c> family in two passes, and the order matters: every id must be allocated
+    /// before any body is written, because a body links to <i>other</i> concepts' ids and those ids
+    /// are only final once the registry has resolved every collision (§3.3).
+    /// </summary>
+    private static CodeFamily BuildCodeConcepts(
+        CodeGraphModel graph,
+        ConceptIdRegistry registry,
+        GenerateOptions options,
+        IReadOnlyList<(ConceptId Id, PackageManifest Manifest)> packages)
+    {
+        var profiles = new Dictionary<string, LanguageProfile>(StringComparer.Ordinal);
+
+        // Sorted, never grouped-and-iterated: a Dictionary/HashSet enumeration order must never reach
+        // the output (§6.2). CodeGraphBuilder already sorts its symbols, but sorting again here is what
+        // makes this method deterministic on its own, for any CodeGraph a caller hands it. Both sorts
+        // below are load-bearing and pinned by tests whose fixtures put the input in a DIFFERENT order
+        // from the sorted one, so deleting either chain turns a test red rather than passing by luck.
+        var unsorted = new List<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)>();
+        foreach (var group in graph.Symbols.GroupBy(s => new SymbolKey(s.Language, s.Container, s.Name)))
+        {
+            // Within one concept, the declaration order decides which span `resource` points at and the
+            // order of the `## Signatures` bullets.
+            var declarations = (IReadOnlyList<SymbolFact>)group
+                .OrderBy(s => s.RelativePath, StringComparer.Ordinal)
+                .ThenBy(s => s.StartOffset)
+                .ThenBy(s => s.Signature, StringComparer.Ordinal)
+                .ToList();
+
+            var profile = ProfileFor(group.Key.Language, options, profiles);
+            unsorted.Add((group.Key, declarations, RawSegments(declarations[0], profile)));
+        }
+
+        // Shallowest first, so a symbol's parent is always registered before the symbol itself -- see
+        // RegisterCodeId for why that matters. Ordering by depth first does not weaken §3.3's Ordinal
+        // tie-break: two symbols can only compete for one id if they share a parent path, and sharing a
+        // parent path means sharing a depth, so the tie-break still runs on Ordinal name order within
+        // every group that could actually collide.
+        //
+        // The depth key is doing real work even though the ThenBy on Container usually reaches the same
+        // answer on its own. In the canonical case a child's container is its parent's container with
+        // the parent's name appended, which makes the parent's container a proper Ordinal PREFIX of the
+        // child's, and a prefix sorts first -- so Container order already puts parents ahead of
+        // children, and deleting this key would look free. It is not: SplitContainer drops empty
+        // entries, so more than one container spelling denotes the same structural path, and the moment
+        // two spellings differ textually (`.N.Log` and `N.Log` split identically, but `.` is 0x2E and
+        // `N` is 0x4E) the textual order stops tracking the structural one and a child sorts ahead of
+        // its own parent. That is what CodeConceptGeneratorTests pins, so this key cannot be removed as
+        // dead code on the grounds that nothing observes it.
+        var groups = unsorted
+            .OrderBy(g => g.RawSegments.Length)
+            .ThenBy(g => g.Key.Language, StringComparer.Ordinal)
+            .ThenBy(g => g.Key.Container, StringComparer.Ordinal)
+            .ThenBy(g => g.Key.Name, StringComparer.Ordinal)
+            .ToList();
+
+        DisambiguateSharedRawPaths(groups);
+
+        // A call site names its caller as (container, name) and its target as (container, name) -- and
+        // CallSite carries no language at all. Both joins below are therefore language-agnostic, which is
+        // unambiguous today only because v1 ships exactly one profile. It stops being true the moment a
+        // second one lands: two languages declaring the same container and name would attribute the same
+        // call to BOTH concepts, and nothing anywhere would say so. A wrong edge in a knowledge bundle is
+        // worse than a missing one -- an agent reading it gets a confidently false answer -- so the
+        // assumption fails loudly here rather than sitting in a comment for someone to not read. This
+        // throw is the specification of what to fix: give both joins a language component, which means
+        // CallSite gaining a Language field, since the resolvers are what would have to supply it.
+        var languages = groups
+            .Select(g => g.Key.Language)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(l => l, StringComparer.Ordinal)
+            .ToList();
+
+        if (languages.Count > 1)
+        {
+            throw new InvalidOperationException(
+                "ConceptGenerator: this code graph carries symbols in more than one language ("
+                + string.Join(", ", languages)
+                + "), but call edges are joined to their caller and to their target on (container, name) alone"
+                + " -- CallSite carries no language -- so two languages declaring the same container and name"
+                + " would attribute the same call to both concepts. Give both joins in"
+                + " ConceptGenerator.BuildCodeConcepts a language component (CallSite needs a Language field)"
+                + " before generating a multi-language bundle.");
+        }
+
+        // §5.1: a namespace needs a concept of its own, because a link to its DIRECTORY cannot exist --
+        // `index.md` is a reserved file, not a concept, so `/code/csharp/okf4net/index` would be a
+        // BrokenLink. A container concept coexists with its directory exactly as a type's does
+        // (`okf4net.md` beside `okf4net/`).
+        //
+        // Which containers need one is read off the raw paths rather than from a `SymbolKind.Namespace`
+        // symbol, because no shipped extractor emits one: the immediate container of a symbol's raw
+        // path, whenever no symbol group already claims it. An unclaimed container is a
+        // namespace or module in every case the C# profile can produce (types ARE extracted, so a
+        // member's type prefix is claimed). It is presented as a namespace even in the one case it
+        // might not be -- a type whose own declaration was never extracted while its members were. The
+        // tempting inference from the other end, "a prefix with a MEMBER child is a type", is what a
+        // reader of C# would expect and is exactly wrong for the next profile: a TypeScript member's
+        // immediate container is a module, not a type, so that rule would mislabel every module.
+        var claimed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            claimed.Add(RawKey(group.RawSegments));
+        }
+
+        // Only a group's IMMEDIATE container, never every ancestor prefix -- and that bound is what
+        // keeps the spine a connected graph rather than a set of islands.
+        //
+        // A container synthesized from a deeper prefix has, by construction, nothing declared directly
+        // in it: it is a pure pass-through level of the path tree. It cannot be reached from a package,
+        // because a package attaches at the deepest container above the groups it owns, which is never
+        // this one; and it can only be reached from ITS parent, which is a pass-through level too. So a
+        // chain of them dangles off nothing. `producers/src/OkfProducer.Core/` is the case that shows
+        // it: every type there sits in `OkfProducer.Core.Generation` and its siblings, nothing at all in
+        // `OkfProducer.Core` or `OkfProducer`, so both were emitted as concepts with children and no
+        // incoming edge -- unreachable from `overview` while `okf validate` stayed silent, since nothing
+        // DANGLED, the tree simply had a severed branch.
+        //
+        // Restricting synthesis to a container something is actually declared in makes the invariant
+        // provable rather than hoped for: every container concept has at least one group whose immediate
+        // container it is, and that group's package attaches at exactly this container -- PROVIDED the
+        // container is not cut off from the ancestor a package will attach to, which is what
+        // BridgeContainerGaps below guarantees. A level with nothing in it and nothing below it that
+        // needs it is not a concept: it stays a plain directory, exactly as `code/csharp/` does.
+        var containerSegments = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            var parent = group.RawSegments[..^1];
+            if (parent.Length < MinimumContainerDepth)
+            {
+                continue;
+            }
+
+            var key = RawKey(parent);
+            if (!claimed.Contains(key))
+            {
+                containerSegments.TryAdd(key, parent);
+            }
+        }
+
+        BridgeContainerGaps(containerSegments, claimed);
+
+        // Sorted out of the dictionary immediately: from here on this list, not the hash table, is what
+        // decides registration order and output order (§6.2).
+        var containers = containerSegments
+            .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+            .Select(entry => entry.Value)
+            .ToList();
+
+        // Pass 1 -- ids. Registered in the sorted order above so §3.3's numeric tie-break is decided by
+        // the Ordinal order of the symbols' own names, not by which file the scanner happened to reach
+        // first: a file move or a line shift must not renumber anything.
+        //
+        // Level by level rather than in one sweep, because containers and symbols interleave by depth:
+        // a container must be registered before the symbols nested under it (they hang off its
+        // REGISTERED id, so that an escaped name -- `Index`, `Log` -- takes its children with it), and
+        // the symbols one level up must be registered before it. Within a level, symbols go first: a
+        // real declaration outranks a synthesized container when both want the same id, and the loser
+        // takes the numeric suffix.
+        var ids = new Dictionary<SymbolKey, ConceptId>();
+        var idsByName = new Dictionary<(string Container, string Name), ConceptId>();
+        var primaryByName = new Dictionary<(string Container, string Name), SymbolFact>();
+        var registeredByRawPath = new Dictionary<string, ConceptId>(StringComparer.Ordinal);
+        var containerIds = new Dictionary<string, ConceptId>(StringComparer.Ordinal);
+        var titlesByRawPath = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var maxDepth = 0;
+        foreach (var group in groups)
+        {
+            maxDepth = Math.Max(maxDepth, group.RawSegments.Length);
+        }
+
+        foreach (var container in containers)
+        {
+            maxDepth = Math.Max(maxDepth, container.Length);
+        }
+
+        for (var depth = MinimumContainerDepth; depth <= maxDepth; depth++)
+        {
+            foreach (var (key, declarations, rawSegments) in groups.Where(g => g.RawSegments.Length == depth))
+            {
+                var profile = ProfileFor(key.Language, options, profiles);
+                var id = RegisterCodeId(declarations[0], profile, registry, rawSegments, registeredByRawPath);
+                ids[key] = id;
+                registeredByRawPath.TryAdd(RawKey(rawSegments), id);
+                titlesByRawPath.TryAdd(RawKey(rawSegments), QualifiedTitle(declarations[0], profile));
+
+                // Link targets, keyed the way an edge names them: (container, name), no language. The guard
+                // above is what makes that key unambiguous rather than merely lucky; TryAdd's first-wins is
+                // then only a same-language duplicate guard, which the group key already rules out.
+                idsByName.TryAdd((key.Container, key.Name), id);
+                primaryByName.TryAdd((key.Container, key.Name), declarations[0]);
+            }
+
+            foreach (var segments in containers.Where(c => c.Length == depth))
+            {
+                var containerKey = RawKey(segments);
+                var id = RegisterContainerId(segments, registry, registeredByRawPath);
+                containerIds[containerKey] = id;
+                registeredByRawPath.TryAdd(containerKey, id);
+                titlesByRawPath.TryAdd(containerKey, ContainerTitle(segments));
+            }
+        }
+
+        // Calls are hung off the CALLER's concept (§4.5 rules out the reverse direction), so index the
+        // edges by caller once rather than rescanning the edge list per concept.
+        var callsByCaller = new Dictionary<(string Container, string Name), List<ResolvedEdge>>();
+        foreach (var edge in graph.Edges
+            .OrderBy(e => e.Site.CallerContainer, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.CallerName, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.CalledName, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.RelativePath, StringComparer.Ordinal)
+            .ThenBy(e => e.Site.Offset))
+        {
+            var callerKey = (edge.Site.CallerContainer, edge.Site.CallerName);
+            if (!callsByCaller.TryGetValue(callerKey, out var list))
+            {
+                list = [];
+                callsByCaller[callerKey] = list;
+            }
+
+            list.Add(edge);
+        }
+
+        // The containment spine itself (§5.2): one edge per parent, pointing exactly one level down.
+        // A node's parent is its raw path minus the last segment, which is why the raw paths -- not the
+        // ids, which escaping and numeric suffixes can move -- are what the tree is built on.
+        var childrenByParent = new Dictionary<string, List<Child>>(StringComparer.Ordinal);
+
+        void Attach(string[] segments)
+        {
+            if (segments.Length <= MinimumContainerDepth)
+            {
+                return;
+            }
+
+            var key = RawKey(segments);
+            var parentKey = RawKey(segments[..^1]);
+            if (!registeredByRawPath.TryGetValue(key, out var id) || !registeredByRawPath.ContainsKey(parentKey))
+            {
+                return;
+            }
+
+            if (!childrenByParent.TryGetValue(parentKey, out var siblings))
+            {
+                siblings = [];
+                childrenByParent[parentKey] = siblings;
+            }
+
+            siblings.Add(new Child(id, titlesByRawPath[key]));
+        }
+
+        foreach (var group in groups)
+        {
+            Attach(group.RawSegments);
+        }
+
+        foreach (var container in containers)
+        {
+            Attach(container);
+        }
+
+        var attribution = AttributePackages(groups, containerIds, registeredByRawPath, titlesByRawPath, packages, options);
+
+        // Which repository files each node was derived from -- the ownership Task 11's manifest records
+        // and its pruning joins on (§6.3 rule 3): an id whose owning file this run could not read is
+        // absent for a reason that is not "the symbol was deleted", and must survive.
+        //
+        // Accumulated onto every ancestor path, not just the group's own, because a container concept
+        // is synthesized rather than declared: with no owner it could never be pruned (correct but
+        // leaky), and with a wrong one it could be pruned while a member below it survives. Its honest
+        // owners are the files of everything nested under it, which is exactly what this loop builds.
+        var filesByRawPath = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            for (var length = group.RawSegments.Length; length >= MinimumContainerDepth; length--)
+            {
+                var key = RawKey(group.RawSegments[..length]);
+                foreach (var declaration in group.Declarations)
+                {
+                    AddSorted(filesByRawPath, key, NormalizeSeparators(declaration.RelativePath));
+                }
+            }
+        }
+
+        // Pass 2 -- documents.
+        var concepts = new List<GeneratedConcept>(groups.Count + containers.Count);
+        for (var depth = MinimumContainerDepth; depth <= maxDepth; depth++)
+        {
+            foreach (var (key, declarations, rawSegments) in groups.Where(g => g.RawSegments.Length == depth))
+            {
+                var id = ids[key];
+                var profile = ProfileFor(key.Language, options, profiles);
+                callsByCaller.TryGetValue((key.Container, key.Name), out var edges);
+                var extras = ExtrasFor(RawKey(rawSegments), childrenByParent, attribution, options.SourceOwnership, declarations);
+
+                concepts.Add(new GeneratedConcept(id, BuildCodeConcept(
+                    id, declarations, profile, edges ?? [], idsByName, primaryByName, options, extras))
+                {
+                    SourceFiles = FilesOf(filesByRawPath, RawKey(rawSegments)),
+                });
+            }
+
+            foreach (var segments in containers.Where(c => c.Length == depth))
+            {
+                // No ownership and no declarations: a container is not declared in a file, so it has no
+                // framework of its own to be absent from -- that is a fact about a symbol, and it is
+                // stated on the symbol's own concept.
+                var containerKey = RawKey(segments);
+                var extras = ExtrasFor(containerKey, childrenByParent, attribution, ownership: null, declarations: []);
+
+                concepts.Add(new GeneratedConcept(
+                    containerIds[containerKey],
+                    BuildContainerConcept(containerIds[containerKey], segments, titlesByRawPath[containerKey], extras, options))
+                {
+                    SourceFiles = FilesOf(filesByRawPath, containerKey),
+                });
+            }
+        }
+
+        return new CodeFamily(concepts, attribution.PackageChildren);
+    }
+
+    /// <summary>
+    /// Everything a concept's body needs beyond its own declarations: the one level of containment
+    /// below it, the other packages that also compile its sources, and the target frameworks it is
+    /// absent from.
+    /// </summary>
+    private sealed record NodeExtras(
+        IReadOnlyList<Child> Children,
+        IReadOnlyList<string> AlsoCompiledBy,
+        IReadOnlyList<string> AbsentFrameworks)
+    {
+        /// <summary>A leaf with nothing to add: no children, no shared sources, no absent framework.</summary>
+        public static NodeExtras None { get; } = new([], [], []);
+    }
+
+    private static NodeExtras ExtrasFor(
+        string rawKey,
+        IReadOnlyDictionary<string, List<Child>> childrenByParent,
+        Attribution attribution,
+        SourceOwnershipMap? ownership,
+        IReadOnlyList<SymbolFact> declarations)
+    {
+        var children = childrenByParent.TryGetValue(rawKey, out var found) ? found : (IReadOnlyList<Child>)[];
+        var shared = attribution.AlsoCompiledBy.TryGetValue(rawKey, out var others) ? others : (IReadOnlyList<string>)[];
+        var absent = AbsentFrameworks(ownership, declarations);
+
+        return children.Count == 0 && shared.Count == 0 && absent.Count == 0
+            ? NodeExtras.None
+            : new NodeExtras(children, shared, absent);
+    }
+
+    /// <summary>
+    /// The package half of the containment spine: which namespaces each package concept links down to,
+    /// and, where sources are shared, which other packages a namespace names.
+    /// </summary>
+    private sealed record Attribution(
+        IReadOnlyDictionary<string, List<Child>> PackageChildren,
+        IReadOnlyDictionary<string, List<string>> AlsoCompiledBy);
+
+    /// <summary>
+    /// Attributes each code container to the package that compiles its sources (§5.1), from the
+    /// <c>Compile</c> item set the composition root supplied -- never from the directory tree.
+    ///
+    /// <para><b>With no map, nothing is attributed</b> and the run says so through
+    /// <see cref="GenerateOptions.Note"/>. That is the whole point of the seam: a missing link leaves
+    /// the spine incomplete, which is visible and costs a reader one hop; a link guessed from directory
+    /// layout is wrong whenever a project adds, removes or links sources across directories, and a
+    /// wrong edge in a knowledge bundle is a confidently false answer.</para>
+    ///
+    /// <para>Three rules, all of them §5.1's. A file claimed by several projects belongs to the
+    /// <see cref="StringComparer.Ordinal"/>-first <c>.csproj</c>, and the others are named in the
+    /// concept rather than duplicating it. A package links to the <i>minimal</i> containers it declares
+    /// into -- if it declares into both <c>N</c> and <c>N.Sub</c>, only <c>N</c> is linked, because
+    /// <c>N</c> already lists <c>N.Sub</c> one level down (§5.2). And a group whose nearest container is
+    /// none at all (a type in the global namespace) is attached directly, so a package with no
+    /// namespace anywhere still has a level below it.</para>
+    /// </summary>
+    private static Attribution AttributePackages(
+        IReadOnlyList<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)> groups,
+        IReadOnlyDictionary<string, ConceptId> containerIds,
+        IReadOnlyDictionary<string, ConceptId> registeredByRawPath,
+        IReadOnlyDictionary<string, string> titlesByRawPath,
+        IReadOnlyList<(ConceptId Id, PackageManifest Manifest)> packages,
+        GenerateOptions options)
+    {
+        var children = new Dictionary<string, List<Child>>(StringComparer.Ordinal);
+        var alsoCompiledBy = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        if (options.SourceOwnership is not { } ownership)
+        {
+            if (packages.Count > 0 && groups.Count > 0)
+            {
+                options.Note?.Invoke(
+                    "no source-ownership map was supplied, so no package -> namespace containment link was emitted."
+                    + " A namespace's package is read from MSBuild's `Compile` item set, never from the directory"
+                    + " tree: a project can add, remove and link sources across directories, so a directory-derived"
+                    + " link would attribute a namespace to the wrong package.");
+            }
+
+            return new Attribution(children, alsoCompiledBy);
+        }
+
+        // Normalized by the map's own rule, not by this file's NormalizeSeparators: this is the join
+        // key between a project and its package concept, and two normalization rules would make the
+        // join miss silently rather than fail.
+        var packagesByProject = new Dictionary<string, (ConceptId Id, string Name)>(StringComparer.Ordinal);
+        foreach (var (id, manifest) in packages)
+        {
+            packagesByProject.TryAdd(SourceOwnershipMap.Normalize(manifest.RelativePath), (id, manifest.Name));
+        }
+
+        var targets = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        var shared = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        var candidates = new HashSet<string>(StringComparer.Ordinal);
+        var attributed = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var group in groups)
+        {
+            var attachKey = AttachmentKey(group.RawSegments, containerIds);
+            candidates.Add(attachKey);
+
+            foreach (var path in group.Declarations
+                .Select(declaration => NormalizeSeparators(declaration.RelativePath))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(path => path, StringComparer.Ordinal))
+            {
+                // The Ordinal-first claimant, among the claimants that ARE a detected package. A project
+                // with no package concept -- a test project, a tool outside the solution -- is not
+                // something to attach to, and letting it win the tie would drop the link entirely even
+                // though a real package compiles the same file. The order is still the .csproj paths'
+                // own Ordinal order, so which package wins does not depend on scan order.
+                (ConceptId Id, string Name)? owner = null;
+                var others = new List<string>();
+
+                foreach (var project in ownership.ClaimantsOf(path))
+                {
+                    if (!packagesByProject.TryGetValue(project, out var package))
+                    {
+                        continue;
+                    }
+
+                    if (owner is null)
+                    {
+                        owner = package;
+                    }
+                    else
+                    {
+                        others.Add(package.Name);
+                    }
+                }
+
+                if (owner is not { } attachedTo)
+                {
+                    continue;
+                }
+
+                AddSorted(targets, attachedTo.Id.ToString(), attachKey);
+                attributed.Add(attachKey);
+
+                foreach (var other in others)
+                {
+                    AddSorted(shared, attachKey, other);
+                }
+            }
+        }
+
+        foreach (var (packageId, keys) in targets)
+        {
+            // Minimal under the ancestor relation: a key whose own ancestor is also claimed by this
+            // package is already reachable one level down from that ancestor (§5.2).
+            children[packageId] =
+            [
+                .. keys
+                    .Where(key => !keys.Any(other => IsProperAncestor(other, key)) && registeredByRawPath.ContainsKey(key))
+                    .Select(key => new Child(registeredByRawPath[key], titlesByRawPath[key])),
+            ];
+        }
+
+        foreach (var (key, names) in shared)
+        {
+            alsoCompiledBy[key] = [.. names];
+        }
+
+        var orphans = candidates.Count - attributed.Count;
+        if (orphans > 0)
+        {
+            options.Note?.Invoke(
+                $"{orphans.ToString(CultureInfo.InvariantCulture)} code container(s) were not attributed to a package:"
+                + " no detected package's `Compile` item set claims the sources that declare them, so they are"
+                + " reachable from their own parent but not from any package concept.");
+        }
+
+        return new Attribution(children, alsoCompiledBy);
+    }
+
+    /// <summary>
+    /// Adds the levels needed to connect a container to its nearest <i>registered</i> ancestor, and
+    /// nothing else.
+    ///
+    /// <para><b>Why a container can be cut off at all.</b> A package attaches at the deepest container
+    /// above the groups it owns, and the minimality filter then drops any attach key whose ancestor the
+    /// same package also claims -- on the premise that the deeper one is already reachable one level
+    /// down from that ancestor. Synthesizing only immediate containers is what can invalidate that
+    /// premise: with a type in <c>N</c> and a type in <c>N.Sub.Deeper</c> and nothing in <c>N.Sub</c>,
+    /// the package claims <c>N</c> and <c>N.Sub.Deeper</c>, minimality keeps only <c>N</c>, and the
+    /// chain from <c>N</c> to <c>N.Sub.Deeper</c> has a hole in it -- so an entire subtree leaves the
+    /// graph without a single link dangling anywhere.</para>
+    ///
+    /// <para><b>Why the closure is bounded rather than a return to synthesizing every prefix.</b> The
+    /// bridge is only built where there is something on both ends: a container whose nearest ancestor is
+    /// registered gets the levels in between, and a container with no registered ancestor at all gets
+    /// nothing, because that one is where its package attaches directly. Loosening the minimality filter
+    /// instead would keep the deeper key and put the package three levels down, past concepts it should
+    /// have gone through -- and synthesizing every prefix brings back the pass-through islands. This is
+    /// the only one of the three that leaves all of "sparse where nothing needs it", "truthful package
+    /// attachment", and "one level down" standing.</para>
+    /// </summary>
+    private static void BridgeContainerGaps(Dictionary<string, string[]> containerSegments, HashSet<string> claimed)
+    {
+        // A snapshot, because the loop adds to the dictionary: every level it adds sits between an
+        // already-registered ancestor and an already-present container, so it can create no new gap and
+        // one pass is enough.
+        foreach (var container in containerSegments.Values.ToList())
+        {
+            for (var length = container.Length - 1; length >= MinimumContainerDepth; length--)
+            {
+                var ancestorKey = RawKey(container[..length]);
+                if (!claimed.Contains(ancestorKey) && !containerSegments.ContainsKey(ancestorKey))
+                {
+                    continue;
+                }
+
+                // Found the nearest registered ancestor: fill in from just below it down to this
+                // container, so every step of the chain has a parent to hang off.
+                for (var bridge = length + 1; bridge < container.Length; bridge++)
+                {
+                    containerSegments.TryAdd(RawKey(container[..bridge]), container[..bridge]);
+                }
+
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The node a package attaches a symbol group to: the deepest container above it, or -- for a
+    /// symbol with no container at all, such as a type in the global namespace -- the group itself.
+    /// </summary>
+    private static string AttachmentKey(string[] rawSegments, IReadOnlyDictionary<string, ConceptId> containerIds)
+    {
+        for (var length = rawSegments.Length - 1; length >= MinimumContainerDepth; length--)
+        {
+            var key = RawKey(rawSegments[..length]);
+            if (containerIds.ContainsKey(key))
+            {
+                return key;
+            }
+        }
+
+        return RawKey(rawSegments);
+    }
+
+    /// <summary>
+    /// True when <paramref name="candidate"/> is a strict ancestor of <paramref name="key"/> in the raw
+    /// path tree. Both are <see cref="RawKey"/> strings, whose <c>NUL</c> join is what makes the prefix
+    /// test exact: <c>[A, BC]</c> and <c>[AB, C]</c> share no textual prefix once the separator cannot
+    /// occur inside a segment.
+    /// </summary>
+    private static bool IsProperAncestor(string candidate, string key) =>
+        key.Length > candidate.Length && key.StartsWith(candidate + char.MinValue, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The target frameworks every declaration of this symbol is excluded from -- so a symbol behind an
+    /// <c>#if</c>-conditioned <c>Compile</c> item says so instead of silently claiming to exist under
+    /// every framework its package targets (§5.1's multi-TFM rule: the symbols are the union, and the
+    /// gaps are stated). Intersected across declarations, never unioned: a symbol declared in a file
+    /// that IS compiled for a framework exists there, whatever its other declarations do.
+    /// </summary>
+    private static IReadOnlyList<string> AbsentFrameworks(SourceOwnershipMap? ownership, IReadOnlyList<SymbolFact> declarations)
+    {
+        if (ownership is null || declarations.Count == 0)
+        {
+            return [];
+        }
+
+        List<string>? absent = null;
+        foreach (var path in declarations
+            .Select(declaration => NormalizeSeparators(declaration.RelativePath))
+            .Distinct(StringComparer.Ordinal))
+        {
+            var fileAbsent = ownership.FrameworksAbsentFrom(path);
+            if (fileAbsent.Count == 0)
+            {
+                return [];
+            }
+
+            absent = absent is null ? [.. fileAbsent] : [.. absent.Intersect(fileAbsent, StringComparer.Ordinal)];
+            if (absent.Count == 0)
+            {
+                return [];
+            }
+        }
+
+        absent?.Sort(StringComparer.Ordinal);
+
+        return absent ?? [];
+    }
+
+    /// <summary>
+    /// The repository files recorded against one raw path, materialised out of the
+    /// <see cref="SortedSet{T}"/> that accumulated them so nothing downstream is ordered by a hash
+    /// table (§6.2). Empty for a node nothing was declared under -- which no node reachable here has,
+    /// since containers are only synthesized where a group sits below them, but empty is the honest
+    /// answer rather than a throw: an owner-less id is simply never pruned.
+    /// </summary>
+    private static IReadOnlyList<string> FilesOf(Dictionary<string, SortedSet<string>> filesByRawPath, string rawKey) =>
+        filesByRawPath.TryGetValue(rawKey, out var files) ? [.. files] : [];
+
+    private static void AddSorted(Dictionary<string, SortedSet<string>> map, string key, string value)
+    {
+        if (!map.TryGetValue(key, out var values))
+        {
+            values = new SortedSet<string>(StringComparer.Ordinal);
+            map[key] = values;
+        }
+
+        values.Add(value);
+    }
+
+    private static OkfDocument BuildCodeConcept(
+        ConceptId id,
+        IReadOnlyList<SymbolFact> declarations,
+        LanguageProfile profile,
+        IReadOnlyList<ResolvedEdge> edges,
+        IReadOnlyDictionary<(string Container, string Name), ConceptId> idsByName,
+        IReadOnlyDictionary<(string Container, string Name), SymbolFact> primaryByName,
+        GenerateOptions options,
+        NodeExtras extras)
+    {
+        var primary = declarations[0];
+        var title = QualifiedTitle(primary, profile);
+        var (description, descriptionSource) = Descriptions.Resolve(primary, options.ExistingFrontmatter?.Invoke(id));
+
+        var builder = OkfDocumentBuilder
+            .ForType(ConceptTypeName(primary))
+            .Title(title)
+            .Description(description)
+            .Tags(ConceptTags(primary))
+            .Body(BuildCodeBody(title, BodyDescription(description, descriptionSource), declarations, edges, idsByName, primaryByName, profile, extras));
+
+        // §4.3: a URL short-circuits the validator's path classifier, so it is the only shape of
+        // `resource` a code concept can carry without earning a warning. No URL => no field.
+        if (ResourceUrl(primary, options) is { } resource)
+        {
+            builder = builder.Resource(resource);
+        }
+
+        // §4.5: no `sources` block -- it would duplicate `resource` on every one of ~470 concepts.
+        // No family emits one any more: `packages/` and `docs/` used to write a single entry whose
+        // `resource` was the same string as the field above it, which is this rule's own case and cost
+        // a second warning per concept for one fact.
+        builder = builder.Extension(DescriptionResolver.DescriptionSourceKey, new YamlString(descriptionSource));
+
+        // §4.4: `by` and never `at`. All ~470 concepts are generated in one pass, so a per-concept
+        // timestamp would store a single fact 470 times AND rewrite all 470 files on every
+        // regeneration -- the bundle's `git diff` would show 470 timestamps instead of what changed in
+        // the code. `at` (and `revision`) belong to `overview` alone.
+        var generated = new YamlMapping();
+        generated.Insert("by", new YamlString(ProducerActor));
+        builder = builder.Extension("generated", generated);
+
+        return builder.Build();
+    }
+
+    private static string BuildCodeBody(
+        string title,
+        string description,
+        IReadOnlyList<SymbolFact> declarations,
+        IReadOnlyList<ResolvedEdge> edges,
+        IReadOnlyDictionary<(string Container, string Name), ConceptId> idsByName,
+        IReadOnlyDictionary<(string Container, string Name), SymbolFact> primaryByName,
+        LanguageProfile profile,
+        NodeExtras extras)
+    {
+        var body = new StringBuilder();
+        body.Append("# ").Append(LiftedBodyText(title)).Append("\n\n");
+        body.Append(description.TrimEnd()).Append('\n');
+
+        // §3.2: one concept per (container, name), so an overload set is one concept listing every
+        // signature with its own span, rather than `validate-2`/`validate-3` ids that renumber their
+        // neighbours whenever an overload is added.
+        body.Append("\n## Signatures\n\n");
+        foreach (var declaration in declarations)
+        {
+            body.Append("- ").Append(CodeSpan(declaration.Signature))
+                .Append(" — ").Append(CodeSpan(SpanLabel(declaration))).Append('\n');
+        }
+
+        // §5.1's multi-TFM rule, stated where a reader of this symbol will see it.
+        AppendAbsentFrameworks(body, extras.AbsentFrameworks);
+
+        // §5.2's descending family, kept in its own section: `okf graph` sees containment and calls
+        // alike, and it is the heading that says which is which.
+        AppendContains(body, extras.Children);
+        AppendAlsoCompiledBy(body, extras.AlsoCompiledBy);
+
+        // Both Exact and ByName become links; only Unresolved stays text. Measured: 54-58% of call
+        // sites have no declaration anywhere in the repository (they are BCL or NuGet), so linking
+        // them would emit that many BrokenLink diagnostics and drown `okf validate`. In a code span
+        // they stay readable and greppable without polluting the graph (§4.5).
+        var links = new List<string>();
+        var unresolved = new List<string>();
+
+        foreach (var edge in edges)
+        {
+            if (edge.Confidence != EdgeConfidence.Unresolved
+                && edge.TargetContainer is { } targetContainer
+                && edge.TargetName is { } targetName
+                && idsByName.TryGetValue((targetContainer, targetName), out var targetId))
+            {
+                var targetTitle = primaryByName.TryGetValue((targetContainer, targetName), out var targetFact)
+                    ? QualifiedTitle(targetFact, profile)
+                    : targetName;
+
+                // Absolute (§6.1's recommended form): the generator never does relative-path
+                // arithmetic, and `okf graph` resolves the link from the id alone.
+                links.Add($"- [{LinkText(targetTitle)}](/{targetId})");
+            }
+            else
+            {
+                // Defensive: CodeGraph guarantees a resolved target exists in Symbols, so the lookup
+                // above cannot miss. If it ever did, rendering text is the safe direction -- a link to
+                // a concept that was never generated is a broken link in the user's bundle.
+                unresolved.Add($"- {CodeSpan(edge.Site.CalledName)}");
+            }
+        }
+
+        AppendSection(body, "## Calls", links);
+        AppendSection(body, "## Calls (unresolved)", unresolved);
+
+        // §4.5: no `## Called by`. Bundle.Backlinks(id) is public and computed at load, so
+        // materialising reverse links would duplicate derivable information and double the churn --
+        // adding one call would rewrite the callee's concept too.
+        return body.ToString();
+    }
+
+    /// <summary>
+    /// The concept for one container -- a namespace, a module, or a type nothing declared in scope --
+    /// which exists so the level above it has something to link to at all (§5.1: <c>index.md</c> is
+    /// reserved, so a directory is not a link target). It carries no <c>resource</c>: a container is not
+    /// declared in one file, and §4.3 admits only a URL there.
+    /// </summary>
+    private static OkfDocument BuildContainerConcept(
+        ConceptId id,
+        string[] segments,
+        string title,
+        NodeExtras extras,
+        GenerateOptions options)
+    {
+        var language = segments[1];
+        var (description, descriptionSource) =
+            ContainerDescriptions.Resolve(ContainerFact(segments), options.ExistingFrontmatter?.Invoke(id));
+
+        var body = new StringBuilder();
+        body.Append("# ").Append(LiftedBodyText(title)).Append("\n\n");
+        body.Append(BodyDescription(description, descriptionSource).TrimEnd()).Append('\n');
+        AppendContains(body, extras.Children);
+        AppendAlsoCompiledBy(body, extras.AlsoCompiledBy);
+
+        string[] tags = language.Length == 0 ? [ContainerToken] : [language, ContainerToken];
+
+        var builder = OkfDocumentBuilder
+            .ForType($"{LanguageDisplayName(language)} Container")
+            .Title(title)
+            .Description(description)
+            .Tags(tags)
+            .Body(body.ToString())
+            .Extension(DescriptionResolver.DescriptionSourceKey, new YamlString(descriptionSource));
+
+        // §4.4, exactly as for a symbol concept: `by` and never `at`.
+        var generated = new YamlMapping();
+        generated.Insert("by", new YamlString(ProducerActor));
+
+        return builder.Extension("generated", generated).Build();
+    }
+
+    /// <summary>
+    /// A container's title: the container qualified by its immediate owner (<c>OKF4net.Yaml</c>), which
+    /// is the same shape <see cref="QualifiedTitle"/> gives a symbol, joined the same way -- with
+    /// <c>.</c>, whatever the language's own separator, because <see cref="LanguageProfile"/> exposes
+    /// the split direction only and a title is prose, not an id.
+    /// </summary>
+    private static string ContainerTitle(string[] segments) =>
+        segments.Length <= MinimumContainerDepth ? segments[^1] : $"{segments[^2]}.{segments[^1]}";
+
+    /// <summary>
+    /// A container rendered as a <see cref="SymbolFact"/> <b>for the description chain only</b>, so a
+    /// namespace gets §4.2's field preservation (a hand-written description survives regeneration) from
+    /// the same <see cref="DescriptionResolver"/> as every other concept, rather than a second, forkable
+    /// copy of that rule.
+    ///
+    /// <para><b>It is not a declaration and must never be treated as one.</b> Its
+    /// <see cref="SymbolFact.RelativePath"/> is empty and its offsets are zero, so handing it to
+    /// <see cref="ResourceUrl"/> would mint a permalink to line 0 of the repository root -- a link that
+    /// looks right and points nowhere. It goes to <see cref="DescriptionResolver.Resolve"/> and nowhere
+    /// else.</para>
+    ///
+    /// <para><see cref="SymbolKind.Namespace"/> is the nearest of the three kinds and is not read by
+    /// <see cref="ContainerSource"/>, which is the only source this fact ever reaches; the concept's own
+    /// vocabulary is <see cref="ContainerToken"/>'s, precisely because the kind is what this pass cannot
+    /// know.</para>
+    /// </summary>
+    private static SymbolFact ContainerFact(string[] segments) => new(
+        SymbolKind.Namespace,
+        Language: segments[1],
+        Container: string.Join('.', segments[2..^1]),
+        Name: segments[^1],
+        Signature: string.Empty,
+        SymbolVisibility.Public,
+        RelativePath: string.Empty,
+        StartOffset: 0,
+        EndOffset: 0,
+        StartLine: 0,
+        EndLine: 0,
+        DocComment: null);
+
+    /// <summary>
+    /// Any text this producer <b>lifted from outside the bundle</b> and renders into a body -- a
+    /// repository or package name, a README's own <c>#</c> heading, a <c>.csproj</c>
+    /// <c>&lt;Description&gt;</c>, a doc comment -- with its markdown link syntax neutralized.
+    ///
+    /// <para><b>The test is where the text was authored FOR, not who typed it.</b> A NuGet
+    /// <c>&lt;Description&gt;</c> and a README heading are written by humans, but for NuGet and for
+    /// GitHub; nobody writing either means a link relative to a bundle that did not exist yet. So from
+    /// the bundle's point of view they are derived, exactly as a doc comment is, and rendering
+    /// <c>[docs](guide)</c> or <c>[Guide](docs/guide.md)</c> from one of them verbatim manufactures a
+    /// link the author never wrote. Only text authored <i>in</i> the bundle is exempt, and
+    /// <c>description_source</c> is what says so -- see <see cref="BodyDescription"/>.</para>
+    ///
+    /// <para>A no-op for text that cannot contain the syntax, which is most of it: a C# identifier, a
+    /// dotted type name. Applied uniformly all the same, because a per-family exception is exactly how
+    /// two concepts with identical text end up behaving differently.</para>
+    /// </summary>
+    private static string LiftedBodyText(string text) => NeutralizeMarkdownLinks(text);
+
+    /// <summary>
+    /// <see cref="LiftedBodyText"/> for lifted text that <b>begins a paragraph</b> in the body: it
+    /// additionally escapes a leading block-construct marker, so a description cannot silently stop
+    /// being a paragraph and start being a heading, a list item or a block quote.
+    ///
+    /// <para><b>Bounded on purpose: one character, at the start of a line.</b> The only thing that can
+    /// change a line's block type is its first non-space character -- <c>#</c>, <c>-</c>, <c>*</c>,
+    /// <c>+</c>, <c>&gt;</c>, a run of 3+ backticks or tildes (a fenced code block), or a run of digits
+    /// followed by <c>.</c> or <c>)</c>. This is deliberately not a general markdown escaper: everything
+    /// further into the line is inline markup, which renders as the author's own emphasis and is none of
+    /// this producer's business. CommonMark renders <c>\#</c> as <c>#</c>, so the reader sees exactly
+    /// what was written.</para>
+    ///
+    /// <para><b>A marker only counts when a space, a tab or the line's end follows it</b> -- which is
+    /// CommonMark's own rule and not a refinement of it. Escaping unconditionally would rewrite ordinary
+    /// emphasis: <c>*fast* and small.</c> would become <c>\*fast* and small.</c> and render its asterisks
+    /// literally, this guard corrupting the prose it exists to protect. <c>&gt;</c> and a fence are the
+    /// exceptions the spec itself makes: <c>&gt;text</c> is a block quote with no space at all, and an
+    /// info string may sit right against a fence (<c>```csharp</c>).</para>
+    ///
+    /// <para><b>An unbalanced fence has a consumer, not just a renderer, to answer to.</b> A leading
+    /// ``` or <c>~~~</c> left undefused makes <see cref="OKF4net.LinkScanner"/>.<c>ExtractLinks</c> skip
+    /// every line after it as code -- so a description whose fence is never closed (ordinary: it is only
+    /// a description, not a whole document) silently hides the rest of this concept's own body, links
+    /// included, from the very scanner that resolves them.</para>
+    ///
+    /// <para><b>Every line, not only the first.</b> A <c>.csproj</c> <c>&lt;Description&gt;</c> reaches
+    /// a body with its newlines intact, so a <c>- </c> opening line 2 starts a list exactly as it would
+    /// opening line 1 -- a guarantee stated for "the description" has to hold for all of it, or the
+    /// documentation and the code disagree about which half is covered.</para>
+    ///
+    /// <para><b>For an ordered-list marker the delimiter is escaped, not the digit</b>, and the two are
+    /// not interchangeable: <c>\1.</c> renders a literal backslash, because a backslash escape is only
+    /// defined for ASCII punctuation, while <c>1\.</c> renders <c>1.</c> and forms no list.</para>
+    ///
+    /// <para>The sharpest case is <c>#</c>. A description that opens a heading is a rendering fault on
+    /// its own, and <c>LinkScanner.ExtractCitations</c> reads a heading whose title is exactly
+    /// <c>Citations</c> as §13.1's legacy citations marker -- a structural claim about the concept,
+    /// made by text its author wrote for a compiler.</para>
+    /// </summary>
+    private static string LiftedBodyParagraph(string text) => EscapeLeadingBlockMarker(LiftedBodyText(text));
+
+    /// <summary>
+    /// Escapes the one character that would make <paramref name="text"/> open a markdown block, or
+    /// returns it unchanged when it opens none. See <see cref="LiftedBodyParagraph"/> for the bound.
+    /// </summary>
+    private static string EscapeLeadingBlockMarker(string text)
+    {
+        // Every line, not only the first: a `.csproj` <Description> reaches a body with its newlines
+        // intact, and a `- ` opening line 2 starts a list exactly as it would opening line 1. Splitting
+        // on `\n` and keeping any `\r` with the line leaves the text byte-identical apart from the
+        // escapes themselves.
+        var lines = text.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            lines[i] = EscapeLineBlockMarker(lines[i]);
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static string EscapeLineBlockMarker(string line)
+    {
+        var start = LeadingWhitespaceEnd(line);
+        if (start >= line.Length)
+        {
+            return line;
+        }
+
+        // A block quote is the one marker CommonMark does not require a space after: `>text` quotes.
+        if (line[start] == '>')
+        {
+            return line.Insert(start, "\\");
+        }
+
+        if (TryEscapeLeadingFence(line, start, out var fenced))
+        {
+            return fenced;
+        }
+
+        // A line that is nothing but one repeated marker is a thematic break (`---`, `***`, `___`) or a
+        // setext underline (`---`, `===`), and a setext underline retitles the paragraph ABOVE it -- a
+        // block-type change made to a line the guard already passed. It is checked before the bullet
+        // rule because the space requirement below, correct for `- item`, is exactly what lets these
+        // through.
+        if (IsMarkerOnlyLine(line, start))
+        {
+            return line.Insert(start, "\\");
+        }
+
+        // A bullet or an ATX heading marker only opens a block when a space (or the line's end) follows
+        // it. Without that check this escapes ordinary emphasis: `*fast* and small.` would become
+        // `\*fast* and small.`, which renders the asterisks literally -- the method damaging the prose
+        // it is here to protect.
+        if (line[start] is '-' or '*' or '+')
+        {
+            return IsBlockMarkerBoundary(line, start + 1) ? line.Insert(start, "\\") : line;
+        }
+
+        if (line[start] == '#')
+        {
+            var hashes = start;
+            while (hashes < line.Length && line[hashes] == '#')
+            {
+                hashes++;
+            }
+
+            // Seven or more `#` is not a heading at all, so there is nothing to defuse.
+            return hashes - start <= 6 && IsBlockMarkerBoundary(line, hashes)
+                ? line.Insert(start, "\\")
+                : line;
+        }
+
+        if (!char.IsAsciiDigit(line[start]))
+        {
+            return line;
+        }
+
+        // An ordered-list marker: digits, then `.` or `)`, then the same boundary. The DELIMITER is
+        // escaped, never the digit -- see this method's caller.
+        var delimiter = start;
+        while (delimiter < line.Length && char.IsAsciiDigit(line[delimiter]))
+        {
+            delimiter++;
+        }
+
+        return delimiter < line.Length
+            && line[delimiter] is '.' or ')'
+            && IsBlockMarkerBoundary(line, delimiter + 1)
+                ? line.Insert(delimiter, "\\")
+                : line;
+    }
+
+    /// <summary>
+    /// The index of the first non-whitespace character in <paramref name="line"/> (or its length, if
+    /// there is none), where <b>whitespace means <see cref="char.IsWhiteSpace(char)"/></b> -- NBSP, form
+    /// feed, vertical tab and U+2028 included, not the <c>' '</c>/<c>'\t'</c> pair CommonMark allows
+    /// before a block marker.
+    ///
+    /// <para><b>The consumer's definition is the authoritative one, and the consumer is
+    /// <see cref="OKF4net.LinkScanner"/>.</b> Its <c>CodeFreeLines</c> decides a line opens a fenced code
+    /// block by <c>TrimStart()</c>, which trims every <c>char.IsWhiteSpace</c>. So a description line
+    /// beginning with an NBSP and then ``` was not defused here while it did open a fence there -- after
+    /// which the scanner skipped every following line, this concept's own <c>## Contains</c> and
+    /// <c>## Calls</c> included. Two definitions of "leading whitespace" is precisely how a branch gets
+    /// severed with nothing dangling for <c>okf validate</c> to see, and the same reasoning that makes
+    /// <see cref="NeutralizeMarkdownLinks"/> mirror <c>BlankInlineCode</c> rather than CommonMark applies
+    /// here: this has to agree with the consumer, not with a spec.</para>
+    ///
+    /// <para>The wider class is safe for the markers that only affect <i>rendering</i>
+    /// (<see cref="EscapeLineBlockMarker"/>'s others), because CommonMark does not admit them behind an
+    /// NBSP either: the line was already a paragraph, and the escape it now gets renders identically to
+    /// the character it protects (<c>\-</c> is <c>-</c>). It can add a redundant escape; it cannot
+    /// change what a reader sees.</para>
+    /// </summary>
+    private static int LeadingWhitespaceEnd(string line)
+    {
+        var start = 0;
+        while (start < line.Length && char.IsWhiteSpace(line[start]))
+        {
+            start++;
+        }
+
+        return start;
+    }
+
+    /// <summary>
+    /// Escapes a leading run of 3+ backticks or tildes at <paramref name="start"/> -- a fenced code
+    /// block opener -- and reports whether it did. CommonMark requires no following space (an info
+    /// string may sit right against it, `` ```csharp ``), so this is unconditional, like a block quote.
+    ///
+    /// <para><b>Why an unbalanced fence is dangerous, not just ugly.</b> Left undefused, a fence with no
+    /// matching close anywhere later in the same body -- ordinary when the text is only a description,
+    /// not a whole document -- makes <see cref="OKF4net.LinkScanner"/>.<c>ExtractLinks</c> skip every
+    /// line after it as code, silently hiding this concept's own outgoing links (<c>## Contains</c>,
+    /// <c>## Calls</c>) from the very scanner that resolves them. Nothing dangles, so <c>okf validate</c>
+    /// stays silent while the branch is simply severed -- which is why <see cref="BodyDescription"/>
+    /// defuses this one marker even on text it otherwise leaves untouched (see its own remarks).</para>
+    /// </summary>
+    private static bool TryEscapeLeadingFence(string line, int start, out string escaped)
+    {
+        if (line[start] is '`' or '~')
+        {
+            var fenceMarker = line[start];
+            var run = start;
+            while (run < line.Length && line[run] == fenceMarker)
+            {
+                run++;
+            }
+
+            if (run - start >= 3)
+            {
+                escaped = line.Insert(start, "\\");
+                return true;
+            }
+        }
+
+        escaped = line;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether position <paramref name="index"/> ends a block marker: a space, a tab, or the end of the
+    /// line (a bare <c>-</c> on its own line is an empty list item). A <c>\r</c> counts as the end, so a
+    /// CRLF-separated line behaves like an LF-separated one.
+    /// </summary>
+    private static bool IsBlockMarkerBoundary(string line, int index) =>
+        index >= line.Length || line[index] is ' ' or '\t' or '\r';
+
+    /// <summary>
+    /// Whether every non-blank character from <paramref name="start"/> is the same one of
+    /// <c>-</c>, <c>*</c>, <c>_</c>, <c>=</c> -- the shape of a thematic break or a setext underline.
+    /// Requiring one repeated character is CommonMark's own rule and is what keeps this from firing on
+    /// ordinary prose: <c>-*-</c> is neither construct and is left alone.
+    /// </summary>
+    private static bool IsMarkerOnlyLine(string line, int start)
+    {
+        var marker = line[start];
+        if (marker is not ('-' or '*' or '_' or '='))
+        {
+            return false;
+        }
+
+        for (var i = start; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (c is ' ' or '\t' or '\r')
+            {
+                continue;
+            }
+
+            if (c != marker)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// A <c>description</c> as it is rendered <b>into a body</b>: neutralized as
+    /// <see cref="LiftedBodyText"/> when this producer derived it, and left exactly as the author wrote
+    /// it when the author wrote it in the bundle.
+    ///
+    /// <para><b>The asymmetry is the whole rule.</b> A <c>[text](dest)</c> inside a C# doc comment is
+    /// doc syntax that merely looks like markdown -- <c>LinkScanner</c>'s own summary in this repository
+    /// contains the literal <c>&lt;c&gt;[text](dest)&lt;/c&gt;</c> -- and the author never meant a
+    /// bundle link. Rendered verbatim it becomes one: measured, that single doc comment was the only
+    /// broken link in a 649-concept bundle generated from this repository. The same syntax in a
+    /// <c>manual</c> or <c>llm</c> description is a link the author meant <i>for this bundle</i>, and
+    /// rewriting it would be editing a human's text.</para>
+    ///
+    /// <para><b>Keyed on <c>description_source</c>, which makes it consistent with §4.2's preservation
+    /// table by construction rather than by coincidence:</b> the set neutralized here --
+    /// <see cref="DocCommentSource.SourceLabel"/> and <see cref="SignatureSource.SourceLabel"/> -- is
+    /// exactly the set <see cref="DescriptionResolver"/> re-derives, and everything it protects is
+    /// left alone. The comparison is <see cref="StringComparison.Ordinal"/> against the two literals,
+    /// where the resolver's own comparison is case-insensitive, and that is correct rather than a
+    /// mismatch: this value is not read off disk, it is whatever <see cref="DescriptionResolver.Resolve"/>
+    /// just returned, and a spelling variant of a derived label can only reach that return as a
+    /// <i>preserved</i> value -- which must not be touched, and is not.</para>
+    ///
+    /// <para>The families with no <c>description_source</c> at all -- <c>packages/*</c>, <c>docs/*</c>,
+    /// <c>overview</c> -- never reach this method: nothing in them is bundle-authored, so they go
+    /// straight through <see cref="LiftedBodyText"/>.</para>
+    ///
+    /// <para><b>One exception to "left exactly as the author wrote it": a leading fence is defused
+    /// regardless of provenance.</b> Every other marker only changes rendering, which is the author's
+    /// choice to make. A fence is different in kind -- <see cref="TryEscapeLeadingFence"/>'s own remarks
+    /// explain why -- and the danger it poses to <c>## Contains</c>/<c>## Calls</c> is the same whether
+    /// the text came from a doc comment or was hand-typed straight into the bundle's frontmatter on a
+    /// prior <c>--update</c>. So a bundle-authored description is defused for a fence and left untouched
+    /// for everything else, rather than skipping <see cref="BodyDescription"/> entirely.</para>
+    /// </summary>
+    private static string BodyDescription(string description, string descriptionSource) =>
+        descriptionSource is DocCommentSource.SourceLabel or SignatureSource.SourceLabel
+            ? LiftedBodyParagraph(description)
+            : DefuseLeadingFenceOnly(description);
+
+    /// <summary>
+    /// Escapes the leading fenced-code-block marker that <b>never closes</b> -- nothing else, including
+    /// every other block marker <see cref="EscapeLeadingBlockMarker"/> also handles, and including a
+    /// fence that is part of a balanced pair. See <see cref="BodyDescription"/> for why a fence alone is
+    /// defused on text this producer otherwise never touches.
+    ///
+    /// <para><b>Balanced pairs are left alone, and that is a correction rather than a relaxation.</b> The
+    /// danger is not a fence, it is a fence <see cref="OKF4net.LinkScanner"/> never closes: on a balanced
+    /// pair the scanner opens the block and closes it again, so every line after the close -- this
+    /// concept's own <c>## Contains</c> and <c>## Calls</c> -- is scanned exactly as it would be with no
+    /// fence at all. Escaping such a pair bought no structural property whatsoever, and it was not free:
+    /// <c>\</c> before ``` renders as a literal backtick followed by a stray two-backtick span opener, so
+    /// the escape destroyed the author's code block rather than blemishing it -- damage done to text this
+    /// method's whole premise is that it must not edit.</para>
+    ///
+    /// <para><b>Which fence is the unclosed one is decided by replaying the scanner's own state machine,
+    /// not by counting.</b> A <c>~~~</c> does not close a ``` block, so parity over all fence-shaped
+    /// lines is the wrong question; and the replay has to be repeated until it settles, because escaping
+    /// the unclosed opener puts the lines it was hiding back in front of the scanner and one of THEM can
+    /// open a fence of its own (``` then <c>~~~</c> is the two-line case). Each pass escapes exactly one
+    /// line and strictly reduces the number of fence-shaped lines, so it terminates.</para>
+    /// </summary>
+    private static string DefuseLeadingFenceOnly(string text)
+    {
+        var lines = text.Split('\n');
+
+        while (UnclosedFenceLine(lines) is { } index)
+        {
+            // The escape always lands: UnclosedFenceLine nominates a line only on the same 3+ run of the
+            // same marker that TryEscapeLeadingFence tests for. Guarded all the same, because the loop's
+            // termination rests on that agreement and a future edit to either could break it silently --
+            // an unescaped fence is the bug this method already has; an infinite loop would be a new one.
+            var start = LeadingWhitespaceEnd(lines[index]);
+            if (!TryEscapeLeadingFence(lines[index], start, out var fenced))
+            {
+                break;
+            }
+
+            lines[index] = fenced;
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    /// <summary>
+    /// The index of the line that opens a fenced code block <see cref="OKF4net.LinkScanner"/> never
+    /// closes, or <see langword="null"/> when every fence in <paramref name="lines"/> is balanced.
+    ///
+    /// <para>A transcription of <c>LinkScanner.CodeFreeLines</c>'s own loop, and deliberately so: the
+    /// question is not what CommonMark makes of these lines, it is what the scanner that resolves this
+    /// bundle's links does with them. Both marker characters are tracked separately, and a closer must
+    /// repeat the marker its opener used.</para>
+    /// </summary>
+    private static int? UnclosedFenceLine(IReadOnlyList<string> lines)
+    {
+        char? fence = null;
+        var opener = 0;
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            var start = LeadingWhitespaceEnd(line);
+            var marker = start < line.Length ? line[start] : '\0';
+            var run = 0;
+            while (start + run < line.Length && line[start + run] == marker)
+            {
+                run++;
+            }
+
+            var isFence = marker is '`' or '~' && run >= 3;
+
+            if (fence is { } open)
+            {
+                if (isFence && marker == open)
+                {
+                    fence = null;
+                }
+
+                continue;
+            }
+
+            if (isFence)
+            {
+                fence = marker;
+                opener = i;
+            }
+        }
+
+        return fence is null ? null : opener;
+    }
+
+    /// <summary>
+    /// Escapes every unescaped <c>]</c>, which neutralizes markdown link <i>syntax</i> while leaving
+    /// every character the reader sees exactly where it was: CommonMark renders <c>\]</c> as <c>]</c>,
+    /// so <c>[text](dest)</c> still reads as <c>[text](dest)</c>.
+    ///
+    /// <para><b>The closing bracket, and not the opening one</b>, because the opening one does not
+    /// work: <c>LinkScanner.ScanLineLinks</c> dispatches on <c>[</c> with no look-back at all, so a
+    /// preceding backslash does not stop it and <c>\[text](dest)</c> would render correctly while still
+    /// being extracted as a link. Its <c>ParseInlineLink</c> does honour a backslash inside the link
+    /// text, where it skips the next character -- so an escaped <c>]</c> never closes the text, the
+    /// bracket depth never returns to zero, and the parse fails. Verified against the scanner itself in
+    /// <c>CodeConceptGeneratorTests</c> rather than reasoned about here alone.</para>
+    ///
+    /// <para>An already-escaped character is copied through untouched rather than escaped twice, which
+    /// would turn an invisible escape into a visible backslash.</para>
+    ///
+    /// <para><b>Inside an inline code span nothing is escaped at all</b>, and that is a correctness
+    /// requirement rather than a nicety: CommonMark does not process backslash escapes inside a code
+    /// span, so the backslash would simply be VISIBLE -- <c>YamlValue.cs</c>'s summary shipped as
+    /// <c>A sequence (`[...\]` or block `- ...`)</c>, this method corrupting the very prose it exists to
+    /// preserve. It is also provably unnecessary there: <c>LinkScanner.BlankInlineCode</c> blanks code
+    /// spans before scanning, so a <c>]</c> inside one could never have produced a link. The backtick
+    /// rule here therefore mirrors that method's exactly -- toggle on every backtick, not on runs --
+    /// because the two must agree with each other, not with a spec.</para>
+    /// </summary>
+    private static string NeutralizeMarkdownLinks(string text)
+    {
+        if (!text.Contains(']', StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var builder = new StringBuilder(text.Length + 8);
+        var inCodeSpan = false;
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            // A backtick toggles a code span, exactly as LinkScanner.BlankInlineCode does -- one
+            // backtick, not a run, and with NO backslash awareness, because that is the rule the
+            // consumer applies and this has to agree with the consumer, not with CommonMark. Honouring
+            // `\` before a backtick desynchronises the two: on ``A \` b ` [text](dest).`` the scanner
+            // closes its span at the second backtick and reads the rest as prose, while a producer that
+            // skipped the first would still believe it was inside a span and ship a live link.
+            if (c == '`')
+            {
+                inCodeSpan = !inCodeSpan;
+                builder.Append(c);
+                continue;
+            }
+
+            // And the flag resets at every newline, because BlankInlineCode is applied per line: an
+            // unclosed backtick cannot make the NEXT line code. Carrying it across `\n` would leave a
+            // multi-line description -- a `.csproj` <Description> reaches a body with its newlines
+            // intact -- "inside a code span" for the whole rest of the text.
+            if (c == '\n')
+            {
+                inCodeSpan = false;
+                builder.Append(c);
+                continue;
+            }
+
+            if (inCodeSpan)
+            {
+                builder.Append(c);
+                continue;
+            }
+
+            // The double-escape guard, but never over a backtick: that character is the consumer's
+            // state machine, and consuming it here is what caused the divergence described above.
+            if (c == '\\' && i + 1 < text.Length && text[i + 1] != '`')
+            {
+                builder.Append(c).Append(text[i + 1]);
+                i++;
+                continue;
+            }
+
+            if (c == ']')
+            {
+                builder.Append('\\');
+            }
+
+            builder.Append(c);
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>The one level of containment below this concept (§5.2), as absolute links (§6.1).</summary>
+    private static void AppendContains(StringBuilder body, IReadOnlyList<Child> children) =>
+        AppendSection(body, "## Contains", [.. children.Select(child => $"- [{LinkText(child.Title)}](/{child.Id})")]);
+
+    /// <summary>
+    /// The other packages whose <c>Compile</c> item set also claims this concept's sources (§5.1).
+    /// Deliberately plain text rather than links: containment is one edge per parent, and turning this
+    /// mention into a link would give the concept a second incoming parent -- the duplication the
+    /// Ordinal-first rule exists to prevent.
+    /// </summary>
+    private static void AppendAlsoCompiledBy(StringBuilder body, IReadOnlyList<string> packageNames) =>
+        AppendSection(body, "## Also compiled by", [.. packageNames.Select(name => $"- {CodeSpan(name)}")]);
+
+    /// <summary>The frameworks this symbol's package targets but does not compile it for (§5.1).</summary>
+    private static void AppendAbsentFrameworks(StringBuilder body, IReadOnlyList<string> frameworks) =>
+        AppendSection(body, "## Target frameworks", [.. frameworks.Select(framework => $"- Absent from {CodeSpan(framework)}.")]);
+
+    /// <summary>
+    /// Appends one bullet section, deduplicated and sorted <see cref="StringComparer.Ordinal"/>, or
+    /// nothing at all when there is nothing to list. The distinct/sort is on the fully rendered line,
+    /// so two call sites from the same caller to the same target collapse to one bullet.
+    /// </summary>
+    private static void AppendSection(StringBuilder body, string heading, List<string> lines)
+    {
+        var rendered = lines.Distinct(StringComparer.Ordinal).OrderBy(l => l, StringComparer.Ordinal).ToList();
+        if (rendered.Count == 0)
+        {
+            return;
+        }
+
+        body.Append('\n').Append(heading).Append("\n\n");
+        foreach (var line in rendered)
+        {
+            body.Append(line).Append('\n');
+        }
+    }
+
+    /// <summary>
+    /// Allocates this symbol's concept id.
+    ///
+    /// <para><b>Preferred path: hang the symbol under its parent's REGISTERED id, not under its parent's
+    /// raw name.</b> The two differ whenever the parent's own segment had to be escaped, and a type
+    /// named <c>Log</c> or <c>Index</c> is enough to trigger it -- <c>System.Index</c> ships in the BCL.
+    /// Deriving from the raw name there would register the type at <c>code/csharp/n/log-2</c> while its
+    /// members kept the untouched container segment and landed in <c>code/csharp/n/log/</c>: a concept
+    /// file sitting beside a directory that is not its own. That breaks §3.3's invariant that a type
+    /// becomes both <c>log.md</c> AND <c>log/</c> -- the correspondence Task 9's containment spine is
+    /// built on -- and <c>IndexGenerator</c> would list the orphaned directory as a child of the
+    /// namespace rather than of the type. Groups are registered shallowest-first precisely so the
+    /// parent's id is already known here.</para>
+    ///
+    /// <para><b>Fallback path.</b> With no registered parent (a member whose type was not extracted, or
+    /// a type whose namespace has no concept until Task 9), the id is built from the raw names by
+    /// <see cref="CodeConceptIds.For"/>. That call can fail outright, and not hypothetically: a C#
+    /// identifier may legally be entirely non-ASCII (<c>public void 概要()</c>), and
+    /// <see cref="ConceptId.Slugify"/> maps every such character to <c>-</c> and then rejects the empty
+    /// result. §2.3's policy is that hostile or merely unusual input degrades the output and never
+    /// aborts the run, so the candidates are tried in order, each keeping as much of the real path as
+    /// the previous failure allows: the symbol's own name replaced by its kind, then the container
+    /// dropped, then both. The registry disambiguates whatever lands.</para>
+    /// </summary>
+    private static ConceptId RegisterCodeId(
+        SymbolFact fact,
+        LanguageProfile profile,
+        ConceptIdRegistry registry,
+        IReadOnlyList<string> rawSegments,
+        IReadOnlyDictionary<string, ConceptId> registeredByRawPath)
+    {
+        var token = KindTag(fact.Kind);
+
+        if (registeredByRawPath.TryGetValue(RawKey(rawSegments.Take(rawSegments.Count - 1)), out var parentId))
+        {
+            // Only the leaf can fail here -- the parent id is already a registered, valid ConceptId --
+            // so the ladder collapses to two rungs: the symbol's own name, then its kind.
+            foreach (var candidateName in new[] { fact.Name, token })
+            {
+                try
+                {
+                    return registry.Register(parentId.ToString(), LeafSegment(fact with { Name = candidateName }, profile));
+                }
+                catch (ConceptIdException)
+                {
+                }
+            }
+        }
+
+        SymbolFact[] candidates =
+        [
+            fact,
+            fact with { Name = token },
+            fact with { Container = string.Empty },
+            fact with { Container = string.Empty, Name = token },
+        ];
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var path = CodeConceptIds.For(candidate, profile);
+                var slash = path.LastIndexOf('/');
+
+                // The last segment is already slugified by CodeConceptIds; Register slugifies again,
+                // which is idempotent, and runs the reserved-segment and collision rules (§3.3).
+                return slash < 0
+                    ? registry.Register(string.Empty, path)
+                    : registry.Register(path[..slash], path[(slash + 1)..]);
+            }
+            catch (ConceptIdException)
+            {
+                // Either the name/container could not be slugified, or -- since CodeConceptIds does not
+                // validate them -- the "code"/language segments could not form a concept id.
+            }
+        }
+
+        // Reachable only when the language token itself is not a usable segment; "code" and the kind
+        // token both always are, so this cannot throw.
+        return registry.Register("code", token);
+    }
+
+    /// <summary>
+    /// Allocates a container's concept id, on the same two paths and for the same reasons as
+    /// <see cref="RegisterCodeId"/>: under its parent's <b>registered</b> id when there is one -- so a
+    /// namespace under an escaped ancestor follows that ancestor rather than splitting off into a
+    /// directory nobody owns -- and otherwise from the raw path through
+    /// <see cref="CodeConceptIds.ForContainer"/>.
+    ///
+    /// <para>The ladder is the same shape too, because the same input can defeat it: a namespace segment
+    /// may be entirely non-ASCII, which <see cref="ConceptId.Slugify"/> rejects. Each rung keeps as much
+    /// of the real path as the previous failure allows -- the segment's own name, then the generic
+    /// container token -- and §2.3 forbids the alternative of aborting the run.</para>
+    /// </summary>
+    private static ConceptId RegisterContainerId(
+        string[] segments,
+        ConceptIdRegistry registry,
+        IReadOnlyDictionary<string, ConceptId> registeredByRawPath)
+    {
+        var language = segments[1];
+
+        if (registeredByRawPath.TryGetValue(RawKey(segments[..^1]), out var parentId))
+        {
+            foreach (var candidate in new[] { segments[^1], ContainerToken })
+            {
+                try
+                {
+                    return registry.Register(parentId.ToString(), ContainerLeafSegment(language, candidate));
+                }
+                catch (ConceptIdException)
+                {
+                }
+            }
+        }
+
+        string[][] candidates = [segments[2..], [ContainerToken]];
+        foreach (var candidateSegments in candidates)
+        {
+            try
+            {
+                var path = CodeConceptIds.ForContainer(language, candidateSegments);
+                var slash = path.LastIndexOf('/');
+
+                return slash < 0
+                    ? registry.Register(string.Empty, path)
+                    : registry.Register(path[..slash], path[(slash + 1)..]);
+            }
+            catch (ConceptIdException)
+            {
+                // Either a container segment could not be slugified, or -- since CodeConceptIds does not
+                // validate them -- the "code"/language segments could not form a concept id.
+            }
+        }
+
+        // Reachable only when the language token itself is not a usable segment; "code" and the
+        // container token both always are, so this cannot throw.
+        return registry.Register("code", ContainerToken);
+    }
+
+    /// <summary>
+    /// The final id segment for a container's own name, taken from
+    /// <see cref="CodeConceptIds.ForContainer"/> on a single-segment path rather than reimplemented --
+    /// the same reason <see cref="LeafSegment"/> reads <see cref="CodeConceptIds.For"/>: that type owns
+    /// the word-boundary tokenizer (§3.1), and a second copy of it here could drift.
+    /// </summary>
+    /// <exception cref="ConceptIdException">The name (or the language) cannot form an id segment.</exception>
+    private static string ContainerLeafSegment(string language, string name)
+    {
+        var path = CodeConceptIds.ForContainer(language, [name]);
+        var slash = path.LastIndexOf('/');
+        return slash < 0 ? path : path[(slash + 1)..];
+    }
+
+    /// <summary>
+    /// The symbol's id path in <b>unslugified</b> form: <c>code</c>, the language, the container's own
+    /// segments, then the name. Two uses, both keyed on the fact that a parent's raw segments are
+    /// exactly its child's minus the last one -- a member of <c>N.Log</c> splits to
+    /// <c>[code, csharp, N, Log]</c>, which is precisely the type <c>N.Log</c>'s own raw path. That is
+    /// what lets <see cref="RegisterCodeId"/> find a parent without reconstructing a dotted name (which
+    /// would have to guess the language's join separator, and <see cref="LanguageProfile"/> only offers
+    /// the split direction). Its length also gives the depth the groups are sorted by.
+    /// </summary>
+    private static string[] RawSegments(SymbolFact fact, LanguageProfile profile)
+    {
+        var segments = new List<string>(4) { "code", fact.Language };
+        segments.AddRange(profile.SplitContainer(fact.Container));
+        segments.Add(fact.Name);
+        return [.. segments];
+    }
+
+    /// <summary>
+    /// Joins raw segments into one lookup key with <c>NUL</c>, which no identifier or namespace segment
+    /// in any supported language can contain -- so the key is unambiguous where a <c>.</c> or <c>/</c>
+    /// join would merge <c>[A.B]</c> and <c>[A, B]</c> into the same string.
+    /// </summary>
+    private static string RawKey(IEnumerable<string> segments) => string.Join(char.MinValue, segments);
+
+    /// <summary>
+    /// The character appended to a leaf raw segment to tell two groups apart that
+    /// <see cref="RawSegments"/> would otherwise give the same path. Never NUL, which
+    /// <see cref="RawKey"/> joins on and <see cref="IsProperAncestor"/>'s prefix test depends on, and
+    /// never anything an identifier can contain -- so a disambiguated key can collide with nothing and
+    /// still cannot be mistaken for a descendant of the key it was cloned from.
+    /// </summary>
+    private const char RawPathDiscriminator = '\u0001';
+
+    /// <summary>
+    /// Gives every symbol group a raw path of its own, which <see cref="RawSegments"/> alone does not
+    /// guarantee.
+    ///
+    /// <para><b>Why two groups can share one raw path.</b> <c>SplitContainer</c> drops empty entries, so
+    /// <c>N.Log</c> and <c>N..Log</c> are two distinct <see cref="SymbolKey"/>s -- two groups, two
+    /// registry ids -- that split to the same segments. The comment on the depth sort above already
+    /// records that more than one container spelling denotes the same structural path; this is the other
+    /// conclusion to draw from it. It is reachable on the malformed input §2.3 puts in scope: an
+    /// extractor builds a container path from every ancestor carrying a <c>name</c> field, and a
+    /// MISSING/ERROR node on a partial parse contributes an empty segment.</para>
+    ///
+    /// <para><b>What sharing one cost.</b> Every map keyed on the raw path -- the registered id, the
+    /// title, the source files pruning joins on, the package attachment -- is <c>TryAdd</c>, so the
+    /// second group lost to the first everywhere: the parent emitted the FIRST group's link twice
+    /// (deduplicated to one bullet by <see cref="AppendSection"/>) and the second concept got no incoming
+    /// link at all, while its files were recorded against its rival's id. An unreachable concept whose
+    /// file exists is a severed branch with nothing dangling -- exactly what <c>okf validate</c> cannot
+    /// see.</para>
+    ///
+    /// <para><b>Only the LEAF segment is disambiguated</b>, which is what makes this a local fix rather
+    /// than a re-parenting: a group's parent key is its segments minus the last, so suffixing the last
+    /// leaves the parent lookup -- and therefore <see cref="RegisterCodeId"/>'s "register under my
+    /// parent's registered id" rule -- exactly as it was. Nothing downstream reads a raw segment as a
+    /// name (titles come from the <see cref="SymbolFact"/>, container names from the container's own
+    /// segments), so the suffix never reaches output.</para>
+    ///
+    /// <para><b>The residual, stated because it is real.</b> Members declared under the second spelling
+    /// still compute their parent key from their own container string, which splits to the FIRST group's
+    /// path -- so they register and attach under the first group's concept. That is inherent to two
+    /// spellings denoting one structural path, and it is now consistent (one parent, one incoming link)
+    /// where before it was contradictory: both concepts listed the same children while one of them had no
+    /// parent.</para>
+    /// </summary>
+    private static void DisambiguateSharedRawPaths(
+        List<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)> groups)
+    {
+        // Run after the sort, so which group keeps the undecorated path is decided by §6.2's order and
+        // not by the order the extractor happened to emit symbols in.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < groups.Count; i++)
+        {
+            var segments = groups[i].RawSegments;
+            if (seen.Add(RawKey(segments)))
+            {
+                continue;
+            }
+
+            var disambiguated = (string[])segments.Clone();
+            var ordinal = 2;
+            do
+            {
+                disambiguated[^1] = segments[^1] + RawPathDiscriminator + ordinal.ToString(CultureInfo.InvariantCulture);
+                ordinal++;
+            }
+            while (!seen.Add(RawKey(disambiguated)));
+
+            groups[i] = (groups[i].Key, groups[i].Declarations, disambiguated);
+        }
+    }
+
+    /// <summary>
+    /// The final id segment for this symbol's own name, taken from <see cref="CodeConceptIds.For"/> on
+    /// a container-less copy rather than reimplemented: that method owns the word-boundary tokenizer
+    /// (§3.1), and it appends the name segment identically whether or not there is a container, so this
+    /// reads the real rule instead of forking a second copy of it that could drift.
+    /// </summary>
+    /// <exception cref="ConceptIdException">The name (or the language) cannot form an id segment.</exception>
+    private static string LeafSegment(SymbolFact fact, LanguageProfile profile)
+    {
+        var path = CodeConceptIds.For(fact with { Container = string.Empty }, profile);
+        var slash = path.LastIndexOf('/');
+        return slash < 0 ? path : path[(slash + 1)..];
+    }
+
+    /// <summary>
+    /// The profile to cut <paramref name="language"/>'s containers with. A symbol whose language matches
+    /// none of <see cref="GenerateOptions.Profiles"/> is <b>not</b> skipped: this synthesizes a
+    /// throwaway profile carrying only that language, so the symbol still gets a concept and gets the
+    /// same id the real profile would have given it.
+    ///
+    /// <b>That substitution is valid under exactly one condition</b>, and it is stated at the other end
+    /// too, on <see cref="LanguageProfile.SplitContainer"/> itself (neither note is complete alone --
+    /// whoever changes that method will read its own doc, not this one): container splitting must stay a
+    /// pure function of <see cref="LanguageProfile.Language"/>. Every other field synthesized here is
+    /// empty, so the moment <see cref="LanguageProfile.SplitContainer"/> consults one of them, this
+    /// profile stops standing in for the real one and starts silently producing different concept ids --
+    /// which is an id churn, not a cosmetic difference. If that day comes, this method must become a
+    /// hard requirement instead: no profile for the language, no concept.
+    /// </summary>
+    private static LanguageProfile ProfileFor(string language, GenerateOptions options, Dictionary<string, LanguageProfile> cache)
+    {
+        if (cache.TryGetValue(language, out var cached))
+        {
+            return cached;
+        }
+
+        var profile = options.Profiles.FirstOrDefault(p => string.Equals(p.Language, language, StringComparison.Ordinal))
+            ?? new LanguageProfile(
+                Language: language,
+                GrammarName: string.Empty,
+                DeclarationQuery: string.Empty,
+                CallQuery: string.Empty,
+                DocCommentPrefix: string.Empty,
+                FileExtensions: []);
+
+        cache[language] = profile;
+        return profile;
+    }
+
+    /// <summary>
+    /// The concept's <c>title</c>: the symbol qualified by its <i>immediate</i> owner
+    /// (<c>Scanner.Scan</c>, <c>OKF4net.LinkScanner</c>), which is §4.1's shape. The full dotted
+    /// container is deliberately not repeated -- the concept id already carries the whole hierarchy,
+    /// and a title is what a reader and <c>ConceptSearch</c>'s title weighting see.
+    /// </summary>
+    private static string QualifiedTitle(SymbolFact fact, LanguageProfile profile)
+    {
+        var segments = profile.SplitContainer(fact.Container);
+        return segments.Count == 0 ? fact.Name : $"{segments[^1]}.{fact.Name}";
+    }
+
+    /// <summary>The <c>type</c> field: e.g. <c>C# Member</c>, <c>C# Type</c>.</summary>
+    private static string ConceptTypeName(SymbolFact fact) =>
+        $"{LanguageDisplayName(fact.Language)} {KindNoun(fact.Kind)}";
+
+    private static string LanguageDisplayName(string language) => language switch
+    {
+        "csharp" => "C#",
+        "" => "Code",
+        // Invariant, never culture-aware: a Turkish-locale build must not title a "typescript" symbol
+        // "Typescript" with a dotless capital I lurking anywhere in the pipeline (§6.2).
+        _ => char.ToUpperInvariant(language[0]) + language[1..],
+    };
+
+    private static string KindNoun(SymbolKind kind) => kind switch
+    {
+        SymbolKind.Type => "Type",
+        SymbolKind.Namespace => "Namespace",
+        _ => "Member",
+    };
+
+    private static string KindTag(SymbolKind kind) => kind switch
+    {
+        SymbolKind.Type => "type",
+        SymbolKind.Namespace => "namespace",
+        _ => "member",
+    };
+
+    private static string VisibilityTag(SymbolVisibility visibility) => visibility switch
+    {
+        SymbolVisibility.Public => "public",
+        SymbolVisibility.Internal => "internal",
+        _ => "private",
+    };
+
+    private static string[] ConceptTags(SymbolFact fact) =>
+        fact.Language.Length == 0
+            ? [KindTag(fact.Kind), VisibilityTag(fact.Visibility)]
+            : [fact.Language, KindTag(fact.Kind), VisibilityTag(fact.Visibility)];
+
+    /// <summary>
+    /// The forge permalink for one declaration -- a <see cref="BlobUrl"/> with the declaration's line
+    /// span appended -- or <see langword="null"/> when this run has nothing to build one from. See
+    /// <see cref="GenerateOptions.RepoUrl"/> for why a <c>code/</c> concept's alternative is no field
+    /// at all rather than a repo-relative path, and <see cref="FileResource"/> for why the
+    /// <c>packages/</c> and <c>docs/</c> families answer that same question the other way.
+    /// </summary>
+    private static string? ResourceUrl(SymbolFact declaration, GenerateOptions options) =>
+        BlobUrl(declaration.RelativePath, options) is { } blob ? blob + LineSpan(declaration) : null;
+
+    /// <summary>
+    /// The <c>resource</c> a whole-file concept carries: the same §4.3 permalink when this run can
+    /// build one, and the repository-relative path when it cannot.
+    ///
+    /// <para><b>Why this differs from the <c>code/</c> family's rule, which omits the field instead.</b>
+    /// The choice turns on what the fallback costs and what it carries, and both differ here. Cost:
+    /// after the duplicate <c>sources</c> entry was dropped, a non-resolving path earns exactly one
+    /// <c>FrontmatterPathMissing</c> warning per concept and omitting the field earns exactly one
+    /// <c>missing recommended frontmatter field</c> -- measured on this repository as 10 and 10 -- so
+    /// keeping it is free. Content: a code concept's body already names its file in every
+    /// <c>## Signatures</c> span label, so dropping <c>resource</c> loses a reader nothing, whereas a
+    /// <c>Package</c> or <c>Documentation</c> concept has no other pointer at all to the single file
+    /// it is about. Tied on cost and ahead on content, so the path stays.</para>
+    /// </summary>
+    private static string FileResource(string relativePath, GenerateOptions options) =>
+        BlobUrl(relativePath, options) ?? relativePath;
+
+    /// <summary>
+    /// The forge blob URL for one repository-relative path, with no line span, or
+    /// <see langword="null"/> when this run has nothing to build one from. The single site the
+    /// permalink rule lives at: <see cref="ResourceUrl"/> appends a declaration's span to it and
+    /// <see cref="FileResource"/> uses it as-is, so the two families cannot drift into different
+    /// escaping or a different base.
+    ///
+    /// <para>Built segment by segment with escaping, never by raw concatenation (§4.3), and the ref
+    /// keeps its own <c>/</c> separators so <c>feature/x</c> still addresses a blob.</para>
+    /// </summary>
+    private static string? BlobUrl(string relativePath, GenerateOptions options)
+    {
+        if (options.Rev is not { Length: > 0 } rev)
+        {
+            return null;
+        }
+
+        // A value that is not an absolute http(s) URL would not be classified as
+        // FrontmatterResourceKind.Url by the validator, and would then be resolved as a path against
+        // the concept's own directory -- the exact warning-per-concept outcome §4.3 exists to avoid.
+        // The rule lives on GenerateOptions rather than here BECAUSE the CLI has to apply the same
+        // one to refuse such a value at its boundary, and two copies that merely agree today are two
+        // copies that stop agreeing the day one scheme list is widened and the other is not.
+        if (!GenerateOptions.TryPermalinkBase(options.RepoUrl, out var parsed))
+        {
+            return null;
+        }
+
+        // From the PARSED uri, never the raw string: `https://github.com/o/r?x=1` trimmed as text yields
+        // `https://github.com/o/r?x=1/blob/main/...`, which the validator still classifies as a Url and
+        // still passes with no warning -- a silently wrong link, the worst of the available outcomes.
+        // GetLeftPart(UriPartial.Path) drops the query and the fragment and keeps scheme, authority and
+        // path, which is exactly the base a blob URL is built on.
+        var basePart = parsed.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        var revPart = EscapePath(rev);
+        var pathPart = EscapePath(NormalizeSeparators(relativePath));
+
+        return $"{basePart}/blob/{revPart}/{pathPart}";
+    }
+
+    private static string EscapePath(string path) =>
+        string.Join('/', path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.EscapeDataString));
+
+    private static string NormalizeSeparators(string path) => path.Replace('\\', '/');
+
+    private static string LineSpan(SymbolFact declaration)
+    {
+        var end = RenderedEndLine(declaration);
+
+        return declaration.StartLine == end
+            ? $"#L{declaration.StartLine.ToString(CultureInfo.InvariantCulture)}"
+            : $"#L{declaration.StartLine.ToString(CultureInfo.InvariantCulture)}-L{end.ToString(CultureInfo.InvariantCulture)}";
+    }
+
+    /// <summary>
+    /// The last line a declaration's rendered span covers: a <see cref="SymbolKind.Type"/> is capped at
+    /// its header (<see cref="SymbolFact.HeaderEndLine"/>), everything else keeps its full extent.
+    ///
+    /// <para><b>This is a churn bound, not a cosmetic choice.</b> A type declaration's span runs to its
+    /// closing brace, so without the cap <i>every</i> edit inside the body -- adding a private helper,
+    /// adding an overload, deleting a method -- rewrote the type's own concept, in <c>resource</c> and
+    /// in the label beside its signature. §8.3's blast-radius table says adding a private member must
+    /// change <b>no</b> concept at all, and that promise is one of the three (with merged overloads and
+    /// one-level containment) the whole id scheme exists to keep. Measured by
+    /// <c>BlastRadiusTests</c>, which is where the violation surfaced.</para>
+    ///
+    /// <para>What the cap deliberately does <b>not</b> hide: an edit <i>above</i> a type still moves it,
+    /// because the declaration genuinely moved. And the permalink stays useful -- a reader lands on the
+    /// declaration line rather than on a highlighted block spanning the whole type.</para>
+    ///
+    /// <para>Falls back to <see cref="SymbolFact.EndLine"/> when no header line was recorded (every
+    /// hand-constructed fact), and when a recorded one would run backwards -- a span whose end precedes
+    /// its start is worse than an over-wide one.</para>
+    /// </summary>
+    private static int RenderedEndLine(SymbolFact declaration) =>
+        declaration.Kind == SymbolKind.Type
+        && declaration.HeaderEndLine is { } header
+        && header >= declaration.StartLine
+            ? header
+            : declaration.EndLine;
+
+    /// <summary>The <c>path#Lstart-Lend</c> label shown next to a signature in the body.</summary>
+    private static string SpanLabel(SymbolFact declaration) =>
+        NormalizeSeparators(declaration.RelativePath) + LineSpan(declaration);
+
+    /// <summary>
+    /// Wraps <paramref name="text"/> in a markdown code span that survives the text itself: the fence
+    /// is one backtick longer than the longest backtick run inside, padded with spaces when the content
+    /// starts or ends with a backtick, and control characters (a code span cannot contain a newline)
+    /// are flattened to spaces. Signatures and called names come out of source files, which §2.3 treats
+    /// as untrusted input -- a naive <c>$"`{text}`"</c> would let one of them close the span early and
+    /// corrupt the rest of the document.
+    /// </summary>
+    private static string CodeSpan(string text)
+    {
+        var flat = Flatten(text);
+        var fence = new string('`', LongestBacktickRun(flat) + 1);
+        var pad = flat.Length == 0 || flat[0] == '`' || flat[^1] == '`' ? " " : string.Empty;
+
+        return fence + pad + flat + pad + fence;
+    }
+
+    private static string Flatten(string text)
+    {
+        var chars = text.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsControl(chars[i]))
+            {
+                chars[i] = ' ';
+            }
+        }
+
+        return new string(chars).Trim();
+    }
+
+    private static int LongestBacktickRun(string text)
+    {
+        var longest = 0;
+        var current = 0;
+        foreach (var c in text)
+        {
+            current = c == '`' ? current + 1 : 0;
+            longest = Math.Max(longest, current);
+        }
+
+        return longest;
+    }
+
+    /// <summary>
+    /// Escapes the display half of a markdown link. Symbol names are identifiers in practice, but they
+    /// reach here from untrusted source text (§2.3), and a stray <c>]</c> would end the link text early
+    /// and turn the rest of the line into prose.
+    ///
+    /// <para><b>A backtick is replaced rather than escaped, and it is the link's survival that is at
+    /// stake, not its rendering.</b> <see cref="OKF4net.LinkScanner"/>'s <c>BlankInlineCode</c> toggles a
+    /// code span on <i>every</i> backtick and blanks to the end of the line, so a bullet whose label
+    /// carries an ODD number of them has its own <c>](/id)</c> blanked before <c>ScanLineLinks</c> ever
+    /// sees it: the link vanishes, the target file still exists, and nothing dangles, so
+    /// <c>okf validate</c> stays silent while the branch is severed -- the same failure shape as an
+    /// unbalanced fence, one character wide. Reachable through <c>overview</c>'s own children, since a
+    /// doc concept's title is lifted verbatim from the README's <c>#</c> heading and an unbalanced
+    /// backtick in one (<c>Migrating to `v2</c>) is an ordinary typo.</para>
+    ///
+    /// <para><b>Why <c>&amp;#96;</c> and not <c>\`</c>.</b> A backslash would be correct for a renderer --
+    /// CommonMark escapes a backtick like any ASCII punctuation -- and useless here, because
+    /// <c>BlankInlineCode</c> has no backslash awareness at all, deliberately (see
+    /// <see cref="NeutralizeMarkdownLinks"/>, which mirrors that rule rather than CommonMark's for
+    /// exactly this reason). Only a form carrying no backtick CHARACTER leaves the consumer's state
+    /// machine alone, and a numeric character reference renders as the character the author wrote. The
+    /// substitution is not applied to <see cref="CodeSpan"/>, where a backtick is content and the fence
+    /// is widened around it instead.</para>
+    /// </summary>
+    private static string LinkText(string text) =>
+        Flatten(text).Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("`", "&#96;", StringComparison.Ordinal)
+            .Replace("[", "\\[", StringComparison.Ordinal)
+            .Replace("]", "\\]", StringComparison.Ordinal);
 }

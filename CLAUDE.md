@@ -70,16 +70,25 @@ which stays byte-exact golden captures. `samples/` holds standalone example
 projects that consume those bundles (each with its own solution/build, not
 part of `OKF4net.sln` or CI).
 
-`producers/OkfProducer` is a standalone native OKF producer CLI
-(`OkfProducer.sln`: `OkfProducer.Core` + `OkfProducer.Cli`, `generate`/
-`validate` commands via System.CommandLine + Generic Host) that scans a
-repository (`RepositoryScanner`) and generates an OKF v0.2 bundle from it
-(`ConceptGenerator`, `BundleWriter`, built on `OkfDocumentBuilder`) — same
-status as `samples/`: its own solution, references `src/OKF4net`, not part
-of `OKF4net.sln`/CI, not published to NuGet, and exempt from the zero-dependency
-rule above (`Microsoft.Extensions.Hosting`, `System.CommandLine`). First
-ecosystem slice only (npm/NuGet manifests + README); see `ROADMAP.md` for
-open follow-ups (CI coverage, more ecosystems).
+`producers/OkfProducer` is a standalone native OKF producer CLI (`okfgen`;
+`OkfProducer.sln`: `OkfProducer.Core` + `OkfProducer.CodeGraph.TreeSitter` +
+`OkfProducer.CodeGraph.Roslyn` + `OkfProducer.Cli`, `generate`/`validate`
+commands via System.CommandLine + Generic Host) that scans a repository
+(`RepositoryScanner`) and generates an OKF v0.2 bundle from it
+(`ConceptGenerator`, `BundleWriter`, built on `OkfDocumentBuilder`), including a
+C# code-graph stage — one concept per namespace/type/member with resolved
+`## Calls` links. `OkfProducer.Cli` is the composition root: the only project
+that references everything, and therefore the only place the pipeline can be
+assembled. Same status as `samples/`: its own solution, references
+`src/OKF4net`, not part of `OKF4net.sln`, not published to NuGet, and exempt
+from the zero-dependency rule above (`Microsoft.Extensions.Hosting`,
+`System.CommandLine`, `Microsoft.CodeAnalysis.CSharp`, `TreeSitter.DotNet` —
+`OkfProducer.Core` itself still references only `OKF4net`). **`producers/` is
+outside CI by decision (2026-08-01), not by omission**, so the guarantee is one
+local command — `dotnet test producers/OkfProducer.sln` — stated at the top of
+`producers/README.md`; run it before touching the producer and after any public
+`OKF4net` API change. Remaining follow-ups (more ecosystems, per-RID package
+weight) are in `ROADMAP.md`.
 
 ## graphify
 
