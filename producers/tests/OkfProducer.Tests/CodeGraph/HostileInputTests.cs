@@ -1076,4 +1076,39 @@ public class HostileInputTests : IDisposable
             }
         }
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_non_positive_timeout_is_refused_at_construction_rather_than_mid_run(int seconds)
+    {
+        // A non-positive deadline cancels the linked source immediately, so `CodeGraphBuilder.Build`
+        // RAISED out of the walk instead of returning an incomplete RunStatus -- the honest reporting
+        // path this type exists to feed. An operator who typed a bad number got a stack trace where
+        // the design promises a run that says what it could not do.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => ExtractionLimits.Default with { Timeout = TimeSpan.FromSeconds(seconds) });
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_non_positive_size_or_depth_is_refused_too(int value)
+    {
+        // Same rule, same reason: a bound of zero does not bound a run, it empties one, and doing that
+        // silently is worse than saying no.
+        Assert.Throws<ArgumentOutOfRangeException>(() => ExtractionLimits.Default with { MaxFileBytes = value });
+        Assert.Throws<ArgumentOutOfRangeException>(() => ExtractionLimits.Default with { MaxDepth = value });
+    }
+
+    [Fact]
+    public void The_default_limits_are_themselves_valid()
+    {
+        // The control: the validation above runs in the property initialisers, so a wrong predicate
+        // would make the type unconstructable and every other test in this solution would fail with a
+        // reason that has nothing to do with what it was testing.
+        Assert.True(ExtractionLimits.Default.MaxFileBytes > 0);
+        Assert.True(ExtractionLimits.Default.MaxDepth > 0);
+        Assert.True(ExtractionLimits.Default.Timeout > TimeSpan.Zero);
+    }
 }

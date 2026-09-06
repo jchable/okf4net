@@ -4,8 +4,35 @@ using OkfProducer.Core.Scanning;
 
 namespace OkfProducer.Tests.CodeGraph;
 
-public class CodeGraphBuilderTests
+public class CodeGraphBuilderTests : IDisposable
 {
+    /// <summary>
+    /// Every temp repository <c>SnapshotWith</c> made, deleted on the way out. It used to make one per
+    /// call and delete none -- nine per run, forever, in the user's temp directory.
+    /// </summary>
+    private readonly List<string> _tempDirectories = [];
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        foreach (var directory in _tempDirectories)
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort: a locked file on the way out must not fail a green run.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
     private static readonly LanguageProfile CSharpProfile =
         new("csharp", "tree-sitter-c-sharp", "", "", "///", [".cs"]);
 
@@ -298,9 +325,10 @@ public class CodeGraphBuilderTests
     /// <see cref="RepositorySnapshot.RepoPath"/>, the same way <see cref="RepositoryScanner"/> does
     /// for manifests.
     /// </summary>
-    private static RepositorySnapshot SnapshotWith(params string[] relativePaths)
+    private RepositorySnapshot SnapshotWith(params string[] relativePaths)
     {
         var repoPath = Directory.CreateTempSubdirectory("okfproducer-codegraph-").FullName;
+        _tempDirectories.Add(repoPath);
         foreach (var relativePath in relativePaths)
         {
             var fullPath = Path.Combine(repoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));

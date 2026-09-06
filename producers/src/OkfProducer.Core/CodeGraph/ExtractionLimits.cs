@@ -55,6 +55,61 @@ namespace OkfProducer.Core.CodeGraph;
 public sealed record ExtractionLimits(long MaxFileBytes, int MaxDepth, TimeSpan Timeout)
 {
     /// <summary>
+    /// Refuses a value that cannot mean what a limit means, at construction rather than mid-run.
+    ///
+    /// <para>A non-positive <see cref="Timeout"/> is the one that mattered: it cancels the linked
+    /// source immediately, so <c>CodeGraphBuilder.Build</c> raised out of the walk instead of coming
+    /// back with an incomplete <see cref="RunStatus"/> -- the honest reporting path this type exists
+    /// to feed. An operator who typed a bad number got a stack trace where the design promises a run
+    /// that says what it could not do. A non-positive <see cref="MaxFileBytes"/> or
+    /// <see cref="MaxDepth"/> is refused for the same reason: it does not bound a run, it empties one,
+    /// and doing so silently is worse than saying no.</para>
+    /// </summary>
+    private readonly long _maxFileBytes = Positive(MaxFileBytes, nameof(MaxFileBytes));
+    private readonly int _maxDepth = (int)Positive(MaxDepth, nameof(MaxDepth));
+    private readonly TimeSpan _timeout = PositiveDuration(Timeout);
+
+    /// <inheritdoc cref="MaxFileBytes"/>
+    public long MaxFileBytes
+    {
+        get => _maxFileBytes;
+        init => _maxFileBytes = Positive(value, nameof(MaxFileBytes));
+    }
+
+    /// <inheritdoc cref="MaxDepth"/>
+    public int MaxDepth
+    {
+        get => _maxDepth;
+        init => _maxDepth = (int)Positive(value, nameof(MaxDepth));
+    }
+
+    /// <inheritdoc cref="Timeout"/>
+    public TimeSpan Timeout
+    {
+        get => _timeout;
+        init => _timeout = PositiveDuration(value);
+    }
+
+    /// <summary>
+    /// Refuses a bound that does not bound.
+    ///
+    /// <para>Written as explicit <c>init</c> accessors over backing fields, not as property
+    /// initialisers, and the difference is not stylistic: a record's <c>with</c> expression copies
+    /// backing fields through the compiler-generated copy constructor and <b>does not re-run property
+    /// initialisers</b>. The initialiser form validated the primary constructor only, and
+    /// <c>ExtractionLimits.Default with { Timeout = ... }</c> -- which is how every caller in this
+    /// solution builds one -- sailed straight past it. Measured, by a test that failed.</para>
+    /// </summary>
+    private static long Positive(long value, string name) =>
+        value > 0 ? value : throw new ArgumentOutOfRangeException(name, value, "must be positive.");
+
+    /// <inheritdoc cref="Positive"/>
+    private static TimeSpan PositiveDuration(TimeSpan value) =>
+        value > TimeSpan.Zero
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(Timeout), value, "must be a positive duration.");
+
+    /// <summary>
     /// 2 MB per file, a directory depth of 512, and a 10-minute between-files deadline -- see
     /// <see cref="Timeout"/> for exactly what that last one does and does not bound.
     /// </summary>
