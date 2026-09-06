@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -754,20 +755,12 @@ public sealed class RoslynResolver : ISymbolResolver
 
         for (var current = declaration.Parent; current is not null; current = current.Parent)
         {
-            var segment = current switch
-            {
-                BaseNamespaceDeclarationSyntax ns => ns.Name.ToString(),
-                BaseTypeDeclarationSyntax type => type.Identifier.Text,
-                DelegateDeclarationSyntax dele => dele.Identifier.Text,
-                MethodDeclarationSyntax method => method.Identifier.Text,
-                ConstructorDeclarationSyntax constructor => constructor.Identifier.Text,
-                DestructorDeclarationSyntax destructor => destructor.Identifier.Text,
-                PropertyDeclarationSyntax property => property.Identifier.Text,
-                EventDeclarationSyntax @event => @event.Identifier.Text,
-                LocalFunctionStatementSyntax local => local.Identifier.Text,
-                VariableDeclaratorSyntax declarator => declarator.Identifier.Text,
-                _ => string.Empty,
-            };
+            // Through DeclaredName for everything but a namespace, so an ancestor is spelled here
+            // exactly as that ancestor's own concept is. Spelling it with the bare identifier token
+            // instead was measured to put every member of `Holder<T>` under `Holder`'s container.
+            var segment = current is BaseNamespaceDeclarationSyntax ns
+                ? ns.Name.ToString()
+                : DeclaredName(current);
 
             if (segment.Length > 0)
             {
@@ -830,6 +823,66 @@ public sealed class RoslynResolver : ISymbolResolver
     /// symbol with no source declaration to read.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The name <c>TreeSitterExtractor</c> gives this declaration -- the ONE place the two engines'
+    /// spelling rule lives on this side, used both for a leaf name and for every ancestor segment of a
+    /// container path.
+    ///
+    /// <para><b>Why it is not just the identifier token.</b> Two shapes need more than the token, and
+    /// both were measured to drift when only one side knew: a generic TYPE carries its arity
+    /// (<c>Holder</c>, <c>Holder_1</c>, <c>Holder_2</c>, since the grammar's <c>name</c> field is
+    /// <c>Holder</c> for all three), and a member implementing an interface explicitly carries the
+    /// interface as a dotted prefix (<c>IShape.Draw</c>), because it is a different member from a
+    /// public <c>Draw</c> and not callable as one.</para>
+    ///
+    /// <para>Arity is a TYPE rule only: a call site captures its callee as the bare identifier, so
+    /// qualifying a generic METHOD would stop every call to it from joining. Delegates take no arity
+    /// either, because the extractor classes them as members.</para>
+    ///
+    /// <para>Getting this wrong is not a missed link but a WRONG one, which is the outcome §2.1's
+    /// chaining exists to make impossible: <c>CodeGraphBuilder</c> overwrites the baseline's verdict
+    /// with the exact one and only then degrades a non-joining <c>Exact</c>, so a spelling only this
+    /// side knows leaves the graph strictly worse than not running the resolver at all.</para>
+    /// </summary>
+    private static string DeclaredName(SyntaxNode declaration)
+    {
+        var identifier = declaration switch
+        {
+            BaseTypeDeclarationSyntax type => type.Identifier,
+            DelegateDeclarationSyntax dele => dele.Identifier,
+            MethodDeclarationSyntax method => method.Identifier,
+            ConstructorDeclarationSyntax constructor => constructor.Identifier,
+            DestructorDeclarationSyntax destructor => destructor.Identifier,
+            PropertyDeclarationSyntax property => property.Identifier,
+            EventDeclarationSyntax @event => @event.Identifier,
+            LocalFunctionStatementSyntax local => local.Identifier,
+            VariableDeclaratorSyntax declarator => declarator.Identifier,
+            _ => default,
+        };
+
+        if (identifier.Text.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (declaration is TypeDeclarationSyntax { TypeParameterList.Parameters.Count: > 0 } generic)
+        {
+            return $"{identifier.Text}_{generic.TypeParameterList!.Parameters.Count.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        var explicitInterface = declaration switch
+        {
+            MethodDeclarationSyntax method => method.ExplicitInterfaceSpecifier,
+            PropertyDeclarationSyntax property => property.ExplicitInterfaceSpecifier,
+            EventDeclarationSyntax @event => @event.ExplicitInterfaceSpecifier,
+            _ => null,
+        };
+
+        return explicitInterface is null
+            ? identifier.Text
+            : $"{explicitInterface.Name}.{identifier.Text}";
+    }
+
     private static string SimpleNameOf(ISymbol symbol)
     {
         foreach (var reference in symbol.DeclaringSyntaxReferences)
@@ -837,23 +890,9 @@ public sealed class RoslynResolver : ISymbolResolver
             // The node kinds here mirror CSharpProfile.DeclarationQuery's, deliberately: a declaration
             // this producer does not extract has no SymbolFact to join anyway, so there is nothing to
             // match its spelling against.
-            var identifier = reference.GetSyntax() switch
+            if (DeclaredName(reference.GetSyntax()) is { Length: > 0 } declared)
             {
-                BaseTypeDeclarationSyntax type => type.Identifier,
-                DelegateDeclarationSyntax dele => dele.Identifier,
-                MethodDeclarationSyntax method => method.Identifier,
-                ConstructorDeclarationSyntax constructor => constructor.Identifier,
-                DestructorDeclarationSyntax destructor => destructor.Identifier,
-                PropertyDeclarationSyntax property => property.Identifier,
-                EventDeclarationSyntax @event => @event.Identifier,
-                LocalFunctionStatementSyntax local => local.Identifier,
-                VariableDeclaratorSyntax declarator => declarator.Identifier,
-                _ => default,
-            };
-
-            if (identifier.Text.Length > 0)
-            {
-                return identifier.Text;
+                return declared;
             }
         }
 

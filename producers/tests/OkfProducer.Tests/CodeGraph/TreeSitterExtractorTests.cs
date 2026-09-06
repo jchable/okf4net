@@ -529,14 +529,21 @@ public class TreeSitterExtractorTests : IDisposable
     [Fact]
     public void An_explicit_interface_implementation_is_named_apart_from_the_public_member()
     {
-        // Both report `name` as `Bar`, so the two collapsed into one concept carrying ONE description
-        // -- the first declaration's -- and both signatures, for two deliberately different
-        // implementations. The qualified form takes the interface as a dotted prefix, which is how C#
-        // writes it.
+        // Both report `name` as `Bar`, so at THIS layer the two were one symbol. The qualified form
+        // takes the interface as a dotted prefix, which is how C# writes it.
         //
-        // Name matching no longer reaches the explicit member, and that is the correct outcome rather
-        // than a cost: it is not callable as `Bar()` on the type, so a call that used to bind to it was
-        // binding to the wrong member.
+        // What that does NOT do, measured rather than assumed after the register claimed otherwise:
+        // it does not split a merged CONCEPT, because there was never a merged concept to split. An
+        // explicit interface implementation carries no access modifier, so `VisibilityOf` classes it
+        // Private, and Private is out of scope under every flag -- `--include-internal` included. It is
+        // filtered before ConceptGenerator ever groups anything. The register's D1b-I2 said the two
+        // collapsed into "one concept, one description, both signatures"; that outcome is not
+        // reachable through the shipped pipeline, and the golden confirms it -- the fixture's explicit
+        // `IEquatable<Boxed>.Equals` produces no concept at all.
+        //
+        // The fix is still right, one layer down: two different members sharing one name is wrong for
+        // any consumer reading SymbolFacts before the scope filter, and name matching would otherwise
+        // bind a call to `Bar()` -- which cannot reach the explicit member on the type -- to it.
         var result = ExtractSource("""
             namespace N;
             public interface IFoo { void Bar(); }

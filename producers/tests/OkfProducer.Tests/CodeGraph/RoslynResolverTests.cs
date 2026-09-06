@@ -473,7 +473,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     // The other half of the same defect, and it needs no verbatim identifier at all: Roslyn mangles
     // an explicit interface implementation's name to its qualified form (Explicitly.IShape.Draw), so
     // a local function declared inside one reports a container carrying two extra dots -- and
-    // therefore two extra SEGMENTS -- that the extractor's `Explicitly.Square.Draw` does not have.
+    // therefore two extra SEGMENTS -- that the extractor's `Explicitly.Square.IShape.Draw` does not have.
     public const string ExplicitImplementationSource = """
         namespace Explicitly;
         public interface IShape { void Draw(); }
@@ -515,16 +515,22 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     [Fact]
     public void An_explicit_interface_implementation_contributes_the_segment_source_spells()
     {
+        // The segment reads `IShape.Draw` rather than `Draw` since an explicitly implemented member is
+        // named apart from a public one of the same name (D1b-I2). What this test pins is unchanged and
+        // is the point: BOTH sides say the same thing. It is what caught the drift when only the
+        // extractor learnt the rule -- an ancestor spelled one way here and another way there makes
+        // `CodeGraphBuilder` overwrite the baseline with a non-joining `Exact` and then degrade it,
+        // leaving the graph strictly worse than not running the resolver at all.
         var site = Assert.Single(_scratch.SitesIn("ExplicitImplementation.cs"), s => s.CalledName == "Nested");
 
         var baseline = Assert.Single(new NameMatchResolver().Resolve([site], _scratch.Symbols));
         Assert.Equal(EdgeConfidence.ByName, baseline.Confidence);
-        Assert.Equal("Explicitly.Square.Draw", baseline.TargetContainer);
+        Assert.Equal("Explicitly.Square.IShape.Draw", baseline.TargetContainer);
 
         var edge = Assert.Single(_scratch.Resolver.Resolve([site], _scratch.Symbols));
 
         Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
-        Assert.Equal("Explicitly.Square.Draw", edge.TargetContainer);
+        Assert.Equal("Explicitly.Square.IShape.Draw", edge.TargetContainer);
         Assert.Contains(_scratch.Symbols, s => s.Container == edge.TargetContainer && s.Name == edge.TargetName);
     }
 

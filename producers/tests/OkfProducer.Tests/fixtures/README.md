@@ -28,9 +28,16 @@ an unintended one loud, so read the diff before you accept it.
 OKFGEN_UPDATE_GOLDEN=1 dotnet test producers/OkfProducer.sln --filter "FullyQualifiedName~CheckTests.Check_passes_on_an_unchanged_bundle"
 ```
 
-That rewrites `golden/` from scratch (it is machine output, so it is captured, never merged into) and
-then asserts against what it just wrote. Review `git diff producers/tests/OkfProducer.Tests/fixtures/golden`
-and commit it with the change that caused it.
+**That command exits RED, by design, and a green run would be the bug.** It rewrites `golden/` from
+scratch (it is machine output, so it is captured, never merged into) and then *refuses to assert*,
+failing with a notice saying so. The reason is worth stating: in update mode the expected side is
+produced by the very harness that produced the actual side, so a comparison between them is a
+tautology — and a tautology reported green is exactly how a stale variable left in someone's shell
+disarms a golden test without anyone noticing.
+
+So the procedure is two runs, not one. Rewrite, review
+`git diff producers/tests/OkfProducer.Tests/fixtures/golden`, then **re-run without the variable** to
+actually check it, and commit the diff with the change that caused it.
 
 **Two intentional changes will rewrite the whole golden**, and neither is drift:
 

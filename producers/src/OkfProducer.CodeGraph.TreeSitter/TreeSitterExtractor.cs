@@ -952,7 +952,15 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             var nameField = current.Type == FileScopedNamespaceNodeType ? null : current.GetChildForField(NameFieldName);
             if (nameField is not null)
             {
-                segments.Insert(0, nameField.Text);
+                // Through the SAME qualification the declaration itself gets, or the container path
+                // would spell an ancestor differently from that ancestor's own concept. Measured on
+                // the enriched golden fixture before this line existed: `Holder`, `Holder<T>` and
+                // `Holder<T, U>` became three type concepts, and all of their members landed under the
+                // first one, because a member's container read the ancestor's bare `name` field.
+                segments.Insert(0, QualifyName(
+                    nameField.Text,
+                    current,
+                    IsTypeDeclaration(current.Type) ? SymbolKind.Type : SymbolKind.Member));
             }
 
             current = current.Parent;

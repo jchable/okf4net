@@ -70,11 +70,40 @@ internal static class ProducerFixture
         var graph = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], [new NameMatchResolver()])
             .Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
 
+        // Supplied by hand rather than by MSBuild, and that is a deliberate, recorded limit on what the
+        // golden covers. The fixture repository is never restored -- committing an `obj/` would be
+        // machine-specific -- so `dotnet msbuild` fails on it (NETSDK1004: no project.assets.json) and
+        // Roslyn compiles nothing. Composing the real query would add a network- and SDK-dependent
+        // restore to the one test that is fast and offline, and would still capture zero `Exact` edges
+        // unless that restore succeeded.
+        //
+        // What supplying the map directly RECOVERS, and what the golden had been captured without: the
+        // package -> namespace containment link, whose absence made the whole `code/` family an orphan
+        // in the captured bundle -- 0 of 12 concepts reachable from `overview`, measured -- plus
+        // `## Also compiled by` and `## Target frameworks`.
+        //
+        // What stays absent, on purpose: every `Exact` edge. `RoslynResolverTests` exercises that
+        // engine directly, against repositories it restores itself.
+        var sources = Directory
+            .EnumerateFiles(Path.Combine(repoPath, "src"), "*.cs", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+        var ownership = SourceOwnershipMap.From(
+            repoPath,
+            [new ProjectCompileItems(Path.Combine(repoPath, "src", "Fixture.csproj"), "net10.0", sources)]);
+
         var options = new GenerateOptions
         {
             RepoUrl = RepoUrl,
             Rev = Rev,
             Profiles = [CSharpProfile.Instance],
+            SourceOwnership = ownership,
+
+            // Tree-sitter alone, because tree-sitter alone ran: naming a Roslyn version here would
+            // attach a determinism claim to an engine this capture never invoked. Bumping the
+            // TreeSitter.DotNet package therefore rewrites `overview`, which is exactly the reviewed
+            // migration §6.2 asks for rather than a drift.
+            EngineVersions = [TreeSitterExtractor.EngineVersion],
 
             // The line that makes a manual description survive a regeneration -- and therefore the
             // line without which --check would report every hand-edited concept as drift for ever.

@@ -5,8 +5,8 @@ description: Repository fixture-repo, containing 1 detected package.
 tags:
   - repository
 generated:
-  by: okfgen/0.1.0
-  at: 2026-09-03T12:28:06Z
+  by: okfgen/0.1.0 tree-sitter/1.3.0
+  at: 2026-09-06T07:38:05Z
 ---
 
 # fixture-repo

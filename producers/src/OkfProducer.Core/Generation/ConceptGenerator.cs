@@ -264,6 +264,19 @@ public sealed class ConceptGenerator : IConceptGenerator
         var body = new StringBuilder();
         body.Append("# ").Append(LiftedBodyText(snapshot.RepoName)).Append("\n\n")
             .Append(LiftedBodyParagraph(description, preserved)).Append('\n');
+
+        // The dirty-tree caveat, where a READER of the bundle is rather than only in a code comment.
+        // `revision` names the committed HEAD and never the working tree, so with uncommitted edits at
+        // generation time it names a commit this bundle was not built from -- and `--check` cannot see
+        // the difference either, since both sides carry the same revision. Emitted only when there is a
+        // revision to qualify: outside a git repository the field is absent and there is nothing to
+        // warn about.
+        if (revision is { Length: > 0 })
+        {
+            body.Append("\nThe `revision` above names the committed HEAD, not the working tree: if the repository had "
+                + "uncommitted changes when this bundle was generated, that commit is not what it was generated from.\n");
+        }
+
         AppendContains(body, children);
 
         var builder = OkfDocumentBuilder

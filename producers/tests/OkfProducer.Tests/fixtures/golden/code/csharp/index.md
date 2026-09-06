@@ -4,4 +4,4 @@
 
 # Subdirectories
 
-* [n](n/index.md) - Contains 6: registry, N.Registry, scanner, N.Scanner, sub, N.Sub.
+* [n](n/index.md) - Contains 8: registry, N.Registry, scanner, N.Scanner, shapes, N.Shapes, sub, N.Sub.
