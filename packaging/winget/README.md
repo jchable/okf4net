@@ -82,11 +82,29 @@ Prerequisites: `winget install Microsoft.WingetCreate`, and a fork of
 [`winget-releaser`](https://github.com/vedantmgoyal9/winget-releaser) (the
 tool behind the `winget-submit*` jobs) **updates an existing package — it
 does not create one.** `Coderise.OKF4net.Render` has no published version in
-winget-pkgs yet, so `winget-submit-render` will keep failing (or skipping, if
-`WINGET_TOKEN` is also unset) until someone runs the manual
-`wingetcreate submit` flow above for it at least once. Do not expect a tag
-push to publish the render package by itself — that first PR has to be
-opened by hand.
+winget-pkgs yet, so its first PR has to be opened by hand via the
+`wingetcreate submit` flow above. Do not expect a tag push to publish the
+render package by itself.
+
+Because of that, `winget-submit-render` is gated on **two** things, not just
+the `WINGET_TOKEN` secret: it also requires the repository variable
+`WINGET_RENDER_PUBLISHED` to be `true`. Without it the job skips with a
+notice instead of failing the release — which matters, because the artifacts
+the first manual submission needs are produced by the very release that would
+otherwise run this job against a package that does not exist.
+
+The sequence is therefore:
+
+1. Tag and release. The render manifests are generated and attached to the
+   Release; `winget-submit-render` skips with a notice.
+2. Submit those manifests manually (see above) and get the winget-pkgs PR
+   merged.
+3. Set the repository variable `WINGET_RENDER_PUBLISHED=true`
+   (Settings → Secrets and variables → Actions → Variables).
+
+From the next release on, the render package updates automatically like
+`Coderise.OKF4net` does. That one needs no such gate — it is already
+published.
 
 ## Regenerating manifests locally
 
