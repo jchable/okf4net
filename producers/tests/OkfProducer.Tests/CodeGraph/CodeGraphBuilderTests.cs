@@ -19,10 +19,13 @@ public class CodeGraphBuilderTests
     {
         public IReadOnlyList<CallSite> Sites { get; init; } = [];
 
+        /// <summary>What this stub reports for a file it IS asked about. <see cref="FileStatus.Extracted"/> unless a test needs a skip.</summary>
+        public FileStatus Status { get; init; } = FileStatus.Extracted;
+
         public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile, ExtractionLimits limits) =>
             new([.. symbols.Where(s => s.RelativePath == relativePath)],
                 [.. Sites.Where(s => s.RelativePath == relativePath)],
-                FileStatus.Extracted);
+                Status);
     }
 
     private sealed class CapturingExtractor : ILanguageExtractor
@@ -157,6 +160,18 @@ public class CodeGraphBuilderTests
 
         Assert.Empty(graph.Symbols);
         Assert.True(graph.Status.IsComplete);
+
+        // The control, without which the assertion above could not fail: the stub reports Extracted
+        // for anything it is asked about, so `IsComplete` was true for BOTH the property under test
+        // and its negation. Same builder over a file a profile DOES claim, reporting a skip, moves it
+        // -- so `true` above is a fact about the .txt file being unreached, not about the stub.
+        var skipped = new CodeGraphBuilder(
+                new StubExtractor(Member("T", "Caller")) { Status = FileStatus.SkippedTooLarge },
+                CSharpProfiles,
+                [])
+            .Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.False(skipped.Status.IsComplete);
     }
 
     [Fact]

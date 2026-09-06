@@ -68,6 +68,14 @@ public class PruningTests
 
         // §6.3 rule 1: a degraded run "deletes nothing AND SAYS SO".
         Assert.Contains(result.Notes, n => n.Contains("did not visit every eligible file", StringComparison.Ordinal));
+
+        // And says WHICH concepts it kept, by prefix rather than as a bare count. Nothing asserted any
+        // part of this sentence until now, so its wording was free to drift: on `--update --no-code`
+        // the number is every code concept the previous run claimed, and a bare "678 concept(s) this
+        // run did not generate" reads as a loss report on a run that wrote its other families fine.
+        Assert.Contains(
+            result.Notes,
+            n => n.Contains("1 concept(s) under 'code' that this run did not generate were kept", StringComparison.Ordinal));
     }
 
     [Fact]

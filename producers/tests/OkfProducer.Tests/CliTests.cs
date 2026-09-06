@@ -477,6 +477,14 @@ public class CliTests
     [InlineData("/srv/demo", false)]
     [InlineData("", false)]
     [InlineData(null, false)]
+
+    // Two shapes the table omitted, both verified correct and neither proved by it. `javascript:` is
+    // the scheme a permalink must never carry into a bundle a viewer will render. And a
+    // scheme-relative `//host/path` is rejected for a reason worth having a row for rather than
+    // relying on: .NET parses it as `Scheme="file"`, so it fails the http/https check as a quirk of
+    // the parser rather than by an explicit rule, and a future parser change would flip it silently.
+    [InlineData("javascript:alert(1)", false)]
+    [InlineData("//github.com/acme/demo", false)]
     public void The_permalink_base_rule_is_one_definition_shared_by_the_generator_and_the_cli(string? repoUrl, bool expected)
     {
         // Pinned as a table because this rule now has two consumers who must not diverge: the

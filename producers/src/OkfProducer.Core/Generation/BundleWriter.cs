@@ -380,7 +380,13 @@ public sealed class BundleWriter : IBundleWriter
 
         if (RefusalToPrune(manifest, status, previous, repoPath, failureCount) is { } refusal)
         {
-            notes.Add($"{candidates.Count} concept(s) this run did not generate were kept: {refusal}");
+            // Named by their prefix rather than counted bare. The count is correct -- a review filed it
+            // as a miscount and it is not -- but on `--update --no-code` it is EVERY code concept the
+            // previous run claimed, so a bare "678 concept(s) this run did not generate" reads as a
+            // loss report on a run that wrote thirty concepts perfectly well. Saying which family they
+            // are is what turns an alarming true number into a useful one.
+            notes.Add(
+                $"{candidates.Count} concept(s) under '{previous.OwnedPrefix}' that this run did not generate were kept: {refusal}");
             return new ReconcileOutcome([], candidates);
         }
 

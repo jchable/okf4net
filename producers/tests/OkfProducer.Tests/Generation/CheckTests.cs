@@ -101,6 +101,11 @@ public class CheckTests(ITestOutputHelper output)
         var report = RunCheck(workspace, ProducerFixture.GoldenBundle);
 
         Assert.True(report.IsClean, Explain(report));
+
+        // The exit code too, which every sibling in this file asserts and this one did not: IsClean
+        // and ExitCode are separate fields on DriftReport, so a report can be clean and still exit
+        // non-zero, and nothing here would have noticed.
+        Assert.Equal(0, report.ExitCode);
     }
 
     [Fact]
@@ -124,6 +129,10 @@ public class CheckTests(ITestOutputHelper output)
             report.Differences,
             d => d.StartsWith("code/csharp/n/scanner/normalize.md:", StringComparison.Ordinal)
                 && d.Contains("missing from the bundle", StringComparison.Ordinal));
+
+        // Drift found means a non-zero exit, and this test asserted the drift without the exit code --
+        // the half a CI gate actually reads.
+        Assert.NotEqual(0, report.ExitCode);
     }
 
     [Fact]

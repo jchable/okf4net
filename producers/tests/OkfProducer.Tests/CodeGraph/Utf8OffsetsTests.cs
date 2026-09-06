@@ -92,6 +92,7 @@ public class Utf8OffsetsTests
 
     [Theory]
     [InlineData(-1)]
+    [InlineData(int.MinValue)]
     public void ToUtf8_rejects_a_negative_offset(int utf16Offset)
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => Utf8Offsets.ToUtf8("abc", utf16Offset));
@@ -105,6 +106,7 @@ public class Utf8OffsetsTests
 
     [Theory]
     [InlineData(-1)]
+    [InlineData(int.MinValue)]
     public void ToUtf16_rejects_a_negative_offset(int utf8Offset)
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => Utf8Offsets.ToUtf16("abc", utf8Offset));
