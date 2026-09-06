@@ -155,6 +155,37 @@ public class OkfRenderCliTests
     }
 
     [Fact]
+    public void After_separator_a_dash_prefixed_token_is_the_bundle_not_an_unknown_option()
+    {
+        // Regression guard for `afterSeparator` in Scan: nothing past `--` is
+        // ever read as a flag, precisely so a bundle path beginning with `-`
+        // still works. If that switch were ever dropped, "-weird-bundle"
+        // here would be scanned as an option and rejected as "unknown
+        // option" instead of taking the <bundle> slot.
+        var r = Run("--", "-weird-bundle");
+
+        Assert.Equal(1, r.Code);
+        Assert.DoesNotContain("unknown option", r.Err);
+    }
+
+    [Fact]
+    public void Repeated_out_flag_keeps_the_first_value_and_still_consumes_the_second()
+    {
+        // Regression guard: a later "--out" no longer overwrites the first
+        // recorded value, but it must still consume its own following token
+        // -- otherwise that token falls through to the positional scan and
+        // is misread as a second, unexpected argument.
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "site");
+
+        var r = Run(BundlePath, "--out", outDir, "--out", "somewhere-else");
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+        Assert.True(File.Exists(Path.Combine(outDir, "index.html")));
+    }
+
+    [Fact]
     public void Help_prints_usage_and_succeeds()
     {
         var r = Run("--help");
