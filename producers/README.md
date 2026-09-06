@@ -91,9 +91,11 @@ scanned tree, with the repository as the working directory, reading its `.git/co
 many times depends on the flags, so here is the whole of it rather than a number. `git show
 -s` and `git rev-parse` run on *every* generate — they stamp `overview`'s `generated.at`
 and `revision`. `git symbolic-ref` runs as well, **unless `--rev` already named the ref**, in
-which case the branch is never read. And `--check` runs one further `git rev-parse` in the
-scanned tree before the regeneration it compares against, on top of that regeneration's own.
-Two to four invocations, then. Far less exposure than MSBuild — none of them triggers a hook,
+which case the branch is never read — and where it succeeds it is followed by a second
+`git rev-parse --verify HEAD`, because an *unborn* branch (`git init` with no commit yet) is a
+branch name that names no commit, and permalinks built against it point at nothing. And
+`--check` runs one further `git rev-parse` in the scanned tree before the regeneration it
+compares against, on top of that regeneration's own. Two to five invocations, then. Far less exposure than MSBuild — none of them triggers a hook,
 an fsmonitor, or a pager with stdout redirected — but it is not nothing, and this section
 used to say "no process is spawned". And it is not free of structural cost: the source-ownership
 map comes out of the same MSBuild query, so with the flag on there is **no `packages` →

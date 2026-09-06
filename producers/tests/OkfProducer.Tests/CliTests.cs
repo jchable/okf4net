@@ -1219,6 +1219,33 @@ public class CliTests
     }
 
     [Fact]
+    public void A_repository_with_no_commit_yet_reports_no_branch_name()
+    {
+        // MEASURED, and the reason this is not the detached-HEAD case one property over: on a
+        // zero-commit repository `git symbolic-ref` SUCCEEDS and returns the unborn branch, while
+        // `git rev-parse HEAD` fails. Reading only the first left `--repo-url` without `--rev` emitting
+        // a `resource` permalink on every code concept, each pointing into a branch that contains none
+        // of the files -- and the CLI's "no branch name could be read" note never fired to say so. A
+        // wrong link reads exactly as confidently as a right one, which §2.3 calls the worse outcome.
+        ProducerFixture.RequireGit();
+        using var workspace = NewWorkspace(out var repo, out _);
+
+        ProducerFixture.Git(repo, "init", "-q");
+
+        Assert.Null(GitRevision.CurrentBranch(repo));
+
+        // The other direction, so the assertion above cannot pass because the fixture simply has no
+        // working git: the SAME repository, one commit later, does report a branch.
+        ProducerFixture.Git(repo, "config", "user.email", "cli-tests@example.invalid");
+        ProducerFixture.Git(repo, "config", "user.name", "CLI Tests");
+        ProducerFixture.Git(repo, "config", "commit.gpgsign", "false");
+        ProducerFixture.Git(repo, "add", "-A");
+        ProducerFixture.Git(repo, "commit", "-q", "-m", "fixture");
+
+        Assert.NotNull(GitRevision.CurrentBranch(repo));
+    }
+
+    [Fact]
     public void Force_is_an_alias_for_reset_and_not_a_flag_that_does_nothing()
     {
         // `--force` is documented as an alias for `--reset` and was exercised by no test at all:
