@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Reflection;
+using OKF4net.Internal;
 using OKF4net.Viewer;
 
 namespace OKF4net.Render;
@@ -24,7 +25,11 @@ namespace OKF4net.Render;
 /// block, the <c>--out</c> containment refusal — mirrors what <c>OkfCli</c>
 /// does for its own verbs, with wording rewritten to name this tool and its
 /// one command rather than the <c>render</c> verb it used to be (that verb no
-/// longer exists in any binary, so no message here may name it).
+/// longer exists in any binary, so no message here may name it). The two
+/// pieces that are genuinely identical to <c>OkfCli</c>'s -- not merely
+/// similar in shape -- live in <see cref="CliArgScanning"/> instead of being
+/// forked here: the valued-flag/separator scanning rule, and the
+/// <see cref="ArgumentException"/> <c>ParamName</c>-suffix strip.
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// tool in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -168,10 +173,7 @@ public static class OkfRenderCli
                         continue;
                     case "--out":
                         {
-                            // The separator is not a value: swallowing it would
-                            // hide "requires a value" and cancel the separator's
-                            // contract for everything that follows.
-                            var hasValue = i + 1 < args.Length && args[i + 1] != "--";
+                            var hasValue = CliArgScanning.HasFollowingValue(args, i);
 
                             // First occurrence wins, but a later one still
                             // consumes its own value so that value can never be
@@ -251,7 +253,7 @@ public static class OkfRenderCli
         }
         catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            throw new CliOperationException(UserMessage(e));
+            throw new CliOperationException(CliArgScanning.UserMessage(e));
         }
 
         stdout.Write($"wrote {written.Count} files to {parsed.OutDir}\n");
@@ -271,26 +273,4 @@ public static class OkfRenderCli
         }
     }
 
-    /// <summary>
-    /// Renders an exception's message for a human reading <c>error: ...</c>
-    /// on a terminal, stripping .NET's <c>" (Parameter 'x')"</c> suffix that
-    /// <see cref="ArgumentException"/> appends whenever
-    /// <see cref="ArgumentException.ParamName"/> is set. See
-    /// <c>OkfCli.UserMessage</c> for the identical rationale: correct and
-    /// useful for a library caller catching the exception, but framework
-    /// noise out of place in output meant for humans.
-    /// </summary>
-    private static string UserMessage(Exception e)
-    {
-        if (e is ArgumentException { ParamName: not null } argEx)
-        {
-            var suffix = $" (Parameter '{argEx.ParamName}')";
-            if (argEx.Message.EndsWith(suffix, StringComparison.Ordinal))
-            {
-                return argEx.Message[..^suffix.Length];
-            }
-        }
-
-        return e.Message;
-    }
 }

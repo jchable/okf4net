@@ -365,10 +365,7 @@ public static class OkfCli
         /// <param name="token">The valued flag.</param>
         private int TakeValuedFlag(string[] args, int i, string token)
         {
-            // The separator is not a value: swallowing it would hide
-            // "requires a value" and cancel the separator's contract for
-            // everything that follows.
-            var hasValue = i + 1 < args.Length && args[i + 1] != "--";
+            var hasValue = CliArgScanning.HasFollowingValue(args, i);
 
             // First occurrence wins. A later one still consumes its own value,
             // so that value can never be read as the positional.
@@ -448,32 +445,6 @@ public static class OkfCli
             _positional ?? throw new CliOperationException($"missing {what}");
     }
 
-    /// <summary>
-    /// Renders an exception's message for a human reading <c>error: ...</c>
-    /// on a terminal, stripping .NET's <c>" (Parameter 'x')"</c> suffix that
-    /// <see cref="ArgumentException"/> appends whenever
-    /// <see cref="ArgumentException.ParamName"/> is set. That suffix is
-    /// framework noise -- correct and useful for a library caller catching
-    /// the exception (so, e.g., <see cref="File.ReadAllBytes"/> keeps
-    /// throwing it unchanged for a garbage path), but out of place in CLI
-    /// output meant for humans. Every catch site that would otherwise surface
-    /// an <see cref="ArgumentException"/>'s <c>Message</c> to the CLI funnels
-    /// through here instead, so no verb can leak it.
-    /// </summary>
-    private static string UserMessage(Exception e)
-    {
-        if (e is ArgumentException { ParamName: not null } argEx)
-        {
-            var suffix = $" (Parameter '{argEx.ParamName}')";
-            if (argEx.Message.EndsWith(suffix, StringComparison.Ordinal))
-            {
-                return argEx.Message[..^suffix.Length];
-            }
-        }
-
-        return e.Message;
-    }
-
     /// <summary>Loads a bundle, converting a failure into the CLI's error arm.</summary>
     private static Bundle Load(string path)
     {
@@ -528,8 +499,10 @@ public static class OkfCli
             // (embedded NUL, reserved device names, ...) with ArgumentException
             // or NotSupportedException rather than an I/O exception, so both
             // must be caught here too or they escape as unhandled exceptions
-            // instead of a clean CLI error.
-            throw new CliOperationException(UserMessage(e));
+            // instead of a clean CLI error. CliArgScanning.UserMessage strips
+            // ArgumentException's " (Parameter 'x')" framework-noise suffix,
+            // shared with okf-render's identical need.
+            throw new CliOperationException(CliArgScanning.UserMessage(e));
         }
 
         try
@@ -552,7 +525,7 @@ public static class OkfCli
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             // See ReadFileStrict above: same funnel, same rationale.
-            throw new CliOperationException(UserMessage(e));
+            throw new CliOperationException(CliArgScanning.UserMessage(e));
         }
     }
 
