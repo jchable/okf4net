@@ -20,8 +20,11 @@ namespace OKF4net.Render;
 /// machinery (<c>VerbSpec</c>, per-verb flag allowlists, a dispatch table), so
 /// this is a small hand-rolled scanner over exactly this command's grammar
 /// rather than a port of that machinery. User-visible behaviour — error text
-/// shape, exit codes, the <c>error: </c> prefix, the <c>--out</c> containment
-/// refusal — matches what the <c>render</c> verb did.
+/// shape, exit codes, the <c>error: </c> prefix, the bare-invocation usage
+/// block, the <c>--out</c> containment refusal — mirrors what <c>OkfCli</c>
+/// does for its own verbs, with wording rewritten to name this tool and its
+/// one command rather than the <c>render</c> verb it used to be (that verb no
+/// longer exists in any binary, so no message here may name it).
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// tool in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -73,6 +76,16 @@ public static class OkfRenderCli
     {
         stdout.NewLine = "\n";
         stderr.NewLine = "\n";
+
+        if (args.Length == 0)
+        {
+            // A bare invocation is the discovery gesture for a one-command
+            // tool: the full usage block on stderr, not "error: missing
+            // <bundle>", mirroring OkfCli.Run's identical zero-argument case.
+            stderr.Write(Usage);
+            stderr.Write("\n");
+            return 1;
+        }
 
         try
         {
@@ -205,9 +218,11 @@ public static class OkfRenderCli
     /// missing:
     ///   1. "--out" present but unvalued          -> "--out requires a value"
     ///   2. bundle positional missing              -> "missing &lt;bundle&gt;"
-    ///   3. "--out" absent entirely                -> "render requires --out &lt;dir&gt;"
-    /// e.g. bare "okf-render --out" reports (1) even though the bundle is
-    /// also missing, and bare "okf-render" reports (2) rather than (3).
+    ///   3. "--out" absent entirely                -> "missing --out &lt;dir&gt;"
+    /// e.g. "okf-render b --out" reports (1) even though the bundle is
+    /// present, and "okf-render b" reports (3) rather than passing an empty
+    /// output directory through. A fully bare invocation is handled earlier,
+    /// in <see cref="Run"/>, before this method is ever reached.
     /// </summary>
     private static int RunRender(ParsedArgs parsed, TextWriter stdout)
     {
@@ -223,7 +238,7 @@ public static class OkfRenderCli
 
         if (parsed.OutDir is null)
         {
-            throw new CliOperationException("render requires --out <dir>");
+            throw new CliOperationException("missing --out <dir>");
         }
 
         var bundle = Load(parsed.Bundle);

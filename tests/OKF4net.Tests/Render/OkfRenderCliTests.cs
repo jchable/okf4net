@@ -42,15 +42,26 @@ public class OkfRenderCliTests
     {
         var r = Run(BundlePath);
         Assert.Equal(1, r.Code);
+
+        // Regression guard: this message used to read "render requires --out
+        // <dir>", naming a verb this binary never exposes (it was ported
+        // verbatim from the old `okf render` verb). It must name the flag or
+        // the tool instead.
         Assert.Contains("--out", r.Err);
+        Assert.DoesNotContain("render requires", r.Err);
     }
 
     [Fact]
-    public void Without_a_bundle_fails()
+    public void No_args_prints_usage_and_fails()
     {
+        // A bare invocation is the discovery gesture for a one-command tool:
+        // OkfCli.Run does exactly this for zero arguments (full Usage block
+        // on stderr, no "error: " prefix), and this tool should behave the
+        // same way rather than surfacing "error: missing <bundle>".
         var r = Run();
         Assert.Equal(1, r.Code);
-        Assert.Contains("error:", r.Err);
+        Assert.Contains("USAGE:", r.Err);
+        Assert.Equal("", r.Out);
     }
 
     [Fact]
