@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
+using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -529,7 +530,7 @@ public sealed class RoslynResolver : ISymbolResolver
         var text = owned.Tree.GetText().ToString();
         var model = owned.Compilation.GetSemanticModel(owned.Tree);
 
-        var index = new Dictionary<int, CalleeMatch>();
+        var pending = new List<(int Utf16Offset, CalleeMatch Match)>();
         foreach (var invocation in owned.Tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
             var callee = CalleeName(invocation.Expression);
@@ -541,16 +542,42 @@ public sealed class RoslynResolver : ISymbolResolver
             var symbol = TargetSymbol(model, invocation, callee);
             var (kind, container, name) = DescribeTarget(owned.Compilation, _repositoryProjectAssemblies, symbol);
 
-            // Roslyn counts UTF-16 code units; a CallSite's identity is a UTF-8 byte offset. Do not
-            // delete this conversion on the grounds that the tree-sitter side "already gives UTF-16
-            // too" -- see Utf8Offsets' summary; that is an artefact of the binding, and the failure
-            // mode when it stops holding is a call credited to the wrong symbol, silently.
-            var offset = Utf8Offsets.ToUtf8(text, callee.Identifier.SpanStart);
-
             // Identifier.Text, not ValueText: ValueText strips the @ from a verbatim identifier, while
             // CallSite.CalledName is the grammar's raw token and keeps it, so @class() would fail the
             // name guard in Resolve on a difference that is purely about how the name was spelled.
-            index[offset] = new CalleeMatch(callee.Identifier.Text, kind, container, name);
+            pending.Add((callee.Identifier.SpanStart, new CalleeMatch(callee.Identifier.Text, kind, container, name)));
+        }
+
+        // Roslyn counts UTF-16 code units; a CallSite's identity is a UTF-8 byte offset. Do not delete
+        // this conversion on the grounds that the tree-sitter side "already gives UTF-16 too" -- see
+        // Utf8Offsets' summary; that is an artefact of the binding, and the failure mode when it stops
+        // holding is a call credited to the WRONG symbol, silently.
+        //
+        // ONE pass over the file for all of its call sites, rather than one pass per site.
+        // `Utf8Offsets.ToUtf8` counts from the start of the text every time, so calling it per callee
+        // made this O(file size x call sites): a large file with many calls paid for its own length
+        // once for each of them. Sorted first so the walk only ever moves forward.
+        var index = new Dictionary<int, CalleeMatch>();
+        var utf8 = 0;
+        var utf16 = 0;
+
+        foreach (var (utf16Offset, match) in pending.OrderBy(entry => entry.Utf16Offset))
+        {
+            // The boundary guard `Utf8Offsets.ToUtf8` applies, kept rather than lost to the
+            // optimisation: an offset splitting a surrogate pair would make the segment below start on
+            // a lone low surrogate and count 3 bytes for it through the replacement fallback -- a
+            // plausible wrong number out of the join key, which is the failure this whole discipline
+            // exists to prevent. O(1) here, where the method's own check is O(1) too.
+            if (utf16Offset > 0 && utf16Offset < text.Length
+                && char.IsHighSurrogate(text[utf16Offset - 1]) && char.IsLowSurrogate(text[utf16Offset]))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(owned), utf16Offset, "a callee identifier begins inside a surrogate pair.");
+            }
+
+            utf8 += Encoding.UTF8.GetByteCount(text.AsSpan(utf16, utf16Offset - utf16));
+            utf16 = utf16Offset;
+            index[utf8] = match;
         }
 
         return index;

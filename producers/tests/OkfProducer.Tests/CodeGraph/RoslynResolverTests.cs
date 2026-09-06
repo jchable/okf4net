@@ -1973,4 +1973,28 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.IsType<MsBuildQueryException>(ex);
         Assert.Contains("did not finish within", ex.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Every_call_site_in_a_non_ascii_file_still_finds_its_index_entry()
+    {
+        // The equivalence guard for the one-pass offset walk in BuildIndex. It used to call
+        // `Utf8Offsets.ToUtf8` per callee, which counts from the start of the text every time --
+        // O(file size x call sites). Accumulating instead is O(file size), and the danger of that
+        // trade is precise: this offset is the JOIN KEY between two engines, so a drift of one byte
+        // does not lose a call, it credits it to whatever sits nearby.
+        //
+        // The two sides really are computed differently, which is what makes this an equivalence test
+        // rather than a tautology: the extractor converts each site with the per-site method, the
+        // resolver now walks the file once. A non-ASCII file is the fixture because every offset after
+        // the first accented character differs between UTF-8 and UTF-16 -- on ASCII the two agree and
+        // any drift would be invisible.
+        var sites = _scratch.SitesIn("NonAscii.cs");
+        Assert.NotEmpty(sites);
+
+        var edges = _scratch.Resolver.Resolve(sites, _scratch.Symbols);
+
+        // One verdict per site: a site whose offset did not land on an index entry gets no edge at all,
+        // so a count short of the input is exactly the drift this pins.
+        Assert.Equal(sites.Count, edges.Count);
+    }
 }
