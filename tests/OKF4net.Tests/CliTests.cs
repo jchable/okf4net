@@ -636,7 +636,19 @@ public class CliTests
 
         Assert.Equal(1, r.Code);
         Assert.Contains("unknown subcommand: render", r.Err);
-        Assert.DoesNotContain("render", Run("--help").Out);
+    }
+
+    /// <summary>
+    /// Same split as above, from the help text's side: `render` must not be
+    /// listed among `okf`'s commands. A plain substring check would also
+    /// fail on an unrelated future word like "renders" or "pre-rendered"
+    /// appearing anywhere in the help text, for a reason that has nothing to
+    /// do with this guard -- so this matches "render" as a whole word.
+    /// </summary>
+    [Fact]
+    public void Help_does_not_list_render_as_a_command()
+    {
+        Assert.DoesNotMatch(new Regex(@"\brender\b", RegexOptions.IgnoreCase), Run("--help").Out);
     }
 
     // ----------------------------------------------------------------
