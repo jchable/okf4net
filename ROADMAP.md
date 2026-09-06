@@ -44,7 +44,9 @@ are the concrete entry points.
   MCP story is read-only-focused; this would exercise write/append and
   `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
 - Performance baselines for large bundle loads.
-- Bundle viewer: **static render shipped** as `okf render` (`OKF4net.Viewer`).
+- Bundle viewer: **static render shipped** as the standalone `okf-render`
+  binary (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf`
+  itself so the CI-facing validator does not carry the viewer's JavaScript.
   The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
   remains open — it is what unlocks full-text search in the viewer, since a
   server can run `ConceptSearch` directly instead of mirroring its weights in
