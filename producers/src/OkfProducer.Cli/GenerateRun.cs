@@ -609,6 +609,26 @@ internal static class GenerateRun
     /// family is generated from, so the ownership map's join key is by construction the one
     /// <c>ConceptGenerator</c> looks a package up by.
     /// </summary>
+    /// <summary>
+    /// Every nuget project MSBuild will be asked about -- <b>including test projects, and including
+    /// them when <c>--include-tests</c> is off</b>.
+    ///
+    /// <para>That reads as an inconsistency and is not one, because the flag and this list govern
+    /// different things. <c>--include-tests</c> decides which FILES are extracted
+    /// (<c>FileEligibility.IsEligible</c>); this decides which projects are asked for their
+    /// <c>Compile</c> item sets, and §5.1's ownership map is built from those. A test project can
+    /// legitimately claim a PRODUCTION file -- a linked <c>&lt;Compile Include="..\..\src\Shared.cs"/&gt;</c>
+    /// is ordinary -- and dropping it here would silently remove that file's
+    /// <c>## Also compiled by</c> entry, which is a fact about the production file rather than about
+    /// the test project. Narrowing the query would make the map answer a different question from the
+    /// one it is documented to answer.</para>
+    ///
+    /// <para><b>The cost, stated because it is real:</b> one <c>dotnet msbuild</c> subprocess per test
+    /// project on every run, roughly a second each here, for item sets whose own files this run will
+    /// not extract. Measured on this repository, no test project claims a production file, so nothing
+    /// in the emitted bundle would change if they were skipped -- the price buys correctness in the
+    /// general case, not in this one.</para>
+    /// </summary>
     private static IReadOnlyList<string> CSharpProjectPaths(RepositorySnapshot snapshot) =>
     [
         .. snapshot.Packages

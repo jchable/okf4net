@@ -558,6 +558,46 @@ public class TreeSitterExtractorTests : IDisposable
         Assert.Equal(["Bar", "IFoo.Bar"], names);
     }
 
+    [Fact]
+    public void A_call_inside_an_indexer_or_an_operator_yields_no_edge_at_all()
+    {
+        // The documented gap: indexers, operator overloads and conversion operators are not extracted
+        // as symbols, because none of them has a `name` field in this grammar (an indexer is written
+        // `this[...]`; an operator's symbol is an anonymous child after the anonymous keyword). Naming
+        // them would need bespoke, unverified rules, so the profile accepts the gap.
+        //
+        // What that gap RIPPLES into was never stated or tested: a call inside one of those members
+        // finds no ancestor in CallerMemberAncestorNodeTypes, so the site comes out with an empty
+        // caller. An edge naming a caller that does not exist is exactly what §2.1 calls worse than no
+        // edge -- so what must be true is that NONE survives, and that is what this pins.
+        //
+        // It is not the extractor that drops it: the site is emitted with an empty caller and
+        // CodeGraphBuilder's invariant (no edge may name a caller absent from Symbols) is what removes
+        // it. Stated here because a future change to either half would silently let the orphan through.
+        var result = ExtractSource("""
+            namespace N;
+            public class T
+            {
+                public void Target() { }
+
+                public int this[int i] { get { Target(); return i; } }
+
+                public static T operator +(T a, T b) { a.Target(); return a; }
+            }
+            """);
+
+        // The gap itself, asserted so this test fails loudly rather than vacuously if the profile ever
+        // starts extracting them -- at which point the ripple below stops being the right behaviour.
+        Assert.DoesNotContain(result.Symbols, s => s.Name is "this" or "+" or "op_Addition");
+
+        // Every call site found inside those two members carries no caller to hang a concept off.
+        Assert.All(
+            result.Sites.Where(s => s.CalledName == "Target"),
+            site => Assert.True(
+                site.CallerName.Length == 0,
+                $"expected no caller for a call inside an indexer or operator, got '{site.CallerName}'."));
+    }
+
     private ExtractionResult ExtractSource(string source, string relativePath = "T.cs")
     {
         var directory = Directory.CreateTempSubdirectory("okfproducer-treesitter-").FullName;
