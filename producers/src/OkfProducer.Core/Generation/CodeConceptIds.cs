@@ -192,6 +192,13 @@ public static class CodeConceptIds
 
             // Rule 3: digit -> upper marks the start of the next word (Utf8Offsets -> Utf8-Offsets).
             // upper -> digit and lower -> digit are deliberately NOT boundaries (OKF4net stays whole).
+            //
+            // `_` is NOT a boundary either, and that is a decision rather than an omission a review
+            // should keep re-finding. `MAX_VALUE` slugifies to `max_value`, not `max-value`, because
+            // `_` is a valid concept-id character (ConceptId.ValidateSegment admits it) and the
+            // underscore the author wrote is information about the name rather than punctuation this
+            // producer invented. Splitting on it would also make `_field` and `Field` collide, which
+            // the three rules above exist to avoid rather than create.
             var digitToUpper = char.IsUpper(c) && char.IsDigit(prev);
 
             if (lowerToUpper || acronymBoundary || digitToUpper)

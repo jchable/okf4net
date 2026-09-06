@@ -196,12 +196,13 @@ public class ScopeTests : IDisposable
     /// <see cref="RepositoryScanner"/> scan of a repo with a test project would produce, without
     /// widening <see cref="RepositorySnapshot"/>'s own shape.
     /// </summary>
-    private static RepositorySnapshot SnapshotWithTestProject(string projectDirectory = "tests/OKF4net.Tests") =>
+    private RepositorySnapshot SnapshotWithTestProject(string projectDirectory = "tests/OKF4net.Tests") =>
         SnapshotWithProject(referencesTestSdk: true, projectDirectory);
 
-    private static RepositorySnapshot SnapshotWithProject(bool referencesTestSdk, string projectDirectory)
+    private RepositorySnapshot SnapshotWithProject(bool referencesTestSdk, string projectDirectory)
     {
         var repoPath = Directory.CreateTempSubdirectory("okfproducer-scope-").FullName;
+        _tempDirectories.Add(repoPath);
         var projectName = projectDirectory.Split('/')[^1];
         var csprojRelativePath = $"{projectDirectory}/{projectName}.csproj";
         var csprojFullPath = Path.Combine(repoPath, csprojRelativePath.Replace('/', Path.DirectorySeparatorChar));

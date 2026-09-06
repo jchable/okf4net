@@ -112,8 +112,13 @@ public class BlastRadiusTests
         // This row LOOKS like it says "nothing" and does not. `overview` carries `revision` and
         // `generated.at`, both read off the HEAD commit, so any commit rewrites it -- one file out of
         // the bundle. That bound is the property being asserted; "nothing changes" would be false, and
-        // an assertion that can never pass is worse than none. With a wall-clock stamp instead of the
-        // HEAD one, this same assertion would come back with every concept in the bundle.
+        // an assertion that can never pass is worse than none.
+        //
+        // This comment used to end "with a wall-clock stamp instead of the HEAD one, this same
+        // assertion would come back with every concept in the bundle", and that is false: only
+        // `overview` carries `at` and `revision` at all -- `DeterminismTests.Only_overview_carries_at_and_revision`
+        // pins it -- so a wall-clock stamp would still return exactly `["overview"]` here and this row
+        // would stay green. The leak IS caught, by the `AddPrivateMember` row, not by this one.
         Assert.Equal(["overview"], ConceptsChangedBy(Mutation.CommitUnrelatedFile));
     }
 
