@@ -870,9 +870,21 @@ public sealed class BundleWriter : IBundleWriter
 
     /// <summary>
     /// Whether <paramref name="directory"/> is the owned prefix's own directory or one nested inside
-    /// it. Compares path components rather than raw string prefixes, so a sibling directory whose name
-    /// merely starts with the prefix (<c>code2/</c> beside <c>code/</c>) is not walked into and
-    /// deleted.
+    /// it. Compares path components rather than raw string prefixes.
+    ///
+    /// <para><b>What it actually stops: the walk climbing ABOVE the owned prefix.</b>
+    /// <see cref="RemoveEmptyDirectories"/> starts at a pruned concept's directory and moves upward one
+    /// parent at a time, so this is the sole condition standing between a
+    /// <c>Directory.Delete(recursive: true)</c> and the bundle root. It is the most destructive
+    /// statement on this branch, and until
+    /// <c>PruningTests.The_directory_ladder_stops_at_the_owned_prefix_root_and_not_above_it</c> it was
+    /// on no test's critical path -- every other fixture left a sibling that broke the loop one rung in.
+    ///
+    /// <para>This comment used to describe a different scenario: a sibling directory whose name merely
+    /// starts with the prefix (<c>code2/</c> beside <c>code/</c>) being walked into and deleted. That
+    /// cannot happen and never could -- the walk only ever goes upward, so it never reaches a sibling
+    /// at all. The component comparison is still the right implementation; it just was not defending
+    /// against the thing the comment named.</para></para>
     /// </summary>
     private static bool IsWithinPrefixRoot(string directory, string prefixRoot) =>
         string.Equals(directory, prefixRoot, PathComparison)

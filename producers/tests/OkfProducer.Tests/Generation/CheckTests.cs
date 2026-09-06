@@ -656,6 +656,46 @@ public class CheckTests(ITestOutputHelper output)
         Assert.Contains("## Calls (unresolved)\n", count, StringComparison.Ordinal);  // an unresolved one
     }
 
+    [Fact]
+    public void Check_leaves_the_bundle_it_was_given_byte_for_byte_unchanged()
+    {
+        // The property every OTHER test in this file silently depends on. Six of them run Check against
+        // the COMMITTED golden, so a regression that regenerated in place would rewrite the golden --
+        // and every one of those tests would go on passing, comparing the bundle against itself. A
+        // self-disarming suite is the failure this branch spent its remediation on; this is the
+        // assertion that stops it happening to the golden.
+        //
+        // Byte for byte over every file, not a count and not a timestamp: regenerating in place would
+        // leave the same file names, and `generated.at` would not move either, since the golden is
+        // captured outside git where that field is excluded from the COMPARISON but not from a write.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+
+        var before = Snapshot(ProducerFixture.GoldenBundle);
+        var report = RunCheck(workspace, ProducerFixture.GoldenBundle);
+        var after = Snapshot(ProducerFixture.GoldenBundle);
+
+        // Asserted first, so a Check that somehow performed no comparison at all cannot satisfy the
+        // real assertions below by having done nothing.
+        Assert.True(report.IsClean, Explain(report));
+
+        Assert.Equal(
+            before.Keys.OrderBy(key => key, StringComparer.Ordinal),
+            after.Keys.OrderBy(key => key, StringComparer.Ordinal));
+
+        foreach (var (path, hash) in before)
+        {
+            Assert.True(after[path].SequenceEqual(hash), $"Check rewrote '{path}' in the bundle it was given.");
+        }
+    }
+
+    /// <summary>Every file under <paramref name="bundlePath"/>, keyed by relative path, with its bytes hashed.</summary>
+    private static Dictionary<string, byte[]> Snapshot(string bundlePath) =>
+        Directory.EnumerateFiles(bundlePath, "*", SearchOption.AllDirectories)
+            .ToDictionary(
+                path => Path.GetRelativePath(bundlePath, path).Replace(Path.DirectorySeparatorChar, '/'),
+                path => System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)),
+                StringComparer.Ordinal);
+
     // -- fixture ----------------------------------------------------------------------------------
 
     private static string RepoIn(ProducerFixture.TempDir workspace) =>

@@ -1217,6 +1217,29 @@ public class CliTests
         Assert.NotEqual(0, Run("validate").ExitCode);
         Assert.NotEqual(0, Run("validate", "--bundle", bundle).ExitCode);
     }
+
+    [Fact]
+    public void Force_is_an_alias_for_reset_and_not_a_flag_that_does_nothing()
+    {
+        // `--force` is documented as an alias for `--reset` and was exercised by no test at all:
+        // dropping the `|| forceOption` clause at the composition root broke the alias silently, and
+        // an operator using it would have got a run that refused a non-empty --out instead of
+        // recreating it.
+        //
+        // The fixture is what makes this discriminate. A bundle that already holds a file the
+        // regeneration does not produce is the only shape where reset and no-reset differ observably:
+        // without the alias the run refuses the non-empty directory, and with it the stray file is gone.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        var stray = Path.Combine(bundle, "hand-written.md");
+        File.WriteAllText(stray, "---\ntype: Note\ntitle: t\ndescription: d\n---\n\nbody\n");
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--force");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.False(File.Exists(stray), "--force did not recreate the bundle, so it is not behaving as --reset.");
+    }
     // ---- assertions -------------------------------------------------------------------------
 
     private sealed record CliResult(int ExitCode, string Output, string Error);

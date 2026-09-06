@@ -56,14 +56,21 @@ public class SourceOwnershipMapTests
     {
         // The Ordinal-first rule is only a rule if the order does not depend on which project the
         // caller queried first, so the fixture supplies them in the opposite order.
+        //
+        // The names are `Z` and `a`, not `A` and `Z`, and that is the fixture rather than a detail.
+        // §6.2 pins ORDINAL, but an `A`/`Z` pair sorts the same way under every culture on earth, so
+        // the assertion measured sortedness and called it Ordinal: swapping every
+        // `StringComparer.Ordinal` in this type for `CurrentCulture` left it green. Ordinal compares
+        // code points, where `Z` (0x5A) precedes `a` (0x61); a linguistic comparison puts `a` first.
+        // The two orders are now opposite, so only one of them passes.
         var map = SourceOwnershipMap.From("/repo",
             [
+                new ProjectCompileItems("src/a/a.csproj", "net10.0", ["shared/Thing.cs"]),
                 new ProjectCompileItems("src/Z/Z.csproj", "net10.0", ["shared/Thing.cs"]),
-                new ProjectCompileItems("src/A/A.csproj", "net10.0", ["shared/Thing.cs"]),
             ]);
 
-        Assert.Equal(["src/A/A.csproj", "src/Z/Z.csproj"], map.ClaimantsOf("shared/Thing.cs"));
-        Assert.Equal("src/A/A.csproj", map.OwnerOf("shared/Thing.cs"));
+        Assert.Equal(["src/Z/Z.csproj", "src/a/a.csproj"], map.ClaimantsOf("shared/Thing.cs"));
+        Assert.Equal("src/Z/Z.csproj", map.OwnerOf("shared/Thing.cs"));
     }
 
     [Fact]
