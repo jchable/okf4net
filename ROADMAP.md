@@ -163,6 +163,16 @@ are the concrete entry points.
     verification command, the packaging step and the project layout.
 
   Open follow-ups, still open:
+  - **The pruning guard compares scope FLAGS, not the scope RULE.** `BundleWriter` refuses to prune
+    when the previous run covered a wider scope, and it decides that by comparing the flags recorded
+    in the manifest — so it is blind to a run whose flags are identical but whose *rule* narrowed.
+    Measured on exactly that: a bundle generated before scope moved to effective visibility, then
+    regenerated with the same flags, lost five concepts and the guard stayed silent, because nothing
+    in the manifest said the rule had changed. The producer now prints a note when it caps a public
+    member at an internal container, which covers the one case that exists today; the general fix is
+    to record a scope-rule identifier beside `scope` in the manifest so the existing guard fires on a
+    rule change as it does on a flag change. Deliberately not done in the fix round that found it:
+    it changes the manifest format, which is a compatibility decision of its own.
   - **More ecosystems.** Package detection is npm and NuGet only, and the code stage is C# only.
     The architecture is multi-language by construction (one `LanguageProfile` per language, one
     `ISymbolResolver` per precision level); a second profile would test the generality of that

@@ -267,6 +267,26 @@ internal static class GenerateRun
             // into the parser.
             using var extractor = new TreeSitterExtractor();
             graph = new CodeGraphBuilder(extractor, profiles, resolvers).Build(snapshot, limits, scope);
+
+            // Said out loud because the alternative is a SILENT deletion. Scope filters on effective
+            // visibility -- a member is capped by every type enclosing it -- and that is correct, but
+            // an earlier version of this producer filtered on the declared modifier alone and emitted
+            // these. Regenerating over such a bundle prunes them, and `BundleWriter`'s scope-narrowing
+            // guard cannot say so: it compares the recorded scope FLAGS, which are identical on both
+            // sides here. It is the rule that narrowed, not the run, and nothing else in the pipeline
+            // is in a position to notice.
+            //
+            // A note rather than a refusal to prune: the concepts really are out of scope now, and
+            // keeping them would republish exactly the internal API the flag was left off to exclude.
+            // What the operator needs is to know it happened and how to get them back.
+            if (graph.CappedByContainer > 0 && !request.IncludeInternal)
+            {
+                note($"{graph.CappedByContainer} declaration(s) are public in their own right but enclosed by an"
+                    + " internal type, so C# caps them at internal and this run left them out. An earlier version of"
+                    + " this producer emitted them anyway, tagged `public` -- so regenerating over a bundle that has"
+                    + " them will delete them, and that deletion is this change rather than anything removed from the"
+                    + " repository. Pass --include-internal to keep them.");
+            }
         }
 
         var options = new GenerateOptions

@@ -177,6 +177,15 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
 
         var symbols = declared.Where(s => FileEligibility.IsInScope(s, declaredByKey, scope)).ToList();
 
+        // Counted rather than merely applied, because this filter REMOVES concepts an earlier version
+        // of this producer emitted, and a regeneration prunes them from a bundle that already has them.
+        // The writer's scope-narrowing guard cannot see it -- it compares the recorded scope FLAGS, and
+        // this run's flags match the previous run's exactly; it is the rule that narrowed. So the count
+        // is what lets the run say so out loud. Exactly the difference between the two filters: a
+        // declaration whose own modifier is in scope and whose enclosing type is not.
+        var cappedByContainer = declared.Count(s =>
+            FileEligibility.IsInScope(s, scope) && !FileEligibility.IsInScope(s, declaredByKey, scope));
+
         var sites = results.SelectMany(r => r.Result.Sites).ToList();
 
         // (path, offset) is a call site's identity -- the same key both engines match on -- so two
@@ -278,7 +287,7 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // own doc comments for the full reasoning §6.3 and this task's own measurement forced).
         var status = new RunStatus(!incomplete, skipped);
 
-        return new CodeGraph(symbols, edges, status);
+        return new CodeGraph(symbols, edges, status) { CappedByContainer = cappedByContainer };
     }
 
     /// <summary>

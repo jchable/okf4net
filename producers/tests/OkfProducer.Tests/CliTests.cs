@@ -255,6 +255,54 @@ public class CliTests
     }
 
     [Fact]
+    public void A_run_that_capped_a_public_member_at_its_internal_container_says_so()
+    {
+        // The one deletion in this producer that nothing else can report. Scope filters on EFFECTIVE
+        // visibility, so a `public` member of an `internal` type is out -- correct, since C# caps it
+        // there -- but an earlier version emitted it, tagged `public`, and regenerating over such a
+        // bundle PRUNES it. `BundleWriter`'s scope-narrowing guard cannot say so: it compares the
+        // recorded scope FLAGS, and those are identical on both sides. It is the rule that narrowed.
+        //
+        // Measured before the note existed, on this exact shape: five concepts deleted, nothing
+        // printed. A note rather than a refusal to prune, because the concepts really are out of scope
+        // and keeping them would republish the internal API the flag was left off to exclude.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        WriteSource(repo, "src/Capped.cs", """
+            namespace Demo;
+
+            internal class Outer
+            {
+                /// <summary>Public, but nothing outside the assembly can reach it.</summary>
+                public void Reachable() { }
+            }
+            """);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("1 declaration(s) are public in their own right but enclosed by an internal type", result.Error, StringComparison.Ordinal);
+        Assert.Contains("Pass --include-internal to keep them", result.Error, StringComparison.Ordinal);
+
+        // Counted once, and only for what the CAP removed: `Outer` is out by its own modifier, so it
+        // must not be in the count -- an inflated number would send an operator looking for a
+        // declaration the flag would not bring back.
+        AssertAbsent(bundle, "code/csharp/demo/outer/reachable");
+    }
+
+    [Fact]
+    public void A_run_that_capped_nothing_stays_silent_about_it()
+    {
+        // The other half, so the note cannot become one every run prints and nobody reads. The default
+        // fixture has no internal container, so there is nothing to cap.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("enclosed by an internal type", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_run_that_never_reached_roslyn_does_not_name_roslyn_as_having_produced_it()
     {
         // §6.2: `generated.by` is a determinism claim -- "these engine versions produced these bytes"
