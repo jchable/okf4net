@@ -118,18 +118,6 @@
       ]
     },
     {
-      "id": "code/csharp/n/shapes/hidden",
-      "sources": [
-        "src/Shapes.cs"
-      ]
-    },
-    {
-      "id": "code/csharp/n/shapes/hidden/never",
-      "sources": [
-        "src/Shapes.cs"
-      ]
-    },
-    {
       "id": "code/csharp/n/shapes/holder",
       "sources": [
         "src/Shapes.cs"

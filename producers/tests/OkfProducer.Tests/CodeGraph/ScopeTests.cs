@@ -85,6 +85,51 @@ public class ScopeTests : IDisposable
         Assert.True(FileEligibility.IsEligible("lib/OkfProducer.Core/Foo.cs", snapshot, ScopeOptions.Default));
     }
 
+    [Theory]
+    // A public member of an internal type: capped at internal, so out of scope by default and in scope
+    // with the flag. This is the case that shipped wrong -- filtering read the declared modifier alone,
+    // so the member was emitted in a default-scope bundle AND tagged `public`, a visibility C# does not
+    // give it. An operator who left --include-internal off precisely to keep internal API out of a
+    // knowledge bundle got it published anyway. The producer's own fixture carries the shape, so the
+    // golden blessed it: `code/csharp/n/shapes/hidden/never` and the container it forced into
+    // existence are both gone now.
+    [InlineData(SymbolVisibility.Public, SymbolVisibility.Internal, false, true)]
+    // Both public: unaffected, and asserted so a fix that simply hid more is visible as one.
+    [InlineData(SymbolVisibility.Public, SymbolVisibility.Public, true, true)]
+    // The cap only ever REDUCES: a public container cannot lift an internal member into scope.
+    [InlineData(SymbolVisibility.Internal, SymbolVisibility.Public, false, true)]
+    // Private wins over everything, including the flag.
+    [InlineData(SymbolVisibility.Public, SymbolVisibility.Private, false, false)]
+    public void A_members_scope_is_capped_by_the_type_that_encloses_it(
+        SymbolVisibility member, SymbolVisibility container, bool inDefaultScope, bool withInternal)
+    {
+        var enclosing = new SymbolFact(SymbolKind.Type, "csharp", "N", "Hidden", "class Hidden",
+            container, "src/T.cs", 0, 1, 1, 2, null);
+        var declared = new Dictionary<(string Container, string Name), SymbolFact>
+        {
+            [("N", "Hidden")] = enclosing,
+        };
+
+        var fact = new SymbolFact(SymbolKind.Member, "csharp", "N.Hidden", "Never", "void Never()",
+            member, "src/T.cs", 2, 3, 3, 4, null);
+
+        Assert.Equal(inDefaultScope, FileEligibility.IsInScope(fact, declared, ScopeOptions.Default));
+        Assert.Equal(withInternal, FileEligibility.IsInScope(fact, declared, new ScopeOptions(IncludeTests: false, IncludeInternal: true)));
+    }
+
+    [Fact]
+    public void An_unknown_container_caps_nothing_rather_than_hiding_what_it_encloses()
+    {
+        // The direction this must fail in. A container absent from the declared set is a namespace, or
+        // a type in a file this run could not read -- treating it as private would delete concepts over
+        // a file that merely failed to open, and §2.3 rates a wrongly-narrowed bundle below a wide one.
+        // Reached on every ordinary member, whose container chain ends at a namespace.
+        var fact = new SymbolFact(SymbolKind.Member, "csharp", "N.Nowhere", "Visible", "void Visible()",
+            SymbolVisibility.Public, "src/T.cs", 0, 1, 1, 2, null);
+
+        Assert.True(FileEligibility.IsInScope(fact, new Dictionary<(string, string), SymbolFact>(), ScopeOptions.Default));
+    }
+
     [Fact]
     public void Project_ownership_matching_is_case_sensitive()
     {

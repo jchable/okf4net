@@ -108,7 +108,7 @@ fail visibly rather than silently:
 | an event | `Point.Moved` | under `point` |
 | a two-declarator field | `Point.X, Y` | `point/x`, `point/y` |
 | a block-scoped namespace | `namespace N.Shapes { }` | `code/csharp/n/shapes` |
-| an `internal` type, out of scope, whose container still exists | `Hidden` | `code/csharp/n/shapes/hidden` |
+| an `internal` type, and its `public` member, both out of scope | `Hidden`, `Hidden.Never` | — none, deliberately |
 | a type whose header spans three lines (R48's cap) | `Size` | `code/csharp/n/shapes/size` |
 
 Two shapes `Shapes.cs` contains and the golden does **not** hold a concept for, said plainly because

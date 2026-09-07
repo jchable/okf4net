@@ -18,7 +18,6 @@ Shapes, a code container in N.
 
 - [Shapes.Boxed](/code/csharp/n/shapes/boxed)
 - [Shapes.Corner](/code/csharp/n/shapes/corner)
-- [Shapes.Hidden](/code/csharp/n/shapes/hidden)
 - [Shapes.Holder&#96;1](/code/csharp/n/shapes/holder-1)
 - [Shapes.Holder&#96;2](/code/csharp/n/shapes/holder-2)
 - [Shapes.Holder](/code/csharp/n/shapes/holder)

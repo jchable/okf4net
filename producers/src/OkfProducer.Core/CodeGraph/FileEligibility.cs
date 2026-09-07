@@ -78,6 +78,76 @@ public static class FileEligibility
             _ => false,
         };
 
+    /// <summary>
+    /// <see cref="IsInScope(SymbolFact, ScopeOptions)"/> against a symbol's EFFECTIVE visibility: the
+    /// least visible of its own modifier and every type that encloses it.
+    ///
+    /// <para><b>Why the declared modifier alone was the wrong filter.</b> C# caps a member at its
+    /// container: <c>public void Never()</c> inside <c>internal class Hidden</c> is not reachable from
+    /// outside the assembly, whatever the keyword says. Filtering on the modifier alone put that member
+    /// in a default-scope bundle -- tagged <c>public</c>, a visibility the language does not give it --
+    /// so an operator who left <c>--include-internal</c> off precisely to keep internal API out of a
+    /// shipped knowledge bundle got it published anyway, and mislabelled. The producer's own fixture
+    /// carries that shape, so the golden blessed it.
+    /// </para>
+    ///
+    /// <para><b>Why it takes the whole declared set.</b> A <see cref="SymbolFact"/> names its container
+    /// as a dotted path and nothing more, so the container's own visibility is not on it; the cap can
+    /// only be computed where every declared symbol is in hand. <paramref name="declared"/> must be the
+    /// UNFILTERED set -- filtering first would drop the very containers that do the capping, and a
+    /// member whose container is missing would then look top-level and slip through.</para>
+    ///
+    /// <para>A container that is not among <paramref name="declared"/> caps nothing: it is a namespace,
+    /// or a type in a file this run did not read. Treating an unknown container as private would delete
+    /// concepts over a file the run merely failed to open, which §2.3 rates well below keeping them.</para>
+    /// </summary>
+    /// <param name="fact">The symbol to test.</param>
+    /// <param name="declared">Every symbol this run extracted, before any scope filtering.</param>
+    /// <param name="scope">The run's scope options.</param>
+    public static bool IsInScope(SymbolFact fact, IReadOnlyDictionary<(string Container, string Name), SymbolFact> declared, ScopeOptions scope)
+    {
+        ArgumentNullException.ThrowIfNull(fact);
+        ArgumentNullException.ThrowIfNull(declared);
+
+        var effective = fact.Visibility;
+        var container = fact.Container;
+
+        // Upward one type at a time, taking the least visible seen. Bounded by the container's segment
+        // count, so a cycle is not expressible: each step strictly shortens the path.
+        while (container.Length > 0 && effective != SymbolVisibility.Private)
+        {
+            var lastDot = container.LastIndexOf('.');
+            var parentContainer = lastDot < 0 ? string.Empty : container[..lastDot];
+            var name = lastDot < 0 ? container : container[(lastDot + 1)..];
+
+            if (declared.TryGetValue((parentContainer, name), out var enclosing) && enclosing.Kind == SymbolKind.Type)
+            {
+                effective = Least(effective, enclosing.Visibility);
+            }
+
+            container = parentContainer;
+        }
+
+        return IsInScope(fact with { Visibility = effective }, scope);
+    }
+
+    /// <summary>
+    /// The less visible of two tiers. Written as an explicit ladder rather than as a comparison on the
+    /// enum's numeric order: the members happen to be declared most-visible-first today, so
+    /// <c>left > right</c> would work and would silently invert if anyone reordered them.
+    /// </summary>
+    private static SymbolVisibility Least(SymbolVisibility left, SymbolVisibility right)
+    {
+        if (left == SymbolVisibility.Private || right == SymbolVisibility.Private)
+        {
+            return SymbolVisibility.Private;
+        }
+
+        return left == SymbolVisibility.Internal || right == SymbolVisibility.Internal
+            ? SymbolVisibility.Internal
+            : SymbolVisibility.Public;
+    }
+
     private static string[] DirectorySegments(string relativePath)
     {
         var segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);

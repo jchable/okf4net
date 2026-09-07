@@ -160,7 +160,22 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // that is load-bearing rather than incidental. Filtering `declared` (already sorted) rather
         // than sorting a separately-filtered list keeps the two in the same order by construction.
         var declared = SortSymbols(results.SelectMany(r => r.Result.Symbols));
-        var symbols = declared.Where(s => FileEligibility.IsInScope(s, scope)).ToList();
+        // Filtered on EFFECTIVE visibility, which needs the whole declared set: a member is capped by
+        // every type enclosing it, and a SymbolFact names its container as a dotted path without the
+        // container's own visibility. `declared` is the unfiltered set on purpose -- filtering first
+        // would remove the containers that do the capping.
+        //
+        // Keyed by (Container, Name), the same join every other consumer uses. A duplicate key is
+        // possible in principle (two declarations reduced to one identity) and is resolved by keeping
+        // the FIRST, which `declared` has already sorted deterministically; the alternative, throwing,
+        // would fail a run over a shape §3.2 exists to merge rather than reject.
+        var declaredByKey = new Dictionary<(string Container, string Name), SymbolFact>();
+        foreach (var symbol in declared)
+        {
+            declaredByKey.TryAdd((symbol.Container, symbol.Name), symbol);
+        }
+
+        var symbols = declared.Where(s => FileEligibility.IsInScope(s, declaredByKey, scope)).ToList();
 
         var sites = results.SelectMany(r => r.Result.Sites).ToList();
 

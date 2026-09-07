@@ -507,7 +507,7 @@ public class CheckTests(ITestOutputHelper output)
         // The_golden_bundle_holds_one_occurrence_of_each_shape.
         using var workspace = ProducerFixture.CopyRepoOutsideGit();
 
-        Assert.Equal(37, RunCheck(workspace, ProducerFixture.GoldenBundle).ConceptsRegenerated);
+        Assert.Equal(35, RunCheck(workspace, ProducerFixture.GoldenBundle).ConceptsRegenerated);
     }
 
     [Fact]
@@ -553,11 +553,14 @@ public class CheckTests(ITestOutputHelper output)
         // the kinds we have accepted, so a NEW kind cannot hide inside an unchanged total. One kind is
         // left, a §4.3 consequence:
         //
-        //  * five "missing recommended frontmatter field `resource`" -- `overview` and the four
-        //    container concepts (`n`, `n/sub`, `n/shapes`, and `n/shapes/hidden`, the last being the
-        //    internal type whose own symbol is out of scope while its public member is not). A
-        //    container is not declared in one file, so there is no line span to build a permalink
-        //    from, and §4.3 admits only a URL there.
+        //  * four "missing recommended frontmatter field `resource`" -- `overview` and the three
+        //    container concepts (`n`, `n/sub`, `n/shapes`). A container is not declared in one file, so
+        //    there is no line span to build a permalink from, and §4.3 admits only a URL there.
+        //
+        //    There was a fifth, `n/shapes/hidden`: a container synthesized for an internal type because
+        //    its public member stayed in scope. Scope filters on EFFECTIVE visibility now -- a member
+        //    is capped by every type enclosing it -- so the member is out and the container it forced
+        //    into existence is gone with it.
         //
         // The four "frontmatter path ... not found" this fixture used to carry are gone. `packages/*`
         // and `docs/*` wrote a repo-relative `resource` AND repeated it in a one-entry `sources` block,
@@ -573,7 +576,7 @@ public class CheckTests(ITestOutputHelper output)
         Assert.True(outcome.IsConformant, string.Join("\n", outcome.DiagnosticLines));
         Assert.DoesNotContain(outcome.DiagnosticLines, line => line.Contains("BrokenLink", StringComparison.Ordinal));
 
-        Assert.Equal(5, outcome.WarningCount);
+        Assert.Equal(4, outcome.WarningCount);
         Assert.All(
             outcome.DiagnosticLines.Where(line => line.StartsWith("[warning]", StringComparison.Ordinal)),
             line => Assert.True(
@@ -620,8 +623,6 @@ public class CheckTests(ITestOutputHelper output)
                 "code/csharp/n/shapes/boxed/changed",   // an event
                 "code/csharp/n/shapes/boxed/render",    // whose doc comment carries [brackets], a backtick and a tag
                 "code/csharp/n/shapes/corner",          // an enum, whose members are deliberately not concepts
-                "code/csharp/n/shapes/hidden",          // an INTERNAL type: out of scope, so only a container survives
-                "code/csharp/n/shapes/hidden/never",    // its public member, which scope does not filter
                 "code/csharp/n/shapes/holder",          // three types differing only by arity (D1b-I1) --
                 "code/csharp/n/shapes/holder-1",        // and each one's members under IT, not under the first.
                 "code/csharp/n/shapes/holder-1/value",  // The arity concepts sort BEFORE `holder/count` because

@@ -1,7 +1,3 @@
-# C# Container
-
-* [Shapes.Hidden](hidden.md) - Hidden, a code container in N.Shapes.
-
 # C# Type
 
 * [Shapes.Boxed](boxed.md) - A type whose header spans three lines, which nothing else here does. The header cap (R48) is the churn bound the whole id scheme rests on, and with every fixture type putting { on the next line it would produce a byte-identical golden if it simply returned StartLine + 1. This declaration is what makes that substitution visible.
@@ -16,7 +12,6 @@
 # Subdirectories
 
 * [boxed](boxed/index.md) - Contains 5: Boxed.Boxed, builder, Boxed.Builder, Boxed.Changed, Boxed.Render.
-* [hidden](hidden/index.md) - Not in scope by default.
 * [holder](holder/index.md) - Held count.
 * [holder-1](holder-1/index.md) - The held value.
 * [holder-2](holder-2/index.md) - Looks the value up.

@@ -12,5 +12,5 @@
 
 * [registry](registry/index.md) - Contains 2: Registry.Count, Registry.Register.
 * [scanner](scanner/index.md) - Contains 4: Scanner.Gone, Scanner.Normalize, Scanner.Root, Scanner.Scan.
-* [shapes](shapes/index.md) - Contains 16: boxed, Shapes.Boxed, Shapes.Corner, hidden, Shapes.Hidden, holder, holder-1, Shapes.Holder`1, holder-2, Shapes.Holder`2, Shapes.Holder, i-shape, Shapes.IShape, point, Shapes.Point, Shapes.Size.
+* [shapes](shapes/index.md) - Contains 14: boxed, Shapes.Boxed, Shapes.Corner, holder, holder-1, Shapes.Holder`1, holder-2, Shapes.Holder`2, Shapes.Holder, i-shape, Shapes.IShape, point, Shapes.Point, Shapes.Size.
 * [sub](sub/index.md) - Contains 2: formatter, Sub.Formatter.
