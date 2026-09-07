@@ -246,7 +246,7 @@ public class HtmlWriterTests
         // but the junction/symlink resolves to a real directory INSIDE the
         // bundle -- exactly what GuardOutputDirectory exists to refuse.
         //   mklink /J <linkHost>\vlink <bundle>\generated-site
-        //   okf render <bundle> --out <linkHost>\vlink
+        //   okf-render <bundle> --out <linkHost>\vlink
         using var src = new TempDir();
         using var linkHost = new TempDir();
         var site = SiteModel.Build(SampleBundle(src));

@@ -44,10 +44,17 @@ the repo root and the attribution entry in `NOTICE`.
 dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail
 ```
 
-Exits `0` (conformant): 9 concepts, 0 errors, 18 warnings, 0 info. The
+Exits `0` (conformant): 9 concepts, 0 errors, 36 warnings, 0 info. The
 warnings are expected and harmless:
 
-- 12 of the 18 are `sources[].resource` / `executor.resource` /
+- 18 of the 36 are `LegacyDateOnlyTimestamp`: 7 `stale_after` values plus
+  §5.1 `sources[].last_modified` and `usage_window` bounds written as bare
+  `YYYY-MM-DD`. OKF v0.2 §5 requires "an ISO 8601 datetime with an explicit
+  UTC offset" for every timestamp-valued key, so the upstream sample is in
+  drift with its own spec. The values are still read (normalized to midnight
+  UTC); this is upstream drift to report upstream, **not** something to patch
+  locally — the bundle is a verbatim copy (see `NOTICE`).
+- 12 of the 36 are `sources[].resource` / `executor.resource` /
   `attester.resource` frontmatter paths reported as "not found". OKF v0.2
   §6.2 resolves a plain relative path (no leading `/`) against the
   **referencing concept's own directory**, not the bundle root — e.g.
@@ -58,7 +65,7 @@ warnings are expected and harmless:
   concept. The upstream bundle writes these paths bundle-root-relative
   instead. This affects only frontmatter-path *resolution* diagnostics —
   reading, browsing, and searching the bundle are unaffected.
-- The remaining 6 are "missing recommended frontmatter field `resource`"
+- The remaining 6 of the 36 are "missing recommended frontmatter field `resource`"
   on concept types where a `resource` URI doesn't apply (`Metric`, `Skill`,
   and `Attested Computation`).
 

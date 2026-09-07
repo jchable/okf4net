@@ -129,8 +129,8 @@ public class AgentIntegrationTests
 
     /// <summary>
     /// The read-only counterpart of the write scenario, and the question the
-    /// audit surface exists for: "which concepts are past their stale_after
-    /// date and were never verified by a human?". It is the only test that
+    /// audit surface exists for: "which concepts are past stale_after and were
+    /// never verified by a human?". It is the only test that
     /// drives <c>okf_audit</c> through the framework's real function-invoking
     /// pipeline rather than calling the C# method directly, so it is what
     /// proves the JSON argument binding works: the scripted "model" passes a

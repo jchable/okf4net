@@ -66,14 +66,13 @@ are the concrete entry points.
     against the *temporary* name, and for the lock — a security-sensitive
     seam that must not be swapped in passing. Pre-existing and shared by
     every write path; not introduced by verification.
-- **Per-verb `--help` for the CLI.** `okf audit --help` today prints
-  `error: missing <bundle>`, and so do `okf validate --help` and every other
-  verb: the CLI has one global usage block and no per-verb help, so a verb's
-  own flags are only discoverable by reading OPTIONS or this repo. `audit`
-  makes it visible (six optional flags, none of which fit on its COMMANDS
-  line), but the gap is CLI-wide and should be closed for all nine verbs at
-  once — intercepting `--help` inside each command before its positional is
-  resolved, which also changes those invocations from exit 1 to exit 0.
+- **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
+  builder can now write a *per-entry* §5.1 override (`AddSource(…,
+  usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal
+  case, the one that frames every `usage_count` in a document — has no typed
+  setter: a producer must hand-build its `{ from, to }` mapping and pass it
+  through `Extension("usage_window", …)`. The builder currently makes the
+  exception easier to write than the rule.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
 - `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source
@@ -83,12 +82,19 @@ are the concrete entry points.
   MCP story is read-only-focused; this would exercise write/append and
   `IndexGenerator`/`ChangeLog` (§8/§9) updating live as notes are added.
 - Performance baselines for large bundle loads.
-- Bundle viewer: **static render shipped** as `okf render` (`OKF4net.Viewer`).
+- Bundle viewer: **static render shipped** as the standalone `okf-render`
+  binary (`OKF4net.Render`, over `OKF4net.Viewer`) — split out of `okf`
+  itself so the CI-facing validator does not carry the viewer's JavaScript.
   The live-server half of [#40](https://github.com/jchable/okf4net/issues/40)
-  remains open — it is what unlocks full-text search in the viewer, since a
-  server can run `ConceptSearch` directly instead of mirroring its weights in
-  JavaScript. Its implementation approach (zero-dep `HttpListener`, ASP.NET
-  Core, or a standalone web tool) is still open.
+  was **dropped, and the issue closed** — the interactive, always-fresh
+  viewing it was meant to provide is being pursued as the VS Code extension
+  below instead, which reaches the same goal from inside the editor without
+  a local HTTP server, and reaches full-text search by the same route (an
+  extension host is a process, so it can have the .NET side run
+  `ConceptSearch` rather than mirroring its weights in JavaScript). What the
+  server would have added over `okf-render` alone was one saved command
+  invocation per edit; search was the only capability that genuinely
+  required it, and the extension gets that too.
   - **The client-side XSS defense is guarded by a JS harness, not by xunit.**
     xunit runs on .NET and cannot execute JavaScript, so
     `tests/OKF4net.Tests/Viewer/ViewerAssetsTests.cs` only smoke-checks for
@@ -112,6 +118,46 @@ are the concrete entry points.
   cross-links — outreach-oriented (contributor/adoption funnel), likely
   outside pure C#/.NET so scoped as its own project rather than a
   `samples/` entry.
+- **A Visual Studio Code extension viewer.** Browse the bundle open in the
+  workspace from the editor itself — a tree view over the concepts, a
+  rendered preview of the selected one, re-rendered on save — instead of
+  generating a static site and switching to a browser. Its own project
+  (TypeScript, its own repo and marketplace listing), like the graph explorer
+  above, not a `samples/` entry.
+  - **`OKF4net.Viewer` already carries the client half.** `Assets/viewer.js`
+    is a self-contained IIFE with no framework dependency: it reads a
+    `{ body, links }` JSON payload, renders the markdown with the vendored
+    marked, sanitizes the *parsed DOM*, then rewires inter-concept links. A
+    webview can run it as-is, and `tools/viewer-security-check/` keeps
+    guarding it — which is the point of reusing it rather than writing a
+    second renderer, since the sanitizer is the security-critical part and
+    took several rounds to get right (see that file's header comment). Two
+    adaptations are unavoidable: a VS Code webview's CSP needs a per-load
+    nonce on the `<script>` tags and webview asset URIs for the three files,
+    and `viewer.css` hard-codes its palette where an extension should read
+    the `--vscode-*` theme variables.
+  - **It does not carry the C# half across.** An extension host is Node, so
+    `SiteModel`/`HtmlWriter` are reachable only by shelling out. Cheapest
+    path: run `okf render --out <tmp>` and point the webview at the generated
+    page. Better fit: `SiteModel.Build` is a pure `Bundle` → model projection
+    with no I/O, so a JSON output mode emitting exactly the `{ body, links }`
+    payload for one concept would let the extension re-render a single page
+    per save. That JSON payload mode is now the *only* consumer of this
+    plumbing, since the live-server half of #40 was dropped in favour of
+    this extension.
+    `HtmlWriter` and `HtmlSafeJson` do not transfer at all: output layout and
+    write-containment guards are static-site concerns, and a webview receives
+    the payload by `postMessage` as a real object rather than escaping it
+    into an HTML `<script>` element.
+  - **Search is reachable here, unlike in the static site.** The extension
+    host is a process, so it can have the .NET side run `ConceptSearch`
+    instead of mirroring its weights in JavaScript. There is no `okf search`
+    verb today though — the scorer is exposed only as `okf_search` in
+    `OKF4net.Agents` (hence over `okf-mcp`), so this means either driving the
+    MCP server or adding that verb.
+  - **Licence obligations travel with the files.** `viewer.js`/`viewer.css`
+    are LGPL-3.0-or-later and the vendored `marked.min.js` is MIT with a
+    `NOTICE` credit; copying them into a separate extension repo carries both.
 - **Dogfooding on a real third-party OSS project's docs.** Convert an
   existing open-source project's markdown docs into an OKF bundle via
   `okf fmt`/`index`/`validate`, as a concrete "here's how you'd actually
@@ -137,25 +183,63 @@ are the concrete entry points.
   broaden `ValidateSegment` needs its own design pass (cross-platform Unicode
   normalization, golden-fixture impact).
 
-- **`producers/OkfProducer` walking skeleton shipped** (repo scanner → OKF v0.2 bundle generator,
-  `generate`/`validate` commands, npm/NuGet/README detection only — see
-  [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md) and
-  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md)). Two follow-ups noted at
-  merge time, not yet acted on:
-  - **No CI coverage.** `producers/` is deliberately outside `OKF4net.sln`/`ci.yml`, so nothing
-    verifies it still builds after an `src/OKF4net` API change — it can rot silently. Either add a
-    lightweight build+test job for `producers/OkfProducer.sln`, or treat "does `producers/` still
-    build" as an explicit step whenever a public `OKF4net` API changes.
-  - **Undocumented.** Not mentioned in `README.md`/`CLAUDE.md`/`CONTRIBUTING.md`. Add pointers once
-    the producer grows past this first walking-skeleton slice (more ecosystems, LLM enrichment).
-- **Known limitation: generated `sources[].resource` paths don't resolve against the bundle.**
-  `producers/OkfProducer`'s `ConceptGenerator` records `sources[].resource` relative to the
-  *scanned repository* (e.g. `package.json`), which is the semantically correct provenance
-  reference — but `BundleValidator` resolves `sources[].resource` relative to the *bundle root*,
-  so every generated package/doc concept gets a "path not found" warning by construction. Decided
-  at merge time: accept the warning rather than embed copies of referenced files in the bundle
-  (which would be a larger, unplanned scope change). Revisit only if this becomes a real friction
-  point once the producer has actual users.
+- **`producers/OkfProducer` shipped** (repo scanner → OKF v0.2 bundle generator, `generate`/
+  `validate` commands, npm/NuGet/README detection, and a C# code-graph stage: one concept per
+  namespace, type and member, with resolved `## Calls` links — see
+  [its design spec](docs/superpowers/specs/2026-07-31-okf-producer-design.md), the
+  [core plan](docs/superpowers/plans/2026-07-31-okf-producer-core.md) and the
+  [code-graph design](docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md)).
+  Two things a reader should not mistake for open questions:
+  - **No CI coverage — decided, not pending.** On 2026-08-01 it was settled that `producers/` does
+    **not** go into CI: it stays outside `OKF4net.sln`/`ci.yml`. Two consequences, both accepted.
+    The guarantee is local and it is one command, stated at the top of
+    [`producers/README.md`](producers/README.md): `dotnet test producers/OkfProducer.sln`, run
+    before touching the producer and after any public `OKF4net` API change. And the per-RID
+    packaging smoke test cannot be a guarantee without CI, so it is a **documented manual step at
+    release time**, described as such rather than implied to be covered.
+  - **Documented.** [`producers/README.md`](producers/README.md) carries the flag surface, the
+    verification command, the packaging step and the project layout.
+
+  Open follow-ups, still open:
+  - **The pruning guard compares scope FLAGS, not the scope RULE.** `BundleWriter` refuses to prune
+    when the previous run covered a wider scope, and it decides that by comparing the flags recorded
+    in the manifest — so it is blind to a run whose flags are identical but whose *rule* narrowed.
+    Measured on exactly that: a bundle generated before scope moved to effective visibility, then
+    regenerated with the same flags, lost five concepts and the guard stayed silent, because nothing
+    in the manifest said the rule had changed. The producer now prints a note when it caps a public
+    member at an internal container, which covers the one case that exists today; the general fix is
+    to record a scope-rule identifier beside `scope` in the manifest so the existing guard fires on a
+    rule change as it does on a flag change. Deliberately not done in the fix round that found it:
+    it changes the manifest format, which is a compatibility decision of its own.
+  - **More ecosystems.** Package detection is npm and NuGet only, and the code stage is C# only.
+    The architecture is multi-language by construction (one `LanguageProfile` per language, one
+    `ISymbolResolver` per precision level); a second profile would test the generality of that
+    seam rather than chase coverage.
+  - **Per-RID package weight.** A RID-specific `dotnet tool` package measures 80.7–87.6 MB
+    installed (11.5–13.3 MB to download). Most of it is tree-sitter grammars this producer never
+    loads — `verilog` 17.3 MB, `razor` 10.5 MB, `cpp` 5.1 MB — which cannot be removed one file
+    at a time, because `deps.json` is what feeds `NATIVE_DLL_SEARCH_DIRECTORIES`. Getting the
+    installed size below ~40 MB is a follow-up, not a v1 promise.
+  - **No test covers `--rev`'s branch auto-detection happy path.** Every CLI fixture repository is
+    deliberately outside git (so the suite stays at ~16 s and spawns no MSBuild), and the detached
+    -HEAD case is covered by the one test that does build a git repository. The auto-detected
+    branch name is verified by manual run only.
+- **Known limitation: without `--repo-url`, `packages/` and `docs/` `resource` paths don't resolve
+  against the bundle.** `producers/OkfProducer` records those families' `resource` relative to the
+  *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct
+  provenance reference — but `BundleValidator` resolves a bare relative `resource` against the
+  **concept's own directory**, not the bundle root (`Bundle.TryResolveResource`), so
+  `packages/okf4net.md` sends the validator looking under `<bundle>/packages/src/OKF4net/…` and it
+  misses by construction: one "path not found" warning apiece, 10 on this repository.
+  **`--repo-url` removes all 10**: those families build the same forge URL the `code/` family does,
+  and a URL short-circuits the validator's path classifier. The original entry here recorded 20
+  warnings and framed the only alternative as embedding copies of referenced files in the bundle;
+  both were wrong. Half the 20 came from a one-entry `sources` block repeating `resource` verbatim
+  (deleted — §4.5 already forbade it by name), and the other half needed no scope change at all,
+  only passing `GenerateOptions` to two builders that had never taken it. What remains is the
+  no-`--repo-url` fallback, kept deliberately: omitting the field costs the same 10 warnings
+  (measured, 2026-09-03) and the path is the only pointer those concepts have to their own subject.
+  See `producers/README.md`, "What `--repo-url` changes".
 
 ## Out of scope
 

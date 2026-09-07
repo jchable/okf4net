@@ -56,7 +56,7 @@ public sealed class KnowledgeResolverRouter : IKnowledgeResolver
     /// <see cref="KnowledgeQuery.SourceVisibilityPolicy"/> unset;
     /// <see langword="null"/> (the default) applies no restriction.
     /// </param>
-    /// <param name="clock">Supplies "today" for stale-policy filtering; defaults to the system clock.</param>
+    /// <param name="clock">Supplies "now" for stale-policy filtering; defaults to the system clock.</param>
     /// <exception cref="ArgumentException">
     /// <paramref name="defaultStrategy"/> is not a defined
     /// <see cref="KnowledgeResolverStrategy"/> member.

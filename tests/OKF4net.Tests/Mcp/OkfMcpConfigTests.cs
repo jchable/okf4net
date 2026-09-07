@@ -35,8 +35,85 @@ public sealed class OkfMcpConfigTests
         Assert.Contains("not found", error);
     }
 
+    /// <summary>
+    /// The server now serves a bundle read-only unless a host explicitly asks
+    /// for writes. It defaulted the other way, which meant the surface most
+    /// people actually deploy — okf-mcp in a desktop client — handed the model
+    /// unconfirmed write access to the corpus the moment it was installed, and
+    /// bundle content is untrusted.
+    ///
+    /// A breaking default, chosen deliberately: this is the one place where the
+    /// safe setting has to be what you get for free, because the people it
+    /// protects are the ones who never read the environment-variable docs.
+    /// </summary>
     [Fact]
-    public void Arg_takes_precedence_and_defaults_to_read_write()
+    public void Defaults_to_read_only()
+    {
+        var dir = Directory.CreateTempSubdirectory("okf-cfg-").FullName;
+        try
+        {
+            var ok = OkfMcpConfig.TryResolve([dir], Env(), out _, out var readOnly, out _);
+
+            Assert.True(ok);
+            Assert.True(readOnly);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>Writes are opt-in, through OKF_MCP_WRITABLE.</summary>
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    [InlineData("YES")]
+    public void Writable_env_opts_into_write_tools(string truthy)
+    {
+        var dir = Directory.CreateTempSubdirectory("okf-cfg-").FullName;
+        try
+        {
+            var ok = OkfMcpConfig.TryResolve([dir], Env(("OKF_MCP_WRITABLE", truthy)), out _, out var readOnly, out _);
+
+            Assert.True(ok);
+            Assert.False(readOnly);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The retained OKF_MCP_READONLY wins over OKF_MCP_WRITABLE when both are
+    /// set. The two can only conflict through a configuration mistake, and of
+    /// the two ways to resolve it, only one cannot turn a mistake into a
+    /// writable server.
+    /// </summary>
+    [Fact]
+    public void Readonly_env_overrides_writable_when_both_are_set()
+    {
+        var dir = Directory.CreateTempSubdirectory("okf-cfg-").FullName;
+        try
+        {
+            var ok = OkfMcpConfig.TryResolve(
+                [dir],
+                Env(("OKF_MCP_WRITABLE", "1"), ("OKF_MCP_READONLY", "1")),
+                out _,
+                out var readOnly,
+                out _);
+
+            Assert.True(ok);
+            Assert.True(readOnly);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Arg_takes_precedence_over_the_env_root()
     {
         var dir = Directory.CreateTempSubdirectory("okf-cfg-").FullName;
         try
@@ -46,7 +123,8 @@ public sealed class OkfMcpConfigTests
             Assert.True(ok);
             Assert.Null(error);
             Assert.Equal(dir, root);
-            Assert.False(readOnly);
+            // Was `False`, when writes were the default. See Defaults_to_read_only.
+            Assert.True(readOnly);
         }
         finally
         {
@@ -147,7 +225,10 @@ public sealed class OkfMcpConfigTests
             Assert.True(ok);
             Assert.Null(error);
             Assert.Equal(knowledge, root);
-            Assert.False(readOnly);
+            // Was `False`, when writes were the default. Discovery in particular
+            // has no configuration behind it at all, so it is the last place a
+            // writable default belonged. See Defaults_to_read_only.
+            Assert.True(readOnly);
         }
         finally
         {

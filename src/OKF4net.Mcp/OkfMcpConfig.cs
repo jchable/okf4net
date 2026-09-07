@@ -12,8 +12,26 @@ public static class OkfMcpConfig
     /// <summary>Environment variable naming the bundle root when no positional argument is given.</summary>
     public const string BundleRootEnv = "OKF_BUNDLE_ROOT";
 
-    /// <summary>Environment variable enabling read-only mode when truthy.</summary>
+    /// <summary>
+    /// Environment variable forcing read-only mode when truthy.
+    ///
+    /// Read-only is now the DEFAULT, so this is no longer how you get it —
+    /// it is retained because it cannot make the server less safe: when it
+    /// disagrees with <see cref="WritableEnv"/>, this one wins. Existing
+    /// configurations that set it keep working and keep meaning the same thing.
+    /// </summary>
     public const string ReadOnlyEnv = "OKF_MCP_READONLY";
+
+    /// <summary>
+    /// Environment variable opting IN to the three write tools when truthy.
+    ///
+    /// Writes used to be the default. That put unconfirmed write access to the
+    /// corpus behind nothing on the surface most people actually deploy — a
+    /// desktop client's MCP config — while bundle content is untrusted by
+    /// design. Serving a bundle for consultation is the common case and the
+    /// safe one, so it is what you get for free.
+    /// </summary>
+    public const string WritableEnv = "OKF_MCP_WRITABLE";
 
     private static readonly IReadOnlySet<string> TruthyValues =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "1", "true", "yes", "on" };
@@ -88,7 +106,13 @@ public static class OkfMcpConfig
         out string? error)
     {
         bundleRoot = string.Empty;
-        readOnly = TruthyValues.Contains(getEnv(ReadOnlyEnv)?.Trim() ?? string.Empty);
+
+        // Read-only unless writes are explicitly requested, and an explicit
+        // ReadOnlyEnv still wins over WritableEnv. The two can only disagree
+        // through a configuration mistake, and of the two ways to resolve one,
+        // only this one cannot turn a mistake into a writable server.
+        readOnly = !TruthyValues.Contains(getEnv(WritableEnv)?.Trim() ?? string.Empty)
+            || TruthyValues.Contains(getEnv(ReadOnlyEnv)?.Trim() ?? string.Empty);
 
         var root = args.Count > 0 && !string.IsNullOrWhiteSpace(args[0])
             ? args[0]
@@ -144,6 +168,6 @@ public static class OkfMcpConfig
             message += ".";
         }
 
-        return $"okf-mcp: {message} Usage: okf-mcp <bundle-root> (or set {BundleRootEnv}, or run inside a bundle whose root index.md declares okf_version; {ReadOnlyEnv}=1 for read-only).";
+        return $"okf-mcp: {message} Usage: okf-mcp <bundle-root> (or set {BundleRootEnv}, or run inside a bundle whose root index.md declares okf_version; read-only unless {WritableEnv}=1).";
     }
 }

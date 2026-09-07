@@ -509,6 +509,28 @@ public class OkfWriteToolsTests
         Assert.Equal(before, File.ReadAllText(logPath));
     }
 
+    /// <summary>
+    /// The rejection must name the field that was actually wrong. The theory
+    /// above only asserts "Error", so it would pass just as happily with the
+    /// `kind` and `text` messages swapped — which is exactly the failure a
+    /// shared, field-name-parameterised validator can introduce.
+    /// </summary>
+    [Theory]
+    [InlineData("", "text", "kind")]
+    [InlineData("Update", "", "text")]
+    [InlineData("Update\nx", "text", "kind")]
+    [InlineData("Update", "text\nx", "text")]
+    public void AppendLog_rejection_names_the_offending_field(string kind, string text, string expectedField)
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+
+        var result = tools.AppendLog(kind, text);
+
+        Assert.StartsWith($"Error: invalid {expectedField} ", result, StringComparison.Ordinal);
+    }
+
+
     [Fact]
     public void AppendLog_rejects_text_that_would_forge_a_fake_log_day_heading()
     {

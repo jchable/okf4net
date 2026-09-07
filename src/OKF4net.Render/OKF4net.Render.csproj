@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>okf-render</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      Same rationale as OKF4net.Cli: the version output reports
+      AssemblyInformationalVersionAttribute, which the -p:Version property
+      (release.yml, derived from the git tag) does touch, so the tag, the
+      archive filename and the binary's own version output cannot drift
+      apart the way the winget 0.2.0 incident did for okf. See
+      OkfCli.CliVersion.
+    -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OKF4net\OKF4net.csproj" />
+    <ProjectReference Include="..\OKF4net.Viewer\OKF4net.Viewer.csproj" />
+  </ItemGroup>
+
+</Project>

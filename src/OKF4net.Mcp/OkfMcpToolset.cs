@@ -7,7 +7,7 @@ namespace OKF4net.Mcp;
 
 /// <summary>
 /// Builds the MCP tool set for one OKF bundle by wrapping the
-/// <see cref="AIFunction"/>s produced by <see cref="OkfBundleTools.GetTools"/>.
+/// <see cref="AIFunction"/>s produced by <see cref="OkfBundleTools.GetTools()"/>.
 /// This is the single seam shared by the stdio host (<c>Program</c>) and the
 /// tests, so both expose exactly the same tools.
 /// </summary>
@@ -27,14 +27,14 @@ public static class OkfMcpToolset
     {
         var okf = new OkfBundleTools(bundleRoot);
 
-        var result = new List<McpServerTool>();
-        foreach (var tool in okf.GetTools())
-        {
-            if (readOnly && OkfBundleTools.WriteToolNames.Contains(tool.Name))
-            {
-                continue;
-            }
+        // The filtering lives in OkfToolMode.ReadOnly rather than here: this
+        // used to re-implement it against WriteToolNames, a second copy of a
+        // rule that exists precisely so there is only one.
+        var mode = readOnly ? OkfToolMode.ReadOnly : OkfToolMode.ReadWrite;
 
+        var result = new List<McpServerTool>();
+        foreach (var tool in okf.GetTools(mode))
+        {
             result.Add(McpServerTool.Create((AIFunction)tool));
         }
 

@@ -57,7 +57,7 @@ public enum DiagnosticCode
     /// <summary><c>generated.by</c> is not a well-formed §7 actor.</summary>
     GeneratedInvalidActor,
 
-    /// <summary><c>generated.at</c> is not ISO-8601.</summary>
+    /// <summary><c>generated.at</c> could not be read as a timestamp at all.</summary>
     GeneratedInvalidDate,
 
     /// <summary>A <c>verified</c> entry is missing its required <c>by</c>.</summary>
@@ -66,7 +66,7 @@ public enum DiagnosticCode
     /// <summary><c>verified.by</c> is not a well-formed §7 actor.</summary>
     VerifiedInvalidActor,
 
-    /// <summary><c>verified.at</c> is not ISO-8601.</summary>
+    /// <summary><c>verified.at</c> could not be read as a timestamp at all.</summary>
     VerifiedInvalidDate,
 
     /// <summary>A <c>verified</c> list entry is not a <c>{by, at}</c> mapping.</summary>
@@ -84,13 +84,33 @@ public enum DiagnosticCode
     /// <summary>A <c>sources</c> entry is missing its required <c>resource</c>.</summary>
     SourceMissingResource,
 
-    /// <summary>A <c>sources</c> entry's <c>last_modified</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary>
+    /// A <c>sources</c> entry's <c>last_modified</c> could not be read as a
+    /// timestamp at all. The legacy <c>YYYY-MM-DD</c> form is read, and warns
+    /// as <see cref="LegacyDateOnlyTimestamp"/> instead.
+    /// </summary>
     SourceInvalidLastModified,
 
-    /// <summary><c>usage_window.from</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary>
+    /// A <c>usage_window</c> <c>from</c> bound could not be read as a timestamp
+    /// at all -- either the shared, top-level <c>usage_window.from</c> or a
+    /// <c>sources[].usage_window.from</c> per-entry override (§5.1); the
+    /// <see cref="Diagnostic.Field"/> (<c>usage_window.from</c> vs.
+    /// <c>sources.usage_window.from</c>) tells the two positions apart. The
+    /// legacy <c>YYYY-MM-DD</c> form is read, and warns as
+    /// <see cref="LegacyDateOnlyTimestamp"/> instead.
+    /// </summary>
     UsageWindowInvalidFrom,
 
-    /// <summary><c>usage_window.to</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary>
+    /// A <c>usage_window</c> <c>to</c> bound could not be read as a timestamp
+    /// at all -- either the shared, top-level <c>usage_window.to</c> or a
+    /// <c>sources[].usage_window.to</c> per-entry override (§5.1); the
+    /// <see cref="Diagnostic.Field"/> (<c>usage_window.to</c> vs.
+    /// <c>sources.usage_window.to</c>) tells the two positions apart. The
+    /// legacy <c>YYYY-MM-DD</c> form is read, and warns as
+    /// <see cref="LegacyDateOnlyTimestamp"/> instead.
+    /// </summary>
     UsageWindowInvalidTo,
 
     /// <summary><c>status</c> is present but not a scalar.</summary>
@@ -99,10 +119,25 @@ public enum DiagnosticCode
     /// <summary><c>status</c> is a scalar but not one of <c>draft</c>/<c>stable</c>/<c>deprecated</c>.</summary>
     StatusUnknown,
 
-    /// <summary><c>stale_after</c> is not <c>YYYY-MM-DD</c>.</summary>
+    /// <summary><c>stale_after</c> could not be read as a timestamp at all.</summary>
     StaleAfterInvalid,
 
-    /// <summary>The concept is past its <c>stale_after</c> date.</summary>
+    /// <summary>
+    /// A timestamp-valued key uses the legacy date-only form (or a datetime
+    /// with no explicit offset) instead of the §5 ISO 8601 datetime with an
+    /// explicit UTC offset. Read as a fallback, like the §13.1 legacy fields.
+    /// </summary>
+    LegacyDateOnlyTimestamp,
+
+    /// <summary>
+    /// A timestamp-valued key carries an explicit UTC offset and parses, but
+    /// its spelling is not ISO 8601 (§5: "Every timestamp-valued key in OKF
+    /// is an ISO 8601 datetime with an explicit UTC offset"). Still read as
+    /// the parsed instant (§11); only the spelling is flagged.
+    /// </summary>
+    NonIso8601Timestamp,
+
+    /// <summary>The concept is past its <c>stale_after</c> instant.</summary>
     ConceptStale,
 
     /// <summary>The body uses the legacy <c># Citations</c> heading instead of the <c>sources</c> frontmatter field (§13.1).</summary>
@@ -244,10 +279,10 @@ public static class BundleValidator
     /// Validates a loaded bundle against §11, returning all findings.
     /// </summary>
     /// <param name="bundle">The loaded bundle to validate.</param>
-    /// <param name="clock">Supplies "today" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
+    /// <param name="clock">Supplies "now" for staleness checks (§5.5); defaults to <see cref="SystemClock"/>.</param>
     public static ValidationReport Validate(Bundle bundle, IOkfClock? clock = null)
     {
-        var today = (clock ?? new SystemClock()).Today;
+        var now = (clock ?? new SystemClock()).Now;
         var diagnostics = new List<Diagnostic>();
 
         // (1) Files whose frontmatter could not be parsed are conformance errors.
@@ -304,9 +339,9 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.by is not a valid §7 actor: {DebugQuote.Quote(g.By.Value.Raw)}", DiagnosticCode.GeneratedInvalidActor, "generated.by"));
                 }
 
-                if (g.At is { } gat && !IsIso8601DateTime(gat))
+                if (g.At is { } gat)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"generated.at is not ISO-8601: {DebugQuote.Quote(gat)}", DiagnosticCode.GeneratedInvalidDate, "generated.at"));
+                    CheckTemporal(diagnostics, concept, gat, "generated.at", "generated.at", DiagnosticCode.GeneratedInvalidDate);
                 }
             }
 
@@ -321,9 +356,9 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.by is not a valid §7 actor: {DebugQuote.Quote(stamp.By.Value.Raw)}", DiagnosticCode.VerifiedInvalidActor, "verified.by"));
                 }
 
-                if (stamp.At is { } vat && !IsIso8601DateTime(vat))
+                if (stamp.At is { } vat)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"verified.at is not ISO-8601: {DebugQuote.Quote(vat)}", DiagnosticCode.VerifiedInvalidDate, "verified.at"));
+                    CheckTemporal(diagnostics, concept, vat, "verified.at", "verified.at", DiagnosticCode.VerifiedInvalidDate);
                 }
             }
 
@@ -366,22 +401,35 @@ public static class BundleValidator
                     diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, "source entry is missing required `resource`", DiagnosticCode.SourceMissingResource, "sources.resource"));
                 }
 
-                if (src.LastModified is { } lastModified && !ChangeLog.IsIsoDate(lastModified))
+                if (src.LastModified is { } lastModified)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"source last_modified is not `YYYY-MM-DD`: {DebugQuote.Quote(lastModified)}", DiagnosticCode.SourceInvalidLastModified, "sources.last_modified"));
+                    CheckTemporal(diagnostics, concept, lastModified, "source last_modified", "sources.last_modified", DiagnosticCode.SourceInvalidLastModified);
+                }
+
+                if (src.UsageWindow is { } suw)
+                {
+                    if (suw.From is { } suf)
+                    {
+                        CheckTemporal(diagnostics, concept, suf, "source usage_window from", "sources.usage_window.from", DiagnosticCode.UsageWindowInvalidFrom);
+                    }
+
+                    if (suw.To is { } sut)
+                    {
+                        CheckTemporal(diagnostics, concept, sut, "source usage_window to", "sources.usage_window.to", DiagnosticCode.UsageWindowInvalidTo);
+                    }
                 }
             }
 
             if (fm.UsageWindow is { } uw)
             {
-                if (uw.From is { } uf && !ChangeLog.IsIsoDate(uf))
+                if (uw.From is { } uf)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"usage_window from is not `YYYY-MM-DD`: {DebugQuote.Quote(uf)}", DiagnosticCode.UsageWindowInvalidFrom, "usage_window.from"));
+                    CheckTemporal(diagnostics, concept, uf, "usage_window from", "usage_window.from", DiagnosticCode.UsageWindowInvalidFrom);
                 }
 
-                if (uw.To is { } ut && !ChangeLog.IsIsoDate(ut))
+                if (uw.To is { } ut)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"usage_window to is not `YYYY-MM-DD`: {DebugQuote.Quote(ut)}", DiagnosticCode.UsageWindowInvalidTo, "usage_window.to"));
+                    CheckTemporal(diagnostics, concept, ut, "usage_window to", "usage_window.to", DiagnosticCode.UsageWindowInvalidTo);
                 }
             }
 
@@ -397,11 +445,12 @@ public static class BundleValidator
                 diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"unknown status {DebugQuote.Quote(fm.Get("status")!.AsDisplayString() ?? string.Empty)}; treated as stable", DiagnosticCode.StatusUnknown, "status"));
             }
 
-            if (lc.StaleAfterMalformed)
+            if (lc.StaleAfterRaw is { } staleAfterRaw)
             {
-                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"stale_after is not `YYYY-MM-DD`: {DebugQuote.Quote(lc.StaleAfterRaw!)}", DiagnosticCode.StaleAfterInvalid, "stale_after"));
+                CheckTemporal(diagnostics, concept, staleAfterRaw, "stale_after", "stale_after", DiagnosticCode.StaleAfterInvalid);
             }
-            else if (lc.IsStale(today))
+
+            if (lc.IsStale(now))
             {
                 diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"concept is stale (stale_after {lc.StaleAfterRaw})", DiagnosticCode.ConceptStale, "stale_after"));
             }
@@ -612,14 +661,87 @@ public static class BundleValidator
     /// <summary>
     /// Light ISO-8601 datetime check: a valid <c>YYYY-MM-DD</c> date,
     /// optionally followed by <c>T&lt;time&gt;</c> with an optional zone.
-    /// This is intentionally permissive -- the spec treats <c>timestamp</c>
-    /// formatting as soft guidance.
+    /// This is intentionally permissive -- the spec treats the legacy §13.1
+    /// <c>timestamp</c> formatting as soft guidance.
     /// </summary>
+    /// <remarks>
+    /// It validates the <em>date part only</em>, so it accepts a broken time
+    /// (<c>2026-01-01T25:00:00Z</c>). That is why the validator no longer uses
+    /// it for §5 timestamp keys: those go through the shared internal
+    /// <c>OkfTimestamp</c> classifier, which reads the whole value. Retained as
+    /// public API for consumers that want the loose shape check.
+    /// </remarks>
+    /// <param name="s">The value to check.</param>
     public static bool IsIso8601DateTime(string s)
     {
         var sepIndex = s.IndexOfAny(['T', ' ']);
         var datePart = sepIndex >= 0 ? s[..sepIndex] : s;
         return ChangeLog.IsIsoDate(datePart);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="s"/> is a §5-conformant timestamp: an ISO 8601
+    /// datetime carrying an explicit UTC offset (<c>2026-06-30T14:00:00Z</c>).
+    /// A bare date or a zoneless datetime is readable but not conformant --
+    /// <see cref="IsIso8601DateTime"/> stays the permissive check, this one is
+    /// the conformance check.
+    /// </summary>
+    /// <remarks>
+    /// Exposed for callers outside this assembly -- producers deciding whether
+    /// a value they are about to write is already §5-conformant, and consumers
+    /// wanting the same verdict the validator reaches -- so the rule is not
+    /// spelled a second time elsewhere. It has no caller inside this repository:
+    /// the validator reads the richer four-way form from the internal
+    /// <c>OkfTimestamp.Classify</c> directly, since it must tell "legacy" from
+    /// "misspelled" from "unreadable", which a bool cannot carry.
+    /// </remarks>
+    /// <param name="s">The raw frontmatter value.</param>
+    public static bool IsConformantInstant(string s) => OkfTimestamp.IsConformant(s);
+
+    /// <summary>
+    /// Checks one §5 timestamp-valued key: unreadable values get
+    /// <paramref name="invalidCode"/>, readable-but-legacy ones get
+    /// <see cref="DiagnosticCode.LegacyDateOnlyTimestamp"/>, readable-but-not-ISO-8601
+    /// ones get <see cref="DiagnosticCode.NonIso8601Timestamp"/>, and the §5 form
+    /// is silent. All six §5 timestamp keys go through here — <c>stale_after</c>
+    /// via <see cref="Lifecycle"/>, plus <c>generated.at</c>, <c>verified[].at</c>,
+    /// <c>sources[].last_modified</c>, and both <c>usage_window</c> bounds in
+    /// either position (the shared, top-level sibling and a per-entry
+    /// <c>sources[].usage_window</c> override, §5.1) — so a value cannot be
+    /// rejected in one field and accepted in another, the four forms cannot
+    /// swap places between fields, and the two <c>usage_window</c> positions
+    /// cannot classify the same raw value differently.
+    /// </summary>
+    private static void CheckTemporal(
+        List<Diagnostic> diagnostics,
+        Concept concept,
+        string raw,
+        string label,
+        string field,
+        DiagnosticCode invalidCode)
+    {
+        var form = OkfTimestamp.Classify(raw, out _);
+        switch (form)
+        {
+            case TimestampForm.Unreadable:
+                // Deliberately says only that the value could not be read, not
+                // that it is not ISO 8601: the readability gate is
+                // DateTimeOffset.TryParse, which cannot read several genuine
+                // ISO 8601 spellings (the wholly-basic 20260630T140000Z, leap
+                // seconds, week and ordinal dates). They land here, and calling
+                // them "not an ISO-8601 datetime" would be false of them.
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} could not be read as a timestamp: {DebugQuote.Quote(raw)}", invalidCode, field));
+                break;
+            case TimestampForm.LegacyDateOnly:
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} {DebugQuote.Quote(raw)} is a legacy date-only value; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.LegacyDateOnlyTimestamp, field));
+                break;
+            case TimestampForm.NonIso8601:
+                diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"{label} {DebugQuote.Quote(raw)} is not an ISO-8601 spelling; §5 wants an ISO-8601 datetime with an explicit UTC offset", DiagnosticCode.NonIso8601Timestamp, field));
+                break;
+            case TimestampForm.Conformant:
+            default:
+                break;
+        }
     }
 
 }

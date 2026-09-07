@@ -35,7 +35,7 @@ internal static class FusedResolverEngine
     /// <see cref="KnowledgeContext"/>.
     /// </summary>
     /// <param name="catalog">The catalog whose enabled knowledge sources are searched.</param>
-    /// <param name="clock">Supplies "today" for stale-policy filtering.</param>
+    /// <param name="clock">Supplies "now" for stale-policy filtering.</param>
     /// <param name="query">The query to run across every enabled knowledge source.</param>
     /// <param name="comparer">
     /// The ranking order. Must impose a TOTAL order (no ties left to
@@ -152,7 +152,7 @@ internal static class FusedResolverEngine
 
         var ranked = new List<RankedPassage>();
         var anySourceSearchedSuccessfully = false;
-        var today = clock.Today;
+        var now = clock.Now;
 
         foreach (var (source, directory) in resolved)
         {
@@ -170,7 +170,7 @@ internal static class FusedResolverEngine
             anySourceSearchedSuccessfully = true;
             foreach (var passage in result.Passages)
             {
-                if (query.StalePolicy.Admits(passage.Lifecycle, today))
+                if (query.StalePolicy.Admits(passage.Lifecycle, now))
                 {
                     ranked.Add(new RankedPassage(passage, source.Priority));
                 }

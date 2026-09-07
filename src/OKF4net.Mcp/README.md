@@ -34,15 +34,29 @@ The bundle root may instead be supplied via the environment:
   "mcpServers": {
     "okf": {
       "command": "okf-mcp",
-      "env": { "OKF_BUNDLE_ROOT": "/path/to/my-bundle", "OKF_MCP_READONLY": "1" }
+      "env": { "OKF_BUNDLE_ROOT": "/path/to/my-bundle" }
     }
   }
 }
 ```
 
-Set `OKF_MCP_READONLY=1` to serve the bundle for consultation only (the write
-tools `okf_write_concept`, `okf_verify`, `okf_append_log`,
-`okf_regenerate_indexes` are not registered).
+The server is **read-only by default**: the write tools `okf_write_concept`,
+`okf_verify`, `okf_append_log` and `okf_regenerate_indexes` are not registered
+unless you set `OKF_MCP_WRITABLE=1`.
+
+Bundle content is untrusted — it comes from files another agent or a human
+contributor may have written — so an injection carried in a concept body can
+only cause a persistent change if a write tool is reachable. Serving a bundle
+for consultation is both the common case and the safe one, so it is what you
+get for free.
+
+`OKF_MCP_READONLY=1` is still accepted and still forces read-only. It wins over
+`OKF_MCP_WRITABLE` when both are set, so an existing configuration keeps
+working and keeps meaning the same thing.
+
+> **Changed default.** Earlier versions registered the write tools unless
+> `OKF_MCP_READONLY=1` was set. If you relied on that, add
+> `OKF_MCP_WRITABLE=1`.
 
 ## Bundle resolution order
 
@@ -82,8 +96,8 @@ non-empty `type`) for `okf_verify`, deliberately, so a concept missing a
 performs no document validation at all — it only rebuilds `index.md` listings
 from what is already on disk.
 
-That's twelve tools full (eight read-only tools above plus the four write
-tools), or eight when `OKF_MCP_READONLY=1` drops the four write tools.
+That's eight tools by default (the read-only ones above), or twelve when
+`OKF_MCP_WRITABLE=1` adds the four write tools.
 `okf_get_computation` reads a §10 attested-computation concept's contract and
 sanctioned computation source — read-only, no attestation runtime needed.
 `okf_audit` reads the bundle's trust/freshness/lifecycle signals — also

@@ -34,6 +34,16 @@ jobs:
         working-directory: web
         run: npm ci
 
+      # Gated at `high` rather than the default, deliberately. Two moderate
+      # react-router advisories are knowingly carried and cannot be fixed on
+      # this dependency tree — see web/SECURITY-NOTES.md for the analysis. A
+      # strict gate would need a suppression list, and a stale entry there
+      # hides the next real advisory; this fails on anything high or critical
+      # while staying quiet about the two we have already assessed.
+      - name: Audit dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
+
       - name: Typecheck
         working-directory: web
         run: npm run typecheck

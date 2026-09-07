@@ -73,7 +73,7 @@ public sealed class MergedKnowledgeResolver : IKnowledgeResolver
     /// Creates a resolver over <paramref name="catalog"/>.
     /// </summary>
     /// <param name="catalog">The catalog whose enabled knowledge sources are searched.</param>
-    /// <param name="clock">Supplies "today" for stale-policy filtering; defaults to the system clock.</param>
+    /// <param name="clock">Supplies "now" for stale-policy filtering; defaults to the system clock.</param>
     /// <param name="defaultFairnessQuota">
     /// The fairness quota applied when a query does not set its own
     /// <see cref="KnowledgeQuery.FairnessQuota"/>. <see langword="null"/>

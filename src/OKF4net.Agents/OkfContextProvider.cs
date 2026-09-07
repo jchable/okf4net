@@ -29,7 +29,11 @@ namespace OKF4net.Agents;
 /// generated listing), then concepts scored against the last user message in
 /// the invocation's messages (the shared <see cref="OkfBundleTools.ScoreConceptsFor"/>
 /// seam also used by <see cref="OkfBundleTools.Search"/>), each rendered via
-/// <see cref="OkfBundleTools.ReadConcept"/>. Everything is whole-line
+/// <see cref="OkfBundleTools.ReadConcept"/>. Which concepts get the scarce
+/// slots is decided by <see cref="ConceptSearch.TopDiversified"/>, not by a
+/// plain take of the highest scores — on both this path and the scoped one
+/// below, so that one large id family (a generated <c>code/</c> subtree, say)
+/// cannot spend the whole window. Everything is whole-line
 /// truncated to fit its allotted share of the budget, with a trailing
 /// <c>… (truncated)</c> marker when it was. The result is a single
 /// <see cref="ChatMessage"/> of delimited <c>&lt;okf-context id="..."&gt;</c>
@@ -191,11 +195,19 @@ public sealed class OkfContextProvider : AIContextProvider
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Never throws: <see cref="OkfContextProviderOptions.TokenBudget"/>
+    /// Throws only for cancellation: <see cref="OkfContextProviderOptions.TokenBudget"/>
     /// <c>&lt;= 0</c> yields an empty <see cref="AIContext"/> (all three
     /// properties <see langword="null"/>); a bundle that fails to (re)load
     /// yields a context whose message is a plain <c>bundle unavailable: &lt;reason&gt;</c>
     /// note instead. See the type-level remarks for the assembly algorithm.
+    ///
+    /// A cancelled <paramref name="cancellationToken"/> raises an
+    /// <see cref="OperationCanceledException"/> — deliberately, since a caller
+    /// that withdrew is not waiting for a context. Note this method is not
+    /// <see langword="async"/>: on the V1 path the exception surfaces
+    /// synchronously from the call itself rather than through the returned
+    /// <see cref="ValueTask"/>, so a caller that stores the task and awaits it
+    /// later must still guard the call.
     /// </remarks>
     protected override ValueTask<AIContext> ProvideAIContextAsync(
         InvokingContext context,
@@ -211,6 +223,14 @@ public sealed class OkfContextProvider : AIContextProvider
         {
             return ProvideScopedAsync(context, totalBudget, cancellationToken);
         }
+
+        // The V1 path below is synchronous and does real work — a full bundle
+        // walk off disk in GetBundle(), then a file read per injected concept —
+        // so a caller that has already cancelled must not pay for any of it.
+        // Deliberately OUTSIDE the try: the catch arm converts a failed load
+        // into a "bundle unavailable" context, and a cancellation is not a
+        // bundle failure to report to the model, it is the caller withdrawing.
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Everything from here on — the initial (re)load, Browse, the
         // scoring seam, and ReadConcept — is wrapped in the SAME try/catch.
@@ -245,17 +265,36 @@ public sealed class OkfContextProvider : AIContextProvider
             sb.Append(rootBlock);
             remaining -= rootUsed;
 
-            // (b) Concepts scored against the last user message, highest
-            // first, each capped to whatever budget remains. Stops (rather
-            // than skipping ahead) at the first concept that doesn't fit at
-            // all, since every following concept has the same or less room.
+            // (b) Concepts scored against the last user message and then
+            // family-rotated (see below) -- so the best-scoring concept is
+            // first, but the rest is NOT plain descending score. Each is
+            // capped to whatever budget remains. Stops (rather than skipping
+            // ahead) at the first concept that doesn't fit at all, since every
+            // following concept has the same or less room.
             if (query is not null)
             {
-                var today = DateOnly.FromDateTime(UtcNow().Date);
-                foreach (var (concept, _) in _tools!.ScoreConceptsFor(query)
-                    .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, today))
-                    .Take(_options.MaxConceptsInjected))
+                var now = new DateTimeOffset(DateTime.SpecifyKind(UtcNow(), DateTimeKind.Utc), TimeSpan.Zero);
+
+                // Diversified rather than a plain Take, and applied after the
+                // stale filter so the injection window is spent on admitted
+                // concepts. With only MaxConceptsInjected slots (5 by default),
+                // a bundle carrying a generated `code/` subtree would otherwise
+                // inject nothing but members: measured at 1 curated concept
+                // across 55 slots (design §8.7). This covers THIS path only --
+                // the scoped (V2) path has its own selection site in
+                // ProvideScopedAsync, diversified separately.
+                var admitted = _tools!.ScoreConceptsFor(query)
+                    .Where(hit => _options.StalePolicy.Admits(hit.Concept.Document.Frontmatter.Lifecycle, now))
+                    .ToList();
+
+                foreach (var (concept, _) in ConceptSearch.TopDiversified(admitted, _options.MaxConceptsInjected))
                 {
+                    // Each iteration reads a concept off disk, so a caller that
+                    // withdrew part-way should not pay for the rest. The guard
+                    // before the bundle walk above only covers a token that was
+                    // already cancelled on entry.
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     if (remaining <= 0)
                     {
                         break;
@@ -280,13 +319,55 @@ public sealed class OkfContextProvider : AIContextProvider
         }
         catch (Exception ex) when (ex is OkfException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
+            ReportInternalError(ex);
             return new(new AIContext
             {
                 Instructions = FixedInstructions,
-                Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {ex.Message}")],
+                Messages = [new ChatMessage(ChatRole.User, $"bundle unavailable: {FailureCategory(ex)}")],
             });
         }
     }
+
+    /// <summary>
+    /// Hands one swallowed exception to the host's
+    /// <see cref="OkfContextProviderOptions.OnInternalError"/>, if wired.
+    /// Never throws on the caller's behalf: the callback is host code, and an
+    /// exception escaping context assembly would break the never-throw
+    /// contract this method exists to keep intact.
+    /// </summary>
+    private void ReportInternalError(Exception ex)
+    {
+        var sink = _options.OnInternalError;
+        if (sink is null)
+        {
+            return;
+        }
+
+        try
+        {
+            sink(ex);
+        }
+        catch
+        {
+            // A broken telemetry callback must not take the agent down.
+        }
+    }
+
+    /// <summary>
+    /// What the MODEL is told about a failure: a category, never the exception's
+    /// own message. A .NET filesystem exception's message carries the absolute
+    /// path, and an exception from a host-plugged component can carry anything
+    /// at all. Mirrors <c>OkfBundleTools.SkipReason</c>'s vocabulary so the two
+    /// model-facing surfaces describe the same failure the same way.
+    /// </summary>
+    private static string FailureCategory(Exception ex) => ex switch
+    {
+        DecoderFallbackException => "not valid UTF-8",
+        UnauthorizedAccessException => "access denied",
+        IOException => "I/O error",
+        OkfException => "the bundle could not be loaded",
+        _ => "unreadable",
+    };
 
     private async ValueTask<AIContext> ProvideScopedAsync(InvokingContext context, int totalBudget, CancellationToken ct)
     {
@@ -329,7 +410,7 @@ public sealed class OkfContextProvider : AIContextProvider
             knowledge.AddRange(kc.Passages);
         }
         catch (Exception ex) when (ex is OperationCanceledException) { throw; }
-        catch (Exception) { /* errors-as-data: knowledge degrades to empty */ }
+        catch (Exception ex) { ReportInternalError(ex); /* errors-as-data: knowledge degrades to empty */ }
 
         try
         {
@@ -337,7 +418,7 @@ public sealed class OkfContextProvider : AIContextProvider
             memory.AddRange(mr.Passages);
         }
         catch (Exception ex) when (ex is OperationCanceledException) { throw; }
-        catch (Exception) { /* errors-as-data: memory degrades to empty */ }
+        catch (Exception ex) { ReportInternalError(ex); /* errors-as-data: memory degrades to empty */ }
 
         // Split budget with BOTH floors reserved + spillover (spec §6.3: "each
         // a configurable floor + spillover"). Each surface first gets its own
@@ -351,12 +432,37 @@ public sealed class OkfContextProvider : AIContextProvider
         var kFloor = (int)(totalBudget * _options.KnowledgeBudgetShare);
         var mFloor = (int)(totalBudget * _options.MemoryBudgetShare);
 
+        // Family-rotate the knowledge passages before any of them is rendered.
+        // AppendPassages spends the budget down a CONTIGUOUS PREFIX, so a
+        // bundle carrying a generated `code/` subtree otherwise fills the whole
+        // prefix with members: measured on the §8.7 corpus, with every
+        // generated member sharing the curated vocabulary as real okfgen output
+        // does, at 38 of 336 passages rendered and ZERO curated concepts
+        // reaching the context on 6 of 7 broad queries, the first curated
+        // passage sitting at rank #333.
+        //
+        // TopDiversifiedBy, not TopDiversified: the list arrives already
+        // ordered by the resolver, possibly interleaved across sources by
+        // KnowledgeQuery.FairnessQuota, and re-deriving the order from scores
+        // would throw that interleave away. Ordering families by first
+        // appearance keeps it.
+        //
+        // count = Count is a full reordering, not a truncation: what bounds
+        // this list is the token budget below, not a slot count.
+        //
+        // Knowledge only. `memory` is NOT a single ranked list -- FileMemoryStore
+        // concatenates one ranked list per tier in its own read order, and its
+        // passage ids are tier-prefixed, so a family rotation there would
+        // interleave the tiers and override that precedence rather than spread
+        // slots within it.
+        var rankedKnowledge = ConceptSearch.TopDiversifiedBy(knowledge, FamilyOf, knowledge.Count);
+
         var sb = new StringBuilder();
-        var (kCount1, kUsed1) = AppendPassages(sb, knowledge, "knowledge", kFloor);
+        var (kCount1, kUsed1) = AppendPassages(sb, rankedKnowledge, "knowledge", kFloor);
         var (mCount1, mUsed1) = AppendPassages(sb, memory, "memory", mFloor);
 
         var remaining = totalBudget - kUsed1 - mUsed1;
-        var (_, kUsed2) = AppendPassages(sb, knowledge.Skip(kCount1), "knowledge", remaining);
+        var (_, kUsed2) = AppendPassages(sb, rankedKnowledge.Skip(kCount1), "knowledge", remaining);
         remaining -= kUsed2;
         AppendPassages(sb, memory.Skip(mCount1), "memory", remaining);
 
@@ -370,6 +476,18 @@ public sealed class OkfContextProvider : AIContextProvider
             Instructions = FixedInstructions,
             Messages = [new ChatMessage(ChatRole.User, sb.ToString())],
         };
+    }
+
+    /// <summary>
+    /// The top-level id segment of a passage's concept id — the "family" the
+    /// scoped path rotates over. Mirrors <c>ConceptSearch.TopDiversified</c>'s
+    /// <c>Concept.Id.Segments[0]</c>, reached through the id string because a
+    /// <see cref="KnowledgePassage"/> carries the id, not the concept.
+    /// </summary>
+    private static string FamilyOf(KnowledgePassage passage)
+    {
+        var slash = passage.ConceptId.IndexOf('/');
+        return slash < 0 ? passage.ConceptId : passage.ConceptId[..slash];
     }
 
     /// <returns>How many passages were rendered (a contiguous prefix of <paramref name="passages"/>), and the total token estimate they used.</returns>
@@ -642,6 +760,92 @@ public sealed class OkfContextProvider : AIContextProvider
         return default;
     }
 
+    /// <summary>
+    /// The frontmatter for a memory concept, used only where the concept is
+    /// being created — both capture paths append to an existing one otherwise.
+    /// One helper rather than a copy per path: the two copies it replaced were
+    /// identical, and both were identically wrong.
+    ///
+    /// Provenance is the §5.2 <c>generated</c> stamp, not the legacy §13.1
+    /// <c>timestamp</c> these paths used to write. The provider is a producer,
+    /// and a <c>timestamp</c> here made every captured concept trip
+    /// <c>BundleValidator</c>'s <c>LegacyTimestamp</c> warning the moment the
+    /// memory bundle was validated. The actor mirrors
+    /// <c>BundleConceptWriter.ProducerActor</c>'s format.
+    ///
+    /// This is the ONLY place the stamp can come from on these paths: both
+    /// write through <c>AppendToConceptAtomic</c>, which reaches
+    /// <c>BuildValidatedContent</c>'s string overload directly and so never
+    /// runs the writer's <c>MaybeStampGenerated</c> — turning on
+    /// <c>AutoStampGenerated</c> would not stamp these concepts.
+    /// </summary>
+    private static string MemoryFrontmatter(string dateStr, DateTime now) =>
+        "type: AgentMemory\n"
+        + $"title: Agent memory {dateStr}\n"
+        + $"description: Captured user/agent exchanges for {dateStr}.\n"
+        + "generated:\n"
+        + $"  by: okf4net/{OkfSpec.Version}\n"
+        + $"  at: {OkfTimestamp.FormatUtc(now)}\n";
+
+    /// <summary>
+    /// Decides which scope a capture belongs to (arbitration B), or returns
+    /// <see langword="null"/> to say the capture must be skipped — setting
+    /// <see cref="LastMemoryError"/> to why.
+    ///
+    /// Three cases. No <c>ScopeAccessor</c> configured means local mode, and
+    /// the capture goes to the local subtree. With one configured, the scope is
+    /// recovered from the session correlated by a prior
+    /// <c>ProvideAIContextAsync</c>. If it cannot be recovered — no session, no
+    /// prior provide, or the session was provided under MULTIPLE scopes — the
+    /// capture is skipped rather than misfiled: attributing an exchange to the
+    /// wrong tenant or user is worse than losing it, so this path is
+    /// deliberately fail-closed.
+    /// </summary>
+    /// <param name="context">The invocation being captured.</param>
+    private KnowledgeAccessScope? ResolveCaptureScope(InvokedContext context)
+    {
+        if (_options.ScopeAccessor is null)
+        {
+            return KnowledgeAccessScope.Local;
+        }
+
+        if (context.Session is not { } session || !_scopeBySession.TryGetValue(session, out var box))
+        {
+            LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
+            return null;
+        }
+
+        // Snapshot box.Scope/box.Poisoned atomically (locked on the SAME box
+        // instance ProvideScopedAsync writes under), then branch on the copied
+        // locals outside the lock -- no async work happens inside it. Without
+        // this lock, this read could race a concurrent ProvideScopedAsync write
+        // to the same box.
+        KnowledgeAccessScope? cached;
+        bool poisoned;
+        lock (box)
+        {
+            cached = box.Scope;
+            poisoned = box.Poisoned;
+        }
+
+        if (cached is null)
+        {
+            LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
+            return null;
+        }
+
+        if (poisoned)
+        {
+            // FAIL-CLOSED: this session was provided under multiple scopes, so
+            // the capture cannot be safely attributed to one. Skip it entirely
+            // rather than misfiling it under any scope.
+            LastMemoryError = "Scoped capture skipped: this AgentSession was used under multiple scopes.";
+            return null;
+        }
+
+        return cached;
+    }
+
     private async ValueTask StoreScopedAsync(InvokedContext context, CancellationToken ct)
     {
         if (_options.MemoryCapture == MemoryCaptureMode.Disabled)
@@ -661,51 +865,8 @@ public sealed class OkfContextProvider : AIContextProvider
             return;
         }
 
-        // Scope resolution for capture (arbitration B):
-        //  - No ScopeAccessor configured  => local mode; capture to the local subtree.
-        //  - ScopeAccessor configured but we cannot recover the invocation's scope
-        //    (no session, or no prior ProvideAIContextAsync in this session) => SKIP
-        //    the capture and record why, rather than misfiling it into _local.
-        KnowledgeAccessScope scope;
-        if (_options.ScopeAccessor is null)
+        if (ResolveCaptureScope(context) is not { } scope)
         {
-            scope = KnowledgeAccessScope.Local;
-        }
-        else if (context.Session is { } session && _scopeBySession.TryGetValue(session, out var box))
-        {
-            // Snapshot box.Scope/box.Poisoned atomically (locked on the SAME
-            // box instance ProvideScopedAsync writes under), then branch on
-            // the copied locals outside the lock -- no async work happens
-            // inside it. Without this lock, this read could race a concurrent
-            // ProvideScopedAsync write to the same box.
-            KnowledgeAccessScope? cached;
-            bool poisoned;
-            lock (box)
-            {
-                cached = box.Scope;
-                poisoned = box.Poisoned;
-            }
-
-            if (cached is null)
-            {
-                LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
-                return;
-            }
-
-            if (poisoned)
-            {
-                // FAIL-CLOSED: this session was provided under multiple scopes,
-                // so the capture cannot be safely attributed to one. Skip it
-                // entirely rather than misfiling it under any scope.
-                LastMemoryError = "Scoped capture skipped: this AgentSession was used under multiple scopes.";
-                return;
-            }
-
-            scope = cached;
-        }
-        else
-        {
-            LastMemoryError = "Scoped capture skipped: the invocation scope could not be determined (no session, or no prior context provide in this session).";
             return;
         }
 
@@ -719,12 +880,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = OkfTimestamp.FormatUtc(now);
-        var frontmatter =
-            "type: AgentMemory\n"
-            + $"title: Agent memory {dateStr}\n"
-            + $"description: Captured user/agent exchanges for {dateStr}.\n"
-            + $"timestamp: {timestamp}\n";
+        var frontmatter = MemoryFrontmatter(dateStr, now);
 
         try
         {
@@ -797,12 +953,7 @@ public sealed class OkfContextProvider : AIContextProvider
             .Append(Neutralize(SanitizeNul(agentText) ?? NoContentPlaceholder)).Append('\n')
             .ToString();
 
-        var timestamp = OkfTimestamp.FormatUtc(now);
-        var frontmatterYamlIfCreating =
-            "type: AgentMemory\n"
-            + $"title: Agent memory {dateStr}\n"
-            + $"description: Captured user/agent exchanges for {dateStr}.\n"
-            + $"timestamp: {timestamp}\n";
+        var frontmatterYamlIfCreating = MemoryFrontmatter(dateStr, now);
 
         // currentBody is the concept's CURRENT on-disk body, re-read by
         // AppendToConceptAtomic itself inside its single hold of the shared

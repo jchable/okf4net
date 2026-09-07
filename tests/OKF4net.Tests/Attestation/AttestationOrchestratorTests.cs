@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using OKF4net;
 using OKF4net.Attestation;
@@ -37,12 +38,131 @@ public class AttestationOrchestratorTests
         {
             ["bigquery"] = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 })),
         });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
         Assert.True(outcome.Displayable);
         Assert.True(outcome.Verdict!.Value.Passed);
         Assert.True(outcome.ReceiptShapeOk);
         Assert.Null(outcome.Error);
+    }
+
+    /// <summary>
+    /// The orchestrator handed its token to each host stage and then trusted
+    /// them to observe it. A stage that ignores its token is not a hypothetical
+    /// — it is any binder or executor whose underlying client predates
+    /// cancellation support, or simply forgets — and for those, an
+    /// already-cancelled run executed every stage and could return a
+    /// DISPLAYABLE success. For §10 that means a computation actually ran, and
+    /// possibly hit a warehouse, after the caller withdrew.
+    ///
+    /// Passing the token on is not observing it. The orchestrator checks at
+    /// each step boundary, so cancellation is honoured whatever the host does.
+    /// </summary>
+    [Fact]
+    public async Task A_cancelled_run_does_not_execute_stages_that_ignore_their_token()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var executed = false;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        // Ignores its token entirely, like a stage built on a client that has
+        // no cancellation support.
+        runtime.ExecuteFunc = (_, _, _) =>
+        {
+            executed = true;
+            return ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+
+        Assert.False(executed, "the executor ran after the caller had already withdrawn");
+    }
+
+    /// <summary>
+    /// A stage that cancels the supplied token and then faults with the
+    /// cancellation WRAPPED — an AggregateException, which is what
+    /// `.Result`/`.Wait()` on a cancelled task produces, and a realistic shape
+    /// at a plugin boundary — was converted into an ordinary non-displayable
+    /// outcome, because the filter only recognised a top-level
+    /// OperationCanceledException. The caller had cancelled; that is a
+    /// cancellation however it is packaged.
+    /// </summary>
+    [Fact]
+    public async Task A_wrapped_cancellation_still_propagates()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        var runtime = new FakeRuntime
+        {
+            ExecuteFunc = (_, _, _) =>
+            {
+                cts.Cancel();
+                throw new AggregateException(new OperationCanceledException(cts.Token));
+            },
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+    }
+
+    /// <summary>
+    /// Cancellation is control flow, not data. Every stage's catch was a bare
+    /// `catch (Exception)`, so an OperationCanceledException raised by a
+    /// host-plugged stage was caught with everything else and converted into a
+    /// business outcome — `RunAsync(ct)` with a cancelled token returned a
+    /// normal-looking result, and a caller could not tell "the executor failed"
+    /// from "I asked it to stop".
+    ///
+    /// Errors-as-data is the contract for FAILURES and stays; an OCE is not one.
+    /// </summary>
+    [Theory]
+    [InlineData("binder")]
+    [InlineData("executor")]
+    [InlineData("attester")]
+    public async Task A_cancelled_stage_propagates_rather_than_becoming_an_outcome(string stage)
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        // Each stage observes the token and honours it, the way a real
+        // implementation awaiting I/O would.
+        var runtime = new FakeRuntime();
+        switch (stage)
+        {
+            case "binder":
+                runtime.BindFunc = (_, _, _, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
+                break;
+            case "executor":
+                runtime.ExecuteFunc = (_, _, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
+                break;
+            default:
+                // Step 8 runs only when the receipt shape is trustworthy, so the
+                // executor has to return the two fields the concept declares --
+                // FakeRuntime's default empty Receipt would skip attestation
+                // entirely and the stage under test would never be reached.
+                runtime.ExecuteFunc = (_, _, _) =>
+                    ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+                runtime.AttestFunc = (_, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("unreachable"); };
+                break;
+        }
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
     }
 
     [Fact]
@@ -91,7 +211,7 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-01-01\n---\n# Computation\n\n```\nX\n```\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
             parameterValues: new Dictionary<string, object?>(), policy: StalePolicy.Strict);
         Assert.Equal(StaleState.Stale, outcome.Stale);
@@ -107,11 +227,39 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2099-01-01\n---\n# Computation\n\n```\nX\n```\n");
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new(2026, 1, 1)));
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"),
             new Dictionary<string, object?>(), policy: StalePolicy.Strict);
         Assert.Equal(StaleState.Fresh, outcome.Stale);
         Assert.True(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// Regression test for the §5 bug this branch fixes, at §10.6's gate.
+    /// <see cref="Stale_concept_gated_under_strict_policy"/> above uses the
+    /// legacy date-only <c>2025-01-01</c>, which the pre-fix <c>Lifecycle</c>
+    /// parsed too (<c>DateOnly.TryParseExact("yyyy-MM-dd")</c>) — so it would
+    /// stay green even if the gate regressed to that parser. A §5-conformant
+    /// instant is what it could not read: <c>StaleAfter</c> came back null,
+    /// <c>ComputeStale</c> returned <see cref="StaleState.Unknown"/>, and
+    /// <c>StalePolicy.Strict</c> admits a null <c>StaleAfter</c> — so a concept
+    /// six months past its expiry was attested and displayed. This test fails
+    /// on the pre-fix parser and passes on the shipped one.
+    /// </summary>
+    [Fact]
+    public async Task Stale_concept_with_a_conformant_instant_stale_after_is_gated_under_strict_policy()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nstale_after: 2025-06-30T14:00:00Z\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var outcome = await orch.RunAsync(bundle: Bundle.Load(tmp.Path), conceptId: ConceptId.Parse("c/rev"),
+            parameterValues: new Dictionary<string, object?>(), policy: StalePolicy.Strict);
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+        Assert.False(outcome.Displayable);
+        Assert.True(outcome.Verdict!.Value.Passed); // attested fine; only the staleness gate blocks display
+        Assert.Contains(outcome.Reasons, r => r.Contains("stale"));
     }
 
     [Fact]

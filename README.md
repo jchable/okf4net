@@ -69,8 +69,9 @@ other project layers a specific integration on top and points back to it.
 | Project                  | NuGet package             | Responsibility                                                              | Deep dive                                                     |
 |--------------------------|---------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------|
 | `OKF4net`                | `OKF4net`                 | Zero-dependency core library: parse, validate, index, graph OKF bundles.   | [Library overview](#library-overview)                        |
-| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`audit`/`verify`/`info`/`index`/`graph`/`parse`/`fmt`/`render`). | [As a CLI](#as-a-cli)                                    |
-| `OKF4net.Viewer`         | — (ships inside the `okf` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs the `okf render` verb. | [As a CLI](#as-a-cli)                                        |
+| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`audit`/`verify`/`info`/`index`/`graph`/`parse`/`fmt`). | [As a CLI](#as-a-cli)                                    |
+| `OKF4net.Render`         | — (Native AOT `okf-render` binary, no PackageId) | Standalone CLI: generates a browsable HTML site from a bundle. | [As a CLI](#as-a-cli)                                        |
+| `OKF4net.Viewer`         | — (ships inside the `okf-render` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs `okf-render`. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
@@ -172,7 +173,24 @@ On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
 winget install Coderise.OKF4net
 ```
 
-On any OS, build from source — see [Building & testing](#building--testing).
+On Linux or macOS, install a release binary with the install script:
+
+```sh
+curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh
+```
+
+It detects your OS/architecture, downloads the matching archive from the
+latest [GitHub Release](https://github.com/jchable/okf4net/releases),
+verifies its SHA-256 checksum, and installs to `/usr/local/bin` (falling back
+to `~/.local/bin` when that isn't writable — it never calls `sudo`). Pass
+`--bin okf-render` to install the site generator instead of `okf`, `--version
+<tag>` to pin a release, `--dir <path>` to override the destination, or
+`--dry-run` to see what it would do without touching disk or network beyond
+resolving the version. Run it with `-h` for the full option list; see
+[`packaging/install.sh`](packaging/install.sh) for the implementation.
+
+On any OS, you can also build from source — see
+[Building & testing](#building--testing).
 
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
@@ -183,8 +201,12 @@ okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
 okf parse    <file>      Parse one concept document and print its structure
 okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes)
-okf render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle
 ```
+
+Every verb takes `-h`/`--help` for its own usage and option list. Arguments are
+validated per verb: an option that verb does not define, or a surplus
+positional, is an error rather than silently ignored — so a typo'd flag never
+runs the command with different behaviour than you asked for.
 
 `okf validate` exits non-zero when a bundle is not conformant, so it drops
 straight into CI:
@@ -208,7 +230,8 @@ summary form; with any filter flag it prints one line per matching concept, so
 the output pipes. `--json` always emits the full document.
 
 `--as-of <YYYY-MM-DD>` pins the date staleness is evaluated against, on both
-`okf audit` and `okf validate`. Without it, anything touching `stale_after`
+`okf audit` and `okf validate`; it pins to midnight UTC on that date, since §5
+makes `stale_after` an instant. Without it, anything touching `stale_after`
 (§5.5) depends on the day it runs — including `okf validate`'s
 `concept is stale` warning, which is why a CI job that wants a reproducible
 verdict should pin the date rather than let the calendar move under it. Note the counts
@@ -277,21 +300,41 @@ numeric offset, or fractional seconds are all rejected, not silently rounded.
 > the diff happens to touch and silently empty the very worklist this feature
 > exists to populate.
 
-Generate a browsable HTML site from a bundle:
-
-```sh
-okf render bundles/ga4 --out /tmp/ga4-site
-# then open /tmp/ga4-site/index.html
-```
-
-The generated site is self-contained and opens straight off the filesystem —
-no server needed. It is read-only; full-text search arrives with the planned
-`okf serve` companion.
-
 `okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
 single-file binary — no .NET runtime installation required on the target
 machine. Full command reference with real output samples:
 [CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
+
+#### `okf-render` — generate a static HTML site
+
+Static HTML site generation lives in a **separate** binary, `okf-render`
+(`OKF4net.Render`), not in `okf` itself — `okf` is meant to be the small,
+dependency-free CI validator winget distributes, and the site generator pulls
+in a vendored copy of [marked](https://github.com/markedjs/marked) (MIT) that
+a CI job running `okf validate` never executes. `OKF4net.Mcp` already
+established the pattern this follows: a leaf executable owns the dependencies
+its one job needs, instead of pushing them into the shared core.
+
+```sh
+dotnet publish src/OKF4net.Render -c Release   # Native AOT, self-contained okf-render binary
+okf-render bundles/ga4 --out /tmp/ga4-site
+# then open /tmp/ga4-site/index.html
+```
+
+The generated site is self-contained and opens straight off the filesystem —
+no server needed. It is read-only, and has no full-text search: a static site
+has no server to run the shared `ConceptSearch` scorer, and mirroring its
+weights in JavaScript would fork it. Interactive browsing with search is
+planned as a VS Code extension instead (see `ROADMAP.md`), not as a local
+server. `okf-render` has its own winget package,
+**`Coderise.OKF4net.Render`**, built and attached to each Release the same way
+as `okf`'s — but its *first* submission to `winget-pkgs` is a manual, one-time
+step (see [`packaging/winget/README.md`](packaging/winget/README.md)) that has
+not happened yet, so `winget install Coderise.OKF4net.Render` will not resolve
+until it does. Until then, on Linux or macOS install it with the same script
+as `okf` above (`--bin okf-render`), or on any OS grab a prebuilt archive from
+a [GitHub Release](https://github.com/jchable/okf4net/releases) or build it
+from source as shown above.
 
 ### Using OKF4net with Microsoft Agent Framework
 
@@ -311,7 +354,9 @@ using OKF4net.Agents;
 IChatClient chatClient = /* your IChatClient, e.g. from an OpenAI/Azure client */;
 var tools = new OkfBundleTools("./my_bundle");
 
-AIAgent agent = chatClient.AsAIAgent(tools: tools.GetTools());
+// The write tools need the host's approval before they run. `GetTools()` with
+// no argument returns them ungated — see the security note below.
+AIAgent agent = chatClient.AsAIAgent(tools: tools.GetTools(OkfToolMode.RequireApprovalForWrites));
 var response = await agent.RunAsync("Search the bundle for concepts about refunds.");
 Console.WriteLine(response.Text);
 ```
@@ -325,7 +370,7 @@ verify → append → regenerate → validate → changes-since → get-computat
 | `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.                                                                                                                    |
 | `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                                                        |
 | `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                                                                  |
-| `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                                                      |
+| `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns the best-matching concept id first, then spreads the remaining results across top-level id families, so the list is not in descending score order. |
 | `okf_audit`              | Audit the bundle's trust, freshness and lifecycle signals (§5.3–§5.5): counts by trust tier and status, plus the concepts needing attention. Read-only.                                                       |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
 | `okf_verify`             | Record a review (§5.2): adds or replaces the caller's `{by, at}` entry in each concept's `verified` list — a dated declaration, not a proof; never infer one from a PR approval.                            |
@@ -340,11 +385,30 @@ verify → append → regenerate → validate → changes-since → get-computat
 is untrusted — it comes from files on disk that may have been written by
 another agent or a human contributor — and is never injected into the
 conversation with a `system` role; it only ever reaches the model as tool
-output. The four write-capable tools (`okf_write_concept`, `okf_verify`,
-`okf_append_log` and `okf_regenerate_indexes`)
-rely entirely on the Agent Framework's own tool-approval mechanism to gate
-execution — `OkfBundleTools` performs no additional confirmation step of its
-own.
+output.
+
+That matters most for the four write-capable tools (`okf_write_concept`,
+`okf_verify`, `okf_append_log`, `okf_regenerate_indexes`), because an injection carried in a
+concept body is only dangerous if it can reach a persistent write.
+**`GetTools()` returns them ungated**, and nothing asks on your behalf: the
+Agent Framework's approval mechanism is not active by default, so a plain
+`AIFunction` is invoked directly. Choose how they are exposed:
+
+```csharp
+// The model must not write at all:
+var tools = okf.GetTools(OkfToolMode.ReadOnly);
+
+// Or: every tool, but a write needs the host's approval first.
+var tools = okf.GetTools(OkfToolMode.RequireApprovalForWrites);
+```
+
+`RequireApprovalForWrites` wraps exactly the write tools in
+`ApprovalRequiredAIFunction`; read tools stay ungated, since prompting for
+everything trains a user to click through and is how the one approval that
+mattered gets waved past. `OkfBundleTools.WriteToolNames` is the single source
+of truth for which tools count, so a write tool added later cannot slip past a
+host's own filtering either. The parameterless `GetTools()` keeps its
+historical ungated meaning so existing hosts are not changed under them.
 
 The core `OKF4net` library stays dependency-free (BCL only); only
 `OKF4net.Agents` references `Microsoft.Agents.AI` (see
@@ -373,7 +437,7 @@ var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { Mem
 
 AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
 {
-    ChatOptions = new ChatOptions { Tools = tools.GetTools() },
+    ChatOptions = new ChatOptions { Tools = tools.GetTools(OkfToolMode.RequireApprovalForWrites) },
     AIContextProviders = [provider],
 });
 
@@ -388,6 +452,7 @@ var response = await agent.RunAsync("What do we know about orders?");
 | `MemoryCapture`       | `MemoryCaptureMode.Disabled` | Opt-in: `MemoryCaptureMode.Enabled` captures exchanges as long-term memory concepts in the bundle after each invocation; `Disabled` writes nothing. |
 | `MemoryDirectory`     | `"memory"`                   | Bundle subdirectory holding memory concepts, as a single `ConceptId` segment (no `/`).                                                                   |
 | `MaxConceptsInjected` | `5`                          | Maximum number of scored concepts injected into a single invocation's context.                                                                           |
+| `OnInternalError`     | `null`                       | Host-side sink for exceptions context assembly swallows (a failed bundle load, a failed knowledge/memory read). The model only ever sees a category. |
 
 **Security note:** as with the tools above, bundle content is untrusted.
 `ProvideAIContextAsync` injects the bundle root index plus the top scored
@@ -395,6 +460,15 @@ concepts (progressive disclosure, budget-bounded) as reference **data in a
 message** — it is never written into `AIContext.Instructions`, so a
 prompt-injection payload smuggled into a concept body cannot reach the
 instructions channel.
+
+Information flows the other way too. When context assembly fails, the model is
+told a category (`bundle unavailable: I/O error`), never the exception's own
+message — a .NET filesystem exception carries the absolute path, and an
+exception from a host-plugged runtime can carry a connection string or a query.
+The same applies to `okf_run_computation`: the outcome rendered to the model
+names the failing stage and the exception *type*, while the exception itself
+stays on `AttestationOutcome.Error` for the host. Wire `OnInternalError` to get
+the detail into your own logs.
 
 **Memory design (v1, deterministic):** `StoreAIContextAsync` captures each
 exchange with no LLM call — the last user message and the agent's final
@@ -578,8 +652,9 @@ Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
 { "mcpServers": { "okf": { "command": "okf-mcp", "args": ["/path/to/bundle"] } } }
 ```
 
-See [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for read-only mode
-and the full tool list, or the
+`okf-mcp` serves the bundle **read-only by default**; set `OKF_MCP_WRITABLE=1`
+to register the three write tools as well. See
+[`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for the full tool list, or the
 [MCP setup guide on the site](https://jchable.github.io/okf4net/docs/mcp/).
 
 ## Mapping to the spec
@@ -634,9 +709,10 @@ no framework to learn before you can help.
 ## Building & testing
 
 ```sh
-dotnet build OKF4net.sln           # core library + okf CLI + test project
+dotnet build OKF4net.sln           # core library + okf CLI + okf-render + test project
 dotnet test OKF4net.sln            # unit + integration tests (incl. golden CLI comparisons)
-dotnet publish src/OKF4net.Cli -c Release  # Native AOT, self-contained okf binary
+dotnet publish src/OKF4net.Cli -c Release     # Native AOT, self-contained okf binary
+dotnet publish src/OKF4net.Render -c Release  # Native AOT, self-contained okf-render binary
 ```
 
 Just want the `okf` binary on Windows, not a source build? `winget install

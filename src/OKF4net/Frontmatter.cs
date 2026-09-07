@@ -82,6 +82,25 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// <summary>The §5.1 <c>usage_window</c> sibling of <c>sources</c>, if present.</summary>
     public UsageWindow? UsageWindow => Provenance.ParseUsageWindow(_map.Get("usage_window"));
 
+    /// <summary>
+    /// The <c>usage_window</c> framing <paramref name="source"/>'s <c>usage_count</c>
+    /// (§5.1): the entry's own window when it carries one, otherwise the shared
+    /// sibling <see cref="UsageWindow"/>. The override is whole-object, not
+    /// per-field -- an entry writing <c>usage_window: { from: X }</c> yields a
+    /// window whose <c>To</c> is <see langword="null"/>; it does not inherit the
+    /// shared window's <c>to</c>. A malformed override (a non-mapping value)
+    /// parses to <see langword="null"/> and falls back to the shared window
+    /// exactly as an absent one does.
+    ///
+    /// <para>Nothing ties <paramref name="source"/> to <em>this</em> frontmatter:
+    /// <see cref="Source"/> is a standalone value type, so a caller can pass a
+    /// <see cref="Source"/> read from a different document and silently get this
+    /// document's shared window as the fallback. Pass a <see cref="Source"/>
+    /// obtained from this frontmatter's own <see cref="Sources"/>.</para>
+    /// </summary>
+    /// <param name="source">A source entry, expected to come from this frontmatter's <see cref="Sources"/>.</param>
+    public UsageWindow? EffectiveUsageWindow(Source source) => source.UsageWindow ?? this.UsageWindow;
+
     /// <summary>The §5.2 <c>generated</c> stamp, if present.</summary>
     public Stamp? Generated => Trust.ParseGenerated(_map.Get("generated"));
 

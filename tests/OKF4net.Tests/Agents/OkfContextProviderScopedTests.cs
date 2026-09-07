@@ -132,6 +132,39 @@ public class OkfContextProviderScopedTests
         Assert.Contains("nonce-zx99", text, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The scoped (V2) capture path wrote the same legacy §13.1 <c>timestamp</c>
+    /// the V1 path did, so every memory concept a scoped host captured tripped
+    /// <see cref="DiagnosticCode.LegacyTimestamp"/>. Both paths now share
+    /// <c>MemoryFrontmatter</c>; this pins the V2 half of that so the two cannot
+    /// drift apart again.
+    ///
+    /// The memory tier root is its own bundle, holding nothing but concepts this
+    /// provider wrote, so the diagnostic assertion needs no per-concept filter.
+    /// </summary>
+    [Fact]
+    public async Task Scoped_capture_stamps_generated_and_leaves_no_legacy_timestamp()
+    {
+        using var root = new TempDir();
+        var (resolver, store, _) = SetUp(root);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var session = new TestAgentSession();
+        var provider = new OkfContextProvider(resolver, store, ScopedOptions(scope));
+        provider.UtcNow = () => new DateTime(2026, 7, 27, 9, 0, 0, DateTimeKind.Utc);
+
+        await provider.ProvideForTest(Invoking(session, "hello"), CancellationToken.None);
+        await provider.StoreForTest(Invoked(session, "remember nonce-zx99", "acknowledged nonce-zx99"));
+        Assert.Null(provider.LastMemoryError);
+
+        var memRoot = Path.Combine(root.Path, "mem");
+        var doc = OkfDocument.Parse(File.ReadAllText(MemPath(memRoot, MemoryTier.User, scope, "2026-07-27.md")));
+        Assert.Equal("2026-07-27T09:00:00Z", doc.Frontmatter.Generated?.At);
+        Assert.False(string.IsNullOrWhiteSpace(doc.Frontmatter.Generated?.By?.Raw));
+
+        var report = BundleValidator.Validate(Bundle.Load(memRoot));
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.LegacyTimestamp);
+    }
+
     [Fact]
     public async Task Capture_then_recall_round_trips_under_the_session_tier()
     {

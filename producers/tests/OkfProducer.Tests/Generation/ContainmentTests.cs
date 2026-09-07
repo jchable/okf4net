@@ -1,0 +1,695 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net;
+using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Generation;
+using OkfProducer.Core.Scanning;
+using OkfProducer.Core.Validation;
+
+// `CodeGraph` alone would bind to the sibling namespace OkfProducer.Tests.CodeGraph, not to the type
+// (CS0118) -- see the same alias, and the same reason, at the top of ConceptGenerator.cs.
+using CodeGraphModel = OkfProducer.Core.CodeGraph.CodeGraph;
+
+namespace OkfProducer.Tests.Generation;
+
+/// <summary>
+/// §5: the containment spine -- the descending links that make a generated bundle navigable from
+/// <c>overview</c> down to a single member -- and the namespace concepts that spine needs to exist at
+/// all. Before this, <c>okf graph</c> on a generated bundle showed call edges between members and
+/// nothing above them: no way in from a package, and no concept for a namespace to be a way in to.
+/// </summary>
+public class ContainmentTests
+{
+    [Fact]
+    public void Every_namespace_gets_a_real_concept()
+    {
+        // A link to a directory's index.md would be a BrokenLink: index.md is a reserved file, not a
+        // concept (§5.1). So a namespace needs a concept of its own, coexisting with its directory
+        // exactly as a type does (`n.md` beside `n/`).
+        //
+        // Typed "C# Container" and not "C# Namespace": what this pass identifies is a level of the path
+        // tree no extracted declaration claims, which is a namespace most of the time and measurably not
+        // always -- 11 of the 28 synthesized on this repository are private or internal types whose
+        // members outlived the visibility scope filter. See ConceptGenerator.ContainerToken.
+        var concept = Single(Generate(), "code/csharp/n");
+
+        Assert.Equal("C# Container", concept.Document.Frontmatter.Type);
+        Assert.Equal("N", concept.Document.Frontmatter.Title);
+        Assert.Contains("container", concept.Document.Frontmatter.Tags);
+
+        // No `resource`: a namespace is not declared in one file, and §4.3 admits only a URL there.
+        Assert.Null(concept.Document.Frontmatter.Resource);
+    }
+
+    [Fact]
+    public void Each_level_links_exactly_one_level_down()
+    {
+        // §5.2, and it is churn control, not cosmetics: if overview listed all 480 concepts, adding one
+        // type would rewrite overview. With one level, adding a type touches its namespace alone.
+        Assert.Contains("(/code/csharp/n)", Single(Generate(), "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.Contains("(/code/csharp/n/scanner)", Single(Generate(), "code/csharp/n").Document.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("/code/csharp/n/scanner/scan", Single(Generate(), "code/csharp/n").Document.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("/code/csharp/n/scanner", Single(Generate(), "packages/lib").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_package_owns_the_namespaces_declared_by_its_Compile_items()
+    {
+        // §5.1: NOT "the files in its folder" -- MSBuild lets a project add, remove and link sources
+        // across directories. The fixture's only C# file is `linked/Scanner.cs`, which is not under the
+        // project's directory at all: directory containment attributes nothing here, and only the
+        // `Compile` item set the composition root read out of MSBuild can produce this link.
+        Assert.Contains("(/code/csharp/n)", Single(Generate(), "packages/lib").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_file_claimed_by_two_projects_is_attached_once_to_the_first_ordinal_project()
+    {
+        var concepts = Generate(sharedFile: true);
+
+        var linkCount = concepts.Count(c => c.Document.Body.Contains("(/code/csharp/shared)", StringComparison.Ordinal));
+
+        Assert.Equal(1, linkCount);
+        Assert.Contains("(/code/csharp/shared)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_other_claimants_are_named_rather_than_duplicated()
+    {
+        // §5.1's second half: the concept mentions the others. As text, never as a link -- a link would
+        // give the namespace a second incoming containment edge, which is the duplication the
+        // Ordinal-first rule exists to prevent.
+        var body = Single(Generate(sharedFile: true), "code/csharp/shared").Document.Body;
+
+        Assert.Contains("## Also compiled by", body, StringComparison.Ordinal);
+        Assert.Contains("`lib2`", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("(/packages/lib2)", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void With_no_ownership_map_no_package_link_is_emitted_and_the_run_says_so()
+    {
+        // The degradation §5.1 demands. A missing link leaves the spine incomplete, which is visible and
+        // costs a reader one hop; a link guessed from the directory tree attributes a namespace to the
+        // wrong package, which is a confident lie. So: no link, and a note saying why.
+        var notes = new List<string>();
+        var concepts = new ConceptGenerator().Generate(Snapshot(), Graph(), Options() with { SourceOwnership = null, Note = notes.Add });
+
+        Assert.DoesNotContain("(/code/csharp/n)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.Contains(concepts, c => c.Id.ToString() == "code/csharp/n");
+        Assert.Contains(notes, note => note.Contains("Compile", StringComparison.Ordinal) && note.Contains("directory", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_namespace_no_project_claims_is_reported_rather_than_attributed_anyway()
+    {
+        // The same rule one level down: a map that simply does not mention this file attributes nothing,
+        // and the run says how many containers came out of the pass unattached to a package.
+        var notes = new List<string>();
+        var ownership = SourceOwnershipMap.From(RepoRoot,
+            [new ProjectCompileItems("src/A/A.csproj", "net10.0", ["src/A/Unrelated.cs"])]);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), Graph(), Options() with { SourceOwnership = ownership, Note = notes.Add });
+
+        Assert.DoesNotContain("(/code/csharp/n)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.Contains(notes, note => note.Contains("not attributed to a package", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_claimant_that_is_not_a_detected_package_does_not_win_the_tie()
+    {
+        // "The first .csproj in Ordinal order" is a rule for choosing between PACKAGES. A test project
+        // or a tool outside the solution has no package concept to attach to, so letting it win the tie
+        // would drop the link entirely while a real package compiles the very same file. `build/...`
+        // sorts before `src/...`, so this fixture fails without that distinction rather than by luck.
+        var ownership = SourceOwnershipMap.From(RepoRoot,
+            [
+                new ProjectCompileItems("src/A/A.csproj", "net10.0", ["linked/Scanner.cs"]),
+                new ProjectCompileItems("build/Tool/Tool.csproj", "net10.0", ["linked/Scanner.cs"]),
+            ]);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), Graph(), Options() with { SourceOwnership = ownership });
+
+        Assert.Contains("(/code/csharp/n)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("## Also compiled by", Single(concepts, "code/csharp/n").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_symbol_absent_from_a_target_framework_says_so_in_its_body()
+    {
+        // §5.1's multi-TFM rule: the symbols are the union across frameworks, and a symbol missing from
+        // one says so, rather than a concept per TFM multiplying the bundle for information nobody asks
+        // for at that level.
+        var ownership = SourceOwnershipMap.From(RepoRoot,
+            [
+                new ProjectCompileItems("src/A/A.csproj", "net10.0", ["linked/Scanner.cs"]),
+                new ProjectCompileItems("src/A/A.csproj", "net8.0", []),
+            ]);
+
+        var body = Single(
+            new ConceptGenerator().Generate(Snapshot(), Graph(), Options() with { SourceOwnership = ownership }),
+            "code/csharp/n/scanner/scan").Document.Body;
+
+        Assert.Contains("## Target frameworks", body, StringComparison.Ordinal);
+        Assert.Contains("Absent from `net8.0`", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_symbol_every_framework_compiles_carries_no_framework_section()
+    {
+        Assert.DoesNotContain("## Target frameworks", Single(Generate(), "code/csharp/n/scanner/scan").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Overview_links_to_its_packages_and_docs_and_nothing_deeper()
+    {
+        var body = Single(Generate(), "overview").Document.Body;
+
+        Assert.Contains("(/packages/lib)", body, StringComparison.Ordinal);
+        Assert.Contains("(/docs/readme)", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("/code/", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Containment_and_calls_are_two_families_that_do_not_mix()
+    {
+        // §5.2: `okf graph` sees both; it is the body section that says which is which. A member is a
+        // leaf of the containment tree and still the source of call edges.
+        var type = Single(Generate(), "code/csharp/n/scanner").Document.Body;
+        var member = Single(Generate(), "code/csharp/n/scanner/scan").Document.Body;
+
+        Assert.Contains("## Contains", type, StringComparison.Ordinal);
+        Assert.DoesNotContain("## Calls", type, StringComparison.Ordinal);
+        Assert.DoesNotContain("## Contains", member, StringComparison.Ordinal);
+        Assert.Contains("[Other.Callee](/code/csharp/n/other/callee)", member, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_namespace_whose_name_is_reserved_is_escaped_and_keeps_its_children()
+    {
+        // `index`/`log` collide with the bundle's own reserved files, and a namespace is as free to be
+        // called `Index` as a type is. The escape has to carry the children with it, or the namespace's
+        // file would sit beside a directory that is not its own (§3.3).
+        var graph = new CodeGraphModel(
+            [
+                Type("Index", "Thing", "src/A/Thing.cs"),
+                Member("Index.Thing", "Go", "public void Go()", "src/A/Thing.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var ids = new ConceptGenerator().Generate(Snapshot(), graph, Options()).Select(c => c.Id.ToString()).ToList();
+
+        Assert.Contains("code/csharp/index-2", ids);
+        Assert.Contains("code/csharp/index-2/thing", ids);
+        Assert.Contains("code/csharp/index-2/thing/go", ids);
+        Assert.DoesNotContain("code/csharp/index", ids);
+    }
+
+    [Fact]
+    public void A_nested_namespace_hangs_off_its_parent_and_not_off_the_package()
+    {
+        // §5.2 again, at the one place it is easy to get wrong: a package must link to the namespaces it
+        // declares into, minus those already reachable from another of its own links. `N.Sub` is listed
+        // by `N`, so the package names `N` alone.
+        var graph = new CodeGraphModel(
+            [
+                Type("N", "Scanner", "linked/Scanner.cs"),
+                Type("N.Sub", "Deep", "linked/Scanner.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+
+        Assert.Contains("(/code/csharp/n)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("(/code/csharp/n/sub)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.Contains("(/code/csharp/n/sub)", Single(concepts, "code/csharp/n").Document.Body, StringComparison.Ordinal);
+        Assert.Contains("(/code/csharp/n/sub/deep)", Single(concepts, "code/csharp/n/sub").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_package_that_declares_only_deep_leaves_no_container_unreachable()
+    {
+        // The defect this pins: with symbols solely in `N.Sub.Deeper`, the pass-through levels `N` and
+        // `N.Sub` used to be emitted as concepts with children and NO incoming edge -- islands
+        // unreachable from overview, while `okf validate` stayed silent because nothing dangled. The
+        // tree was severed, not the links. `producers/src/OkfProducer.Core/` reproduces it exactly:
+        // everything sits in `OkfProducer.Core.Generation`, nothing in `OkfProducer.Core`.
+        var graph = new CodeGraphModel(
+            [
+                Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs"),
+                Member("N.Sub.Deeper.Thing", "Go", "public void Go()", "linked/Scanner.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+
+        AssertEveryContainerIsReachable(concepts);
+
+        // And the package links to the container it actually declares into -- no concept is skipped on
+        // the way, because the levels that would have been skipped are not concepts.
+        Assert.Contains("(/code/csharp/n/sub/deeper)", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain(concepts, c => c.Id.ToString() == "code/csharp/n");
+        Assert.DoesNotContain(concepts, c => c.Id.ToString() == "code/csharp/n/sub");
+    }
+
+    [Fact]
+    public void A_gap_between_two_declared_containers_is_bridged_rather_than_left_open()
+    {
+        // The shape sparse synthesis got wrong: something declared in `N`, something declared in
+        // `N.Sub.Deeper`, nothing at all in `N.Sub`. The package's attach keys are `n` and
+        // `n/sub/deeper`; minimality drops the deeper one because an ancestor is claimed, on the premise
+        // that it is "already reachable one level down from that ancestor" -- which is only true while
+        // the level in between exists. It did not, so `n/sub/deeper` took its whole subtree off the
+        // graph with no link dangling anywhere.
+        //
+        // The bridge is bounded: `n/sub` is synthesized because it connects a container to a REGISTERED
+        // ancestor. Where there is no such ancestor, nothing is synthesized and the package attaches
+        // directly -- which is the case the test below this one pins.
+        var concepts = new ConceptGenerator().Generate(Snapshot(), GapGraph(), Options());
+
+        AssertEveryContainerIsReachable(concepts);
+
+        Assert.Contains(concepts, c => c.Id.ToString() == "code/csharp/n/sub");
+        Assert.Contains("(/code/csharp/n/sub)", Single(concepts, "code/csharp/n").Document.Body, StringComparison.Ordinal);
+        Assert.Contains("(/code/csharp/n/sub/deeper)", Single(concepts, "code/csharp/n/sub").Document.Body, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("deep-only")]
+    [InlineData("gap")]
+    [InlineData("two-gaps")]
+    [InlineData("nested-types")]
+    [InlineData("global-namespace")]
+    [InlineData("two-roots")]
+    [InlineData("deep-chain")]
+    public void No_container_is_ever_disconnected_whatever_the_namespace_shape(string shape)
+    {
+        // The permanent form of the probe that caught the last two defects, kept as a test rather than
+        // as a throwaway harness -- being deleted before commit is exactly why this class escaped twice.
+        // Reachability is invisible to BrokenLinks(): a severed branch dangles nothing.
+        //
+        // One repository's output cannot cover this, because none of these shapes occurs on ours. Each
+        // one is a different way for the chain between a package and a container to have a hole in it.
+        var concepts = new ConceptGenerator().Generate(Snapshot(), ShapeGraph(shape), Options());
+
+        // `global-namespace` legitimately synthesizes no container at all, since nothing declares one --
+        // every other shape must produce at least one, or a producer that synthesizes ZERO containers
+        // would satisfy the reachability loop below vacuously (an empty `foreach` asserts nothing). This
+        // is the floor Task 9's own cap parked rather than fixed: restored here rather than only in the
+        // three non-Theory callers, so the class it exists to catch cannot slip back in through a fourth.
+        AssertEveryContainerIsReachable(concepts, expectAtLeastOne: shape != "global-namespace");
+
+        // And the package always has somewhere to point: for `global-namespace` there is no container at
+        // all -- correctly, since nothing declares one -- so the reachability assertion above is vacuous
+        // for that shape and this is what carries it. The entry point into `code/` must never be empty.
+        Assert.Contains("## Contains", Single(concepts, "packages/lib").Document.Body, StringComparison.Ordinal);
+    }
+
+    private static CodeGraphModel ShapeGraph(string shape) => new(
+        shape switch
+        {
+            // Everything in one deep namespace, nothing above it: no ancestor exists, so the package
+            // attaches directly and no bridging level is invented.
+            "deep-only" => [Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs")],
+
+            // Something at the top and something deep, nothing in between.
+            "gap" =>
+            [
+                Type("N", "Top", "linked/Scanner.cs"),
+                Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs"),
+            ],
+
+            // Two independent holes below one root.
+            "two-gaps" =>
+            [
+                Type("N", "Top", "linked/Scanner.cs"),
+                Type("N.A.Deep", "One", "linked/Scanner.cs"),
+                Type("N.B.Deeper.Still", "Two", "linked/Scanner.cs"),
+            ],
+
+            // A member whose type is extracted: the type is claimed, so it is a registered ancestor and
+            // no container is needed between it and its members.
+            "nested-types" =>
+            [
+                Type("N", "Outer", "linked/Scanner.cs"),
+                Type("N.Outer", "Inner", "linked/Scanner.cs"),
+                Member("N.Outer.Inner", "Go", "public void Go()", "linked/Scanner.cs"),
+            ],
+
+            // No container at all: the package attaches to the type itself.
+            "global-namespace" => [Type("", "Loose", "linked/Scanner.cs")],
+
+            "two-roots" =>
+            [
+                Type("A.One", "Thing", "linked/Scanner.cs"),
+                Type("B.Two.Three", "Other", "linked/Scanner.cs"),
+            ],
+
+            _ =>
+            [
+                Type("N", "Top", "linked/Scanner.cs"),
+                Type("N.A.B.C.D", "Bottom", "linked/Scanner.cs"),
+            ],
+        },
+        [],
+        RunStatus.Complete);
+
+    [Fact]
+    public void Every_container_in_an_ordinary_bundle_has_an_incoming_edge()
+    {
+        // The invariant itself, over the full fixture: mixed depths, two packages, a shared file. Stated
+        // as a test rather than only fixed, because "no link dangles" -- which BrokenLinks() checks --
+        // is not the same property as "no concept is unreachable", and only the first was ever asserted.
+        var concepts = Generate(sharedFile: true);
+
+        Assert.Contains(concepts, c => c.Document.Frontmatter.Type?.EndsWith(" Container", StringComparison.Ordinal) == true);
+        AssertEveryContainerIsReachable(concepts);
+    }
+
+    /// <summary>
+    /// Asserts that every container concept is named by some other concept's containment section. A
+    /// container is reachable from <c>overview</c> exactly when it has an incoming edge, since every
+    /// other family is reachable by construction.
+    /// </summary>
+    /// <param name="expectAtLeastOne">
+    /// Whether this fixture is expected to synthesize at least one container. True by default, since
+    /// every caller but <c>global-namespace</c> does: a producer regression that stopped synthesizing
+    /// containers entirely would otherwise satisfy the <c>foreach</c> below vacuously (nothing to
+    /// iterate is nothing to fail on) -- exactly the regression class this whole probe exists to catch.
+    /// </param>
+    private static void AssertEveryContainerIsReachable(IReadOnlyList<GeneratedConcept> concepts, bool expectAtLeastOne = true)
+    {
+        var containers = concepts
+            .Where(c => c.Document.Frontmatter.Type?.EndsWith(" Container", StringComparison.Ordinal) == true)
+            .Select(c => c.Id.ToString())
+            .ToList();
+
+        if (expectAtLeastOne)
+        {
+            Assert.NotEmpty(containers);
+        }
+
+        foreach (var container in containers)
+        {
+            Assert.Contains(
+                concepts,
+                other => other.Id.ToString() != container
+                    && other.Document.Body.Contains($"](/{container})", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void Two_groups_whose_containers_differ_only_by_an_empty_segment_each_get_an_incoming_link()
+    {
+        // `SplitContainer` drops empty entries, so `N.Sub` and `N..Sub` are two distinct SymbolKeys with
+        // two distinct registry ids -- and ONE shared raw path. Everything downstream of the raw path was
+        // first-wins (`registeredByRawPath.TryAdd`), so the parent linked the first id twice and the
+        // second concept got no incoming link at all: a severed branch with nothing dangling, invisible
+        // to `okf validate`. Reachable on the malformed input §2.3 puts in scope -- a MISSING/ERROR node
+        // on a partial parse contributes an empty container segment.
+        var graph = new CodeGraphModel(
+            [
+                Type("N.Sub", "Thing", "linked/Scanner.cs"),
+                Type("N..Sub", "Thing", "linked/Scanner.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+        var leaves = concepts
+            .Select(c => c.Id.ToString())
+            .Where(id => id.StartsWith("code/csharp/n/sub/", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Equal(2, leaves.Count);
+        foreach (var leaf in leaves)
+        {
+            Assert.Contains(
+                concepts,
+                other => other.Id.ToString() != leaf
+                    && other.Document.Body.Contains($"](/{leaf})", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void A_package_links_both_top_level_groups_that_share_a_raw_path()
+    {
+        // The same first-wins lookup one level up, where the group IS the attachment point: with no
+        // container anywhere, `AttributePackages` resolves the package's child through the raw path too,
+        // so the second concept was unreachable from the only family that could reach it.
+        var graph = new CodeGraphModel(
+            [
+                Type("", "Loose", "linked/Scanner.cs"),
+                Type(".", "Loose", "linked/Scanner.cs"),
+            ],
+            [],
+            RunStatus.Complete);
+
+        var concepts = new ConceptGenerator().Generate(Snapshot(), graph, Options());
+        var body = Single(concepts, "packages/lib").Document.Body;
+
+        Assert.Contains("(/code/csharp/loose)", body, StringComparison.Ordinal);
+        Assert.Contains("(/code/csharp/loose-2)", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_package_description_opening_a_fence_behind_non_ascii_whitespace_still_lists_its_namespaces()
+    {
+        // The derived route into the same disagreement, and the only family where it is reachable: a
+        // `.csproj` <Description> reaches the body untrimmed, so a leading NBSP before a fence slipped
+        // past EscapeLineBlockMarker (' ' and '\t' only) while LinkScanner.CodeFreeLines trimmed it with
+        // TrimStart() and opened a fence -- swallowing this package's whole `## Contains` section, which
+        // is the only way into the `code/` family.
+        var snapshot = new RepositorySnapshot(RepoRoot, "my-repo",
+            [new PackageManifest("nuget", "src/A/A.csproj", "lib", "\u00a0```\nan unclosed fence.")],
+            [new DocFile("README.md", "Readme")]);
+
+        var body = Single(new ConceptGenerator().Generate(snapshot, Graph(), Options()), "packages/lib").Document.Body;
+
+        Assert.Contains(LinkScanner.ExtractLinks(body), link => link.Target == "/code/csharp/n");
+    }
+
+    [Fact]
+    public void A_manual_package_description_still_has_its_leading_fence_defused()
+    {
+        // §4.2 preservation reaching `packages/*` brings the one exception `code/*` already makes with
+        // it: a description a human wrote is left exactly as written EXCEPT for an unbalanced leading
+        // fence, which is not a rendering choice but a severed branch -- the scanner would skip every
+        // line after it, `## Contains` included.
+        var options = Options() with
+        {
+            ExistingFrontmatter = id => id.ToString() == "packages/lib" ? Preserved("```\nan unclosed fence.") : null,
+        };
+
+        var concept = Single(new ConceptGenerator().Generate(Snapshot(), Graph(), options), "packages/lib");
+
+        Assert.Equal("```\nan unclosed fence.", concept.Document.Frontmatter.Description);
+        Assert.Contains(LinkScanner.ExtractLinks(concept.Document.Body), link => link.Target == "/code/csharp/n");
+    }
+
+    /// <summary>Frontmatter as a human would leave it behind: a description of their own, marked <c>manual</c>.</summary>
+    private static Frontmatter Preserved(string description) =>
+        OkfDocumentBuilder.ForType("Package")
+            .Description(description)
+            .Extension(DescriptionResolver.DescriptionSourceKey, new OKF4net.Yaml.YamlString(DescriptionResolver.ManualLabel))
+            .Body("body\n")
+            .Build()
+            .Frontmatter;
+
+    [Fact]
+    public void A_manual_description_on_a_namespace_survives_regeneration()
+    {
+        // §4.2 reaches the namespace family too: a container concept is a real concept a human can edit,
+        // so it goes through the same DescriptionResolver rather than a second copy of the rule.
+        var options = Options() with
+        {
+            ExistingFrontmatter = id => id.ToString() == "code/csharp/n"
+                ? OkfDocumentBuilder.ForType("C# Container")
+                    .Description("Hand written.")
+                    .Extension(DescriptionResolver.DescriptionSourceKey, new OKF4net.Yaml.YamlString("manual"))
+                    .Body("body\n")
+                    .Build()
+                    .Frontmatter
+                : null,
+        };
+
+        var fm = Single(new ConceptGenerator().Generate(Snapshot(), Graph(), options), "code/csharp/n").Document.Frontmatter;
+
+        Assert.Equal("Hand written.", fm.Description);
+        Assert.Equal("manual", fm.Get("description_source")?.AsDisplayString());
+    }
+
+    [Fact]
+    public void Every_generated_concept_passes_the_strict_producer_validation()
+    {
+        foreach (var concept in Generate(sharedFile: true))
+        {
+            concept.Document.Validate();
+        }
+    }
+
+    [Fact]
+    public void Two_runs_over_the_same_inputs_produce_identical_ids_and_bodies()
+    {
+        // Honest scope, because the obvious reading of this name is wrong: .NET randomises the string
+        // hash seed once per PROCESS, so both runs here share it and an output ordered by a Dictionary
+        // or a HashSet would come back identical twice. This test cannot detect that class of defect.
+        // It pins in-process stability only -- that nothing carries mutable state between runs.
+        //
+        // The cross-process guard is elsewhere and is a different shape: the pinned literal id sequence
+        // in CodeConceptGeneratorTests.Code_concepts_come_out_in_a_pinned_order_shallowest_first_then_ordinal,
+        // which a hash-ordered output fails under some seed and therefore eventually in CI.
+        var first = Generate(sharedFile: true);
+        var second = Generate(sharedFile: true);
+
+        Assert.Equal(first.Select(c => c.Id.ToString()), second.Select(c => c.Id.ToString()));
+        Assert.Equal(first.Select(c => c.Document.Body), second.Select(c => c.Document.Body));
+    }
+
+    [Fact]
+    public void The_bundle_that_comes_out_validates_clean()
+    {
+        using var tmp = new TempDir();
+        Write(Generate(sharedFile: true, repoUrl: "https://github.com/o/r"), tmp.Path);
+
+        var outcome = new BundleValidationRunner().Validate(tmp.Path, new FixedClock(new DateOnly(2026, 8, 31)));
+
+        Assert.True(outcome.IsConformant, string.Join("\n", outcome.DiagnosticLines));
+
+        // Not `DiagnosticLines.Contains("BrokenLink")`: Diagnostic.ToString() renders
+        // `[severity] path: message` and never the DiagnosticCode, so that assertion would pass on any
+        // bundle whatsoever, including one where every containment link dangles. The check that can
+        // actually fail is the bundle's own link resolution -- which is the whole point of this lot,
+        // since a dangling containment link is exactly what would make `okf graph` show nothing.
+        Assert.Empty(Bundle.Load(tmp.Path).BrokenLinks());
+    }
+
+    // -- fixture ----------------------------------------------------------------------------------
+
+    private const string RepoRoot = "/repo";
+
+    private static IReadOnlyList<GeneratedConcept> Generate(bool sharedFile = false, string? repoUrl = null)
+        => new ConceptGenerator().Generate(
+            Snapshot(sharedFile),
+            Graph(sharedFile),
+            Options(repoUrl) with { SourceOwnership = Ownership(sharedFile) });
+
+    private static GenerateOptions Options(string? repoUrl = null) => new()
+    {
+        RepoUrl = repoUrl,
+        Rev = repoUrl is null ? null : "main",
+        Profiles = [CSharp],
+        SourceOwnership = Ownership(sharedFile: false),
+    };
+
+    /// <summary>
+    /// One package whose <c>.csproj</c> sits in <c>src/A/</c> while its only source file lives in
+    /// <c>linked/</c> -- so no directory rule could attribute the namespace -- plus, on the shared
+    /// fixture, a second package that claims the same shared file as the first.
+    /// </summary>
+    private static RepositorySnapshot Snapshot(bool sharedFile = false) => new(
+        RepoRoot,
+        "my-repo",
+        sharedFile
+            ?
+            [
+                new PackageManifest("nuget", "src/A/A.csproj", "lib", null),
+                new PackageManifest("nuget", "src/B/B.csproj", "lib2", null),
+            ]
+            : [new PackageManifest("nuget", "src/A/A.csproj", "lib", null)],
+        [new DocFile("README.md", "Readme")]);
+
+    private static SourceOwnershipMap Ownership(bool sharedFile) => SourceOwnershipMap.From(
+        RepoRoot,
+        sharedFile
+            ?
+            [
+                new ProjectCompileItems("src/A/A.csproj", "net10.0", ["linked/Scanner.cs", "src/shared/Thing.cs"]),
+                new ProjectCompileItems("src/B/B.csproj", "net10.0", ["src/shared/Thing.cs"]),
+            ]
+            : [new ProjectCompileItems("src/A/A.csproj", "net10.0", ["linked/Scanner.cs"])]);
+
+    /// <summary>
+    /// A repository declaring in <c>N</c> and in <c>N.Sub.Deeper</c>, with nothing whatsoever in
+    /// <c>N.Sub</c> -- the gap sparse container synthesis left unbridged.
+    /// </summary>
+    private static CodeGraphModel GapGraph() => new(
+        [
+            Type("N", "Top", "linked/Scanner.cs"),
+            Type("N.Sub.Deeper", "Thing", "linked/Scanner.cs"),
+            Member("N.Sub.Deeper.Thing", "Go", "public void Go()", "linked/Scanner.cs"),
+        ],
+        [],
+        RunStatus.Complete);
+
+    private static CodeGraphModel Graph(bool sharedFile = false) => new(
+        sharedFile
+            ? [.. CoreSymbols, Type("Shared", "Thing", "src/shared/Thing.cs")]
+            : CoreSymbols,
+        [
+            new ResolvedEdge(new CallSite("N.Scanner", "Scan", "Other.Callee", "linked/Scanner.cs", 100),
+                "N.Other", "Callee", EdgeConfidence.Exact),
+        ],
+        RunStatus.Complete);
+
+    private static readonly SymbolFact[] CoreSymbols =
+    [
+        Type("N", "Scanner", "linked/Scanner.cs"),
+        Member("N.Scanner", "Scan", "public void Scan()", "linked/Scanner.cs"),
+        Type("N", "Other", "linked/Other.cs"),
+        Member("N.Other", "Callee", "public void Callee()", "linked/Other.cs"),
+    ];
+
+    private static GeneratedConcept Single(IReadOnlyList<GeneratedConcept> concepts, string id)
+        => concepts.Single(c => c.Id.ToString() == id);
+
+    private static void Write(IReadOnlyList<GeneratedConcept> concepts, string path)
+    {
+        var result = new BundleWriter().Write(path, concepts, WritePolicy.RequireEmpty, System.IO.Path.GetTempPath());
+
+        Assert.Empty(result.Failures);
+    }
+
+    private static SymbolFact Type(string container, string name, string path) =>
+        new(SymbolKind.Type, "csharp", container, name, $"public class {name}",
+            SymbolVisibility.Public, path, 0, 1, 1, 2, null);
+
+    private static SymbolFact Member(string container, string name, string signature, string path) =>
+        new(SymbolKind.Member, "csharp", container, name, signature,
+            SymbolVisibility.Public, path, 10, 11, 3, 4, null);
+
+    private static readonly LanguageProfile CSharp = new(
+        Language: "csharp",
+        GrammarName: "c_sharp",
+        DeclarationQuery: string.Empty,
+        CallQuery: string.Empty,
+        DocCommentPrefix: "///",
+        FileExtensions: [".cs"]);
+
+    private sealed class TempDir : IDisposable
+    {
+        public TempDir()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "okfproducer-containment-" + Guid.NewGuid());
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            try
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+}

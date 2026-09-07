@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using OKF4net.Cli;
@@ -51,6 +52,113 @@ public class CliTests
         Assert.Contains("USAGE:", r.Out);
     }
 
+    // Every verb, and every flag each one actually accepts. Kept here rather
+    // than derived from the CLI's own tables so the tests fail if a verb
+    // silently loses a flag.
+    private static readonly string[] AllVerbs =
+        ["validate", "audit", "info", "index", "graph", "parse", "fmt"];
+
+    /// <summary>
+    /// A minimal throwaway bundle for argument-parsing tests. These pass a
+    /// bundle path to EVERY verb including <c>index</c>, which writes: pointed
+    /// at <see cref="BundlePath"/> a parser regression would regenerate
+    /// index.md inside tests/fixtures/ and break the golden captures. It did,
+    /// once, while these tests were red.
+    /// </summary>
+    private static TempDir ScratchBundle()
+    {
+        var tmp = new TempDir();
+        tmp.Write("notes/thing.md", "---\ntype: Note\ntitle: Thing\ndescription: A thing.\n---\n\nbody\n");
+        return tmp;
+    }
+
+    public static TheoryData<string, string> VerbsAndHelpFlags()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var verb in AllVerbs)
+        {
+            data.Add(verb, "-h");
+            data.Add(verb, "--help");
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Asking a verb for help hit the missing-positional guard first, so
+    /// `okf validate --help` answered `error: missing &lt;bundle&gt;` and exited 1
+    /// — the one question a user asks when they do not know what the bundle
+    /// argument is.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(VerbsAndHelpFlags))]
+    public void Verb_help_prints_help_and_succeeds(string verb, string flag)
+    {
+        var r = Run(verb, flag);
+
+        Assert.Equal(0, r.Code);
+        Assert.Contains(verb, r.Out, StringComparison.Ordinal);
+        Assert.Equal("", r.Err);
+    }
+
+    /// <summary>
+    /// Any `-`-prefixed token was accepted and kept, so a typo'd or invented
+    /// flag ran the command with silently different behaviour than asked for:
+    /// `okf validate b --jsonn` printed the human report and exited 0.
+    /// </summary>
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("audit")]
+    [InlineData("info")]
+    [InlineData("index")]
+    [InlineData("graph")]
+    public void Unknown_option_is_rejected(string verb)
+    {
+        // A throwaway bundle, never the shared fixture: `index` WRITES, and a
+        // regression that let the bad option through would otherwise regenerate
+        // index.md inside tests/fixtures/ and corrupt the golden captures.
+        using var tmp = ScratchBundle();
+
+        var r = Run(verb, tmp.Path, "--bogus");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unknown option: --bogus", r.Err, StringComparison.Ordinal);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Only the first positional took the slot; every later one was dropped on
+    /// the floor, so `okf info bundle extra` ignored `extra` and exited 0.
+    /// </summary>
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("audit")]
+    [InlineData("info")]
+    [InlineData("index")]
+    [InlineData("graph")]
+    public void Extra_positional_is_rejected(string verb)
+    {
+        using var tmp = ScratchBundle(); // see Unknown_option_is_rejected
+
+        var r = Run(verb, tmp.Path, "extra");
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: extra", r.Err, StringComparison.Ordinal);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// A flag one verb accepts is not thereby accepted everywhere: the rejection
+    /// is per-verb, not one global allowlist.
+    /// </summary>
+    [Fact]
+    public void A_flag_from_another_verb_is_rejected()
+    {
+        // --dot is graph's; --stale is audit's.
+        Assert.Contains("unknown option: --dot", Run("validate", BundlePath, "--dot").Err, StringComparison.Ordinal);
+        Assert.Contains("unknown option: --stale", Run("info", BundlePath, "--stale").Err, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Version_prints_and_succeeds()
     {
@@ -58,6 +166,38 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Contains("okf ", r.Out);
         Assert.Contains("OKF spec v0.2", r.Out);
+    }
+
+    /// <summary>
+    /// The version `okf --version` reports must be the one the build stamped,
+    /// not a value maintained by hand beside it.
+    ///
+    /// It used to be `private const string CliVersion`, which `-p:Version` — the
+    /// property release.yml derives from the git tag and passes to `dotnet
+    /// publish` — does not touch. So the tag, the package and the zip filename
+    /// could all say one version while the binary inside said another, and the
+    /// only guard compared the constant to Directory.Build.props, which a
+    /// divergent tag leaves untouched. That is not hypothetical: the winget
+    /// package for 0.2.0 shipped a binary whose `--version` printed
+    /// 0.1.0-alpha.1, caught by a Microsoft moderator rather than by CI.
+    ///
+    /// Reading the assembly's own informational version removes the failure
+    /// mode instead of guarding it: there is no second place left to drift.
+    /// </summary>
+    [Fact]
+    public void Version_is_read_from_the_assembly_not_a_separate_constant()
+    {
+        var stamped = typeof(OkfCli).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion;
+
+        var r = Run("--version");
+
+        Assert.Equal(0, r.Code);
+        Assert.StartsWith($"okf {stamped} ", r.Out);
+        // A '+' would mean the source-revision suffix leaked into user-facing
+        // output; the csproj disables it.
+        Assert.DoesNotContain("+", stamped, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -103,7 +243,9 @@ public class CliTests
         var before = Run("validate", tmp.Path, "--as-of", "2026-05-31");
         var onTheDay = Run("validate", tmp.Path, "--as-of", "2026-06-01");
 
-        // §5.5 is `today >= stale_after`, so the boundary date is already stale.
+        // §5.5 is `now >= stale_after`, and both sides here are midnight UTC
+        // (--as-of pins one, a date-only stale_after normalizes to one), so the
+        // boundary date is already stale.
         Assert.DoesNotContain("concept is stale", before.Out);
         Assert.Contains("concept is stale (stale_after 2026-06-01)", onTheDay.Out);
 
@@ -301,6 +443,30 @@ public class CliTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
     }
 
+
+    /// <summary>
+    /// `okf graph` without `--dot` had no test at all (issue #14): the golden
+    /// capture covers only the `--dot` renderer, so half the verb's output was
+    /// unpinned. Closing that before refactoring the method, since a refactor
+    /// of an uncovered branch proves nothing.
+    ///
+    /// The expectation is derived from the CLI's documented behaviour, not
+    /// copied from a run: a concept with links prints its id, then one indented
+    /// line per link marked `-&gt;` when the target resolves and `-x` when it
+    /// does not; a concept with no outgoing links is skipped entirely.
+    /// </summary>
+    [Fact]
+    public void Graph_plain_text_lists_links_and_marks_broken_ones()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: A\ndescription: d\n---\n\n[b](/b.md) and [gone](/missing.md)\n");
+        tmp.Write("b.md", "---\ntype: Note\ntitle: B\ndescription: d\n---\n\nno links here\n");
+
+        var r = Run("graph", tmp.Path);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("a\n  -> b\n  -x missing\n", r.Out);
+    }
     [Fact]
     public void Graph_dot_prints_digraph()
     {
@@ -417,124 +583,72 @@ public class CliTests
     }
 
     [Fact]
-    public void Index_with_embedded_nul_path_reports_no_files_written_not_an_error()
+    public void Index_with_embedded_nul_path_exits_one_with_error_prefix()
     {
-        // Deliberately NOT an "error: ..." exit-1 case: RegenerateIndexes
-        // checks whether the bundle root exists first, and Directory.Exists
-        // swallows the underlying failure and simply returns false for a
-        // garbage path, so the function returns an empty result rather than
-        // an I/O error. CmdIndex then reports "no index files written" and
-        // exits 0. Audited (A3) to confirm this command needed no change,
-        // unlike parse/fmt/validate/info/graph.
+        // Was deliberately the one exit-0 case here, on the reasoning that
+        // Directory.Exists merely returns false for a garbage path, so
+        // RegenerateIndexes returns an empty list rather than an I/O error and
+        // CmdIndex had nothing to report. An external audit re-raised it and
+        // the earlier reasoning does not hold: "the check cannot tell you why"
+        // is not a reason to report success for a root that does not exist.
+        // CmdIndex now runs the same RequireBundleRoot guard the other bundle
+        // verbs inherit from Bundle.Load, so index matches parse/fmt/validate/
+        // info/graph instead of standing alone.
         var r = Run("index", "x\0y");
-        Assert.Equal(0, r.Code);
-        Assert.Contains("no index files written", r.Out);
-        Assert.Equal("", r.Err);
-    }
-
-    [Fact]
-    public void Render_writes_a_site_and_reports_success()
-    {
-        using var dest = new TempDir();
-        var outDir = Path.Combine(dest.Path, "site");
-
-        var r = Run("render", BundlePath, "--out", outDir);
-
-        Assert.Equal(0, r.Code);
-        Assert.Equal("", r.Err);
-        Assert.True(File.Exists(Path.Combine(outDir, "index.html")));
-    }
-
-    [Fact]
-    public void Render_without_out_fails()
-    {
-        var r = Run("render", BundlePath);
         Assert.Equal(1, r.Code);
-        Assert.Contains("--out", r.Err);
+        Assert.StartsWith("error:", r.Err);
+        Assert.DoesNotContain("at OKF4net", r.Err);
+        Assert.Equal("", r.Out);
     }
 
     [Fact]
-    public void Render_without_a_bundle_fails()
+    public void Index_on_a_missing_bundle_root_exits_one_like_the_other_bundle_verbs()
     {
-        var r = Run("render");
-        Assert.Equal(1, r.Code);
-        Assert.Contains("error:", r.Err);
+        // `index` is the only bundle verb that never routes through the shared
+        // Load helper (it goes straight to IndexGenerator), so nothing gave it
+        // Bundle.Load's "root is not a directory" guard: it reported "no index
+        // files written (empty bundle?)" and exited 0 on a target that does not
+        // exist, while validate/info/graph all exited 1. Comparing the
+        // two verbs' stderr pins them together, so the separate guard cannot
+        // drift from the message the shared path produces.
+        var missing = Path.Combine(Path.GetTempPath(), "okf-missing-" + Guid.NewGuid().ToString("N"));
+
+        var index = Run("index", missing);
+        var validate = Run("validate", missing);
+
+        Assert.Equal(1, index.Code);
+        Assert.StartsWith("error:", index.Err);
+        Assert.DoesNotContain("at OKF4net", index.Err);
+        Assert.Equal(validate.Err, index.Err);
+        Assert.Equal("", index.Out);
     }
 
+    /// <summary>
+    /// `render` was split out into the standalone `okf-render` binary
+    /// (`OKF4net.Render`) before ever shipping in a release, so `okf` carries
+    /// no shim or hint for it: an invocation naming it is an ordinary unknown
+    /// subcommand, exactly like any other name `okf` never defined.
+    /// </summary>
     [Fact]
-    public void Render_into_the_bundle_itself_fails()
+    public void Render_is_no_longer_a_recognized_subcommand()
     {
-        // Regression guard: if this check ever weakens, `dotnet test` would
-        // write generated HTML straight into whatever bundle path is passed
-        // here. Use a throwaway bundle in a TempDir -- never BundlePath,
-        // which is the byte-exact golden fixture tests/fixtures/appendix_a --
-        // so a regression can never corrupt the real goldens the
-        // golden-parity tests depend on.
-        using var tmp = new TempDir();
-        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
-
-        var r = Run("render", tmp.Path, "--out", Path.Combine(tmp.Path, "site"));
+        var r = Run("render", BundlePath, "--out", "/tmp/wherever");
 
         Assert.Equal(1, r.Code);
-        Assert.Contains("error:", r.Err);
-
-        // Regression guard for the .NET ArgumentException(paramName) leaking
-        // its " (Parameter 'outDir')" framework-noise suffix into CLI output
-        // meant for humans -- HtmlWriter.Write is a library API and correctly
-        // keeps throwing with paramName set; the CLI must strip it before
-        // printing.
-        Assert.DoesNotContain("Parameter", r.Err);
+        Assert.Contains("unknown subcommand: render", r.Err);
     }
 
+    /// <summary>
+    /// Same split as above, from the help text's side: `render` must not be
+    /// listed among `okf`'s commands. A plain substring check would also
+    /// fail on an unrelated future word like "renders" or "pre-rendered"
+    /// appearing anywhere in the help text, for a reason that has nothing to
+    /// do with this guard -- so this matches "render" as a whole word.
+    /// </summary>
     [Fact]
-    public void Render_with_out_flag_missing_its_value_after_the_bundle_fails_with_out_message()
+    public void Help_does_not_list_render_as_a_command()
     {
-        var r = Run("render", BundlePath, "--out");
-
-        Assert.Equal(1, r.Code);
-        Assert.Contains("--out requires a value", r.Err);
-    }
-
-    [Fact]
-    public void Render_with_bare_out_flag_and_no_bundle_fails_with_out_message_not_missing_bundle()
-    {
-        // Same "--out present but unvalued" failure as the test above, just
-        // with the bundle positional also absent. Before the fix this order
-        // dependency made the message flip to "missing <bundle>" (Positional
-        // ran first and hit the empty slot before FlagValue's bounds check
-        // ever fired) -- deterministic now: FlagValue's check always wins.
-        var r = Run("render", "--out");
-
-        Assert.Equal(1, r.Code);
-        Assert.Contains("--out requires a value", r.Err);
-        Assert.DoesNotContain("missing <bundle>", r.Err);
-    }
-
-    [Fact]
-    public void Usage_mentions_the_render_verb()
-    {
-        var r = Run("--help");
-        Assert.Equal(0, r.Code);
-        Assert.Contains("render", r.Out);
-    }
-
-    [Fact]
-    public void Render_with_only_out_and_no_bundle_fails_rather_than_treating_the_out_dir_as_the_bundle()
-    {
-        // --out is the CLI's first VALUED option -- every other verb's flags
-        // are valueless (--dot, --json, -w) -- so the naive Positional()
-        // scan (first arg not starting with '-') would previously return the
-        // *value* of --out as the bundle path when the bundle itself is
-        // omitted. Guard against silently rendering the output directory as
-        // if it were the bundle.
-        using var dest = new TempDir();
-        var outDir = Path.Combine(dest.Path, "site");
-
-        var r = Run("render", "--out", outDir);
-
-        Assert.Equal(1, r.Code);
-        Assert.Contains("error:", r.Err);
-        Assert.False(Directory.Exists(outDir));
+        Assert.DoesNotMatch(new Regex(@"\brender\b", RegexOptions.IgnoreCase), Run("--help").Out);
     }
 
     // ----------------------------------------------------------------
@@ -740,15 +854,36 @@ public class CliTests
     /// Everything after `--` is positional, never a flag — that is what the
     /// separator is for. Only the positional scan used to honour it, so a
     /// `--json` sitting after the separator still switched the output format.
+    ///
+    /// The separator no longer swallows the leftovers, though: a token after it
+    /// is a positional like any other, so a SECOND one is `unexpected argument`
+    /// rather than silently dropped. The guarantee this test exists for is
+    /// unchanged and strictly stronger — `--json` after the separator is still
+    /// not a flag, still does not switch the format, and now says why instead
+    /// of vanishing.
     /// </summary>
     [Fact]
     public void Audit_tokens_after_the_separator_are_never_flags()
     {
         var r = Run("audit", "--", V02BundlePath, "--json");
 
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: --json", r.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+    }
+
+    /// <summary>
+    /// The separator's own job, isolated from the surplus-argument rule above:
+    /// a lone token after `--` is the positional even when it starts with `-`,
+    /// which is the whole reason the separator exists.
+    /// </summary>
+    [Fact]
+    public void A_lone_token_after_the_separator_is_the_positional()
+    {
+        var r = Run("audit", "--", V02BundlePath);
+
         Assert.Equal(0, r.Code);
         Assert.StartsWith("bundle:     ", r.Out);
-        Assert.DoesNotContain("\"conceptCount\"", r.Out);
     }
 
     /// <summary>
@@ -767,9 +902,13 @@ public class CliTests
 
         var r = Run("fmt", "--", file, "-w");
 
-        Assert.Equal(0, r.Code);
+        // The point of this test is the file on disk, and it is untouched —
+        // `-w` after the separator is not a flag. It is now also named as a
+        // surplus positional rather than silently dropped, so the verb reports
+        // instead of printing the formatted document.
         Assert.Equal(unformatted, File.ReadAllText(file));
-        Assert.Contains("title: Spaced", r.Out);
+        Assert.Equal(1, r.Code);
+        Assert.Contains("unexpected argument: -w", r.Err, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -887,7 +1026,9 @@ public class CliTests
         Assert.Equal("Metric", finding.GetProperty("type").GetString());
         Assert.Equal("Daily Active Users", finding.GetProperty("title").GetString());
         Assert.Equal("human-reviewed", finding.GetProperty("trust").GetString());
-        Assert.Equal("2099-01-01", finding.GetProperty("staleAfter").GetString());
+        // Verbatim raw frontmatter, not the parsed instant: the fixture carries
+        // the §5 conformant form, so the JSON echoes it unchanged.
+        Assert.Equal("2099-01-01T00:00:00Z", finding.GetProperty("staleAfter").GetString());
         Assert.True(finding.GetProperty("stale").GetBoolean());
     }
 
@@ -920,20 +1061,29 @@ public class CliTests
 
     /// <summary>
     /// `--` ends option parsing; it does not discard the positionals that came
-    /// before it. With a single positional slot the old rule ("the token after
-    /// the separator wins") was indistinguishable from this one; with a verb
-    /// that takes several, it would silently drop the bundle.
+    /// before it. On a verb with one positional slot that is unobservable —
+    /// `Audit_tokens_after_the_separator_are_never_flags` covers what happens
+    /// there — so it is pinned on `verify`, the one variadic verb, where
+    /// dropping the earlier tokens would silently change which concepts get
+    /// stamped rather than merely rejecting a surplus argument.
     /// </summary>
     [Fact]
     public void Separator_keeps_positionals_from_both_sides()
     {
-        var r = Run("audit", V02BundlePath, "--", "--json");
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
 
-        // The bundle before `--` is still the positional; `--json` after it is
-        // an argument, not a flag, so the output is the text report.
+        // The flags sit before the separator on purpose: after it, `--by` would
+        // be a concept id like any other token, which is what `--` is for.
+        var r = Run("verify", bundle, "metrics/dau", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z", "--", "metrics/rev");
+
+        // Both ids land: the one before the separator is not discarded, and the
+        // one after it is an argument rather than a flag.
         Assert.Equal(0, r.Code);
-        Assert.StartsWith($"bundle:     {V02BundlePath}", r.Out);
-        Assert.DoesNotContain("\"conceptCount\"", r.Out);
+        Assert.Equal(
+            "recorded metrics/dau  human:ada  2026-08-28T09:14:00Z\n" +
+            "recorded metrics/rev  human:ada  2026-08-28T09:14:00Z\n",
+            r.Out);
     }
 
     private static string NewBundleWithTwoConcepts(TempDir tmp)
