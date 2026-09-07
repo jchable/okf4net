@@ -34,6 +34,16 @@ namespace OkfProducer.Cli;
 /// only lever over the fact that evaluating a repository's MSBuild logic <i>executes</i> that logic;
 /// see <see cref="GenerateRun"/>'s own remarks for what it does and does not buy.
 /// </param>
+/// <param name="RoslynTimeout">
+/// A wall-clock budget for the whole Roslyn stage, or <see langword="null"/> for none -- which is the
+/// default, because a budget makes the emitted bundle a function of how fast the machine is and §6.2
+/// pins determinism at a fixed extractor version, not a fixed CPU. The extraction stage has always
+/// honoured <c>ExtractionLimits.Timeout</c>; this stage never had a bound of its own, since MSBuild's
+/// two-minute per-query cap bounds one subprocess and nothing bounds their sum. When the budget runs
+/// out the stage is abandoned WHOLE, so the run degrades to exactly the <see cref="NoMsBuild"/> state
+/// and says so, rather than emitting a bundle whose exact and name-matched links are divided by
+/// machine speed with nothing recording where the line fell.
+/// </param>
 internal sealed record GenerateRequest(
     string RepoPath,
     string OutPath,
@@ -45,7 +55,8 @@ internal sealed record GenerateRequest(
     bool IncludeInternal,
     bool NoCode,
     long MaxFileBytes,
-    bool NoMsBuild);
+    bool NoMsBuild,
+    TimeSpan? RoslynTimeout = null);
 
 /// <summary>
 /// The producer's composition root: the one place scan, extract, resolve, attribute, generate and
@@ -91,8 +102,12 @@ internal sealed record GenerateRequest(
 /// below <i>unless</i> <c>--rev</c> already named the ref, in which case the <c>??</c> never
 /// evaluates it; and <c>--check</c> spawns one further <c>git rev-parse</c>
 /// (<c>BundleDrift.Check</c>) before the regeneration it compares against. All of them go through
-/// <c>GitRevision.RunGit</c> with the scanned repository as their working directory. Two to four
-/// invocations, then, not a fixed three -- <c>producers/README.md</c> states the same breakdown.
+/// <c>GitRevision.RunGit</c> with the scanned repository as their working directory. Two to FIVE
+/// invocations, then, not a fixed three: the unborn-branch fix added a second
+/// <c>git rev-parse --verify HEAD</c> inside <c>GitRevision.CurrentBranch</c>, and this sentence was
+/// left at "two to four" while <c>producers/README.md</c> was corrected -- so it also stopped being
+/// true that the README "states the same breakdown". Both halves are fixed here; the README is the
+/// one to keep in step, since it is what an operator reads.
 /// The flag is off by default deliberately -- making it opt-in would silently
 /// degrade the resolution quality of every run that exists today -- which is why it is stated here and
 /// in <c>producers/README.md</c> rather than left to be discovered.</para>
@@ -210,17 +225,68 @@ internal static class GenerateRun
             {
                 // Later resolvers override earlier ones for the files they own (§2.1), so the exact
                 // resolver goes after the name-matching baseline, never before it.
-                roslyn = RoslynResolver.Create(request.RepoPath, projectPaths, limits);
-                resolvers.Add(roslyn);
+                //
+                // The two branches are not two policies. Without a budget this is the call it always
+                // was, on the overload that cannot return null, so nothing about an unbudgeted run
+                // changed when the budget arrived. With one, an exhausted budget lands the run in
+                // exactly the --no-msbuild state -- resolver absent, ownership map absent -- which is
+                // why the note below names the same two losses in the same order rather than
+                // inventing a third vocabulary for a state the operator already has a name for.
+                if (request.RoslynTimeout is { } budget)
+                {
+                    if (RoslynResolver.TryCreateWithin(request.RepoPath, projectPaths, limits, budget, out var bounded))
+                    {
+                        roslyn = bounded;
+                    }
+                    else
+                    {
+                        note($"--roslyn-timeout of {budget.TotalSeconds:0.###}s ran out before the Roslyn stage"
+                            + " finished, so the stage was abandoned whole and this run resolved calls with the"
+                            + " name-matching baseline alone. The two losses are the same ones --no-msbuild"
+                            + " carries. (1) Every `## Calls` link here is a name match, and an inter-type"
+                            + " ambiguity it cannot settle is left unlinked. (2) There is no source-ownership map,"
+                            + " so NO `packages` -> namespace containment link is emitted, and under --update that"
+                            + " overwrites the ones a previous run had. Raise the budget, or drop --roslyn-timeout"
+                            + " to let the stage take as long as it takes.");
+                    }
+                }
+                else
+                {
+                    roslyn = RoslynResolver.Create(request.RepoPath, projectPaths, limits);
+                }
 
-                ReportProjects(roslyn, request.RepoPath, note);
-                ownership = Attribution(request.RepoPath, roslyn.QueriedProjects, note);
+                if (roslyn is not null)
+                {
+                    resolvers.Add(roslyn);
+                    ReportProjects(roslyn, request.RepoPath, note);
+                    ownership = Attribution(request.RepoPath, roslyn.QueriedProjects, note);
+                }
             }
 
             // Disposed as soon as the graph exists: CodeGraph holds symbols and edges, never a handle
             // into the parser.
             using var extractor = new TreeSitterExtractor();
             graph = new CodeGraphBuilder(extractor, profiles, resolvers).Build(snapshot, limits, scope);
+
+            // Said out loud because the alternative is a SILENT deletion. Scope filters on effective
+            // visibility -- a member is capped by every type enclosing it -- and that is correct, but
+            // an earlier version of this producer filtered on the declared modifier alone and emitted
+            // these. Regenerating over such a bundle prunes them, and `BundleWriter`'s scope-narrowing
+            // guard cannot say so: it compares the recorded scope FLAGS, which are identical on both
+            // sides here. It is the rule that narrowed, not the run, and nothing else in the pipeline
+            // is in a position to notice.
+            //
+            // A note rather than a refusal to prune: the concepts really are out of scope now, and
+            // keeping them would republish exactly the internal API the flag was left off to exclude.
+            // What the operator needs is to know it happened and how to get them back.
+            if (graph.CappedByContainer > 0 && !request.IncludeInternal)
+            {
+                note($"{graph.CappedByContainer} declaration(s) are public in their own right but enclosed by an"
+                    + " internal type, so C# caps them at internal and this run left them out. An earlier version of"
+                    + " this producer emitted them anyway, tagged `public` -- so regenerating over a bundle that has"
+                    + " them will delete them, and that deletion is this change rather than anything removed from the"
+                    + " repository. Pass --include-internal to keep them.");
+            }
         }
 
         var options = new GenerateOptions
@@ -238,6 +304,31 @@ internal static class GenerateRun
                 : null,
             SourceOwnership = ownership,
             Note = note,
+
+            // §6.2: each engine is named only when it actually ran. Under --no-code no engine touched
+            // the repository, so claiming a tree-sitter and a Roslyn version would attach a determinism
+            // guarantee to an artefact none of them produced -- the same reason that path passes a null
+            // manifest rather than an empty one.
+            //
+            // PER ENGINE, and it used to be all-or-nothing. Roslyn was named on every run that was not
+            // --no-code, including the runs where it demonstrably never ran: --no-msbuild, a repository
+            // with no project file, an exhausted --roslyn-timeout, and -- the case a non-null check
+            // still got wrong -- a repository whose projects all FAILED to query or compile. That is
+            // the exact claim this block exists to refuse, one engine over, and `ProducerFixture` had
+            // the rule right ("tree-sitter alone, because tree-sitter alone ran") while the shipped CLI
+            // did not.
+            //
+            // The condition is "at least one project compiled", not "a resolver exists".
+            // `RoslynResolver.Create` returns a resolver whatever happened: every project can be
+            // recorded MsBuildQueryFailed and it still constructs one. That is the COMMON degradation
+            // -- an unrestored checkout, no `dotnet` on PATH -- and it named `roslyn/5.3.0` in a bundle
+            // Roslyn contributed no byte to. This producer's own fixture repository is in exactly that
+            // state, which is how the golden and the shipped CLI came to disagree about one repository.
+            EngineVersions = request.NoCode
+                ? []
+                : roslyn is null || !roslyn.Projects.Any(p => p.Availability == RoslynProjectAvailability.Compiled)
+                    ? [TreeSitterExtractor.EngineVersion]
+                    : [TreeSitterExtractor.EngineVersion, RoslynResolver.EngineVersion],
         };
 
         var concepts = services.Generator.Generate(snapshot, graph, options);
@@ -600,6 +691,25 @@ internal static class GenerateRun
     /// The <c>.csproj</c> files the scan detected, absolute -- the same set the <c>packages/</c>
     /// family is generated from, so the ownership map's join key is by construction the one
     /// <c>ConceptGenerator</c> looks a package up by.
+    ///
+    /// <para>Every nuget project MSBuild will be asked about -- <b>including test projects, and
+    /// including them when <c>--include-tests</c> is off</b>.</para>
+    ///
+    /// <para>That reads as an inconsistency and is not one, because the flag and this list govern
+    /// different things. <c>--include-tests</c> decides which FILES are extracted
+    /// (<c>FileEligibility.IsEligible</c>); this decides which projects are asked for their
+    /// <c>Compile</c> item sets, and §5.1's ownership map is built from those. A test project can
+    /// legitimately claim a PRODUCTION file -- a linked <c>&lt;Compile Include="..\..\src\Shared.cs"/&gt;</c>
+    /// is ordinary -- and dropping it here would silently remove that file's
+    /// <c>## Also compiled by</c> entry, which is a fact about the production file rather than about
+    /// the test project. Narrowing the query would make the map answer a different question from the
+    /// one it is documented to answer.</para>
+    ///
+    /// <para><b>The cost, stated because it is real:</b> one <c>dotnet msbuild</c> subprocess per test
+    /// project on every run, roughly a second each here, for item sets whose own files this run will
+    /// not extract. Measured on this repository, no test project claims a production file, so nothing
+    /// in the emitted bundle would change if they were skipped -- the price buys correctness in the
+    /// general case, not in this one.</para>
     /// </summary>
     private static IReadOnlyList<string> CSharpProjectPaths(RepositorySnapshot snapshot) =>
     [

@@ -68,6 +68,14 @@ public class PruningTests
 
         // §6.3 rule 1: a degraded run "deletes nothing AND SAYS SO".
         Assert.Contains(result.Notes, n => n.Contains("did not visit every eligible file", StringComparison.Ordinal));
+
+        // And says WHICH concepts it kept, by prefix rather than as a bare count. Nothing asserted any
+        // part of this sentence until now, so its wording was free to drift: on `--update --no-code`
+        // the number is every code concept the previous run claimed, and a bare "678 concept(s) this
+        // run did not generate" reads as a loss report on a run that wrote its other families fine.
+        Assert.Contains(
+            result.Notes,
+            n => n.Contains("1 concept(s) under 'code' that this run did not generate were kept", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1443,18 +1451,40 @@ public class PruningTests
     {
         // Handed in reverse, so the sort chain is what puts it right: delete either OrderBy in
         // GenerationManifest.Normalized and this goes red rather than passing by luck.
+        //
+        // THE PAIRS ARE THE TEST. This used to hand in `a`/`b` and `src/A.cs`/`src/Z.cs`, which sort
+        // the same way under every comparer there is -- so it measured SORTEDNESS and called it
+        // Ordinal. Swapping every `StringComparer.Ordinal` in `Normalized` for `CurrentCulture` left
+        // it green, though §6.2 pins Ordinal, and the reason it is pinned is that this file is
+        // compared byte for byte by `--check`: a linguistic sort makes the bytes depend on the
+        // machine's locale, so a bundle generated under one culture reports drift under another with
+        // nothing in the source changed.
+        //
+        // Both pairs below were MEASURED to invert between the two, against `InvariantCulture` as
+        // well as `CurrentCulture`, so this discriminates wherever it runs rather than only under the
+        // author's locale:
+        //
+        //   ids:   `_` is 0x5F and `0` is 0x30, so Ordinal puts `m0` first; a linguistic comparer
+        //          weighs punctuation below digits and puts `m_1` first.
+        //   paths: `Z` is 0x5A and `a` is 0x61, so Ordinal puts `Z.cs` first; a linguistic comparer
+        //          treats case as a tertiary difference and puts `a.cs` first.
+        //
+        // Each is handed in the LINGUISTIC order, which is the order a culture-sensitive sort would
+        // leave untouched -- so that mutation cannot pass by leaving the input alone.
+        const string firstId = "code/csharp/n/t/m0";
+        const string secondId = "code/csharp/n/t/m_1";
         using var tmp = new TempDir();
         new GenerationManifest(
                 Prefix,
-                [new ManifestConcept(B, ["src/Z.cs", "src/A.cs"]), new ManifestConcept(A, [])],
-                ["src/Z.cs", "src/A.cs"],
+                [new ManifestConcept(secondId, ["src/a.cs", "src/Z.cs"]), new ManifestConcept(firstId, [])],
+                ["src/a.cs", "src/Z.cs"],
                 ScopeOptions.Default)
             .WriteTo(tmp.Path);
 
         var text = File.ReadAllText(Path.Combine(tmp.Path, GenerationManifest.FileName));
 
-        Assert.True(text.IndexOf($"\"{A}\"", StringComparison.Ordinal) < text.IndexOf($"\"{B}\"", StringComparison.Ordinal));
-        Assert.True(text.IndexOf("src/A.cs", StringComparison.Ordinal) < text.IndexOf("src/Z.cs", StringComparison.Ordinal));
+        Assert.True(text.IndexOf($"\"{firstId}\"", StringComparison.Ordinal) < text.IndexOf($"\"{secondId}\"", StringComparison.Ordinal));
+        Assert.True(text.IndexOf("src/Z.cs", StringComparison.Ordinal) < text.IndexOf("src/a.cs", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1716,6 +1746,102 @@ public class PruningTests
         WriteRun(tmp, [A], complete: true, scope: new ScopeOptions(IncludeTests: true, IncludeInternal: false));
 
         Assert.Equal(new ScopeOptions(IncludeTests: true, IncludeInternal: false), GenerationManifest.TryRead(tmp.Path)?.Scope);
+    }
+
+    [Fact]
+    public void The_directory_ladder_stops_at_the_owned_prefix_root_and_not_above_it()
+    {
+        // `IsWithinPrefixRoot` is the only thing between RemoveEmptyDirectories' walk and the bundle
+        // root, and no test put it on the critical path: every other fixture here leaves a sibling
+        // directory that breaks the loop after one rung, so the walk never climbs far enough for the
+        // guard to be what stops it.
+        //
+        // The prefix is two segments deep on purpose. With `code`, the rung above the prefix root is
+        // the bundle root, which `overview.md` already protects through the files check -- so deleting
+        // the guard changes nothing observable and a test written that way proves nothing. With
+        // `code/csharp`, the rung above is `code`, which is empty by then and has no file and no
+        // sibling to protect it. The guard is the only reason it survives.
+        using var tmp = new TempDir();
+
+        WriteRun(tmp, [A], complete: true, ownedPrefix: "code/csharp");
+        var codeDirectory = Path.Combine(tmp.Path, "code");
+        Assert.True(Directory.Exists(Path.Combine(codeDirectory, "csharp", "n", "t")));
+
+        var result = WriteRun(tmp, [], complete: true, ownedPrefix: "code/csharp");
+
+        // The ladder did climb -- without this the assertion below would pass over a walk that never
+        // ran at all, which is the failure mode the finding is about.
+        Assert.Contains(A, result.Pruned.Select(id => id.ToString()));
+        Assert.False(Directory.Exists(Path.Combine(codeDirectory, "csharp")));
+
+        // And it stopped where it had to.
+        Assert.True(Directory.Exists(codeDirectory));
+    }
+
+    [Fact]
+    public void A_rename_prunes_the_old_id_and_writes_the_new_one_in_the_same_run()
+    {
+        // The one destructive interaction no test ran. §6.3's "not visited AND not on disk" inference
+        // was accepted partly on the claim that a rename is covered; it was not. It is also the shape
+        // this producer causes on itself: any change to the id scheme renames every concept it touches,
+        // so the run that follows such a change IS this test.
+        //
+        // Ordering is what makes it safe and what makes it worth pinning: Reconcile runs AFTER
+        // CommitStaging, and its candidates exclude this run's own ids -- so the new file is on disk
+        // before the old one is considered for deletion, and a scheme where the new id sorted before
+        // the old could not delete the new one by mistake.
+        using var tmp = new TempDir();
+
+        WriteRun(tmp, [A], complete: true);
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
+
+        var result = WriteRun(tmp, [B], complete: true);
+
+        // Both directions, because a writer that deleted everything would satisfy the first alone and a
+        // writer that deleted nothing would satisfy the second alone.
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/b.md")));
+        Assert.Equal([A], result.Pruned.Select(id => id.ToString()));
+
+        // And the manifest tracks the rename rather than accumulating: a manifest still claiming the old
+        // id would make the NEXT run treat it as a candidate all over again.
+        var claimed = GenerationManifest.TryRead(tmp.Path)!.ConceptIds.Select(id => id.ToString()).ToList();
+        Assert.Contains(B, claimed);
+        Assert.DoesNotContain(A, claimed);
+    }
+
+    [Fact]
+    public void The_manifest_write_leaves_no_temporary_behind_and_lands_readable()
+    {
+        // WHAT THIS DOES NOT WITNESS, named first because the test used to be called
+        // `..._is_staged_and_moved_...` and could not see either half of that.
+        //
+        // The reason `GenerationManifest.WriteTo` stages is that `File.WriteAllBytes` truncates first
+        // and fills after, so a process dying between the two leaves a manifest that is present, short
+        // and not JSON -- the one truncate-then-write in a design whose whole point is that a bundle is
+        // never observed half-written. That window opens and closes INSIDE one call, so no in-process
+        // test can stand in it: both assertions below hold identically for the plain
+        // `File.WriteAllBytes(path, ...)` the staging replaced -- no `.tmp` is ever created, and the
+        // manifest is written in full. MEASURED with that mutation in place: this test stays green.
+        //
+        // Witnessing it would need the same kind of collaborator seam `TreeSitterExtractor` took for
+        // its size check (`IFileSystemReader`, added because "the guarantee is about an operation that
+        // did not happen, and only a collaborator can witness that"). That seam does not exist on the
+        // write side, and inventing one is a production change this test is not the place to make. The
+        // argument for staging is at `WriteTo`; this is not its proof.
+        //
+        // What IS asserted here is real and was worth a test of its own: the staged file does not
+        // survive. A leftover would accumulate one per run in the user's bundle, and
+        // `ReportUnownedFiles` would have nothing to say about it -- it is not a concept and not under
+        // the owned prefix. That is the one mutation this catches: staging without moving.
+        using var tmp = new TempDir();
+        WriteRun(tmp, [A], complete: true);
+
+        Assert.Empty(Directory.EnumerateFiles(tmp.Path, "*.tmp", SearchOption.AllDirectories));
+
+        // And the manifest that landed is readable, so a staged file was not left in place under
+        // another name in place of the real one.
+        Assert.NotNull(GenerationManifest.TryRead(tmp.Path));
     }
 
     // ---------------------------------------------------------------------------------------------

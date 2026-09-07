@@ -101,6 +101,11 @@ public class CheckTests(ITestOutputHelper output)
         var report = RunCheck(workspace, ProducerFixture.GoldenBundle);
 
         Assert.True(report.IsClean, Explain(report));
+
+        // The exit code too, which every sibling in this file asserts and this one did not: IsClean
+        // and ExitCode are separate fields on DriftReport, so a report can be clean and still exit
+        // non-zero, and nothing here would have noticed.
+        Assert.Equal(0, report.ExitCode);
     }
 
     [Fact]
@@ -124,6 +129,10 @@ public class CheckTests(ITestOutputHelper output)
             report.Differences,
             d => d.StartsWith("code/csharp/n/scanner/normalize.md:", StringComparison.Ordinal)
                 && d.Contains("missing from the bundle", StringComparison.Ordinal));
+
+        // Drift found means a non-zero exit, and this test asserted the drift without the exit code --
+        // the half a CI gate actually reads.
+        Assert.NotEqual(0, report.ExitCode);
     }
 
     [Fact]
@@ -498,7 +507,7 @@ public class CheckTests(ITestOutputHelper output)
         // The_golden_bundle_holds_one_occurrence_of_each_shape.
         using var workspace = ProducerFixture.CopyRepoOutsideGit();
 
-        Assert.Equal(15, RunCheck(workspace, ProducerFixture.GoldenBundle).ConceptsRegenerated);
+        Assert.Equal(35, RunCheck(workspace, ProducerFixture.GoldenBundle).ConceptsRegenerated);
     }
 
     [Fact]
@@ -544,9 +553,14 @@ public class CheckTests(ITestOutputHelper output)
         // the kinds we have accepted, so a NEW kind cannot hide inside an unchanged total. One kind is
         // left, a §4.3 consequence:
         //
-        //  * three "missing recommended frontmatter field `resource`" -- `overview` and the two
-        //    container concepts. A container is not declared in one file, so there is no line span to
-        //    build a permalink from, and §4.3 admits only a URL there.
+        //  * four "missing recommended frontmatter field `resource`" -- `overview` and the three
+        //    container concepts (`n`, `n/sub`, `n/shapes`). A container is not declared in one file, so
+        //    there is no line span to build a permalink from, and §4.3 admits only a URL there.
+        //
+        //    There was a fifth, `n/shapes/hidden`: a container synthesized for an internal type because
+        //    its public member stayed in scope. Scope filters on EFFECTIVE visibility now -- a member
+        //    is capped by every type enclosing it -- so the member is out and the container it forced
+        //    into existence is gone with it.
         //
         // The four "frontmatter path ... not found" this fixture used to carry are gone. `packages/*`
         // and `docs/*` wrote a repo-relative `resource` AND repeated it in a one-entry `sources` block,
@@ -562,7 +576,7 @@ public class CheckTests(ITestOutputHelper output)
         Assert.True(outcome.IsConformant, string.Join("\n", outcome.DiagnosticLines));
         Assert.DoesNotContain(outcome.DiagnosticLines, line => line.Contains("BrokenLink", StringComparison.Ordinal));
 
-        Assert.Equal(3, outcome.WarningCount);
+        Assert.Equal(4, outcome.WarningCount);
         Assert.All(
             outcome.DiagnosticLines.Where(line => line.StartsWith("[warning]", StringComparison.Ordinal)),
             line => Assert.True(
@@ -588,7 +602,7 @@ public class CheckTests(ITestOutputHelper output)
             .OrderBy(id => id, StringComparer.Ordinal)
             .ToList();
 
-        Assert.InRange(concepts.Count, 15, 20);
+        Assert.InRange(concepts.Count, 35, 40);
 
         Assert.Equal(
             [
@@ -601,6 +615,26 @@ public class CheckTests(ITestOutputHelper output)
                 "code/csharp/n/scanner/normalize",      // the one resolved call target
                 "code/csharp/n/scanner/root",
                 "code/csharp/n/scanner/scan",
+                "code/csharp/n/shapes",                 // a BLOCK-scoped namespace, where every other is file-scoped
+                "code/csharp/n/shapes/boxed",           // the one type whose header spans three lines
+                "code/csharp/n/shapes/boxed/boxed",     // a constructor
+                "code/csharp/n/shapes/boxed/builder",   // a type nested in a type
+                "code/csharp/n/shapes/boxed/builder/build",
+                "code/csharp/n/shapes/boxed/changed",   // an event
+                "code/csharp/n/shapes/boxed/render",    // whose doc comment carries [brackets], a backtick and a tag
+                "code/csharp/n/shapes/corner",          // an enum, whose members are deliberately not concepts
+                "code/csharp/n/shapes/holder",          // three types differing only by arity (D1b-I1) --
+                "code/csharp/n/shapes/holder-1",        // and each one's members under IT, not under the first.
+                "code/csharp/n/shapes/holder-1/value",  // The arity concepts sort BEFORE `holder/count` because
+                "code/csharp/n/shapes/holder-2",        // Ordinal puts `-` (0x2D) ahead of `/` (0x2F) -- they did
+                "code/csharp/n/shapes/holder-2/find",   // not under the old `_N` spelling (`_` is 0x5F).
+                "code/csharp/n/shapes/holder/count",
+                "code/csharp/n/shapes/i-shape",         // an interface
+                "code/csharp/n/shapes/i-shape/render",
+                "code/csharp/n/shapes/point",           // a struct
+                "code/csharp/n/shapes/point/x",         // two declarators on one field, which nothing else reaches
+                "code/csharp/n/shapes/point/y",
+                "code/csharp/n/shapes/size",            // a positional record, with no body at all
                 "code/csharp/n/sub",                    // a nested container
                 "code/csharp/n/sub/formatter",
                 "code/csharp/n/sub/formatter/format",
@@ -613,6 +647,16 @@ public class CheckTests(ITestOutputHelper output)
         // The private member `Scanner.Cache` is in the fixture source and must NOT be here (§5.4).
         Assert.DoesNotContain("code/csharp/n/scanner/cache", concepts);
 
+        // Nor is `Boxed`'s explicit `IEquatable<Boxed>.Equals`, and for a reason worth pinning: an
+        // explicit interface implementation carries no access modifier, so it is Private and out of
+        // scope under every flag. The register's D1b-I2 claimed the two collapsed into one concept
+        // with both signatures; measured here, the explicit one produces no concept at all.
+        Assert.DoesNotContain(concepts, id => id.Contains("equals", StringComparison.Ordinal));
+
+        // The local function inside `Render` is Private too, so it is not a concept either.
+        Assert.DoesNotContain(concepts, id => id.Contains("compose", StringComparison.Ordinal));
+        Assert.DoesNotContain("code/csharp/n/scanner/cache", concepts);
+
         var register = File.ReadAllText(Path.Combine(ProducerFixture.GoldenBundle, "code/csharp/n/registry/register.md"));
         var count = File.ReadAllText(Path.Combine(ProducerFixture.GoldenBundle, "code/csharp/n/registry/count.md"));
 
@@ -621,6 +665,46 @@ public class CheckTests(ITestOutputHelper output)
         Assert.Contains("## Calls\n", register, StringComparison.Ordinal);            // a resolved call
         Assert.Contains("## Calls (unresolved)\n", count, StringComparison.Ordinal);  // an unresolved one
     }
+
+    [Fact]
+    public void Check_leaves_the_bundle_it_was_given_byte_for_byte_unchanged()
+    {
+        // The property every OTHER test in this file silently depends on. Six of them run Check against
+        // the COMMITTED golden, so a regression that regenerated in place would rewrite the golden --
+        // and every one of those tests would go on passing, comparing the bundle against itself. A
+        // self-disarming suite is the failure this branch spent its remediation on; this is the
+        // assertion that stops it happening to the golden.
+        //
+        // Byte for byte over every file, not a count and not a timestamp: regenerating in place would
+        // leave the same file names, and `generated.at` would not move either, since the golden is
+        // captured outside git where that field is excluded from the COMPARISON but not from a write.
+        using var workspace = ProducerFixture.CopyRepoOutsideGit();
+
+        var before = Snapshot(ProducerFixture.GoldenBundle);
+        var report = RunCheck(workspace, ProducerFixture.GoldenBundle);
+        var after = Snapshot(ProducerFixture.GoldenBundle);
+
+        // Asserted first, so a Check that somehow performed no comparison at all cannot satisfy the
+        // real assertions below by having done nothing.
+        Assert.True(report.IsClean, Explain(report));
+
+        Assert.Equal(
+            before.Keys.OrderBy(key => key, StringComparer.Ordinal),
+            after.Keys.OrderBy(key => key, StringComparer.Ordinal));
+
+        foreach (var (path, hash) in before)
+        {
+            Assert.True(after[path].SequenceEqual(hash), $"Check rewrote '{path}' in the bundle it was given.");
+        }
+    }
+
+    /// <summary>Every file under <paramref name="bundlePath"/>, keyed by relative path, with its bytes hashed.</summary>
+    private static Dictionary<string, byte[]> Snapshot(string bundlePath) =>
+        Directory.EnumerateFiles(bundlePath, "*", SearchOption.AllDirectories)
+            .ToDictionary(
+                path => Path.GetRelativePath(bundlePath, path).Replace(Path.DirectorySeparatorChar, '/'),
+                path => System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)),
+                StringComparer.Ordinal);
 
     // -- fixture ----------------------------------------------------------------------------------
 

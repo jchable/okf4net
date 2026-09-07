@@ -133,6 +133,20 @@ public class DeterminismTests
         // `by` alone survives on a code concept -- but not on every family: packages/* and docs/*
         // carry no `generated` block at all, only code and container concepts do.
         Assert.NotNull(Single(concepts, "code/csharp/n/scanner/scan").Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by"));
+
+        // And the caveat that qualifies `revision` travels with it, in the body where a reader of the
+        // bundle is. It said this only in a code comment on GitRevision until now: `revision` names the
+        // committed HEAD, never the working tree, so with uncommitted edits it names a commit the
+        // bundle was not generated from -- and `--check` cannot see the difference either, both sides
+        // carrying the same revision.
+        //
+        // Asserted HERE rather than against the golden on purpose: the golden is captured outside git,
+        // so it has no `revision` and correctly carries no caveat. This is the only fixture in the
+        // solution where the sentence can appear at all, which is also why its absence went unnoticed.
+        Assert.Contains(
+            "names the committed HEAD, not the working tree",
+            Single(concepts, "overview").Document.Body,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -171,6 +185,14 @@ public class DeterminismTests
         Assert.NotNull(overview.Document.Frontmatter.GeneratedAt);
         Assert.EndsWith("Z", overview.Document.Frontmatter.GeneratedAt, StringComparison.Ordinal);
         Assert.Null(overview.Document.Frontmatter.Get("revision"));
+
+        // And no caveat about a field that is not there. The sentence qualifies `revision`; emitting it
+        // unconditionally would have every bundle generated outside git warn about a value it does not
+        // carry, which is how a warning stops being read.
+        Assert.DoesNotContain(
+            "names the committed HEAD, not the working tree",
+            overview.Document.Body,
+            StringComparison.Ordinal);
     }
 
     // -- fixture ----------------------------------------------------------------------------------

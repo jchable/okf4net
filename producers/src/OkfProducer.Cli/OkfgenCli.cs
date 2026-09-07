@@ -101,7 +101,9 @@ public static class OkfgenCli
             Description =
                 "The git ref --repo-url permalinks are built against. Defaults to the current branch name, never "
                 + "a commit sha -- a sha would rewrite every code concept's `resource` on the next commit. On a "
-                + "detached HEAD there is no branch name to read, so this becomes required for permalinks.",
+                + "detached HEAD there is no branch name to read, so this becomes required for permalinks. "
+                + "The recorded revision names the COMMITTED HEAD, not the working tree: with uncommitted local "
+                + "edits it names a commit this bundle was not generated from.",
         };
 
         var checkOption = new Option<bool>("--check") { Description = BundleDrift.CheckDescription };
@@ -154,6 +156,53 @@ public static class OkfgenCli
             DefaultValueFactory = _ => ExtractionLimits.Default.MaxFileBytes,
         };
 
+        // Option<double?> rather than Option<double>, so "absent" and "0" are distinguishable. With a
+        // 0 default they were not: `--roslyn-timeout 0` reached the same value as not passing the
+        // option, so it silently meant UNBOUNDED -- the opposite of the smallest bound an operator (or
+        // a wrapper computing a remaining budget down to zero) was asking for -- while
+        // `--roslyn-timeout -1` was refused with a message saying the value must be positive. The
+        // accepted domain and the stated domain disagreed on exactly the value most likely to arrive
+        // programmatically. Zero is now refused like any other non-positive budget.
+        var roslynTimeoutOption = new Option<double?>("--roslyn-timeout")
+        {
+            Description =
+                "Wall-clock budget, in seconds, for the whole Roslyn stage -- the `dotnet msbuild` queries and the "
+                + "compilations after them. Absent by default, and absent means unbounded: each query is capped at "
+                + "two minutes on its own, but nothing caps their sum, so a large repository runs for as long as it "
+                + "runs. Supplying a budget changes what the bundle contains as a function of how fast this machine "
+                + "is, which is why it is not a default. If the budget runs out the stage is abandoned WHOLE, not "
+                + "truncated: you get the same uniformly name-matched bundle --no-msbuild produces, with the same "
+                + "note saying what was lost, rather than one where some links are exact and some are not with "
+                + "nothing recording which.",
+            DefaultValueFactory = _ => null,
+
+            // PARSED INVARIANTLY, and this is a correctness fix rather than tidiness. Without a custom
+            // parser System.CommandLine converts a double with the CURRENT culture and
+            // NumberStyles.AllowThousands, so this option meant different things on different machines:
+            // measured under de-DE, `--roslyn-timeout 1.5` parsed as 15 and `0.001` as 1 -- exit 0, no
+            // diagnostic, a budget 10^n too large from the exact form README.md documents -- while
+            // under fr-FR the same `1.5` was refused outright. A budget silently multiplied changes
+            // which projects finish, so it changes the `## Calls` links, the containment links and
+            // `generated.engines` in the emitted bundle: the locale of the machine would have decided bundle
+            // content, which is precisely what §6.2 pins determinism against.
+            //
+            // NumberStyles.Float and no AllowThousands: a separator here is a typo, not a grouping, and
+            // reading `1,5` as 15 is the failure this exists to stop rather than a convenience.
+            CustomParser = result =>
+            {
+                var token = result.Tokens.Count > 0 ? result.Tokens[0].Value : string.Empty;
+                if (double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
+                {
+                    return seconds;
+                }
+
+                result.AddError(
+                    $"--roslyn-timeout: '{token}' is not a number of seconds. Write it with a '.' decimal point"
+                    + " and no thousands separator (for example 90 or 1.5), whatever this machine's locale is.");
+                return 0;
+            },
+        };
+
         var generateCommand = new Command("generate", "Generate an OKF bundle from a repository")
         {
             Options =
@@ -161,6 +210,7 @@ public static class OkfgenCli
                 repoOption, outOption, updateOption, resetOption, forceOption,
                 repoUrlOption, revOption, checkOption,
                 includeTestsOption, includeInternalOption, noCodeOption, noMsBuildOption, maxFileSizeOption,
+                roslynTimeoutOption,
             },
         };
 
@@ -175,6 +225,45 @@ public static class OkfgenCli
             {
                 error.WriteLine("error: --max-file-size must be a positive number of bytes.");
                 return 1;
+            }
+
+            // 0 is this option's "absent", not a zero-second budget: a budget of zero would abandon the
+            // stage before it started, which is what --no-msbuild already says more clearly. Negative
+            // is a typo either way.
+            //
+            // THE RANGE IS CHECKED ON THE TimeSpan, NOT ON THE DOUBLE, because those are two different
+            // ranges and the guard used to test the wrong one. Two bands of values passed `>= 0` here
+            // and then threw out of the run with a stack trace instead of this message: anything above
+            // TimeSpan.MaxValue.TotalSeconds (~9.22e11) made TimeSpan.FromSeconds throw
+            // OverflowException, and anything under one tick (1e-7 s) truncated to TimeSpan.Zero, which
+            // TryCreateWithin refuses by contract. A CLI that answers a bad argument with an unhandled
+            // exception has no argument validation on that path, whatever the line above looks like.
+            TimeSpan? roslynTimeout = null;
+            if (parseResult.GetValue(roslynTimeoutOption) is { } roslynTimeoutSeconds)
+            {
+                if (double.IsNaN(roslynTimeoutSeconds)
+                    || roslynTimeoutSeconds <= 0
+                    || roslynTimeoutSeconds > TimeSpan.MaxValue.TotalSeconds)
+                {
+                    error.WriteLine(
+                        "error: --roslyn-timeout must be a positive number of seconds, and no larger than "
+                        + TimeSpan.MaxValue.TotalSeconds.ToString("F0", CultureInfo.InvariantCulture) + ".");
+                    return 1;
+                }
+
+                var budget = TimeSpan.FromSeconds(roslynTimeoutSeconds);
+                if (budget <= TimeSpan.Zero)
+                {
+                    // Positive as a double, zero as a TimeSpan: below one tick there is no budget left
+                    // to express, and rounding it up to a tick would be inventing a value the operator
+                    // did not ask for.
+                    error.WriteLine(
+                        "error: --roslyn-timeout is smaller than the smallest budget that can be expressed"
+                        + " (100 nanoseconds). Use a larger value, or drop the option to leave the stage unbounded.");
+                    return 1;
+                }
+
+                roslynTimeout = budget;
             }
 
             if (check && reset)
@@ -250,7 +339,8 @@ public static class OkfgenCli
                 IncludeInternal: parseResult.GetValue(includeInternalOption),
                 NoCode: parseResult.GetValue(noCodeOption),
                 MaxFileBytes: maxFileBytes,
-                NoMsBuild: parseResult.GetValue(noMsBuildOption));
+                NoMsBuild: parseResult.GetValue(noMsBuildOption),
+                RoslynTimeout: roslynTimeout);
 
             return Generate(request, services, output, error);
         });

@@ -4,6 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- Spec section 6.2: the engine versions are locked rather than floated. See the same
+         property and the full reasoning in OkfProducer.CodeGraph.TreeSitter.csproj. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,8 +24,11 @@
 
       Deliberately absent: Microsoft.CodeAnalysis.Workspaces.MSBuild. Avoiding it, and driving the
       compilation from `dotnet msbuild`'s own item/property query output instead, is the point of
-      this project (design 7.2, proven by producers/spikes/RoslynCompilationSpike at 0 errors on three
-      real projects). Also deliberately absent: any reference to OkfProducer.CodeGraph.TreeSitter,
+      this project (design 7.2, proven by a spike at 0 errors on three real projects). That spike is
+      NOT in the working tree: it was deleted after answering, the way a spike should be, and it is
+      recoverable at `git checkout 0db6e9a  producers/spikes` (with the usual path separator). This comment cited the path as
+      if it were still there, which is a pointer to nothing for anyone trying to check the claim.
+      Also deliberately absent: any reference to OkfProducer.CodeGraph.TreeSitter,
       whose native grammars weigh ~590 MB; the offset conversion both extractors share lives in
       OkfProducer.Core instead.
     -->

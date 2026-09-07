@@ -51,6 +51,26 @@ public sealed record SymbolFact(
     string? DocComment)
 {
     /// <summary>
+    /// Separates a generic type's name from its arity in <see cref="Name"/> (<c>Holder`1</c>).
+    ///
+    /// <para><b>It lives here, in Core, because it is a contract BETWEEN the two engines</b> -- the
+    /// same reason <c>Utf8Offsets</c> does. Both the tree-sitter extractor and the Roslyn resolver
+    /// spell a generic type's name this way, and they join on that spelling; a copy in each that drifts
+    /// does not lose a call, it credits it to another symbol.</para>
+    ///
+    /// <para><b>A backtick because it cannot occur in a C# identifier</b> -- not through <c>@</c>, not
+    /// through a Unicode escape -- which is what makes the qualification injective. The first version
+    /// used <c>_N</c>, chosen so a reader could tell "arity 1" from the registry's "second thing called
+    /// Foo" (<c>-2</c>). Both characters are in the identifier alphabet, so a type genuinely named
+    /// <c>Holder_1</c> and one named <c>Holder&lt;T&gt;</c> produced the same <see cref="Name"/>,
+    /// grouped as one concept, and were emitted with both signatures under one description -- exactly
+    /// the merge this qualification exists to prevent, reachable from legal C#. The backtick is also
+    /// the CLR's own arity convention, and <c>ConceptId.Slugify</c> maps it to <c>-</c>, so the emitted
+    /// id is <c>holder-1</c> while a real <c>Holder_1</c> stays <c>holder_1</c>.</para>
+    /// </summary>
+    public const char ArityMarker = '`';
+
+    /// <summary>
     /// The line carrying the end of this declaration's <b>header</b> -- the opening brace of its body
     /// where it has one, the declaration's own last line where it does not -- or <see langword="null"/>
     /// when the extractor did not record one.
@@ -74,4 +94,28 @@ public sealed record SymbolFact(
     /// header line recorded, so use the full span".</para>
     /// </summary>
     public int? HeaderEndLine { get; init; }
+
+    /// <summary>
+    /// The namespace part of <see cref="Container"/> -- a dotted prefix of it -- or
+    /// <see langword="null"/> when the extractor did not record one.
+    ///
+    /// <para><b>What it separates, and why <see cref="Container"/> alone cannot.</b>
+    /// <c>Container</c> is a flat dotted string, so a type nested inside <c>Bar</c> and a top-level
+    /// type in the namespace <c>Foo.Bar</c> both report <c>"Foo.Bar"</c> -- two structurally different
+    /// parents spelled identically. The consequence was measured: with a class <c>Bar</c> in namespace
+    /// <c>Foo</c> and a class <c>Baz</c> in namespace <c>Foo.Bar</c>, <c>Baz</c> was emitted at
+    /// <c>code/csharp/foo/bar/baz</c>, as though it were nested inside the type. §3.3 enumerated two
+    /// residual collisions; this was a third.
+    ///
+    /// The extractor knows the difference -- it walks ancestors and sees a namespace node in one case
+    /// and a type node in the other -- and the flattening threw it away. Recording where the namespace
+    /// STOPS is enough to recover it: a group's parent is a namespace exactly when the parent's depth
+    /// equals the namespace's.</para>
+    ///
+    /// <para>An <c>init</c> property defaulting to <see langword="null"/> for the same reason as
+    /// <see cref="HeaderEndLine"/>: every fixture in this solution constructs a <see cref="SymbolFact"/>
+    /// positionally with no syntax tree to read this from, and <see langword="null"/> means "not
+    /// recorded", which the generator treats exactly as it behaved before this existed.</para>
+    /// </summary>
+    public string? ContainerNamespace { get; init; }
 }

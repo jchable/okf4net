@@ -262,7 +262,15 @@ public sealed class BundleWriter : IBundleWriter
                     + " Remove the link, or generate into a bundle that does not contain one.");
             }
 
-            ReportUnownedFiles(outPath, manifest.OwnedPrefix, manifest, previous, notes);
+            // `merged`, not `manifest`: the difference is exactly the ids that FAILED to write, and
+            // handing over the pre-merge set made this method treat each of them as owned. A file
+            // sitting at a failed id's path -- which is where a hand-written concept is most likely to
+            // be, since the failure is often the filesystem refusing to overwrite it -- was therefore
+            // the one file §6.3 rule 2 exists to report and the one this report stayed silent about.
+            //
+            // Same set the manifest records, for the same reason it records it: ownership is what
+            // authorizes deletion, so anything not owned is what an operator needs named.
+            ReportUnownedFiles(outPath, merged.OwnedPrefix, merged, previous, notes);
         }
 
         // Not gated HERE, and it does not need to be: IndexGenerator gates itself. A previous round of
@@ -380,7 +388,13 @@ public sealed class BundleWriter : IBundleWriter
 
         if (RefusalToPrune(manifest, status, previous, repoPath, failureCount) is { } refusal)
         {
-            notes.Add($"{candidates.Count} concept(s) this run did not generate were kept: {refusal}");
+            // Named by their prefix rather than counted bare. The count is correct -- a review filed it
+            // as a miscount and it is not -- but on `--update --no-code` it is EVERY code concept the
+            // previous run claimed, so a bare "678 concept(s) this run did not generate" reads as a
+            // loss report on a run that wrote thirty concepts perfectly well. Saying which family they
+            // are is what turns an alarming true number into a useful one.
+            notes.Add(
+                $"{candidates.Count} concept(s) under '{previous.OwnedPrefix}' that this run did not generate were kept: {refusal}");
             return new ReconcileOutcome([], candidates);
         }
 
@@ -418,7 +432,18 @@ public sealed class BundleWriter : IBundleWriter
             {
                 // No owner means no way to tell a deleted symbol from an unread file, and the safe
                 // reading of "I cannot tell" is always "keep".
+                //
+                // SAID, where it used to be done silently. The sibling branch immediately above notes
+                // its carry and this one did not, so the two identical outcomes were distinguishable
+                // only by which of them the operator heard about. And this is not a shape only a
+                // hand-edited manifest can reach: `ReadStrings` answers `[]` for a truncated or
+                // malformed sources list rather than rejecting the manifest, so a run interrupted while
+                // writing one leaves every candidate looking source-less on the next run -- a bundle
+                // that quietly stops pruning, with nothing said.
                 carried.Add(candidate);
+                notes.Add(
+                    $"'{candidate.Id}' records no source file in the previous manifest, so this run cannot"
+                    + " tell a deleted symbol from an unread file; it was kept.");
                 continue;
             }
 
@@ -870,9 +895,21 @@ public sealed class BundleWriter : IBundleWriter
 
     /// <summary>
     /// Whether <paramref name="directory"/> is the owned prefix's own directory or one nested inside
-    /// it. Compares path components rather than raw string prefixes, so a sibling directory whose name
-    /// merely starts with the prefix (<c>code2/</c> beside <c>code/</c>) is not walked into and
-    /// deleted.
+    /// it. Compares path components rather than raw string prefixes.
+    ///
+    /// <para><b>What it actually stops: the walk climbing ABOVE the owned prefix.</b>
+    /// <see cref="RemoveEmptyDirectories"/> starts at a pruned concept's directory and moves upward one
+    /// parent at a time, so this is the sole condition standing between a
+    /// <c>Directory.Delete(recursive: true)</c> and the bundle root. It is the most destructive
+    /// statement on this branch, and until
+    /// <c>PruningTests.The_directory_ladder_stops_at_the_owned_prefix_root_and_not_above_it</c> it was
+    /// on no test's critical path -- every other fixture left a sibling that broke the loop one rung in.
+    ///
+    /// <para>This comment used to describe a different scenario: a sibling directory whose name merely
+    /// starts with the prefix (<c>code2/</c> beside <c>code/</c>) being walked into and deleted. That
+    /// cannot happen and never could -- the walk only ever goes upward, so it never reaches a sibling
+    /// at all. The component comparison is still the right implementation; it just was not defending
+    /// against the thing the comment named.</para></para>
     /// </summary>
     private static bool IsWithinPrefixRoot(string directory, string prefixRoot) =>
         string.Equals(directory, prefixRoot, PathComparison)

@@ -6,7 +6,9 @@ tags:
   - repository
 generated:
   by: okfgen/0.1.0
-  at: 2026-09-03T12:28:06Z
+  at: 2026-09-07T10:17:58Z
+  engines:
+    - tree-sitter/1.3.0
 ---
 
 # fixture-repo

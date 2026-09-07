@@ -133,8 +133,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.Contains("99", stranded.Detail, StringComparison.Ordinal);
 
         // The run continued, and said honestly that it is partial.
-        Assert.True(resolver.IsAvailable, Describe(resolver));
-        Assert.False(resolver.IsComplete);
+        Assert.True(AnyCompiled(resolver), Describe(resolver));
+        Assert.False(AllCompiled(resolver));
 
         // The stranded project is left to the baseline; the sound one still resolves exactly.
         Assert.False(resolver.Owns("stranded/Stranded.cs"));
@@ -331,8 +331,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         var resolver = RoslynResolver.Create(RepoRoot(), [missing]);
 
-        Assert.False(resolver.IsAvailable);
-        Assert.False(resolver.IsComplete);
+        Assert.False(AnyCompiled(resolver));
+        Assert.False(AllCompiled(resolver));
         Assert.False(resolver.Owns("src/OKF4net/ConceptId.cs"));
         var report = Assert.Single(resolver.Projects);
         Assert.Equal(RoslynProjectAvailability.MsBuildQueryFailed, report.Availability);
@@ -356,8 +356,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // moved: Resolve builds its result by iterating `sites`, so it returns empty for ANY
         // implementation of it, including a broken one. That assertion could not fail. The three
         // below can: each names a value this fixture's own restore-and-compile has to have produced.
-        Assert.True(_scratch.Resolver.IsAvailable);
-        Assert.True(_scratch.Resolver.IsComplete);
+        Assert.True(AnyCompiled(_scratch.Resolver));
+        Assert.True(AllCompiled(_scratch.Resolver));
         Assert.All(_scratch.Resolver.Projects, p => Assert.Equal(RoslynProjectAvailability.Compiled, p.Availability));
     }
 
@@ -373,14 +373,69 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // What that wrong answer costs is a SILENT report, not a deletion. Task 11 settled that this
         // property is not the pruning gate and cannot be one: no resolver contributes a symbol to
         // CodeGraph.Symbols, so a degraded resolver can turn a call link into a code span but never
-        // make a concept absent, and pruning acts on absence. See RoslynResolver.IsComplete's own doc
+        // make a concept absent, and pruning acts on absence. See this file's AllCompiled doc
         // comment; pruning gates on RunStatus.TraversalComplete plus the per-file FileStatus.
         var resolver = RoslynResolver.Create(RepoRoot(), []);
 
-        Assert.False(resolver.IsComplete);
-        Assert.False(resolver.IsAvailable);
+        Assert.False(AllCompiled(resolver));
+        Assert.False(AnyCompiled(resolver));
         Assert.Empty(resolver.Projects);
         Assert.False(resolver.Owns("src/OKF4net/ConceptId.cs"));
+    }
+
+    [Fact]
+    public void An_exhausted_budget_abandons_the_stage_whole_rather_than_publishing_what_finished()
+    {
+        // The property that makes an opt-in budget safe to offer at all. Returning the projects that
+        // happened to finish first would emit a bundle whose exact and name-matched links are divided
+        // by how fast the machine was, with nothing recording where the line fell -- §2.1 rates that
+        // below having no exact resolver, because its reader cannot tell which half they are holding.
+        //
+        // The budget is deterministic rather than racy despite naming a duration: it is checked at the
+        // top of each per-project iteration, and the FIRST `dotnet msbuild` query is a subprocess that
+        // cannot return in under a millisecond. So by the time the compile loop looks, the budget is
+        // spent, on any machine.
+        using var repository = new TwoProjectRepository();
+
+        var completed = RoslynResolver.TryCreateWithin(
+            repository.Root, [repository.ApplicationProject], limits: null, TimeSpan.FromMilliseconds(1), out var resolver);
+
+        Assert.False(completed);
+        Assert.Null(resolver);
+    }
+
+    [Fact]
+    public void An_ample_budget_resolves_exactly_what_an_unbounded_run_does()
+    {
+        // The other half: opting in must change nothing when the budget is not the binding constraint,
+        // or the option would be a second code path rather than a bound on the one that exists. Both
+        // sides go through the same private core; this is what says so out loud.
+        using var repository = new TwoProjectRepository();
+
+        var unbounded = RoslynResolver.Create(repository.Root, [repository.ApplicationProject]);
+        var completed = RoslynResolver.TryCreateWithin(
+            repository.Root, [repository.ApplicationProject], limits: null, TimeSpan.FromMinutes(5), out var bounded);
+
+        Assert.True(completed);
+        Assert.NotNull(bounded);
+        Assert.Equal(
+            unbounded.Projects.Select(p => (p.ProjectPath, p.Availability)),
+            bounded.Projects.Select(p => (p.ProjectPath, p.Availability)));
+        Assert.Equal(
+            unbounded.Owns(repository.ApplicationSourceFile[(repository.Root.Length + 1)..].Replace('\\', '/')),
+            bounded.Owns(repository.ApplicationSourceFile[(repository.Root.Length + 1)..].Replace('\\', '/')));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_budget_that_is_not_positive_is_a_caller_error_rather_than_an_instant_abandonment(int seconds)
+    {
+        // Zero would abandon before the stage started, which is what `--no-msbuild` already says, and
+        // says better -- it names the two things that are lost. Silently accepting it here would give
+        // the CLI two spellings of one behaviour, one of them undocumented.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => RoslynResolver.TryCreateWithin(RepoRoot(), [], limits: null, TimeSpan.FromSeconds(seconds), out _));
     }
 
     // Source for the test below. Roslyn strips the @ from a verbatim identifier and the grammar keeps
@@ -473,7 +528,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     // The other half of the same defect, and it needs no verbatim identifier at all: Roslyn mangles
     // an explicit interface implementation's name to its qualified form (Explicitly.IShape.Draw), so
     // a local function declared inside one reports a container carrying two extra dots -- and
-    // therefore two extra SEGMENTS -- that the extractor's `Explicitly.Square.Draw` does not have.
+    // therefore two extra SEGMENTS -- that the extractor's `Explicitly.Square.IShape.Draw` does not have.
     public const string ExplicitImplementationSource = """
         namespace Explicitly;
         public interface IShape { void Draw(); }
@@ -515,16 +570,22 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     [Fact]
     public void An_explicit_interface_implementation_contributes_the_segment_source_spells()
     {
+        // The segment reads `IShape.Draw` rather than `Draw` since an explicitly implemented member is
+        // named apart from a public one of the same name (D1b-I2). What this test pins is unchanged and
+        // is the point: BOTH sides say the same thing. It is what caught the drift when only the
+        // extractor learnt the rule -- an ancestor spelled one way here and another way there makes
+        // `CodeGraphBuilder` overwrite the baseline with a non-joining `Exact` and then degrade it,
+        // leaving the graph strictly worse than not running the resolver at all.
         var site = Assert.Single(_scratch.SitesIn("ExplicitImplementation.cs"), s => s.CalledName == "Nested");
 
         var baseline = Assert.Single(new NameMatchResolver().Resolve([site], _scratch.Symbols));
         Assert.Equal(EdgeConfidence.ByName, baseline.Confidence);
-        Assert.Equal("Explicitly.Square.Draw", baseline.TargetContainer);
+        Assert.Equal("Explicitly.Square.IShape.Draw", baseline.TargetContainer);
 
         var edge = Assert.Single(_scratch.Resolver.Resolve([site], _scratch.Symbols));
 
         Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
-        Assert.Equal("Explicitly.Square.Draw", edge.TargetContainer);
+        Assert.Equal("Explicitly.Square.IShape.Draw", edge.TargetContainer);
         Assert.Contains(_scratch.Symbols, s => s.Container == edge.TargetContainer && s.Name == edge.TargetName);
     }
 
@@ -591,7 +652,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         var resolver = RoslynResolver.Create(repository.Root, [repository.Project]);
 
-        Assert.False(resolver.IsAvailable);
+        Assert.False(AnyCompiled(resolver));
         var report = Assert.Single(resolver.Projects);
         Assert.Equal(RoslynProjectAvailability.CompilationHadErrors, report.Availability);
         Assert.False(resolver.Owns("Serialization.cs"));
@@ -616,7 +677,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.Equal(RoslynProjectAvailability.CompilationHadErrors, library.Availability);
         var application = Assert.Single(resolver.Projects, p => p.ProjectPath == repository.ApplicationProject);
         Assert.Equal(RoslynProjectAvailability.Compiled, application.Availability);
-        Assert.False(resolver.IsComplete);
+        Assert.False(AllCompiled(resolver));
 
         using var extractor = new TreeSitterExtractor();
         var extracted = extractor.Extract("app/Program.cs", repository.ApplicationSourceFile, CSharpProfile.Instance, ExtractionLimits.Default);
@@ -721,7 +782,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         var resolver = RoslynResolver.Create(repository.Root, [repository.ApplicationProject]);
 
-        Assert.True(resolver.IsComplete, Describe(resolver));
+        Assert.True(AllCompiled(resolver), Describe(resolver));
         Assert.Equal(2, resolver.Projects.Count);
 
         using var extractor = new TreeSitterExtractor();
@@ -762,7 +823,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         Assert.False(capped.Owns("Big.cs"));
         // Still a cap and not a collapse: the project compiled and its in-bounds file is owned.
-        Assert.True(capped.IsComplete, Describe(capped));
+        Assert.True(AllCompiled(capped), Describe(capped));
         Assert.True(capped.Owns("Small.cs"), Describe(capped));
     }
 
@@ -961,6 +1022,29 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         string.Join("; ", resolver.Projects.Select(p => $"{Path.GetFileName(p.ProjectPath)}: {p.Availability} {p.Detail}"));
 
     /// <summary>
+    /// Whether at least one project compiled -- "ran, and resolved nothing" as against "could not run".
+    /// </summary>
+    /// <remarks>
+    /// These two predicates were <c>RoslynResolver.IsAvailable</c> and <c>RoslynResolver.IsComplete</c>
+    /// until this file became their only reader and they were removed. They live here now because that
+    /// is where they are used, and a derived one-liner over <see cref="RoslynResolver.Projects"/> is
+    /// what any caller wanting the summary would write.
+    /// </remarks>
+    private static bool AnyCompiled(RoslynResolver resolver) =>
+        resolver.Projects.Any(p => p.Availability == RoslynProjectAvailability.Compiled);
+
+    /// <summary>
+    /// Whether the repository was covered completely: at least one project, and every one compiled.
+    ///
+    /// <para>The <c>Count &gt; 0</c> clause is the point, not a formality. <c>All</c> over an empty list
+    /// is vacuously true, and an empty project list is precisely the state in which EVERY call fell back
+    /// to name matching -- reachable rather than theoretical, since finding no <c>.csproj</c> yields an
+    /// empty list and not an error.</para>
+    /// </summary>
+    private static bool AllCompiled(RoslynResolver resolver) =>
+        resolver.Projects.Count > 0 && resolver.Projects.All(p => p.Availability == RoslynProjectAvailability.Compiled);
+
+    /// <summary>
     /// A hand-built <see cref="ProjectInputs"/> for the tests that only exercise
     /// <see cref="CompilationFactory"/>'s parse options: no MSBuild round trip, no files, nothing that
     /// could fail for an unrelated reason.
@@ -983,7 +1067,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         var resolver = RoslynResolver.Create(repositoryRoot, [projectPath]);
 
         Assert.True(
-            resolver.IsAvailable,
+            AnyCompiled(resolver),
             $"no project compiled, so attachment cannot be measured. This test needs a restored repository. {Describe(resolver)}");
 
         using var extractor = new TreeSitterExtractor();
@@ -1091,7 +1175,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             Restore(projectPath);
 
             Resolver = RoslynResolver.Create(Root, [projectPath]);
-            Assert.True(Resolver.IsComplete, Describe(Resolver));
+            Assert.True(AllCompiled(Resolver), Describe(Resolver));
 
             using var extractor = new TreeSitterExtractor();
             var symbols = new List<SymbolFact>();
@@ -1901,5 +1985,81 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.True(
             process.ExitCode == 0,
             $"`dotnet {verb} {projectPath}` exited {process.ExitCode}: {stdout.GetAwaiter().GetResult()} {stderr.GetAwaiter().GetResult()}");
+    }
+
+    [Fact]
+    public void A_missing_dotnet_cli_degrades_one_project_rather_than_ending_the_run()
+    {
+        // The "MSBuild absent" path, reachable until now only by uninstalling the SDK. What matters is
+        // not that it fails but HOW: as MsBuildQueryException, the one type RoslynResolver catches, so
+        // the project is reported unavailable and the name-matching baseline carries it. Anything else
+        // escaping here skips per-project degradation and takes generation down for the whole
+        // repository -- which is exactly what C2-1 was, and this absent test is why it went unnoticed.
+        using var repo = new OkfProducer.Tests.Generation.ProducerFixture.TempDir();
+        var project = Path.Combine(repo.Path, "Absent.csproj");
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+
+        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, "okfgen-no-such-executable", TimeSpan.FromMinutes(2)));
+
+        Assert.IsType<MsBuildQueryException>(ex);
+        Assert.Contains("Absent.csproj", ex.Message, StringComparison.Ordinal);
+
+        // The MESSAGE, not just the type: `Run` guards a missing working directory separately and
+        // reports that instead, and both refusals are MsBuildQueryException. Asserting only the type
+        // let either answer for the other -- and the wrong one sends an operator hunting for an SDK
+        // that is installed.
+        Assert.Contains("dotnet CLI was not found", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_query_that_outruns_its_deadline_is_killed_and_reported_as_a_timeout()
+    {
+        // The other branch spawning hid: reachable otherwise only by waiting two minutes.
+        //
+        // THE EXECUTABLE IS THE REAL ONE, and the previous fixture is why that matters. It substituted
+        // `sleep` for `dotnet` off Windows and `powershell` on it -- but `Run` always appends MSBuild's
+        // own argument list, so what actually launched was `sleep msbuild <proj> -nodeReuse:false ...`.
+        // GNU sleep rejects "msbuild" as a duration and exits 1 within milliseconds, so control reached
+        // the EXIT-CODE branch and never the deadline branch: the assertion below was red on Linux and
+        // macOS -- two thirds of the only guarantee `producers/` has, since it is outside CI. On
+        // Windows it passed, but on a race: PowerShell's startup merely happens to exceed the budget.
+        //
+        // Substituting the executable was the wrong idea rather than the wrong choice of stand-in,
+        // because no stand-in can both ignore MSBuild's arguments and refuse to exit. So this runs the
+        // real `dotnet msbuild` under a budget no real evaluation can meet: the host's own startup
+        // exceeds 200 ms before MSBuild reads a line of the project. That is deterministic on every
+        // platform, and it exercises the production path exactly as a two-minute overrun would.
+        using var repo = new OkfProducer.Tests.Generation.ProducerFixture.TempDir();
+        var project = Path.Combine(repo.Path, "Slow.csproj");
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+
+        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, "dotnet", TimeSpan.FromMilliseconds(200)));
+
+        Assert.IsType<MsBuildQueryException>(ex);
+        Assert.Contains("did not finish within", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Every_call_site_in_a_non_ascii_file_still_finds_its_index_entry()
+    {
+        // The equivalence guard for the one-pass offset walk in BuildIndex. It used to call
+        // `Utf8Offsets.ToUtf8` per callee, which counts from the start of the text every time --
+        // O(file size x call sites). Accumulating instead is O(file size), and the danger of that
+        // trade is precise: this offset is the JOIN KEY between two engines, so a drift of one byte
+        // does not lose a call, it credits it to whatever sits nearby.
+        //
+        // The two sides really are computed differently, which is what makes this an equivalence test
+        // rather than a tautology: the extractor converts each site with the per-site method, the
+        // resolver now walks the file once. A non-ASCII file is the fixture because every offset after
+        // the first accented character differs between UTF-8 and UTF-16 -- on ASCII the two agree and
+        // any drift would be invisible.
+        var sites = _scratch.SitesIn("NonAscii.cs");
+        Assert.NotEmpty(sites);
+
+        var edges = _scratch.Resolver.Resolve(sites, _scratch.Symbols);
+
+        // One verdict per site: a site whose offset did not land on an index entry gets no edge at all,
+        // so a count short of the input is exactly the drift this pins.
+        Assert.Equal(sites.Count, edges.Count);
     }
 }

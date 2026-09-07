@@ -20,10 +20,16 @@ namespace OkfProducer.Tests.Generation;
 /// <see cref="CheckTests"/> and <see cref="BlastRadiusTests"/> go through, and the golden bundle beside
 /// it is what holds its output still.</para>
 ///
-/// <para><b>It is not the shipped composition.</b> The CLI does not compose the code-graph stage yet
-/// (Task 13 owns its flags), so this is the producer's pipeline assembled here, from the same
-/// production types. What it verifies is those types; what it cannot verify is a CLI that wires them
-/// differently -- which is why <see cref="ExistingBundleFrontmatter"/> lives in
+/// <para><b>It is not the shipped composition.</b> This used to say the CLI did not compose the
+/// code-graph stage yet and that Task 13 owned its flags; that task landed, and <c>GenerateRun</c>
+/// composes the stage today. The divergence is now a deliberate one rather than a gap waiting to
+/// close: this fixture runs tree-sitter and <c>NameMatchResolver</c> and stops there, because
+/// composing the Roslyn stage would put a <c>dotnet msbuild</c> evaluation -- SDK- and
+/// network-dependent -- inside every golden comparison (the reason is stated again at
+/// <see cref="Run"/>, at the line that omits it). So this is the producer's pipeline assembled here,
+/// from the same production types, minus one stage on purpose. What it verifies is those types; what
+/// it cannot verify is a CLI that wires them differently -- which is why
+/// <see cref="ExistingBundleFrontmatter"/> lives in
 /// <c>OkfProducer.Core</c> rather than in this file: it is the one piece a CLI could forget and
 /// silently destroy hand-written descriptions with, so it is production code that both callers share
 /// rather than a helper only the tests have.</para>
@@ -70,11 +76,40 @@ internal static class ProducerFixture
         var graph = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], [new NameMatchResolver()])
             .Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
 
+        // Supplied by hand rather than by MSBuild, and that is a deliberate, recorded limit on what the
+        // golden covers. The fixture repository is never restored -- committing an `obj/` would be
+        // machine-specific -- so `dotnet msbuild` fails on it (NETSDK1004: no project.assets.json) and
+        // Roslyn compiles nothing. Composing the real query would add a network- and SDK-dependent
+        // restore to the one test that is fast and offline, and would still capture zero `Exact` edges
+        // unless that restore succeeded.
+        //
+        // What supplying the map directly RECOVERS, and what the golden had been captured without: the
+        // package -> namespace containment link, whose absence made the whole `code/` family an orphan
+        // in the captured bundle -- 0 of 12 concepts reachable from `overview`, measured -- plus
+        // `## Also compiled by` and `## Target frameworks`.
+        //
+        // What stays absent, on purpose: every `Exact` edge. `RoslynResolverTests` exercises that
+        // engine directly, against repositories it restores itself.
+        var sources = Directory
+            .EnumerateFiles(Path.Combine(repoPath, "src"), "*.cs", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+        var ownership = SourceOwnershipMap.From(
+            repoPath,
+            [new ProjectCompileItems(Path.Combine(repoPath, "src", "Fixture.csproj"), "net10.0", sources)]);
+
         var options = new GenerateOptions
         {
             RepoUrl = RepoUrl,
             Rev = Rev,
             Profiles = [CSharpProfile.Instance],
+            SourceOwnership = ownership,
+
+            // Tree-sitter alone, because tree-sitter alone ran: naming a Roslyn version here would
+            // attach a determinism claim to an engine this capture never invoked. Bumping the
+            // TreeSitter.DotNet package therefore rewrites `overview`, which is exactly the reviewed
+            // migration §6.2 asks for rather than a drift.
+            EngineVersions = [TreeSitterExtractor.EngineVersion],
 
             // The line that makes a manual description survive a regeneration -- and therefore the
             // line without which --check would report every hand-edited concept as drift for ever.
@@ -411,7 +446,17 @@ internal static class ProducerFixture
         }
     }
 
-    /// <summary>A temporary directory, deleted on <see cref="Dispose"/>.</summary>
+    /// <summary>A temporary directory, deleted on <see cref="Dispose"/>.
+    ///
+    /// <para><b>Four test files carry their own <c>TempDir</c> beside this one</b> --
+    /// <c>HostileInputTests</c>, <c>ContainmentTests</c>, <c>DeterminismTests</c>,
+    /// <c>PruningTests</c> -- and that duplication is a decision, not an oversight. Each of those
+    /// carries a <c>Write</c> helper that this one does not, and the versions are not interchangeable:
+    /// a <c>Write</c> that creates missing parent directories and one that does not make a test over a
+    /// path whose directory is absent assert two different things, silently. Unifying them means
+    /// settling that semantics for four suites at once, on a helper whose whole job is to set up the
+    /// conditions those suites are measuring. The duplication is visible and inert; the merge is the
+    /// part with a way to be wrong.</para></summary>
     public sealed class TempDir : IDisposable
     {
         public TempDir()

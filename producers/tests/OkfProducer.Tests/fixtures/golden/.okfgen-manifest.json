@@ -8,6 +8,7 @@
   "extractedFiles": [
     "src/Registry.cs",
     "src/Scanner.cs",
+    "src/Shapes.cs",
     "src/Sub/Formatter.cs"
   ],
   "concepts": [
@@ -16,6 +17,7 @@
       "sources": [
         "src/Registry.cs",
         "src/Scanner.cs",
+        "src/Shapes.cs",
         "src/Sub/Formatter.cs"
       ]
     },
@@ -65,6 +67,126 @@
       "id": "code/csharp/n/scanner/scan",
       "sources": [
         "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/boxed",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/builder",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/builder/build",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/changed",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/render",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/corner",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-1",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-1/value",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-2",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-2/find",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder/count",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/i-shape",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/i-shape/render",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/point",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/point/x",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/point/y",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/size",
+      "sources": [
+        "src/Shapes.cs"
       ]
     },
     {

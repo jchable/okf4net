@@ -53,9 +53,10 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--rev <ref>` | current branch | The ref permalinks point at. Never a commit sha by default: a sha would rewrite every code concept's `resource` on the next commit. On a detached HEAD there is no branch name, so this becomes required for permalinks. |
 | `--check` | off | Regenerate over a copy of the bundle and exit non-zero if anything differs. Never writes to `--out`. Refused with `--reset`/`--force` (it would delete nothing while the operator believed a reset happened) and with `--no-code` (see below). |
 | `--include-tests` | off | Walk test projects and `test`/`tests`/`spec` directories too. |
-| `--include-internal` | off | Emit `internal` declarations, not only public ones. |
+| `--include-internal` | off | Emit `internal` declarations, not only public ones. The filter is on **effective** visibility, so a `public` member of an `internal` type is capped at internal and stays out by default — it used to be emitted, and tagged `public`, a visibility C# does not give it. |
 | `--no-code` | off | Skip the code-graph stage entirely: `overview`, `packages/` and `docs/` only. |
 | `--no-msbuild` | off | Do not run `dotnet msbuild` on the scanned repository, and skip the Roslyn resolver built on it. Costs **two** things: call links then come from name matching alone, so an ambiguous name is left unlinked instead of resolved exactly; and the run has no source-ownership map, so **no `packages` → namespace containment link is emitted at all** — under `--update` that overwrites the ones a previous run wrote. **Read the section below before deciding you do not need this.** |
+| `--roslyn-timeout <seconds>` | *none* | Wall-clock budget for the whole Roslyn stage — the `dotnet msbuild` queries and the compilations after them. **Absent means unbounded**, which is the default and is deliberate: each query is capped at two minutes on its own, but nothing caps their sum, so a large repository runs for as long as it runs, and a budget would make the emitted bundle a function of how fast this machine is (§6.2 pins determinism at a fixed extractor version, not a fixed CPU). If the budget runs out the stage is abandoned **whole**, never truncated — you get the same uniformly name-matched bundle `--no-msbuild` produces, with a note naming the same two losses, rather than one whose exact and name-matched links are divided by machine speed with nothing recording where the line fell. |
 | `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. The tree-sitter engine skips a larger one *and counts it*, which makes the run partial: the concepts it owned are then not pruned. The Roslyn engine applies the same cap to the `Compile` items MSBuild reports, but drops an over-cap item **silently** — for a file the scan also walked the counted skip covers it, and for one it did not (a linked out-of-repository source, a generated file under `obj/`) nothing reports it: the project simply fails to compile and is named as such. |
 
 ### Generating from a repository runs that repository's build logic
@@ -91,9 +92,11 @@ scanned tree, with the repository as the working directory, reading its `.git/co
 many times depends on the flags, so here is the whole of it rather than a number. `git show
 -s` and `git rev-parse` run on *every* generate — they stamp `overview`'s `generated.at`
 and `revision`. `git symbolic-ref` runs as well, **unless `--rev` already named the ref**, in
-which case the branch is never read. And `--check` runs one further `git rev-parse` in the
-scanned tree before the regeneration it compares against, on top of that regeneration's own.
-Two to four invocations, then. Far less exposure than MSBuild — none of them triggers a hook,
+which case the branch is never read — and where it succeeds it is followed by a second
+`git rev-parse --verify HEAD`, because an *unborn* branch (`git init` with no commit yet) is a
+branch name that names no commit, and permalinks built against it point at nothing. And
+`--check` runs one further `git rev-parse` in the scanned tree before the regeneration it
+compares against, on top of that regeneration's own. Two to five invocations, then. Far less exposure than MSBuild — none of them triggers a hook,
 an fsmonitor, or a pager with stdout redirected — but it is not nothing, and this section
 used to say "no process is spawned". And it is not free of structural cost: the source-ownership
 map comes out of the same MSBuild query, so with the flag on there is **no `packages` →
@@ -102,6 +105,23 @@ namespace containment link at all**, and under `--update` those links are overwr
 It is **off by default on purpose**. Turning it on by default would silently degrade the
 resolution quality of every run that exists today, which is a worse trade than a documented
 hazard with a lever next to it.
+
+### What `revision` on `overview` does and does not say
+
+`overview` carries a `revision` field holding the exact HEAD sha, and it names the
+**committed HEAD — never the working tree**. Both `git show -s` and `git rev-parse` report
+the commit currently checked out regardless of any uncommitted change to the source the run
+actually scanned, so on a dirty tree `revision` names a commit this bundle was **not**, byte
+for byte, generated from. There is no attempt to detect that and no fabricated value in its
+place: a sha is either the checked-out one or absent.
+
+Two consequences worth stating rather than discovering. A reader treating `revision` as
+"check out this commit and you get this bundle" is right only when the tree was clean at
+generation time. And `--check` cannot see the difference either: both sides carry the same
+revision, so a bundle generated from uncommitted edits can be reported as having no drift.
+
+Generating from a clean tree is what makes the field mean what it appears to mean.
+
 
 ### What a run says about itself
 
@@ -479,10 +499,45 @@ None of this is applied to `src/OKF4net.Mcp`, which has real users and declares 
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `src/OkfProducer.Core` | `OKF4net` only | Scanning, the language-agnostic code-graph contracts, concept generation, the bundle writer, `--check`, the generation manifest. |
+| `src/OkfProducer.Core` | `OKF4net` only | Scanning, the code-graph contracts, concept generation, the bundle writer, `--check`, the generation manifest. |
 | `src/OkfProducer.CodeGraph.TreeSitter` | Core + `TreeSitter.DotNet` | The `ILanguageExtractor` and the C# profile. |
 | `src/OkfProducer.CodeGraph.Roslyn` | Core + `Microsoft.CodeAnalysis.CSharp` | The exact `ISymbolResolver`, and the `dotnet msbuild` query behind it. |
 | `src/OkfProducer.Cli` | all of the above | The composition root — the only project that can assemble the pipeline — and the `okfgen` command surface. |
 | `tests/OkfProducer.Tests` | all of the above | xunit, the fixture repository and the golden bundle. |
+
+### Adding a second language means editing Core, not only adding a profile
+
+That row used to say Core holds the **language-agnostic** code-graph contracts, and
+that word was doing work the code does not do. Three pieces of C#/MSBuild knowledge
+live in Core today, and each of them is a place a second language has to touch:
+
+- `LanguageProfile.SplitContainer` picks its separator from the language name —
+  `.` for `csharp` and `java`, `/` for everything else. It is not a profile field
+  on purpose: `ConceptGenerator.ProfileFor` synthesizes a throwaway profile from a
+  bare language name when a symbol's language matches none the caller supplied, and
+  that fallback produces the right concept ids only while this method is a pure
+  function of `Language`. Making the separator a field would silently mis-slug
+  every affected id (§3.1 treats id churn as unrecoverable), so the fallback would
+  have to become a hard requirement in the same change. Both ends say so.
+- `LanguageProfile.VisibilityOf` collapses modifier text using C#'s real access
+  rules, including its default-visibility rules per declaration kind.
+- `FileEligibility` reads `.csproj` XML to decide what a project owns and what is a
+  test project.
+
+And one that is not code organization but correctness, so it is the first thing to
+budget for: **`CallSite` carries no language field at all.** A call names its caller
+and its target as `(container, name)`, so both joins in `ConceptGenerator` are
+language-blind — unambiguous today only because v1 ships exactly one profile. With
+two, the same `(container, name)` declared in each attributes one call to *both*
+concepts, and a wrong edge in a knowledge bundle is worse than a missing one: an
+agent reading it gets a confidently false answer. That assumption does not sit in a
+comment waiting to be missed — `ConceptGenerator` **throws** on a graph carrying more
+than one language, and the throw is the specification of the fix: give both joins a
+language component, which means `CallSite` gaining a `Language` the resolvers supply.
+
+None of this is a defect to fix now — a second language is not on the roadmap, and
+inventing a general abstraction for one hypothetical consumer would be the worse
+trade. It is written down because the alternative is discovering it halfway through
+adding that language, having budgeted for "just add a profile".
 
 Design: [`docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md`](../docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md).

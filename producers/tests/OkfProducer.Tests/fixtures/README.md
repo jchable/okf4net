@@ -8,6 +8,12 @@ Two directories:
 `CheckTests` regenerates `golden/` over a copy of itself and compares the bytes; `BlastRadiusTests`
 mutates a copy of `fixture-repo/` and asserts exactly which concepts move.
 
+**The committed `golden/` is this solution's only CROSS-PROCESS determinism oracle**, and that is
+worth knowing before deleting it as redundant with `DeterminismTests`. Those two runs happen in one
+process, so they share the per-process string hash seed: any ordering that leaked from a dictionary
+compares equal to itself and the test stays green. The bytes here were written by a different
+process on a different day, so they do not.
+
 ## Read this first: the discipline here is the OPPOSITE of `tests/fixtures/`
 
 The repository's other golden directory, `tests/fixtures/`, holds **byte-exact captures of the
@@ -28,15 +34,23 @@ an unintended one loud, so read the diff before you accept it.
 OKFGEN_UPDATE_GOLDEN=1 dotnet test producers/OkfProducer.sln --filter "FullyQualifiedName~CheckTests.Check_passes_on_an_unchanged_bundle"
 ```
 
-That rewrites `golden/` from scratch (it is machine output, so it is captured, never merged into) and
-then asserts against what it just wrote. Review `git diff producers/tests/OkfProducer.Tests/fixtures/golden`
-and commit it with the change that caused it.
+**That command exits RED, by design, and a green run would be the bug.** It rewrites `golden/` from
+scratch (it is machine output, so it is captured, never merged into) and then *refuses to assert*,
+failing with a notice saying so. The reason is worth stating: in update mode the expected side is
+produced by the very harness that produced the actual side, so a comparison between them is a
+tautology — and a tautology reported green is exactly how a stale variable left in someone's shell
+disarms a golden test without anyone noticing.
+
+So the procedure is two runs, not one. Rewrite, review
+`git diff producers/tests/OkfProducer.Tests/fixtures/golden`, then **re-run without the variable** to
+actually check it, and commit the diff with the change that caused it.
 
 **Two intentional changes will rewrite the whole golden**, and neither is drift:
 
 - **A version bump.** `generated.by` is derived from `OkfProducer.Core`'s assembly version
-  (`okfgen/0.1.0`), so bumping it rewrites the `generated` block of every concept. Regenerate,
-  read the diff, commit it as part of the bump.
+  (`okfgen/0.1.0`), so bumping it rewrites the `generated` block of every concept. The engine
+  versions sit beside it in `generated.engines`, on `overview` alone, and a package bump rewrites
+  that line the same way. Regenerate, read the diff, commit it as part of the bump.
 - **A tool-version bump.** Determinism is guaranteed *at a fixed extractor version*, not in the
   absolute: a tree-sitter grammar or Roslyn upgrade can move symbols, spans or descriptions over
   unchanged source (§6.2). Same treatment — a reviewed migration, never a silent drift.
@@ -57,8 +71,13 @@ in this plan, on a fixture that survived only because nobody had checked it out.
 
 ## What `fixture-repo/` contains, and why each piece is there
 
-Fifteen concepts, one occurrence of each shape. A golden of 480 concepts is not reviewable in a diff,
-and a diff nobody can read is not a test.
+Thirty-seven concepts, one occurrence of each shape. A golden of 480 concepts is not reviewable in a
+diff, and a diff nobody can read is not a test.
+
+It said "fifteen" until the review that also found the shape table below had gained no row for any of
+the declaration shapes `Shapes.cs` added — in the document a reviewer is pointed at *before* accepting
+a golden diff. Both are corrected; if you grow the fixture, grow this table in the same commit, or the
+next reader accepts a diff against a description of a bundle that no longer exists.
 
 | Shape | Where | Concept |
 |---|---|---|
@@ -69,11 +88,34 @@ and a diff nobody can read is not a test.
 | a type | `Scanner`, `Registry`, `Formatter` | `code/csharp/n/scanner`, … |
 | a merged overload pair (§3.2) | `Registry.Register` ×2 | `code/csharp/n/registry/register` |
 | a resolved call (§4.5) | `Register` → `Scanner.Normalize` | `## Calls` on `register` |
-| an unresolved call | `Count` → `int.Parse` | `## Calls (unresolved)` on `count` |
+| an unresolved call | `Count` → `int.Parse(raw)`, rendered `` `Parse` `` | `## Calls (unresolved)` on `count` |
 | a description from a doc comment | most members | `description_source: doc-comment` |
 | a description from a signature | `Registry.Count` | `description_source: generated` |
 | a private member, which gets no concept (§5.4) | `Scanner.Cache` | — none, deliberately |
 | a symbol a mutation deletes (§6.3) | `Scanner.Gone` | `code/csharp/n/scanner/gone` |
+
+The declaration shapes `src/Shapes.cs` adds, which exist to make the span-capping and identity rules
+fail visibly rather than silently:
+
+| Shape | Where | Concept |
+|---|---|---|
+| an interface | `IShape` | `code/csharp/n/shapes/i-shape` |
+| a struct | `Point` | `code/csharp/n/shapes/point` |
+| a record | `Boxed` | `code/csharp/n/shapes/boxed` |
+| an enum, whose members are deliberately not concepts | `Corner` | `code/csharp/n/shapes/corner` |
+| three types differing only by generic arity (§3.2) | `Holder`, `Holder<T>`, `Holder<T,U>` | `holder`, `holder-1`, `holder-2` |
+| a constructor | `Boxed(..)` | under `boxed` |
+| an event | `Point.Moved` | under `point` |
+| a two-declarator field | `Point.X, Y` | `point/x`, `point/y` |
+| a block-scoped namespace | `namespace N.Shapes { }` | `code/csharp/n/shapes` |
+| an `internal` type, and its `public` member, both out of scope | `Hidden`, `Hidden.Never` | — none, deliberately |
+| a type whose header spans three lines (R48's cap) | `Size` | `code/csharp/n/shapes/size` |
+
+Two shapes `Shapes.cs` contains and the golden does **not** hold a concept for, said plainly because
+the file's own header once implied the opposite: an **explicit interface implementation**
+(`IEquatable<Boxed>.Equals`) and a **local function**. Both are `Private` — neither carries an access
+modifier — so `FileEligibility.IsInScope` filters them with `--include-internal` off, which is the
+default this capture uses. They exercise the extractor, not the emitted bundle.
 
 Two placement rules the tests depend on, so keep them if you edit the fixture:
 

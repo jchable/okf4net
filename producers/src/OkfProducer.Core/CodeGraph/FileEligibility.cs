@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Xml.Linq;
+using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 
 namespace OkfProducer.Core.CodeGraph;
@@ -33,7 +34,7 @@ public static class FileEligibility
     /// -- the same treatment <see cref="CodeGraphBuilder.Build"/> already gives a file matching no
     /// <see cref="LanguageProfile"/>.
     /// </summary>
-    public static bool IsEligible(string relativePath, RepositorySnapshot snapshot, ScopeOptions scope)
+    public static bool IsEligible(string relativePath, RepositorySnapshot snapshot, ScopeOptions scope, IFileSystemReader? reader = null)
     {
         var directorySegments = DirectorySegments(relativePath);
 
@@ -58,7 +59,7 @@ public static class FileEligibility
             }
         }
 
-        return !IsOwnedByTestProject(relativePath, snapshot);
+        return !IsOwnedByTestProject(relativePath, snapshot, reader ?? SystemFileReader.Instance);
     }
 
     /// <summary>
@@ -76,6 +77,76 @@ public static class FileEligibility
             SymbolVisibility.Internal => scope.IncludeInternal,
             _ => false,
         };
+
+    /// <summary>
+    /// <see cref="IsInScope(SymbolFact, ScopeOptions)"/> against a symbol's EFFECTIVE visibility: the
+    /// least visible of its own modifier and every type that encloses it.
+    ///
+    /// <para><b>Why the declared modifier alone was the wrong filter.</b> C# caps a member at its
+    /// container: <c>public void Never()</c> inside <c>internal class Hidden</c> is not reachable from
+    /// outside the assembly, whatever the keyword says. Filtering on the modifier alone put that member
+    /// in a default-scope bundle -- tagged <c>public</c>, a visibility the language does not give it --
+    /// so an operator who left <c>--include-internal</c> off precisely to keep internal API out of a
+    /// shipped knowledge bundle got it published anyway, and mislabelled. The producer's own fixture
+    /// carries that shape, so the golden blessed it.
+    /// </para>
+    ///
+    /// <para><b>Why it takes the whole declared set.</b> A <see cref="SymbolFact"/> names its container
+    /// as a dotted path and nothing more, so the container's own visibility is not on it; the cap can
+    /// only be computed where every declared symbol is in hand. <paramref name="declared"/> must be the
+    /// UNFILTERED set -- filtering first would drop the very containers that do the capping, and a
+    /// member whose container is missing would then look top-level and slip through.</para>
+    ///
+    /// <para>A container that is not among <paramref name="declared"/> caps nothing: it is a namespace,
+    /// or a type in a file this run did not read. Treating an unknown container as private would delete
+    /// concepts over a file the run merely failed to open, which §2.3 rates well below keeping them.</para>
+    /// </summary>
+    /// <param name="fact">The symbol to test.</param>
+    /// <param name="declared">Every symbol this run extracted, before any scope filtering.</param>
+    /// <param name="scope">The run's scope options.</param>
+    public static bool IsInScope(SymbolFact fact, IReadOnlyDictionary<(string Container, string Name), SymbolFact> declared, ScopeOptions scope)
+    {
+        ArgumentNullException.ThrowIfNull(fact);
+        ArgumentNullException.ThrowIfNull(declared);
+
+        var effective = fact.Visibility;
+        var container = fact.Container;
+
+        // Upward one type at a time, taking the least visible seen. Bounded by the container's segment
+        // count, so a cycle is not expressible: each step strictly shortens the path.
+        while (container.Length > 0 && effective != SymbolVisibility.Private)
+        {
+            var lastDot = container.LastIndexOf('.');
+            var parentContainer = lastDot < 0 ? string.Empty : container[..lastDot];
+            var name = lastDot < 0 ? container : container[(lastDot + 1)..];
+
+            if (declared.TryGetValue((parentContainer, name), out var enclosing) && enclosing.Kind == SymbolKind.Type)
+            {
+                effective = Least(effective, enclosing.Visibility);
+            }
+
+            container = parentContainer;
+        }
+
+        return IsInScope(fact with { Visibility = effective }, scope);
+    }
+
+    /// <summary>
+    /// The less visible of two tiers. Written as an explicit ladder rather than as a comparison on the
+    /// enum's numeric order: the members happen to be declared most-visible-first today, so
+    /// <c>left > right</c> would work and would silently invert if anyone reordered them.
+    /// </summary>
+    private static SymbolVisibility Least(SymbolVisibility left, SymbolVisibility right)
+    {
+        if (left == SymbolVisibility.Private || right == SymbolVisibility.Private)
+        {
+            return SymbolVisibility.Private;
+        }
+
+        return left == SymbolVisibility.Internal || right == SymbolVisibility.Internal
+            ? SymbolVisibility.Internal
+            : SymbolVisibility.Public;
+    }
 
     private static string[] DirectorySegments(string relativePath)
     {
@@ -104,7 +175,7 @@ public static class FileEligibility
     /// resolved path back off disk, rather than adding raw project data to
     /// <see cref="RepositorySnapshot"/>, keeps that record's shape unchanged for every other consumer.
     /// </summary>
-    private static bool IsOwnedByTestProject(string relativePath, RepositorySnapshot snapshot)
+    private static bool IsOwnedByTestProject(string relativePath, RepositorySnapshot snapshot, IFileSystemReader reader)
     {
         var fileDirectory = DirectorySegments(relativePath);
 
@@ -134,13 +205,24 @@ public static class FileEligibility
         }
 
         var absoluteCsprojPath = Path.Combine(snapshot.RepoPath, bestProjectPath.Replace('/', Path.DirectorySeparatorChar));
-        return ReferencesTestSdk(absoluteCsprojPath);
+        return ReferencesTestSdk(absoluteCsprojPath, reader);
     }
 
-    // Ordinal, not OrdinalIgnoreCase: every other path comparison in this codebase (§6.2's "never a
-    // culture-dependent comparison" rule) is Ordinal, and a case-sensitive filesystem can genuinely
-    // hold both src/Foo and src/foo as distinct directories -- OrdinalIgnoreCase here could pick the
-    // wrong one as a file's owning project.
+    // Case-insensitively on Windows and ordinally elsewhere -- BundlePaths.PathComparison, the
+    // codebase's one answer to "are these the same path", rather than a second rule written here.
+    //
+    // This was a flat Ordinal, argued for on the grounds that a case-sensitive filesystem can hold
+    // both src/Foo and src/foo as distinct directories, which is true and is exactly what
+    // PathComparison already encodes. What the argument missed is where the two sides come from. A
+    // file's path is walked off disk; the project's comes from `PackageManifest.RelativePath`, which
+    // RepositoryScanner may have read out of a `.sln`'s TEXT and never normalised against disk. On
+    // Windows a differently-cased entry there still passes `File.Exists`, so the project was found,
+    // its `.csproj` was read, and then this comparison rejected it -- and a test project in a
+    // non-conventionally-named directory was silently INCLUDED with `--include-tests` off, which is
+    // the one direction §5.4 cannot afford to get wrong.
+    //
+    // Still never culture-dependent, which is what §6.2 forbids: OrdinalIgnoreCase is not a
+    // linguistic comparison.
     private static bool IsAncestorOrSame(string[] directory, string[] descendant)
     {
         if (directory.Length > descendant.Length)
@@ -150,7 +232,7 @@ public static class FileEligibility
 
         for (var i = 0; i < directory.Length; i++)
         {
-            if (!string.Equals(directory[i], descendant[i], StringComparison.Ordinal))
+            if (!string.Equals(directory[i], descendant[i], BundlePaths.PathComparison))
             {
                 return false;
             }
@@ -159,24 +241,38 @@ public static class FileEligibility
         return true;
     }
 
-    private static bool ReferencesTestSdk(string absoluteCsprojPath)
+    private static bool ReferencesTestSdk(string absoluteCsprojPath, IFileSystemReader reader)
     {
-        if (!File.Exists(absoluteCsprojPath))
+        if (reader.TryGetLength(absoluteCsprojPath) is null)
         {
             return false;
         }
 
         try
         {
-            var xml = XDocument.Load(absoluteCsprojPath);
+            using var stream = reader.OpenRead(absoluteCsprojPath);
+            var xml = XDocument.Load(stream);
             return (xml.Root?.Descendants().Where(e => e.Name.LocalName == "PackageReference") ?? [])
                 .Any(e => string.Equals((string?)e.Attribute("Include"), TestSdkPackageId, StringComparison.OrdinalIgnoreCase));
         }
-        catch (System.Xml.XmlException)
-        {
-            return false;
-        }
-        catch (IOException)
+        // Every way XDocument.Load can fail on a path that existed a moment ago, not just the two
+        // that were listed here. This method is called from CodeGraphBuilder.Build's per-file loop,
+        // which deliberately does NOT wrap its body -- so an exception escaping here does not degrade
+        // one file, it aborts the whole repository's run. `File.Exists` above narrows nothing: it
+        // answers for the instant it was asked, and it returns false for a directory, so the
+        // interesting failures are the ones it cannot see -- an ACL that denies read, a path the
+        // platform rejects, a file deleted between the two calls.
+        //
+        // NOT covered by an executable test, and that is a real gap rather than an oversight:
+        // UnauthorizedAccessException and SecurityException cannot be provoked here portably (a
+        // read-denying ACL is Windows-specific and needs elevation the suite does not have), and the
+        // two that CAN be provoked -- XmlException, IOException -- were already caught before this
+        // change. Covering the rest needs a loader seam on this type; see the register entry.
+        catch (Exception e) when (e is System.Xml.XmlException
+            or IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException
+            or NotSupportedException)
         {
             return false;
         }

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics;
+using System.Globalization;
+using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -26,12 +29,21 @@ namespace OkfProducer.CodeGraph.Roslyn;
 ///
 /// <para><b>Degradation.</b> A project that cannot be compiled cleanly is reported unavailable and its
 /// files are not <see cref="Owns"/>ed, so <see cref="NameMatchResolver"/>'s baseline stands for them
-/// untouched. This resolver never resolves from a compilation that has errors. <see cref="Projects"/>,
-/// <see cref="IsAvailable"/> and <see cref="IsComplete"/> are what let a caller distinguish "ran, and
-/// resolved nothing" from "could not run" -- the difference between a repository with no internal
-/// calls and one whose call graph is only approximate. That distinction is a question a caller can
-/// ask, not a pruning gate: see <see cref="IsComplete"/>'s own doc comment for why it cannot be one,
-/// and for the fact that only <see cref="Projects"/> reaches the run's report today.</para>
+/// untouched. This resolver never resolves from a compilation that has errors. <see cref="Projects"/>
+/// is what lets a caller distinguish "ran, and resolved nothing" from "could not run" -- the
+/// difference between a repository with no internal calls and one whose call graph is only
+/// approximate -- and it reports that per project, naming each one and why, rather than as a
+/// boolean.
+///
+/// <para>Two summary properties, <c>IsAvailable</c> and <c>IsComplete</c>, used to sit here.
+/// Remediation wave 2b established that nothing in <c>producers/src</c> read either one: the run's
+/// report comes from <c>GenerateRun.ReportProjects</c> iterating <see cref="Projects"/>, and §7.2 had
+/// claimed otherwise. That wave chose to correct the claims and keep the properties; this one removed
+/// them instead. The reasoning for keeping them was that a host embedding the resolver would ask
+/// exactly that question -- but no host does, this is not a published library, and a property whose
+/// only readers are the tests asserting on it is a shape this branch has already been burned by. A
+/// caller wanting the summary derives it from <see cref="Projects"/> in one line, which is what the
+/// tests now do.</para>
 ///
 /// <para><b>Loud, but never fatal to the run.</b> An unknown <c>LangVersion</c> is refused rather
 /// than degraded to a preview language version (correction 3) -- but the refusal is scoped to the one
@@ -139,62 +151,11 @@ public sealed class RoslynResolver : ISymbolResolver
     public IReadOnlyList<RoslynProjectReport> Projects { get; }
 
     /// <summary>
-    /// Whether at least one project compiled, i.e. whether this resolver can settle anything at all.
-    ///
-    /// <para><b>Nothing in <c>producers/src</c> reads this, or <see cref="IsComplete"/>.</b> Grepped,
-    /// not assumed: the only readers are this project's tests. See <see cref="IsComplete"/> for what
-    /// the run's report actually feeds from and why that was left as it is.</para>
+    /// This engine's §6.2 token for <c>overview</c>'s <c>generated.engines</c>, read from the compiler
+    /// assembly this resolver actually loads rather than from a version string written by hand.
     /// </summary>
-    public bool IsAvailable => Projects.Any(p => p.Availability == RoslynProjectAvailability.Compiled);
-
-    /// <summary>
-    /// Whether this resolver covered the repository completely: at least one project, and every one of
-    /// them compiled. <see langword="false"/> means some C# was resolved by name alone, so this run's
-    /// call graph is approximate and an operator should be told.
-    ///
-    /// <para><b>It is not the pruning gate, and an earlier version of this comment said it was.</b>
-    /// Task 11 settled it against the code: which concepts exist is decided entirely by extraction --
-    /// <c>CodeGraphBuilder</c> builds <c>CodeGraph.Symbols</c> from <see cref="ILanguageExtractor"/>
-    /// output filtered by <see cref="FileEligibility.IsInScope"/>, and no resolver contributes a symbol
-    /// to it. A resolver decides only whether a call site renders as a link or as a code span. So a
-    /// degraded resolver cannot make a symbol <i>absent</i>, which is the only way an incomplete
-    /// picture could turn into a wrong deletion. Gating on it would also make pruning dead code on this
-    /// very repository -- <c>src/OKF4net.Cli</c> uses a source generator and does not compile here, so
-    /// this property is <see langword="false"/> on an ordinary checkout -- which is the same trap
-    /// <see cref="RunStatus.IsComplete"/> sets, for the same shape of reason. What DOES gate pruning is
-    /// <see cref="RunStatus.TraversalComplete"/> plus the per-file <see cref="FileStatus"/>; see
-    /// <c>BundleWriter</c>.</para>
-    ///
-    /// <para>
-    /// The <c>Count &gt; 0</c> clause is the whole point of this property, not a formality.
-    /// <c>Projects.All(...)</c> over an empty list is vacuously <see langword="true"/>, so a resolver
-    /// constructed with no projects at all -- which is precisely the state in which EVERY call in the
-    /// repository fell back to name matching -- would otherwise report itself complete. That state is
-    /// reachable rather than theoretical: finding no <c>.csproj</c> in a C# repository is a known gap
-    /// in this producer, and it yields an empty project list, not an error.
-    /// </para>
-    ///
-    /// <para>
-    /// What that clause protects is a caller who asks this question. Claiming completeness would tell
-    /// one the call graph is exact when every edge in it was in fact guessed from a name -- and a wrong
-    /// <c>## Calls</c> link reads as confidently as a right one. It forbids nothing, gates nothing, and
-    /// blocks no deletion; see the paragraph above for why it cannot.
-    /// </para>
-    ///
-    /// <para><b>It does not feed the run's report, and this comment used to say it did -- as did
-    /// 7.2.</b> Grepped across <c>producers/src</c>: nothing reads this property or
-    /// <see cref="IsAvailable"/>; the only readers are this project's tests. What the operator
-    /// actually sees is <c>GenerateRun.ReportProjects</c> iterating <see cref="Projects"/> and
-    /// emitting one note per project that did not compile, naming the project, the
-    /// <see cref="RoslynProjectAvailability"/> and the detail. That is strictly more than a single
-    /// boolean says, which is why the fix was to correct this claim and 7.2's rather than to wire a
-    /// second, coarser channel alongside a working one. Both properties stay: they are the question a
-    /// host embedding this resolver would ask, and the fixture in <c>RoslynResolverTests</c> asserts
-    /// on <see cref="IsComplete"/> to prove its own scratch repository really compiled -- a test that
-    /// would otherwise measure nothing.</para>
-    /// </summary>
-    public bool IsComplete =>
-        Projects.Count > 0 && Projects.All(p => p.Availability == RoslynProjectAvailability.Compiled);
+    public static string EngineVersion { get; } =
+        EngineVersions.Token("roslyn", typeof(CSharpCompilation).Assembly);
 
     /// <summary>
     /// Compiles <paramref name="projectPaths"/>, plus every project they reference that lives under
@@ -226,14 +187,75 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </remarks>
     public static RoslynResolver Create(
         string repositoryPath, IReadOnlyList<string> projectPaths, ExtractionLimits? limits = null)
+        // No budget, so no loop below can abandon and the null return is unreachable from here. The
+        // nullable result exists for TryCreateWithin alone, and this overload's behaviour is
+        // unchanged by its arrival -- which is the point of keeping the two separate rather than
+        // making every caller handle a null it can never receive.
+        => CreateWithin(repositoryPath, projectPaths, limits, new StageDeadline(null))!;
+
+    /// <summary>
+    /// <see cref="Create"/> under a wall-clock budget: builds the resolver if the whole stage fits in
+    /// <paramref name="timeout"/>, and otherwise abandons it and returns <see langword="false"/>.
+    ///
+    /// <para><b>Why this is opt-in, and why the caller gets nothing rather than something.</b> The
+    /// extraction stage has always honoured <see cref="ExtractionLimits.Timeout"/>; this one never
+    /// had a bound of its own. Each <c>dotnet msbuild</c> subprocess is capped at two minutes, but
+    /// nothing caps their sum, and nothing caps the compilations after them -- so a large enough
+    /// repository runs for as long as it runs. A default budget would fix that by making the output
+    /// depend on how fast the machine is, and §6.2 pins determinism at a fixed extractor version,
+    /// not at a fixed CPU. So the budget arrives only when an operator asks for one.</para>
+    ///
+    /// <para>And when it trips, the stage is abandoned <b>whole</b>. Returning the projects that
+    /// happened to finish first would emit a bundle where some <c>## Calls</c> links are exact and
+    /// some are name matches, with the line between them drawn by machine speed and recorded
+    /// nowhere -- an artefact its reader cannot interpret, which §2.1 rates below having no exact
+    /// resolver at all. Abandoning whole leaves a uniformly name-matched bundle, which is a state the
+    /// producer already has a name and a note for.</para>
+    /// </summary>
+    /// <param name="repositoryPath">As <see cref="Create"/>.</param>
+    /// <param name="projectPaths">As <see cref="Create"/>.</param>
+    /// <param name="limits">As <see cref="Create"/>.</param>
+    /// <param name="timeout">The budget for the whole stage. Must be positive.</param>
+    /// <param name="resolver">The resolver, or <see langword="null"/> if the budget was exhausted.</param>
+    /// <returns><see langword="true"/> if the stage completed inside the budget.</returns>
+    public static bool TryCreateWithin(
+        string repositoryPath,
+        IReadOnlyList<string> projectPaths,
+        ExtractionLimits? limits,
+        TimeSpan timeout,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out RoslynResolver? resolver)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+
+        resolver = CreateWithin(repositoryPath, projectPaths, limits, new StageDeadline(timeout));
+        return resolver is not null;
+    }
+
+    private static RoslynResolver? CreateWithin(
+        string repositoryPath, IReadOnlyList<string> projectPaths, ExtractionLimits? limits, StageDeadline deadline)
     {
         ArgumentException.ThrowIfNullOrEmpty(repositoryPath);
         ArgumentNullException.ThrowIfNull(projectPaths);
 
         var repositoryRoot = Path.GetFullPath(repositoryPath);
         var gate = new SourceFileGate((limits ?? ExtractionLimits.Default).MaxFileBytes, repositoryRoot);
-        var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports);
-        var compiled = CompileInDependencyOrder(queried, reports, gate);
+        var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports, deadline);
+        var compiled = CompileInDependencyOrder(queried, reports, gate, deadline);
+
+        // Asked once, after both loops, because both stop at the same flag: whichever of them tripped
+        // it, everything computed so far is discarded rather than published half-done.
+        //
+        // ShouldAbandon() rather than the latched Tripped, and the difference is the whole overrun that
+        // happens during the LAST unit of work -- or the only one, on a single-project repository.
+        // Both loops consult the clock at the top of an iteration, so an overrun after the final check
+        // was never noticed: this returned a resolver for a stage that took longer than the budget,
+        // which contradicts both this method's own doc ("builds the resolver if the whole stage fits in
+        // timeout") and the help text's "the stage is abandoned WHOLE". Asking here reads the clock one
+        // last time, after all the work, which is the only place the total elapsed time is known.
+        if (deadline.ShouldAbandon())
+        {
+            return null;
+        }
 
         var ownedFiles = new Dictionary<string, OwnedFile>(PathComparer);
         // Ordinal by project path so that, when two projects both compile the same file (a linked
@@ -375,6 +397,35 @@ public sealed class RoslynResolver : ISymbolResolver
     }
 
     /// <summary>
+    /// The stage's wall-clock budget, or an unbounded one when <paramref name="budget"/> is
+    /// <see langword="null"/> -- which is what <see cref="Create"/> passes, so that overload runs
+    /// exactly the code it always ran and never consults a clock at all.
+    ///
+    /// <para><see cref="ShouldAbandon"/> is asked at the top of each per-project iteration, and that
+    /// granularity is the honest one: a single <c>dotnet msbuild</c> query is already capped at two
+    /// minutes by <c>MsBuildProjectQuery</c>, so the finest thing this can interrupt is the gap
+    /// between projects. It latches rather than recomputing, so a loop cannot resume after another
+    /// one gave up, and <see cref="Tripped"/> stays false when both loops merely finished.</para>
+    /// </summary>
+    private sealed class StageDeadline(TimeSpan? budget)
+    {
+        private readonly long _start = Stopwatch.GetTimestamp();
+
+        /// <summary>True once a loop has actually abandoned -- never merely because time has passed.</summary>
+        public bool Tripped { get; private set; }
+
+        public bool ShouldAbandon()
+        {
+            if (!Tripped && budget is { } b && Stopwatch.GetElapsedTime(_start) > b)
+            {
+                Tripped = true;
+            }
+
+            return Tripped;
+        }
+    }
+
+    /// <summary>
     /// Runs <see cref="MsBuildProjectQuery.Query"/> over the requested projects and, transitively,
     /// over every project reference that resolves to a <c>.csproj</c> under the repository root.
     /// Queried in sorted order and de-duplicated by absolute path, so the closure is the same set in
@@ -383,7 +434,8 @@ public sealed class RoslynResolver : ISymbolResolver
     private static Dictionary<string, ProjectInputs> QueryProjectClosure(
         string repositoryRoot,
         IReadOnlyList<string> projectPaths,
-        out Dictionary<string, RoslynProjectReport> reports)
+        out Dictionary<string, RoslynProjectReport> reports,
+        StageDeadline deadline)
     {
         var queried = new Dictionary<string, ProjectInputs>(PathComparer);
         reports = new Dictionary<string, RoslynProjectReport>(PathComparer);
@@ -393,6 +445,11 @@ public sealed class RoslynResolver : ISymbolResolver
 
         for (var i = 0; i < pending.Count; i++)
         {
+            if (deadline.ShouldAbandon())
+            {
+                break;
+            }
+
             var projectPath = pending[i];
 
             ProjectInputs inputs;
@@ -431,13 +488,23 @@ public sealed class RoslynResolver : ISymbolResolver
     private static Dictionary<string, CSharpCompilation> CompileInDependencyOrder(
         Dictionary<string, ProjectInputs> queried,
         Dictionary<string, RoslynProjectReport> reports,
-        SourceFileGate gate)
+        SourceFileGate gate,
+        StageDeadline deadline)
     {
         var compiled = new Dictionary<string, CSharpCompilation>(PathComparer);
         var inProgress = new HashSet<string>(PathComparer);
 
         foreach (var projectPath in queried.Keys.OrderBy(p => p, StringComparer.Ordinal))
         {
+            // Only at the top level, deliberately, and not inside Compile's recursion into
+            // dependencies: abandoning halfway down a dependency chain would leave a project compiled
+            // against a reference that was itself abandoned, which is a worse compilation than not
+            // attempting it. A dependency chain is one unit of work here.
+            if (deadline.ShouldAbandon())
+            {
+                break;
+            }
+
             Compile(projectPath, queried, reports, compiled, inProgress, gate);
         }
 
@@ -570,7 +637,7 @@ public sealed class RoslynResolver : ISymbolResolver
         var text = owned.Tree.GetText().ToString();
         var model = owned.Compilation.GetSemanticModel(owned.Tree);
 
-        var index = new Dictionary<int, CalleeMatch>();
+        var pending = new List<(int Utf16Offset, CalleeMatch Match)>();
         foreach (var invocation in owned.Tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
             var callee = CalleeName(invocation.Expression);
@@ -582,16 +649,42 @@ public sealed class RoslynResolver : ISymbolResolver
             var symbol = TargetSymbol(model, invocation, callee);
             var (kind, container, name) = DescribeTarget(owned.Compilation, _repositoryProjectAssemblies, symbol);
 
-            // Roslyn counts UTF-16 code units; a CallSite's identity is a UTF-8 byte offset. Do not
-            // delete this conversion on the grounds that the tree-sitter side "already gives UTF-16
-            // too" -- see Utf8Offsets' summary; that is an artefact of the binding, and the failure
-            // mode when it stops holding is a call credited to the wrong symbol, silently.
-            var offset = Utf8Offsets.ToUtf8(text, callee.Identifier.SpanStart);
-
             // Identifier.Text, not ValueText: ValueText strips the @ from a verbatim identifier, while
             // CallSite.CalledName is the grammar's raw token and keeps it, so @class() would fail the
             // name guard in Resolve on a difference that is purely about how the name was spelled.
-            index[offset] = new CalleeMatch(callee.Identifier.Text, kind, container, name);
+            pending.Add((callee.Identifier.SpanStart, new CalleeMatch(callee.Identifier.Text, kind, container, name)));
+        }
+
+        // Roslyn counts UTF-16 code units; a CallSite's identity is a UTF-8 byte offset. Do not delete
+        // this conversion on the grounds that the tree-sitter side "already gives UTF-16 too" -- see
+        // Utf8Offsets' summary; that is an artefact of the binding, and the failure mode when it stops
+        // holding is a call credited to the WRONG symbol, silently.
+        //
+        // ONE pass over the file for all of its call sites, rather than one pass per site.
+        // `Utf8Offsets.ToUtf8` counts from the start of the text every time, so calling it per callee
+        // made this O(file size x call sites): a large file with many calls paid for its own length
+        // once for each of them. Sorted first so the walk only ever moves forward.
+        var index = new Dictionary<int, CalleeMatch>();
+        var utf8 = 0;
+        var utf16 = 0;
+
+        foreach (var (utf16Offset, match) in pending.OrderBy(entry => entry.Utf16Offset))
+        {
+            // The boundary guard `Utf8Offsets.ToUtf8` applies, kept rather than lost to the
+            // optimisation: an offset splitting a surrogate pair would make the segment below start on
+            // a lone low surrogate and count 3 bytes for it through the replacement fallback -- a
+            // plausible wrong number out of the join key, which is the failure this whole discipline
+            // exists to prevent. O(1) here, where the method's own check is O(1) too.
+            if (utf16Offset > 0 && utf16Offset < text.Length
+                && char.IsHighSurrogate(text[utf16Offset - 1]) && char.IsLowSurrogate(text[utf16Offset]))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(owned), utf16Offset, "a callee identifier begins inside a surrogate pair.");
+            }
+
+            utf8 += Encoding.UTF8.GetByteCount(text.AsSpan(utf16, utf16Offset - utf16));
+            utf16 = utf16Offset;
+            index[utf8] = match;
         }
 
         return index;
@@ -796,20 +889,12 @@ public sealed class RoslynResolver : ISymbolResolver
 
         for (var current = declaration.Parent; current is not null; current = current.Parent)
         {
-            var segment = current switch
-            {
-                BaseNamespaceDeclarationSyntax ns => ns.Name.ToString(),
-                BaseTypeDeclarationSyntax type => type.Identifier.Text,
-                DelegateDeclarationSyntax dele => dele.Identifier.Text,
-                MethodDeclarationSyntax method => method.Identifier.Text,
-                ConstructorDeclarationSyntax constructor => constructor.Identifier.Text,
-                DestructorDeclarationSyntax destructor => destructor.Identifier.Text,
-                PropertyDeclarationSyntax property => property.Identifier.Text,
-                EventDeclarationSyntax @event => @event.Identifier.Text,
-                LocalFunctionStatementSyntax local => local.Identifier.Text,
-                VariableDeclaratorSyntax declarator => declarator.Identifier.Text,
-                _ => string.Empty,
-            };
+            // Through DeclaredName for everything but a namespace, so an ancestor is spelled here
+            // exactly as that ancestor's own concept is. Spelling it with the bare identifier token
+            // instead was measured to put every member of `Holder<T>` under `Holder`'s container.
+            var segment = current is BaseNamespaceDeclarationSyntax ns
+                ? ns.Name.ToString()
+                : DeclaredName(current);
 
             if (segment.Length > 0)
             {
@@ -858,6 +943,69 @@ public sealed class RoslynResolver : ISymbolResolver
     }
 
     /// <summary>
+    /// The name <c>TreeSitterExtractor</c> gives this declaration -- the ONE place the two engines'
+    /// spelling rule lives on this side, used both for a leaf name and for every ancestor segment of a
+    /// container path.
+    ///
+    /// <para><b>Why it is not just the identifier token.</b> Two shapes need more than the token, and
+    /// both were measured to drift when only one side knew: a generic TYPE carries its arity
+    /// (<c>Holder</c>, <c>Holder_1</c>, <c>Holder_2</c>, since the grammar's <c>name</c> field is
+    /// <c>Holder</c> for all three), and a member implementing an interface explicitly carries the
+    /// interface as a dotted prefix (<c>IShape.Draw</c>), because it is a different member from a
+    /// public <c>Draw</c> and not callable as one.</para>
+    ///
+    /// <para>Arity is a TYPE rule only: a call site captures its callee as the bare identifier, so
+    /// qualifying a generic METHOD would stop every call to it from joining. Delegates take no arity
+    /// either, because the extractor classes them as members.</para>
+    ///
+    /// <para>Getting this wrong is not a missed link but a WRONG one, which is the outcome §2.1's
+    /// chaining exists to make impossible: <c>CodeGraphBuilder</c> overwrites the baseline's verdict
+    /// with the exact one and only then degrades a non-joining <c>Exact</c>, so a spelling only this
+    /// side knows leaves the graph strictly worse than not running the resolver at all.</para>
+    /// </summary>
+    private static string DeclaredName(SyntaxNode declaration)
+    {
+        var identifier = declaration switch
+        {
+            BaseTypeDeclarationSyntax type => type.Identifier,
+            DelegateDeclarationSyntax dele => dele.Identifier,
+            MethodDeclarationSyntax method => method.Identifier,
+            ConstructorDeclarationSyntax constructor => constructor.Identifier,
+            DestructorDeclarationSyntax destructor => destructor.Identifier,
+            PropertyDeclarationSyntax property => property.Identifier,
+            EventDeclarationSyntax @event => @event.Identifier,
+            LocalFunctionStatementSyntax local => local.Identifier,
+            VariableDeclaratorSyntax declarator => declarator.Identifier,
+            _ => default,
+        };
+
+        if (identifier.Text.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (declaration is TypeDeclarationSyntax { TypeParameterList.Parameters.Count: > 0 } generic)
+        {
+            // The separator is TreeSitterExtractor.ArityMarker, read from there rather than repeated as
+            // a literal: this spelling is what the two engines join on, so a copy here could drift and
+            // the symptom would not be a lost call but a call credited to another symbol.
+            return $"{identifier.Text}{SymbolFact.ArityMarker}{generic.TypeParameterList!.Parameters.Count.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        var explicitInterface = declaration switch
+        {
+            MethodDeclarationSyntax method => method.ExplicitInterfaceSpecifier,
+            PropertyDeclarationSyntax property => property.ExplicitInterfaceSpecifier,
+            EventDeclarationSyntax @event => @event.ExplicitInterfaceSpecifier,
+            _ => null,
+        };
+
+        return explicitInterface is null
+            ? identifier.Text
+            : $"{explicitInterface.Name}.{identifier.Text}";
+    }
+
+    /// <summary>
     /// The declaration's name <b>exactly as it is written in source</b>, because that -- not Roslyn's
     /// idea of the name -- is what <see cref="SymbolFact.Name"/> holds, and the two have to be the
     /// same string to join.
@@ -879,23 +1027,9 @@ public sealed class RoslynResolver : ISymbolResolver
             // The node kinds here mirror CSharpProfile.DeclarationQuery's, deliberately: a declaration
             // this producer does not extract has no SymbolFact to join anyway, so there is nothing to
             // match its spelling against.
-            var identifier = reference.GetSyntax() switch
+            if (DeclaredName(reference.GetSyntax()) is { Length: > 0 } declared)
             {
-                BaseTypeDeclarationSyntax type => type.Identifier,
-                DelegateDeclarationSyntax dele => dele.Identifier,
-                MethodDeclarationSyntax method => method.Identifier,
-                ConstructorDeclarationSyntax constructor => constructor.Identifier,
-                DestructorDeclarationSyntax destructor => destructor.Identifier,
-                PropertyDeclarationSyntax property => property.Identifier,
-                EventDeclarationSyntax @event => @event.Identifier,
-                LocalFunctionStatementSyntax local => local.Identifier,
-                VariableDeclaratorSyntax declarator => declarator.Identifier,
-                _ => default,
-            };
-
-            if (identifier.Text.Length > 0)
-            {
-                return identifier.Text;
+                return declared;
             }
         }
 

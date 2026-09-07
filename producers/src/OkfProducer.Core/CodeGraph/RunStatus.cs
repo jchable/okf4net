@@ -35,6 +35,20 @@ public sealed record RunStatus(bool TraversalComplete, IReadOnlyList<(string Pat
     /// </summary>
     public bool IsComplete => TraversalComplete && Skipped.All(s => s.Status == FileStatus.Extracted);
 
-    /// <summary>A run in which the traversal completed and every eligible file extracted cleanly.</summary>
+    /// <summary>
+    /// A run in which the traversal completed and every eligible file extracted cleanly.
+    ///
+    /// <para><b>Nothing in <c>producers/src</c> constructs one through this.</b> Grepped, not assumed:
+    /// every production <see cref="RunStatus"/> comes out of <c>CodeGraphBuilder.Build</c> with the
+    /// statuses it actually observed, and the only readers here are this solution's test fixtures,
+    /// which want "a clean run" in one token. Recorded so the next reader does not take it for a
+    /// production path and reason about a code path that has no callers -- the shape this branch has
+    /// been caught by more than once.</para>
+    ///
+    /// <para>Kept rather than moved to the test project, unlike <c>RoslynResolver</c>'s two removed
+    /// summary properties: those made a claim the spec repeated and the code did not honour, while this
+    /// is a factory for the type's own least surprising value, and the fourteen call sites it would
+    /// churn buy nothing.</para>
+    /// </summary>
     public static RunStatus Complete { get; } = new(true, []);
 }

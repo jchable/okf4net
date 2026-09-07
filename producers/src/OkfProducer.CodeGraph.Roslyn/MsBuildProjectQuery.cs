@@ -144,7 +144,25 @@ public static class MsBuildProjectQuery
     /// JSON. Every one of these means "this project's inputs are unknown", never "this project has no
     /// references" -- the caller must degrade, not compile from a half-answer.
     /// </exception>
-    public static ProjectInputs Query(string projectPath)
+    public static ProjectInputs Query(string projectPath) => Query(projectPath, "dotnet", QueryTimeout);
+
+    /// <summary>
+    /// <see cref="Query(string)"/> against a named <paramref name="executable"/> and a caller-chosen
+    /// <paramref name="timeout"/>, so the two degradation paths that spawning hides can be executed.
+    ///
+    /// <para><b>Why this exists.</b> Two branches here -- the dotnet CLI being absent
+    /// (<see cref="Win32Exception"/> out of <see cref="Process.Start(ProcessStartInfo)"/>) and the
+    /// query outrunning its deadline -- were reachable only by uninstalling the SDK or waiting two
+    /// minutes, so neither was ever executed by a test. That is not a cosmetic gap: this class's
+    /// wrapping is what keeps ONE project's failure from ending the whole repository's run, and the
+    /// review that found C2-1 (an unwrapped exception doing exactly that) named this absence as the
+    /// reason it had gone unnoticed.</para>
+    ///
+    /// <para><c>internal</c>, and the public overload is the only production caller: the executable
+    /// and the deadline are not knobs an operator gets, they are what a test needs to make a real
+    /// failure happen instead of describing one.</para>
+    /// </summary>
+    internal static ProjectInputs Query(string projectPath, string executable, TimeSpan timeout)
     {
         ArgumentException.ThrowIfNullOrEmpty(projectPath);
 
@@ -153,7 +171,7 @@ public static class MsBuildProjectQuery
         string json;
         try
         {
-            json = RunQuery(fullPath, targetFramework: null);
+            json = RunQuery(fullPath, targetFramework: null, executable, timeout);
         }
         catch (MsBuildQueryException)
         {
@@ -161,13 +179,13 @@ public static class MsBuildProjectQuery
             // front would add an MSBuild round trip per project to spare the rare multi-targeting one.
             // An unrestored project fails here too and its probe comes back null, so the original --
             // and far more useful -- failure is what propagates.
-            var framework = FirstTargetFramework(fullPath);
+            var framework = FirstTargetFramework(fullPath, executable, timeout);
             if (framework is null)
             {
                 throw;
             }
 
-            json = RunQuery(fullPath, framework);
+            json = RunQuery(fullPath, framework, executable, timeout);
         }
 
         return ReadInputs(fullPath, json);
@@ -215,12 +233,12 @@ public static class MsBuildProjectQuery
     /// failure is the one worth reporting). Evaluation only -- no targets run -- so this is the cheap
     /// probe, taken only after the full query has already failed.
     /// </summary>
-    private static string? FirstTargetFramework(string projectPath)
+    private static string? FirstTargetFramework(string projectPath, string executable, TimeSpan timeout)
     {
         string json;
         try
         {
-            json = Run(projectPath, ["-getProperty:TargetFrameworks", "-getProperty:TargetFramework"]);
+            json = Run(projectPath, ["-getProperty:TargetFrameworks", "-getProperty:TargetFramework"], executable, timeout);
         }
         catch (MsBuildQueryException)
         {
@@ -255,7 +273,7 @@ public static class MsBuildProjectQuery
         }
     }
 
-    private static string RunQuery(string projectPath, string? targetFramework)
+    private static string RunQuery(string projectPath, string? targetFramework, string executable, TimeSpan timeout)
     {
         var arguments = new List<string>();
         if (targetFramework is not null)
@@ -267,10 +285,10 @@ public static class MsBuildProjectQuery
         arguments.AddRange(Items);
         arguments.AddRange(Properties);
 
-        return Run(projectPath, arguments);
+        return Run(projectPath, arguments, executable, timeout);
     }
 
-    private static string Run(string projectPath, IReadOnlyList<string> arguments)
+    private static string Run(string projectPath, IReadOnlyList<string> arguments, string executable, TimeSpan timeout)
     {
         // Guards Process.Start against a working directory that is not there -- a project directory
         // that vanished between the scan and this query, or a caller naming a project that never
@@ -286,7 +304,7 @@ public static class MsBuildProjectQuery
                 $"could not start `dotnet msbuild` for {projectPath}: its directory does not exist.");
         }
 
-        var startInfo = new ProcessStartInfo("dotnet")
+        var startInfo = new ProcessStartInfo(executable)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -335,7 +353,7 @@ public static class MsBuildProjectQuery
             // honoured -- and anything else holding the write end of those pipes (an inherited MSBuild
             // worker; see -nodeReuse:false above) keeps them open with no escape. Cancelling the reads
             // as well as the wait closes that gap.
-            using var timeout = new CancellationTokenSource(QueryTimeout);
+            using var deadline = new CancellationTokenSource(timeout);
 
             // Both streams are drained concurrently, never one ReadToEnd() after the other: MSBuild
             // writes enough to fill a pipe buffer, and a sequential read deadlocks the moment the
@@ -345,15 +363,15 @@ public static class MsBuildProjectQuery
             // an unbounded read of it is an OutOfMemoryException a scanned repository can ask for. See
             // ReadCappedAsync for the measurement that sets the caps -- and for the mechanism that does
             // NOT do it, since the obvious guess is wrong.
-            var stdoutTask = ReadCappedAsync(process.StandardOutput, MaxStdoutChars, timeout.Token);
-            var stderrTask = ReadCappedAsync(process.StandardError, MaxStderrChars, timeout.Token);
+            var stdoutTask = ReadCappedAsync(process.StandardOutput, MaxStdoutChars, deadline.Token);
+            var stderrTask = ReadCappedAsync(process.StandardError, MaxStderrChars, deadline.Token);
 
             CappedRead stdoutRead;
             CappedRead stderrRead;
             int exitCode;
             try
             {
-                process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+                process.WaitForExitAsync(deadline.Token).GetAwaiter().GetResult();
                 stdoutRead = stdoutTask.GetAwaiter().GetResult();
                 stderrRead = stderrTask.GetAwaiter().GetResult();
                 exitCode = process.ExitCode;
@@ -362,7 +380,7 @@ public static class MsBuildProjectQuery
             {
                 TryKill(process);
                 throw new MsBuildQueryException(
-                    $"`dotnet msbuild` for {projectPath} did not finish within {QueryTimeout.TotalSeconds:0} s.");
+                    $"`dotnet msbuild` for {projectPath} did not finish within {timeout.TotalSeconds:0} s.");
             }
             catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
             {

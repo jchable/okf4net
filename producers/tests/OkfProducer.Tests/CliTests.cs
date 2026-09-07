@@ -255,6 +255,174 @@ public class CliTests
     }
 
     [Fact]
+    public void A_run_that_capped_a_public_member_at_its_internal_container_says_so()
+    {
+        // The one deletion in this producer that nothing else can report. Scope filters on EFFECTIVE
+        // visibility, so a `public` member of an `internal` type is out -- correct, since C# caps it
+        // there -- but an earlier version emitted it, tagged `public`, and regenerating over such a
+        // bundle PRUNES it. `BundleWriter`'s scope-narrowing guard cannot say so: it compares the
+        // recorded scope FLAGS, and those are identical on both sides. It is the rule that narrowed.
+        //
+        // Measured before the note existed, on this exact shape: five concepts deleted, nothing
+        // printed. A note rather than a refusal to prune, because the concepts really are out of scope
+        // and keeping them would republish the internal API the flag was left off to exclude.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        WriteSource(repo, "src/Capped.cs", """
+            namespace Demo;
+
+            internal class Outer
+            {
+                /// <summary>Public, but nothing outside the assembly can reach it.</summary>
+                public void Reachable() { }
+            }
+            """);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("1 declaration(s) are public in their own right but enclosed by an internal type", result.Error, StringComparison.Ordinal);
+        Assert.Contains("Pass --include-internal to keep them", result.Error, StringComparison.Ordinal);
+
+        // Counted once, and only for what the CAP removed: `Outer` is out by its own modifier, so it
+        // must not be in the count -- an inflated number would send an operator looking for a
+        // declaration the flag would not bring back.
+        AssertAbsent(bundle, "code/csharp/demo/outer/reachable");
+    }
+
+    [Fact]
+    public void A_run_that_capped_nothing_stays_silent_about_it()
+    {
+        // The other half, so the note cannot become one every run prints and nobody reads. The default
+        // fixture has no internal container, so there is nothing to cap.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("enclosed by an internal type", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_run_that_never_reached_roslyn_does_not_name_roslyn_as_having_produced_it()
+    {
+        // §6.2: `generated.by` is a determinism claim -- "these engine versions produced these bytes"
+        // -- so naming an engine that did not run makes the claim false in the direction that matters,
+        // by promising reproducibility against a tool the run never invoked.
+        //
+        // It was named unconditionally on every run that was not --no-code, which covers three cases
+        // where Roslyn demonstrably never ran: --no-msbuild, a repository with no project file (this
+        // fixture: a package.json and C# sources, no .csproj), and an exhausted --roslyn-timeout.
+        // `ProducerFixture` had the rule right for its own capture -- "tree-sitter alone, because
+        // tree-sitter alone ran" -- and the shipped CLI did not, which is why the golden could not
+        // catch it.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+
+        // Read off `generated.engines`, not `generated.by`: the engines used to be appended to the
+        // actor, which §7 does not allow, so the list moved to a sibling key. `by` is now an actor and
+        // says nothing about engines at all -- which is why this assertion had to move with it rather
+        // than merely be adjusted.
+        var generated = Frontmatter(bundle, "overview").Get("generated")?.AsMapping();
+        var engines = generated?.Get("engines")?.AsSequence()?.Select(i => i.AsDisplayString()).ToList();
+
+        Assert.Equal(ConceptGenerator.ProducerActor, generated?.Get("by")?.AsDisplayString());
+        Assert.NotNull(engines);
+        Assert.Contains(engines, e => e!.StartsWith("tree-sitter/", StringComparison.Ordinal));
+        Assert.DoesNotContain(engines, e => e!.StartsWith("roslyn/", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("-1", "must be a positive number of seconds")]
+    // Zero is refused, and it used to be the one value where the accepted domain and the stated domain
+    // disagreed: the guard rejected only `< 0` with a message saying the value must be POSITIVE, then
+    // mapped 0 to "no budget" -- so an operator, or a wrapper script whose remaining budget had counted
+    // down to zero, asked for the smallest possible bound and silently got the largest one. It reads as
+    // absent only because the option's default was also 0; the option is nullable now, so the two are
+    // distinguishable and zero is refused like any other non-positive budget.
+    [InlineData("0", "must be a positive number of seconds")]
+    // Above TimeSpan.MaxValue.TotalSeconds (~9.22e11). Accepted by the `>= 0` guard this used to have,
+    // then thrown out of TimeSpan.FromSeconds as an unhandled OverflowException with a stack trace.
+    [InlineData("1000000000000", "no larger than")]
+    // Positive as a double, zero as a TimeSpan: under one tick (1e-7 s) it truncated to TimeSpan.Zero,
+    // which TryCreateWithin refuses by contract -- an unhandled ArgumentOutOfRangeException from inside
+    // the run. The guard tested the double's range; the value that reaches the API is a TimeSpan, and
+    // those are two different ranges.
+    [InlineData("0.00000001", "smaller than the smallest budget")]
+    public void A_roslyn_budget_outside_the_expressible_range_is_refused_with_an_error_not_a_stack_trace(
+        string value, string because)
+    {
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--roslyn-timeout", value);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(because, result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("Unhandled exception", result.Error, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(bundle), $"'{value}' was refused but the run still created the bundle.");
+    }
+
+    [Theory]
+    // The decimal point is '.', on every machine. Without a custom parser System.CommandLine converts a
+    // double with the CURRENT culture and NumberStyles.AllowThousands, so this option meant different
+    // things in different places: measured under de-DE, `1.5` parsed as 15 and `0.001` as 1 -- exit 0,
+    // no diagnostic, a budget 10^n too large from the exact form the README documents -- while fr-FR
+    // refused the same `1.5` outright. A multiplied budget changes which projects finish, so it changes
+    // the emitted `## Calls` links, the containment links and `generated.engines`: the machine's locale
+    // would have decided bundle content, which is what §6.2 pins determinism against.
+    [InlineData("1,5")]
+    [InlineData("1 000")]
+    [InlineData("90s")]
+    public void A_roslyn_budget_is_read_invariantly_so_a_separator_is_a_typo_and_not_a_grouping(string value)
+    {
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--roslyn-timeout", value);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("is not a number of seconds", result.Error, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(bundle), $"'{value}' was refused but the run still created the bundle.");
+    }
+
+    [Fact]
+    public void The_help_says_what_supplying_a_roslyn_budget_costs()
+    {
+        // The option is opt-in because it makes the emitted bundle a function of machine speed, and an
+        // operator has to be able to read that BEFORE reaching for it -- so both halves of the warning
+        // are pinned: that unbounded is the default, and that the abandonment is whole, not partial.
+        //
+        // This was called `No_roslyn_budget_is_the_default_and_...`, and the first half of that name
+        // was a claim about BEHAVIOUR made entirely out of help text. Reading a sentence that says
+        // "absent means unbounded" cannot show that absent means unbounded; the test below is what
+        // does, by observing that a default run has no budget to run out of.
+        var result = Run("generate", "--help");
+        var help = Collapse(result.Output);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("--roslyn-timeout", help, StringComparison.Ordinal);
+        Assert.Contains("absent means unbounded", help, StringComparison.Ordinal);
+        Assert.Contains("the stage is abandoned WHOLE, not truncated", help, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_run_with_no_roslyn_budget_never_abandons_the_stage_for_running_out_of_one()
+    {
+        // The behavioural half. "Absent means unbounded" is observable in one place -- the note the
+        // abandonment prints -- so a default run must never carry it, however long the stage takes.
+        // Asserted against the note's own text rather than a timing measurement, which would make the
+        // test a function of the machine exactly as the option makes the bundle one.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("--roslyn-timeout of", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("ran out before the Roslyn stage finished", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Check_passes_on_a_bundle_that_matches_its_repository()
     {
         using var workspace = NewWorkspace(out var repo, out var bundle);
@@ -477,6 +645,14 @@ public class CliTests
     [InlineData("/srv/demo", false)]
     [InlineData("", false)]
     [InlineData(null, false)]
+
+    // Two shapes the table omitted, both verified correct and neither proved by it. `javascript:` is
+    // the scheme a permalink must never carry into a bundle a viewer will render. And a
+    // scheme-relative `//host/path` is rejected for a reason worth having a row for rather than
+    // relying on: .NET parses it as `Scheme="file"`, so it fails the http/https check as a quirk of
+    // the parser rather than by an explicit rule, and a future parser change would flip it silently.
+    [InlineData("javascript:alert(1)", false)]
+    [InlineData("//github.com/acme/demo", false)]
     public void The_permalink_base_rule_is_one_definition_shared_by_the_generator_and_the_cli(string? repoUrl, bool expected)
     {
         // Pinned as a table because this rule now has two consumers who must not diverge: the
@@ -1025,6 +1201,11 @@ public class CliTests
         // Compared with whitespace collapsed, since the help renderer wraps to the console width.
         var result = Run("generate", "--help");
 
+        // `--help` is a successful invocation, not a refused one, and this file's every other test
+        // says so about its own run. Both `--help` tests here asserted only the text, so a regression
+        // that printed the whole help and then exited non-zero -- a shell script's `okfgen --help ||
+        // exit 1` breaking for nobody's benefit -- had nothing to fail.
+        Assert.Equal(0, result.ExitCode);
         Assert.Contains(Collapse(BundleDrift.CheckDescription), Collapse(result.Output), StringComparison.Ordinal);
     }
 
@@ -1043,8 +1224,10 @@ public class CliTests
         // counted, which makes the run partial", or back to "no process is spawned" -- turns this
         // red. README prose is deliberately NOT pinned here: it changes for good reasons, and a
         // substring test over it would be noise.
-        var help = Collapse(Run("generate", "--help").Output);
+        var result = Run("generate", "--help");
+        var help = Collapse(result.Output);
 
+        Assert.Equal(0, result.ExitCode);
         Assert.Contains("but drops an over-cap item silently", help, StringComparison.Ordinal);
         Assert.Contains(
             "It does not make the run process-free: `git` still runs in the scanned tree",
@@ -1158,6 +1341,115 @@ public class CliTests
         Assert.Null(GitRevision.CurrentBranch(repoPath));
     }
 
+
+    [Fact]
+    public void The_validate_verb_reports_a_conformant_bundle_and_exits_zero()
+    {
+        // Nothing in the solution called Run("validate", ...) at all, so everything the composition
+        // root wires for this verb -- the option name, the diagnostic lines, the count line, the
+        // IsConformant ternary and the BundleLoadException branch -- was held by no test, while this
+        // class's own doc claimed it exercises "the shipped composition, in process".
+        // BundleValidationRunnerTests covers the runner; these four cover the CLI around it.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        var result = Run("validate", "--okf", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("0 error(s)", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_validate_verb_exits_one_on_a_bundle_that_is_not_conformant()
+    {
+        // The other side of the ternary, so inverting it fails one of the two rather than neither.
+        // A concept with no `type` is the one thing §11 hard-requires, so this is an error and not a
+        // warning -- warnings leave the bundle conformant and would not separate the branches.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+        File.WriteAllText(Path.Combine(bundle, "broken.md"), "---\ntitle: t\n---\n\nbody\n");
+
+        var result = Run("validate", "--okf", bundle);
+
+        Assert.Equal(1, result.ExitCode);
+    }
+
+    [Fact]
+    public void The_validate_verb_reports_an_unloadable_bundle_on_stderr_and_exits_one()
+    {
+        // The catch (BundleLoadException) branch. Dropping it turns a missing bundle from a reported
+        // error into an unhandled exception, and no test noticed.
+        using var workspace = NewWorkspace(out _, out var bundle);
+
+        var result = Run("validate", "--okf", Path.Combine(bundle, "does-not-exist"));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_validate_verb_names_its_bundle_option_okf()
+    {
+        // Pins the option NAME. The bundle is generated first, and that is the whole fixture: without
+        // it, `--bundle` on a path that does not exist exits non-zero whether the option is recognised
+        // or not, so the assertion holds under the rename it claims to catch -- measured, after the
+        // first version of this test did exactly that.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        Assert.NotEqual(0, Run("validate").ExitCode);
+        Assert.NotEqual(0, Run("validate", "--bundle", bundle).ExitCode);
+    }
+
+    [Fact]
+    public void A_repository_with_no_commit_yet_reports_no_branch_name()
+    {
+        // MEASURED, and the reason this is not the detached-HEAD case one property over: on a
+        // zero-commit repository `git symbolic-ref` SUCCEEDS and returns the unborn branch, while
+        // `git rev-parse HEAD` fails. Reading only the first left `--repo-url` without `--rev` emitting
+        // a `resource` permalink on every code concept, each pointing into a branch that contains none
+        // of the files -- and the CLI's "no branch name could be read" note never fired to say so. A
+        // wrong link reads exactly as confidently as a right one, which §2.3 calls the worse outcome.
+        ProducerFixture.RequireGit();
+        using var workspace = NewWorkspace(out var repo, out _);
+
+        ProducerFixture.Git(repo, "init", "-q");
+
+        Assert.Null(GitRevision.CurrentBranch(repo));
+
+        // The other direction, so the assertion above cannot pass because the fixture simply has no
+        // working git: the SAME repository, one commit later, does report a branch.
+        ProducerFixture.Git(repo, "config", "user.email", "cli-tests@example.invalid");
+        ProducerFixture.Git(repo, "config", "user.name", "CLI Tests");
+        ProducerFixture.Git(repo, "config", "commit.gpgsign", "false");
+        ProducerFixture.Git(repo, "add", "-A");
+        ProducerFixture.Git(repo, "commit", "-q", "-m", "fixture");
+
+        Assert.NotNull(GitRevision.CurrentBranch(repo));
+    }
+
+    [Fact]
+    public void Force_is_an_alias_for_reset_and_not_a_flag_that_does_nothing()
+    {
+        // `--force` is documented as an alias for `--reset` and was exercised by no test at all:
+        // dropping the `|| forceOption` clause at the composition root broke the alias silently, and
+        // an operator using it would have got a run that refused a non-empty --out instead of
+        // recreating it.
+        //
+        // The fixture is what makes this discriminate. A bundle that already holds a file the
+        // regeneration does not produce is the only shape where reset and no-reset differ observably:
+        // without the alias the run refuses the non-empty directory, and with it the stray file is gone.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+        Assert.Equal(0, Run("generate", "--repo", repo, "--out", bundle).ExitCode);
+
+        var stray = Path.Combine(bundle, "hand-written.md");
+        File.WriteAllText(stray, "---\ntype: Note\ntitle: t\ndescription: d\n---\n\nbody\n");
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--force");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.False(File.Exists(stray), "--force did not recreate the bundle, so it is not behaving as --reset.");
+    }
     // ---- assertions -------------------------------------------------------------------------
 
     private sealed record CliResult(int ExitCode, string Output, string Error);

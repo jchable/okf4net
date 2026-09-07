@@ -4,6 +4,22 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- Spec section 6.2: determinism holds at a FIXED extractor version, so the engine versions are locked
+         rather than floated. A grammar or Roslyn bump can move symbols, spans and descriptions
+         over unchanged source; locking makes that bump a deliberate migration instead of a drift
+         a rebuild suffers. The versions are ALSO recorded in overview's generated.engines, which is
+         what makes a golden diff interpretable, and which a lock file alone cannot say.
+
+         The committed lock file covers the plain `net10.0` restore, the one `dotnet build` and
+         `dotnet test producers/OkfProducer.sln` perform, which is this project's whole guarantee since
+         producers/ is outside CI. A RID-TARGETED restore rewrites it: `dotnet publish -r win-x64` on
+         OkfProducer.Cli (which declares three RuntimeIdentifiers) adds a `net10.0/win-x64` section
+         here, leaving a dirty working tree. Committing all three is not available: successive RID
+         restores REPLACE each other's section rather than accumulating, measured, so the plain
+         restore is what is committed, and a `-r` build is expected to modify this file. Do not commit
+         that modification; it is an artefact of the target, not a dependency change. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>

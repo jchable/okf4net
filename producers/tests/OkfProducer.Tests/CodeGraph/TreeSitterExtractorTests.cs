@@ -2,6 +2,7 @@
 using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Scanning;
 
 namespace OkfProducer.Tests.CodeGraph;
 
@@ -490,6 +491,168 @@ public class TreeSitterExtractorTests : IDisposable
         Assert.Equal(first.Symbols.Select(s => s.Name), second.Symbols.Select(s => s.Name));
         Assert.Equal(first.Sites.Select(s => s.CalledName), second.Sites.Select(s => s.CalledName));
     }
+
+    [Fact]
+    public void Generic_types_of_different_arity_are_distinct_symbols()
+    {
+        // `Foo`, `Foo<T>` and `Foo<T, U>` all report `name` as `Foo`, so they used to collapse into one
+        // symbol group and render as overloads of a single member -- §3.2's merge rule, written for
+        // method overloads, silently extended to unrelated types.
+        //
+        // The separator was `_N` first, chosen so "arity 1" would not read as the registry's "second
+        // thing called Foo" (`-2`). It is a backtick now, because legibility was the wrong thing to
+        // optimise: `_` and a digit are both C# identifier characters, so the qualification was NOT
+        // injective and a real `Foo_1` collapsed back together with `Foo<T>` -- see the sibling test
+        // below. A backtick cannot occur in a C# identifier under any spelling, and it is the CLR's own
+        // arity convention.
+        var result = ExtractSource("""
+            namespace N;
+            public class Foo { }
+            public class Foo<T> { }
+            public class Foo<T, U> { }
+            """);
+
+        Assert.Equal(
+            ["Foo", "Foo`1", "Foo`2"],
+            result.Symbols.Where(s => s.Kind == SymbolKind.Type).Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void A_type_named_like_an_arity_suffix_stays_distinct_from_the_generic_it_would_have_collided_with()
+    {
+        // The injectivity the separator exists for, and the defect that changed it. Under `_N`, a type
+        // genuinely named `Holder_1` and a type named `Holder<T>` both produced the SymbolFact.Name
+        // "Holder_1": one SymbolKey group, one concept listing both `public class Holder_1` and
+        // `public class Holder<T>`, one description taken from whichever sorted first, and the members
+        // of two unrelated types shown as siblings under it. That is exactly the merge the arity rule
+        // was added to remove, reachable from perfectly legal C#.
+        //
+        // Asserted on the extractor, where the qualification happens, rather than on the emitted ids:
+        // `CodeConceptIds` deliberately does not treat `_` as a word boundary, so under the old rule
+        // the two also slugified identically and the id level could not tell them apart either.
+        var result = ExtractSource("""
+            namespace N;
+            public class Holder_1 { }
+            public class Holder<T> { }
+            """);
+
+        var names = result.Symbols.Where(s => s.Kind == SymbolKind.Type).Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+        Assert.Equal(2, names.Distinct(StringComparer.Ordinal).Count());
+        Assert.Contains("Holder_1", names);
+        Assert.Contains("Holder`1", names);
+    }
+
+    [Fact]
+    public void A_generic_method_keeps_its_bare_name_so_calls_still_match_it()
+    {
+        // The deliberate asymmetry, and the reason it is not an oversight. A call site captures its
+        // callee as the bare identifier -- `Bar<int>()` yields `Bar` -- so suffixing a generic METHOD
+        // would stop every call to it from matching by name. That trades a merged concept for a lost
+        // edge, which is the worse of the two, so arity is a TYPE rule only.
+        var result = ExtractSource("""
+            namespace N;
+            public class T { public void Bar<U>() { } }
+            """);
+
+        Assert.Contains("Bar", result.Symbols.Select(s => s.Name));
+    }
+
+    [Fact]
+    public void An_explicit_interface_implementation_is_named_apart_from_the_public_member()
+    {
+        // Both report `name` as `Bar`, so at THIS layer the two were one symbol. The qualified form
+        // takes the interface as a dotted prefix, which is how C# writes it.
+        //
+        // What that does NOT do, measured rather than assumed after the register claimed otherwise:
+        // it does not split a merged CONCEPT, because there was never a merged concept to split. An
+        // explicit interface implementation carries no access modifier, so `VisibilityOf` classes it
+        // Private, and Private is out of scope under every flag -- `--include-internal` included. It is
+        // filtered before ConceptGenerator ever groups anything. The register's D1b-I2 said the two
+        // collapsed into "one concept, one description, both signatures"; that outcome is not
+        // reachable through the shipped pipeline, and the golden confirms it -- the fixture's explicit
+        // `IEquatable<Boxed>.Equals` produces no concept at all.
+        //
+        // The fix is still right, one layer down: two different members sharing one name is wrong for
+        // any consumer reading SymbolFacts before the scope filter, and name matching would otherwise
+        // bind a call to `Bar()` -- which cannot reach the explicit member on the type -- to it.
+        var result = ExtractSource("""
+            namespace N;
+            public interface IFoo { void Bar(); }
+            public class Impl : IFoo
+            {
+                public void Bar() { }
+                void IFoo.Bar() { }
+            }
+            """);
+
+        var names = result.Symbols.Where(s => s.Container == "N.Impl").Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal);
+        Assert.Equal(["Bar", "IFoo.Bar"], names);
+    }
+
+    [Fact]
+    public void A_call_inside_an_indexer_or_an_operator_yields_no_edge_at_all()
+    {
+        // The documented gap: indexers, operator overloads and conversion operators are not extracted
+        // as symbols, because none of them has a `name` field in this grammar (an indexer is written
+        // `this[...]`; an operator's symbol is an anonymous child after the anonymous keyword). Naming
+        // them would need bespoke, unverified rules, so the profile accepts the gap.
+        //
+        // What that gap RIPPLES into was never stated or tested: a call inside one of those members
+        // finds no ancestor in CallerMemberAncestorNodeTypes, so the site comes out with an empty
+        // caller. An edge naming a caller that does not exist is exactly what §2.1 calls worse than no
+        // edge -- so what must be true is that NONE survives, and that is what this pins.
+        //
+        // It is not the extractor that drops it: the site is emitted with an empty caller and
+        // CodeGraphBuilder's invariant (no edge may name a caller absent from Symbols) is what removes
+        // it. Stated here because a future change to either half would silently let the orphan through.
+        var result = ExtractSource(IndexerAndOperatorSource);
+
+        // The gap itself, asserted so this test fails loudly rather than vacuously if the profile ever
+        // starts extracting them -- at which point the ripple below stops being the right behaviour.
+        Assert.DoesNotContain(result.Symbols, s => s.Name is "this" or "+" or "op_Addition");
+
+        // Every call site found inside those two members carries no caller to hang a concept off.
+        Assert.All(
+            result.Sites.Where(s => s.CalledName == "Target"),
+            site => Assert.True(
+                site.CallerName.Length == 0,
+                $"expected no caller for a call inside an indexer or operator, got '{site.CallerName}'."));
+
+        // THE SECOND HALF, which this test named ("yields no edge at all") and did not make. Everything
+        // above is computed from the extractor alone, so deleting `CodeGraphBuilder`'s invariant -- no
+        // edge may name a caller absent from Symbols -- left the orphan edge in the graph with this
+        // test still green, and `CSharpProfile`'s doc comment claimed it "pins both halves". Building
+        // the graph is what turns that claim into an assertion, and it is cheap: the same source, the
+        // real profile, no resolver, so nothing but the invariant can remove the edge.
+        using var extractor = new TreeSitterExtractor();
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-indexer-").FullName;
+        _tempDirectories.Add(repoPath);
+        File.WriteAllText(Path.Combine(repoPath, "T.cs"), IndexerAndOperatorSource);
+
+        var graph = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], [])
+            .Build(new RepositorySnapshot(repoPath, "indexer-repo", [], []), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.DoesNotContain(graph.Edges, e => e.Site.CallerName.Length == 0);
+        Assert.Empty(graph.Edges);
+    }
+
+    /// <summary>
+    /// The fixture for <c>A_call_inside_an_indexer_or_an_operator_yields_no_edge_at_all</c>, shared by
+    /// its two halves so the extractor assertions and the graph assertion cannot drift onto different
+    /// source and quietly stop being about the same calls.
+    /// </summary>
+    private const string IndexerAndOperatorSource = """
+        namespace N;
+        public class T
+        {
+            public void Target() { }
+
+            public int this[int i] { get { Target(); return i; } }
+
+            public static T operator +(T a, T b) { a.Target(); return a; }
+        }
+        """;
 
     private ExtractionResult ExtractSource(string source, string relativePath = "T.cs")
     {

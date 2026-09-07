@@ -4,8 +4,35 @@ using OkfProducer.Core.Scanning;
 
 namespace OkfProducer.Tests.CodeGraph;
 
-public class CodeGraphBuilderTests
+public class CodeGraphBuilderTests : IDisposable
 {
+    /// <summary>
+    /// Every temp repository <c>SnapshotWith</c> made, deleted on the way out. It used to make one per
+    /// call and delete none -- nine per run, forever, in the user's temp directory.
+    /// </summary>
+    private readonly List<string> _tempDirectories = [];
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        foreach (var directory in _tempDirectories)
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort: a locked file on the way out must not fail a green run.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
     private static readonly LanguageProfile CSharpProfile =
         new("csharp", "tree-sitter-c-sharp", "", "", "///", [".cs"]);
 
@@ -19,10 +46,13 @@ public class CodeGraphBuilderTests
     {
         public IReadOnlyList<CallSite> Sites { get; init; } = [];
 
+        /// <summary>What this stub reports for a file it IS asked about. <see cref="FileStatus.Extracted"/> unless a test needs a skip.</summary>
+        public FileStatus Status { get; init; } = FileStatus.Extracted;
+
         public ExtractionResult Extract(string relativePath, string absolutePath, LanguageProfile profile, ExtractionLimits limits) =>
             new([.. symbols.Where(s => s.RelativePath == relativePath)],
                 [.. Sites.Where(s => s.RelativePath == relativePath)],
-                FileStatus.Extracted);
+                Status);
     }
 
     private sealed class CapturingExtractor : ILanguageExtractor
@@ -157,6 +187,18 @@ public class CodeGraphBuilderTests
 
         Assert.Empty(graph.Symbols);
         Assert.True(graph.Status.IsComplete);
+
+        // The control, without which the assertion above could not fail: the stub reports Extracted
+        // for anything it is asked about, so `IsComplete` was true for BOTH the property under test
+        // and its negation. Same builder over a file a profile DOES claim, reporting a skip, moves it
+        // -- so `true` above is a fact about the .txt file being unreached, not about the stub.
+        var skipped = new CodeGraphBuilder(
+                new StubExtractor(Member("T", "Caller")) { Status = FileStatus.SkippedTooLarge },
+                CSharpProfiles,
+                [])
+            .Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.False(skipped.Status.IsComplete);
     }
 
     [Fact]
@@ -283,9 +325,10 @@ public class CodeGraphBuilderTests
     /// <see cref="RepositorySnapshot.RepoPath"/>, the same way <see cref="RepositoryScanner"/> does
     /// for manifests.
     /// </summary>
-    private static RepositorySnapshot SnapshotWith(params string[] relativePaths)
+    private RepositorySnapshot SnapshotWith(params string[] relativePaths)
     {
         var repoPath = Directory.CreateTempSubdirectory("okfproducer-codegraph-").FullName;
+        _tempDirectories.Add(repoPath);
         foreach (var relativePath in relativePaths)
         {
             var fullPath = Path.Combine(repoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -294,5 +337,47 @@ public class CodeGraphBuilderTests
         }
 
         return new RepositorySnapshot(repoPath, "test-repo", [], []);
+    }
+
+    /// <summary>Answers a site nobody gave it, which is precisely what <see cref="ISymbolResolver.Resolve"/>'s contract forbids.</summary>
+    private sealed class PhantomResolver(CallSite phantom) : ISymbolResolver
+    {
+        public bool Owns(string relativePath) => true;
+
+        public IReadOnlyList<ResolvedEdge> Resolve(IReadOnlyList<CallSite> sites, IReadOnlyList<SymbolFact> symbols) =>
+            [new ResolvedEdge(phantom, "T", phantom.CalledName, EdgeConfidence.Exact)];
+    }
+
+    [Fact]
+    public void An_edge_for_a_site_the_extractor_never_emitted_is_dropped()
+    {
+        // The verdict dictionary used to take whatever a resolver handed back -- `verdicts[key] = edge`
+        // with no membership test -- so an edge naming a site nobody extracted was added to the graph.
+        // A stale offset, a file the resolver read for itself, an off-by-one in an engine's own
+        // conversion: any of them produced a `## Calls` link attributed to a caller that does not exist,
+        // and the contract Resolve states ("answer the sites you were given") was enforced nowhere.
+        //
+        // The phantom differs from the real site only by OFFSET, and its caller is a REAL declared
+        // symbol -- both deliberate. An unknown caller is already filtered later, by the invariant that
+        // no edge may name a caller absent from Symbols, so a phantom with a made-up caller would be
+        // caught by machinery that has nothing to do with this contract and the test would pass over a
+        // missing guard. Measured: the first version of this fixture did exactly that.
+        // Offset is also the identity half an engine is most likely to get wrong, and the half no
+        // name-based assertion would notice.
+        var real = new CallSite("T", "Caller", "Callee", "A.cs", 42);
+        var phantom = new CallSite("T", "Caller", "Callee", "A.cs", 999);
+
+        var builder = new CodeGraphBuilder(
+            new StubExtractor(Member("T", "Caller"), Member("T", "Callee")) { Sites = [real] },
+            CSharpProfiles,
+            [new PhantomResolver(phantom)]);
+
+        var graph = builder.Build(SnapshotWith("A.cs"), ExtractionLimits.Default, ScopeOptions.Default);
+
+        // The real site is still there, unresolved -- the phantom did not displace it either.
+        var edge = Assert.Single(graph.Edges);
+        Assert.Equal(42, edge.Site.Offset);
+        Assert.Equal("Caller", edge.Site.CallerName);
+        Assert.Equal(EdgeConfidence.Unresolved, edge.Confidence);
     }
 }

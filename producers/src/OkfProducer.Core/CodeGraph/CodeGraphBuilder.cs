@@ -11,7 +11,7 @@ namespace OkfProducer.Core.CodeGraph;
 /// site's relative path and offset), so a missing or non-owning resolver degrades precision, never
 /// the shape of the output (§2.1).
 /// </summary>
-public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList<LanguageProfile> profiles, IReadOnlyList<ISymbolResolver> resolvers)
+public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList<LanguageProfile> profiles, IReadOnlyList<ISymbolResolver> resolvers, IFileSystemReader? reader = null)
 {
     /// <summary>
     /// Extracts every eligible file in <paramref name="snapshot"/>'s repository, concatenates and
@@ -126,7 +126,7 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
                 continue;
             }
 
-            if (!FileEligibility.IsEligible(relativePath, snapshot, scope))
+            if (!FileEligibility.IsEligible(relativePath, snapshot, scope, reader))
             {
                 continue;
             }
@@ -160,14 +160,46 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // that is load-bearing rather than incidental. Filtering `declared` (already sorted) rather
         // than sorting a separately-filtered list keeps the two in the same order by construction.
         var declared = SortSymbols(results.SelectMany(r => r.Result.Symbols));
-        var symbols = declared.Where(s => FileEligibility.IsInScope(s, scope)).ToList();
+        // Filtered on EFFECTIVE visibility, which needs the whole declared set: a member is capped by
+        // every type enclosing it, and a SymbolFact names its container as a dotted path without the
+        // container's own visibility. `declared` is the unfiltered set on purpose -- filtering first
+        // would remove the containers that do the capping.
+        //
+        // Keyed by (Container, Name), the same join every other consumer uses. A duplicate key is
+        // possible in principle (two declarations reduced to one identity) and is resolved by keeping
+        // the FIRST, which `declared` has already sorted deterministically; the alternative, throwing,
+        // would fail a run over a shape §3.2 exists to merge rather than reject.
+        var declaredByKey = new Dictionary<(string Container, string Name), SymbolFact>();
+        foreach (var symbol in declared)
+        {
+            declaredByKey.TryAdd((symbol.Container, symbol.Name), symbol);
+        }
+
+        var symbols = declared.Where(s => FileEligibility.IsInScope(s, declaredByKey, scope)).ToList();
+
+        // Counted rather than merely applied, because this filter REMOVES concepts an earlier version
+        // of this producer emitted, and a regeneration prunes them from a bundle that already has them.
+        // The writer's scope-narrowing guard cannot see it -- it compares the recorded scope FLAGS, and
+        // this run's flags match the previous run's exactly; it is the rule that narrowed. So the count
+        // is what lets the run say so out loud. Exactly the difference between the two filters: a
+        // declaration whose own modifier is in scope and whose enclosing type is not.
+        var cappedByContainer = declared.Count(s =>
+            FileEligibility.IsInScope(s, scope) && !FileEligibility.IsInScope(s, declaredByKey, scope));
 
         var sites = results.SelectMany(r => r.Result.Sites).ToList();
 
+        // (path, offset) is a call site's identity -- the same key both engines match on -- so two
+        // sites sharing one would be two calls at the same byte, which the grammar cannot produce:
+        // an `invocation_expression`'s callee node starts where no other callee node starts. Seeded
+        // with `Add` rather than the indexer so that stops being an assumption: if a future grammar or
+        // profile ever emits two, this throws here instead of silently keeping whichever came last and
+        // dropping a call from the graph with nothing to show for it.
         var verdicts = new Dictionary<(string RelativePath, int Offset), ResolvedEdge>();
         foreach (var site in sites)
         {
-            verdicts[(site.RelativePath, site.Offset)] = new ResolvedEdge(site, TargetContainer: null, TargetName: null, EdgeConfidence.Unresolved);
+            verdicts.Add(
+                (site.RelativePath, site.Offset),
+                new ResolvedEdge(site, TargetContainer: null, TargetName: null, EdgeConfidence.Unresolved));
         }
 
         foreach (var resolver in resolvers)
@@ -191,7 +223,17 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             // are handled after the fact, by the degrade-to-Unresolved pass below.
             foreach (var edge in resolver.Resolve(ownedSites, declared))
             {
-                verdicts[(edge.Site.RelativePath, edge.Site.Offset)] = edge;
+                // Only over a site the EXTRACTOR emitted. `verdicts[key] = edge` accepted anything a
+                // resolver handed back, so a resolver returning an edge for a site nobody extracted --
+                // a stale offset, a file it read itself, an off-by-one -- added a phantom call to the
+                // graph, and a phantom edge is a `## Calls` link to a caller that does not exist. The
+                // dictionary is seeded from `sites` above, so membership IS the contract
+                // `ISymbolResolver.Resolve` states and never enforced: an edge answers a site it was
+                // given, or it is not an answer.
+                if (verdicts.ContainsKey((edge.Site.RelativePath, edge.Site.Offset)))
+                {
+                    verdicts[(edge.Site.RelativePath, edge.Site.Offset)] = edge;
+                }
             }
         }
 
@@ -245,7 +287,7 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // own doc comments for the full reasoning §6.3 and this task's own measurement forced).
         var status = new RunStatus(!incomplete, skipped);
 
-        return new CodeGraph(symbols, edges, status);
+        return new CodeGraph(symbols, edges, status) { CappedByContainer = cappedByContainer };
     }
 
     /// <summary>

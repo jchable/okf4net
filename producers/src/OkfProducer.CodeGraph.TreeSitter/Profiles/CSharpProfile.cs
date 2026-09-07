@@ -35,7 +35,18 @@ public static class CSharpProfile
     /// immediately after the anonymous <c>operator</c> keyword node, not a field. Naming either
     /// requires bespoke, untested-by-any-brief-requirement logic (walk to the child after the
     /// keyword; synthesize something like <c>this[]</c>), so this profile accepts the coverage gap
-    /// rather than add unverified naming rules.</item>
+    /// rather than add unverified naming rules.
+    ///
+    /// <para><b>What that gap ripples into, which this list used not to say.</b> A CALL inside one of
+    /// them finds no ancestor in <c>TreeSitterExtractor.CallerMemberAncestorNodeTypes</c> either, so
+    /// the site is emitted with an empty caller. Nothing downstream can hang a <c>## Calls</c> entry
+    /// on a caller that has no concept, and an edge naming one is exactly what §2.1 calls worse than
+    /// no edge -- so <c>CodeGraphBuilder</c>'s invariant, that no edge may name a caller absent from
+    /// <c>Symbols</c>, is what removes it. The outcome is right; it was reached by two mechanisms
+    /// neither of which mentioned the other.
+    /// <c>TreeSitterExtractorTests.A_call_inside_an_indexer_or_an_operator_yields_no_edge_at_all</c>
+    /// pins both halves, and asserts the gap itself, so it fails loudly rather than vacuously if this
+    /// profile ever starts extracting them.</para></item>
     /// </list>
     /// </summary>
     public const string DeclarationQuery = """

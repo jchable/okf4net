@@ -57,6 +57,20 @@ public static class Utf8Offsets
             throw new ArgumentOutOfRangeException(nameof(utf16Offset), utf16Offset, "must be within the text.");
         }
 
+        // An offset splitting a surrogate pair is REFUSED rather than converted, because converting it
+        // silently returns a plausible wrong number: the span then ends on a lone high surrogate,
+        // which `GetByteCount` runs through the replacement fallback and scores as 3 bytes -- neither
+        // the 0 of the codepoint's start nor the 4 of its end. This type is a JOIN KEY between two
+        // engines, so a wrong number here does not lose a call site, it credits the call to whatever
+        // sits a few bytes away (§2.1). The class summary says both engines only ever produce
+        // boundary offsets; this is that assumption made checkable instead of merely stated.
+        if (utf16Offset > 0 && utf16Offset < text.Length
+            && char.IsHighSurrogate(text[utf16Offset - 1]) && char.IsLowSurrogate(text[utf16Offset]))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(utf16Offset), utf16Offset, "splits a surrogate pair, so it names no codepoint boundary.");
+        }
+
         return Encoding.UTF8.GetByteCount(text.AsSpan(0, utf16Offset));
     }
 
@@ -77,9 +91,22 @@ public static class Utf8Offsets
         var utf16Index = 0;
         var utf8Count = 0;
 
+        // `==`, not `>=`, and that one character is the whole fix. With `>=`, an offset landing INSIDE
+        // a multi-byte sequence silently rounded UP to the next boundary and returned it: on
+        // `"A\U0001D11EB"` an offset of 2 -- one byte into the four-byte codepoint -- came back as 3,
+        // the index of the `B` after it.
+        //
+        // The example carried a trailing `B` for a reason this comment first got wrong, citing the
+        // two-rune `"A\U0001D11E"` instead. Rounding up needs a rune AFTER the multi-byte sequence to
+        // round up TO: without one the loop runs out and the old code threw rather than answering, so
+        // the shorter string demonstrates the opposite of the failure being described. Measured both
+        // ways before rewriting this.
+        //
+        // A plausible wrong number out of a join key credits a call to a neighbouring symbol rather
+        // than losing it, which §2.1 calls the worse of the two.
         foreach (var rune in text.EnumerateRunes())
         {
-            if (utf8Count >= utf8Offset)
+            if (utf8Count == utf8Offset)
             {
                 return utf16Index;
             }
@@ -88,11 +115,18 @@ public static class Utf8Offsets
             utf16Index += rune.Utf16SequenceLength;
         }
 
-        if (utf8Count != utf8Offset)
+        if (utf8Count == utf8Offset)
         {
-            throw new ArgumentOutOfRangeException(nameof(utf8Offset), utf8Offset, "beyond the end of the text.");
+            return utf16Index;
         }
 
-        return utf16Index;
+        // Overshooting means the offset fell inside a sequence; falling short means it is past the end.
+        // Two different mistakes on the caller's side, told apart so the message names the real one.
+        throw new ArgumentOutOfRangeException(
+            nameof(utf8Offset),
+            utf8Offset,
+            utf8Count < utf8Offset
+                ? "beyond the end of the text."
+                : "does not land on a codepoint boundary.");
     }
 }

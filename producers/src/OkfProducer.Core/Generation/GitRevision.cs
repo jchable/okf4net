@@ -72,8 +72,9 @@ public static class GitRevision
 
     /// <summary>
     /// The name of the branch currently checked out in <paramref name="repoRoot"/> (e.g. <c>main</c>,
-    /// <c>feature/x</c>), or <see langword="null"/> when there is none to read: a <b>detached
-    /// HEAD</b>, a path outside any git repository, or <c>git</c> itself not runnable.
+    /// <c>feature/x</c>), or <see langword="null"/> when there is none a permalink could be built
+    /// against: a <b>detached HEAD</b>, an <b>unborn branch</b> (initialised, no commit yet), a path
+    /// outside any git repository, or <c>git</c> itself not runnable.
     ///
     /// <para><b>What the null is for.</b> This is the default the CLI's <c>--rev</c> falls back to
     /// when building §4.3's <c>resource</c> permalinks, and a branch name is deliberately the only
@@ -90,8 +91,27 @@ public static class GitRevision
     /// the caller as a null.</para>
     /// </summary>
     /// <param name="repoRoot">The repository root to run <c>git</c> in.</param>
-    public static string? CurrentBranch(string repoRoot) =>
-        RunGit(repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD") is { Length: > 0 } branch ? branch : null;
+    public static string? CurrentBranch(string repoRoot)
+    {
+        if (RunGit(repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD") is not { Length: > 0 } branch)
+        {
+            return null;
+        }
+
+        // An UNBORN branch is a branch name that names no commit, and a permalink built against it
+        // resolves to nothing. `git init` followed by no commit is exactly that state, and it is not
+        // exotic -- it is every repository on its first run of this producer.
+        //
+        // Measured: on a zero-commit repository `symbolic-ref` SUCCEEDS and returns the branch while
+        // `rev-parse HEAD` fails. So checking only the first left `--repo-url` without `--rev` emitting
+        // a `resource` on every code concept, all pointing into a branch containing none of the files,
+        // and the caller's "no branch name could be read" note never fired to say otherwise. A wrong
+        // link reads exactly as confidently as a right one, which §2.3 calls the worse outcome.
+        //
+        // The second invocation is the cost, and it is only paid where the first succeeded: a caller
+        // that passed --rev never reaches this method at all. producers/README.md counts it.
+        return RunGit(repoRoot, "rev-parse", "--verify", "--quiet", "HEAD") is { Length: > 0 } ? branch : null;
+    }
 
     /// <summary>Formats <paramref name="instant"/>, taken as UTC, as <c>yyyy-MM-ddTHH:mm:ssZ</c> -- invariant, second precision, a literal <c>Z</c>.</summary>
     private static string FormatUtc(DateTimeOffset instant) =>

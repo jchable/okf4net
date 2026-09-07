@@ -18,4 +18,5 @@ N, a top-level code container.
 
 - [N.Registry](/code/csharp/n/registry)
 - [N.Scanner](/code/csharp/n/scanner)
+- [N.Shapes](/code/csharp/n/shapes)
 - [N.Sub](/code/csharp/n/sub)

@@ -158,15 +158,39 @@ public class HostileInputTests : IDisposable
     [Fact]
     public void The_size_check_never_loads_an_oversized_file_into_memory()
     {
-        // The file's declared length alone must decide SkippedTooLarge -- the extractor is never
-        // given a chance to read its bytes at all. A file that reports itself too large but whose
-        // actual bytes (if ever read) would decode fine still gets rejected on length.
+        // The claim is about an operation that does NOT happen, so no FileStatus can carry it:
+        // rejecting on the declared length and reading first then rejecting both end at
+        // SkippedTooLarge. Before the reader seam existed this test asserted only that status, and
+        // MEASURED green with `File.ReadAllBytes` hoisted above the length check -- it named an
+        // ordering it could not see. The recording reader is what turns the claim into an assertion.
         using var tmp = new TempDir();
         var path = tmp.Write("big.cs", "namespace N;\npublic class T {}");
+        var reader = new RecordingReader();
+        using var extractor = new TreeSitterExtractor(reader);
 
-        var result = Extract(path, ExtractionLimits.Default with { MaxFileBytes = 1 });
+        var result = extractor.Extract(
+            "big.cs", path, CSharpProfile.Instance, ExtractionLimits.Default with { MaxFileBytes = 1 });
 
         Assert.Equal(FileStatus.SkippedTooLarge, result.Status);
+        Assert.False(reader.Opened);
+    }
+
+    /// <summary>
+    /// An <see cref="IFileSystemReader"/> over the real filesystem that records whether the bytes were
+    /// ever opened. Length still comes from disk, so the size decision under test is the production
+    /// one.
+    /// </summary>
+    private sealed class RecordingReader : IFileSystemReader
+    {
+        public bool Opened { get; private set; }
+
+        public long? TryGetLength(string absolutePath) => SystemFileReader.Instance.TryGetLength(absolutePath);
+
+        public Stream OpenRead(string absolutePath)
+        {
+            Opened = true;
+            return SystemFileReader.Instance.OpenRead(absolutePath);
+        }
     }
 
     [Fact]
@@ -1051,5 +1075,40 @@ public class HostileInputTests : IDisposable
             {
             }
         }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_non_positive_timeout_is_refused_at_construction_rather_than_mid_run(int seconds)
+    {
+        // A non-positive deadline cancels the linked source immediately, so `CodeGraphBuilder.Build`
+        // RAISED out of the walk instead of returning an incomplete RunStatus -- the honest reporting
+        // path this type exists to feed. An operator who typed a bad number got a stack trace where
+        // the design promises a run that says what it could not do.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => ExtractionLimits.Default with { Timeout = TimeSpan.FromSeconds(seconds) });
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_non_positive_size_or_depth_is_refused_too(int value)
+    {
+        // Same rule, same reason: a bound of zero does not bound a run, it empties one, and doing that
+        // silently is worse than saying no.
+        Assert.Throws<ArgumentOutOfRangeException>(() => ExtractionLimits.Default with { MaxFileBytes = value });
+        Assert.Throws<ArgumentOutOfRangeException>(() => ExtractionLimits.Default with { MaxDepth = value });
+    }
+
+    [Fact]
+    public void The_default_limits_are_themselves_valid()
+    {
+        // The control: the validation above runs in the property initialisers, so a wrong predicate
+        // would make the type unconstructable and every other test in this solution would fail with a
+        // reason that has nothing to do with what it was testing.
+        Assert.True(ExtractionLimits.Default.MaxFileBytes > 0);
+        Assert.True(ExtractionLimits.Default.MaxDepth > 0);
+        Assert.True(ExtractionLimits.Default.Timeout > TimeSpan.Zero);
     }
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Globalization;
 using System.Text;
 using OkfProducer.Core.CodeGraph;
 using TreeSitter;
@@ -24,6 +25,59 @@ namespace OkfProducer.CodeGraph.TreeSitter;
 /// </remarks>
 public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 {
+    private readonly IFileSystemReader _reader;
+
+    /// <summary>
+    /// Reads <paramref name="stream"/> to its end into a single array.
+    /// <paramref name="expectedLength"/> is a hint and never a bound: the bound is
+    /// <see cref="ExtractionLimits.MaxFileBytes"/>, checked before this is reached.
+    ///
+    /// <para><b>One buffer, because two would halve the cap's meaning.</b> This read into a
+    /// <see cref="MemoryStream"/> and returned <c>ToArray()</c>, under a comment claiming it "allocates
+    /// once" -- it always allocated twice, the stream's buffer and then the array copied out of it, so
+    /// peak was 2x the file where <c>File.ReadAllBytes</c> peaked at 1x. <c>--max-file-size</c> is
+    /// §2.3's bound on what one hostile file can make this process allocate, and it was bounding half
+    /// of what was allocated. The growth path was worse than the doubling: a stream given no usable
+    /// hint grows by repeated reallocation and copies the whole file before it can fail, where
+    /// <c>ReadAllBytes</c> refused on the declared length up front.</para>
+    ///
+    /// <para>Filled with <see cref="Stream.ReadExactly(byte[], int, int)"/> when the length is known,
+    /// so a short read is an error rather than a silently truncated file -- truncation would yield
+    /// spans pointing at the wrong code, which §2.3 rates below not extracting the file at all. The
+    /// unknown-length fallback keeps the old behaviour, since there is nothing better to do.</para>
+    /// </summary>
+    private static byte[] ReadFully(Stream stream, long expectedLength)
+    {
+        if (expectedLength is > 0 and <= int.MaxValue)
+        {
+            var buffer = new byte[(int)expectedLength];
+            stream.ReadExactly(buffer, 0, buffer.Length);
+            return buffer;
+        }
+
+        using var growing = new MemoryStream();
+        stream.CopyTo(growing);
+        return growing.ToArray();
+    }
+
+    /// <summary>
+    /// Creates an extractor reading through <paramref name="reader"/>, or the real filesystem when it
+    /// is <see langword="null"/>.
+    ///
+    /// <para>The seam exists so a test can observe WHETHER a file was read, which no
+    /// <see cref="FileStatus"/> can report: the guarantee that a file's declared length alone decides
+    /// <see cref="FileStatus.SkippedTooLarge"/> is about an operation that did not happen, and only a
+    /// collaborator can witness that. Reparse-point detection is NOT routed through it -- see
+    /// <c>TryReadSource</c>.</para>
+    /// </summary>
+    public TreeSitterExtractor(IFileSystemReader? reader = null) => _reader = reader ?? SystemFileReader.Instance;
+
+    /// <summary>
+    /// This engine's §6.2 token for <c>overview</c>'s <c>generated.engines</c>, read from the binding
+    /// assembly this extractor actually loads rather than from a version string written by hand.
+    /// </summary>
+    public static string EngineVersion { get; } = Core.CodeGraph.EngineVersions.Token("tree-sitter", typeof(Parser).Assembly);
+
     private const string CommentNodeType = "comment";
     private const string FileScopedNamespaceNodeType = "file_scoped_namespace_declaration";
     private const string NamespaceDeclarationNodeType = "namespace_declaration";
@@ -590,30 +644,38 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// <paramref name="source"/> to the decoded text when every guard passes; otherwise returns the
     /// <see cref="FileStatus"/> to report and sets <paramref name="source"/> to <see cref="string.Empty"/>.
     /// </summary>
-    private static FileStatus? TryReadSource(string relativePath, string absolutePath, ExtractionLimits limits, out string source)
+    private FileStatus? TryReadSource(string relativePath, string absolutePath, ExtractionLimits limits, out string source)
     {
         source = string.Empty;
 
         byte[] bytes;
         try
         {
+            // The link check stays on the real FileInfo and is deliberately NOT behind the reader
+            // seam. It is a containment decision, and a seam able to answer it is a seam able to
+            // waive it -- a test double could then let a symlink through a check whose whole purpose
+            // is that nothing does.
             var fileInfo = new FileInfo(absolutePath);
             if (fileInfo.LinkTarget is not null || IsUnderReparsePoint(absolutePath, relativePath))
             {
                 return FileStatus.SkippedSymlink;
             }
 
-            if (!fileInfo.Exists)
+            // Length BEFORE any read, and the seam is what lets a test say so: a status cannot
+            // distinguish "rejected on its declared length" from "read, then rejected", and those are
+            // the same outcome for a caller and a very different one for memory.
+            if (_reader.TryGetLength(absolutePath) is not { } length)
             {
                 return FileStatus.SkippedUnreadable;
             }
 
-            if (fileInfo.Length > limits.MaxFileBytes)
+            if (length > limits.MaxFileBytes)
             {
                 return FileStatus.SkippedTooLarge;
             }
 
-            bytes = File.ReadAllBytes(absolutePath);
+            using var stream = _reader.OpenRead(absolutePath);
+            bytes = ReadFully(stream, length);
         }
         catch (IOException)
         {
@@ -708,9 +770,9 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
                 continue;
             }
 
-            var name = match.Captures.First(c => c.Name == "name").Node.Text;
-
             var kind = IsTypeDeclaration(decl.Type) ? SymbolKind.Type : SymbolKind.Member;
+            var name = QualifyName(match.Captures.First(c => c.Name == "name").Node.Text, decl, kind);
+
             var container = ComputeContainerPath(decl, namespaceContext.NameCovering(decl.StartIndex));
             var modifiersText = ComputeModifiersText(decl, kind);
             var visibility = profile.VisibilityOf(modifiersText, kind);
@@ -742,6 +804,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
                 // stops short of the declaration it names. Where there is no body at all
                 // (`public record Foo(int X);`), the declaration's own last line is its header's.
                 HeaderEndLine = (bodyStart?.StartPosition.Row ?? decl.EndPosition.Row) + 1,
+                ContainerNamespace = ComputeContainerNamespace(decl, namespaceContext.NameCovering(decl.StartIndex)),
             });
         }
 
@@ -803,6 +866,98 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private static bool IsTypeDeclaration(string nodeType) =>
         Array.IndexOf(TypeDeclarationNodeTypes, nodeType) >= 0;
 
+    /// <summary>The node holding a generic declaration's type parameters, when it has any.</summary>
+    private const string TypeParameterListNodeType = "type_parameter_list";
+
+    /// <summary>One type parameter inside a <see cref="TypeParameterListNodeType"/>.</summary>
+    private const string TypeParameterNodeType = "type_parameter";
+
+    /// <summary>
+    /// The node naming the interface an explicitly-implemented member belongs to
+    /// (<c>void IFoo.Bar()</c>), when there is one.
+    /// </summary>
+    private const string ExplicitInterfaceSpecifierNodeType = "explicit_interface_specifier";
+
+    /// <summary>
+    /// The name a declaration is known by once two shapes the grammar's <c>name</c> field cannot tell
+    /// apart are separated.
+    ///
+    /// <para><b>Generic arity, on TYPES only.</b> <c>Foo</c>, <c>Foo&lt;T&gt;</c> and
+    /// <c>Foo&lt;T, U&gt;</c> in one namespace all report <c>name</c> as <c>Foo</c>, so they collapsed
+    /// into one symbol group and were rendered as overloads of a single member. §3.2's merge rule was
+    /// written for method overloads, where merging is the point; extending it to unrelated types was
+    /// never intended by the spec.
+    ///
+    /// <b>The separator is a BACKTICK, and the reason is injectivity rather than taste.</b> This first
+    /// shipped as <c>_N</c>, chosen so a reader could tell "arity 1" from the registry's "second thing
+    /// called Foo" (<c>-2</c>) at a glance. But <c>_</c> and a digit are both drawn from the C#
+    /// identifier alphabet, so the mapping was not injective: a type genuinely named <c>Holder_1</c>
+    /// and <c>Holder&lt;T&gt;</c> produced the SAME <see cref="SymbolFact.Name"/>, landed in one
+    /// <c>SymbolKey</c> group, and were emitted as a single concept listing both signatures with one
+    /// description -- reinstating, for a perfectly legal input, the exact merge this rule exists to
+    /// remove. A backtick cannot occur in a C# identifier under any spelling (not via <c>@</c>, not via
+    /// a Unicode escape), so <c>Holder`1</c> can only have been produced here, and it is the CLR's own
+    /// arity convention besides. <see cref="ConceptId.Slugify"/> maps it to <c>-</c>, so the id reads
+    /// <c>holder-1</c> while a real <c>Holder_1</c> stays <c>holder_1</c> -- distinct at both levels.
+    ///
+    /// <b>Members are deliberately left alone</b>, generic ones included. A call site captures its
+    /// callee as the bare identifier (<c>Bar&lt;T&gt;()</c> yields <c>Bar</c>), so qualifying a generic
+    /// METHOD would stop every call to it from matching by name -- trading a merged concept for a lost
+    /// edge, which is the worse of the two.</para>
+    ///
+    /// <para><b>Explicit interface implementations.</b> <c>public void Bar()</c> and
+    /// <c>void IFoo.Bar()</c> on one type also both report <c>Bar</c>, and collapsed into one concept
+    /// carrying one description -- the first declaration's -- and both signatures. The qualified form
+    /// takes the interface as a dotted prefix, which is how C# writes it. Name matching no longer
+    /// reaches the explicit member, and that is correct rather than a cost: it is not callable as
+    /// <c>Bar()</c> on the type, so a call that used to bind to it was binding to the wrong member.</para>
+    /// </summary>
+    private static string QualifyName(string name, Node decl, SymbolKind kind)
+    {
+        if (kind == SymbolKind.Type)
+        {
+            var arity = decl.Children
+                .FirstOrDefault(c => c.Type == TypeParameterListNodeType)
+                ?.Children.Count(c => c.Type == TypeParameterNodeType) ?? 0;
+
+            return arity == 0 ? name : $"{name}{SymbolFact.ArityMarker}{arity.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        var explicitInterface = decl.Children
+            .FirstOrDefault(c => c.Type == ExplicitInterfaceSpecifierNodeType)
+            ?.Text.TrimEnd('.');
+
+        return string.IsNullOrEmpty(explicitInterface) ? name : $"{explicitInterface}.{name}";
+    }
+
+    /// <summary>
+    /// The namespace part of the path <see cref="ComputeContainerPath"/> builds -- the same walk,
+    /// keeping only the <c>namespace</c> ancestors -- or <see langword="null"/> when there are none.
+    ///
+    /// <para>Always a dotted PREFIX of the container path, because a namespace can only enclose a type
+    /// and never the reverse, so the generator can compare depths rather than re-parse either string.
+    /// A block-scoped <c>namespace Foo.Bar { }</c> contributes its whole dotted name as one ancestor,
+    /// exactly as it does over there, so the two stay in step.</para>
+    /// </summary>
+    private static string? ComputeContainerNamespace(Node decl, string? fileScopedNamespaceName)
+    {
+        var segments = new List<string>();
+        for (var current = decl.Parent; current is not null; current = current.Parent)
+        {
+            if (current.Type == NamespaceDeclarationNodeType && current.GetChildForField(NameFieldName) is { } nameField)
+            {
+                segments.Insert(0, nameField.Text);
+            }
+        }
+
+        if (fileScopedNamespaceName is not null)
+        {
+            segments.Insert(0, fileScopedNamespaceName);
+        }
+
+        return segments.Count == 0 ? null : string.Join(".", segments);
+    }
+
     /// <summary>
     /// Builds the dotted <c>N.Outer.Inner</c> path above <paramref name="decl"/>: every ancestor
     /// that exposes a <c>name</c> field (a namespace, a type, or -- for a local function -- the
@@ -828,7 +983,15 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             var nameField = current.Type == FileScopedNamespaceNodeType ? null : current.GetChildForField(NameFieldName);
             if (nameField is not null)
             {
-                segments.Insert(0, nameField.Text);
+                // Through the SAME qualification the declaration itself gets, or the container path
+                // would spell an ancestor differently from that ancestor's own concept. Measured on
+                // the enriched golden fixture before this line existed: `Holder`, `Holder<T>` and
+                // `Holder<T, U>` became three type concepts, and all of their members landed under the
+                // first one, because a member's container read the ancestor's bare `name` field.
+                segments.Insert(0, QualifyName(
+                    nameField.Text,
+                    current,
+                    IsTypeDeclaration(current.Type) ? SymbolKind.Type : SymbolKind.Member));
             }
 
             current = current.Parent;
@@ -895,6 +1058,16 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// <see cref="ComputeSignature"/> so the signature text and
     /// <see cref="SymbolFact.HeaderEndLine"/> are cut at the same node by construction; see that
     /// property for why the line matters.
+    ///
+    /// <para><b>These three strings are a contract with the vendored grammar, and the concern was that
+    /// nothing would notice it breaking.</b> A grammar bump renaming any of the fields makes the
+    /// lookup return <see langword="null"/> silently, and the header then falls back to the
+    /// declaration's own last line -- which is the pre-R48 churn defect, where every edit inside a
+    /// type's body rewrote the type's own concept. MEASURED, one rename at a time, against the whole
+    /// suite: <c>body</c> turns 12 tests red (the golden included, through <c>CheckTests</c>, plus two
+    /// <c>BlastRadiusTests</c> rows), <c>accessors</c> turns 8 red, <c>value</c> turns 1 red. Covered
+    /// by execution rather than by name, and the golden's enrichment -- one occurrence of each
+    /// declaration shape -- is what carries most of it.</para>
     /// </summary>
     private static Node? HeaderEndNode(Node decl) =>
         decl.GetChildForField(BodyFieldName)

@@ -145,6 +145,21 @@ Effet de bord bienvenu : les `partial class` réparties sur plusieurs fichiers f
 
 - **Segments réservés.** `BundleConceptWriter` rejette les concepts nommés `index` ou `log` (ils écraseraient les fichiers propres du bundle) — vérifié dans `src/OKF4net/BundleConceptWriter.cs`. Une propriété nommée `Index` est parfaitement plausible ; on **réutilise** `IsReservedSegment` de `ConceptGenerator.cs` au lieu d'en écrire un second.
 - **Collision résiduelle** (casse seule — `Parse` vs `parse` — ou type imbriqué homonyme d'un membre) : départage déterministe par **ordre Ordinal du nom d'origine**, le premier garde le slug nu, les suivants prennent `-2`, `-3`. Ordinal **sur le nom** et non sur (fichier, ligne), pour que le départage survive à un déplacement de fichier ou à un décalage de lignes. Mesuré à **0 occurrence** sur ce repo ; la règle existe pour Go et JS, où c'est courant.
+
+> **Correction apportée à l'implémentation (dépilage des findings Important, 2026-09-04) : une TROISIÈME collision résiduelle existait, non listée ici.** Une classe `Bar` dans le namespace `Foo` et une classe `Baz` dans le namespace `Foo.Bar` se réduisent au même chemin brut `[code, csharp, Foo, Bar]` pour leur parent. Le conteneur n'était donc jamais synthétisé — un groupe réclamait déjà le chemin — et `Baz` s'enregistrait sous l'identifiant du **type**. Mesuré sur cette fixture exacte avant correctif : `code/csharp/foo/bar/baz`, c'est-à-dire un type de premier niveau rendu comme un type imbriqué, le namespace n'ayant aucun concept.
+>
+> `SymbolFact.Container` ne peut pas trancher : c'est une chaîne pointée aplatie, et une classe imbriquée dans `Bar` comme une classe de premier niveau dans `Foo.Bar` y rapportent toutes deux `"Foo.Bar"`. L'extracteur, lui, connaît la différence — il descend les ancêtres et voit un nœud namespace dans un cas, un nœud type dans l'autre — et l'aplatissement la jetait.
+>
+> `SymbolFact.ContainerNamespace` (propriété `init`, défaut `null`, même forme que `HeaderEndLine`) porte désormais la partie namespace du conteneur. La règle : **le parent d'un groupe est un namespace exactement quand sa profondeur égale celle du namespace.** Deux lignes du tableau ci-dessous ont des segments identiques et des parents différents, ce qui est précisément ce qu'aucune règle sur la chaîne ne peut exprimer.
+>
+> | déclaration | segments | profondeur ns | parent |
+> |---|---|---|---|
+> | `Bar`, type dans ns `Foo` | `[code,csharp,Foo,Bar]` | 3 | namespace `Foo` |
+> | `M`, membre de `Bar` | `[code,csharp,Foo,Bar,M]` | 3 | type `Bar` |
+> | `Baz`, type dans ns `Foo.Bar` | `[code,csharp,Foo,Bar,Baz]` | 4 | namespace `Foo.Bar` |
+> | `Baz`, imbriquée dans `Bar` | `[code,csharp,Foo,Bar,Baz]` | 3 | type `Bar` |
+>
+> Le namespace reçoit un chemin brut marqué et donc son propre identifiant (`code/csharp/foo/bar-2`) ; **le type garde le chemin qu'il avait**, donc aucun identifiant de type existant ne bouge. Un groupe dont `ContainerNamespace` est `null` — toute fixture de test, tout futur extracteur qui ne l'enregistre pas — est laissé exactement tel quel : la passe est inerte plutôt que devinatrice.
 - **Profondeur.** Un type devient à la fois le fichier `link-scanner.md` et le dossier `link-scanner/`. C'est légal, et `IndexGenerator` les liste dans deux rubriques distinctes du parent (document / `Subdirectories`). Conséquence assumée : **un `index.md` par dossier de type** (~170 sur ce repo). Sur un projet Java profond (`com/example/…`), les chemins s'allongent — **à surveiller vis-à-vis de `MAX_PATH` sous Windows**.
 
 ### 3.4 Un registre d'ids unique
@@ -189,6 +204,16 @@ Scans a concept body for §6 markdown links, returning them in source order.
 - `string.Substring`
 - `Enumerable.Where`
 ```
+
+> **Correction apportée à l'implémentation (dépilage des findings Minor, 2026-09-06) : deux comportements livrés n'apparaissaient dans aucune section de cette spec.**
+>
+> **1. Le plafond d'en-tête sur un `resource` de TYPE (R48).** L'exemple ci-dessus est un *membre*, et un membre garde son span complet `StartLine..EndLine` — c'est utile, un permalien vers son corps entier. Un **type**, lui, voit son span coupé à la fin de son en-tête. La raison est la promesse de rayon d'impact de §8.3 : le span d'une déclaration de type court jusqu'à son accolade fermante, donc *toute* édition dans le corps — ajouter un membre privé, ajouter une surcharge, supprimer une méthode — déplacerait `EndLine` et réécrirait le concept du type. Ce serait du churn causé par la position de l'édition et non par ce que le type déclare, ce qui falsifie « ajouter un membre privé ne change aucun concept ».
+>
+> Une édition *au-dessus* du type le déplace encore, et c'est correct : la déclaration a réellement bougé. `SymbolFact.HeaderEndLine` porte la ligne, et `producers/tests/.../fixtures/golden` contient depuis 2026-09-04 un type dont l'en-tête tient sur trois lignes — sans lui, le plafond aurait produit un golden identique s'il retournait `StartLine + 1`.
+>
+> Le finding qui a relevé cette omission ajoutait que le plafond « contredit l'exemple de §4.1 ». Vérifié : il ne le contredit pas, l'exemple étant un membre.
+>
+> **2. La neutralisation du texte repris.** Une `description` dérivée d'un commentaire de documentation est du texte écrit par autrui qui atterrit dans un document markdown, et rien ici ne le disait. Ce qui est appliqué : les liens markdown sont neutralisés, un marqueur de bloc en début de ligne est échappé, une fence **non fermée** est défusée (une fence équilibrée est laissée telle quelle), le contenu d'un bloc `<code>` est **jeté** — c'est de la source, pas de la prose, le même argument que le sanitizer du viewer fait pour `<script>`/`<style>` — tandis que `<c>` inline est conservé parce qu'il fait partie de la phrase. Un run non fermé qui *ressemble* à une balise est laissé verbatim, par la règle qui garde `List<T> of results` intact.
 
 ### 4.2 `description` : une chaîne de sources, pas un LLM
 
@@ -489,7 +514,9 @@ La correction 1 récupère bien les fichiers générés **par le SDK** (`*.Globa
 >
 > Vérifié par `grep` sur tout `producers/src` : aucun lecteur de production pour l'une ou l'autre propriété ; les seuls lecteurs sont les tests. Ce que l'opérateur voit vient de `GenerateRun.ReportProjects`, qui itère `RoslynResolver.Projects` et émet **une note par projet non compilé**, en nommant le projet, sa `RoslynProjectAvailability` et le détail. C'est strictement plus d'information qu'un booléen.
 >
-> Arbitrage retenu : **corriger le document et les commentaires plutôt que câbler une seconde voie**. Câbler `IsComplete` dans le rapport ajouterait une ligne agrégée à côté d'une voie par projet qui fonctionne déjà et qui dit davantage. Les deux propriétés restent : c'est la question qu'un hôte intégrant le resolver pose, et le fixture de `RoslynResolverTests` s'appuie sur `IsComplete` pour prouver que son dépôt scratch a réellement compilé.
+> Arbitrage retenu : **corriger le document et les commentaires plutôt que câbler une seconde voie**. Câbler `IsComplete` dans le rapport ajouterait une ligne agrégée à côté d'une voie par projet qui fonctionne déjà et qui dit davantage.
+>
+> **Suite (dépilage des findings Important, 2026-09-04) : les deux propriétés ont été SUPPRIMÉES.** La vague 2b les avait gardées en écrivant ici qu'« un hôte intégrant le resolver pose cette question » et que le fixture de `RoslynResolverTests` s'appuyait sur `IsComplete`. Arbitrage de l'utilisateur : aucun hôte ne les lit, `producers/` n'est pas une bibliothèque publiée, et une propriété dont les seuls lecteurs sont les tests qui l'assertent est exactement la forme que cette branche a payée treize fois (« assertion incapable d'échouer »). `AnyCompiled` et `AllCompiled` vivent désormais dans `RoslynResolverTests`, dérivées de `RoslynResolver.Projects` en une ligne — ce qu'écrirait tout appelant voulant le résumé. La clause `Count > 0` reste documentée là-bas : `All` sur une liste vide est vrai par vacuité, et une liste vide est précisément l'état où *tous* les appels sont retombés sur le name matching.
 
 **Rayon d'impact — il déborde du projet en échec.** C'est le point le moins intuitif et il doit être écrit noir sur blanc. Un projet qui ne compile pas ne coûte pas seulement la précision *sur ses propres fichiers* :
 
@@ -649,6 +676,14 @@ Drapeaux ajoutés à `okfgen generate` par ce lot :
 | `--include-internal` | off | descend sous la visibilité publique | 5.4 |
 | `--no-code` | off | désactive l'étage graphe de code (comportement actuel) | 5.4 |
 | `--max-file-size <n>` | 2 Mo | plafond par fichier source, appliqué par les deux moteurs ; au-delà, l'extracteur ignore **et compte** (run partiel), la porte Roslyn laisse tomber l'item `Compile` **silencieusement** | 2.3 |
+| `--no-msbuild` | off | saute tout l'étage Roslyn, et avec lui l'évaluation MSBuild qu'il exige. Coûte **deux** choses, pas une : les liens d'appel viennent de la seule baseline par correspondance de noms, et il n'y a **aucune** carte de propriété des sources, donc aucun lien `packages` → namespace n'est émis (sous `--update`, cela écrase ceux d'un run précédent) | 2.1, 5.1 |
+| `--roslyn-timeout <s>` | *absent* | budget horloge pour tout l'étage Roslyn — les requêtes `dotnet msbuild` et les compilations qui suivent. **Absent veut dire non borné** : chaque requête est plafonnée à deux minutes isolément, rien ne plafonne leur somme. Opt-in parce qu'un budget fait dépendre le bundle émis de la vitesse de la machine, alors que §6.2 fixe le déterminisme à une version d'extracteur, pas à un CPU. Épuisé, l'étage est abandonné **en entier** : le run atterrit exactement dans l'état `--no-msbuild`, avec la même note, plutôt que d'émettre un bundle dont les liens exacts et par nom sont séparés par la vitesse de la machine sans rien pour dire où passe la ligne | 2.3, 6.2 |
+
+> **Les deux dernières lignes ont été ajoutées après coup, et l'omission mérite d'être nommée.**
+> `--no-msbuild` est décrit longuement en §7.2 (« Levier ajouté ») mais n'avait jamais rejoint ce
+> tableau, qui se présente pourtant comme la surface CLI du lot. Un tableau récapitulatif incomplet est
+> pire qu'absent : il se lit comme exhaustif. Vérifié cette fois contre `OkfgenCli.Run` plutôt que
+> contre le souvenir de ce qui a été ajouté.
 
 `--update` conserve son nom mais change de sémantique sur `code/` (élagage, §6.3).
 

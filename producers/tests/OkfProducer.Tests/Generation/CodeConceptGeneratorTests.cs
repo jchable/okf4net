@@ -44,11 +44,19 @@ public class CodeConceptGeneratorTests
     {
         // 54-58% of call sites have no declaration in the repo. Linking them
         // would emit that many BrokenLink diagnostics and drown `validate`.
+        //
+        // THE CALLEE IS A BARE IDENTIFIER, and that is the fixture rather than a detail. This used to
+        // say `string.Substring`, a shape `CSharpProfile.CallQuery` cannot produce: an UNRESOLVED
+        // entry renders `edge.Site.CalledName`, which is the identifier as written at the call, and
+        // the query captures the name node alone -- the golden proves it, where `int.Parse(raw)` in
+        // `Registry.cs` comes out as `- ``Parse`` `, not `int.Parse`. A dotted name reaches this
+        // section only down the defensive branch, from a RESOLVED target. So the old assertions
+        // guarded the rendering of a string that could never arrive.
         var body = Single(Generate(), "code/csharp/n/scanner/scan").Document.Body;
 
         Assert.Contains("## Calls (unresolved)", body, StringComparison.Ordinal);
-        Assert.Contains("`string.Substring`", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("[string.Substring]", body, StringComparison.Ordinal);
+        Assert.Contains("`Substring`", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Substring]", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -61,10 +69,18 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void With_repo_url_the_resource_is_a_url_and_earns_no_path_warning()
+    public void With_repo_url_the_resource_is_an_absolute_url_with_a_line_span()
     {
         // §4.3: a bare relative resource resolves against the CONCEPT directory,
         // not the bundle root, so it would miss for every code concept.
+        //
+        // This was called `..._and_earns_no_path_warning`, which named a VALIDATOR verdict. No
+        // validator runs here -- this reads one frontmatter field off one document -- so that half of
+        // the name was a promise the body could not keep, and it is dropped rather than left to be
+        // trusted. The verdict itself is covered where a validator actually runs:
+        // `CheckTests.The_golden_bundle_validates_with_no_error_and_only_the_warnings_we_know_about`
+        // puts the real `BundleValidator` over a real bundle generated with a repo URL, and enumerates
+        // the warnings it is allowed to have.
         var fm = Single(Generate(repoUrl: "https://github.com/o/r", rev: "main"), "code/csharp/n/scanner/scan").Document.Frontmatter;
 
         Assert.StartsWith("https://github.com/o/r/blob/main/", fm.Resource, StringComparison.Ordinal);
@@ -111,8 +127,21 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void A_signature_line_names_the_file_with_forward_slashes_and_a_line_span()
+    public void A_signature_line_names_the_file_and_a_line_span()
     {
+        // This was called `..._with_forward_slashes_and_a_line_span`, and that half of the name was a
+        // claim this test cannot make: every fixture path here is the literal `src/Scanner.cs`, so a
+        // forward slash goes in and a forward slash comes out whatever the generator does with
+        // separators. Deleting `ConceptGenerator.NormalizeSeparators` from the signature line would
+        // leave it green.
+        //
+        // WHERE THE PROPERTY ACTUALLY LIVES, since dropping the name should not lose the fact:
+        // `CodeGraphBuilder.EnumerateFiles` normalizes once, at the only place a separator is ever
+        // chosen -- `Path.GetRelativePath` against the walk -- so everything downstream, this
+        // generator included, already receives `/`. It is covered, and by execution rather than by
+        // name: deleting that `Replace` turns six tests red, across `HostileInputTests` and
+        // `CliTests` (measured, on Windows, where `GetRelativePath` returns backslashes). The call in
+        // this file is a second belt on an already-normalized value.
         var body = Single(Generate(), "code/csharp/n/scanner/scan").Document.Body;
 
         Assert.Contains("## Signatures", body, StringComparison.Ordinal);
@@ -301,14 +330,24 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void The_registry_spans_the_code_family_as_well_as_packages_and_docs()
+    public void A_doc_titled_overview_coexists_with_the_overview_concept()
     {
-        // §3.4: one registry, one allocation record for the whole run. Being exact about what that
-        // means, because the tempting claim is false: the four families use disjoint prefixes, so a doc
-        // titled "overview" lands on `docs/overview` and CANNOT collide with the bare `overview` id --
-        // they coexist, which is what this asserts. What the shared registry buys is that `code/` is in
-        // the same record as the rest (the old Generate-local usedIds never covered it) and that
-        // `overview` is allocated rather than assumed.
+        // NAMED FOR WHAT IT PINS, after a review found the old name
+        // (`The_registry_spans_the_code_family_as_well_as_packages_and_docs`) promising something no
+        // assertion here could fail on: the graph is empty, so no `code/` id is produced at all and
+        // reverting the code family to a `Generate`-local `usedIds` leaves both assertions green.
+        //
+        // Adding code concepts would not fix that, and the reason is worth stating rather than
+        // rediscovering. §3.4's "one registry" has no observable consequence through this surface: the
+        // four families use DISJOINT PREFIXES by construction (`overview`, `docs/`, `packages/`,
+        // `code/`), so a cross-family collision cannot be built, and a code-local registry would
+        // disambiguate code ids among themselves exactly as the shared one does. The property is
+        // structural -- it is why a whole class of collision is impossible -- not behavioural, and a
+        // test cannot separate it from its absence without changing the id scheme itself.
+        //
+        // What this DOES pin, and what a regression could break: a doc titled "overview" lands on
+        // `docs/overview` and the bare `overview` id is allocated rather than assumed, so the two
+        // coexist instead of one overwriting the other.
         var snapshot = new RepositorySnapshot("/repo", "my-repo", [], [new DocFile("O.md", "overview")]);
 
         var ids = Ids(new ConceptGenerator().Generate(snapshot, GraphOf(), Options()));
@@ -841,10 +880,19 @@ public class CodeConceptGeneratorTests
     {
         // An already-escaped bracket must be copied through, not escaped again: `\\]` renders a visible
         // backslash, which would be this fix corrupting the very text it exists to preserve.
+        //
+        // The two assertions below are both about what must NOT appear, and between them they left a
+        // gap: a producer that DELETED the author's backslash -- shipping `Keep [a]` -- satisfies
+        // both. `[a]` on its own is not a link, so the scanner still finds none, and with the
+        // backslash gone there is no `\\]` either. "Copied through" is a claim about the exact bytes,
+        // so it is now asserted as exact bytes, and that is what makes the deletion visible. MEASURED:
+        // with the guard rewritten to swallow the author's backslash, the exact-bytes assertion goes
+        // red and the two below stay green on their own.
         var graph = GraphOf(Member("N.Scanner", "Doc", "public void Doc()", doc: "Keep [a\\] and [b](c)."));
 
         var body = Single(new ConceptGenerator().Generate(Snapshot(), graph, Options()), "code/csharp/n/scanner/doc").Document.Body;
 
+        Assert.Contains("Keep [a\\] and [b\\](c).", body, StringComparison.Ordinal);
         Assert.Empty(LinkScanner.ExtractLinks(body));
         Assert.DoesNotContain("\\\\]", body, StringComparison.Ordinal);
     }
@@ -880,6 +928,88 @@ public class CodeConceptGeneratorTests
         Assert.Equal(["overview"], ids);
     }
 
+    [Fact]
+    public void The_engine_versions_reach_overview_as_a_sibling_key_and_not_inside_the_actor()
+    {
+        // §6.2: determinism holds at a FIXED extractor version, not absolutely, so the artefact has to
+        // say which engines produced it -- a golden that moved is otherwise uninterpretable, and a lock
+        // file pins the versions without recording them.
+        //
+        // BOTH HALVES ARE ASSERTED, and the second is the one this test exists for now. This used to
+        // write the engines INTO `by`, as `okfgen/0.1.0 tree-sitter/1.3.0 roslyn/5.3.0`, and its own
+        // comment called that "the spec's own shape". It is the opposite: §5.2 makes `generated.by` an
+        // actor and §7 defines an actor as exactly one of `<producer>/<version>`, `human:<id>`,
+        // `process:<id>`. A space-separated list is none of them.
+        //
+        // The failure was silent, which is why nothing caught it. `OKF4net.Actor.Parse` splits on the
+        // FIRST slash, so it returned IsWellFormed:true with Version = "0.1.0 tree-sitter/1.3.0
+        // roslyn/5.3.0"; `BundleValidator` warns only on a malformed actor, so `okf validate` reported
+        // the bundle clean while every consumer reading the version off this producer's own output got
+        // a string naming no release of anything. The golden shipped it.
+        var options = Options() with { EngineVersions = ["tree-sitter/1.3.0", "roslyn/5.3.0"] };
+
+        var generated = Single(new ConceptGenerator().Generate(Snapshot(), GraphOf(), options), "overview")
+            .Document.Frontmatter.Get("generated")?.AsMapping();
+
+        Assert.NotNull(generated);
+
+        // `by` is an actor and nothing else -- the assertion that goes red if the engines creep back in.
+        Assert.Equal(ConceptGenerator.ProducerActor, generated.Get("by")?.AsDisplayString());
+
+        // And the provenance survives, in a producer key OKF preserves across a round-trip.
+        var engines = generated.Get("engines")?.AsSequence();
+        Assert.NotNull(engines);
+        Assert.Equal(
+            ["tree-sitter/1.3.0", "roslyn/5.3.0"],
+            engines.Select(i => i.AsDisplayString()));
+    }
+
+    [Fact]
+    public void Overviews_actor_is_well_formed_and_reads_back_the_producer_version()
+    {
+        // The consumer-side half, asserted through the reader that actually matters rather than by
+        // inspecting the string ourselves: OKF4net's own Actor.Parse is what a bundle's consumers use,
+        // and under the old multi-token spelling it reported this exact artefact as well-formed while
+        // returning a Version of "0.1.0 tree-sitter/1.3.0 roslyn/5.3.0". Parsing the field is the only
+        // way to state that as a test; a string comparison cannot see it.
+        var options = Options() with { EngineVersions = ["tree-sitter/1.3.0", "roslyn/5.3.0"] };
+
+        var by = Single(new ConceptGenerator().Generate(Snapshot(), GraphOf(), options), "overview")
+            .Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+
+        var actor = Actor.Parse(by!);
+
+        Assert.True(actor.IsWellFormed);
+        Assert.Equal(ActorKind.Producer, actor.Kind);
+        Assert.Equal("okfgen", actor.Producer);
+        Assert.DoesNotContain(" ", actor.Version!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void With_no_engine_versions_overview_carries_the_producer_token_alone()
+    {
+        // The --no-code path, and every caller that supplies none. Emitting a trailing space, or engine
+        // tokens for engines that never ran, would attach a determinism claim to an artefact no engine
+        // produced.
+        var by = Single(Generate(), "overview")
+            .Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+
+        Assert.Equal(ConceptGenerator.ProducerActor, by);
+    }
+
+    [Fact]
+    public void A_code_concept_does_not_repeat_the_engine_versions()
+    {
+        // On `overview` alone, like `at` and for the same reason (6.1): the engines are a fact about the
+        // RUN, and repeating them on hundreds of `code/` concepts would rewrite every file on a version
+        // bump that changed nothing else in them.
+        var options = Options() with { EngineVersions = ["tree-sitter/1.3.0", "roslyn/5.3.0"] };
+        var by = Single(new ConceptGenerator().Generate(Snapshot(), Graph(), options), "code/csharp/n/scanner/scan")
+            .Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+
+        Assert.Equal(ConceptGenerator.ProducerActor, by);
+    }
+
     // -- fixture ----------------------------------------------------------------------------------
 
     private static IReadOnlyList<GeneratedConcept> Generate(
@@ -911,8 +1041,14 @@ public class CodeConceptGeneratorTests
 
     /// <summary>
     /// The fixture graph: <c>N.Scanner.Scan</c> calls <c>N.Other.Callee</c> exactly (twice, from two
-    /// sites, so the dedup is exercised) and <c>string.Substring</c> not at all; <c>N.T.Validate</c> is
+    /// sites, so the dedup is exercised) and <c>Substring</c> not at all; <c>N.T.Validate</c> is
     /// two overloads on one concept and reaches <c>N.Other.Helper</c> by name only.
+    ///
+    /// <para><b>Every <c>CalledName</c> here is what the extractor would really hand over.</b> The
+    /// unresolved one is a bare identifier because that is all <c>CSharpProfile.CallQuery</c>
+    /// captures; the dotted <c>Other.Callee</c> on the exact edges never reaches any output -- a
+    /// resolved entry is rendered from the TARGET's title -- so it is left as documentation of which
+    /// call the site stands for.</para>
     /// </summary>
     private static CodeGraphModel Graph() => new(
         [
@@ -934,7 +1070,7 @@ public class CodeConceptGeneratorTests
                 "N.Other", "Callee", EdgeConfidence.Exact),
             new ResolvedEdge(new CallSite("N.Scanner", "Scan", "Other.Callee", "src/Scanner.cs", 140),
                 "N.Other", "Callee", EdgeConfidence.Exact),
-            new ResolvedEdge(new CallSite("N.Scanner", "Scan", "string.Substring", "src/Scanner.cs", 180),
+            new ResolvedEdge(new CallSite("N.Scanner", "Scan", "Substring", "src/Scanner.cs", 180),
                 null, null, EdgeConfidence.Unresolved),
             new ResolvedEdge(new CallSite("N.T", "Validate", "Helper", "src/T.cs", 60),
                 "N.Other", "Helper", EdgeConfidence.ByName),
@@ -942,6 +1078,115 @@ public class CodeConceptGeneratorTests
         RunStatus.Complete);
 
     private static CodeGraphModel GraphOf(params SymbolFact[] symbols) => new(symbols, [], RunStatus.Complete);
+
+    [Fact]
+    public void A_namespace_and_a_type_of_the_same_name_get_separate_concepts()
+    {
+        // A class `Bar` in namespace `Foo`, and a class `Baz` in namespace `Foo.Bar`. Both reduce to
+        // the raw path [code, csharp, Foo, Bar] for their parent, so the container was never
+        // synthesized and Baz registered under the TYPE's id. MEASURED before the fix, with exactly
+        // this fixture: overview, code/csharp/foo, code/csharp/foo/bar, code/csharp/foo/bar/baz,
+        // code/csharp/foo/bar/m, code/csharp/foo/bar/baz/q -- a top-level type rendered as a nested
+        // one, and the namespace with no concept at all.
+        //
+        // ContainerNamespace is what separates them: the parent is a namespace exactly when its depth
+        // equals the namespace's. Two of the four facts below have IDENTICAL raw segments and
+        // different parents, which is what no flat container string can express.
+        var graph = GraphOf(
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo", "Bar", "public class Bar",
+                SymbolVisibility.Public, "src/Bar.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo.Bar", "M", "public void M()",
+                SymbolVisibility.Public, "src/Bar.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo.Bar", "Baz", "public class Baz",
+                SymbolVisibility.Public, "src/Baz.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo.Bar" },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo.Bar.Baz", "Q", "public void Q()",
+                SymbolVisibility.Public, "src/Baz.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo.Bar" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        // The TYPE keeps the path it already had -- only the namespace moves, so no existing type's id
+        // shifts under this change.
+        Assert.Contains("code/csharp/foo/bar", ids);
+        Assert.Contains("code/csharp/foo/bar/m", ids);
+
+        // The namespace is a concept of its own now, and its contents hang off IT.
+        Assert.Contains("code/csharp/foo/bar-2", ids);
+        Assert.Contains("code/csharp/foo/bar-2/baz", ids);
+        Assert.Contains("code/csharp/foo/bar-2/baz/q", ids);
+
+        // The assertion that fails without the fix.
+        Assert.DoesNotContain("code/csharp/foo/bar/baz", ids);
+    }
+
+    [Fact]
+    public void A_marked_top_level_namespace_is_registered_under_its_real_name()
+    {
+        // The twin of the test above, at the depth where the fix above did NOT reach. There the
+        // namespace is nested, so its parent (`code/csharp/foo`) is already registered and
+        // `RegisterContainerId` takes the branch that cleans the leaf with `SegmentName`. Here the
+        // namespace is TOP-LEVEL, its parent key `[code, csharp]` is never registered, and the
+        // fallback ran instead -- which passed the RAW segments to `CodeConceptIds.ForContainer`.
+        //
+        // So the internal discriminator `ns` was slugified rather than stripped, and the bundle
+        // shipped `code/csharp/foo-ns.md` carrying `title: Foo`, with `"code/csharp/foo-ns"` recorded
+        // in the manifest and every id in that subtree marked permanently. Reproduced end to end
+        // before the fix on two files -- a global-namespace `class Foo` beside a `namespace Foo` --
+        // which is the ordinary shape of a repository whose root type shares its namespace's name.
+        //
+        // Nothing caught it because the suite's only namespace-vs-type fixture was the nested one, and
+        // for a top-level namespace the fallback is not an edge case: it is always the path taken.
+        var graph = GraphOf(
+            new SymbolFact(SymbolKind.Type, "csharp", string.Empty, "Foo", "public class Foo",
+                SymbolVisibility.Public, "src/a/Foo.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = string.Empty },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo", "Ping", "public void Ping()",
+                SymbolVisibility.Public, "src/a/Foo.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = string.Empty },
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo", "Bar", "public class Bar",
+                SymbolVisibility.Public, "src/b/Bar.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo.Bar", "Run", "public void Run()",
+                SymbolVisibility.Public, "src/b/Bar.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        // The type keeps the bare path; the namespace takes the ordinary numeric tie-break.
+        Assert.Contains("code/csharp/foo", ids);
+        Assert.Contains("code/csharp/foo/ping", ids);
+        Assert.Contains("code/csharp/foo-2", ids);
+        Assert.Contains("code/csharp/foo-2/bar", ids);
+        Assert.Contains("code/csharp/foo-2/bar/run", ids);
+
+        // The assertion that fails without the fix, and it is about the whole subtree rather than the
+        // container alone: the marker propagated into every id below it.
+        Assert.DoesNotContain(ids, id => id.Contains("-ns", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_type_nested_in_another_type_still_hangs_off_it()
+    {
+        // The control for the test above, and the reason the fix is a depth comparison rather than a
+        // rule about names. `Baz` here has the SAME raw segments as the `Baz` above -- container
+        // "Foo.Bar", name "Baz" -- and must land in the opposite place, because its namespace stops one
+        // level higher. A fix that keyed on the container string alone would move this one too.
+        var graph = GraphOf(
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo", "Bar", "public class Bar",
+                SymbolVisibility.Public, "src/Bar.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo.Bar", "Baz", "public class Baz",
+                SymbolVisibility.Public, "src/Bar.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        Assert.Contains("code/csharp/foo/bar/baz", ids);
+        Assert.DoesNotContain("code/csharp/foo/bar-2", ids);
+    }
 
     private static SymbolFact Type(string container, string name, string path, string? doc = null) =>
         new(SymbolKind.Type, "csharp", container, name, $"public class {name}",
