@@ -301,16 +301,40 @@ and this project adheres to
 
 ### Fixed
 
-- **`okfgen` no longer names Roslyn in `generated.by` on a run where Roslyn never
-  ran.** That field is a determinism claim — *these engine versions produced these
-  bytes* — so naming an engine the run never invoked makes it false in the
-  direction that matters, by promising reproducibility against a tool that was not
-  there. It was written unconditionally on every run that was not `--no-code`,
-  which covers three cases where the stage demonstrably did not execute:
-  `--no-msbuild`, a repository with no project file, and an exhausted
-  `--roslyn-timeout`. Named per engine now. The golden fixture could not catch
-  this, because the fixture harness had the rule right while the shipped CLI did
-  not.
+- **`generated.by` is an actor again, and the engine versions moved to
+  `generated.engines`.** §5.2 makes that field an actor and §7 defines an actor as
+  exactly one of `<producer>/<version>`, `human:<id>`, `process:<id>`. It was written
+  as `okfgen/0.1.0 tree-sitter/1.3.0 roslyn/5.3.0`, which is none of them — and the
+  failure was silent, because `Actor.Parse` splits on the first `/` and reported it
+  well-formed with a version of `0.1.0 tree-sitter/1.3.0 roslyn/5.3.0`. `okf validate`
+  called such a bundle clean while every consumer reading the version got a string
+  naming no release. The provenance is preserved in a sibling key, which OKF keeps
+  across a round-trip. **Regenerate to update an existing bundle's `overview`.**
+- **Scope filters on effective visibility.** A `public` member of an `internal` type is
+  capped at internal by C#, so it is now out of scope by default. It used to be emitted
+  with `--include-internal` off *and* tagged `public` — a visibility the language does
+  not give it — so a bundle generated to exclude internal API published it anyway.
+  **This removes concepts from regenerated bundles**, which is the point.
+- **Generic types are disambiguated with a backtick, not `_`.** `Holder<T>` was spelled
+  `Holder_1`, drawn from the C# identifier alphabet, so a type genuinely named
+  `Holder_1` collapsed into the same concept — both signatures under one description.
+  The ids move from `holder_1` to `holder-1`.
+- **`okfgen` no longer names Roslyn in `generated.engines` on a run where Roslyn never
+  ran** — including the common one, where every project failed to query or compile
+  (an unrestored checkout, no `dotnet` on `PATH`). That field is a determinism claim
+  — *these engine versions produced these bytes* — so naming an engine the run never
+  invoked makes it false in the direction that matters, by promising reproducibility
+  against a tool that was not there. It was written unconditionally on every run that
+  was not `--no-code`, which also covers `--no-msbuild`, a repository with no project
+  file, and an exhausted `--roslyn-timeout`. The golden fixture could not catch this:
+  the fixture harness had the rule right while the shipped CLI did not, so the two
+  disagreed about the same repository.
+- **`--roslyn-timeout` is read invariantly, and its whole range is validated.** Without
+  a custom parser the value was converted with the machine's culture and
+  `AllowThousands`: `1.5` meant 15 on a comma-decimal locale, silently, and was refused
+  outright on another. Values above `TimeSpan`'s range and below one tick escaped the
+  range guard as unhandled exceptions. `--roslyn-timeout 0` was accepted and meant
+  *unbounded*, the opposite of the smallest bound; it is refused now.
 - **Cancelling an attested computation now stops it, whatever the host stage
   does.** The orchestrator handed its token to each stage and trusted them to
   observe it; a stage that ignores its token — any client predating cancellation
