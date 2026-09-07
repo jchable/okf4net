@@ -1,6 +1,6 @@
 ---
 type: C# Member
-title: Holder_2.Find
+title: Holder`2.Find
 description: Looks the value up.
 resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L104-L107
 tags:
@@ -12,7 +12,7 @@ generated:
   by: okfgen/0.1.0
 ---
 
-# Holder_2.Find
+# Holder`2.Find
 
 Looks the value up.
 

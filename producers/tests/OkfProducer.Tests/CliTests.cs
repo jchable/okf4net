@@ -273,23 +273,62 @@ public class CliTests
 
         Assert.Equal(0, result.ExitCode);
 
-        var by = Frontmatter(bundle, "overview").Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+        // Read off `generated.engines`, not `generated.by`: the engines used to be appended to the
+        // actor, which §7 does not allow, so the list moved to a sibling key. `by` is now an actor and
+        // says nothing about engines at all -- which is why this assertion had to move with it rather
+        // than merely be adjusted.
+        var generated = Frontmatter(bundle, "overview").Get("generated")?.AsMapping();
+        var engines = generated?.Get("engines")?.AsSequence()?.Select(i => i.AsDisplayString()).ToList();
 
-        Assert.NotNull(by);
-        Assert.Contains("tree-sitter/", by, StringComparison.Ordinal);
-        Assert.DoesNotContain("roslyn/", by, StringComparison.Ordinal);
+        Assert.Equal(ConceptGenerator.ProducerActor, generated?.Get("by")?.AsDisplayString());
+        Assert.NotNull(engines);
+        Assert.Contains(engines, e => e!.StartsWith("tree-sitter/", StringComparison.Ordinal));
+        Assert.DoesNotContain(engines, e => e!.StartsWith("roslyn/", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void A_negative_roslyn_budget_is_refused_rather_than_silently_ignored()
+    [Theory]
+    [InlineData("-1", "must be a positive number of seconds")]
+    // Above TimeSpan.MaxValue.TotalSeconds (~9.22e11). Accepted by the `>= 0` guard this used to have,
+    // then thrown out of TimeSpan.FromSeconds as an unhandled OverflowException with a stack trace.
+    [InlineData("1000000000000", "no larger than")]
+    // Positive as a double, zero as a TimeSpan: under one tick (1e-7 s) it truncated to TimeSpan.Zero,
+    // which TryCreateWithin refuses by contract -- an unhandled ArgumentOutOfRangeException from inside
+    // the run. The guard tested the double's range; the value that reaches the API is a TimeSpan, and
+    // those are two different ranges.
+    [InlineData("0.00000001", "smaller than the smallest budget")]
+    public void A_roslyn_budget_outside_the_expressible_range_is_refused_with_an_error_not_a_stack_trace(
+        string value, string because)
     {
         using var workspace = NewWorkspace(out var repo, out var bundle);
 
-        var result = Run("generate", "--repo", repo, "--out", bundle, "--roslyn-timeout", "-1");
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--roslyn-timeout", value);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("--roslyn-timeout must be a positive number of seconds", result.Error, StringComparison.Ordinal);
-        Assert.False(Directory.Exists(bundle), "the run was refused but still created the bundle.");
+        Assert.Contains(because, result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("Unhandled exception", result.Error, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(bundle), $"'{value}' was refused but the run still created the bundle.");
+    }
+
+    [Theory]
+    // The decimal point is '.', on every machine. Without a custom parser System.CommandLine converts a
+    // double with the CURRENT culture and NumberStyles.AllowThousands, so this option meant different
+    // things in different places: measured under de-DE, `1.5` parsed as 15 and `0.001` as 1 -- exit 0,
+    // no diagnostic, a budget 10^n too large from the exact form the README documents -- while fr-FR
+    // refused the same `1.5` outright. A multiplied budget changes which projects finish, so it changes
+    // the emitted `## Calls` links, the containment links and `generated.engines`: the machine's locale
+    // would have decided bundle content, which is what §6.2 pins determinism against.
+    [InlineData("1,5")]
+    [InlineData("1 000")]
+    [InlineData("90s")]
+    public void A_roslyn_budget_is_read_invariantly_so_a_separator_is_a_typo_and_not_a_grouping(string value)
+    {
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--roslyn-timeout", value);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("is not a number of seconds", result.Error, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(bundle), $"'{value}' was refused but the run still created the bundle.");
     }
 
     [Fact]

@@ -1,6 +1,6 @@
 ---
 type: C# Type
-title: Shapes.Holder_1
+title: Shapes.Holder`1
 description: Arity one. A separate concept from Holder, which it was not before.
 resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L94-L95
 tags:
@@ -12,7 +12,7 @@ generated:
   by: okfgen/0.1.0
 ---
 
-# Shapes.Holder_1
+# Shapes.Holder`1
 
 Arity one. A separate concept from Holder, which it was not before.
 
@@ -22,4 +22,4 @@ Arity one. A separate concept from Holder, which it was not before.
 
 ## Contains
 
-- [Holder_1.Value](/code/csharp/n/shapes/holder_1/value)
+- [Holder&#96;1.Value](/code/csharp/n/shapes/holder-1/value)

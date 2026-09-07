@@ -623,11 +623,11 @@ public class CheckTests(ITestOutputHelper output)
                 "code/csharp/n/shapes/hidden",          // an INTERNAL type: out of scope, so only a container survives
                 "code/csharp/n/shapes/hidden/never",    // its public member, which scope does not filter
                 "code/csharp/n/shapes/holder",          // three types differing only by arity (D1b-I1) --
-                "code/csharp/n/shapes/holder/count",    // and each one's members under IT, not under the first
-                "code/csharp/n/shapes/holder_1",
-                "code/csharp/n/shapes/holder_1/value",
-                "code/csharp/n/shapes/holder_2",
-                "code/csharp/n/shapes/holder_2/find",
+                "code/csharp/n/shapes/holder-1",        // and each one's members under IT, not under the first.
+                "code/csharp/n/shapes/holder-1/value",  // The arity concepts sort BEFORE `holder/count` because
+                "code/csharp/n/shapes/holder-2",        // Ordinal puts `-` (0x2D) ahead of `/` (0x2F) -- they did
+                "code/csharp/n/shapes/holder-2/find",   // not under the old `_N` spelling (`_` is 0x5F).
+                "code/csharp/n/shapes/holder/count",
                 "code/csharp/n/shapes/i-shape",         // an interface
                 "code/csharp/n/shapes/i-shape/render",
                 "code/csharp/n/shapes/point",           // a struct

@@ -993,7 +993,10 @@ public sealed class RoslynResolver : ISymbolResolver
 
         if (declaration is TypeDeclarationSyntax { TypeParameterList.Parameters.Count: > 0 } generic)
         {
-            return $"{identifier.Text}_{generic.TypeParameterList!.Parameters.Count.ToString(CultureInfo.InvariantCulture)}";
+            // The separator is TreeSitterExtractor.ArityMarker, read from there rather than repeated as
+            // a literal: this spelling is what the two engines join on, so a copy here could drift and
+            // the symptom would not be a lost call but a call credited to another symbol.
+            return $"{identifier.Text}{SymbolFact.ArityMarker}{generic.TypeParameterList!.Parameters.Count.ToString(CultureInfo.InvariantCulture)}";
         }
 
         var explicitInterface = declaration switch

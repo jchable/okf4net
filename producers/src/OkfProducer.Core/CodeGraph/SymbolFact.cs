@@ -51,6 +51,26 @@ public sealed record SymbolFact(
     string? DocComment)
 {
     /// <summary>
+    /// Separates a generic type's name from its arity in <see cref="Name"/> (<c>Holder`1</c>).
+    ///
+    /// <para><b>It lives here, in Core, because it is a contract BETWEEN the two engines</b> -- the
+    /// same reason <c>Utf8Offsets</c> does. Both the tree-sitter extractor and the Roslyn resolver
+    /// spell a generic type's name this way, and they join on that spelling; a copy in each that drifts
+    /// does not lose a call, it credits it to another symbol.</para>
+    ///
+    /// <para><b>A backtick because it cannot occur in a C# identifier</b> -- not through <c>@</c>, not
+    /// through a Unicode escape -- which is what makes the qualification injective. The first version
+    /// used <c>_N</c>, chosen so a reader could tell "arity 1" from the registry's "second thing called
+    /// Foo" (<c>-2</c>). Both characters are in the identifier alphabet, so a type genuinely named
+    /// <c>Holder_1</c> and one named <c>Holder&lt;T&gt;</c> produced the same <see cref="Name"/>,
+    /// grouped as one concept, and were emitted with both signatures under one description -- exactly
+    /// the merge this qualification exists to prevent, reachable from legal C#. The backtick is also
+    /// the CLR's own arity convention, and <c>ConceptId.Slugify</c> maps it to <c>-</c>, so the emitted
+    /// id is <c>holder-1</c> while a real <c>Holder_1</c> stays <c>holder_1</c>.</para>
+    /// </summary>
+    public const char ArityMarker = '`';
+
+    /// <summary>
     /// The line carrying the end of this declaration's <b>header</b> -- the opening brace of its body
     /// where it has one, the declaration's own last line where it does not -- or <see langword="null"/>
     /// when the extractor did not record one.

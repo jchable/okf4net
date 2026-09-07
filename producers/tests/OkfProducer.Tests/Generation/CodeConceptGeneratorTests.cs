@@ -929,18 +929,60 @@ public class CodeConceptGeneratorTests
     }
 
     [Fact]
-    public void The_engine_versions_reach_overviews_generated_by()
+    public void The_engine_versions_reach_overview_as_a_sibling_key_and_not_inside_the_actor()
     {
-        // Spec 6.2: determinism holds at a FIXED extractor version, not absolutely, so the artefact has
-        // to say which engines produced it -- a golden that moved is otherwise uninterpretable, and a
-        // lock file pins the versions without recording them. The shape is the spec's own:
-        // `okfgen/0.1.0 tree-sitter/x.y.z roslyn/a.b.c`.
+        // §6.2: determinism holds at a FIXED extractor version, not absolutely, so the artefact has to
+        // say which engines produced it -- a golden that moved is otherwise uninterpretable, and a lock
+        // file pins the versions without recording them.
+        //
+        // BOTH HALVES ARE ASSERTED, and the second is the one this test exists for now. This used to
+        // write the engines INTO `by`, as `okfgen/0.1.0 tree-sitter/1.3.0 roslyn/5.3.0`, and its own
+        // comment called that "the spec's own shape". It is the opposite: §5.2 makes `generated.by` an
+        // actor and §7 defines an actor as exactly one of `<producer>/<version>`, `human:<id>`,
+        // `process:<id>`. A space-separated list is none of them.
+        //
+        // The failure was silent, which is why nothing caught it. `OKF4net.Actor.Parse` splits on the
+        // FIRST slash, so it returned IsWellFormed:true with Version = "0.1.0 tree-sitter/1.3.0
+        // roslyn/5.3.0"; `BundleValidator` warns only on a malformed actor, so `okf validate` reported
+        // the bundle clean while every consumer reading the version off this producer's own output got
+        // a string naming no release of anything. The golden shipped it.
+        var options = Options() with { EngineVersions = ["tree-sitter/1.3.0", "roslyn/5.3.0"] };
+
+        var generated = Single(new ConceptGenerator().Generate(Snapshot(), GraphOf(), options), "overview")
+            .Document.Frontmatter.Get("generated")?.AsMapping();
+
+        Assert.NotNull(generated);
+
+        // `by` is an actor and nothing else -- the assertion that goes red if the engines creep back in.
+        Assert.Equal(ConceptGenerator.ProducerActor, generated.Get("by")?.AsDisplayString());
+
+        // And the provenance survives, in a producer key OKF preserves across a round-trip.
+        var engines = generated.Get("engines")?.AsSequence();
+        Assert.NotNull(engines);
+        Assert.Equal(
+            ["tree-sitter/1.3.0", "roslyn/5.3.0"],
+            engines.Select(i => i.AsDisplayString()));
+    }
+
+    [Fact]
+    public void Overviews_actor_is_well_formed_and_reads_back_the_producer_version()
+    {
+        // The consumer-side half, asserted through the reader that actually matters rather than by
+        // inspecting the string ourselves: OKF4net's own Actor.Parse is what a bundle's consumers use,
+        // and under the old multi-token spelling it reported this exact artefact as well-formed while
+        // returning a Version of "0.1.0 tree-sitter/1.3.0 roslyn/5.3.0". Parsing the field is the only
+        // way to state that as a test; a string comparison cannot see it.
         var options = Options() with { EngineVersions = ["tree-sitter/1.3.0", "roslyn/5.3.0"] };
 
         var by = Single(new ConceptGenerator().Generate(Snapshot(), GraphOf(), options), "overview")
             .Document.Frontmatter.Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
 
-        Assert.Equal($"{ConceptGenerator.ProducerActor} tree-sitter/1.3.0 roslyn/5.3.0", by);
+        var actor = Actor.Parse(by!);
+
+        Assert.True(actor.IsWellFormed);
+        Assert.Equal(ActorKind.Producer, actor.Kind);
+        Assert.Equal("okfgen", actor.Producer);
+        Assert.DoesNotContain(" ", actor.Version!, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1078,6 +1120,51 @@ public class CodeConceptGeneratorTests
 
         // The assertion that fails without the fix.
         Assert.DoesNotContain("code/csharp/foo/bar/baz", ids);
+    }
+
+    [Fact]
+    public void A_marked_top_level_namespace_is_registered_under_its_real_name()
+    {
+        // The twin of the test above, at the depth where the fix above did NOT reach. There the
+        // namespace is nested, so its parent (`code/csharp/foo`) is already registered and
+        // `RegisterContainerId` takes the branch that cleans the leaf with `SegmentName`. Here the
+        // namespace is TOP-LEVEL, its parent key `[code, csharp]` is never registered, and the
+        // fallback ran instead -- which passed the RAW segments to `CodeConceptIds.ForContainer`.
+        //
+        // So the internal discriminator `ns` was slugified rather than stripped, and the bundle
+        // shipped `code/csharp/foo-ns.md` carrying `title: Foo`, with `"code/csharp/foo-ns"` recorded
+        // in the manifest and every id in that subtree marked permanently. Reproduced end to end
+        // before the fix on two files -- a global-namespace `class Foo` beside a `namespace Foo` --
+        // which is the ordinary shape of a repository whose root type shares its namespace's name.
+        //
+        // Nothing caught it because the suite's only namespace-vs-type fixture was the nested one, and
+        // for a top-level namespace the fallback is not an edge case: it is always the path taken.
+        var graph = GraphOf(
+            new SymbolFact(SymbolKind.Type, "csharp", string.Empty, "Foo", "public class Foo",
+                SymbolVisibility.Public, "src/a/Foo.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = string.Empty },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo", "Ping", "public void Ping()",
+                SymbolVisibility.Public, "src/a/Foo.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = string.Empty },
+            new SymbolFact(SymbolKind.Type, "csharp", "Foo", "Bar", "public class Bar",
+                SymbolVisibility.Public, "src/b/Bar.cs", 0, 1, 1, 2, null)
+            { ContainerNamespace = "Foo" },
+            new SymbolFact(SymbolKind.Member, "csharp", "Foo.Bar", "Run", "public void Run()",
+                SymbolVisibility.Public, "src/b/Bar.cs", 2, 3, 3, 4, null)
+            { ContainerNamespace = "Foo" });
+
+        var ids = Ids(new ConceptGenerator().Generate(Snapshot(), graph, Options()));
+
+        // The type keeps the bare path; the namespace takes the ordinary numeric tie-break.
+        Assert.Contains("code/csharp/foo", ids);
+        Assert.Contains("code/csharp/foo/ping", ids);
+        Assert.Contains("code/csharp/foo-2", ids);
+        Assert.Contains("code/csharp/foo-2/bar", ids);
+        Assert.Contains("code/csharp/foo-2/bar/run", ids);
+
+        // The assertion that fails without the fix, and it is about the whole subtree rather than the
+        // container alone: the marker propagated into every id below it.
+        Assert.DoesNotContain(ids, id => id.Contains("-ns", StringComparison.Ordinal));
     }
 
     [Fact]

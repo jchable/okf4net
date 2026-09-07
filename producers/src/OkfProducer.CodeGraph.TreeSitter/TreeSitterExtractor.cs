@@ -865,9 +865,19 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// <c>Foo&lt;T, U&gt;</c> in one namespace all report <c>name</c> as <c>Foo</c>, so they collapsed
     /// into one symbol group and were rendered as overloads of a single member. §3.2's merge rule was
     /// written for method overloads, where merging is the point; extending it to unrelated types was
-    /// never intended by the spec. The suffix is <c>_N</c> and not <c>-N</c> deliberately: the registry
-    /// already appends <c>-2</c> to disambiguate two concepts that want one id, and a reader must be
-    /// able to tell "arity 1" from "second thing called Foo" at a glance.
+    /// never intended by the spec.
+    ///
+    /// <b>The separator is a BACKTICK, and the reason is injectivity rather than taste.</b> This first
+    /// shipped as <c>_N</c>, chosen so a reader could tell "arity 1" from the registry's "second thing
+    /// called Foo" (<c>-2</c>) at a glance. But <c>_</c> and a digit are both drawn from the C#
+    /// identifier alphabet, so the mapping was not injective: a type genuinely named <c>Holder_1</c>
+    /// and <c>Holder&lt;T&gt;</c> produced the SAME <see cref="SymbolFact.Name"/>, landed in one
+    /// <c>SymbolKey</c> group, and were emitted as a single concept listing both signatures with one
+    /// description -- reinstating, for a perfectly legal input, the exact merge this rule exists to
+    /// remove. A backtick cannot occur in a C# identifier under any spelling (not via <c>@</c>, not via
+    /// a Unicode escape), so <c>Holder`1</c> can only have been produced here, and it is the CLR's own
+    /// arity convention besides. <see cref="ConceptId.Slugify"/> maps it to <c>-</c>, so the id reads
+    /// <c>holder-1</c> while a real <c>Holder_1</c> stays <c>holder_1</c> -- distinct at both levels.
     ///
     /// <b>Members are deliberately left alone</b>, generic ones included. A call site captures its
     /// callee as the bare identifier (<c>Bar&lt;T&gt;()</c> yields <c>Bar</c>), so qualifying a generic
@@ -889,7 +899,7 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
                 .FirstOrDefault(c => c.Type == TypeParameterListNodeType)
                 ?.Children.Count(c => c.Type == TypeParameterNodeType) ?? 0;
 
-            return arity == 0 ? name : $"{name}_{arity.ToString(CultureInfo.InvariantCulture)}";
+            return arity == 0 ? name : $"{name}{SymbolFact.ArityMarker}{arity.ToString(CultureInfo.InvariantCulture)}";
         }
 
         var explicitInterface = decl.Children

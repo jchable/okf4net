@@ -1,6 +1,6 @@
 ---
 type: C# Member
-title: Holder_1.Value
+title: Holder`1.Value
 description: The held value.
 resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L97
 tags:
@@ -12,7 +12,7 @@ generated:
   by: okfgen/0.1.0
 ---
 
-# Holder_1.Value
+# Holder`1.Value
 
 The held value.
 

@@ -304,11 +304,29 @@ public sealed class ConceptGenerator : IConceptGenerator
         // at a FIXED extractor version, not absolutely -- a grammar or Roslyn bump can move symbols,
         // spans and descriptions over unchanged source -- so a golden that moved is uninterpretable
         // unless the artefact says which engines produced it. A run given none (every fixture, and
-        // --no-code) emits the producer token alone.
+        // --no-code) emits the producer key alone.
+        //
+        // THE ENGINES ARE A SIBLING KEY, NOT PART OF `by`, and the difference is conformance rather
+        // than taste. §5.2 makes `generated.by` an actor, and §7 defines an actor as ONE of exactly
+        // three forms -- `<producer>/<version>`, `human:<id>`, `process:<id>`. This used to write
+        // `okfgen/0.1.0 tree-sitter/1.3.0 roslyn/5.3.0`, which is none of them, and the failure was
+        // silent in the worst way: `OKF4net.Actor.Parse` splits on the FIRST `/`, so it returned
+        // `IsWellFormed: true` with `Version` = "0.1.0 tree-sitter/1.3.0 roslyn/5.3.0". The validator
+        // warns only on a malformed actor (`Validate.cs`), so `okf validate` called the bundle clean
+        // while every consumer reading the version off this producer's own artefact got a three-token
+        // string naming no release of anything.
+        //
+        // `engines` keeps §6.2's property without touching the actor: OKF frontmatter preserves
+        // producer keys it does not know across a round-trip (`Frontmatter` wraps an order-preserving
+        // `YamlMapping` rather than a fixed DTO), so the provenance survives and `by` stays an actor.
         var generated = new YamlMapping();
-        generated.Insert("by", new YamlString(
-            engineVersions.Count == 0 ? ProducerActor : $"{ProducerActor} {string.Join(' ', engineVersions)}"));
+        generated.Insert("by", new YamlString(ProducerActor));
         generated.Insert("at", new YamlString(generatedAt));
+        if (engineVersions.Count > 0)
+        {
+            generated.Insert("engines", new YamlSequence([.. engineVersions.Select(v => new YamlString(v))]));
+        }
+
         builder = builder.Extension("generated", generated);
 
         // `revision` is the exact sha, a sibling of `generated` rather than nested inside it -- distinct
@@ -1492,7 +1510,21 @@ public sealed class ConceptGenerator : IConceptGenerator
             }
         }
 
-        string[][] candidates = [segments[2..], [ContainerToken]];
+        // SegmentName on EVERY segment, not just the leaf, and this is the whole defect the fallback
+        // used to have. The branch above cleans its leaf; this one passed the raw segments straight to
+        // CodeConceptIds, so a namespace that DisambiguateNamespacesAgainstTypes had marked was
+        // slugified WITH its marker and shipped as `code/csharp/foo-ns` -- id and title disagreeing
+        // (`title: Foo`), the marker recorded in the manifest, and every id in that subtree carrying it
+        // permanently, which §3.1 treats as unrecoverable.
+        //
+        // It was not a corner: for a TOP-LEVEL namespace this fallback is always the path taken, since
+        // the parent key `[code, <language>]` is never in registeredByRawPath. Reproduced on two files
+        // -- a global-namespace `class Foo` beside a `namespace Foo` -- and pinned by
+        // `ConceptGeneratorTests.A_marked_namespace_container_is_registered_under_its_real_name`.
+        //
+        // SegmentName's own summary already claimed that every path back to something a reader sees
+        // goes through it. That claim is now true.
+        string[][] candidates = [[.. segments[2..].Select(SegmentName)], [ContainerToken]];
         foreach (var candidateSegments in candidates)
         {
             try

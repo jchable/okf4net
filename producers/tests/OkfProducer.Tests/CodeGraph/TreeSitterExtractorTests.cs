@@ -496,9 +496,14 @@ public class TreeSitterExtractorTests : IDisposable
     {
         // `Foo`, `Foo<T>` and `Foo<T, U>` all report `name` as `Foo`, so they used to collapse into one
         // symbol group and render as overloads of a single member -- §3.2's merge rule, written for
-        // method overloads, silently extended to unrelated types. The suffix is `_N` and not `-N`
-        // because the registry already appends `-2` to disambiguate two concepts wanting one id, and
-        // "arity 1" must not read as "second thing called Foo".
+        // method overloads, silently extended to unrelated types.
+        //
+        // The separator was `_N` first, chosen so "arity 1" would not read as the registry's "second
+        // thing called Foo" (`-2`). It is a backtick now, because legibility was the wrong thing to
+        // optimise: `_` and a digit are both C# identifier characters, so the qualification was NOT
+        // injective and a real `Foo_1` collapsed back together with `Foo<T>` -- see the sibling test
+        // below. A backtick cannot occur in a C# identifier under any spelling, and it is the CLR's own
+        // arity convention.
         var result = ExtractSource("""
             namespace N;
             public class Foo { }
@@ -507,8 +512,34 @@ public class TreeSitterExtractorTests : IDisposable
             """);
 
         Assert.Equal(
-            ["Foo", "Foo_1", "Foo_2"],
+            ["Foo", "Foo`1", "Foo`2"],
             result.Symbols.Where(s => s.Kind == SymbolKind.Type).Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void A_type_named_like_an_arity_suffix_stays_distinct_from_the_generic_it_would_have_collided_with()
+    {
+        // The injectivity the separator exists for, and the defect that changed it. Under `_N`, a type
+        // genuinely named `Holder_1` and a type named `Holder<T>` both produced the SymbolFact.Name
+        // "Holder_1": one SymbolKey group, one concept listing both `public class Holder_1` and
+        // `public class Holder<T>`, one description taken from whichever sorted first, and the members
+        // of two unrelated types shown as siblings under it. That is exactly the merge the arity rule
+        // was added to remove, reachable from perfectly legal C#.
+        //
+        // Asserted on the extractor, where the qualification happens, rather than on the emitted ids:
+        // `CodeConceptIds` deliberately does not treat `_` as a word boundary, so under the old rule
+        // the two also slugified identically and the id level could not tell them apart either.
+        var result = ExtractSource("""
+            namespace N;
+            public class Holder_1 { }
+            public class Holder<T> { }
+            """);
+
+        var names = result.Symbols.Where(s => s.Kind == SymbolKind.Type).Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+        Assert.Equal(2, names.Distinct(StringComparer.Ordinal).Count());
+        Assert.Contains("Holder_1", names);
+        Assert.Contains("Holder`1", names);
     }
 
     [Fact]
