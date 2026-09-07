@@ -48,6 +48,24 @@ and this project adheres to
   and were unreachable from `overview` — which `okf validate` does not report,
   because an orphan dangles nothing. A `.csproj` that no solution references is
   still not a package.
+- **`okfgen generate --repo-url <url>` / `--rev <ref>`** turn each concept's
+  `resource` into a forge permalink to its declaration. Without `--repo-url` a
+  code concept carries no `resource` at all, and a `--repo-url` that is not an
+  absolute http/https URL is refused rather than silently dropping every one of
+  them. `--rev` defaults to the current branch name and never to a sha: a sha
+  would rewrite every code concept's `resource` on the next commit.
+- **Scope and size flags on `generate`**: `--include-tests` and
+  `--include-internal` widen what the code stage emits, `--no-code` skips the
+  stage entirely, and `--max-file-size <bytes>` (2 MiB by default) caps the
+  largest source file either engine will read — the tree-sitter engine counts
+  what it skips, which makes the run partial and so prunes nothing.
+- **A generate is a function of the commit, not of the clock.** `overview`'s
+  `generated.at` and `revision` are stamped from the HEAD commit's committer date
+  and sha — the wall clock is only the fallback for a tree git cannot answer for —
+  and the output ordering is deterministic, so re-running over the same commit
+  does not churn the bundle. Writes land in a staging directory and are committed
+  at the end, so a run that fails while generating leaves the previous bundle
+  where it was.
 - **`ConceptSearch.TopDiversified`** — picks the top N of a scored result set
   while rotating across top-level id families, so one family cannot take every
   slot in a truncated window. `ConceptSearch.Search` is unchanged; this is an
@@ -298,6 +316,46 @@ and this project adheres to
   unless a `WINGET_TOKEN` secret is configured, so releases stay green until
   the package is published and the token/fork exist — see
   `packaging/winget/README.md`.
+- **`okfgen` is packaged per-RID** (`win-x64;linux-x64;osx-arm64`), which it was
+  not at 0.5.0: the code-graph stage pulls `Microsoft.CodeAnalysis.CSharp` and
+  `TreeSitter.DotNet`, and the latter ships native binaries. `producers/` keeps
+  every other bit of the status it had at 0.5.0 — its own solution
+  (`producers/OkfProducer.sln`), referencing `src/OKF4net` by project reference,
+  **not** part of `OKF4net.sln`, **not** in CI (a decision taken 2026-08-01, not
+  an omission), **not** published to NuGet, and exempt from the zero-dependency
+  rule. `OkfProducer.Core` itself still references only `OKF4net`. Because
+  nothing on a pull request builds this solution, the guarantee is one local
+  command — `dotnet test producers/OkfProducer.sln` — and `producers/README.md`
+  now opens with it.
+- **Breaking (producer): `okfgen generate` now runs the scanned repository's
+  build logic.** The exact call-site resolver gets its reference set by spawning
+  `dotnet msbuild` once per project, in that project's own directory, and an
+  MSBuild *evaluation* is the execution of repository-authored logic — there is no
+  read-only mode to ask for. `Directory.Build.props`/`.targets` and everything they
+  import, any target hooked on `BeforeTargets="ResolveReferences"`, and a
+  `RoslynCodeTaskFactory` inline `<Code>` task all run as the user running
+  `okfgen`; a `Directory.Build.rsp` in that directory even adds switches to the
+  producer's own invocation (measured on this host: a one-line rsp containing
+  `-t:Pwn` made the query run a target it never requested). **Only point `okfgen`
+  at a repository you would be willing to build.** `--no-msbuild` is the way out —
+  no msbuild is spawned and no MSBuild logic from the scanned tree is evaluated —
+  at the cost of name-matching-only call resolution (which refuses an ambiguous
+  name rather than guessing, so what is lost is edges, not correctness) and of
+  emitting no `packages` → namespace containment link at all. It is off by default
+  on purpose: defaulting it on would silently degrade every run that exists today.
+  Note that `--no-msbuild` does not make the run process-free: `okfgen` still runs
+  `git` in the scanned tree (two to five `show -s`/`rev-parse`/`symbolic-ref`
+  invocations, depending on the flags) to stamp `overview`. `producers/README.md`
+  carries the full threat model.
+- **Breaking (producer): `--update` no longer preserves everything.** Under the
+  `code` prefix, a concept the previous run claimed and this one no longer produces
+  is pruned — otherwise a deleted type would leave its concept behind forever.
+  Outside `code`, hand-written concepts are preserved exactly as before. The
+  pruning is gated on the run having been *complete*: a partial traversal (a file
+  skipped for exceeding `--max-file-size`, a project that failed to compile) prunes
+  nothing, so a degraded run cannot delete what it merely failed to see. `--check`
+  is refused together with `--reset`/`--force` and with `--no-code`, both of which
+  would otherwise let an operator believe something was verified that was not.
 
 ### Fixed
 
@@ -484,6 +542,12 @@ and this project adheres to
   drifted: the 0.2.0 winget package shipped a binary printing
   `okf 0.1.0-alpha.1`, which the previous test did not catch (it only asserted
   the `okf ` prefix).
+- **`okfgen --reset` no longer empties the bundle and then fails.** The delete
+  moved to the commit boundary, so a run that fails while generating leaves the
+  previous bundle intact (a run interrupted during the commit itself still leaves
+  a half-written directory — `--update` is the flag with no such window). A `--out`
+  that is, or contains, `--repo` is now refused, as is one holding a symbolic link
+  or junction.
 
 ## [0.5.0] - 2026-07-31
 
