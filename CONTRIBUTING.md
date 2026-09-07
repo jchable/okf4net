@@ -23,9 +23,10 @@ something. Three commands get you building and testing (see below): `dotnet buil
 ## Building and testing
 
 ```sh
-dotnet build OKF4net.sln           # core library + okf CLI + test project
-dotnet test OKF4net.sln            # unit + integration tests
-dotnet publish src/OKF4net.Cli -c Release   # Native AOT okf binary
+dotnet build OKF4net.sln              # core library + okf CLI + okf-render + test project
+dotnet test OKF4net.sln               # unit + integration tests
+dotnet publish src/OKF4net.Cli -c Release      # Native AOT okf binary
+dotnet publish src/OKF4net.Render -c Release   # Native AOT okf-render binary
 ```
 
 All warnings are treated as errors, so a clean build is required.

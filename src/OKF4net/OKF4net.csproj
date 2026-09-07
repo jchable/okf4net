@@ -40,6 +40,11 @@
          "okf" (see OKF4net.Cli.csproj's AssemblyName), not "OKF4net.Cli":
          InternalsVisibleTo must match the actual assembly name. -->
     <InternalsVisibleTo Include="okf" />
+    <!-- okf-render is OKF4net.Render's <AssemblyName>. Lets it share
+         Internal/CliArgScanning with okf's CliArgs instead of forking the
+         valued-flag/separator scanning rule and the ArgumentException
+         ParamName-suffix strip into a second hand-rolled copy. -->
+    <InternalsVisibleTo Include="okf-render" />
     <InternalsVisibleTo Include="OKF4net.Agents" />
     <!-- Lets OKF4net.Catalog reuse the internal ReparsePoints helper instead
          of duplicating a platform-specific implementation. -->
