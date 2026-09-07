@@ -383,6 +383,61 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.False(resolver.Owns("src/OKF4net/ConceptId.cs"));
     }
 
+    [Fact]
+    public void An_exhausted_budget_abandons_the_stage_whole_rather_than_publishing_what_finished()
+    {
+        // The property that makes an opt-in budget safe to offer at all. Returning the projects that
+        // happened to finish first would emit a bundle whose exact and name-matched links are divided
+        // by how fast the machine was, with nothing recording where the line fell -- §2.1 rates that
+        // below having no exact resolver, because its reader cannot tell which half they are holding.
+        //
+        // The budget is deterministic rather than racy despite naming a duration: it is checked at the
+        // top of each per-project iteration, and the FIRST `dotnet msbuild` query is a subprocess that
+        // cannot return in under a millisecond. So by the time the compile loop looks, the budget is
+        // spent, on any machine.
+        using var repository = new TwoProjectRepository();
+
+        var completed = RoslynResolver.TryCreateWithin(
+            repository.Root, [repository.ApplicationProject], limits: null, TimeSpan.FromMilliseconds(1), out var resolver);
+
+        Assert.False(completed);
+        Assert.Null(resolver);
+    }
+
+    [Fact]
+    public void An_ample_budget_resolves_exactly_what_an_unbounded_run_does()
+    {
+        // The other half: opting in must change nothing when the budget is not the binding constraint,
+        // or the option would be a second code path rather than a bound on the one that exists. Both
+        // sides go through the same private core; this is what says so out loud.
+        using var repository = new TwoProjectRepository();
+
+        var unbounded = RoslynResolver.Create(repository.Root, [repository.ApplicationProject]);
+        var completed = RoslynResolver.TryCreateWithin(
+            repository.Root, [repository.ApplicationProject], limits: null, TimeSpan.FromMinutes(5), out var bounded);
+
+        Assert.True(completed);
+        Assert.NotNull(bounded);
+        Assert.Equal(
+            unbounded.Projects.Select(p => (p.ProjectPath, p.Availability)),
+            bounded.Projects.Select(p => (p.ProjectPath, p.Availability)));
+        Assert.Equal(
+            unbounded.Owns(repository.ApplicationSourceFile[(repository.Root.Length + 1)..].Replace('\\', '/')),
+            bounded.Owns(repository.ApplicationSourceFile[(repository.Root.Length + 1)..].Replace('\\', '/')));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_budget_that_is_not_positive_is_a_caller_error_rather_than_an_instant_abandonment(int seconds)
+    {
+        // Zero would abandon before the stage started, which is what `--no-msbuild` already says, and
+        // says better -- it names the two things that are lost. Silently accepting it here would give
+        // the CLI two spellings of one behaviour, one of them undocumented.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => RoslynResolver.TryCreateWithin(RepoRoot(), [], limits: null, TimeSpan.FromSeconds(seconds), out _));
+    }
+
     // Source for the test below. Roslyn strips the @ from a verbatim identifier and the grammar keeps
     // it, so the two disagree about this method's name on both sides of the join at once.
     public const string VerbatimSource = """

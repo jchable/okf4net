@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Microsoft.CodeAnalysis;
@@ -186,14 +187,67 @@ public sealed class RoslynResolver : ISymbolResolver
     /// </remarks>
     public static RoslynResolver Create(
         string repositoryPath, IReadOnlyList<string> projectPaths, ExtractionLimits? limits = null)
+        // No budget, so no loop below can abandon and the null return is unreachable from here. The
+        // nullable result exists for TryCreateWithin alone, and this overload's behaviour is
+        // unchanged by its arrival -- which is the point of keeping the two separate rather than
+        // making every caller handle a null it can never receive.
+        => CreateWithin(repositoryPath, projectPaths, limits, new StageDeadline(null))!;
+
+    /// <summary>
+    /// <see cref="Create"/> under a wall-clock budget: builds the resolver if the whole stage fits in
+    /// <paramref name="timeout"/>, and otherwise abandons it and returns <see langword="false"/>.
+    ///
+    /// <para><b>Why this is opt-in, and why the caller gets nothing rather than something.</b> The
+    /// extraction stage has always honoured <see cref="ExtractionLimits.Timeout"/>; this one never
+    /// had a bound of its own. Each <c>dotnet msbuild</c> subprocess is capped at two minutes, but
+    /// nothing caps their sum, and nothing caps the compilations after them -- so a large enough
+    /// repository runs for as long as it runs. A default budget would fix that by making the output
+    /// depend on how fast the machine is, and §6.2 pins determinism at a fixed extractor version,
+    /// not at a fixed CPU. So the budget arrives only when an operator asks for one.</para>
+    ///
+    /// <para>And when it trips, the stage is abandoned <b>whole</b>. Returning the projects that
+    /// happened to finish first would emit a bundle where some <c>## Calls</c> links are exact and
+    /// some are name matches, with the line between them drawn by machine speed and recorded
+    /// nowhere -- an artefact its reader cannot interpret, which §2.1 rates below having no exact
+    /// resolver at all. Abandoning whole leaves a uniformly name-matched bundle, which is a state the
+    /// producer already has a name and a note for.</para>
+    /// </summary>
+    /// <param name="repositoryPath">As <see cref="Create"/>.</param>
+    /// <param name="projectPaths">As <see cref="Create"/>.</param>
+    /// <param name="limits">As <see cref="Create"/>.</param>
+    /// <param name="timeout">The budget for the whole stage. Must be positive.</param>
+    /// <param name="resolver">The resolver, or <see langword="null"/> if the budget was exhausted.</param>
+    /// <returns><see langword="true"/> if the stage completed inside the budget.</returns>
+    public static bool TryCreateWithin(
+        string repositoryPath,
+        IReadOnlyList<string> projectPaths,
+        ExtractionLimits? limits,
+        TimeSpan timeout,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out RoslynResolver? resolver)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+
+        resolver = CreateWithin(repositoryPath, projectPaths, limits, new StageDeadline(timeout));
+        return resolver is not null;
+    }
+
+    private static RoslynResolver? CreateWithin(
+        string repositoryPath, IReadOnlyList<string> projectPaths, ExtractionLimits? limits, StageDeadline deadline)
     {
         ArgumentException.ThrowIfNullOrEmpty(repositoryPath);
         ArgumentNullException.ThrowIfNull(projectPaths);
 
         var repositoryRoot = Path.GetFullPath(repositoryPath);
         var gate = new SourceFileGate((limits ?? ExtractionLimits.Default).MaxFileBytes, repositoryRoot);
-        var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports);
-        var compiled = CompileInDependencyOrder(queried, reports, gate);
+        var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports, deadline);
+        var compiled = CompileInDependencyOrder(queried, reports, gate, deadline);
+
+        // Asked once, after both loops, because both stop at the same flag: whichever of them tripped
+        // it, everything computed so far is discarded rather than published half-done.
+        if (deadline.Tripped)
+        {
+            return null;
+        }
 
         var ownedFiles = new Dictionary<string, OwnedFile>(PathComparer);
         // Ordinal by project path so that, when two projects both compile the same file (a linked
@@ -340,10 +394,40 @@ public sealed class RoslynResolver : ISymbolResolver
     /// Queried in sorted order and de-duplicated by absolute path, so the closure is the same set in
     /// the same order regardless of the order <paramref name="projectPaths"/> arrives in.
     /// </summary>
+    /// <summary>
+    /// The stage's wall-clock budget, or an unbounded one when <paramref name="budget"/> is
+    /// <see langword="null"/> -- which is what <see cref="Create"/> passes, so that overload runs
+    /// exactly the code it always ran and never consults a clock at all.
+    ///
+    /// <para><see cref="ShouldAbandon"/> is asked at the top of each per-project iteration, and that
+    /// granularity is the honest one: a single <c>dotnet msbuild</c> query is already capped at two
+    /// minutes by <c>MsBuildProjectQuery</c>, so the finest thing this can interrupt is the gap
+    /// between projects. It latches rather than recomputing, so a loop cannot resume after another
+    /// one gave up, and <see cref="Tripped"/> stays false when both loops merely finished.</para>
+    /// </summary>
+    private sealed class StageDeadline(TimeSpan? budget)
+    {
+        private readonly long _start = Stopwatch.GetTimestamp();
+
+        /// <summary>True once a loop has actually abandoned -- never merely because time has passed.</summary>
+        public bool Tripped { get; private set; }
+
+        public bool ShouldAbandon()
+        {
+            if (!Tripped && budget is { } b && Stopwatch.GetElapsedTime(_start) > b)
+            {
+                Tripped = true;
+            }
+
+            return Tripped;
+        }
+    }
+
     private static Dictionary<string, ProjectInputs> QueryProjectClosure(
         string repositoryRoot,
         IReadOnlyList<string> projectPaths,
-        out Dictionary<string, RoslynProjectReport> reports)
+        out Dictionary<string, RoslynProjectReport> reports,
+        StageDeadline deadline)
     {
         var queried = new Dictionary<string, ProjectInputs>(PathComparer);
         reports = new Dictionary<string, RoslynProjectReport>(PathComparer);
@@ -353,6 +437,11 @@ public sealed class RoslynResolver : ISymbolResolver
 
         for (var i = 0; i < pending.Count; i++)
         {
+            if (deadline.ShouldAbandon())
+            {
+                break;
+            }
+
             var projectPath = pending[i];
 
             ProjectInputs inputs;
@@ -391,13 +480,23 @@ public sealed class RoslynResolver : ISymbolResolver
     private static Dictionary<string, CSharpCompilation> CompileInDependencyOrder(
         Dictionary<string, ProjectInputs> queried,
         Dictionary<string, RoslynProjectReport> reports,
-        SourceFileGate gate)
+        SourceFileGate gate,
+        StageDeadline deadline)
     {
         var compiled = new Dictionary<string, CSharpCompilation>(PathComparer);
         var inProgress = new HashSet<string>(PathComparer);
 
         foreach (var projectPath in queried.Keys.OrderBy(p => p, StringComparer.Ordinal))
         {
+            // Only at the top level, deliberately, and not inside Compile's recursion into
+            // dependencies: abandoning halfway down a dependency chain would leave a project compiled
+            // against a reference that was itself abandoned, which is a worse compilation than not
+            // attempting it. A dependency chain is one unit of work here.
+            if (deadline.ShouldAbandon())
+            {
+                break;
+            }
+
             Compile(projectPath, queried, reports, compiled, inProgress, gate);
         }
 

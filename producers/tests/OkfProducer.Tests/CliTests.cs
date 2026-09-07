@@ -255,6 +255,59 @@ public class CliTests
     }
 
     [Fact]
+    public void A_run_that_never_reached_roslyn_does_not_name_roslyn_as_having_produced_it()
+    {
+        // §6.2: `generated.by` is a determinism claim -- "these engine versions produced these bytes"
+        // -- so naming an engine that did not run makes the claim false in the direction that matters,
+        // by promising reproducibility against a tool the run never invoked.
+        //
+        // It was named unconditionally on every run that was not --no-code, which covers three cases
+        // where Roslyn demonstrably never ran: --no-msbuild, a repository with no project file (this
+        // fixture: a package.json and C# sources, no .csproj), and an exhausted --roslyn-timeout.
+        // `ProducerFixture` had the rule right for its own capture -- "tree-sitter alone, because
+        // tree-sitter alone ran" -- and the shipped CLI did not, which is why the golden could not
+        // catch it.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+
+        var by = Frontmatter(bundle, "overview").Get("generated")?.AsMapping()?.Get("by")?.AsDisplayString();
+
+        Assert.NotNull(by);
+        Assert.Contains("tree-sitter/", by, StringComparison.Ordinal);
+        Assert.DoesNotContain("roslyn/", by, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_negative_roslyn_budget_is_refused_rather_than_silently_ignored()
+    {
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle, "--roslyn-timeout", "-1");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--roslyn-timeout must be a positive number of seconds", result.Error, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(bundle), "the run was refused but still created the bundle.");
+    }
+
+    [Fact]
+    public void No_roslyn_budget_is_the_default_and_the_help_says_what_supplying_one_costs()
+    {
+        // The option is opt-in because it makes the emitted bundle a function of machine speed, and an
+        // operator has to be able to read that BEFORE reaching for it -- so both halves are pinned:
+        // that unbounded is the default, and that the abandonment is whole rather than partial.
+        var result = Run("generate", "--help");
+        var help = Collapse(result.Output);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("--roslyn-timeout", help, StringComparison.Ordinal);
+        Assert.Contains("absent means unbounded", help, StringComparison.Ordinal);
+        Assert.Contains("the stage is abandoned WHOLE, not truncated", help, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Check_passes_on_a_bundle_that_matches_its_repository()
     {
         using var workspace = NewWorkspace(out var repo, out var bundle);

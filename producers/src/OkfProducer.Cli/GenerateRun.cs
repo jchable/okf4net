@@ -34,6 +34,16 @@ namespace OkfProducer.Cli;
 /// only lever over the fact that evaluating a repository's MSBuild logic <i>executes</i> that logic;
 /// see <see cref="GenerateRun"/>'s own remarks for what it does and does not buy.
 /// </param>
+/// <param name="RoslynTimeout">
+/// A wall-clock budget for the whole Roslyn stage, or <see langword="null"/> for none -- which is the
+/// default, because a budget makes the emitted bundle a function of how fast the machine is and §6.2
+/// pins determinism at a fixed extractor version, not a fixed CPU. The extraction stage has always
+/// honoured <c>ExtractionLimits.Timeout</c>; this stage never had a bound of its own, since MSBuild's
+/// two-minute per-query cap bounds one subprocess and nothing bounds their sum. When the budget runs
+/// out the stage is abandoned WHOLE, so the run degrades to exactly the <see cref="NoMsBuild"/> state
+/// and says so, rather than emitting a bundle whose exact and name-matched links are divided by
+/// machine speed with nothing recording where the line fell.
+/// </param>
 internal sealed record GenerateRequest(
     string RepoPath,
     string OutPath,
@@ -45,7 +55,8 @@ internal sealed record GenerateRequest(
     bool IncludeInternal,
     bool NoCode,
     long MaxFileBytes,
-    bool NoMsBuild);
+    bool NoMsBuild,
+    TimeSpan? RoslynTimeout = null);
 
 /// <summary>
 /// The producer's composition root: the one place scan, extract, resolve, attribute, generate and
@@ -210,11 +221,42 @@ internal static class GenerateRun
             {
                 // Later resolvers override earlier ones for the files they own (§2.1), so the exact
                 // resolver goes after the name-matching baseline, never before it.
-                roslyn = RoslynResolver.Create(request.RepoPath, projectPaths, limits);
-                resolvers.Add(roslyn);
+                //
+                // The two branches are not two policies. Without a budget this is the call it always
+                // was, on the overload that cannot return null, so nothing about an unbudgeted run
+                // changed when the budget arrived. With one, an exhausted budget lands the run in
+                // exactly the --no-msbuild state -- resolver absent, ownership map absent -- which is
+                // why the note below names the same two losses in the same order rather than
+                // inventing a third vocabulary for a state the operator already has a name for.
+                if (request.RoslynTimeout is { } budget)
+                {
+                    if (RoslynResolver.TryCreateWithin(request.RepoPath, projectPaths, limits, budget, out var bounded))
+                    {
+                        roslyn = bounded;
+                    }
+                    else
+                    {
+                        note($"--roslyn-timeout of {budget.TotalSeconds:0.###}s ran out before the Roslyn stage"
+                            + " finished, so the stage was abandoned whole and this run resolved calls with the"
+                            + " name-matching baseline alone. The two losses are the same ones --no-msbuild"
+                            + " carries. (1) Every `## Calls` link here is a name match, and an inter-type"
+                            + " ambiguity it cannot settle is left unlinked. (2) There is no source-ownership map,"
+                            + " so NO `packages` -> namespace containment link is emitted, and under --update that"
+                            + " overwrites the ones a previous run had. Raise the budget, or drop --roslyn-timeout"
+                            + " to let the stage take as long as it takes.");
+                    }
+                }
+                else
+                {
+                    roslyn = RoslynResolver.Create(request.RepoPath, projectPaths, limits);
+                }
 
-                ReportProjects(roslyn, request.RepoPath, note);
-                ownership = Attribution(request.RepoPath, roslyn.QueriedProjects, note);
+                if (roslyn is not null)
+                {
+                    resolvers.Add(roslyn);
+                    ReportProjects(roslyn, request.RepoPath, note);
+                    ownership = Attribution(request.RepoPath, roslyn.QueriedProjects, note);
+                }
             }
 
             // Disposed as soon as the graph exists: CodeGraph holds symbols and edges, never a handle
@@ -239,13 +281,22 @@ internal static class GenerateRun
             SourceOwnership = ownership,
             Note = note,
 
-            // §6.2: named only when the code stage actually ran. Under --no-code no engine touched the
-            // repository, so claiming a tree-sitter and a Roslyn version would attach a determinism
+            // §6.2: each engine is named only when it actually ran. Under --no-code no engine touched
+            // the repository, so claiming a tree-sitter and a Roslyn version would attach a determinism
             // guarantee to an artefact none of them produced -- the same reason that path passes a null
             // manifest rather than an empty one.
+            //
+            // PER ENGINE, and it used to be all-or-nothing. Roslyn was named on every run that was not
+            // --no-code, including the runs where it demonstrably never ran: --no-msbuild, a repository
+            // with no project file, and now an exhausted --roslyn-timeout. That is the exact claim this
+            // block exists to refuse, one engine over, and `ProducerFixture` had the rule right --
+            // "tree-sitter alone, because tree-sitter alone ran" -- while the shipped CLI did not. The
+            // resolver being non-null is the same condition everything else on this path keys off.
             EngineVersions = request.NoCode
                 ? []
-                : [TreeSitterExtractor.EngineVersion, RoslynResolver.EngineVersion],
+                : roslyn is null
+                    ? [TreeSitterExtractor.EngineVersion]
+                    : [TreeSitterExtractor.EngineVersion, RoslynResolver.EngineVersion],
         };
 
         var concepts = services.Generator.Generate(snapshot, graph, options);

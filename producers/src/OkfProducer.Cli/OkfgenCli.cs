@@ -156,6 +156,20 @@ public static class OkfgenCli
             DefaultValueFactory = _ => ExtractionLimits.Default.MaxFileBytes,
         };
 
+        var roslynTimeoutOption = new Option<double>("--roslyn-timeout")
+        {
+            Description =
+                "Wall-clock budget, in seconds, for the whole Roslyn stage -- the `dotnet msbuild` queries and the "
+                + "compilations after them. Absent by default, and absent means unbounded: each query is capped at "
+                + "two minutes on its own, but nothing caps their sum, so a large repository runs for as long as it "
+                + "runs. Supplying a budget changes what the bundle contains as a function of how fast this machine "
+                + "is, which is why it is not a default. If the budget runs out the stage is abandoned WHOLE, not "
+                + "truncated: you get the same uniformly name-matched bundle --no-msbuild produces, with the same "
+                + "note saying what was lost, rather than one where some links are exact and some are not with "
+                + "nothing recording which.",
+            DefaultValueFactory = _ => 0,
+        };
+
         var generateCommand = new Command("generate", "Generate an OKF bundle from a repository")
         {
             Options =
@@ -163,6 +177,7 @@ public static class OkfgenCli
                 repoOption, outOption, updateOption, resetOption, forceOption,
                 repoUrlOption, revOption, checkOption,
                 includeTestsOption, includeInternalOption, noCodeOption, noMsBuildOption, maxFileSizeOption,
+                roslynTimeoutOption,
             },
         };
 
@@ -176,6 +191,16 @@ public static class OkfgenCli
             if (maxFileBytes <= 0)
             {
                 error.WriteLine("error: --max-file-size must be a positive number of bytes.");
+                return 1;
+            }
+
+            // 0 is this option's "absent", not a zero-second budget: a budget of zero would abandon the
+            // stage before it started, which is what --no-msbuild already says more clearly. Negative
+            // is a typo either way.
+            var roslynTimeoutSeconds = parseResult.GetValue(roslynTimeoutOption);
+            if (roslynTimeoutSeconds < 0)
+            {
+                error.WriteLine("error: --roslyn-timeout must be a positive number of seconds.");
                 return 1;
             }
 
@@ -252,7 +277,8 @@ public static class OkfgenCli
                 IncludeInternal: parseResult.GetValue(includeInternalOption),
                 NoCode: parseResult.GetValue(noCodeOption),
                 MaxFileBytes: maxFileBytes,
-                NoMsBuild: parseResult.GetValue(noMsBuildOption));
+                NoMsBuild: parseResult.GetValue(noMsBuildOption),
+                RoslynTimeout: roslynTimeoutSeconds > 0 ? TimeSpan.FromSeconds(roslynTimeoutSeconds) : null);
 
             return Generate(request, services, output, error);
         });
