@@ -10,6 +10,17 @@ and this project adheres to
 
 ### Added
 
+- **`okfgen generate --roslyn-timeout <seconds>`** — a wall-clock budget for the
+  whole Roslyn stage, the `dotnet msbuild` queries and the compilations after
+  them. Absent by default, and absent means unbounded: each query is capped at
+  two minutes on its own, but nothing caps their sum, so a large repository runs
+  for as long as it runs. It is not a default because a budget makes the emitted
+  bundle a function of how fast the machine is, and determinism is pinned at a
+  fixed extractor version, not a fixed CPU. If the budget runs out the stage is
+  abandoned **whole**, never truncated: the run lands in exactly the
+  `--no-msbuild` state, with a note naming the same two losses, rather than
+  emitting a bundle whose exact and name-matched links are divided by machine
+  speed with nothing recording where the line fell.
 - **`okfgen` gains a C# code-graph stage** (`producers/OkfProducer`, outside
   `OKF4net.sln` and outside CI by decision). `generate` now emits one `code/`
   concept per namespace, type and member, with resolved `## Calls` links. Two
@@ -290,6 +301,16 @@ and this project adheres to
 
 ### Fixed
 
+- **`okfgen` no longer names Roslyn in `generated.by` on a run where Roslyn never
+  ran.** That field is a determinism claim — *these engine versions produced these
+  bytes* — so naming an engine the run never invoked makes it false in the
+  direction that matters, by promising reproducibility against a tool that was not
+  there. It was written unconditionally on every run that was not `--no-code`,
+  which covers three cases where the stage demonstrably did not execute:
+  `--no-msbuild`, a repository with no project file, and an exhausted
+  `--roslyn-timeout`. Named per engine now. The golden fixture could not catch
+  this, because the fixture harness had the rule right while the shipped CLI did
+  not.
 - **Cancelling an attested computation now stops it, whatever the host stage
   does.** The orchestrator handed its token to each stage and trusted them to
   observe it; a stage that ignores its token — any client predating cancellation

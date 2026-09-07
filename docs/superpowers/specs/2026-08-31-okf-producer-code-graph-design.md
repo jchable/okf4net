@@ -676,6 +676,14 @@ Drapeaux ajoutés à `okfgen generate` par ce lot :
 | `--include-internal` | off | descend sous la visibilité publique | 5.4 |
 | `--no-code` | off | désactive l'étage graphe de code (comportement actuel) | 5.4 |
 | `--max-file-size <n>` | 2 Mo | plafond par fichier source, appliqué par les deux moteurs ; au-delà, l'extracteur ignore **et compte** (run partiel), la porte Roslyn laisse tomber l'item `Compile` **silencieusement** | 2.3 |
+| `--no-msbuild` | off | saute tout l'étage Roslyn, et avec lui l'évaluation MSBuild qu'il exige. Coûte **deux** choses, pas une : les liens d'appel viennent de la seule baseline par correspondance de noms, et il n'y a **aucune** carte de propriété des sources, donc aucun lien `packages` → namespace n'est émis (sous `--update`, cela écrase ceux d'un run précédent) | 2.1, 5.1 |
+| `--roslyn-timeout <s>` | *absent* | budget horloge pour tout l'étage Roslyn — les requêtes `dotnet msbuild` et les compilations qui suivent. **Absent veut dire non borné** : chaque requête est plafonnée à deux minutes isolément, rien ne plafonne leur somme. Opt-in parce qu'un budget fait dépendre le bundle émis de la vitesse de la machine, alors que §6.2 fixe le déterminisme à une version d'extracteur, pas à un CPU. Épuisé, l'étage est abandonné **en entier** : le run atterrit exactement dans l'état `--no-msbuild`, avec la même note, plutôt que d'émettre un bundle dont les liens exacts et par nom sont séparés par la vitesse de la machine sans rien pour dire où passe la ligne | 2.3, 6.2 |
+
+> **Les deux dernières lignes ont été ajoutées après coup, et l'omission mérite d'être nommée.**
+> `--no-msbuild` est décrit longuement en §7.2 (« Levier ajouté ») mais n'avait jamais rejoint ce
+> tableau, qui se présente pourtant comme la surface CLI du lot. Un tableau récapitulatif incomplet est
+> pire qu'absent : il se lit comme exhaustif. Vérifié cette fois contre `OkfgenCli.Run` plutôt que
+> contre le souvenir de ce qui a été ajouté.
 
 `--update` conserve son nom mais change de sémantique sur `code/` (élagage, §6.3).
 
