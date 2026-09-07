@@ -177,6 +177,8 @@ public static class ConceptSearch
     /// <returns>At most <paramref name="count"/> results, in the order they should be shown.</returns>
     public static IReadOnlyList<ScoredConcept> TopDiversified(IReadOnlyList<ScoredConcept> scored, int count)
     {
+        ArgumentNullException.ThrowIfNull(scored);
+
         if (count <= 0 || scored.Count == 0)
         {
             return [];

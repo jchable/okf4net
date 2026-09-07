@@ -77,7 +77,7 @@ library never sees.
   `{}` as "nothing to override with" would be the per-field merge this design
   rejects. Both halves are pinned:
   `FrontmatterTests.EffectiveUsageWindow_falls_back_to_shared_when_the_entrys_override_is_not_a_mapping`
-  and `…_present_and_empty_entry_window_is_not_absent_and_does_not_fall_back`.
+  and `FrontmatterTests.EffectiveUsageWindow_present_and_empty_entry_window_is_not_absent_and_does_not_fall_back`.
 
 ## 4. Model
 
@@ -141,7 +141,7 @@ Checked one at a time on `d6b778d`, **before** writing any implementation.
 | **C2** | Every `Source` construction site takes six arguments, positional or named | ✅ seven sites (`git grep -n "new Source(" d6b778d -- src tests`): three in `src/` (`OkfDocument.cs:212`, `OkfDocumentBuilder.cs:94`, `Provenance.cs:32`) and four in `ProvenanceTests.cs` (`:81`, `:95`, `:106`, `:115`) — an optional seventh member keeps all seven compiling |
 | **C3** | `usage_window` is consumed nowhere outside `Frontmatter`/`Validate` | ✅ no resolver, agent, viewer or CLI path reads it |
 | **C4** | The known-key list governs top-level keys only | ✅ `Frontmatter.cs:27-35` is a top-level list; a nested key inside a `sources` entry is not matched against it |
-| **C5** | `ToYaml`'s round-trip is already exercised | ✅ `ProvenanceTests.ToYaml_round_trips_through_ParseSources_in_order` and `…_uses_canonical_per_entry_key_order` |
+| **C5** | `ToYaml`'s round-trip is already exercised | ✅ `ProvenanceTests.ToYaml_round_trips_through_ParseSources_in_order` and `ProvenanceTests.ToYaml_uses_canonical_per_entry_key_order` |
 | **C6** | *(added by verification)* the producer-side write path covers the new field | ❌ **false** — see below |
 | **C7** | *(added by verification)* `Source(…, UsageWindow? UsageWindow = null)` compiles despite the member sharing its type's name, and every existing call site still builds | ✅ probed by actually adding the member and building: `OKF4net.sln` at 0 errors, 0 warnings, then reverted |
 | **C8** | *(added by verification)* nothing deconstructs `Source` positionally, so the arity change breaks no in-repo caller | ✅ no `is Source(…)`, no `Deconstruct` call anywhere in `src/`, `tests/`, `producers/`, `samples/` |
