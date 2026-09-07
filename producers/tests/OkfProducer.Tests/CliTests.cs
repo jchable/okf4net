@@ -339,11 +339,16 @@ public class CliTests
     }
 
     [Fact]
-    public void No_roslyn_budget_is_the_default_and_the_help_says_what_supplying_one_costs()
+    public void The_help_says_what_supplying_a_roslyn_budget_costs()
     {
         // The option is opt-in because it makes the emitted bundle a function of machine speed, and an
-        // operator has to be able to read that BEFORE reaching for it -- so both halves are pinned:
-        // that unbounded is the default, and that the abandonment is whole rather than partial.
+        // operator has to be able to read that BEFORE reaching for it -- so both halves of the warning
+        // are pinned: that unbounded is the default, and that the abandonment is whole, not partial.
+        //
+        // This was called `No_roslyn_budget_is_the_default_and_...`, and the first half of that name
+        // was a claim about BEHAVIOUR made entirely out of help text. Reading a sentence that says
+        // "absent means unbounded" cannot show that absent means unbounded; the test below is what
+        // does, by observing that a default run has no budget to run out of.
         var result = Run("generate", "--help");
         var help = Collapse(result.Output);
 
@@ -351,6 +356,22 @@ public class CliTests
         Assert.Contains("--roslyn-timeout", help, StringComparison.Ordinal);
         Assert.Contains("absent means unbounded", help, StringComparison.Ordinal);
         Assert.Contains("the stage is abandoned WHOLE, not truncated", help, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_run_with_no_roslyn_budget_never_abandons_the_stage_for_running_out_of_one()
+    {
+        // The behavioural half. "Absent means unbounded" is observable in one place -- the note the
+        // abandonment prints -- so a default run must never carry it, however long the stage takes.
+        // Asserted against the note's own text rather than a timing measurement, which would make the
+        // test a function of the machine exactly as the option makes the bundle one.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        var result = Run("generate", "--repo", repo, "--out", bundle);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("--roslyn-timeout of", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("ran out before the Roslyn stage finished", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]

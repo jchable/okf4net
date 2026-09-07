@@ -92,8 +92,16 @@ public static class Utf8Offsets
         var utf8Count = 0;
 
         // `==`, not `>=`, and that one character is the whole fix. With `>=`, an offset landing INSIDE
-        // a multi-byte sequence silently rounded UP to the next boundary and returned it: on `"A\U0001D11E"`
-        // an offset of 2 -- one byte into the four-byte codepoint -- came back as the index after it.
+        // a multi-byte sequence silently rounded UP to the next boundary and returned it: on
+        // `"A\U0001D11EB"` an offset of 2 -- one byte into the four-byte codepoint -- came back as 3,
+        // the index of the `B` after it.
+        //
+        // The example carried a trailing `B` for a reason this comment first got wrong, citing the
+        // two-rune `"A\U0001D11E"` instead. Rounding up needs a rune AFTER the multi-byte sequence to
+        // round up TO: without one the loop runs out and the old code threw rather than answering, so
+        // the shorter string demonstrates the opposite of the failure being described. Measured both
+        // ways before rewriting this.
+        //
         // A plausible wrong number out of a join key credits a call to a neighbouring symbol rather
         // than losing it, which §2.1 calls the worse of the two.
         foreach (var rune in text.EnumerateRunes())

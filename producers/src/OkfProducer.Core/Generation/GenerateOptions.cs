@@ -104,9 +104,11 @@ public sealed record GenerateOptions
     public Action<string>? Note { get; init; }
 
     /// <summary>
-    /// The extraction engines this run used, each already spelled <c>name/version</c>, appended to
-    /// <c>overview</c>'s <c>generated.by</c> after the producer's own token -- §6.2's
-    /// <c>okfgen/0.1.0 tree-sitter/x.y.z roslyn/a.b.c</c>.
+    /// The extraction engines this run used, each already spelled <c>name/version</c>, written as
+    /// <c>overview</c>'s <c>generated.engines</c> -- a sibling of <c>generated.by</c>, never appended
+    /// to it. They were appended once, which made <c>by</c> a space-separated list where §5.2 and §7
+    /// require a single actor; <c>Actor.Parse</c> accepted it as well formed and read the version
+    /// wrong, so nothing warned.
     ///
     /// <para><b>Why the artefact carries them.</b> §6.2's determinism holds <i>at a fixed extractor
     /// version</i>, not absolutely: a tree-sitter grammar or Roslyn bump can change symbols, spans or

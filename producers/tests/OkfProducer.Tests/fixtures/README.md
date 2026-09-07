@@ -48,8 +48,9 @@ actually check it, and commit the diff with the change that caused it.
 **Two intentional changes will rewrite the whole golden**, and neither is drift:
 
 - **A version bump.** `generated.by` is derived from `OkfProducer.Core`'s assembly version
-  (`okfgen/0.1.0`), so bumping it rewrites the `generated` block of every concept. Regenerate,
-  read the diff, commit it as part of the bump.
+  (`okfgen/0.1.0`), so bumping it rewrites the `generated` block of every concept. The engine
+  versions sit beside it in `generated.engines`, on `overview` alone, and a package bump rewrites
+  that line the same way. Regenerate, read the diff, commit it as part of the bump.
 - **A tool-version bump.** Determinism is guaranteed *at a fixed extractor version*, not in the
   absolute: a tree-sitter grammar or Roslyn upgrade can move symbols, spans or descriptions over
   unchanged source (§6.2). Same treatment — a reviewed migration, never a silent drift.

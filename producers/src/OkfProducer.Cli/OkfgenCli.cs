@@ -183,7 +183,7 @@ public static class OkfgenCli
             // diagnostic, a budget 10^n too large from the exact form README.md documents -- while
             // under fr-FR the same `1.5` was refused outright. A budget silently multiplied changes
             // which projects finish, so it changes the `## Calls` links, the containment links and
-            // `generated.by` in the emitted bundle: the locale of the machine would have decided bundle
+            // `generated.engines` in the emitted bundle: the locale of the machine would have decided bundle
             // content, which is precisely what §6.2 pins determinism against.
             //
             // NumberStyles.Float and no AllowThousands: a separator here is a typo, not a grouping, and

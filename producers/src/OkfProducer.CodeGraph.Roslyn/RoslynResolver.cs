@@ -151,7 +151,7 @@ public sealed class RoslynResolver : ISymbolResolver
     public IReadOnlyList<RoslynProjectReport> Projects { get; }
 
     /// <summary>
-    /// This engine's §6.2 token for <c>overview</c>'s <c>generated.by</c>, read from the compiler
+    /// This engine's §6.2 token for <c>overview</c>'s <c>generated.engines</c>, read from the compiler
     /// assembly this resolver actually loads rather than from a version string written by hand.
     /// </summary>
     public static string EngineVersion { get; } =
@@ -244,7 +244,15 @@ public sealed class RoslynResolver : ISymbolResolver
 
         // Asked once, after both loops, because both stop at the same flag: whichever of them tripped
         // it, everything computed so far is discarded rather than published half-done.
-        if (deadline.Tripped)
+        //
+        // ShouldAbandon() rather than the latched Tripped, and the difference is the whole overrun that
+        // happens during the LAST unit of work -- or the only one, on a single-project repository.
+        // Both loops consult the clock at the top of an iteration, so an overrun after the final check
+        // was never noticed: this returned a resolver for a stage that took longer than the budget,
+        // which contradicts both this method's own doc ("builds the resolver if the whole stage fits in
+        // timeout") and the help text's "the stage is abandoned WHOLE". Asking here reads the clock one
+        // last time, after all the work, which is the only place the total elapsed time is known.
+        if (deadline.ShouldAbandon())
         {
             return null;
         }
