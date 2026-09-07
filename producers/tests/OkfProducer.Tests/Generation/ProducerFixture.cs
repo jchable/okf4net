@@ -446,7 +446,17 @@ internal static class ProducerFixture
         }
     }
 
-    /// <summary>A temporary directory, deleted on <see cref="Dispose"/>.</summary>
+    /// <summary>A temporary directory, deleted on <see cref="Dispose"/>.
+    ///
+    /// <para><b>Four test files carry their own <c>TempDir</c> beside this one</b> --
+    /// <c>HostileInputTests</c>, <c>ContainmentTests</c>, <c>DeterminismTests</c>,
+    /// <c>PruningTests</c> -- and that duplication is a decision, not an oversight. Each of those
+    /// carries a <c>Write</c> helper that this one does not, and the versions are not interchangeable:
+    /// a <c>Write</c> that creates missing parent directories and one that does not make a test over a
+    /// path whose directory is absent assert two different things, silently. Unifying them means
+    /// settling that semantics for four suites at once, on a helper whose whole job is to set up the
+    /// conditions those suites are measuring. The duplication is visible and inert; the merge is the
+    /// part with a way to be wrong.</para></summary>
     public sealed class TempDir : IDisposable
     {
         public TempDir()
