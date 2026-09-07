@@ -2,7 +2,7 @@
 type: C# Member
 title: Holder`2.Find
 description: Looks the value up.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L104-L107
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L106-L109
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Looks the value up.
 
 ## Signatures
 
-- `public TValue? Find(TKey key)` — `src/Shapes.cs#L104-L107`
+- `public TValue? Find(TKey key)` — `src/Shapes.cs#L106-L109`

@@ -2,7 +2,7 @@
 type: C# Member
 title: Builder.Build
 description: Builds a box.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L76-L79
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L78-L81
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Builds a box.
 
 ## Signatures
 
-- `public Boxed Build(Corner corner)` — `src/Shapes.cs#L76-L79`
+- `public Boxed Build(Corner corner)` — `src/Shapes.cs#L78-L81`

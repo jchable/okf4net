@@ -28,15 +28,36 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     private readonly IFileSystemReader _reader;
 
     /// <summary>
-    /// Reads <paramref name="stream"/> to its end, pre-sized from the length already measured so the
-    /// common case allocates once. <paramref name="expectedLength"/> is a hint and never a bound: the
-    /// bound is <see cref="ExtractionLimits.MaxFileBytes"/>, checked before this is reached.
+    /// Reads <paramref name="stream"/> to its end into a single array.
+    /// <paramref name="expectedLength"/> is a hint and never a bound: the bound is
+    /// <see cref="ExtractionLimits.MaxFileBytes"/>, checked before this is reached.
+    ///
+    /// <para><b>One buffer, because two would halve the cap's meaning.</b> This read into a
+    /// <see cref="MemoryStream"/> and returned <c>ToArray()</c>, under a comment claiming it "allocates
+    /// once" -- it always allocated twice, the stream's buffer and then the array copied out of it, so
+    /// peak was 2x the file where <c>File.ReadAllBytes</c> peaked at 1x. <c>--max-file-size</c> is
+    /// §2.3's bound on what one hostile file can make this process allocate, and it was bounding half
+    /// of what was allocated. The growth path was worse than the doubling: a stream given no usable
+    /// hint grows by repeated reallocation and copies the whole file before it can fail, where
+    /// <c>ReadAllBytes</c> refused on the declared length up front.</para>
+    ///
+    /// <para>Filled with <see cref="Stream.ReadExactly(byte[], int, int)"/> when the length is known,
+    /// so a short read is an error rather than a silently truncated file -- truncation would yield
+    /// spans pointing at the wrong code, which §2.3 rates below not extracting the file at all. The
+    /// unknown-length fallback keeps the old behaviour, since there is nothing better to do.</para>
     /// </summary>
     private static byte[] ReadFully(Stream stream, long expectedLength)
     {
-        using var buffer = new MemoryStream(expectedLength is > 0 and <= int.MaxValue ? (int)expectedLength : 0);
-        stream.CopyTo(buffer);
-        return buffer.ToArray();
+        if (expectedLength is > 0 and <= int.MaxValue)
+        {
+            var buffer = new byte[(int)expectedLength];
+            stream.ReadExactly(buffer, 0, buffer.Length);
+            return buffer;
+        }
+
+        using var growing = new MemoryStream();
+        stream.CopyTo(growing);
+        return growing.ToArray();
     }
 
     /// <summary>
@@ -910,22 +931,6 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     }
 
     /// <summary>
-    /// Builds the dotted <c>N.Outer.Inner</c> path above <paramref name="decl"/>: every ancestor
-    /// that exposes a <c>name</c> field (a namespace, a type, or -- for a local function -- the
-    /// method it's nested in) contributes one segment, outermost first. A C# file-scoped namespace
-    /// (<c>namespace N;</c>) is a *sibling* of the declarations it covers, not their syntactic
-    /// parent, so it never surfaces from the ancestor walk and must be prepended separately.
-    ///
-    /// <para>
-    /// A <c>file_scoped_namespace_declaration</c> met during the ancestor walk contributes no segment
-    /// of its own, so the prepended name can never also be collected here and produce <c>N.N</c>.
-    /// That is a structural guarantee of this method rather than a shape that was measured: on every
-    /// shape probed the declaration was a sibling, but <see cref="ReadNamespaceContext"/> may now
-    /// recover one from anywhere in the tree, and this walk is the only thing standing between a
-    /// reparented one and a doubled segment.
-    /// </para>
-    /// </summary>
-    /// <summary>
     /// The namespace part of the path <see cref="ComputeContainerPath"/> builds -- the same walk,
     /// keeping only the <c>namespace</c> ancestors -- or <see langword="null"/> when there are none.
     ///
@@ -953,6 +958,22 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         return segments.Count == 0 ? null : string.Join(".", segments);
     }
 
+    /// <summary>
+    /// Builds the dotted <c>N.Outer.Inner</c> path above <paramref name="decl"/>: every ancestor
+    /// that exposes a <c>name</c> field (a namespace, a type, or -- for a local function -- the
+    /// method it's nested in) contributes one segment, outermost first. A C# file-scoped namespace
+    /// (<c>namespace N;</c>) is a *sibling* of the declarations it covers, not their syntactic
+    /// parent, so it never surfaces from the ancestor walk and must be prepended separately.
+    ///
+    /// <para>
+    /// A <c>file_scoped_namespace_declaration</c> met during the ancestor walk contributes no segment
+    /// of its own, so the prepended name can never also be collected here and produce <c>N.N</c>.
+    /// That is a structural guarantee of this method rather than a shape that was measured: on every
+    /// shape probed the declaration was a sibling, but <see cref="ReadNamespaceContext"/> may now
+    /// recover one from anywhere in the tree, and this walk is the only thing standing between a
+    /// reparented one and a doubled segment.
+    /// </para>
+    /// </summary>
     private static string ComputeContainerPath(Node decl, string? fileScopedNamespaceName)
     {
         var segments = new List<string>();

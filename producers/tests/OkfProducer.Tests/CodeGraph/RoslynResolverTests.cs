@@ -2014,16 +2014,26 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     [Fact]
     public void A_query_that_outruns_its_deadline_is_killed_and_reported_as_a_timeout()
     {
-        // The other branch spawning hid: reachable before only by waiting two minutes. The executable
-        // is a real one that does not exit on its own, so the deadline is what ends it rather than the
-        // process finishing early and the test passing for the wrong reason.
+        // The other branch spawning hid: reachable otherwise only by waiting two minutes.
+        //
+        // THE EXECUTABLE IS THE REAL ONE, and the previous fixture is why that matters. It substituted
+        // `sleep` for `dotnet` off Windows and `powershell` on it -- but `Run` always appends MSBuild's
+        // own argument list, so what actually launched was `sleep msbuild <proj> -nodeReuse:false ...`.
+        // GNU sleep rejects "msbuild" as a duration and exits 1 within milliseconds, so control reached
+        // the EXIT-CODE branch and never the deadline branch: the assertion below was red on Linux and
+        // macOS -- two thirds of the only guarantee `producers/` has, since it is outside CI. On
+        // Windows it passed, but on a race: PowerShell's startup merely happens to exceed the budget.
+        //
+        // Substituting the executable was the wrong idea rather than the wrong choice of stand-in,
+        // because no stand-in can both ignore MSBuild's arguments and refuse to exit. So this runs the
+        // real `dotnet msbuild` under a budget no real evaluation can meet: the host's own startup
+        // exceeds 200 ms before MSBuild reads a line of the project. That is deterministic on every
+        // platform, and it exercises the production path exactly as a two-minute overrun would.
         using var repo = new OkfProducer.Tests.Generation.ProducerFixture.TempDir();
         var project = Path.Combine(repo.Path, "Slow.csproj");
         File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
 
-        var sleeper = OperatingSystem.IsWindows() ? "powershell" : "sleep";
-
-        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, sleeper, TimeSpan.FromMilliseconds(200)));
+        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, "dotnet", TimeSpan.FromMilliseconds(200)));
 
         Assert.IsType<MsBuildQueryException>(ex);
         Assert.Contains("did not finish within", ex.Message, StringComparison.Ordinal);

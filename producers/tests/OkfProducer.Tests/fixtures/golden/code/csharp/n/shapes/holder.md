@@ -2,7 +2,7 @@
 type: C# Type
 title: Shapes.Holder
 description: Non-generic, and the first of three declarations that differ only by arity.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L84-L85
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L86-L87
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ Non-generic, and the first of three declarations that differ only by arity.
 
 ## Signatures
 
-- `public class Holder` — `src/Shapes.cs#L84-L85`
+- `public class Holder` — `src/Shapes.cs#L86-L87`
 
 ## Contains
 

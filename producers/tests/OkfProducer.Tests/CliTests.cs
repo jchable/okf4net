@@ -288,6 +288,13 @@ public class CliTests
 
     [Theory]
     [InlineData("-1", "must be a positive number of seconds")]
+    // Zero is refused, and it used to be the one value where the accepted domain and the stated domain
+    // disagreed: the guard rejected only `< 0` with a message saying the value must be POSITIVE, then
+    // mapped 0 to "no budget" -- so an operator, or a wrapper script whose remaining budget had counted
+    // down to zero, asked for the smallest possible bound and silently got the largest one. It reads as
+    // absent only because the option's default was also 0; the option is nullable now, so the two are
+    // distinguishable and zero is refused like any other non-positive budget.
+    [InlineData("0", "must be a positive number of seconds")]
     // Above TimeSpan.MaxValue.TotalSeconds (~9.22e11). Accepted by the `>= 0` guard this used to have,
     // then thrown out of TimeSpan.FromSeconds as an unhandled OverflowException with a stack trace.
     [InlineData("1000000000000", "no larger than")]

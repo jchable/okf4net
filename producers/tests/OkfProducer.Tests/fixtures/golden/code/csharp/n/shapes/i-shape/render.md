@@ -2,7 +2,7 @@
 type: C# Member
 title: IShape.Render
 description: Renders the shape.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L13
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L15
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Renders the shape.
 
 ## Signatures
 
-- `string Render()` — `src/Shapes.cs#L13`
+- `string Render()` — `src/Shapes.cs#L15`

@@ -389,12 +389,6 @@ public sealed class RoslynResolver : ISymbolResolver
     }
 
     /// <summary>
-    /// Runs <see cref="MsBuildProjectQuery.Query"/> over the requested projects and, transitively,
-    /// over every project reference that resolves to a <c>.csproj</c> under the repository root.
-    /// Queried in sorted order and de-duplicated by absolute path, so the closure is the same set in
-    /// the same order regardless of the order <paramref name="projectPaths"/> arrives in.
-    /// </summary>
-    /// <summary>
     /// The stage's wall-clock budget, or an unbounded one when <paramref name="budget"/> is
     /// <see langword="null"/> -- which is what <see cref="Create"/> passes, so that overload runs
     /// exactly the code it always ran and never consults a clock at all.
@@ -423,6 +417,12 @@ public sealed class RoslynResolver : ISymbolResolver
         }
     }
 
+    /// <summary>
+    /// Runs <see cref="MsBuildProjectQuery.Query"/> over the requested projects and, transitively,
+    /// over every project reference that resolves to a <c>.csproj</c> under the repository root.
+    /// Queried in sorted order and de-duplicated by absolute path, so the closure is the same set in
+    /// the same order regardless of the order <paramref name="projectPaths"/> arrives in.
+    /// </summary>
     private static Dictionary<string, ProjectInputs> QueryProjectClosure(
         string repositoryRoot,
         IReadOnlyList<string> projectPaths,
@@ -935,21 +935,6 @@ public sealed class RoslynResolver : ISymbolResolver
     }
 
     /// <summary>
-    /// The declaration's name <b>exactly as it is written in source</b>, because that -- not Roslyn's
-    /// idea of the name -- is what <see cref="SymbolFact.Name"/> holds, and the two have to be the
-    /// same string to join.
-    ///
-    /// <para>
-    /// They differ in two ways. Roslyn mangles an explicit interface implementation's name to its
-    /// fully qualified form (<c>N.IFoo.Bar</c>) where the source token is just <c>Bar</c>; and Roslyn
-    /// strips the <c>@</c> from a verbatim identifier (<c>@class</c> becomes <c>class</c>) where the
-    /// grammar hands the extractor the raw token, <c>@class</c>. So the declaring syntax's own
-    /// identifier token is preferred whenever there is one -- it is the same text the tree-sitter
-    /// query captured, by construction -- and <see cref="ISymbol.Name"/> is only the fallback, for a
-    /// symbol with no source declaration to read.
-    /// </para>
-    /// </summary>
-    /// <summary>
     /// The name <c>TreeSitterExtractor</c> gives this declaration -- the ONE place the two engines'
     /// spelling rule lives on this side, used both for a leaf name and for every ancestor segment of a
     /// container path.
@@ -1012,6 +997,21 @@ public sealed class RoslynResolver : ISymbolResolver
             : $"{explicitInterface.Name}.{identifier.Text}";
     }
 
+    /// <summary>
+    /// The declaration's name <b>exactly as it is written in source</b>, because that -- not Roslyn's
+    /// idea of the name -- is what <see cref="SymbolFact.Name"/> holds, and the two have to be the
+    /// same string to join.
+    ///
+    /// <para>
+    /// They differ in two ways. Roslyn mangles an explicit interface implementation's name to its
+    /// fully qualified form (<c>N.IFoo.Bar</c>) where the source token is just <c>Bar</c>; and Roslyn
+    /// strips the <c>@</c> from a verbatim identifier (<c>@class</c> becomes <c>class</c>) where the
+    /// grammar hands the extractor the raw token, <c>@class</c>. So the declaring syntax's own
+    /// identifier token is preferred whenever there is one -- it is the same text the tree-sitter
+    /// query captured, by construction -- and <see cref="ISymbol.Name"/> is only the fallback, for a
+    /// symbol with no source declaration to read.
+    /// </para>
+    /// </summary>
     private static string SimpleNameOf(ISymbol symbol)
     {
         foreach (var reference in symbol.DeclaringSyntaxReferences)

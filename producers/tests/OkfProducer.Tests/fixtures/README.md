@@ -70,8 +70,13 @@ in this plan, on a fixture that survived only because nobody had checked it out.
 
 ## What `fixture-repo/` contains, and why each piece is there
 
-Fifteen concepts, one occurrence of each shape. A golden of 480 concepts is not reviewable in a diff,
-and a diff nobody can read is not a test.
+Thirty-seven concepts, one occurrence of each shape. A golden of 480 concepts is not reviewable in a
+diff, and a diff nobody can read is not a test.
+
+It said "fifteen" until the review that also found the shape table below had gained no row for any of
+the declaration shapes `Shapes.cs` added — in the document a reviewer is pointed at *before* accepting
+a golden diff. Both are corrected; if you grow the fixture, grow this table in the same commit, or the
+next reader accepts a diff against a description of a bundle that no longer exists.
 
 | Shape | Where | Concept |
 |---|---|---|
@@ -87,6 +92,29 @@ and a diff nobody can read is not a test.
 | a description from a signature | `Registry.Count` | `description_source: generated` |
 | a private member, which gets no concept (§5.4) | `Scanner.Cache` | — none, deliberately |
 | a symbol a mutation deletes (§6.3) | `Scanner.Gone` | `code/csharp/n/scanner/gone` |
+
+The declaration shapes `src/Shapes.cs` adds, which exist to make the span-capping and identity rules
+fail visibly rather than silently:
+
+| Shape | Where | Concept |
+|---|---|---|
+| an interface | `IShape` | `code/csharp/n/shapes/i-shape` |
+| a struct | `Point` | `code/csharp/n/shapes/point` |
+| a record | `Boxed` | `code/csharp/n/shapes/boxed` |
+| an enum, whose members are deliberately not concepts | `Corner` | `code/csharp/n/shapes/corner` |
+| three types differing only by generic arity (§3.2) | `Holder`, `Holder<T>`, `Holder<T,U>` | `holder`, `holder-1`, `holder-2` |
+| a constructor | `Boxed(..)` | under `boxed` |
+| an event | `Point.Moved` | under `point` |
+| a two-declarator field | `Point.X, Y` | `point/x`, `point/y` |
+| a block-scoped namespace | `namespace N.Shapes { }` | `code/csharp/n/shapes` |
+| an `internal` type, out of scope, whose container still exists | `Hidden` | `code/csharp/n/shapes/hidden` |
+| a type whose header spans three lines (R48's cap) | `Size` | `code/csharp/n/shapes/size` |
+
+Two shapes `Shapes.cs` contains and the golden does **not** hold a concept for, said plainly because
+the file's own header once implied the opposite: an **explicit interface implementation**
+(`IEquatable<Boxed>.Equals`) and a **local function**. Both are `Private` — neither carries an access
+modifier — so `FileEligibility.IsInScope` filters them with `--include-internal` off, which is the
+default this capture uses. They exercise the extractor, not the emitted bundle.
 
 Two placement rules the tests depend on, so keep them if you edit the fixture:
 

@@ -3,7 +3,9 @@
 // event, field or local function, no nested or generic type, no explicit interface implementation,
 // no block-scoped namespace, no non-public visibility, and no type whose header spans more than one
 // line. Deleting the whole escaping layer, or returning `StartLine + 1` from the header cap, would
-// not have moved one golden byte.
+// not have moved one golden byte. Two of those shapes still reach no CONCEPT -- the explicit
+// interface implementation and the local function are Private, so scope filters them; they exercise
+// the extractor only. See `fixtures/README.md`.
 namespace N.Shapes
 {
     /// <summary>A contract with one member, so an <c>interface_declaration</c> reaches the golden.</summary>
@@ -63,7 +65,7 @@ namespace N.Shapes
             return Compose("box:");
         }
 
-        /// <summary>Compares two boxes. Explicitly implemented, so it is a distinct concept from any public <c>Equals</c>.</summary>
+        /// <summary>Compares two boxes. Explicitly implemented, so the extractor spells its name apart from any public <c>Equals</c> -- but it is Private, so it reaches no concept.</summary>
         bool System.IEquatable<Boxed>.Equals(Boxed? other)
         {
             return other is not null && other._corner == _corner;

@@ -2,7 +2,7 @@
 type: C# Type
 title: Boxed.Builder
 description: A nested type, so the containment spine has a type inside a type to describe.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L73-L74
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L75-L76
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ A nested type, so the containment spine has a type inside a type to describe.
 
 ## Signatures
 
-- `public sealed class Builder` — `src/Shapes.cs#L73-L74`
+- `public sealed class Builder` — `src/Shapes.cs#L75-L76`
 
 ## Contains
 

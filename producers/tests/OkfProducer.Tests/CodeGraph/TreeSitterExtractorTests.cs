@@ -2,6 +2,7 @@
 using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Scanning;
 
 namespace OkfProducer.Tests.CodeGraph;
 
@@ -605,17 +606,7 @@ public class TreeSitterExtractorTests : IDisposable
         // It is not the extractor that drops it: the site is emitted with an empty caller and
         // CodeGraphBuilder's invariant (no edge may name a caller absent from Symbols) is what removes
         // it. Stated here because a future change to either half would silently let the orphan through.
-        var result = ExtractSource("""
-            namespace N;
-            public class T
-            {
-                public void Target() { }
-
-                public int this[int i] { get { Target(); return i; } }
-
-                public static T operator +(T a, T b) { a.Target(); return a; }
-            }
-            """);
+        var result = ExtractSource(IndexerAndOperatorSource);
 
         // The gap itself, asserted so this test fails loudly rather than vacuously if the profile ever
         // starts extracting them -- at which point the ripple below stops being the right behaviour.
@@ -627,7 +618,41 @@ public class TreeSitterExtractorTests : IDisposable
             site => Assert.True(
                 site.CallerName.Length == 0,
                 $"expected no caller for a call inside an indexer or operator, got '{site.CallerName}'."));
+
+        // THE SECOND HALF, which this test named ("yields no edge at all") and did not make. Everything
+        // above is computed from the extractor alone, so deleting `CodeGraphBuilder`'s invariant -- no
+        // edge may name a caller absent from Symbols -- left the orphan edge in the graph with this
+        // test still green, and `CSharpProfile`'s doc comment claimed it "pins both halves". Building
+        // the graph is what turns that claim into an assertion, and it is cheap: the same source, the
+        // real profile, no resolver, so nothing but the invariant can remove the edge.
+        using var extractor = new TreeSitterExtractor();
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-indexer-").FullName;
+        _tempDirectories.Add(repoPath);
+        File.WriteAllText(Path.Combine(repoPath, "T.cs"), IndexerAndOperatorSource);
+
+        var graph = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], [])
+            .Build(new RepositorySnapshot(repoPath, "indexer-repo", [], []), ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.DoesNotContain(graph.Edges, e => e.Site.CallerName.Length == 0);
+        Assert.Empty(graph.Edges);
     }
+
+    /// <summary>
+    /// The fixture for <c>A_call_inside_an_indexer_or_an_operator_yields_no_edge_at_all</c>, shared by
+    /// its two halves so the extractor assertions and the graph assertion cannot drift onto different
+    /// source and quietly stop being about the same calls.
+    /// </summary>
+    private const string IndexerAndOperatorSource = """
+        namespace N;
+        public class T
+        {
+            public void Target() { }
+
+            public int this[int i] { get { Target(); return i; } }
+
+            public static T operator +(T a, T b) { a.Target(); return a; }
+        }
+        """;
 
     private ExtractionResult ExtractSource(string source, string relativePath = "T.cs")
     {

@@ -717,12 +717,6 @@ public sealed class DocCommentSource : IDescriptionSource
     }
 
     /// <summary>
-    /// What one tag's inner markup (everything between <c>&lt;</c> and <c>&gt;</c>) contributes to the
-    /// text. Empty for every tag that carries no name of its own; the tag's <i>content</i> is not read
-    /// here at all -- it is simply left in the stream, which is what makes an unrecognised paired tag
-    /// degrade to its inner text for free.
-    /// </summary>
-    /// <summary>
     /// Whether <paramref name="markup"/> opens a <c>&lt;code&gt;</c> block -- the one tag whose CONTENT
     /// this producer drops rather than keeps as text. Not <c>&lt;c&gt;</c>: an inline code span is part
     /// of the sentence, and a self-closing <c>&lt;code/&gt;</c> encloses nothing to drop.
@@ -774,6 +768,12 @@ public sealed class DocCommentSource : IDescriptionSource
         return comment.Length;
     }
 
+    /// <summary>
+    /// What one tag's inner markup (everything between <c>&lt;</c> and <c>&gt;</c>) contributes to the
+    /// text. Empty for every tag that carries no name of its own; the tag's <i>content</i> is not read
+    /// here at all -- it is simply left in the stream, which is what makes an unrecognised paired tag
+    /// degrade to its inner text for free.
+    /// </summary>
     private static string Substitution(string markup)
     {
         if (markup.StartsWith('/'))

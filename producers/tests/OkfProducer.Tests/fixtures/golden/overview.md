@@ -6,7 +6,7 @@ tags:
   - repository
 generated:
   by: okfgen/0.1.0
-  at: 2026-09-07T07:22:34Z
+  at: 2026-09-07T07:41:24Z
   engines:
     - tree-sitter/1.3.0
 ---

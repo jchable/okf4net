@@ -2,7 +2,7 @@
 type: C# Member
 title: Holder.Count
 description: Held count.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L87-L90
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L89-L92
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Held count.
 
 ## Signatures
 
-- `public int Count()` — `src/Shapes.cs#L87-L90`
+- `public int Count()` — `src/Shapes.cs#L89-L92`

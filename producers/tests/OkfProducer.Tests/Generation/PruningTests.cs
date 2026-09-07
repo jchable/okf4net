@@ -1811,26 +1811,36 @@ public class PruningTests
     }
 
     [Fact]
-    public void The_manifest_is_staged_and_moved_leaving_no_temporary_behind()
+    public void The_manifest_write_leaves_no_temporary_behind_and_lands_readable()
     {
-        // `File.WriteAllBytes` truncates first and fills after, so a process dying between the two left
-        // a manifest that was present, short, and not JSON -- the one truncate-then-write in a design
-        // whose whole point is that a bundle is never observed half-written. It is staged and moved now,
-        // like every concept file.
+        // WHAT THIS DOES NOT WITNESS, named first because the test used to be called
+        // `..._is_staged_and_moved_...` and could not see either half of that.
         //
-        // The damage was bounded rather than absent, which is why this is a Minor: `TryRead` answers
-        // null for anything it cannot parse, and null downstream means "own nothing, delete nothing".
-        // A crash therefore cost a silent pruning-free run, not a wrong deletion.
+        // The reason `GenerationManifest.WriteTo` stages is that `File.WriteAllBytes` truncates first
+        // and fills after, so a process dying between the two leaves a manifest that is present, short
+        // and not JSON -- the one truncate-then-write in a design whose whole point is that a bundle is
+        // never observed half-written. That window opens and closes INSIDE one call, so no in-process
+        // test can stand in it: both assertions below hold identically for the plain
+        // `File.WriteAllBytes(path, ...)` the staging replaced -- no `.tmp` is ever created, and the
+        // manifest is written in full. MEASURED with that mutation in place: this test stays green.
+        //
+        // Witnessing it would need the same kind of collaborator seam `TreeSitterExtractor` took for
+        // its size check (`IFileSystemReader`, added because "the guarantee is about an operation that
+        // did not happen, and only a collaborator can witness that"). That seam does not exist on the
+        // write side, and inventing one is a production change this test is not the place to make. The
+        // argument for staging is at `WriteTo`; this is not its proof.
+        //
+        // What IS asserted here is real and was worth a test of its own: the staged file does not
+        // survive. A leftover would accumulate one per run in the user's bundle, and
+        // `ReportUnownedFiles` would have nothing to say about it -- it is not a concept and not under
+        // the owned prefix. That is the one mutation this catches: staging without moving.
         using var tmp = new TempDir();
         WriteRun(tmp, [A], complete: true);
 
-        // The staged file must not survive the write. A leftover would accumulate one per run in the
-        // user's bundle, and `ReportUnownedFiles` would have nothing to say about it -- it is not a
-        // concept and not under the owned prefix.
         Assert.Empty(Directory.EnumerateFiles(tmp.Path, "*.tmp", SearchOption.AllDirectories));
 
-        // And the manifest that landed is readable, so the move is what completed rather than the
-        // staging having been left in place under another name.
+        // And the manifest that landed is readable, so a staged file was not left in place under
+        // another name in place of the real one.
         Assert.NotNull(GenerationManifest.TryRead(tmp.Path));
     }
 

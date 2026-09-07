@@ -1612,40 +1612,6 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// </summary>
     private const char RawPathDiscriminator = '\u0001';
 
-    /// <summary>
-    /// Gives every symbol group a raw path of its own, which <see cref="RawSegments"/> alone does not
-    /// guarantee.
-    ///
-    /// <para><b>Why two groups can share one raw path.</b> <c>SplitContainer</c> drops empty entries, so
-    /// <c>N.Log</c> and <c>N..Log</c> are two distinct <see cref="SymbolKey"/>s -- two groups, two
-    /// registry ids -- that split to the same segments. The comment on the depth sort above already
-    /// records that more than one container spelling denotes the same structural path; this is the other
-    /// conclusion to draw from it. It is reachable on the malformed input §2.3 puts in scope: an
-    /// extractor builds a container path from every ancestor carrying a <c>name</c> field, and a
-    /// MISSING/ERROR node on a partial parse contributes an empty segment.</para>
-    ///
-    /// <para><b>What sharing one cost.</b> Every map keyed on the raw path -- the registered id, the
-    /// title, the source files pruning joins on, the package attachment -- is <c>TryAdd</c>, so the
-    /// second group lost to the first everywhere: the parent emitted the FIRST group's link twice
-    /// (deduplicated to one bullet by <see cref="AppendSection"/>) and the second concept got no incoming
-    /// link at all, while its files were recorded against its rival's id. An unreachable concept whose
-    /// file exists is a severed branch with nothing dangling -- exactly what <c>okf validate</c> cannot
-    /// see.</para>
-    ///
-    /// <para><b>Only the LEAF segment is disambiguated</b>, which is what makes this a local fix rather
-    /// than a re-parenting: a group's parent key is its segments minus the last, so suffixing the last
-    /// leaves the parent lookup -- and therefore <see cref="RegisterCodeId"/>'s "register under my
-    /// parent's registered id" rule -- exactly as it was. Nothing downstream reads a raw segment as a
-    /// name (titles come from the <see cref="SymbolFact"/>, container names from the container's own
-    /// segments), so the suffix never reaches output.</para>
-    ///
-    /// <para><b>The residual, stated because it is real.</b> Members declared under the second spelling
-    /// still compute their parent key from their own container string, which splits to the FIRST group's
-    /// path -- so they register and attach under the first group's concept. That is inherent to two
-    /// spellings denoting one structural path, and it is now consistent (one parent, one incoming link)
-    /// where before it was contradictory: both concepts listed the same children while one of them had no
-    /// parent.</para>
-    /// </summary>
     /// <summary>The marker a namespace segment carries when a type of the same name occupies its path.</summary>
     private const string NamespaceMarker = "ns";
 
@@ -1728,6 +1694,40 @@ public sealed class ConceptGenerator : IConceptGenerator
         }
     }
 
+    /// <summary>
+    /// Gives every symbol group a raw path of its own, which <see cref="RawSegments"/> alone does not
+    /// guarantee.
+    ///
+    /// <para><b>Why two groups can share one raw path.</b> <c>SplitContainer</c> drops empty entries, so
+    /// <c>N.Log</c> and <c>N..Log</c> are two distinct <see cref="SymbolKey"/>s -- two groups, two
+    /// registry ids -- that split to the same segments. The comment on the depth sort above already
+    /// records that more than one container spelling denotes the same structural path; this is the other
+    /// conclusion to draw from it. It is reachable on the malformed input §2.3 puts in scope: an
+    /// extractor builds a container path from every ancestor carrying a <c>name</c> field, and a
+    /// MISSING/ERROR node on a partial parse contributes an empty segment.</para>
+    ///
+    /// <para><b>What sharing one cost.</b> Every map keyed on the raw path -- the registered id, the
+    /// title, the source files pruning joins on, the package attachment -- is <c>TryAdd</c>, so the
+    /// second group lost to the first everywhere: the parent emitted the FIRST group's link twice
+    /// (deduplicated to one bullet by <see cref="AppendSection"/>) and the second concept got no incoming
+    /// link at all, while its files were recorded against its rival's id. An unreachable concept whose
+    /// file exists is a severed branch with nothing dangling -- exactly what <c>okf validate</c> cannot
+    /// see.</para>
+    ///
+    /// <para><b>Only the LEAF segment is disambiguated</b>, which is what makes this a local fix rather
+    /// than a re-parenting: a group's parent key is its segments minus the last, so suffixing the last
+    /// leaves the parent lookup -- and therefore <see cref="RegisterCodeId"/>'s "register under my
+    /// parent's registered id" rule -- exactly as it was. Nothing downstream reads a raw segment as a
+    /// name (titles come from the <see cref="SymbolFact"/>, container names from the container's own
+    /// segments), so the suffix never reaches output.</para>
+    ///
+    /// <para><b>The residual, stated because it is real.</b> Members declared under the second spelling
+    /// still compute their parent key from their own container string, which splits to the FIRST group's
+    /// path -- so they register and attach under the first group's concept. That is inherent to two
+    /// spellings denoting one structural path, and it is now consistent (one parent, one incoming link)
+    /// where before it was contradictory: both concepts listed the same children while one of them had no
+    /// parent.</para>
+    /// </summary>
     private static void DisambiguateSharedRawPaths(
         List<(SymbolKey Key, IReadOnlyList<SymbolFact> Declarations, string[] RawSegments)> groups)
     {

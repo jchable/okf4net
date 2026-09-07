@@ -102,8 +102,12 @@ internal sealed record GenerateRequest(
 /// below <i>unless</i> <c>--rev</c> already named the ref, in which case the <c>??</c> never
 /// evaluates it; and <c>--check</c> spawns one further <c>git rev-parse</c>
 /// (<c>BundleDrift.Check</c>) before the regeneration it compares against. All of them go through
-/// <c>GitRevision.RunGit</c> with the scanned repository as their working directory. Two to four
-/// invocations, then, not a fixed three -- <c>producers/README.md</c> states the same breakdown.
+/// <c>GitRevision.RunGit</c> with the scanned repository as their working directory. Two to FIVE
+/// invocations, then, not a fixed three: the unborn-branch fix added a second
+/// <c>git rev-parse --verify HEAD</c> inside <c>GitRevision.CurrentBranch</c>, and this sentence was
+/// left at "two to four" while <c>producers/README.md</c> was corrected -- so it also stopped being
+/// true that the README "states the same breakdown". Both halves are fixed here; the README is the
+/// one to keep in step, since it is what an operator reads.
 /// The flag is off by default deliberately -- making it opt-in would silently
 /// degrade the resolution quality of every run that exists today -- which is why it is stated here and
 /// in <c>producers/README.md</c> rather than left to be discovered.</para>
@@ -288,13 +292,21 @@ internal static class GenerateRun
             //
             // PER ENGINE, and it used to be all-or-nothing. Roslyn was named on every run that was not
             // --no-code, including the runs where it demonstrably never ran: --no-msbuild, a repository
-            // with no project file, and now an exhausted --roslyn-timeout. That is the exact claim this
-            // block exists to refuse, one engine over, and `ProducerFixture` had the rule right --
-            // "tree-sitter alone, because tree-sitter alone ran" -- while the shipped CLI did not. The
-            // resolver being non-null is the same condition everything else on this path keys off.
+            // with no project file, an exhausted --roslyn-timeout, and -- the case a non-null check
+            // still got wrong -- a repository whose projects all FAILED to query or compile. That is
+            // the exact claim this block exists to refuse, one engine over, and `ProducerFixture` had
+            // the rule right ("tree-sitter alone, because tree-sitter alone ran") while the shipped CLI
+            // did not.
+            //
+            // The condition is "at least one project compiled", not "a resolver exists".
+            // `RoslynResolver.Create` returns a resolver whatever happened: every project can be
+            // recorded MsBuildQueryFailed and it still constructs one. That is the COMMON degradation
+            // -- an unrestored checkout, no `dotnet` on PATH -- and it named `roslyn/5.3.0` in a bundle
+            // Roslyn contributed no byte to. This producer's own fixture repository is in exactly that
+            // state, which is how the golden and the shipped CLI came to disagree about one repository.
             EngineVersions = request.NoCode
                 ? []
-                : roslyn is null
+                : roslyn is null || !roslyn.Projects.Any(p => p.Availability == RoslynProjectAvailability.Compiled)
                     ? [TreeSitterExtractor.EngineVersion]
                     : [TreeSitterExtractor.EngineVersion, RoslynResolver.EngineVersion],
         };
@@ -659,10 +671,9 @@ internal static class GenerateRun
     /// The <c>.csproj</c> files the scan detected, absolute -- the same set the <c>packages/</c>
     /// family is generated from, so the ownership map's join key is by construction the one
     /// <c>ConceptGenerator</c> looks a package up by.
-    /// </summary>
-    /// <summary>
-    /// Every nuget project MSBuild will be asked about -- <b>including test projects, and including
-    /// them when <c>--include-tests</c> is off</b>.
+    ///
+    /// <para>Every nuget project MSBuild will be asked about -- <b>including test projects, and
+    /// including them when <c>--include-tests</c> is off</b>.</para>
     ///
     /// <para>That reads as an inconsistency and is not one, because the flag and this list govern
     /// different things. <c>--include-tests</c> decides which FILES are extracted

@@ -156,7 +156,14 @@ public static class OkfgenCli
             DefaultValueFactory = _ => ExtractionLimits.Default.MaxFileBytes,
         };
 
-        var roslynTimeoutOption = new Option<double>("--roslyn-timeout")
+        // Option<double?> rather than Option<double>, so "absent" and "0" are distinguishable. With a
+        // 0 default they were not: `--roslyn-timeout 0` reached the same value as not passing the
+        // option, so it silently meant UNBOUNDED -- the opposite of the smallest bound an operator (or
+        // a wrapper computing a remaining budget down to zero) was asking for -- while
+        // `--roslyn-timeout -1` was refused with a message saying the value must be positive. The
+        // accepted domain and the stated domain disagreed on exactly the value most likely to arrive
+        // programmatically. Zero is now refused like any other non-positive budget.
+        var roslynTimeoutOption = new Option<double?>("--roslyn-timeout")
         {
             Description =
                 "Wall-clock budget, in seconds, for the whole Roslyn stage -- the `dotnet msbuild` queries and the "
@@ -167,7 +174,7 @@ public static class OkfgenCli
                 + "truncated: you get the same uniformly name-matched bundle --no-msbuild produces, with the same "
                 + "note saying what was lost, rather than one where some links are exact and some are not with "
                 + "nothing recording which.",
-            DefaultValueFactory = _ => 0,
+            DefaultValueFactory = _ => null,
 
             // PARSED INVARIANTLY, and this is a correctness fix rather than tidiness. Without a custom
             // parser System.CommandLine converts a double with the CURRENT culture and
@@ -231,12 +238,11 @@ public static class OkfgenCli
             // OverflowException, and anything under one tick (1e-7 s) truncated to TimeSpan.Zero, which
             // TryCreateWithin refuses by contract. A CLI that answers a bad argument with an unhandled
             // exception has no argument validation on that path, whatever the line above looks like.
-            var roslynTimeoutSeconds = parseResult.GetValue(roslynTimeoutOption);
             TimeSpan? roslynTimeout = null;
-            if (roslynTimeoutSeconds != 0)
+            if (parseResult.GetValue(roslynTimeoutOption) is { } roslynTimeoutSeconds)
             {
                 if (double.IsNaN(roslynTimeoutSeconds)
-                    || roslynTimeoutSeconds < 0
+                    || roslynTimeoutSeconds <= 0
                     || roslynTimeoutSeconds > TimeSpan.MaxValue.TotalSeconds)
                 {
                     error.WriteLine(

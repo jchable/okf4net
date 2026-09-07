@@ -2,7 +2,7 @@
 type: C# Member
 title: Boxed.Boxed
 description: A constructor, which is its own declaration kind.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L49-L52
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L51-L54
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ A constructor, which is its own declaration kind.
 
 ## Signatures
 
-- `public Boxed(Corner corner)` — `src/Shapes.cs#L49-L52`
+- `public Boxed(Corner corner)` — `src/Shapes.cs#L51-L54`
