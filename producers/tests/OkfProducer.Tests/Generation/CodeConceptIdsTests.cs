@@ -49,6 +49,13 @@ public class CodeConceptIdsTests
     {
         // §3.3: ordinal on the NAME, not on (file, line), so the tie-break
         // survives a file move or a line shift.
+        //
+        // And not more than that, which this test should not be read as saying. The suffix is
+        // POSITIONAL: a third declaration named `PARSE` would sort ahead of both of these and take the
+        // bare `parse`, pushing each of them one place down -- `Parse` to `-2`, `parse` to `-3` --
+        // without either declaration having changed. That is real id churn, it is recorded on
+        // `ConceptIdRegistry` with the reason it is not being fixed today, and nothing here or there
+        // prevents it. What is asserted below is stability under a file move, and only that.
         var registry = new ConceptIdRegistry();
 
         var first = registry.Register("code/go/pkg", "Parse");
@@ -56,6 +63,37 @@ public class CodeConceptIdsTests
 
         Assert.Equal("code/go/pkg/parse", first.ToString());
         Assert.Equal("code/go/pkg/parse-2", second.ToString());
+    }
+
+    [Fact]
+    public void A_new_name_that_sorts_first_renumbers_the_declarations_already_there()
+    {
+        // The limit of the rule above, asserted rather than described, because a limit nobody can
+        // execute is a limit nobody believes. This is the accepted churn recorded on
+        // `ConceptIdRegistry`: the suffix is POSITIONAL, so a candidate arriving ahead of the others
+        // takes the bare slug and pushes each of them one place down, though their own declarations
+        // did not change. §3.1 calls id churn unrecoverable; this is the one route to it the scheme
+        // still has.
+        //
+        // Ordinal puts `PARSE` first: `P` ties, then `A` (0x41) precedes `a` (0x61), and `parse`'s
+        // leading `p` (0x70) sorts after both. Callers register in that order, so this is the sequence
+        // a later run really would produce.
+        var before = new ConceptIdRegistry();
+        var beforeParse = before.Register("code/go/pkg", "Parse");
+        var beforeLower = before.Register("code/go/pkg", "parse");
+
+        var after = new ConceptIdRegistry();
+        var afterUpper = after.Register("code/go/pkg", "PARSE");
+        var afterParse = after.Register("code/go/pkg", "Parse");
+        var afterLower = after.Register("code/go/pkg", "parse");
+
+        Assert.Equal("code/go/pkg/parse", afterUpper.ToString());
+
+        // Both existing declarations moved, and neither was edited.
+        Assert.Equal("code/go/pkg/parse", beforeParse.ToString());
+        Assert.Equal("code/go/pkg/parse-2", afterParse.ToString());
+        Assert.Equal("code/go/pkg/parse-2", beforeLower.ToString());
+        Assert.Equal("code/go/pkg/parse-3", afterLower.ToString());
     }
 
     [Fact]

@@ -221,6 +221,23 @@ public static class CodeConceptIds
 /// register them in <see cref="StringComparer.Ordinal"/> order of their original (pre-slugify) name
 /// so the numeric tie-break (§3.3) is stable across a file move or a line shift, not dependent on
 /// scan order.
+///
+/// <para><b>What that stability does NOT cover, stated because the sentence above reads wider than it
+/// is.</b> The suffix is positional: among colliding candidates the Ordinal-first keeps the bare slug
+/// and the rest take <c>-2</c>, <c>-3</c>. So adding a candidate that sorts BEFORE an existing one
+/// renumbers the existing one -- <c>parse</c> becomes <c>parse-2</c> without its own declaration
+/// having changed -- which is the id churn §3.1 treats as unrecoverable, one level up from the
+/// overload merge that exists to prevent exactly this. A file move does not do it; a new sibling
+/// does.</para>
+///
+/// <para>Left as it stands rather than fixed, and the accounting is why. Closing it means suffixing by
+/// something intrinsic to the symbol instead of by position, which moves every already-suffixed id
+/// once -- churn now, to prevent churn later. Measured at ZERO occurrences on this repository and on
+/// the fixture: C#'s residual collisions are case-only pairs and a nested type sharing a member's
+/// name, and neither occurs here. §3.3 says the rule exists for Go and JS, where it is common -- and
+/// no profile for either exists yet, nor can one land without the wider work
+/// <c>producers/README.md</c> prices under "Adding a second language". That is when to pay for this,
+/// with a real corpus to measure the trade against.</para>
 /// </summary>
 public sealed class ConceptIdRegistry
 {
