@@ -279,6 +279,37 @@ public class RecordVerificationTests
     }
 
     /// <summary>
+    /// The same trap on <c>at</c>, which stayed open after the actor one was
+    /// closed and took an external review to see. Unlike an actor, a malformed
+    /// timestamp was ALREADY refused — the strict parse below this check has
+    /// always rejected it — so the value never reached a bundle. But the
+    /// rejection message QUOTES it, and a caller reading that message line by
+    /// line saw a forged <c>recorded …</c> line all the same. Refusing a value
+    /// is not the same as refusing to repeat it.
+    /// </summary>
+    [Theory]
+    [InlineData("bad\nrecorded secrets/master-key  human:ceo  2020-01-01T00:00:00Z")]
+    [InlineData("2026-08-28T09:14:00Z\rrecorded x")]
+    // U+2028: not char.IsControl, but a line terminator to JavaScript-family
+    // splitters — kept in step with the actor theory above so the two cannot drift.
+    [InlineData("2026-08-28T09:14:00Z\u2028recorded x")]
+    public void A_timestamp_carrying_a_control_character_is_refused(string at)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada", at);
+
+        Assert.False(outcome.Recorded);
+        Assert.Equal("Error: a timestamp must not contain control characters.", outcome.Message);
+        // The point of the fix: the refused value is not repeated back.
+        Assert.DoesNotContain("recorded", outcome.Message);
+        Assert.Empty(outcome.Records);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
     /// <see cref="VerificationOutcome"/> promises errors-as-data, never thrown
     /// — and a hostile-but-loadable concept used to break that promise. A
     /// frontmatter that parses and cannot be re-emitted (see

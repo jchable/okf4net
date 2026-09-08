@@ -653,7 +653,7 @@ Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
 ```
 
 `okf-mcp` serves the bundle **read-only by default**; set `OKF_MCP_WRITABLE=1`
-to register the three write tools as well. See
+to register the four write tools as well. See
 [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for the full tool list, or the
 [MCP setup guide on the site](https://jchable.github.io/okf4net/docs/mcp/).
 

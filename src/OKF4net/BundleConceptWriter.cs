@@ -70,7 +70,11 @@ public sealed class BundleConceptWriter
     /// and <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
     /// resolve to, so two different
     /// spellings of the same directory (e.g. a trailing separator, or a
-    /// relative vs. absolute path) still share one lock. Every
+    /// relative vs. absolute path) still share one lock. Those examples are
+    /// LEXICAL, and that is the exact bound: <see cref="ReparsePoints.CanonicalizeRoot"/>
+    /// does not follow a reparse point, so a junction or symlink pointing at
+    /// the same directory gets its OWN lock and is not serialized against --
+    /// see the constructor's comment and the ROADMAP entry. Every
     /// <see cref="BundleConceptWriter"/> instance constructed over the same
     /// bundle path -- not just the same instance -- ends up sharing the
     /// same lock object via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd(TKey,Func{TKey,TValue})"/>
@@ -151,7 +155,7 @@ public sealed class BundleConceptWriter
         BundleRoot = bundleRoot;
         _onWriteCommitted = onWriteCommitted;
 
-        // Canonicalize BEFORE looking up the shared lock so two different
+        // Canonicalize BEFORE looking up the shared lock so two LEXICAL
         // spellings of the same bundle directory (e.g. with/without a
         // trailing separator) still resolve to the same registry entry --
         // the same canonicalization ReparsePoints.IsWithinBundleRoot and
@@ -159,6 +163,19 @@ public sealed class BundleConceptWriter
         // ReparsePoints.CanonicalizeRoot's remarks); otherwise those two
         // spellings would land in different registry entries and defeat the
         // very serialization this lock exists to provide (F3).
+        //
+        // LEXICAL is the operative word, and an external review had to show it:
+        // CanonicalizeRoot is Path.GetFullPath plus a trailing-separator trim,
+        // so it does NOT follow a reparse point. A junction `alias` -> `actual`
+        // is exactly "two spellings of the same bundle directory", and it lands
+        // in two registry entries -- two writers, two locks, one set of files,
+        // no serialization at all. Demonstrated with mklink /J: the two lock
+        // objects are not reference-equal. Resolving the root properly means
+        // walking and following reparse points, which is the same
+        // security-sensitive seam ValidateConceptTarget guards and deserves its
+        // own pass (see ROADMAP). Until then the guarantee is: same lexical
+        // root, one lock; aliased root, none -- which is a narrower promise
+        // than this comment used to make, and the narrower one is the true one.
         var canonicalRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
         _bundleLock = BundleLocks.GetOrAdd(canonicalRoot, static _ => new object());
     }
@@ -550,19 +567,19 @@ public sealed class BundleConceptWriter
         }
 
         // THE governed gate for a control-bearing actor — see
-        // Actor.ContainsControlCharacter for why it lives on the write path and
-        // what it does not cover. Every layer above inherits it from here: the
-        // CLI verb and okf_verify re-run the same predicate only to phrase a
-        // better message, and both renderers interpolate `by` into a line with
-        // no escaping precisely because nothing this method wrote can carry a
-        // newline. Note this refuses the value rather than sanitizing it: an
-        // actor is an identity, and silently rewriting one would store a
+        // LineSafeText.ContainsControlCharacter for why it lives on the write
+        // path and what it does not cover. Every layer above inherits it from
+        // here: the CLI verb and okf_verify re-run the same predicate only to
+        // phrase a better message, and both renderers interpolate `by` into a
+        // line with no escaping precisely because nothing this method wrote can
+        // carry a newline. Note this refuses the value rather than sanitizing
+        // it: an actor is an identity, and silently rewriting one would store a
         // different identity than the caller asked for.
         //
         // Checked BEFORE the well-formedness arm below, whose message echoes
         // `by`: echoing a newline-bearing value would forge a line in the
         // caller's error output — the very thing being closed here.
-        if (by is not null && Actor.ContainsControlCharacter(by))
+        if (by is not null && LineSafeText.ContainsControlCharacter(by))
         {
             return Failed("Error: a §7 actor must not contain control characters.");
         }
@@ -582,6 +599,18 @@ public sealed class BundleConceptWriter
         // "2026-08-28" or a +02:00 offset here would write a value the field's
         // own documentation calls UTC.
         var stampedAt = at ?? OkfTimestamp.FormatUtc(UtcNow());
+
+        // Guarded for the same reason `by` is, and it took an external review to
+        // see it: rejecting a malformed `at` is NOT enough, because the
+        // rejection message below QUOTES it. A strict parse stops the value
+        // being written; it does nothing about the value being echoed, so
+        // `--at $'bad\nrecorded …'` forged a line in the caller's error stream
+        // on a run that wrote nothing. Refused before it is quoted.
+        if (LineSafeText.ContainsControlCharacter(stampedAt))
+        {
+            return Failed("Error: a timestamp must not contain control characters.");
+        }
+
         if (!DateTime.TryParseExact(
                 stampedAt,
                 "yyyy-MM-dd'T'HH:mm:ss'Z'",

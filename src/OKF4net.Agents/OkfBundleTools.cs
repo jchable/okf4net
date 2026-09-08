@@ -39,7 +39,7 @@ public sealed class OkfBundleTools
     /// <summary>
     /// Refusal message for an actor carrying a character that would break the
     /// rendered line. The predicate is shared
-    /// (<c>Actor.ContainsControlCharacter</c>); only the phrasing is local, so
+    /// (<c>LineSafeText.ContainsControlCharacter</c>); only the phrasing is local, so
     /// it reads like this class's other <c>Error: …</c> results rather than
     /// like the CLI's. Deliberately does NOT echo the offending value: doing so
     /// would put the newline it is refusing into this very message.
@@ -251,7 +251,7 @@ public sealed class OkfBundleTools
     public IList<AITool> GetTools() => GetTools(OkfToolMode.ReadWrite);
 
     /// <summary>
-    /// All OKF tools, with the three write-capable ones exposed according to
+    /// All OKF tools, with the four write-capable ones exposed according to
     /// <paramref name="mode"/> — see <see cref="OkfToolMode"/> for what each
     /// means and why.
     ///
@@ -648,8 +648,8 @@ public sealed class OkfBundleTools
         // usage text would most likely retry the same value. The write gate
         // (BundleConceptWriter.RecordVerifications) is what stops the value
         // being stored; this shares its one predicate rather than testing
-        // characters itself. See Actor.ContainsControlCharacter.
-        if (by is not null && Actor.ContainsControlCharacter(by))
+        // characters itself. See LineSafeText.ContainsControlCharacter.
+        if (by is not null && LineSafeText.ContainsControlCharacter(by))
         {
             return VerifyControlCharacterMessage;
         }

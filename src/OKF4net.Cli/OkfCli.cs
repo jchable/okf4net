@@ -851,11 +851,11 @@ public static class OkfCli
         // a newline in an echoed value forges a line in the caller's error
         // output. The write gate (BundleConceptWriter.RecordVerifications) is
         // what actually stops the value from being stored — see
-        // Actor.ContainsControlCharacter; this call site exists only so the
-        // message names the flag instead of arriving unattributed from the
+        // LineSafeText.ContainsControlCharacter; this call site exists only so
+        // the message names the flag instead of arriving unattributed from the
         // writer, which is why it shares that one predicate rather than
         // spelling out its own character test.
-        if (Actor.ContainsControlCharacter(by))
+        if (LineSafeText.ContainsControlCharacter(by))
         {
             throw new CliOperationException("--by must not contain control characters");
         }
@@ -863,6 +863,15 @@ public static class OkfCli
         if (!Actor.Parse(by).IsWellFormed)
         {
             throw new CliOperationException($"--by is not a well-formed §7 actor: \"{by}\"");
+        }
+
+        // Same reason as `by` above, and the arm below is why: it QUOTES `at`.
+        // Rejecting a malformed timestamp keeps it out of the bundle but not
+        // out of stderr, so `--at $'bad\nrecorded …'` forged a line on a run
+        // that wrote nothing. Refused before it is quoted.
+        if (at is not null && LineSafeText.ContainsControlCharacter(at))
+        {
+            throw new CliOperationException("--at must not contain control characters");
         }
 
         // The writer applies the same strict UTC rule; checking here too turns a

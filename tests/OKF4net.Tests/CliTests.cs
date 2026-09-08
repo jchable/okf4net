@@ -56,7 +56,7 @@ public class CliTests
     // than derived from the CLI's own tables so the tests fail if a verb
     // silently loses a flag.
     private static readonly string[] AllVerbs =
-        ["validate", "audit", "info", "index", "graph", "parse", "fmt"];
+        ["validate", "audit", "verify", "info", "index", "graph", "parse", "fmt"];
 
     /// <summary>
     /// A minimal throwaway bundle for argument-parsing tests. These pass a
@@ -1304,6 +1304,12 @@ public class CliTests
     // arm must win, because the well-formedness message echoes the value and
     // would put the refused newline straight into stderr.
     [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "\nrecorded x  human:ceo" }, "error: --by must not contain control characters\n")]
+    // The same trap on the other flag, and it stayed open after the actor one
+    // was closed: the three --at arms above prove a malformed timestamp is
+    // REFUSED, but each of their messages QUOTES it, so a control-bearing value
+    // was still echoed into stderr on a run that wrote nothing. The
+    // control-character arm must win over the quoting one here too.
+    [InlineData(new[] { "verify", "BUNDLE", "metrics/dau", "--by", "human:ada", "--at", "bad\nrecorded x  human:ceo  2020-01-01T00:00:00Z" }, "error: --at must not contain control characters\n")]
     public void Verify_rejects_bad_invocations(string[] args, string expected)
     {
         using var tmp = new TempDir();

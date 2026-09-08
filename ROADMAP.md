@@ -66,6 +66,22 @@ are the concrete entry points.
     against the *temporary* name, and for the lock — a security-sensitive
     seam that must not be swapped in passing. Pre-existing and shared by
     every write path; not introduced by verification.
+  - **Resolve the bundle root before keying the write lock.**
+    `BundleConceptWriter`'s process-wide lock registry is keyed by
+    `ReparsePoints.CanonicalizeRoot`, which is `Path.GetFullPath` plus a
+    trailing-separator trim — purely lexical. A junction or symlink
+    `alias` -> `actual` therefore yields two distinct locks over one set of
+    files, so two writers in the same process can interleave their
+    read-modify-write cycles and lose a stamp. Shown with `mklink /J`: the two
+    lock objects are not reference-equal. Fixing it means following reparse
+    points on the root, which touches the same seam `ValidateConceptTarget`
+    guards, so it needs its own tests (junction, symlink, a root whose parent
+    is a reparse point, and the cross-platform behaviour of
+    `Directory.ResolveLinkTarget`). Pre-existing and shared by every write
+    path, but verification raises the stakes: it is the first operation to hold
+    that lock across a batch of files. The lock is in-process only either way —
+    a second `okf` process was never serialized against, and that limit is
+    already documented on the class.
 - **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
   builder can now write a *per-entry* §5.1 override (`AddSource(…,
   usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal

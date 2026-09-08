@@ -23,7 +23,7 @@ public static class OkfMcpConfig
     public const string ReadOnlyEnv = "OKF_MCP_READONLY";
 
     /// <summary>
-    /// Environment variable opting IN to the three write tools when truthy.
+    /// Environment variable opting IN to the four write tools when truthy.
     ///
     /// Writes used to be the default. That put unconfirmed write access to the
     /// corpus behind nothing on the surface most people actually deploy — a
