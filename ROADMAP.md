@@ -66,6 +66,12 @@ are the concrete entry points.
   against the *temporary* name, and for the lock — a security-sensitive
   seam that must not be swapped in passing. Pre-existing and shared by
   every write path; not introduced by verification.
+  One thing in its favour, measured rather than assumed: every write path in
+  the class funnels through the single `WriteValidatedContentLocked`, whose
+  `File.WriteAllText` is the only line that touches disk. The change is
+  therefore contained to one method — it is the *interaction* with the late
+  reparse-point re-check and the lock that needs the tests, not a scattered
+  edit.
 - **Resolve the bundle root before keying the write lock.**
   `BundleConceptWriter`'s process-wide lock registry is keyed by
   `ReparsePoints.CanonicalizeRoot`, which is `Path.GetFullPath` plus a
@@ -84,6 +90,18 @@ are the concrete entry points.
   already documented on the class. Tracked as
   [#86](https://github.com/jchable/okf4net/issues/86), which carries the
   reproduction.
+  **The design question comes before the fix, and it is bigger than the title
+  suggests.** `CanonicalizeRoot` has nine call sites across five projects —
+  `Bundle`, `IndexGenerator`, `BundleConceptWriter`, `OKF4net.Catalog`
+  (`CatalogPathResolver`, `FileMemoryStore`), `OKF4net.Viewer` — and two of
+  them are the path-safety guards themselves, `IsWithinBundleRoot` and
+  `HasReparsePointAncestor`. Making it resolve reparse points would therefore
+  change what "inside the bundle" means everywhere, which is a security change
+  with a repo-wide blast radius, not a lock fix. The narrower alternative is to
+  leave `CanonicalizeRoot` lexical and give the lock registry its own resolved
+  key, so only the serialization contract moves. Deciding between those two —
+  and saying what each does when resolution fails, or when the target does not
+  exist — is the actual work; the code after it is small.
 - **Reconcile the YAML depth counters between the parser and the emitter.**
   `YamlParser` enforces its 1000-level cap with TWO independent counters (one
   for block nesting, one for flow); `YamlEmitter` has a single counter covering
