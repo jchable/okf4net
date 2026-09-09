@@ -48,17 +48,22 @@ and this project adheres to
   and were unreachable from `overview` — which `okf validate` does not report,
   because an orphan dangles nothing. A `.csproj` that no solution references is
   still not a package.
-- **`okfgen generate --repo-url <url>` / `--rev <ref>`** turn each concept's
-  `resource` into a forge permalink to its declaration. Without `--repo-url` a
-  code concept carries no `resource` at all, and a `--repo-url` that is not an
-  absolute http/https URL is refused rather than silently dropping every one of
-  them. `--rev` defaults to the current branch name and never to a sha: a sha
-  would rewrite every code concept's `resource` on the next commit.
+- **`okfgen generate --repo-url <url>` / `--rev <ref>`** make each concept's
+  `resource` a forge permalink — to its declaration for a `code/` concept, to the
+  file for a `packages/` or `docs/` one. The two families differ without the
+  flags: a `code/` concept then carries no `resource` at all, while a
+  `packages/`/`docs/` one falls back to the repository-relative path. A
+  `--repo-url` that is not an absolute http/https URL is refused rather than
+  silently dropping every permalink. `--rev` defaults to the current branch name
+  and never to a sha — a sha would rewrite every code concept's `resource` on the
+  next commit — and is required for permalinks on a detached HEAD, where there is
+  no branch name to read.
 - **Scope and size flags on `generate`**: `--include-tests` and
   `--include-internal` widen what the code stage emits, `--no-code` skips the
   stage entirely, and `--max-file-size <bytes>` (2 MiB by default) caps the
-  largest source file either engine will read — the tree-sitter engine counts
-  what it skips, which makes the run partial and so prunes nothing.
+  largest source file either engine will read. The tree-sitter engine counts what
+  it skips, which holds back the concepts that file owned; the rest of the bundle
+  is pruned as usual.
 - **A generate is a function of the commit, not of the clock.** `overview`'s
   `generated.at` and `revision` are stamped from the HEAD commit's committer date
   and sha — the wall clock is only the fallback for a tree git cannot answer for —
@@ -350,10 +355,14 @@ and this project adheres to
 - **Breaking (producer): `--update` no longer preserves everything.** Under the
   `code` prefix, a concept the previous run claimed and this one no longer produces
   is pruned — otherwise a deleted type would leave its concept behind forever.
-  Outside `code`, hand-written concepts are preserved exactly as before. The
-  pruning is gated on the run having been *complete*: a partial traversal (a file
-  skipped for exceeding `--max-file-size`, a project that failed to compile) prunes
-  nothing, so a degraded run cannot delete what it merely failed to see. `--check`
+  Outside `code`, hand-written concepts are preserved exactly as before. The gate
+  is the *traversal*: a run prunes only when it visited every eligible file, and
+  one cut short — the extraction budget elapsed, the run cancelled, the walk
+  itself failing — prunes nothing, so it cannot delete what it never reached.
+  Deliberately not "every file parsed cleanly": the vendored tree-sitter grammar
+  mis-parses an empty collection expression, ordinary modern C#, so gating on that
+  would make pruning dead code. A file that was visited but not extracted holds
+  back only the concepts it owned, one candidate at a time. `--check`
   is refused together with `--reset`/`--force` and with `--no-code`, both of which
   would otherwise let an operator believe something was verified that was not.
 
