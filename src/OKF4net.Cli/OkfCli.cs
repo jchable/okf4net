@@ -7,13 +7,13 @@ using OKF4net.Internal;
 namespace OKF4net.Cli;
 
 /// <summary>
-/// The <c>okf</c> command-line tool. Seven subcommands (<c>validate</c>,
-/// <c>audit</c>, <c>info</c>, <c>index</c>, <c>graph</c>, <c>parse</c>,
-/// <c>fmt</c>) over hand-rolled argument parsing -- no third-party
-/// dependencies. (The <c>render</c> verb — static HTML site generation —
-/// lives in the separate <c>okf-render</c> binary, <c>OKF4net.Render</c>, so
-/// this CI-facing validator does not carry the vendored viewer JavaScript it
-/// never executes.)
+/// The <c>okf</c> command-line tool. Eight subcommands (<c>validate</c>,
+/// <c>audit</c>, <c>verify</c>, <c>info</c>, <c>index</c>, <c>graph</c>,
+/// <c>parse</c>, <c>fmt</c>) over hand-rolled argument parsing -- no
+/// third-party dependencies. (The <c>render</c> verb — static HTML site
+/// generation — lives in the separate <c>okf-render</c> binary,
+/// <c>OKF4net.Render</c>, so this CI-facing validator does not carry the
+/// vendored viewer JavaScript it never executes.)
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// CLI in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -51,6 +51,7 @@ public static class OkfCli
         "COMMANDS:\n" +
         "    validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)\n" +
         "    audit    <bundle>    Report trust, freshness and lifecycle across the bundle\n" +
+        "    verify   <bundle> <id>…   Record a review of one or more concepts (--by <actor>)\n" +
         "    info     <bundle>    Summarize a bundle (concepts, types, links, version)\n" +
         "    index    <bundle>    (Re)generate every index.md in the bundle\n" +
         "    graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)\n" +
@@ -62,6 +63,9 @@ public static class OkfCli
         "    -V, --version        Show version\n" +
         "        --json           Machine-readable output for validate/info/audit\n" +
         "        --as-of <date>   Pin today's date (YYYY-MM-DD) for validate/audit\n" +
+        "        --by <actor>     Who is recording the review, for `verify` (required)\n" +
+        "        --at <ts>        UTC timestamp yyyy-MM-ddTHH:mm:ssZ for `verify` (default: now)\n" +
+        "        --dry-run        Show what `verify` would record, write nothing\n" +
         "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
         "                         Filter `audit`'s worklist";
 
@@ -93,6 +97,14 @@ public static class OkfCli
     /// an error for THIS verb even when another verb defines it -- the
     /// allowlist is per-verb, not global, so <c>okf validate b --dot</c> is
     /// rejected rather than quietly ignored.
+    ///
+    /// <paramref name="Variadic"/> says the verb takes more than one
+    /// positional. It defaults to false so the one-positional rule stays the
+    /// default rather than something each verb must remember to ask for, and
+    /// only <c>verify</c> sets it: <c>verify &lt;bundle&gt; &lt;id&gt;…</c>
+    /// names a bundle and then any number of concepts. Making arity part of
+    /// the declared contract keeps that rule enforced per verb rather than
+    /// relaxed globally for the one verb that needs it.
     /// </summary>
     private sealed record VerbSpec(
         string Name,
@@ -101,7 +113,8 @@ public static class OkfCli
         string[] ValuedFlags,
         string[] ValuelessFlags,
         string[] OptionLines,
-        Func<CliArgs, TextWriter, int> Run);
+        Func<CliArgs, TextWriter, int> Run,
+        bool Variadic = false);
 
     /// <summary>
     /// Every subcommand, keyed by name — genuinely the single source for
@@ -133,6 +146,17 @@ public static class OkfCli
              "    --as-of <date>    Evaluate staleness as of YYYY-MM-DD, not today",
              "    --json            Machine-readable output"],
             CmdAudit),
+        ["verify"] = new(
+            "verify", "okf verify <bundle> <id>… | - [--by <actor>] [--at <ts>] [--dry-run]",
+            "Record a review of one or more concepts (§5.2).",
+            ["--by", "--at"], ["--dry-run"],
+            ["    --by <actor>     Who is recording the review (required)",
+             "    --at <ts>        UTC timestamp yyyy-MM-ddTHH:mm:ssZ (default: now)",
+             "    --dry-run        Show what would be recorded, write nothing"],
+            CmdVerify,
+            // The one variadic verb: a bundle followed by any number of concept
+            // ids, or `-` to read them from stdin one per line.
+            Variadic: true),
         ["info"] = new(
             "info", "okf info <bundle> [--json]",
             "Summarize a bundle (concepts, types, links, version).",
@@ -191,7 +215,15 @@ public static class OkfCli
     /// Forces "\n"-only line endings on both writers regardless of platform:
     /// LF is the tool's canonical output.
     /// </summary>
-    public static int Run(string[] args, TextWriter stdout, TextWriter stderr)
+    /// <param name="args">The command-line arguments, excluding the program name.</param>
+    /// <param name="stdin">
+    /// Standard input. Only a verb that documents reading it (today, <c>verify</c>)
+    /// ever touches this reader; every other verb never reads from it, so no
+    /// blocking read is introduced for the rest of the CLI.
+    /// </param>
+    /// <param name="stdout">Standard output.</param>
+    /// <param name="stderr">Standard error.</param>
+    public static int Run(string[] args, TextReader stdin, TextWriter stdout, TextWriter stderr)
     {
         stdout.NewLine = "\n";
         stderr.NewLine = "\n";
@@ -230,7 +262,7 @@ public static class OkfCli
             // positional, so `okf validate --help` used to answer
             // "error: missing <bundle>" -- the one question a user asks when
             // they do not know what that argument is.
-            var parsed = CliArgs.Scan(rest, spec);
+            var parsed = CliArgs.Scan(rest, spec, stdin);
             if (parsed.WantsHelp)
             {
                 stdout.Write(HelpFor(spec));
@@ -241,6 +273,21 @@ public static class OkfCli
         }
         catch (CliOperationException e)
         {
+            stderr.Write($"error: {e.Message}\n");
+            return 1;
+        }
+        catch (OkfException e)
+        {
+            // The safety net for every verb, not a substitute for the targeted
+            // catches below: those exist to phrase a better message (naming the
+            // file, the flag, the concept) and still run first. This one only
+            // catches a library failure no verb anticipated — a YAML emit
+            // failure on a document that parsed, say — and turns it into the
+            // same `error: …`/exit 1 shape as everything else, instead of a
+            // stack trace and exit 127. Deliberately narrow: `OkfException` is
+            // this library's own expected-error base, so an unexpected BCL
+            // exception still crashes loudly rather than being reported as a
+            // routine failure.
             stderr.Write($"error: {e.Message}\n");
             return 1;
         }
@@ -285,15 +332,34 @@ public static class OkfCli
         /// </summary>
         private readonly Dictionary<string, string?> _flags = new(StringComparer.Ordinal);
 
-        /// <summary>The first positional token — or the one after <c>--</c>, which takes the slot.</summary>
-        private string? _positional;
+        /// <summary>
+        /// The positional tokens, in order. `--` ends option parsing without
+        /// discarding what came before it, so a verb taking several positionals
+        /// (`verify <bundle> <id>…`) keeps them all.
+        /// </summary>
+        private readonly List<string> _positionals = [];
 
         /// <summary>The flags this scan was told consume a value, kept so <see cref="Value"/> can tell a user's mistake from the caller's.</summary>
         private string[] _valuedFlags = [];
 
+        /// <summary>Whether the verb declared it takes more than one positional — see <see cref="VerbSpec.Variadic"/>.</summary>
+        private bool _variadic;
+
+        /// <summary>
+        /// Standard input, carried here rather than passed to every handler:
+        /// stdin is one of the invocation's inputs, like the arguments beside
+        /// it, and only <c>verify -</c> reads it. Widening the dispatch
+        /// delegate instead would have added a parameter seven other verbs
+        /// never use.
+        /// </summary>
+        private TextReader _stdin = TextReader.Null;
+
         private CliArgs()
         {
         }
+
+        /// <summary>Standard input for the verbs that read it — in practice only <c>verify -</c>.</summary>
+        internal TextReader Stdin => _stdin;
 
         /// <summary>
         /// Scans <paramref name="args"/> against <paramref name="spec"/>'s declared
@@ -315,10 +381,10 @@ public static class OkfCli
         /// side-effecting flag parked after the separator (<c>fmt -- f -w</c>)
         /// still never writes, and now says why.
         /// </summary>
-        internal static CliArgs Scan(string[] args, VerbSpec spec)
+        internal static CliArgs Scan(string[] args, VerbSpec spec, TextReader stdin)
         {
             var valuedFlags = spec.ValuedFlags;
-            var scanned = new CliArgs { _valuedFlags = valuedFlags };
+            var scanned = new CliArgs { _valuedFlags = valuedFlags, _variadic = spec.Variadic, _stdin = stdin };
 
             for (var i = 0; i < args.Length; i++)
             {
@@ -328,7 +394,7 @@ public static class OkfCli
                 {
                     // Nothing past the separator is a flag -- that is what it is
                     // for (a path starting with `-`). They are positionals, and
-                    // so bound by the one-positional rule like any other.
+                    // so bound by the verb's declared arity like any other.
                     for (var j = i + 1; j < args.Length; j++)
                     {
                         scanned.TakePositional(args[j]);
@@ -343,7 +409,10 @@ public static class OkfCli
                     continue;
                 }
 
-                if (token.StartsWith('-'))
+                // A lone "-" is POSIX's "read from standard input" — an
+                // argument, not an option. Only a token with something after
+                // the dash is a flag.
+                if (token.Length > 1 && token.StartsWith('-'))
                 {
                     scanned.TakeOption(token, spec);
                     continue;
@@ -394,15 +463,21 @@ public static class OkfCli
             _flags[token] = null;
         }
 
-        /// <summary>Fills the single positional slot, or reports the surplus token rather than dropping it.</summary>
+        /// <summary>
+        /// Appends a positional, enforcing the arity the verb declared. A verb
+        /// that takes one — every verb but <c>verify</c> — still reports the
+        /// surplus token rather than dropping it; a variadic one keeps them all
+        /// in order, since <c>verify &lt;bundle&gt; &lt;id&gt;…</c> is the whole
+        /// point of that flag.
+        /// </summary>
         private void TakePositional(string token)
         {
-            if (_positional is not null)
+            if (!_variadic && _positionals.Count > 0)
             {
                 throw new CliOperationException($"unexpected argument: {token}");
             }
 
-            _positional = token;
+            _positionals.Add(token);
         }
 
         /// <summary>Whether help was asked for. Answered centrally in <see cref="Run"/>, before any command body runs.</summary>
@@ -442,7 +517,10 @@ public static class OkfCli
 
         /// <summary>The first positional argument, or throws naming <paramref name="what"/>.</summary>
         internal string Positional(string what) =>
-            _positional ?? throw new CliOperationException($"missing {what}");
+            _positionals.Count > 0 ? _positionals[0] : throw new CliOperationException($"missing {what}");
+
+        /// <summary>Every positional argument, in order — the first is what <see cref="Positional"/> returns.</summary>
+        internal IReadOnlyList<string> Positionals => _positionals;
     }
 
     /// <summary>Loads a bundle, converting a failure into the CLI's error arm.</summary>
@@ -735,6 +813,195 @@ public static class OkfCli
             stdout.Write(FormatAuditFinding(finding));
             stdout.Write("\n");
         }
+    }
+
+    /// <summary>Implements the <c>verify</c> subcommand.</summary>
+    private static int CmdVerify(CliArgs parsed, TextWriter stdout)
+    {
+        // Both values are READ first, so a flag present without a value names
+        // itself ("--by requires a value") rather than surfacing later as a
+        // missing argument. They are VALIDATED after the ids, so that the most
+        // structural mistake — no concept named at all — is reported first.
+        var by = parsed.Value("--by");
+        var at = parsed.Value("--at");
+
+        var positionals = parsed.Positionals;
+        var path = positionals.Count > 0 ? positionals[0] : throw new CliOperationException("missing <bundle>");
+        var ids = positionals.Skip(1).ToList();
+        if (ids.Count == 0)
+        {
+            throw new CliOperationException("missing <concept-id>");
+        }
+
+        // Decided from the ARGUMENTS, before anything reads the pipe.
+        var readFromStdin = ids is ["-"];
+        if (!readFromStdin && ids.Contains("-"))
+        {
+            throw new CliOperationException("\"-\" (stdin) cannot be combined with explicit concept ids");
+        }
+
+        // Validated only now: an invocation naming no concept at all is the
+        // more structural mistake, and its message must come first.
+        if (by is null)
+        {
+            throw new CliOperationException("verify requires --by <actor>");
+        }
+
+        // Checked BEFORE the well-formedness message below, which echoes `by`:
+        // a newline in an echoed value forges a line in the caller's error
+        // output. The write gate (BundleConceptWriter.RecordVerifications) is
+        // what actually stops the value from being stored — see
+        // LineSafeText.ContainsControlCharacter; this call site exists only so
+        // the message names the flag instead of arriving unattributed from the
+        // writer, which is why it shares that one predicate rather than
+        // spelling out its own character test.
+        if (LineSafeText.ContainsControlCharacter(by))
+        {
+            throw new CliOperationException("--by must not contain control characters");
+        }
+
+        if (!Actor.Parse(by).IsWellFormed)
+        {
+            throw new CliOperationException($"--by is not a well-formed §7 actor: \"{by}\"");
+        }
+
+        // Same reason as `by` above, and the arm below is why: it QUOTES `at`.
+        // Rejecting a malformed timestamp keeps it out of the bundle but not
+        // out of stderr, so `--at $'bad\nrecorded …'` forged a line on a run
+        // that wrote nothing. Refused before it is quoted.
+        if (at is not null && LineSafeText.ContainsControlCharacter(at))
+        {
+            throw new CliOperationException("--at must not contain control characters");
+        }
+
+        // The writer applies the same strict UTC rule; checking here too turns a
+        // generic write error into a message naming the flag. Deliberately NOT
+        // BundleValidator.IsIso8601DateTime, which only validates the date part.
+        if (at is not null && !DateTime.TryParseExact(
+                at,
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out _))
+        {
+            throw new CliOperationException($"--at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"{at}\"");
+        }
+
+        // Read LAST of this invocation's inputs, once every flag value is
+        // known to be usable. Draining the pipe first made an already-doomed
+        // invocation (`okf verify b -` with no --by) wait behind a slow
+        // producer, or hang on a terminal until the user found Ctrl-D, before
+        // printing an error it could have printed immediately. The message
+        // ordering above is unchanged — every one of those errors is decided
+        // from the argument list alone.
+        if (readFromStdin)
+        {
+            ids = ReadIdsFrom(parsed.Stdin);
+
+            // An empty stream is "nothing to do", not an error. This is the
+            // documented `okf audit … --trust unverified | cut … | okf verify
+            // … -` pipeline, and `audit` deliberately exits 0 printing nothing
+            // when the bundle needs no attention; failing here made the
+            // headline pipeline non-idempotent and broke it under `set -e`
+            // exactly when the bundle was healthy. The cheapest workaround for
+            // that, `|| true`, would also swallow a genuine partial-write
+            // failure — the one outcome the Records-before-throw design exists
+            // to surface — so this is a correctness fix, not a cosmetic one.
+            //
+            // Every other empty/missing-id case stays an error: `okf verify
+            // <bundle>` naming no concept at all is still `missing
+            // <concept-id>` above, which is what keeps a mistyped `okf verify
+            // mybundle` (for `validate`) loud.
+            if (ids.Count == 0)
+            {
+                return 0;
+            }
+        }
+
+        var bundle = Load(path);
+
+        // Refused here as well as in the writer, so the message reads like its
+        // siblings (the writer's ends with a period; the CLI's do not).
+        var duplicate = ids.GroupBy(id => id, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new CliOperationException($"concept '{duplicate.Key}' is named more than once");
+        }
+
+        // The writer itself already refuses the whole batch atomically if any
+        // id is unknown or non-conformant (BundleConceptWriter.RecordVerifications
+        // resolves, reads, parses and validates every concept before writing
+        // any) — this loop does not exist to prevent a half-stamped batch.
+        // What it buys is message quality: naming the offending id directly
+        // ("unknown concept \"x\"" / "concept \"x\" has no `type`...") instead
+        // of the writer's unattributed "Missing required frontmatter keys:
+        // type", which does not say which of several ids was at fault.
+        foreach (var id in ids)
+        {
+            if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
+            {
+                throw new CliOperationException($"unknown concept \"{id}\"");
+            }
+
+            if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
+            {
+                throw new CliOperationException($"concept \"{id}\" has no `type` and is not §11-conformant");
+            }
+        }
+
+        if (parsed.Has("--dry-run"))
+        {
+            // A dry run writes nothing, so there is no timestamp to report. It
+            // could format one (OkfTimestamp is reachable here), but printing a
+            // date the real run would not reproduce is worse than saying "now".
+            foreach (var id in ids)
+            {
+                stdout.Write($"would record {id}  {by}  {at ?? "(now)"}\n");
+            }
+
+            return 0;
+        }
+
+        // Constructed only now: a dry run above never needs a writer at all.
+        var writer = new BundleConceptWriter(path);
+
+        // One batch call: the writer prepares every concept before writing any,
+        // so nothing is half-stamped if a later one turns out unwritable.
+        var outcome = writer.RecordVerifications(ids, by, at);
+        // Printed BEFORE deciding the exit code: a batch can fail part-way
+        // through the write phase, and the concepts that did land must be
+        // reported. Staying silent about them would repeat, one layer up, the
+        // very thing the writer was fixed not to do.
+        foreach (var record in outcome.Records)
+        {
+            // record.At is the timestamp the writer actually used — the CLI
+            // reports it rather than recomputing one that could differ.
+            var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
+            stdout.Write($"recorded {record.ConceptId}  {by}  {record.At}{replaces}\n");
+        }
+
+        if (!outcome.Recorded)
+        {
+            throw new CliOperationException(outcome.Message.Replace("Error: ", string.Empty, StringComparison.Ordinal));
+        }
+
+        return 0;
+    }
+
+    /// <summary>Reads concept ids from <paramref name="stdin"/>, one per line, ignoring blank lines.</summary>
+    private static List<string> ReadIdsFrom(TextReader stdin)
+    {
+        var ids = new List<string>();
+        while (stdin.ReadLine() is { } line)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length > 0)
+            {
+                ids.Add(trimmed);
+            }
+        }
+
+        return ids;
     }
 
     /// <summary>Implements the <c>info</c> subcommand.</summary>

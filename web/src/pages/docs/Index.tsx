@@ -73,14 +73,14 @@ export default function DocsIndex() {
                 concept: <Link to="/docs/cli">cli</Link>,
                 desc: (
                   <>
-                    The seven <code>okf</code> commands — flags, exit codes, and copy-paste transcripts.
+                    The nine <code>okf</code> commands — flags, exit codes, and copy-paste transcripts.
                   </>
                 ),
               },
               {
                 type: 'Reference',
                 concept: <Link to="/docs/agents">agents</Link>,
-                desc: 'The Microsoft Agent Framework layer — ten bundle tools and a budget-bounded context provider.',
+                desc: 'The Microsoft Agent Framework layer — twelve bundle tools and a budget-bounded context provider.',
               },
               {
                 type: 'Reference',

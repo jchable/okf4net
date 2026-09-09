@@ -20,14 +20,103 @@ are the concrete entry points.
   backed by the shared `ConceptAudit`/`AuditVocabulary` model in `OKF4net`.
   Motivated by ["OKF v0.2 Quietly Admits the Folder Has a Ceiling"](https://medium.com/@davidroliver/okf-v0-2-quietly-admits-the-folder-has-a-ceiling-the-way-up-is-a-library-25fa54e872f9)
   — see [its design spec](docs/superpowers/specs/2026-08-21-okf-audit-design.md).
-- **Per-verb `--help` for the CLI.** `okf audit --help` today prints
-  `error: missing <bundle>`, and so do `okf validate --help` and every other
-  verb: the CLI has one global usage block and no per-verb help, so a verb's
-  own flags are only discoverable by reading OPTIONS or this repo. `audit`
-  makes it visible (six optional flags, none of which fit on its COMMANDS
-  line), but the gap is CLI-wide and should be closed for all eight verbs at
-  once — intercepting `--help` inside each command before its positional is
-  resolved, which also changes those invocations from exit 1 to exit 0.
+- **`okf verify` shipped** — the verb that answers what `okf audit` asks
+  about trust: it records a review by adding, or from the same actor
+  replacing, a `{by, at}` entry in a named concept's `verified` list (§5.2),
+  so — for a `human:` actor — the concept clears audit's trust-filtered
+  selection at the next pass. A `process:` or `<producer>/<version>` actor is accepted
+  symmetrically (§7) but only moves the concept from `unverified` to
+  `machine-confirmed`, which `--trust unverified,machine-confirmed` still
+  selects. Verification only moves the trust dimension (§5.3) — `stale_after` is
+  untouched, so a just-reviewed concept can still appear in `okf audit`'s
+  *default* (staleness-only) worklist. `<id>…` accepts `-` to
+  read ids from standard input, so `okf audit … --trust unverified | cut
+  -d' ' -f1 | okf verify … --by human:ada -` closes the loop in one line.
+  Backed by the new `BundleConceptWriter.RecordVerifications` — the single
+  governed writer of `verified` — and exposed to agents as `okf_verify`. See
+  [its design spec](docs/superpowers/specs/2026-08-28-okf-verify-design.md).
+  - **Next, highest-value follow-up: a time-aware audit.** A `verified`
+    stamp today attests a moment, not a version — `Trust.DeriveTier` derives
+    `human-reviewed` from an actor's presence alone, so a five-year-old human
+    stamp counts the same as one from this morning, and nothing currently
+    flags that the concept's content moved after the review. Exposing the
+    stamps' timestamps on `AuditFinding` would let `okf audit` ask "reviewed,
+    but as of when, and has the file changed since?" — answered outside the
+    library, by comparing `max(verified[].at)` against
+    `git log -1 --format=%cI -- <path>` (the folder is canonical; its
+    history is git's, not the frontmatter's). Deliberately out of `okf
+    verify`'s scope: it needs no new write path, only turns an existing
+    field from a permanent alibi into a signal that decays. No schema
+    extension (`digest`, `scope`, `note` on the stamp) is planned to
+    recreate this information inside the bundle instead — that question is
+    answered by git, on purpose.
+- **Atomic write-then-rename in `BundleConceptWriter`.** Every write path
+  in the class ends at `File.WriteAllText`, which truncates the target and
+  writes in place, so a failure mid-write (full disk, device error) can
+  leave a concept truncated or half-written. `RecordVerifications` reports
+  the concepts whose write returned, and that file is not among them — so
+  the report is not wrong, but "exactly what landed" is a stronger claim
+  than the primitive supports, and the docs now say so. Closing it means
+  writing to a temporary file in the same directory and `File.Replace`-ing
+  it over the target. Deliberately its own pass rather than a footnote to
+  `okf verify`: the call sits immediately after the late reparse-point
+  re-check and inside the per-bundle lock, so a replacement needs tests for
+  `File.Replace` semantics (cross-volume, existing-file, permissions,
+  what happens to the backup), for the path-safety guard still holding
+  against the *temporary* name, and for the lock — a security-sensitive
+  seam that must not be swapped in passing. Pre-existing and shared by
+  every write path; not introduced by verification.
+  One thing in its favour, measured rather than assumed: every write path in
+  the class funnels through the single `WriteValidatedContentLocked`, whose
+  `File.WriteAllText` is the only line that touches disk. The change is
+  therefore contained to one method — it is the *interaction* with the late
+  reparse-point re-check and the lock that needs the tests, not a scattered
+  edit.
+- **Resolve the bundle root before keying the write lock.**
+  `BundleConceptWriter`'s process-wide lock registry is keyed by
+  `ReparsePoints.CanonicalizeRoot`, which is `Path.GetFullPath` plus a
+  trailing-separator trim — purely lexical. A junction or symlink
+  `alias` -> `actual` therefore yields two distinct locks over one set of
+  files, so two writers in the same process can interleave their
+  read-modify-write cycles and lose a stamp. Shown with `mklink /J`: the two
+  lock objects are not reference-equal. Fixing it means following reparse
+  points on the root, which touches the same seam `ValidateConceptTarget`
+  guards, so it needs its own tests (junction, symlink, a root whose parent
+  is a reparse point, and the cross-platform behaviour of
+  `Directory.ResolveLinkTarget`). Pre-existing and shared by every write
+  path, but verification raises the stakes: it is the first operation to hold
+  that lock across a batch of files. The lock is in-process only either way —
+  a second `okf` process was never serialized against, and that limit is
+  already documented on the class. Tracked as
+  [#86](https://github.com/jchable/okf4net/issues/86), which carries the
+  reproduction.
+  **The design question comes before the fix, and it is bigger than the title
+  suggests.** `CanonicalizeRoot` has nine call sites across five projects —
+  `Bundle`, `IndexGenerator`, `BundleConceptWriter`, `OKF4net.Catalog`
+  (`CatalogPathResolver`, `FileMemoryStore`), `OKF4net.Viewer` — and two of
+  them are the path-safety guards themselves, `IsWithinBundleRoot` and
+  `HasReparsePointAncestor`. Making it resolve reparse points would therefore
+  change what "inside the bundle" means everywhere, which is a security change
+  with a repo-wide blast radius, not a lock fix. The narrower alternative is to
+  leave `CanonicalizeRoot` lexical and give the lock registry its own resolved
+  key, so only the serialization contract moves. Deciding between those two —
+  and saying what each does when resolution fails, or when the target does not
+  exist — is the actual work; the code after it is small.
+- **Reconcile the YAML depth counters between the parser and the emitter.**
+  `YamlParser` enforces its 1000-level cap with TWO independent counters (one
+  for block nesting, one for flow); `YamlEmitter` has a single counter covering
+  both. A frontmatter mixing the two — roughly 450 block levels with 900 flow
+  levels — therefore parses happily and then cannot be re-emitted, breaking the
+  invariant a format library owes its callers: whatever it can read, it can
+  write back. Only the *symptom* was addressed alongside `okf verify`: the
+  emitter now raises a catchable `YamlEmitException` instead of a bare
+  `InvalidOperationException`, so the failure is errors-as-data on every path
+  rather than a stack trace out of the CLI or a fault in an MCP host. The
+  asymmetry itself is untouched, deliberately: making the two agree changes what
+  the library ACCEPTS, on the read path, which is a compatibility decision with
+  its own tests (what a bundle in the wild may already contain) and not a
+  footnote to a write feature. Pre-existing; reachable from any caller that
+  parses a hostile-but-loadable document.
 - **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
   builder can now write a *per-entry* §5.1 override (`AddSource(…,
   usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal

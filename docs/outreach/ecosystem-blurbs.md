@@ -6,10 +6,10 @@ below are checked against `README.md` as of this writing:
 - Zero third-party runtime dependencies in `src/OKF4net/` and
   `src/OKF4net.Cli/` (BCL only — own YAML-subset parser, link scanner, CLI
   arg parsing).
-- Library + a `okf` CLI (`validate`/`info`/`index`/`graph`/`parse`/`fmt`),
-  published Native AOT, self-contained, single-file.
+- Library + a `okf` CLI (`validate`/`audit`/`verify`/`info`/`index`/`graph`/
+  `parse`/`fmt`/`render`), published Native AOT, self-contained, single-file.
 - `src/OKF4net.Agents/` is a separate package exposing bundle operations as
-  Microsoft Agent Framework tools (`OkfBundleTools`, nine `AITool`s) plus
+  Microsoft Agent Framework tools (`OkfBundleTools`, twelve `AITool`s) plus
   `OkfContextProvider`; it is the only project depending on
   `Microsoft.Agents.AI`.
 - Implements Google's Open Knowledge Format (OKF) v0.1: a bundle is a
@@ -116,9 +116,9 @@ in-site submission flow is the only mechanism observed.
 > OKF4net is a from-scratch, zero-dependency .NET port of Google's Open
 > Knowledge Format (OKF v0.1) — treat a directory of markdown + YAML files
 > as a queryable, cross-linked knowledge bundle. It ships a Native AOT
-> `okf` CLI (`validate`/`info`/`index`/`graph`/`parse`/`fmt`) and a
-> Microsoft Agent Framework tools layer for agent-native read/write access
-> to the bundle. https://github.com/jchable/okf4net
+> `okf` CLI (`validate`/`audit`/`verify`/`info`/`index`/`graph`/`parse`/`fmt`/
+> `render`) and a Microsoft Agent Framework tools layer for agent-native
+> read/write access to the bundle. https://github.com/jchable/okf4net
 
 ---
 

@@ -9,7 +9,7 @@ using OKF4net.Tests.Attestation;
 namespace OKF4net.Tests.Agents;
 
 /// <summary>
-/// Tests <see cref="OkfBundleTools.GetTools"/>: the eleven tool methods
+/// Tests <see cref="OkfBundleTools.GetTools"/>: the twelve tool methods
 /// exposed as Agent Framework <see cref="AIFunction"/>s (via
 /// <see cref="AITool"/>) when no attestation orchestrator is wired (so
 /// <c>okf_run_computation</c> is omitted; see
@@ -30,6 +30,7 @@ public class AIFunctionExposureTests
         "okf_search",
         "okf_audit",
         "okf_write_concept",
+        "okf_verify",
         "okf_append_log",
         "okf_regenerate_indexes",
         "okf_validate_bundle",
@@ -38,14 +39,14 @@ public class AIFunctionExposureTests
     ];
 
     [Fact]
-    public void GetTools_returns_exactly_eleven_tools()
+    public void GetTools_returns_exactly_twelve_tools()
     {
         var tools = new OkfBundleTools(BundlePath);
-        Assert.Equal(11, tools.GetTools().Count);
+        Assert.Equal(12, tools.GetTools().Count);
     }
 
     [Fact]
-    public void GetTools_names_are_the_eleven_snake_case_names_in_stable_order()
+    public void GetTools_names_are_the_twelve_snake_case_names_in_stable_order()
     {
         var tools = new OkfBundleTools(BundlePath);
         var names = tools.GetTools().Cast<AIFunction>().Select(f => f.Name).ToList();

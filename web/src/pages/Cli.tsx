@@ -42,7 +42,7 @@ export default function Cli() {
   return (
     <Layout
       title="The okf CLI — OKF4net"
-      description="The okf command-line tool: validate, audit, info, index, graph, parse and fmt — a self-contained Native AOT binary that drops straight into CI."
+      description="The okf command-line tool: validate, audit, verify, info, index, graph, parse and fmt — a self-contained Native AOT binary that drops straight into CI."
       current="cli"
     >
       <PageDoc
@@ -54,7 +54,7 @@ export default function Cli() {
         type="Reference"
         title={
           <>
-            Seven commands, <em>one binary.</em>
+            Eight commands, <em>one binary.</em>
           </>
         }
         lede={
@@ -76,6 +76,13 @@ export default function Cli() {
                 <>
                   Report trust (§5.3), lifecycle (§5.4) and staleness (§5.5) across the bundle; filter with{' '}
                   <code>--stale</code>, <code>--trust</code>, <code>--status</code>, <code>--type</code>
+                </>,
+              ],
+              [
+                'okf verify <bundle> <id>…',
+                <>
+                  Record a review (§5.2) — adds or replaces a <code>{'{by, at}'}</code> stamp; clears the
+                  unverified worklist, not staleness
                 </>,
               ],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],

@@ -208,6 +208,31 @@ public class GoldenParityTests
         Assert.Equal(8, allFiles.Length);
     }
 
+    /// <summary>
+    /// `verify` writes, so it runs against a throwaway copy of the v0.2 fixture
+    /// rather than the fixture itself. The golden is hand-authored and verified
+    /// against the design spec's output format -- there is no upstream `verify`
+    /// to capture. The date is pinned with --at so it cannot drift.
+    /// </summary>
+    [Fact]
+    public void Verify_output_matches_golden()
+    {
+        using var tmp = new TempDir();
+        CopyDirectory(Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02"), tmp.Path);
+
+        var r = Run("verify", tmp.Path, "metrics/dau", "metrics/legacy", "--by", "human:ada", "--at", "2026-08-28T09:14:00Z");
+
+        Assert.Equal(0, r.Code);
+        // Concept ids are echoed verbatim from the '/'-form ids this test
+        // passes -- no separator normalization is needed on any platform.
+        Assert.Equal(Golden("verify.out"), r.Out);
+
+        // stdout alone would stay green if the verb printed the right line and
+        // wrote the wrong stamp, touched `generated`, or mangled the document.
+        // The written file is the artefact that matters, so it is pinned too.
+        Assert.Equal(Golden("verify-dau.md"), File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
+    }
+
     private static void CopyDirectory(string sourceDir, string destDir)
     {
         Directory.CreateDirectory(destDir);

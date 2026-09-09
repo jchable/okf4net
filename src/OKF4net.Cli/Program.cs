@@ -14,6 +14,6 @@ public static class Program
         // pages otherwise mangle non-ASCII output).
         Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
-        return OkfCli.Run(args, Console.Out, Console.Error);
+        return OkfCli.Run(args, Console.In, Console.Out, Console.Error);
     }
 }
