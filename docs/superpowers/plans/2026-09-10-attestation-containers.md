@@ -2316,8 +2316,25 @@ Design section: "Bundle de validation".
 
 - [ ] **Step 1: Write the bundle root**
 
+**Correction (verified empirically after this plan first shipped):** every
+`.md` file other than `index.md`/`log.md` is a concept document (§8) — there
+is no "plain prose, not validated" middle ground. A frontmatter-less
+`README.md` fails validation with `[error] missing required frontmatter
+field 'type'`, not a silent skip. `README.md` therefore needs real,
+minimal, valid frontmatter — confirmed by writing exactly the block below
+into an isolated test directory and running `okf validate` against it: `0
+error(s), 1 warning(s)` (only the same class of `missing recommended
+frontmatter field 'resource'` already accepted for the two computations).
+
 ```markdown
 <!-- bundles/attestation_containers_demo/README.md -->
+---
+type: Reference
+title: Attestation Containers Demo
+description: A validation bundle for OKF4net.Attestation.Containers demonstrating Script (python) and SqlClient (postgres) container runtimes.
+tags: [demo, attestation, containers]
+---
+
 # attestation_containers_demo
 
 A small OKF v0.2 bundle, written from scratch (not copied from any
@@ -2494,30 +2511,31 @@ def attest(*, sanctioned_computation, receipt, values):
 **Note on the leading `/` in both `attester.resource` values above (discovered empirically while writing this plan, verify you kept it):** `computations/` and `attesters/` are sibling directories under the bundle root. §6.2's *concept-relative* resolution (a resource path with no leading `/`) resolves against the **referencing concept's own directory**, not the bundle root — so a bare `attesters/greeting_attester.py` written inside `computations/greeting.md` would resolve to the nonexistent `computations/attesters/greeting_attester.py`. This is confirmed empirically: `bundles/acme_retail` uses this exact bare-path pattern for its own sibling `attesters/` directory, and running `dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail` on this very branch reports `frontmatter path 'attester.resource' → 'attesters/sql_equality.py' not found` — a real, pre-existing latent bug in the upstream reference bundle that nothing exercised until this plan's Task 1 wired up attester-resource resolution for the first time. The leading `/` (bundle-root-relative resolution) is what makes this bundle's own references actually resolve.
 
 Run: `dotnet run --project src/OKF4net.Cli -- validate bundles/attestation_containers_demo`
-Expected: 0 errors. Exactly 2 warnings are normal and correct, not a defect to
-chase away: `missing recommended frontmatter field 'resource'` on both
-`computations/greeting.md` and `computations/active-user-count.md` — this
-top-level `resource` field is a generic §4 "what physical asset does this
-concept describe" pointer that doesn't apply to an Attested Computation
-(which uses `executor.resource`/`attester.resource` instead, §10). Verify
-this by running the same command against `bundles/acme_retail`: its own
+Expected: **0 errors, exactly 3 warnings, 3 concept(s)**. All three warnings
+are normal and correct, not a defect to chase away — each is
+`missing recommended frontmatter field 'resource'`, on
+`computations/greeting.md`, `computations/active-user-count.md`, and
+`README.md`. This top-level `resource` field is a generic §4 "what physical
+asset does this concept describe" pointer that doesn't apply to an Attested
+Computation (which uses `executor.resource`/`attester.resource` instead,
+§10) or to a bundle's own about-itself note. Verify the computations' two
+warnings by running the same command against `bundles/acme_retail`: its own
 `computations/*.md` files carry this exact warning too, already accepted as
-correct for this concept type — don't try to silence it here by inventing an
-unused `resource:` value.
+correct for this concept type — don't try to silence any of the three by
+inventing an unused `resource:` value.
 
-**`index.md`/`README.md` MUST produce zero warnings.** §8 of the vendored
-spec (`docs/spec/SPEC.md:512`) is explicit: *"Index files contain no
-frontmatter, with one exception: a bundle-root `index.md` MAY carry an
-`okf_version` key."* None of this bundle's three `index.md` files (Step 1)
-have any frontmatter at all — correct, don't add any. `README.md` (also
-Step 1) is likewise plain prose with no frontmatter — it is deliberately
-NOT an OKF concept (a human-readable provenance note, the same role a
-GitHub README normally plays), so it must never gain a `type`/`title`/etc.
-frontmatter block; doing so would make it a concept with two more
-unavoidable warnings of its own (missing `resource`, missing `tags`) for no
-benefit. `okf validate`'s concept count for this bundle should be exactly 2
-(the two computations) — if it reports 3, something gained frontmatter that
-shouldn't have any.
+**`index.md` MUST produce zero warnings and carry no frontmatter; `README.md`
+MUST be a real, minimal, valid concept.** §8 of the vendored spec
+(`docs/spec/SPEC.md:512`) is explicit that index files carry no frontmatter,
+and this bundle's three `index.md` files (Step 1) correctly have none.
+`README.md`, however, is an ordinary `.md` file — §8 is equally explicit
+that "all other `.md` files are concept documents," so a frontmatter-less
+`README.md` is not silently skipped, it is a **conformance error**
+(`missing required frontmatter field 'type'`) — verified empirically by
+writing the frontmatter-less version into an isolated test directory and
+running `okf validate` against it. `README.md`'s `type: Reference` /
+`title` / `description` / `tags` frontmatter (Step 1) is required, not
+optional polish; do not strip it down to plain prose.
 
 - [ ] **Step 7: Commit**
 
