@@ -2121,9 +2121,15 @@ namespace OKF4net.Tests.Attestation.Containers;
 /// The SqlClient case needs a reachable Postgres instance. Start one first:
 /// <c>docker run --rm -d --name okf-demo-pg -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo -p 5544:5432 postgres:16-alpine</c>,
 /// then seed it: <c>docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE users(id int, active boolean); INSERT INTO users VALUES (1,true),(2,true),(3,false);"</c>,
-/// and set <c>OKF_DEMO_PG_CONN=postgresql://postgres:demo@localhost:5544/demo</c>
-/// before running these tests. Stop it afterwards with
-/// <c>docker stop okf-demo-pg</c>.
+/// and set <c>OKF_DEMO_PG_CONN=postgresql://postgres:demo@host.docker.internal:5544/demo</c>
+/// before running these tests -- <c>host.docker.internal</c>, not
+/// <c>localhost</c>: the connection string is read by the .NET test process
+/// on the host, but consumed *inside* the SqlClient container this test
+/// spins up, where <c>localhost</c> means that container's own loopback,
+/// not the host's. On native Linux Docker Engine (not Docker Desktop) this
+/// hostname may need the daemon started with <c>--add-host=host.docker.internal:host-gateway</c>
+/// support, or substitute the host's real LAN/bridge IP instead. Stop the
+/// fixture afterwards with <c>docker stop okf-demo-pg</c>.
 /// </summary>
 [Trait("Category", "ContainerIntegration")]
 public class ContainerIntegrationTests
@@ -2244,7 +2250,7 @@ Run:
 docker run --rm -d --name okf-demo-pg -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo -p 5544:5432 postgres:16-alpine
 sleep 3
 docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE users(id int, active boolean); INSERT INTO users VALUES (1,true),(2,true),(3,false);"
-OKF_DEMO_PG_CONN=postgresql://postgres:demo@localhost:5544/demo dotnet test tests/OKF4net.Tests --filter "Category=ContainerIntegration"
+OKF_DEMO_PG_CONN=postgresql://postgres:demo@host.docker.internal:5544/demo dotnet test tests/OKF4net.Tests --filter "Category=ContainerIntegration"
 docker stop okf-demo-pg
 ```
 Expected: PASS. If it fails, fix the implementation from Tasks 1–9 (not this test) and re-run — this is where real container behavior (resource limits actually enforced, timeout/cancellation actually killing the container, the pg8000 pip-install-at-runtime approach actually working) gets its only real verification.
