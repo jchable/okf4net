@@ -101,6 +101,12 @@ public sealed class AttestationOrchestrator
             return resolutionFailure;
         }
 
+        // Step 2b: resolve the attester's own source, the same way (§6.2).
+        if (!TryResolveAttesterSource(bundle, concept, contract, out var attesterSourceText, out var attesterResolutionFailure))
+        {
+            return attesterResolutionFailure;
+        }
+
         // Step 3: resolve the runtime.
         if (string.IsNullOrEmpty(contract.Runtime) || !_runtimes.TryGet(contract.Runtime, out var runtime) || runtime is null)
         {
@@ -202,7 +208,7 @@ public sealed class AttestationOrchestrator
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var context = new AttestationContext(contract, resolved, bound, parameterValues, receipt);
+            var context = new AttestationContext(contract, resolved, bound, parameterValues, receipt, attesterSourceText);
             (verdict, error) = await AttestAsync(runtime, context, reasons, cancellationToken).ConfigureAwait(false);
         }
 
@@ -322,6 +328,65 @@ public sealed class AttestationOrchestrator
                 resolved = default;
                 failure = Fail("attested computation has no computation (neither an inline `# Computation` fence nor a `computation:` path)");
                 return false;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the concept's <c>attester.resource</c> the same way
+    /// <see cref="TryResolveComputation"/> resolves <c>computation</c>, so no
+    /// <see cref="IAttester"/> implementation ever needs a <see cref="Bundle"/>
+    /// itself. Absent, empty, or URL-valued <c>attester.resource</c> is not a
+    /// failure — §11 leaves the attester optional (a validator warning, not
+    /// an error, flags an empty resource) — it simply yields a
+    /// <see langword="null"/> source. A declared resource that cannot
+    /// actually be resolved or read on disk IS an early failure, same as a
+    /// broken computation file.
+    /// </summary>
+    /// <param name="bundle">The bundle the concept was loaded from.</param>
+    /// <param name="concept">The attested-computation concept.</param>
+    /// <param name="contract">The concept's §10.2 contract.</param>
+    /// <param name="attesterSourceText">The resolved source text, or <see langword="null"/> when there is nothing to resolve.</param>
+    /// <param name="failure">The non-displayable outcome to return, when this returns <see langword="false"/>.</param>
+    private static bool TryResolveAttesterSource(
+        Bundle bundle,
+        Concept concept,
+        AttestedComputationContract contract,
+        out string? attesterSourceText,
+        [NotNullWhen(false)] out AttestationOutcome? failure)
+    {
+        attesterSourceText = null;
+        failure = null;
+
+        var resource = contract.Attester?.Resource;
+        if (string.IsNullOrEmpty(resource))
+        {
+            return true;
+        }
+
+        if (!bundle.TryResolveResource(concept, resource, out var absolutePath, out var status) || status == ResourceResolutionStatus.Url)
+        {
+            // URLs are never resolved on disk (§6.2); nothing to read. (The
+            // `!TryResolveResource(...)` half never actually triggers --
+            // resolution always returns true -- kept only for the same
+            // defensive symmetry TryResolveComputation above already uses.)
+            return true;
+        }
+
+        if (status != ResourceResolutionStatus.Resolved)
+        {
+            failure = Fail($"attester resource '{resource}' could not be resolved ({status})");
+            return false;
+        }
+
+        try
+        {
+            attesterSourceText = bundle.ReadResourceText(absolutePath!);
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            failure = Fail($"attester resource '{resource}' could not be read: {e.GetType().Name}");
+            return false;
         }
     }
 
