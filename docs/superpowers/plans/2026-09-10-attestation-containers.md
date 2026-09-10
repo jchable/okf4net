@@ -6,7 +6,7 @@
 
 **Architecture:** One shared parameter binder (filters/type-checks against `contract.Parameters`, never touches the bound text) feeds two `IComputationExecutor` implementations (`Script`, `SqlClient`) and one `IAttester` implementation, all driven by a single `IContainerEngine` abstraction whose only real implementation (`CliContainerEngine`) shells to a `run`-compatible container CLI via `Process.Start`/`ArgumentList` — never a concatenated shell string. Every payload (script text, SQL text, attester module source) travels over stdin as text or JSON; the container command is always a short, fixed string. A small prerequisite change to the already-shipped `OKF4net.Attestation` project lets `AttestationContext` carry a pre-resolved attester source, so no `IAttester` implementation ever needs a `Bundle`.
 
-**Tech Stack:** .NET 10 / C# 14, `System.Diagnostics.Process`, `System.Text.Json` (both in-box, no NuGet package), xunit. Container-side: Python 3 (stdlib only for the Script/Attester paths; `pg8000` pip-installed at run time for the SqlClient path — see Task 6's note).
+**Tech Stack:** .NET 10 / C# 14, `System.Diagnostics.Process`, `System.Text.Json` (both in-box, no NuGet package), xunit. Container-side: Python 3 (stdlib only for the Script/Attester paths; `pg8000` pip-installed at run time for the SqlClient path — see Task 5's note).
 
 **Spec:** `docs/superpowers/specs/2026-09-07-attestation-containers-design.md` — read it in full before starting. This plan implements it section by section; task headers below name the design section they satisfy.
 
@@ -159,9 +159,32 @@ public sealed record AttestationContext(
     string? AttesterSourceText);
 ```
 
-Update the doc comment above the record to add a `<param>`-style line:
+Replace the doc comment above the record — currently:
 
 ```csharp
+/// <summary>
+/// The full context handed to an <see cref="IAttester"/> (decision 8,
+/// §10.5(a)(b)): everything it might need to verify a receipt.
+/// </summary>
+/// <param name="Contract">The §10.2 contract projected from the concept's frontmatter.</param>
+/// <param name="Computation">The sanctioned computation that was run.</param>
+/// <param name="Bound">The bound artifact that was executed.</param>
+/// <param name="Values">The parameter values supplied for this run.</param>
+/// <param name="Receipt">The receipt produced by the executor.</param>
+```
+
+with:
+
+```csharp
+/// <summary>
+/// The full context handed to an <see cref="IAttester"/> (decision 8,
+/// §10.5(a)(b)): everything it might need to verify a receipt.
+/// </summary>
+/// <param name="Contract">The §10.2 contract projected from the concept's frontmatter.</param>
+/// <param name="Computation">The sanctioned computation that was run.</param>
+/// <param name="Bound">The bound artifact that was executed.</param>
+/// <param name="Values">The parameter values supplied for this run.</param>
+/// <param name="Receipt">The receipt produced by the executor.</param>
 /// <param name="AttesterSourceText">
 /// The attester's script source, already resolved and read via §6.2
 /// (mirrors how <see cref="Computation"/> is resolved) — <see langword="null"/>
@@ -208,10 +231,12 @@ In `src/OKF4net.Attestation/AttestationOrchestrator.cs`, add a new private stati
             return true;
         }
 
-        bundle.TryResolveResource(concept, resource, out var absolutePath, out var status);
-        if (status == ResourceResolutionStatus.Url)
+        if (!bundle.TryResolveResource(concept, resource, out var absolutePath, out var status) || status == ResourceResolutionStatus.Url)
         {
-            // URLs are never resolved on disk (§6.2); nothing to read.
+            // URLs are never resolved on disk (§6.2); nothing to read. (The
+            // `!TryResolveResource(...)` half never actually triggers --
+            // resolution always returns true -- kept only for the same
+            // defensive symmetry TryResolveComputation above already uses.)
             return true;
         }
 
@@ -1410,6 +1435,10 @@ Design section: component table row for `ContainerAttestationRuntime`.
 ```csharp
 // tests/OKF4net.Tests/Attestation.Containers/ContainerAttestationRuntimeTests.cs
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using OKF4net;
+using OKF4net.Attestation;
 using OKF4net.Attestation.Containers;
 using Xunit;
 
@@ -1434,14 +1463,29 @@ public class ContainerAttestationRuntimeTests
     }
 
     [Fact]
-    public void The_attester_defaults_to_a_fixed_python_image_regardless_of_profile()
+    public async Task The_attester_uses_its_own_fixed_image_even_when_the_profile_image_has_no_python()
     {
-        var runtime = new ContainerAttestationRuntime(new FakeContainerEngine(), new ContainerRuntimeProfile { Image = "postgres:16-alpine", Kind = ContainerRuntimeKind.SqlClient });
-        // ContainerAttester has no public Image accessor, so this is exercised
-        // end-to-end in Task 8's orchestrator-level test instead; this test
-        // only pins the type, which the attester test suite (Task 6) already
-        // covers for image selection.
-        Assert.IsType<ContainerAttester>(runtime.Attester);
+        var engine = new FakeContainerEngine { Respond = _ => new ContainerRunResult(0, """{"ok": true}""", "") };
+        // A SqlClient profile's image (postgres:16-alpine) has no Python at
+        // all -- if ContainerAttestationRuntime ever threaded profile.Image
+        // into the attester instead of ContainerAttesterOptions's own
+        // default, this would be the regression that proves it: the
+        // attester run would target an image the assertion below shows it
+        // did NOT use.
+        var runtime = new ContainerAttestationRuntime(engine, new ContainerRuntimeProfile { Image = "postgres:16-alpine", Kind = ContainerRuntimeKind.SqlClient });
+
+        var context = new AttestationContext(
+            Contract: new AttestedComputationContract("postgres", [], null, null, new Attester("a.py")),
+            Computation: new SanctionedComputation(ComputationSource.Inline, "SELECT 1", null),
+            Bound: new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?>()),
+            Values: new Dictionary<string, object?>(),
+            Receipt: new Receipt(new Dictionary<string, object?>()),
+            AttesterSourceText: "def attest(**_):\n    return {}\n");
+
+        await runtime.Attester.AttestAsync(context);
+
+        Assert.Equal("python:3.12-slim", engine.LastSpec!.Image);
+        Assert.NotEqual("postgres:16-alpine", engine.LastSpec.Image);
     }
 }
 ```
@@ -1652,11 +1696,12 @@ namespace OKF4net.Attestation.Containers;
 /// shells to a Docker-CLI-compatible binary (<c>docker</c>, <c>podman</c>,
 /// or <c>nerdctl</c> — their <c>run</c> surface is compatible, so one
 /// parameterized class covers all three). <see cref="RunAsync"/> itself is
-/// added in the next task; this task adds only <see cref="BuildRunArguments"/>,
-/// the pure part: it never spawns a process, so it is unit-tested directly
-/// without Docker.
+/// added in Task 9, by editing this same file further — not a `partial`
+/// split, there is only ever one file. This task adds only
+/// <see cref="BuildRunArguments"/>, the pure part: it never spawns a
+/// process, so it is unit-tested directly without Docker.
 /// </summary>
-public sealed partial class CliContainerEngine(string binaryName = "docker") : IContainerEngine
+public sealed class CliContainerEngine(string binaryName = "docker") : IContainerEngine
 {
     /// <summary>
     /// Builds the <c>run</c> argument list for <paramref name="spec"/>. Every
@@ -1736,7 +1781,7 @@ Design section: "Gestion d'erreurs & sécurité" in full — cancellation identi
 
 - [ ] **Step 1: Implement `RunAsync` and its private helpers**
 
-Add to `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (inside the existing `partial class CliContainerEngine`, after `BuildRunArguments`):
+Add to `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (inside the existing `CliContainerEngine` class body, after `BuildRunArguments`):
 
 ```csharp
     /// <summary>Stdout/stderr are each capped at 8 MiB; a container that floods either past this is a stage failure, not an OOM.</summary>
@@ -1851,6 +1896,16 @@ Add to `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (inside the ex
         }
     }
 
+    /// <summary>
+    /// Writes <paramref name="input"/> then closes the stream. A container
+    /// that exits before consuming all of stdin closes its end of the pipe
+    /// first, which surfaces here as an <see cref="IOException"/> ("broken
+    /// pipe") -- an expected occurrence (a script that errors out early),
+    /// not a reason to let a raw exception replace the container's actual
+    /// exit code and output in <see cref="RunAsync"/>. Swallowed here;
+    /// <see cref="RunAsync"/>'s own exit-code check reports the real
+    /// failure.
+    /// </summary>
     private static async Task WriteStdinAsync(StreamWriter writer, string? input)
     {
         try
@@ -1860,9 +1915,18 @@ Add to `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (inside the ex
                 await writer.WriteAsync(input).ConfigureAwait(false);
             }
         }
+        catch (IOException)
+        {
+        }
         finally
         {
-            writer.Close();
+            try
+            {
+                writer.Close();
+            }
+            catch (IOException)
+            {
+            }
         }
     }
 
@@ -2194,7 +2258,7 @@ description: Deterministic verification scripts for this bundle's computations.
 
 - [ ] **Step 2: Write the `python` runtime computation**
 
-```markdown
+````markdown
 <!-- bundles/attestation_containers_demo/computations/greeting.md -->
 ---
 type: Attested Computation
@@ -2219,7 +2283,7 @@ params = json.loads(os.environ["OKF_PARAMS_JSON"])
 name = params.get("name", "world")
 print(json.dumps({"message": f"Hello, {name}!"}))
 ```
-```
+````
 
 - [ ] **Step 3: Write its attester**
 
@@ -2246,7 +2310,7 @@ def attest(*, sanctioned_computation, receipt, values):
 
 - [ ] **Step 4: Write the `postgres` runtime computation**
 
-```markdown
+````markdown
 <!-- bundles/attestation_containers_demo/computations/active-user-count.md -->
 ---
 type: Attested Computation
@@ -2271,7 +2335,7 @@ SELECT count(*) AS active_users FROM users WHERE active = true AND id >= :min_id
 Placeholder syntax is `:name` (pg8000's native binding style), not BigQuery's
 `@name` — the two demo runtimes each use the placeholder syntax their own
 driver actually binds; there is no single universal OKF placeholder syntax.
-```
+````
 
 - [ ] **Step 5: Write its attester**
 
@@ -2437,7 +2501,7 @@ return 0;
 
 - [ ] **Step 4: Write the README**
 
-```markdown
+````markdown
 <!-- samples/attestation-containers-demo/README.md -->
 # attestation-containers-demo
 
@@ -2456,7 +2520,7 @@ CI (same convention as `samples/acme-retail-agent` and
 ```bash
 dotnet run --project samples/attestation-containers-demo
 ```
-```
+````
 
 - [ ] **Step 5: Run it (requires Docker)**
 
@@ -2488,3 +2552,15 @@ git commit -m "docs(samples): add attestation-containers-demo sample project"
 **Placeholder scan:** no TBD/TODO; every code step has real code; no step says "similar to Task N" without repeating the actual content.
 
 **Type consistency check:** `ContainerRunSpec`/`ContainerRunResult` (Task 2) are used with the same shape in Tasks 4, 5, 6, 8, 9. `ContainerRuntimeProfile`'s property names (`Image`, `Kind`, `Interpreter`, `Environment`, `MemoryBytes`, `Cpus`, `PidsLimit`, `Timeout`) are used identically in Tasks 4, 5, 7, 9, 11, 12. `AttestationContext.AttesterSourceText` (Task 1) matches its use in Task 6. `ContainerExecutionException(message, stdout, stderr)`'s constructor order matches every call site in Tasks 4, 5, 6.
+
+**Meticulous review (round 2), after this plan was first written — findings fixed in place, not left as notes:**
+
+1. **Rendering bug in this document itself:** three of Task 11/12's markdown-file-content blocks nested a ` ``` ` fence inside another ` ``` ` fence (a `.md` file's own `python`/`sql`/`bash` fence, shown inside a ` ```markdown ` block). Per CommonMark, the inner fence's closing ` ``` ` line closes the *outer* fence early, corrupting everything after it. Fixed by widening the outer fence to four backticks in all three spots.
+2. **Robustness gap in `CliContainerEngine.RunAsync` (Task 9):** `WriteStdinAsync` let an `IOException` (broken pipe — a container that exits before reading all of stdin, an ordinary occurrence, not exceptional) propagate uncaught, which would have replaced `RunAsync`'s normal `ContainerRunResult` return (carrying the container's real exit code and output) with a raw, uninformative exception. Now caught and swallowed; the exit-code check downstream reports the real failure.
+3. **A test that didn't test its own claim (Task 7):** `The_attester_defaults_to_a_fixed_python_image_regardless_of_profile` only asserted `Assert.IsType<ContainerAttester>(...)` — true regardless of which image the attester actually uses, so it could never catch the exact regression its name promises (`ContainerAttestationRuntime` accidentally threading a `SqlClient` profile's non-Python image into the attester — the precise bug design-review finding #2 was about). Rewritten to actually run the attester through a `FakeContainerEngine` and assert on `LastSpec.Image`.
+4. **Spurious `partial` keyword (Task 8):** `CliContainerEngine` was declared `partial` for no reason — Task 9 edits the same file, not a second one. Removed; the class is an ordinary `sealed class`.
+5. **Ambiguous edit instruction (Task 1):** "add a `<param>` line" to an existing doc comment, without showing where relative to the existing lines, is exactly the kind of implicit instruction this skill's "No Placeholders" rule exists to catch. Replaced with the full before/after doc comment.
+6. **Style inconsistency (Task 1):** `TryResolveAttesterSource` initially called `bundle.TryResolveResource(...)` without checking its (always-`true`) return value, unlike the existing `TryResolveComputation` it's explicitly modeled on. Changed to match that method's defensive style, adapted for the one real difference (a URL resource is lenient here, not a failure).
+7. **Task-number typo:** the plan header's Tech Stack line pointed at "Task 6's note" for the pg8000 trade-off; it's actually Task 5. Fixed.
+
+Extensively cross-checked but found sound: every positional-record constructor call against its actual `src/OKF4net`/`src/OKF4net.Attestation` declaration (`AttestedComputationContract`, `ComputationParameter`, `Executor`, `Attester`, `SanctionedComputation`, `BoundComputation`, `AttestationContext`); `Bundle.TryResolveResource`'s real signature and always-`true` return contract; the `CultureInfo.InvariantCulture` use in `BuildRunArguments` against a plain-string test assertion (no locale bug, in either direction); the concurrent stdin-write/stdout-drain/stderr-drain structure in `RunAsync` (no pipe deadlock); the cancellation-vs-timeout disambiguation against `AttestationOrchestrator`'s actual `IsCallerCancellation` logic; and the bare `TempDir`/`ConceptId`/`Bundle` references in new test files against this repo's own C# namespace-nesting convention (`OKF4net.Tests.Attestation.Containers` resolves unqualified names from the enclosing `OKF4net.Tests` namespace the same way `OKF4net.Tests.Attestation` already does, with no `using` needed — confirmed against `AttestationOrchestratorTests.cs`'s existing, working code).
