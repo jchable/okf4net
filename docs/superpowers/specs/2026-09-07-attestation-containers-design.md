@@ -12,20 +12,19 @@ provenance SQL et rouvrait un vecteur d'injection), mais deux binders qui ne
 touchent jamais au texte de la computation.
 
 **Révision (round 2)** : un second audit externe (utilisant le briefing
-round 2 du même fichier) a trouvé quatre points Important supplémentaires.
-Trois sont corrigés inline ici, marqués « post-revue » : image dédiée pour
-l'attester (#2), sémantique d'annulation alignée sur le comportement actuel
-de `AttestationOrchestrator` — qui a changé depuis la rédaction de ce
-document (#5), filtrage des paramètres non déclarés (#7), drainage
+round 2 du même fichier) a trouvé quatre points Important supplémentaires,
+tous maintenant corrigés inline (marqués « post-revue » / « round 2 ») :
+image dédiée pour l'attester (#2) ; sémantique d'annulation alignée sur le
+comportement actuel de `AttestationOrchestrator` — qui a changé depuis la
+rédaction de ce document (#5) ; deux arbitrages tranchés avec l'utilisateur :
+résolution de `attester.resource` pré-résolue par l'orchestrateur, un
+prérequis mineur sur `OKF4net.Attestation` déjà livré (#1, voir « Résolution
+de `attester.resource` » sous Attester) ; abandon de `sqlcmd`/`psql` au
+profit d'un pilote pur-Python, `sqlserver` différé faute de pilote pur-Python
+équivalent validé (#3/#4, voir la section `SqlClient`). Plus quelques
+corrections mineures : filtrage des paramètres non déclarés (#7), drainage
 stdout/stderr borné et concurrent (#6), exigence de limites de ressources
-non encore chiffrées (#8), contrat de sortie de l'attester (#9). **Deux
-points restent ouverts, en attente d'arbitrage** (voir la fin du document
-après « Travaux futurs ») : (#1) `AttestationContext` ne porte pas de quoi
-résoudre `attester.resource` en sécurité — touche le projet
-`OKF4net.Attestation` déjà livré, hors périmètre initial de ce document ;
-(#3/#4) la CLI `sqlcmd`/`psql` ne peut pas honorer à la fois le binding
-natif et la garantie « pas de shell » — remet en cause le choix « CLI
-officielle + wrapper minimal » pour `SqlClient`.
+non encore chiffrées (#8), contrat de sortie de l'attester (#9).
 
 ## Contexte et motivation
 
@@ -45,7 +44,7 @@ règle déjà actée pour ce sous-système (voir mémoire
 réimplémenter la logique d'un script sanctionné en C# — le trust model de §10
 repose sur l'exécution du script réel, pas d'une réinterprétation. Ce document
 conçoit la pièce manquante : un host qui exécute réellement ces scripts
-(Python, clients SQL Postgres/SQL Server, etc.) dans des conteneurs, en
+(Python, clients SQL type Postgres, etc.) dans des conteneurs, en
 respectant cette contrainte.
 
 ## Périmètre
@@ -58,6 +57,13 @@ contrats `OKF4net.Attestation`, que n'importe quel host peut enregistrer dans
 Hors périmètre v1 (voir « Travaux futurs ») : moteurs d'exécution cloud/K8s,
 images conteneur publiées par OKF4net, bootstraps d'attester dans un langage
 autre que Python, gestion de secrets au-delà des variables d'environnement.
+
+**Prérequis (ajouté round 2, finding #1)** : ce projet dépend d'un petit
+ajout à `OKF4net.Attestation` (déjà livré, hors de ce nouveau projet au sens
+strict) — voir « Résolution de `attester.resource` » dans la section
+Attester ci-dessous. À séquencer avant l'implémentation du projet Containers
+lui-même ; l'ampleur est mineure (même patron que la résolution déjà
+existante de `computation`), pas un nouveau cycle de conception séparé.
 
 ## Architecture & dépendances
 
@@ -168,42 +174,88 @@ dans `executor.receipt`. Aucun bootstrap n'est nécessaire — le texte
 sanctionné est directement le programme ; `ScriptComputationExecutor` se
 contente de parser stdout comme `Receipt.Fields`.
 
-### Executor `SqlClient` (ex. `postgres`, `sqlserver`)
+### Executor `SqlClient` (ex. `postgres`, en attente pour `sqlserver`)
 
-stdin = texte SQL sanctionné, **inchangé, placeholders (`@name`) compris** :
+**Révisé (round 2, findings #3/#4)** : la version précédente proposait une
+image cliente officielle (`postgres:16-alpine`, `mssql-tools`) pilotée par
+sa CLI native (`psql`/`sqlcmd`), avec le binding des paramètres délégué à
+cette CLI. Deux défauts, vérifiés indépendamment : `sqlcmd -v` est de la
+substitution de variable de script **côté client** (`$(nom)`), pas un
+binding natif des paramètres nommés T-SQL — l'utiliser aurait réintroduit la
+substitution textuelle que le fix du binder (round 1) élimine justement. Et
+`psql`, même piloté uniquement via stdin, interprète ses propres
+méta-commandes (`\!`, `\copy ... program`) qui peuvent invoquer un shell
+depuis l'intérieur du conteneur — précisément celui qui porte les
+identifiants de connexion. Aucune CLI native ne peut donc honorer à la fois
+l'invariant de binding et la garantie « aucune chaîne du bundle n'atteint un
+shell ».
+
+**Nouveau mécanisme** : même image Python fixe que l'`Attester` (voir
+ci-dessous — résout aussi le finding #2, un seul type d'image à maintenir
+pour SqlClient + Attester), pilotée par un pilote de base de données
+**pur Python** plutôt qu'une CLI :
 
 ```sh
-<engine> run -i --rm --name okf-<guid> -e OKF_CONN=... <image> sh -c "<wrapper fixe>"
+<engine> run -i --rm --name okf-<guid> -e OKF_CONN=... <image> python -c "<wrapper fixe et court>"
 ```
 
-Le wrapper (fourni par ce projet, jamais par le bundle) exécute le SQL
-**strictement inchangé** — contrainte dure : toute réécriture de requête (ex.
-l'envelopper dans `json_agg(...)` pour forcer une sortie JSON, ou substituer
-les placeholders par les valeurs avant exécution) romprait la vérification de
-provenance d'un attester qui compare `executed_sql` au texte sanctionné (cf.
-`sql_equality.py`, qui compare les bind variables **symboliquement** — la
-valeur ne doit jamais apparaître en clair dans `executed_sql`). Les valeurs de
-paramètres (`SqlClientParameterBinder`) sont transmises au wrapper séparément
-et doivent atteindre le client SQL via son mécanisme natif de bind parameters
-(ex. `\bind`/paramètres nommés `psql`, `-v` `sqlcmd`) — jamais par
-interpolation dans la chaîne de requête. Le wrapper se contente ensuite de
-choisir le mode de sortie du client natif le plus proche d'un format
-structuré et de le convertir en JSON. **Décision** : v1 utilise des images
-officielles existantes (ex. `postgres:16-alpine`, image `mssql-tools`), pas
-d'image publiée par OKF4net. **Spike requis à l'implémentation**, sur deux
-points conjoints (pas seulement le formatage JSON) : (a) le mécanisme de bind
-parameters natif disponible par client/version dans ces images, et (b) le
-formatage JSON du résultat sans réécrire la requête. Recommandation
-complémentaire : épingler les images par digest plutôt que par tag flottant
-(`postgres:16-alpine` peut changer de contenu sans préavis).
+stdin porte une enveloppe JSON `{ "sql": "<texte SQL sanctionné, inchangé, placeholders compris>", "values": { ... } }`.
+Le wrapper (chaîne C# constante, jamais dérivée du bundle) se connecte via
+`OKF_CONN`, exécute `sql` **strictement inchangé** en passant `values` au
+pilote via son API de paramètres liés natifs (ex. `pg8000` pour Postgres :
+`cursor.execute(sql, values)`, qui envoie le texte et les valeurs séparément
+sur le protocole — jamais de concaténation ni de méta-langage client
+intermédiaire), puis sérialise le résultat en JSON. Même contrainte dure
+qu'avant : toute réécriture de `sql` (ex. l'envelopper dans `json_agg(...)`)
+romprait la vérification de provenance d'un attester qui compare
+`executed_sql` au texte sanctionné (cf. `sql_equality.py`, bind variables
+comparées **symboliquement** — la valeur ne doit jamais apparaître en clair
+dans `executed_sql`).
+
+**`sqlserver` en attente** : Postgres a un pilote pur-Python mature
+(`pg8000`). Pour SQL Server, les options pur-Python (ex. `python-tds`) sont
+moins éprouvées ; `pyodbc`/`pymssql` sortiraient de « pur Python » (liaison
+native, dépendance système supplémentaire dans l'image). **Décision** :
+`sqlserver` n'est pas dans le périmètre v1 tant qu'un pilote comparable n'a
+pas été validé par un spike dédié — le runtime `postgres` seul valide le
+mécanisme SqlClient.
+
+Recommandation inchangée : épingler l'image par digest plutôt que par tag
+flottant.
 
 ### Attester
+
+**Résolution de `attester.resource` (round 2, finding #1)** : `Bundle.TryResolveResource`
+exige un `Concept` pour résoudre un chemin en sécurité (§6.2 — relatif au
+répertoire du concept ou à la racine du bundle, avec les contrôles de
+containment/reparse). `AttestationContext` (`Contract`, `Computation`,
+`Bound`, `Values`, `Receipt`) n'en porte aucun, et un `IAttestationRuntime`
+est construit une fois puis réutilisé à travers de nombreux runs/bundles —
+il ne peut donc pas non plus fermer sur un bundle/concept particulier. Un
+`IAttester` conteneurisé n'a donc, tel que les contrats existent
+aujourd'hui, aucun moyen sûr d'obtenir le texte du module qu'il doit
+exécuter.
+
+**Correction retenue** (prérequis sur `OKF4net.Attestation`, voir
+« Prérequis » dans Périmètre) : `AttestationOrchestrator.RunAsync` résout
+`attester.resource` de la même manière qu'il résout déjà `computation`
+(même patron que `TryResolveComputation` : §6.2 via `Bundle`/`Concept`,
+lecture du fichier, échec précoce en `AttestationOutcome.Fail(...)` si la
+ressource est absente/introuvable/non sûre/une URL) — bien **avant**
+d'appeler `IAttester.AttestAsync`, comme `computation` l'est avant `Binder`/
+`Executor`. Le texte résolu rejoint `AttestationContext` sous un nouveau
+champ (ex. `AttesterSourceText`). Aucune implémentation `IAttester`, y
+compris `ContainerAttester`, n'a donc jamais besoin d'un `Bundle` — la
+résolution §6.2 reste centralisée au seul endroit qui l'applique déjà pour
+`computation`.
 
 Un module d'attestation (ex. `sql_equality.py`) est une **bibliothèque**, pas
 un programme autonome — il expose une fonction (convention v1 :
 `attest(**kwargs)`) à appeler avec des noms de kwargs fixés par la
-convention OKF4net (pas ceux, arbitraires, que le script utilise déjà). stdin
-porte une enveloppe JSON :
+convention OKF4net (pas ceux, arbitraires, que le script utilise déjà).
+`ContainerAttester` lit `attester_source` depuis
+`AttestationContext.AttesterSourceText` (ci-dessus) — jamais résolu par ce
+projet lui-même. stdin porte une enveloppe JSON :
 
 ```json
 { "attester_source": "<texte complet du module Python>", "kwargs": { "sanctioned_computation": "...", "receipt": { ... }, "values": { ... } } }
@@ -387,7 +439,8 @@ un nouveau bundle d'exemple `bundles/attestation_containers_demo/` est écrit
 dès le départ selon la convention OKF4net, accompagné d'un petit projet
 `samples/attestation-containers-demo/` qui câble
 `OKF4net.Attestation.Containers` + `AttestationOrchestrator` de bout en bout
-sur un runtime `python` et un runtime SQL (postgres ou sqlserver) réel.
+sur un runtime `python` et le runtime `postgres` réel (`sqlserver` différé,
+voir « `sqlserver` en attente » dans la section SqlClient).
 
 ## Travaux futurs (hors périmètre v1)
 
@@ -401,46 +454,5 @@ sur un runtime `python` et un runtime SQL (postgres ou sqlserver) réel.
 - Mécanisme de secrets plus robuste que les variables d'environnement.
 - Câblage réel de `bundles/acme_retail` sur ce host, une fois la convention
   validée sur le bundle de démonstration.
-
-## Points en attente d'arbitrage (round 2)
-
-### #1 — `AttestationContext` ne porte pas de quoi résoudre `attester.resource`
-
-`Bundle.TryResolveResource` exige un `Concept` (résolution §6.2 sûre,
-relative au répertoire du concept ou à la racine du bundle). `AttestationContext`
-(`Contract`, `Computation`, `Bound`, `Values`, `Receipt`) n'en porte aucun,
-et un `IAttestationRuntime` est construit une seule fois puis réutilisé à
-travers de nombreux runs/bundles — il ne peut donc pas non plus fermer sur
-un bundle/concept particulier. Un `IAttester` conteneurisé n'a
-structurellement aucun moyen sûr d'obtenir le texte du module qu'il doit
-exécuter. Ceci touche `OKF4net.Attestation` (déjà livré), pas seulement ce
-nouveau projet. Deux pistes, à trancher avant d'écrire le plan
-d'implémentation :
-
-- Pré-résoudre `attester.resource` dans `AttestationOrchestrator.RunAsync`
-  (même traitement que `computation` à l'étape 2 — `TryResolveComputation`
-  est déjà le patron à suivre) et ajouter le texte résolu à
-  `AttestationContext` ; les implémentations `IAttester` n'ont alors jamais
-  besoin d'un `Bundle`.
-- Étendre `AttestationContext` avec `Bundle`/`Concept` (ou `ConceptId`), et
-  laisser chaque `IAttester` résoudre lui-même via `TryResolveResource`.
-
-### #3/#4 — Le wrapper `SqlClient` ne peut pas honorer binding natif + « pas de shell » avec une CLI brute
-
-`sqlcmd -v` est une substitution de variable de script côté client
-(`$(nom)`), pas un binding natif des paramètres nommés T-SQL — l'utiliser
-réintroduirait la substitution textuelle que le fix du binder (round 1)
-visait justement à éliminer. Et `psql`, même piloté uniquement via stdin
-(`psql -f -`), interprète ses propres méta-commandes (`\!`, `\copy ... program`)
-qui peuvent invoquer un shell depuis l'intérieur du conteneur `SqlClient` —
-celui qui porte les identifiants de connexion. Aucune des deux CLI ne peut
-donc servir de mécanisme d'exécution sans compromettre soit l'invariant de
-binding, soit la garantie « aucune chaîne du bundle n'atteint un shell ».
-
-Piste de correction (à valider) : remplacer la CLI native par un pilote de
-base de données piloté depuis un langage (ex. Python + un pilote pur-Python
-comme `pg8000` pour Postgres), avec le SQL et les valeurs transmis par la
-même mécanique d'enveloppe déjà conçue pour l'attester — ce qui unifierait
-aussi le choix d'image avec la correction du finding #2. Conséquence
-possible : suspendre `sqlserver` jusqu'à ce qu'un pilote comparable soit
-validé pour ce dialecte.
+- `sqlserver` : différé jusqu'à validation d'un pilote pur-Python comparable
+  à `pg8000` (voir « `sqlserver` en attente » sous Executor `SqlClient`).
