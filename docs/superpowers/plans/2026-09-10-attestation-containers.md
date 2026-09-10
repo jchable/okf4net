@@ -305,12 +305,14 @@ Design section: "Architecture & dépendances"; "Principe transversal : pas de mo
 - Create: `src/OKF4net.Attestation.Containers/ContainerRuntimeProfile.cs`
 - Create: `src/OKF4net.Attestation.Containers/ContainerExecutionException.cs`
 - Create: `src/OKF4net.Attestation.Containers/Internal/JsonValues.cs`
+- Create: `src/OKF4net.Attestation.Containers/Internal/ReceiptParsing.cs`
 - Create: `tests/OKF4net.Tests/Attestation.Containers/FakeContainerEngine.cs`
 - Create: `tests/OKF4net.Tests/Attestation.Containers/JsonValuesTests.cs`
+- Create: `tests/OKF4net.Tests/Attestation.Containers/ReceiptParsingTests.cs`
 - Modify: `OKF4net.sln`
 
 **Interfaces:**
-- Produces: `IContainerEngine`, `ContainerRunSpec`, `ContainerRunResult`, `ContainerRuntimeKind`, `ContainerRuntimeProfile`, `ContainerAttesterOptions`, `ContainerExecutionException`, `internal static JsonValues.Normalize(JsonElement) -> object?`, `FakeContainerEngine` (test double, in the test project's `OKF4net.Tests.Attestation.Containers` namespace). Every later task consumes these.
+- Produces: `IContainerEngine`, `ContainerRunSpec`, `ContainerRunResult`, `ContainerRuntimeKind`, `ContainerRuntimeProfile`, `ContainerAttesterOptions`, `ContainerExecutionException`, `internal static JsonValues.Normalize(JsonElement) -> object?`, `internal static ReceiptParsing.Parse(ContainerRunResult, string stageName) -> Receipt`, `FakeContainerEngine` (test double, in the test project's `OKF4net.Tests.Attestation.Containers` namespace). Every later task consumes these. `ReceiptParsing.Parse` exists so Tasks 4 and 5 don't each duplicate the same exit-code-check-then-parse-JSON-into-a-Receipt logic — they differ only in the stage name that appears in a thrown exception's message.
 
 - [ ] **Step 1: Create the project file**
 
@@ -382,7 +384,7 @@ installed and on `PATH` — this is a runtime prerequisite, not a NuGet
 dependency; the project itself has zero third-party package references.
 ```
 
-- [ ] **Step 4: Write the failing test for `JsonValues.Normalize`**
+- [ ] **Step 4: Write the failing tests for `JsonValues.Normalize` and `ReceiptParsing.Parse`**
 
 ```csharp
 // tests/OKF4net.Tests/Attestation.Containers/JsonValuesTests.cs
@@ -422,9 +424,48 @@ public class JsonValuesTests
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it fails**
+```csharp
+// tests/OKF4net.Tests/Attestation.Containers/ReceiptParsingTests.cs
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Collections.Generic;
+using OKF4net.Attestation.Containers;
+using OKF4net.Attestation.Containers.Internal;
+using Xunit;
 
-Run: `dotnet test tests/OKF4net.Tests --filter "FullyQualifiedName~JsonValuesTests"`
+namespace OKF4net.Tests.Attestation.Containers;
+
+public class ReceiptParsingTests
+{
+    [Fact]
+    public void A_non_zero_exit_code_throws_with_the_stage_name_in_the_message()
+    {
+        var ex = Assert.Throws<ContainerExecutionException>(
+            () => ReceiptParsing.Parse(new ContainerRunResult(1, "", "boom"), "script"));
+        Assert.Contains("script exited with code 1", ex.Message);
+        Assert.Equal("boom", ex.Stderr);
+    }
+
+    [Fact]
+    public void Malformed_stdout_JSON_throws_with_the_stage_name_in_the_message()
+    {
+        var ex = Assert.Throws<ContainerExecutionException>(
+            () => ReceiptParsing.Parse(new ContainerRunResult(0, "not json", ""), "SQL wrapper"));
+        Assert.Contains("SQL wrapper stdout was not valid JSON", ex.Message);
+    }
+
+    [Fact]
+    public void Valid_stdout_JSON_becomes_a_normalized_Receipt()
+    {
+        var receipt = ReceiptParsing.Parse(new ContainerRunResult(0, """{"message": "hi", "count": 3}""", ""), "script");
+        Assert.Equal("hi", receipt.Fields["message"]);
+        Assert.Equal(3L, receipt.Fields["count"]);
+    }
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they fail**
+
+Run: `dotnet test tests/OKF4net.Tests --filter "FullyQualifiedName~JsonValuesTests|FullyQualifiedName~ReceiptParsingTests"`
 Expected: FAIL — `OKF4net.Attestation.Containers` does not exist yet.
 
 - [ ] **Step 6: Implement the remaining types**
@@ -616,9 +657,54 @@ internal static class JsonValues
 }
 ```
 
-- [ ] **Step 7: Run the test to verify it passes**
+```csharp
+// src/OKF4net.Attestation.Containers/Internal/ReceiptParsing.cs
+// SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Text.Json;
 
-Run: `dotnet test tests/OKF4net.Tests --filter "FullyQualifiedName~JsonValuesTests"`
+namespace OKF4net.Attestation.Containers.Internal;
+
+/// <summary>
+/// Turns a container's raw <see cref="ContainerRunResult"/> into a
+/// <see cref="Receipt"/>, or throws a <see cref="ContainerExecutionException"/>
+/// explaining why it couldn't. Shared by <see cref="ScriptComputationExecutor"/>
+/// and <see cref="SqlClientComputationExecutor"/> (Tasks 4/5) — both need
+/// exactly this "non-zero exit is a failure; otherwise the stdout JSON
+/// object's fields, normalized, are the receipt" logic, differing only in
+/// <paramref name="stageName"/>, the word that names the stage in a thrown
+/// exception's message.
+/// </summary>
+internal static class ReceiptParsing
+{
+    /// <summary>Parses <paramref name="result"/> into a <see cref="Receipt"/>.</summary>
+    /// <param name="result">The container's raw run result.</param>
+    /// <param name="stageName">Names the stage in a thrown exception's message (e.g. <c>"script"</c>, <c>"SQL wrapper"</c>).</param>
+    public static Receipt Parse(ContainerRunResult result, string stageName)
+    {
+        if (result.ExitCode != 0)
+        {
+            throw new ContainerExecutionException($"{stageName} exited with code {result.ExitCode}", result.Stdout, result.Stderr);
+        }
+
+        Dictionary<string, JsonElement>? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(result.Stdout);
+        }
+        catch (JsonException e)
+        {
+            throw new ContainerExecutionException($"{stageName} stdout was not valid JSON: {e.Message}", result.Stdout, result.Stderr);
+        }
+
+        var fields = (parsed ?? []).ToDictionary(kv => kv.Key, kv => JsonValues.Normalize(kv.Value));
+        return new Receipt(fields);
+    }
+}
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `dotnet test tests/OKF4net.Tests --filter "FullyQualifiedName~JsonValuesTests|FullyQualifiedName~ReceiptParsingTests"`
 Expected: PASS.
 
 - [ ] **Step 8: Write `FakeContainerEngine`**
@@ -872,7 +958,7 @@ Design section: "Executor `Script` (ex. `python`)".
 - Test: `tests/OKF4net.Tests/Attestation.Containers/ScriptComputationExecutorTests.cs`
 
 **Interfaces:**
-- Consumes: `IContainerEngine.RunAsync`, `ContainerRuntimeProfile`, `Internal.JsonValues.Normalize`.
+- Consumes: `IContainerEngine.RunAsync`, `ContainerRuntimeProfile`, `Internal.ReceiptParsing.Parse`.
 - Produces: `ScriptComputationExecutor : IComputationExecutor`, consumed by Task 8.
 
 - [ ] **Step 1: Write the failing tests**
@@ -993,23 +1079,7 @@ public sealed class ScriptComputationExecutor(IContainerEngine engine, Container
             Timeout: profile.Timeout);
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new ContainerExecutionException($"script exited with code {result.ExitCode}", result.Stdout, result.Stderr);
-        }
-
-        Dictionary<string, JsonElement>? parsed;
-        try
-        {
-            parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(result.Stdout);
-        }
-        catch (JsonException e)
-        {
-            throw new ContainerExecutionException($"script stdout was not valid JSON: {e.Message}", result.Stdout, result.Stderr);
-        }
-
-        var fields = (parsed ?? []).ToDictionary(kv => kv.Key, kv => JsonValues.Normalize(kv.Value));
-        return new Receipt(fields);
+        return ReceiptParsing.Parse(result, "script");
     }
 }
 ```
@@ -1039,7 +1109,7 @@ Design section: "Executor `SqlClient`".
 - Test: `tests/OKF4net.Tests/Attestation.Containers/SqlClientComputationExecutorTests.cs`
 
 **Interfaces:**
-- Consumes: `IContainerEngine.RunAsync`, `ContainerRuntimeProfile`, `Internal.JsonValues.Normalize`.
+- Consumes: `IContainerEngine.RunAsync`, `ContainerRuntimeProfile`, `Internal.ReceiptParsing.Parse`.
 - Produces: `SqlClientComputationExecutor : IComputationExecutor`, consumed by Task 8.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1175,23 +1245,7 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             Timeout: profile.Timeout);
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new ContainerExecutionException($"SQL wrapper exited with code {result.ExitCode}", result.Stdout, result.Stderr);
-        }
-
-        Dictionary<string, JsonElement>? parsed;
-        try
-        {
-            parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(result.Stdout);
-        }
-        catch (JsonException e)
-        {
-            throw new ContainerExecutionException($"SQL wrapper stdout was not valid JSON: {e.Message}", result.Stdout, result.Stderr);
-        }
-
-        var fields = (parsed ?? []).ToDictionary(kv => kv.Key, kv => JsonValues.Normalize(kv.Value));
-        return new Receipt(fields);
+        return ReceiptParsing.Parse(result, "SQL wrapper");
     }
 }
 ```
@@ -2551,7 +2605,7 @@ git commit -m "docs(samples): add attestation-containers-demo sample project"
 
 **Placeholder scan:** no TBD/TODO; every code step has real code; no step says "similar to Task N" without repeating the actual content.
 
-**Type consistency check:** `ContainerRunSpec`/`ContainerRunResult` (Task 2) are used with the same shape in Tasks 4, 5, 6, 8, 9. `ContainerRuntimeProfile`'s property names (`Image`, `Kind`, `Interpreter`, `Environment`, `MemoryBytes`, `Cpus`, `PidsLimit`, `Timeout`) are used identically in Tasks 4, 5, 7, 9, 11, 12. `AttestationContext.AttesterSourceText` (Task 1) matches its use in Task 6. `ContainerExecutionException(message, stdout, stderr)`'s constructor order matches every call site in Tasks 4, 5, 6.
+**Type consistency check:** `ContainerRunSpec`/`ContainerRunResult` (Task 2) are used with the same shape in Tasks 4, 5, 6, 8, 9. `ContainerRuntimeProfile`'s property names (`Image`, `Kind`, `Interpreter`, `Environment`, `MemoryBytes`, `Cpus`, `PidsLimit`, `Timeout`) are used identically in Tasks 4, 5, 7, 9, 11, 12. `AttestationContext.AttesterSourceText` (Task 1) matches its use in Task 6. `ContainerExecutionException(message, stdout, stderr)`'s constructor order matches every call site in Tasks 4, 5, 6, and `Internal.ReceiptParsing.Parse` (Task 2), which is now the only place that constructs it for a non-zero-exit or malformed-JSON failure. `Internal.ReceiptParsing.Parse(ContainerRunResult, string stageName) -> Receipt` (Task 2) is used identically by Tasks 4 (`"script"`) and 5 (`"SQL wrapper"`) — added during the SDD pre-flight scan because Tasks 4 and 5 originally duplicated this exact logic verbatim, differing only in that string.
 
 **Meticulous review (round 2), after this plan was first written — findings fixed in place, not left as notes:**
 
