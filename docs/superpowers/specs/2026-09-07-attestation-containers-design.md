@@ -3,15 +3,29 @@
 Date : 2026-09-07
 Statut : proposé
 
-**Révision** : ce document intègre les corrections issues d'une relecture
-adversariale indépendante (voir `docs/review-briefing-attestation-containers-design.md`
-pour le brief d'audit). Le changement principal : le binder de paramètres
-n'est plus une substitution textuelle générique unique (défaut trouvé en
-revue — cassait la vérification de provenance SQL et rouvrait un vecteur
-d'injection), mais deux binders qui ne touchent jamais au texte de la
-computation. Les autres corrections (limites de ressources, timeout,
-contrainte d'invocation process, portée de `executor.resource`, mise en garde
-sur `sql_equality.py`) sont marquées « post-revue » inline.
+**Révision (round 1)** : ce document intègre les corrections issues d'une
+relecture adversariale indépendante (voir
+`docs/review-briefing-attestation-containers-design.md`). Changement
+principal : le binder de paramètres n'est plus une substitution textuelle
+générique unique (défaut trouvé en revue — cassait la vérification de
+provenance SQL et rouvrait un vecteur d'injection), mais deux binders qui ne
+touchent jamais au texte de la computation.
+
+**Révision (round 2)** : un second audit externe (utilisant le briefing
+round 2 du même fichier) a trouvé quatre points Important supplémentaires.
+Trois sont corrigés inline ici, marqués « post-revue » : image dédiée pour
+l'attester (#2), sémantique d'annulation alignée sur le comportement actuel
+de `AttestationOrchestrator` — qui a changé depuis la rédaction de ce
+document (#5), filtrage des paramètres non déclarés (#7), drainage
+stdout/stderr borné et concurrent (#6), exigence de limites de ressources
+non encore chiffrées (#8), contrat de sortie de l'attester (#9). **Deux
+points restent ouverts, en attente d'arbitrage** (voir la fin du document
+après « Travaux futurs ») : (#1) `AttestationContext` ne porte pas de quoi
+résoudre `attester.resource` en sécurité — touche le projet
+`OKF4net.Attestation` déjà livré, hors périmètre initial de ce document ;
+(#3/#4) la CLI `sqlcmd`/`psql` ne peut pas honorer à la fois le binding
+natif et la garantie « pas de shell » — remet en cause le choix « CLI
+officielle + wrapper minimal » pour `SqlClient`.
 
 ## Contexte et motivation
 
@@ -70,11 +84,11 @@ Composants :
 | `CliContainerEngine(string binaryName)` | Seule implémentation v1. Wrapper `Process.Start` autour d'un binaire CLI compatible `run` (Docker, Podman, nerdctl partagent une syntaxe compatible — une seule classe paramétrée par le nom du binaire suffit, pas de classe par moteur). |
 | `ContainerRuntimeProfile` | Config host par nom de `runtime` du bundle : image, nature (`Script` \| `SqlClient`), variables d'environnement (ex. connection string). |
 | `ContainerAttestationRuntime` | Implémente `IAttestationRuntime`. Prend un `IContainerEngine` + un `ContainerRuntimeProfile`, choisit `ScriptParameterBinder`/`ScriptComputationExecutor` ou `SqlClientParameterBinder`/`SqlClientComputationExecutor` selon `Kind`, toujours `ContainerAttester` comme `Attester`. |
-| `ScriptParameterBinder` | `IParameterBinder` pour les profils `Script`. Ne touche **jamais** au texte de la computation — `BoundComputation.BoundText` reste le script sanctionné inchangé. Son seul rôle est de marshaler les valeurs (§10.2 `type`) vers une représentation JSON-safe portée par `BoundComputation.Values`. |
-| `SqlClientParameterBinder` | `IParameterBinder` pour les profils `SqlClient`. Ne touche **jamais** au texte SQL — `BoundText` reste le SQL sanctionné inchangé, placeholders (`@name`) compris. Marshale les valeurs vers la représentation attendue par le mécanisme de bind natif du client cible (`psql`/`sqlcmd`). |
+| `ScriptParameterBinder` | `IParameterBinder` pour les profils `Script`. Ne touche **jamais** au texte de la computation — `BoundComputation.BoundText` reste le script sanctionné inchangé. Filtre `parameterValues` aux seuls noms déclarés dans `contract.Parameters` (voir note ci-dessous), type-check chaque valeur retenue contre le `type` déclaré, puis marshale vers une représentation JSON-safe portée par `BoundComputation.Values`. |
+| `SqlClientParameterBinder` | `IParameterBinder` pour les profils `SqlClient`. Ne touche **jamais** au texte SQL — `BoundText` reste le SQL sanctionné inchangé, placeholders (`@name`) compris. Même filtrage/type-check que `ScriptParameterBinder`, puis marshale vers la représentation attendue par le mécanisme de bind natif du client cible. |
 | `ScriptComputationExecutor` | `IComputationExecutor` pour les profils `Script`. |
 | `SqlClientComputationExecutor` | `IComputationExecutor` pour les profils `SqlClient`. |
-| `ContainerAttester` | `IAttester` — toujours conteneurisé, toujours via le bootstrap Python (v1). |
+| `ContainerAttester` | `IAttester` — toujours conteneurisé, toujours via le bootstrap Python (v1), toujours sur une **image Python fixe et unique**, indépendante de l'image du profil (corrigé post-revue #2 : réutiliser l'image du profil `SqlClient`, ex. `postgres:16-alpine`, planterait au démarrage de l'interpréteur — cette image n'a pas Python). |
 
 **Pourquoi deux binders et pas un seul générique par substitution textuelle**
 (correction post-revue) : une première version de ce design proposait un
@@ -93,6 +107,18 @@ valeurs voyagent à part (`BoundComputation.Values`), et c'est l'executor —
 spécifique au runtime — qui les relaie au mécanisme natif de binding de sa
 cible (variable d'environnement JSON pour un script, paramètre CLI natif
 pour un client SQL).
+
+**Note sur le filtrage des paramètres (ajoutée post-revue, finding #7)** :
+`AttestationOrchestrator.RunAsync` (étape 4) ne fait que vérifier que les
+paramètres **requis** sont présents ; il transmet ensuite le dictionnaire
+`parameterValues` **complet, non filtré** au binder — le commentaire
+« extra values are ignored (§10.3) » décrit l'intention spec, pas un
+filtrage déjà appliqué en code. Si les binders de ce projet relaient ce
+dictionnaire tel quel dans `OKF_PARAMS_JSON` ou vers le mécanisme de bind
+SQL, une clé non déclarée dans `contract.Parameters` peut atteindre le
+script/la requête exécutée. Les deux binders doivent donc appliquer
+eux-mêmes une liste blanche (noms déclarés uniquement) et un contrôle de
+type avant de produire `BoundComputation.Values`.
 
 L'hôte enregistre un `ContainerAttestationRuntime` par nom de runtime distinct
 (`"python"`, `"postgres"`, `"sqlserver"`, ...) dans `AttestationRuntimeRegistry`
@@ -196,6 +222,16 @@ parse ce JSON en `AttestationVerdict`.
 Convention v1 : Python uniquement. D'autres langages (même bootstrap, script
 embarqué différent) sont un travail futur sans exemple concret à ce jour.
 
+**Contrat de sortie (précisé post-revue, finding #9)** : le protocole n'était
+défini que côté entrée (noms des kwargs). Côté sortie, le module d'attestation
+importé ne doit **jamais** écrire sur stdout — un simple `print()` de debug
+laissé dans un import corromprait le flux JSON que `ContainerAttester`
+s'attend à lire. Le bootstrap est seul responsable de stdout : il n'imprime
+qu'une fois, à la toute fin, le verdict JSON complet (clés et types exacts à
+fixer à l'implémentation — au minimum un booléen de résultat explicite).
+Toute diagnostic/log du module importé doit être redirigé ailleurs (stderr,
+ou capturé et ignoré) avant l'appel à `attest(**kwargs)`.
+
 **Ce choix de nommage de kwargs est un détail d'implémentation propre à ce
 projet, pas un gap de la spec OKF v0.2** — §10 laisse l'exécution entièrement
 au host (`executor.resource`/`attester.resource` sont de simples chemins
@@ -224,12 +260,41 @@ maillon consommateur séparé), pas seulement d'adapter des noms de paramètres.
 
 ## Gestion d'erreurs & sécurité
 
-Aucun nouveau modèle d'erreur : `AttestationOrchestrator.RunAsync` capture déjà
-toute exception levée par le binder/executor/attester et la transforme en
-`AttestationOutcome.Error` + `Reasons` (errors-as-data déjà en place). Ce
-projet se contente de lever des exceptions informatives (code de sortie,
-stderr tronqué) sur binaire moteur absent, code de sortie non nul, JSON de
-sortie malformé, ou timeout.
+**Correction post-revue (finding #5)** : cette section décrivait un
+comportement de `AttestationOrchestrator.RunAsync` qui n'est plus le
+comportement actuel du code (`AttestationOrchestrator.cs` a évolué depuis la
+rédaction initiale de ce document). L'orchestrateur distingue maintenant
+explicitement deux cas :
+
+- une exception qui représente **l'annulation de l'appelant** (le
+  `CancellationToken` passé à `RunAsync` est déclenché, et l'exception est —
+  ou enveloppe — une `OperationCanceledException`, via `IsCallerCancellation`) :
+  elle **n'est jamais convertie en donnée**, elle est relancée telle quelle
+  (ou ré-émise avec le même token) pour que l'appelant la reconnaisse comme
+  une annulation, pas comme un échec du run ;
+- un échec de stage ordinaire (tout le reste) : converti en
+  `AttestationOutcome.Fail(...)`, et **seul le type de l'exception** rejoint
+  `Reasons` (jamais son `Message`) — délibéré, parce que `Reasons` est rendu
+  dans le contexte d'un agent, et le message d'une exception venant d'un
+  binder/executor/attester hors du contrôle de cette bibliothèque peut
+  porter une connection string, une requête, ou la donnée qui a fait
+  échouer le run. L'exception complète n'atteint que
+  `AttestationOutcome.Error`, lu uniquement côté hôte.
+
+**Conséquences directes pour ce projet** :
+
+- Quand `CliContainerEngine` tue un conteneur parce que le
+  `CancellationToken` **de l'appelant** a été déclenché, il doit relancer une
+  vraie `OperationCanceledException` liée à **ce même token** (jamais un type
+  d'exception maison enveloppant la cause) — sinon `IsCallerCancellation` ne
+  la reconnaît pas, et une annulation demandée par l'appelant se transforme
+  en échec ordinaire du run.
+- À l'inverse, quand ce projet lève ses propres exceptions informatives
+  (code de sortie, stderr tronqué) sur binaire moteur absent, code de sortie
+  non nul, JSON de sortie malformé, ou son propre timeout indépendant : ce
+  détail riche peut vivre dans le `Message`/les données de l'exception (il
+  n'atteint que `Error`), mais ne doit **jamais** être supposé sûr pour un
+  rendu orienté modèle — même discipline que le reste de l'orchestrateur.
 
 Points de robustesse propres aux conteneurs :
 
@@ -248,7 +313,13 @@ Points de robustesse propres aux conteneurs :
 - Toujours `--rm` + un nom unique par invocation, pour pouvoir faire
   `<engine> kill <nom>` explicitement sur annulation (`CancellationToken`) —
   tuer le process client local ne suffit pas à arrêter le conteneur côté
-  démon.
+  démon. **Course create/kill à gérer (ajouté post-revue)** : une annulation
+  qui arrive pendant la création du conteneur (traction d'image, démarrage)
+  peut faire échouer un `kill <nom>` précoce ("not found"), suivi d'un
+  démarrage tardif qui échappe à la tentative — `CliContainerEngine` doit
+  garantir l'ordre (ex. `create` puis `start` séparés, kill retenté sur une
+  fenêtre bornée) plutôt que supposer qu'un seul `kill` couvre toutes les
+  phases du cycle de vie.
 - **Timeout mur-à-mur indépendant de l'appelant** (ajouté post-revue) : un
   `CancellationToken` qui n'est jamais annulé (appel agent fire-and-forget,
   UI abandonnée) ne doit pas laisser un conteneur tourner indéfiniment.
@@ -260,9 +331,23 @@ Points de robustesse propres aux conteneurs :
   épuiser l'hôte de l'intérieur d'un conteneur par ailleurs « isolé ».
   `ContainerRuntimeProfile` doit porter des valeurs par défaut sûres
   (`--memory`, `--cpus`, `--pids-limit`) passées systématiquement par
-  `CliContainerEngine`.
-- Plafond de lecture sur stdout (taille max) pour éviter qu'un script buggé
-  ou hostile épuise la mémoire de l'hôte.
+  `CliContainerEngine`. **Précision post-revue (finding #8)** : ceci est une
+  exigence de conception, pas encore une politique arrêtée — les valeurs
+  numériques concrètes (et la vérification qu'elles sont réellement
+  appliquées par moteur/plateforme, pas seulement acceptées comme flags)
+  restent à fixer et valider à l'implémentation ; une configuration invalide
+  ou accidentellement illimitée doit être rejetée plutôt que silencieusement
+  ignorée.
+- **Plafond de lecture sur stdout ET stderr, drainés en parallèle (précisé
+  post-revue, finding #6)** : « stderr tronqué » ne veut pas dire « lecture
+  bornée » — si l'implémentation lit tout stderr avant de tronquer la
+  chaîne finale, un conteneur qui inonde stderr épuise la mémoire de l'hôte
+  malgré la limite mémoire du conteneur lui-même. Les deux flux doivent être
+  drainés **concurremment** à l'écriture de stdin (pas séquentiellement,
+  qui expose au deadlock classique de pipe si l'enfant remplit son tampon
+  de sortie en attendant d'être lu), chacun avec son propre plafond de
+  taille appliqué **pendant** la lecture, jamais après coup. Ne jamais
+  parser un préfixe de stdout tronqué comme un receipt ou un verdict valide.
 - Secrets (connection strings) passés via `-e` : limitation documentée en v1
   (visibles via `docker inspect`/`/proc/<pid>/environ`) ; recommandation aux
   hôtes d'utiliser des identifiants à privilège minimal. Un mécanisme de
@@ -316,3 +401,46 @@ sur un runtime `python` et un runtime SQL (postgres ou sqlserver) réel.
 - Mécanisme de secrets plus robuste que les variables d'environnement.
 - Câblage réel de `bundles/acme_retail` sur ce host, une fois la convention
   validée sur le bundle de démonstration.
+
+## Points en attente d'arbitrage (round 2)
+
+### #1 — `AttestationContext` ne porte pas de quoi résoudre `attester.resource`
+
+`Bundle.TryResolveResource` exige un `Concept` (résolution §6.2 sûre,
+relative au répertoire du concept ou à la racine du bundle). `AttestationContext`
+(`Contract`, `Computation`, `Bound`, `Values`, `Receipt`) n'en porte aucun,
+et un `IAttestationRuntime` est construit une seule fois puis réutilisé à
+travers de nombreux runs/bundles — il ne peut donc pas non plus fermer sur
+un bundle/concept particulier. Un `IAttester` conteneurisé n'a
+structurellement aucun moyen sûr d'obtenir le texte du module qu'il doit
+exécuter. Ceci touche `OKF4net.Attestation` (déjà livré), pas seulement ce
+nouveau projet. Deux pistes, à trancher avant d'écrire le plan
+d'implémentation :
+
+- Pré-résoudre `attester.resource` dans `AttestationOrchestrator.RunAsync`
+  (même traitement que `computation` à l'étape 2 — `TryResolveComputation`
+  est déjà le patron à suivre) et ajouter le texte résolu à
+  `AttestationContext` ; les implémentations `IAttester` n'ont alors jamais
+  besoin d'un `Bundle`.
+- Étendre `AttestationContext` avec `Bundle`/`Concept` (ou `ConceptId`), et
+  laisser chaque `IAttester` résoudre lui-même via `TryResolveResource`.
+
+### #3/#4 — Le wrapper `SqlClient` ne peut pas honorer binding natif + « pas de shell » avec une CLI brute
+
+`sqlcmd -v` est une substitution de variable de script côté client
+(`$(nom)`), pas un binding natif des paramètres nommés T-SQL — l'utiliser
+réintroduirait la substitution textuelle que le fix du binder (round 1)
+visait justement à éliminer. Et `psql`, même piloté uniquement via stdin
+(`psql -f -`), interprète ses propres méta-commandes (`\!`, `\copy ... program`)
+qui peuvent invoquer un shell depuis l'intérieur du conteneur `SqlClient` —
+celui qui porte les identifiants de connexion. Aucune des deux CLI ne peut
+donc servir de mécanisme d'exécution sans compromettre soit l'invariant de
+binding, soit la garantie « aucune chaîne du bundle n'atteint un shell ».
+
+Piste de correction (à valider) : remplacer la CLI native par un pilote de
+base de données piloté depuis un langage (ex. Python + un pilote pur-Python
+comme `pg8000` pour Postgres), avec le SQL et les valeurs transmis par la
+même mécanique d'enveloppe déjà conçue pour l'attester — ce qui unifierait
+aussi le choix d'image avec la correction du finding #2. Conséquence
+possible : suspendre `sqlserver` jusqu'à ce qu'un pilote comparable soit
+validé pour ce dialecte.
