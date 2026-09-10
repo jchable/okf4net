@@ -367,6 +367,15 @@ public class ConceptSearchTests
     }
 
     [Fact]
+    public void TopDiversified_rejects_a_null_list()
+    {
+        // Same contract as TopDiversifiedBy below: a null list is a caller
+        // mistake worth naming. Without the guard it fell through to
+        // scored.Count and surfaced as a NullReferenceException instead.
+        Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversified(null!, 1));
+    }
+
+    [Fact]
     public void TopDiversifiedBy_rejects_null_arguments()
     {
         Assert.Throws<ArgumentNullException>(() => ConceptSearch.TopDiversifiedBy<string>(null!, FamilyOf, 1));

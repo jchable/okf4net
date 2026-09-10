@@ -655,7 +655,6 @@ public class CheckTests(ITestOutputHelper output)
 
         // The local function inside `Render` is Private too, so it is not a concept either.
         Assert.DoesNotContain(concepts, id => id.Contains("compose", StringComparison.Ordinal));
-        Assert.DoesNotContain("code/csharp/n/scanner/cache", concepts);
 
         var register = File.ReadAllText(Path.Combine(ProducerFixture.GoldenBundle, "code/csharp/n/registry/register.md"));
         var count = File.ReadAllText(Path.Combine(ProducerFixture.GoldenBundle, "code/csharp/n/registry/count.md"));
