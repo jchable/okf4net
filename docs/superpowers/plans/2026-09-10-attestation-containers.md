@@ -2255,15 +2255,44 @@ docker stop okf-demo-pg
 ```
 Expected: PASS. If it fails, fix the implementation from Tasks 1–9 (not this test) and re-run — this is where real container behavior (resource limits actually enforced, timeout/cancellation actually killing the container, the pg8000 pip-install-at-runtime approach actually working) gets its only real verification.
 
-- [ ] **Step 3: Run the full CI-covered suite to confirm these tests don't run there**
+- [ ] **Step 3: Exclude this category from `ci.yml` explicitly — the runtime `Skip.IfNot` check alone is not CI-safe**
 
-Run: `dotnet test OKF4net.sln`
-Expected: PASS; the three `ContainerIntegration`-tagged tests are skipped (no Docker assumption made) or run and skip themselves via `Skip.IfNot` — either way they must never fail a CI run that has no Docker.
+`Skip.IfNot(DockerAvailable(), ...)` only checks that a `docker` binary answers `--version` — it says nothing about whether Linux containers actually work. GitHub's `ubuntu-latest` runners ship a genuinely working Docker Engine, so without an explicit exclusion these tests would actually execute on every push (pulling `python:3.12-slim` over the network on every CI run — exactly what "local-only, manually-run" is meant to avoid), and `windows-latest` runners default to Windows containers, where `docker run python:3.12-slim` would very plausibly fail outright (an image platform mismatch) rather than skip — surfacing as a real CI test failure, not a clean skip, since `CliContainerEngine.RunAsync` returns a `ContainerRunResult` rather than throwing on a non-zero exit code.
 
-- [ ] **Step 4: Commit**
+In `.github/workflows/ci.yml`, change the `Test` step under the `build-test` job from:
+
+```yaml
+      - name: Test
+        run: dotnet test OKF4net.sln -c Release --no-build
+```
+
+to:
+
+```yaml
+      - name: Test
+        run: dotnet test OKF4net.sln -c Release --no-build --filter "Category!=ContainerIntegration"
+```
+
+This is a structural exclusion (like `producers/` being a separate solution CI never builds), not a hope that `Skip.IfNot` guesses right on every runner OS.
+
+- [ ] **Step 4: Verify both the CI-safe filtered run and the local convenience run**
+
+Run the exact filtered command CI will now run:
+```bash
+dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"
+```
+Expected: PASS, and the three `ContainerIntegration` tests do not appear at all (excluded, not skipped — check the reported total test count dropped by 3 compared to an unfiltered run).
+
+Then run the plain local command a developer would use:
+```bash
+dotnet test OKF4net.sln
+```
+Expected: PASS; the three tests either skip cleanly (no Docker) or actually run against Docker if it's present locally (this environment has Docker, so they should genuinely pass here, not just skip).
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add tests/OKF4net.Tests/Attestation.Containers/ContainerIntegrationTests.cs tests/OKF4net.Tests/OKF4net.Tests.csproj
+git add tests/OKF4net.Tests/Attestation.Containers/ContainerIntegrationTests.cs tests/OKF4net.Tests/OKF4net.Tests.csproj .github/workflows/ci.yml
 git commit -m "test(attestation-containers): add local-only Docker integration tests"
 ```
 
