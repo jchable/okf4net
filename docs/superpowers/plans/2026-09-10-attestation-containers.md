@@ -1762,13 +1762,16 @@ namespace OKF4net.Attestation.Containers;
 /// The only <see cref="IContainerEngine"/> implementation shipped here:
 /// shells to a Docker-CLI-compatible binary (<c>docker</c>, <c>podman</c>,
 /// or <c>nerdctl</c> — their <c>run</c> surface is compatible, so one
-/// parameterized class covers all three). <see cref="RunAsync"/> itself is
-/// added in Task 9, by editing this same file further — not a `partial`
-/// split, there is only ever one file. This task adds only
+/// parameterized class covers all three). This task adds only
 /// <see cref="BuildRunArguments"/>, the pure part: it never spawns a
-/// process, so it is unit-tested directly without Docker.
+/// process, so it is unit-tested directly without Docker. It deliberately
+/// does NOT declare <c>: IContainerEngine</c> yet — that interface requires
+/// a <c>RunAsync</c> method, added in Task 9 by editing this same file
+/// further (not a `partial` split, there is only ever one file); claiming
+/// the interface here without it would fail to compile (CS0535, a missing
+/// interface member), not just warn.
 /// </summary>
-public sealed class CliContainerEngine(string binaryName = "docker") : IContainerEngine
+public sealed class CliContainerEngine(string binaryName = "docker")
 {
     /// <summary>
     /// Builds the <c>run</c> argument list for <paramref name="spec"/>. Every
@@ -1846,9 +1849,21 @@ Design section: "Gestion d'erreurs & sécurité" in full — cancellation identi
 **Interfaces:**
 - Produces: `CliContainerEngine.RunAsync` (the `IContainerEngine` member), completing the class. Consumed transitively by every executor/attester once a host constructs a real `CliContainerEngine` instead of `FakeContainerEngine`.
 
-- [ ] **Step 1: Implement `RunAsync` and its private helpers**
+- [ ] **Step 1: Declare the interface, then implement `RunAsync` and its private helpers**
 
-Add to `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (inside the existing `CliContainerEngine` class body, after `BuildRunArguments`):
+First, change the class declaration line (Task 8 deliberately left the interface off, since `RunAsync` didn't exist yet — see that task's doc-comment note):
+
+```csharp
+public sealed class CliContainerEngine(string binaryName = "docker")
+```
+
+becomes:
+
+```csharp
+public sealed class CliContainerEngine(string binaryName = "docker") : IContainerEngine
+```
+
+Then add to `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (inside the existing `CliContainerEngine` class body, after `BuildRunArguments`):
 
 ```csharp
     /// <summary>Stdout/stderr are each capped at 8 MiB; a container that floods either past this is a stage failure, not an OOM.</summary>
