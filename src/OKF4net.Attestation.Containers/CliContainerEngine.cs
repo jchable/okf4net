@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -9,14 +10,12 @@ namespace OKF4net.Attestation.Containers;
 /// The only <see cref="IContainerEngine"/> implementation shipped here:
 /// shells to a Docker-CLI-compatible binary (<c>docker</c>, <c>podman</c>,
 /// or <c>nerdctl</c> — their <c>run</c> surface is compatible, so one
-/// parameterized class covers all three). This task adds only
-/// <see cref="BuildRunArguments"/>, the pure part: it never spawns a
-/// process, so it is unit-tested directly without Docker. It deliberately
-/// does NOT declare <c>: IContainerEngine</c> yet — that interface requires
-/// a <c>RunAsync</c> method, added in Task 9 by editing this same file
-/// further (not a `partial` split, there is only ever one file); claiming
-/// the interface here without it would fail to compile (CS0535, a missing
-/// interface member), not just warn.
+/// parameterized class covers all three). <see cref="BuildRunArguments"/> is
+/// the pure argument-construction half: it never spawns a process, so it is
+/// unit-tested directly without Docker. <see cref="RunAsync"/> is the real
+/// execution half — it actually spawns the child process, so it is
+/// exercised only by manual review and, later, against real Docker; there is
+/// no automated test for that half in this repository.
 /// </summary>
 public sealed class CliContainerEngine(string binaryName = "docker") : IContainerEngine
 {
@@ -25,8 +24,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// value (image, env vars, resource limits, the container name) is its
     /// own array element — never concatenated into one string — because this
     /// list is fed straight into <see cref="System.Diagnostics.ProcessStartInfo.ArgumentList"/>
-    /// (Task 9), which passes each element to the child process verbatim,
-    /// with no shell involved anywhere in this project's own process.
+    /// in <see cref="RunAsync"/>, which passes each element to the child
+    /// process verbatim, with no shell involved anywhere in this project's
+    /// own process.
     /// </summary>
     internal static IReadOnlyList<string> BuildRunArguments(ContainerRunSpec spec, string containerName)
     {
@@ -81,6 +81,16 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            // Explicit, no-BOM UTF-8: without this, .NET derives the pipe
+            // encoding from the console codepage, which on a headless host
+            // is not guaranteed to be UTF-8. Since ScriptComputationExecutor
+            // puts the sanctioned script's raw text on stdin with no
+            // JSON-escaping, a non-ASCII character silently mistranscoded on
+            // the way in would mean the container runs a DIFFERENT program
+            // than the one actually sanctioned. A BOM would corrupt it too.
+            StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
         };
         foreach (var arg in BuildRunArguments(spec, containerName))
         {
@@ -93,7 +103,14 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         using var process = new Process { StartInfo = psi };
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Win32Exception e)
+        {
+            throw new ContainerExecutionException($"container engine '{binaryName}' could not be started", "", e.Message);
+        }
 
         var stdinTask = WriteStdinAsync(process.StandardInput, spec.Stdin);
         var stdoutTask = ReadBoundedAsync(process.StandardOutput, MaxOutputBytes);
@@ -108,7 +125,32 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             await KillContainerAsync(containerName).ConfigureAwait(false);
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception)
+                {
+                    // Best-effort: the TOCTOU window between the HasExited
+                    // check and this call means the process may have exited
+                    // right here (the very thing KillContainerAsync
+                    // succeeding is expected to cause), which Process.Kill
+                    // can surface as AggregateException/InvalidOperationException.
+                    // Letting that escape would replace the
+                    // OperationCanceledException/ContainerExecutionException
+                    // this block exists to shape.
+                }
+            }
+
+            // stdinTask is otherwise abandoned on these throwing paths;
+            // observe it so a fault there never surfaces as an unobserved
+            // task exception instead of the exception this block throws.
+            try
+            {
+                await stdinTask.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
             }
 
             if (cancellationToken.IsCancellationRequested)
@@ -155,6 +197,8 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                    StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 },
             };
             kill.StartInfo.ArgumentList.Add("kill");
@@ -185,9 +229,10 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// first, which surfaces here as an <see cref="IOException"/> ("broken
     /// pipe") -- an expected occurrence (a script that errors out early),
     /// not a reason to let a raw exception replace the container's actual
-    /// exit code and output in <see cref="RunAsync"/>. Swallowed here;
-    /// <see cref="RunAsync"/>'s own exit-code check reports the real
-    /// failure.
+    /// exit code and output in <see cref="RunAsync"/>. Any other exception
+    /// here is swallowed for the same reason: this method is best-effort by
+    /// construction, and <see cref="RunAsync"/>'s own exit-code check
+    /// reports the real failure.
     /// </summary>
     private static async Task WriteStdinAsync(StreamWriter writer, string? input)
     {
@@ -198,7 +243,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 await writer.WriteAsync(input).ConfigureAwait(false);
             }
         }
-        catch (IOException)
+        catch (Exception)
         {
         }
         finally
@@ -207,7 +252,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             {
                 writer.Close();
             }
-            catch (IOException)
+            catch (Exception)
             {
             }
         }
