@@ -21,7 +21,7 @@ internal static class JsonValues
         JsonValueKind.String => element.GetString(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
-        JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+        JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
         JsonValueKind.Array => element.EnumerateArray().Select(Normalize).ToList(),
         JsonValueKind.Object => element.EnumerateObject().ToDictionary(p => p.Name, p => Normalize(p.Value)),
         _ => null,
