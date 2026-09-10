@@ -2388,7 +2388,7 @@ parameters:
 executor:
   receipt: [message]
 attester:
-  resource: attesters/greeting_attester.py
+  resource: /attesters/greeting_attester.py
 ---
 
 # Computation
@@ -2440,7 +2440,7 @@ parameters:
 executor:
   receipt: [executed_sql, result]
 attester:
-  resource: attesters/active_user_count_attester.py
+  resource: /attesters/active_user_count_attester.py
 ---
 
 # Computation
@@ -2491,8 +2491,10 @@ def attest(*, sanctioned_computation, receipt, values):
 
 - [ ] **Step 6: Validate the bundle**
 
+**Note on the leading `/` in both `attester.resource` values above (discovered empirically while writing this plan, verify you kept it):** `computations/` and `attesters/` are sibling directories under the bundle root. §6.2's *concept-relative* resolution (a resource path with no leading `/`) resolves against the **referencing concept's own directory**, not the bundle root — so a bare `attesters/greeting_attester.py` written inside `computations/greeting.md` would resolve to the nonexistent `computations/attesters/greeting_attester.py`. This is confirmed empirically: `bundles/acme_retail` uses this exact bare-path pattern for its own sibling `attesters/` directory, and running `dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail` on this very branch reports `frontmatter path 'attester.resource' → 'attesters/sql_equality.py' not found` — a real, pre-existing latent bug in the upstream reference bundle that nothing exercised until this plan's Task 1 wired up attester-resource resolution for the first time. The leading `/` (bundle-root-relative resolution) is what makes this bundle's own references actually resolve.
+
 Run: `dotnet run --project src/OKF4net.Cli -- validate bundles/attestation_containers_demo`
-Expected: no errors; any warnings printed must be understood and either fixed or knowingly accepted (e.g. there should be none here — both concepts declare `type`/`title`/`description`, and `executor.receipt` is a proper list).
+Expected: no errors; any warnings printed must be understood and either fixed or knowingly accepted (e.g. there should be none here — both concepts declare `type`/`title`/`description`, `executor.receipt` is a proper list, and both `attester.resource` values are bundle-root-relative per the note above).
 
 - [ ] **Step 7: Commit**
 
