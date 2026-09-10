@@ -477,9 +477,12 @@ namespace OKF4net.Attestation.Containers;
 
 /// <summary>
 /// Runs one container to completion. The single implementation shipped here
-/// is <see cref="CliContainerEngine"/> (Task 9/10); this abstraction exists
-/// so a fundamentally different engine (e.g. a future Kubernetes Jobs
-/// backend) can be added without touching any binder/executor/attester.
+/// is <c>CliContainerEngine</c> (Task 8/9 — not yet written when this file
+/// is; a <c>cref</c> here would fail to resolve and break the build under
+/// this repo's TreatWarningsAsErrors, so this is deliberately plain text);
+/// this abstraction exists so a fundamentally different engine (e.g. a
+/// future Kubernetes Jobs backend) can be added without touching any
+/// binder/executor/attester.
 /// </summary>
 public interface IContainerEngine
 {
@@ -534,8 +537,10 @@ public enum ContainerRuntimeKind
 
 /// <summary>
 /// Host-supplied configuration for one bundle <c>runtime</c> name (e.g.
-/// <c>"python"</c>, <c>"postgres"</c>). One <see cref="ContainerAttestationRuntime"/>
-/// (Task 8) is built per profile and registered under that name in
+/// <c>"python"</c>, <c>"postgres"</c>). One <c>ContainerAttestationRuntime</c>
+/// (Task 7 — not yet written when this file is; plain text, not a
+/// <c>cref</c>, for the same reason as <see cref="IContainerEngine"/>'s own
+/// doc comment) is built per profile and registered under that name in
 /// <c>AttestationRuntimeRegistry</c>.
 /// </summary>
 public sealed record ContainerRuntimeProfile
@@ -566,8 +571,10 @@ public sealed record ContainerRuntimeProfile
 }
 
 /// <summary>
-/// Configuration for <see cref="ContainerAttester"/> (Task 7) — always a
-/// fixed, small Python image, independent of whatever image the executor's
+/// Configuration for <c>ContainerAttester</c> (Task 6 — not yet written when
+/// this file is; plain text, not a <c>cref</c>, for the same reason as
+/// <see cref="IContainerEngine"/>'s own doc comment) — always a fixed,
+/// small Python image, independent of whatever image the executor's
 /// <see cref="ContainerRuntimeProfile"/> uses (a <see cref="ContainerRuntimeKind.SqlClient"/>
 /// profile's image has no Python at all).
 /// </summary>
@@ -649,7 +656,13 @@ internal static class JsonValues
         JsonValueKind.String => element.GetString(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
-        JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+        // The (object) cast is load-bearing: without it, C#'s conditional
+        // operator unifies `long` and `double` by widening the long branch
+        // to double (an implicit numeric conversion), so this would always
+        // return a boxed double even when TryGetInt64 succeeds -- silently
+        // failing every `Assert.Equal(42L, ...)`-shaped comparison a caller
+        // makes downstream.
+        JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
         JsonValueKind.Array => element.EnumerateArray().Select(Normalize).ToList(),
         JsonValueKind.Object => element.EnumerateObject().ToDictionary(p => p.Name, p => Normalize(p.Value)),
         _ => null,
