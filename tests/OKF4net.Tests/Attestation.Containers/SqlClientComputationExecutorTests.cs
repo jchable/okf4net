@@ -62,12 +62,24 @@ public class SqlClientComputationExecutorTests
     }
 
     /// <summary>
-    /// The wrapper binds via <c>conn.run(sql, **values)</c>, so a declared
-    /// parameter whose name happens to match one of pg8000's own keyword
-    /// arguments collides with the driver's signature. Left alone that surfaced
-    /// inside the container as a bare Python <c>TypeError</c> — "got multiple
-    /// values for argument 'sql'" — attributed to the bundle's query, which is
-    /// both confusing and a long way from the cause.
+    /// The wrapper binds via <c>conn.run(sql, **values)</c> against a driver whose
+    /// signature is <c>(self, sql, stream=None, types=None, **params)</c>, so a
+    /// declared parameter sharing one of those names collides — in one of two ways,
+    /// verified against the real driver in a container:
+    /// <list type="bullet">
+    /// <item><c>self</c>/<c>sql</c> are already bound positionally, so they raise
+    /// <c>TypeError: got multiple values for argument …</c> inside the container,
+    /// attributed to the bundle's query.</item>
+    /// <item><c>stream</c>/<c>types</c> raise nothing: the value is consumed as a
+    /// driver option and never reaches <c>**params</c>, so the query runs with its
+    /// placeholder unbound. Silent, and the worse of the two.</item>
+    /// </list>
+    ///
+    /// <b>What this test does and does not prove.</b> It is a C#-side test of a
+    /// C#-side list: it shows the list is <i>enforced</i> before any container
+    /// starts. It cannot show the list is <i>complete</i> — it stayed green while
+    /// <c>self</c> was missing from it. Completeness is pinned against the driver's
+    /// actual signature, not here.
     ///
     /// Caught here rather than in the shared <c>DeclaredParameterFilter</c>: the
     /// collision is a property of *this* transport. A Script profile passes its
@@ -76,6 +88,7 @@ public class SqlClientComputationExecutorTests
     /// other path.
     /// </summary>
     [Theory]
+    [InlineData("self")]
     [InlineData("sql")]
     [InlineData("stream")]
     [InlineData("types")]

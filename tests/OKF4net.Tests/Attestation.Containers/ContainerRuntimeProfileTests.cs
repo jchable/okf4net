@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System;
+using System.Collections.Generic;
 using OKF4net.Attestation.Containers;
 using Xunit;
 
@@ -95,6 +96,62 @@ public class ContainerRuntimeProfileTests
         Assert.Equal("my-db-net", (Default() with { NetworkMode = "my-db-net" }).NetworkMode);
         Assert.Equal("none", (Default() with { Kind = ContainerRuntimeKind.SqlClient, NetworkMode = "none" }).NetworkMode);
     }
+
+    /// <summary>
+    /// <see cref="ContainerRunSpec"/> is a public record a host can build by hand and
+    /// hand straight to <see cref="CliContainerEngine"/>, bypassing the profile
+    /// entirely — so the ceiling guarantee cannot live only in the profile's init
+    /// accessors. Without this, such a host still got <c>--memory 0</c>, which docker
+    /// reads as unlimited.
+    /// </summary>
+    [Fact]
+    public void The_engine_refuses_to_emit_a_ceiling_flag_that_removes_the_ceiling()
+    {
+        var spec = new ContainerRunSpec(
+            Image: "python:3.12-slim",
+            Command: ["python3", "-"],
+            Stdin: null,
+            Environment: new Dictionary<string, string>(),
+            NetworkMode: "none",
+            MemoryBytes: 0,
+            Cpus: 1.0,
+            PidsLimit: 16,
+            Timeout: TimeSpan.FromSeconds(30));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => CliContainerEngine.BuildRunArguments(spec, "okf-test"));
+    }
+
+    /// <summary>
+    /// A null ceiling is not a removed ceiling: it means "omit the flag and take the
+    /// engine's own default", which is a legitimate host choice and must keep working.
+    /// </summary>
+    [Fact]
+    public void An_absent_ceiling_is_still_allowed()
+    {
+        var spec = new ContainerRunSpec(
+            Image: "python:3.12-slim",
+            Command: ["python3", "-"],
+            Stdin: null,
+            Environment: new Dictionary<string, string>(),
+            NetworkMode: "none",
+            MemoryBytes: null,
+            Cpus: null,
+            PidsLimit: null,
+            Timeout: null);
+
+        var args = CliContainerEngine.BuildRunArguments(spec, "okf-test");
+        Assert.DoesNotContain("--memory", args);
+        Assert.DoesNotContain("--cpus", args);
+        Assert.DoesNotContain("--pids-limit", args);
+    }
+
+    /// <summary>
+    /// Infinity satisfies <c>&gt; 0</c>, so an ordinary positivity check would let it
+    /// through and the engine would receive the literal <c>--cpus Infinity</c>.
+    /// </summary>
+    [Fact]
+    public void An_infinite_cpu_ceiling_is_rejected() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Cpus = double.PositiveInfinity });
 
     /// <summary>
     /// The message has to name the property, because the failure surfaces at

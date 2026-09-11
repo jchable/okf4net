@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using OKF4net.Attestation.Containers.Internal;
 
 namespace OKF4net.Attestation.Containers;
 
@@ -13,9 +14,12 @@ namespace OKF4net.Attestation.Containers;
 /// parameterized class covers all three). <see cref="BuildRunArguments"/> is
 /// the pure argument-construction half: it never spawns a process, so it is
 /// unit-tested directly without Docker. <see cref="RunAsync"/> is the real
-/// execution half — it actually spawns the child process, so it is
-/// exercised only by manual review and, later, against real Docker; there is
-/// no automated test for that half in this repository.
+/// execution half — it actually spawns the child process, so no test in the
+/// CI-filtered run covers it. It <i>is</i> covered by
+/// <c>tests/OKF4net.Tests/Attestation.Containers/ContainerIntegrationTests.cs</c>,
+/// which drives it against a real engine; those tests carry
+/// <c>[Trait("Category", "ContainerIntegration")]</c> and are excluded from CI by
+/// decision, so they run only when someone runs them.
 /// </summary>
 public sealed class CliContainerEngine(string binaryName = "docker") : IContainerEngine
 {
@@ -38,22 +42,30 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             args.Add(network);
         }
 
+        // A ceiling is either absent (null -- the flag is omitted and the engine's own
+        // default applies) or a real ceiling. It is never zero or negative, because
+        // docker and podman read those as UNLIMITED: emitting `--memory 0` would
+        // remove the ceiling while looking like it set one.
+        //
+        // ContainerRuntimeProfile already rejects such a value in its init accessors,
+        // but ContainerRunSpec is a public record a host can build by hand and pass
+        // straight to this engine, so the guarantee cannot live only up there.
         if (spec.MemoryBytes is { } memory)
         {
             args.Add("--memory");
-            args.Add(memory.ToString(CultureInfo.InvariantCulture));
+            args.Add(ResourceCeiling.Positive(memory, nameof(spec.MemoryBytes)).ToString(CultureInfo.InvariantCulture));
         }
 
         if (spec.Cpus is { } cpus)
         {
             args.Add("--cpus");
-            args.Add(cpus.ToString(CultureInfo.InvariantCulture));
+            args.Add(ResourceCeiling.Positive(cpus, nameof(spec.Cpus)).ToString(CultureInfo.InvariantCulture));
         }
 
         if (spec.PidsLimit is { } pids)
         {
             args.Add("--pids-limit");
-            args.Add(pids.ToString(CultureInfo.InvariantCulture));
+            args.Add(ResourceCeiling.Positive(pids, nameof(spec.PidsLimit)).ToString(CultureInfo.InvariantCulture));
         }
 
         foreach (var (key, value) in spec.Environment)
@@ -69,12 +81,11 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
 
     /// <summary>
     /// Stdout/stderr are each capped at 8 Mi <b>characters</b>; a container that
-    /// floods either past this is a stage failure, not an OOM. The name says bytes
-    /// and the cap counts chars, which differ for non-ASCII output — a deliberate
-    /// looseness, since the point is to bound host memory with a decimal order of
-    /// magnitude to spare, not to enforce an exact byte budget. Worst case (4-byte
-    /// UTF-8 throughout) the real ceiling is 32 MiB of source bytes held as 16 MiB
-    /// of UTF-16, still far below anything that threatens the host.
+    /// floods either past this is a stage failure, not an OOM. Characters, not
+    /// bytes, and deliberately so — the point is to bound host memory with an order
+    /// of magnitude to spare, not to enforce an exact byte budget. Worst case
+    /// (4-byte UTF-8 throughout) the real ceiling is 32 MiB of source bytes held as
+    /// 16 MiB of UTF-16, still far below anything that threatens the host.
     /// </summary>
     private const int MaxOutputChars = 8 * 1024 * 1024;
 
@@ -293,13 +304,13 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
 
     /// <summary>
     /// Drains <paramref name="reader"/> to its end regardless of
-    /// <paramref name="maxBytes"/>, so the child's pipe never backs up and
-    /// blocks it — but only the first <paramref name="maxBytes"/> characters
+    /// <paramref name="maxChars"/>, so the child's pipe never backs up and
+    /// blocks it — but only the first <paramref name="maxChars"/> characters
     /// are kept. Runs concurrently with the other stream and with the stdin
     /// write in <see cref="RunAsync"/>, which is what actually avoids the
     /// classic redirected-pipe deadlock.
     /// </summary>
-    private static async Task<string> ReadBoundedAsync(StreamReader reader, int maxBytes)
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, int maxChars)
     {
         var buffer = new char[8192];
         var sb = new StringBuilder();
@@ -307,7 +318,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         int read;
         while ((read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
         {
-            var toKeep = Math.Max(0, Math.Min(read, maxBytes - total));
+            var toKeep = Math.Max(0, Math.Min(read, maxChars - total));
             if (toKeep > 0)
             {
                 sb.Append(buffer, 0, toKeep);

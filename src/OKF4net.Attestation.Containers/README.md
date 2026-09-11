@@ -51,9 +51,12 @@ back) and `result` (the rows, as a list of column-keyed objects). A column
 type JSON cannot represent natively — `NUMERIC`, `DATE`, `TIMESTAMP`, `UUID`,
 `BYTEA` — arrives as its Python `str()` form.
 
-Parameters must not be named `sql`, `stream` or `types`: those are the
-driver's own keyword arguments, and the run is refused before any container
-starts rather than failing with a confusing `TypeError` inside it.
+Parameters must not be named `self`, `sql`, `stream` or `types`. The driver's
+signature is `run(self, sql, stream=None, types=None, **params)`, so those
+names collide in one of two ways: `self` and `sql` raise a `TypeError` inside
+the container blamed on your query, while `stream` and `types` raise nothing
+at all — the value is consumed as a driver option and your placeholder is
+left unbound. The run is refused before any container starts.
 
 ### An attester
 

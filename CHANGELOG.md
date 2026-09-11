@@ -18,12 +18,18 @@ and this project adheres to
   be the sanctioned one, and attesting it would attest the reimplementation.
   - One `IContainerEngine` abstraction over any `run`-compatible CLI — Docker,
     Podman, nerdctl — with `CliContainerEngine` as its only real implementation.
-  - **No container is ever given a bind-mounted volume.** Every payload (script
-    text, SQL text, attester module source, parameter values) travels on stdin as
-    text or JSON, and the container's own command is always a short fixed string:
-    an interpreter invocation, or a project-authored wrapper. Arguments are built
+  - **No container is ever given a bind-mounted volume.** Every *code* payload —
+    script text, SQL text, attester module source — travels on stdin as text or
+    JSON, and the container's own command is always a short fixed string: an
+    interpreter invocation, or a project-authored wrapper. Arguments are built
     exclusively through `ProcessStartInfo.ArgumentList`, never a concatenated
     shell string, and never with `UseShellExecute`.
+  - **Parameter values travel differently per runtime, and it matters for
+    exposure.** A `SqlClient` run carries them on stdin alongside the SQL; a
+    `Script` run carries them in the `OKF_PARAMS_JSON` environment variable, which
+    is visible to `docker inspect` and in the host process list — the same exposure
+    class as a connection string. The project README's Limitations section says so;
+    do not pass a value you would not put in a process listing.
   - Two executors: `Script` (the bound text is a standalone program) and
     `SqlClient` (the bound text is SQL, bound by a driver's own native parameter
     mechanism — never interpolated into the query).

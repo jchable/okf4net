@@ -121,11 +121,16 @@ public class ContainerIntegrationTests
     /// wrapper exited with code 1" for a query that in fact succeeded. This selects all
     /// three plus a <c>BYTEA</c> and requires the receipt to come back intact.</para>
     ///
-    /// <para><b>Receipt-channel purity.</b> The wrapper pip-installs its driver on
-    /// every run. With pip writing to the same stdout the receipt is parsed from,
-    /// <c>--quiet</c> only made corruption unlikely, not impossible. Asserting the
-    /// receipt parses and carries exactly the declared fields is what makes the
-    /// DEVNULL redirect load-bearing rather than decorative.</para>
+    /// <para><b>What this test does NOT prove.</b> It guards the encoding defect
+    /// above and that one only. It does <i>not</i> guard the wrapper's
+    /// <c>stdout=subprocess.DEVNULL</c> redirect: removing that leaves this test
+    /// green, verified by reverting it and running this test against real Docker.
+    /// On <c>python:3.12-slim</c> pip's warnings and notices go to stderr, so under
+    /// <c>--quiet</c> nothing reaches the receipt channel anyway. The redirect is
+    /// structural insurance against an image or a pip version where that is not
+    /// true — a case no test here can reach, since it needs an image whose pip
+    /// prints to stdout. Keep the redirect; do not read a green run as evidence
+    /// that dropping it is safe.</para>
     ///
     /// Needs the same Postgres fixture as the test above, plus one extra table:
     /// <c>docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE typed(amount numeric(12,2), booked date, ref uuid, blob bytea); INSERT INTO typed VALUES (1234.56, '2026-09-11', '00000000-0000-0000-0000-000000000001', '\\x4f4b46');"</c>

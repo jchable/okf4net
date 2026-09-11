@@ -23,9 +23,16 @@ internal static class ResourceCeiling
     internal static long Positive(long value, string property) =>
         value > 0 ? value : throw Rejected(value, property);
 
-    /// <summary>Returns <paramref name="value"/> if it is positive; otherwise throws naming <paramref name="property"/>.</summary>
+    /// <summary>
+    /// Returns <paramref name="value"/> if it is a positive, finite number;
+    /// otherwise throws naming <paramref name="property"/>. Infinity is excluded on
+    /// purpose: it satisfies <c>&gt; 0</c>, so it would pass an ordinary positivity
+    /// check and then reach the engine as the literal argument <c>--cpus Infinity</c>,
+    /// which docker rejects with a message about parsing rather than about the
+    /// profile.
+    /// </summary>
     internal static double Positive(double value, string property) =>
-        value > 0 ? value : throw Rejected(value, property);
+        value > 0 && double.IsFinite(value) ? value : throw Rejected(value, property);
 
     /// <summary>Returns <paramref name="value"/> if it is positive; otherwise throws naming <paramref name="property"/>.</summary>
     internal static int Positive(int value, string property) =>
