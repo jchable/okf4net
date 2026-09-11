@@ -328,10 +328,10 @@ public static class BundleValidator
                 // Keyed on `value is null` -- the key being genuinely ABSENT -- and
                 // deliberately read AFTER fm.Get, so the exemption covers only the form
                 // §4.1 licenses. A declared `resource` whose value is unusable
-                // (`resource: ""`, `resource:`, `resource: []`, and -- since
-                // IsEmptyValue is a falsiness test, not an emptiness test --
-                // `resource: false`, `resource: 0`) is a malformed value, not a
-                // statement of abstractness: §4.1 specifies "a URI that uniquely
+                // (`resource: ""`, `resource:`, `resource: []`, `resource: {}`,
+                // and -- since IsEmptyValue is a falsiness test, not an emptiness
+                // test -- `resource: false`, `resource: 0`) is a malformed value, not
+                // a statement of abstractness: §4.1 specifies "a URI that uniquely
                 // identifies the underlying asset", and none of those is one. Such a
                 // value keeps warning, exactly as it does for title/description/tags,
                 // so the carve-out moves one axis only (key presence) and never
