@@ -436,9 +436,19 @@ and this project adheres to
   only resolve from the root. Resolving everything against the concept
   directory made the spec's own worked example unresolvable, and made
   `bundles/acme_retail/` — a verbatim upstream sample laid out exactly as
-  Appendix A is — emit twelve bogus `… not found` warnings while its
-  computations were unrunnable through `AttestationOrchestrator`. Recorded as
-  **S6.2-1** in `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+  Appendix A is — emit twelve bogus `… not found` warnings. The spec does not
+  define the base for a bare path, so this is a change of interpretation
+  rather than a conformance fix: §11 puts path resolution outside the
+  conformance floor entirely, and `acme_retail` was a conformant bundle before
+  and after. What changed is which file a given string names, and therefore
+  the diagnostics. Recorded as **S6.2-1** in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+  - Where it reaches beyond diagnostics: `AttestationOrchestrator` resolves a
+    file-backed `computation:` path (`AttestationOrchestrator.cs:295`), so a
+    bare one now names a different file. It does **not** resolve
+    `executor.resource` or `attester.resource` — those implementations come
+    from the host runtime — so no computation became runnable or unrunnable
+    because of this change.
   - **Breaking (source):** `FrontmatterResourceKind.Relative` is renamed
     `FrontmatterResourceKind.ConceptRelative`, and a bare path now classifies
     as `BundleRelative`. The rename is deliberate: it turns a silent change of

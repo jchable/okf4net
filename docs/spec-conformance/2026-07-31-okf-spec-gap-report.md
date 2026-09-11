@@ -322,8 +322,9 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   2026-09-11). §6.2 lists three accepted shapes — an absolute URL, a
   bundle-relative path beginning with `/`, and "a relative path (for example
   `../computations/revenue.md`)" — but never states what the third is
-  relative *to*. The spec's own examples settle it, and they require two
-  different bases:
+  relative *to*. No normative sentence supplies it, so what follows is an
+  interpretation, not a derivation: the spec's own examples point strongly
+  one way, and they require two different bases:
   - `../computations/revenue.md` (§6.2) and `./other.md` (§6.1) are
     document-relative by construction.
   - A **bare** path is not. §6.3 gives `references/attesters/revenue.py`;
@@ -349,8 +350,12 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
 
   OKF4net therefore resolves by prefix: a leading `/` → bundle root; an
   explicit `./` or `../` → the concept's own directory; anything else (a
-  bare path) → bundle root. This is the only rule under which every example
-  in the spec resolves to a file the spec itself places in the bundle.
+  bare path) → bundle root. Of the readings considered it is the only one
+  under which every example in the spec resolves to a file the spec itself
+  places in the bundle — which is why it was chosen, not a proof that the
+  spec mandates it. A consumer trying both bases in some precedence would
+  also satisfy the examples; the spec defines neither that policy nor its
+  conflict rule, so OKF4net picks the single-base form and says so here.
   `FrontmatterResourceKind` names the two local cases `BundleRelative` and
   `ConceptRelative` accordingly. `src/OKF4net/FrontmatterResource.cs`
   (`FrontmatterResourceClassifier.KindOf`) and

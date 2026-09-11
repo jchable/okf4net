@@ -63,7 +63,8 @@ This file previously recorded a third group — twelve `sources[].resource` /
 explained them as upstream writing bundle-root-relative paths where §6.2
 wanted concept-relative ones. **That explanation was wrong, and the twelve
 warnings were ours, not upstream's.** §6.2 never says what base a relative
-path resolves against; the spec's own Appendix A settles it by laying out
+path resolves against; OKF4net now reads it as bundle-rooted, because the
+spec's own Appendix A only works that way — it lays out
 `computations/revenue.md` beside a bundle-root `references/` directory that
 the concept names as a bare `references/skills/run-on-bq.md`. `acme_retail`
 is laid out exactly that way and was conformant all along. `Bundle.TryResolveResource`

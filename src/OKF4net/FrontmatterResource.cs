@@ -17,10 +17,13 @@ public enum FrontmatterResourceKind
     /// with a leading <c>/</c> or <c>\</c> (e.g. <c>/skills/run.md</c>), or
     /// written bare, with no <c>./</c> or <c>../</c> prefix (e.g.
     /// <c>references/attesters/revenue.py</c>). §6.2 never names the base for
-    /// the bare form, but the spec's own worked example fixes it: Appendix A's
+    /// the bare form; OKF4net reads it as bundle-rooted because the spec's own
+    /// worked example only resolves that way — Appendix A's
     /// <c>computations/revenue.md</c> declares <c>references/skills/run-on-bq.md</c>
     /// against a <c>references/</c> directory that sits at the bundle root, not
-    /// under <c>computations/</c>.
+    /// under <c>computations/</c>. This is OKF4net's interpretation of an
+    /// underspecified field, recorded as S6.2-1 in
+    /// <c>docs/spec-conformance/</c>, not a rule the specification states.
     /// </summary>
     BundleRelative,
 

@@ -337,7 +337,8 @@ What changed:
   alone, that bare `refs/query.sql` would have resolved from the root, missed,
   and added a sixth `… not found` warning — so the fixture INPUT was changed
   to hold the captured OUTPUT still. The justification is that `./` is the
-  spec-correct spelling for what that file actually means, not that the
+  spelling that expresses what that file actually means under the adopted
+  reading of §6.2 (S6.2-1), not that the
   golden was inconvenient; had the concept genuinely intended a root-relative
   path, the right move would have been to re-bless the capture and say so.
 
