@@ -299,6 +299,19 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
     directory would point it at `computations/references/…`, which Appendix
     A's own layout does not contain.
 
+  The strongest counter-reading, and why it does not hold: §5.1
+  (`docs/spec/SPEC.md:305-308`) describes a source `resource` as "an absolute
+  URL, a **bundle-relative path**, or **a path into a `references/`
+  subdirectory**" — three items, the third named *separately from*
+  bundle-relative, which would only be necessary if a bare `references/…`
+  were something other than bundle-relative. That is a phrase; Appendix A is
+  a directory listing, and it puts `references/` at the bundle root while the
+  concept naming it sits in `computations/`. Whatever category the third item
+  belongs to, its target still has to be found where the spec itself puts it.
+  Under this rule the §5.1 item is merely redundant with the second; under the
+  old rule Appendix A is unresolvable. Redundancy in prose loses to a layout
+  that must work.
+
   OKF4net therefore resolves by prefix: a leading `/` → bundle root; an
   explicit `./` or `../` → the concept's own directory; anything else (a
   bare path) → bundle root. This is the only rule under which every example
@@ -315,6 +328,23 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   upstream sample, laid out exactly as Appendix A is — is conformant under
   this reading, and the twelve `… not found` warnings OKF4net used to emit
   against it were the implementation's error, not the bundle's.
+- **S6.2-2** (a `sources[].resource` scope descriptor is not a path) — **Not
+  implemented** (Minor, recorded 2026-09-11). §6.2 says so two lines above
+  the list of accepted shapes (`docs/spec/SPEC.md:472-473`): "A
+  `sources[].resource` may instead be a scope descriptor (§5.1), in which
+  case **it is not a path**." §5.1 gives the example `all queries in BigQuery
+  project X`, and Appendix A uses one (`resource: dashboards/exec-revenue`,
+  `docs/spec/SPEC.md:947`). `BundleValidator.Validate`
+  (`src/OKF4net/Validate.cs:516-532`) classifies every non-URL value as a
+  path, so a scope descriptor resolves, misses, and raises a
+  `FrontmatterPathMissing` warning it should not raise. Long-standing, not a
+  regression — the previous resolution rule missed them identically — and
+  recorded here rather than fixed because the spec gives no syntactic way to
+  tell a descriptor from a path (§5.1 distinguishes them by *meaning*: "a
+  concrete artifact a consumer can follow" versus "a population or scope
+  descriptor it cannot"), so any detection would be a heuristic that needs
+  its own decision. `bundles/acme_retail/` contains no scope descriptor, so
+  its warning count is unaffected.
 
 ### §7 Actor convention
 

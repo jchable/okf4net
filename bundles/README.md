@@ -44,30 +44,32 @@ the repo root and the attribution entry in `NOTICE`.
 dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail
 ```
 
-Exits `0` (conformant): 9 concepts, 0 errors, 36 warnings, 0 info. The
+Exits `0` (conformant): 9 concepts, 0 errors, 24 warnings, 0 info. The
 warnings are expected and harmless:
 
-- 18 of the 36 are `LegacyDateOnlyTimestamp`: 7 `stale_after` values plus
+- 18 of the 24 are `LegacyDateOnlyTimestamp`: 7 `stale_after` values plus
   §5.1 `sources[].last_modified` and `usage_window` bounds written as bare
   `YYYY-MM-DD`. OKF v0.2 §5 requires "an ISO 8601 datetime with an explicit
   UTC offset" for every timestamp-valued key, so the upstream sample is in
   drift with its own spec. The values are still read (normalized to midnight
   UTC); this is upstream drift to report upstream, **not** something to patch
   locally — the bundle is a verbatim copy (see `NOTICE`).
-- 12 of the 36 are `sources[].resource` / `executor.resource` /
-  `attester.resource` frontmatter paths reported as "not found". OKF v0.2
-  §6.2 resolves a plain relative path (no leading `/`) against the
-  **referencing concept's own directory**, not the bundle root — e.g.
-  `computations/gross-margin-period.md`'s `sources[0].resource:
-  policies/margin-standard.md` resolves to
-  `computations/policies/margin-standard.md` (which doesn't exist); the
-  real file is one level up, at `../policies/margin-standard.md` from that
-  concept. The upstream bundle writes these paths bundle-root-relative
-  instead. This affects only frontmatter-path *resolution* diagnostics —
-  reading, browsing, and searching the bundle are unaffected.
-- The remaining 6 of the 36 are "missing recommended frontmatter field `resource`"
+- The remaining 6 of the 24 are "missing recommended frontmatter field `resource`"
   on concept types where a `resource` URI doesn't apply (`Metric`, `Skill`,
   and `Attested Computation`).
+
+This file previously recorded a third group — twelve `sources[].resource` /
+`executor.resource` / `attester.resource` paths reported as "not found" — and
+explained them as upstream writing bundle-root-relative paths where §6.2
+wanted concept-relative ones. **That explanation was wrong, and the twelve
+warnings were ours, not upstream's.** §6.2 never says what base a relative
+path resolves against; the spec's own Appendix A settles it by laying out
+`computations/revenue.md` beside a bundle-root `references/` directory that
+the concept names as a bare `references/skills/run-on-bq.md`. `acme_retail`
+is laid out exactly that way and was conformant all along. `Bundle.TryResolveResource`
+now resolves a bare path from the bundle root, an explicit `./` or `../` from
+the concept's directory, and the twelve warnings are gone. See **S6.2-1** in
+`docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
 
 ## GA4
 

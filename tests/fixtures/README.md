@@ -333,6 +333,14 @@ What changed:
   together with an inline fence) is unaffected, which is why the golden does
   not move.
 
+  State the alternative plainly, since this one is a judgement call: left
+  alone, that bare `refs/query.sql` would have resolved from the root, missed,
+  and added a sixth `… not found` warning — so the fixture INPUT was changed
+  to hold the captured OUTPUT still. The justification is that `./` is the
+  spec-correct spelling for what that file actually means, not that the
+  golden was inconvenient; had the concept genuinely intended a root-relative
+  path, the right move would have been to re-bless the capture and say so.
+
 `malformed/broken-exec.md` keeps its bare `does-not-exist.md`: it names a file
 that exists at neither base, so it still contributes exactly the one
 `… not found` warning it is there for, with the same message text.

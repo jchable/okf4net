@@ -142,8 +142,8 @@ public class FrontmatterResourceTests
     /// P2a regression: on Windows, "E:query.sql" is a DRIVE-RELATIVE path
     /// (not drive-absolute) -- <see cref="System.IO.Path.GetFullPath(string)"/>
     /// resolves it against drive E:'s own current directory, not the concept's
-    /// directory. Before the fix, a raw value classified as
-    /// <see cref="FrontmatterResourceKind.Relative"/> was combined directly via
+    /// directory. Before the fix, a raw value classified as concept-relative
+    /// (the enum member then named <c>Relative</c>) was combined directly via
     /// <c>Path.Combine(conceptDir, rawPath)</c>/<c>Path.GetFullPath</c>, which
     /// discards <c>conceptDir</c> entirely for a rooted second argument -- so
     /// this could resolve to a path unrelated to (and potentially inside) the
@@ -301,6 +301,10 @@ public class FrontmatterResourceTests
     /// strip turns <c>\\server\share\x</c> into the ordinary bundle-relative
     /// <c>server\share\x</c>, so it resolves (and fails to exist) inside the
     /// bundle rather than naming a remote host.
+    ///
+    /// This is a pure regression guard, not a test of the new rule: a leading
+    /// <c>\</c> already took the bundle-relative branch before the §6.2 change,
+    /// so this test is green against the old code too.
     /// </summary>
     [Fact]
     public void Unc_shaped_raw_path_stays_inside_the_bundle()
@@ -342,6 +346,12 @@ public class FrontmatterResourceTests
     /// <c>../computations/revenue.md</c>), so they keep resolving against the
     /// concept's directory even though a same-named file sits at the bundle
     /// root. The root decoy is what the bare-path rule would find.
+    ///
+    /// Like the UNC test below, this is a regression guard rather than a test
+    /// of the new rule: the old code resolved <c>./refs/query.sql</c> against
+    /// the concept's directory too, so it is green against the old code. What
+    /// it pins is that the change did not sweep the dot-prefixed form into the
+    /// bundle-root branch along with the bare one.
     /// </summary>
     [Fact]
     public void Dot_prefixed_path_resolves_relative_to_the_concept()

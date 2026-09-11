@@ -1902,7 +1902,7 @@ public sealed class ConceptGenerator : IConceptGenerator
 
         // A value that is not an absolute http(s) URL would not be classified as
         // FrontmatterResourceKind.Url by the validator, and would then be resolved as a path against
-        // the concept's own directory -- the exact warning-per-concept outcome §4.3 exists to avoid.
+        // the bundle root -- the exact warning-per-concept outcome §4.3 exists to avoid.
         // The rule lives on GenerateOptions rather than here BECAUSE the CLI has to apply the same
         // one to refuse such a value at its boundary, and two copies that merely agree today are two
         // copies that stop agreeing the day one scheme list is widened and the other is not.

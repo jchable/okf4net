@@ -32,11 +32,12 @@ public sealed record GenerateOptions
     /// concept emits <b>no <c>resource</c> at all</b> and the other two fall back to their
     /// repository-relative path.
     ///
-    /// That parting is not an oversight, it is §4.3 applied twice with different inputs. The validator
-    /// resolves a bare relative <c>resource</c> against the <i>concept's own directory</i>, not the
-    /// bundle root (<c>Bundle.TryResolveResource</c>), so a repo-relative path such as
-    /// <c>src/Links.cs</c> carried by <c>code/csharp/okf4net/link-scanner/scan.md</c> would be looked
-    /// for under <c>&lt;bundle&gt;/code/csharp/okf4net/link-scanner/src/Links.cs</c> -- a miss, and one
+    /// That parting is not an oversight, it is §4.3 applied twice with different inputs. A
+    /// repo-relative path names a file in the <i>repository</i>, not in the <i>bundle</i>: the
+    /// validator resolves a bare relative <c>resource</c> from the bundle root
+    /// (<c>Bundle.TryResolveResource</c>, §6.2), so <c>src/Links.cs</c> carried by
+    /// <c>code/csharp/okf4net/link-scanner/scan.md</c> is looked for under
+    /// <c>&lt;bundle&gt;/src/Links.cs</c> -- a miss, and one
     /// <c>FrontmatterPathMissing</c> warning apiece. Omitting the field costs exactly the same number
     /// of warnings (<c>resource</c> is a recommended field), so for a code concept the two options
     /// cost the same and only one of them is honest. For a whole-file concept they still cost the
@@ -142,7 +143,7 @@ public sealed record GenerateOptions
     ///
     /// <para><b>Why the scheme list is closed.</b> Anything else is not classified as
     /// <c>FrontmatterResourceKind.Url</c> by the validator, so it would be resolved as a <i>path</i>
-    /// against the concept's own directory -- the warning-per-concept outcome §4.3 exists to avoid.
+    /// against the bundle root -- the warning-per-concept outcome §4.3 exists to avoid.
     /// Widening it here without widening <c>Bundle</c>'s classifier would produce exactly that.</para>
     /// </summary>
     /// <param name="repoUrl">The candidate permalink base, typically the CLI's <c>--repo-url</c>.</param>
