@@ -53,6 +53,23 @@ public sealed record ContainerRuntimeProfile
         init => _networkMode = value;
     }
 
+    /// <summary>
+    /// Mount the container's root filesystem read-only (<c>--read-only</c>). On by
+    /// default, for both kinds: a sanctioned computation has no reason to write into
+    /// the image, and the writable scratch the stages genuinely need is named
+    /// explicitly by <see cref="TmpfsMounts"/> instead of being the whole filesystem.
+    /// Verified against real Docker for all three paths, including the SQL wrapper's
+    /// driver install — which is why this is a default rather than an opt-in.
+    /// </summary>
+    public bool ReadOnlyRootFilesystem { get; init; } = true;
+
+    /// <summary>
+    /// The writable paths under <see cref="ReadOnlyRootFilesystem"/>, memory-backed and
+    /// destroyed with the container. <c>/tmp</c> by default, which is what the attester
+    /// bootstrap's temp module and the SQL wrapper's <c>--target</c> install both use.
+    /// </summary>
+    public IReadOnlyList<string> TmpfsMounts { get; init; } = ["/tmp"];
+
     /// <summary>Default <c>--memory</c> ceiling. 512 MiB. Must be positive: zero or negative means <i>unlimited</i> to docker and podman, so it is rejected rather than silently removing the ceiling.</summary>
     public long MemoryBytes
     {
@@ -101,6 +118,12 @@ public sealed record ContainerAttesterOptions
 
     /// <summary>Environment variables passed to every attester run.</summary>
     public IReadOnlyDictionary<string, string> Environment { get; init; } = new Dictionary<string, string>();
+
+    /// <summary>Mount the attester container's root filesystem read-only. On by default — an attester is a pure function over its inputs.</summary>
+    public bool ReadOnlyRootFilesystem { get; init; } = true;
+
+    /// <summary>The writable paths under <see cref="ReadOnlyRootFilesystem"/>. <c>/tmp</c> by default: the bootstrap writes the bundle's attester module there before importing it.</summary>
+    public IReadOnlyList<string> TmpfsMounts { get; init; } = ["/tmp"];
 
     /// <summary>Default <c>--memory</c> ceiling. 256 MiB — an attester is a pure function over its inputs, never a network call. Must be positive: zero or negative means <i>unlimited</i> to docker and podman.</summary>
     public long MemoryBytes

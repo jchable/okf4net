@@ -35,8 +35,14 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
         # (a warning, a progress line, a resolver message and the receipt is
         # unparseable). DEVNULL makes it structural. stderr is left alone so a real
         # install failure is still diagnosable; check=True still aborts on one.
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'pg8000'],
+        # --target into the tmpfs, not the image's site-packages: the root filesystem is
+        # mounted read-only, so an ordinary install fails on /root/.local. The tmpfs is
+        # memory-backed and dies with the container, which is where a per-run driver
+        # install belongs anyway. sys.path has to be told about it before the import.
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet',
+                        '--target', '/tmp/okf-pkgs', 'pg8000'],
                        check=True, stdout=subprocess.DEVNULL)
+        sys.path.insert(0, '/tmp/okf-pkgs')
         import pg8000.native
         from urllib.parse import urlparse
         envelope = json.load(sys.stdin)
@@ -115,7 +121,11 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             MemoryBytes: profile.MemoryBytes,
             Cpus: profile.Cpus,
             PidsLimit: profile.PidsLimit,
-            Timeout: profile.Timeout);
+            Timeout: profile.Timeout)
+        {
+            ReadOnlyRootFilesystem = profile.ReadOnlyRootFilesystem,
+            TmpfsMounts = profile.TmpfsMounts,
+        };
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         return ReceiptParsing.Parse(result, "SQL wrapper");

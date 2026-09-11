@@ -87,6 +87,14 @@ ceiling it appears to set.
 Network access defaults closed for `Script` and open for `SqlClient` (which
 must reach a database and a package index), and either can be overridden.
 
+The root filesystem is mounted **read-only** by default, with `/tmp` as a
+memory-backed `tmpfs` that dies with the container. That is not a hole in the
+hardening: it is the one writable path the stages genuinely need — the attester
+bootstrap writes the bundle's module there before importing it, and the SQL
+wrapper installs its driver there — named explicitly instead of leaving the
+whole image writable. Both `ReadOnlyRootFilesystem` and `TmpfsMounts` are on the
+profile if a host needs different paths.
+
 ## Limitations in this version
 
 - **Secrets travel as environment variables.** `OKF_CONN` and anything else in
@@ -98,11 +106,9 @@ must reach a database and a package index), and either can be overridden.
   network access to a package index and pays the install cost each time. A
   purpose-built image with the driver vendored in is the better answer for
   anything beyond local use.
-- **No `--read-only` root filesystem.** Deliberately not implemented rather
-  than half-implemented: the attester bootstrap writes the module to a
-  temporary file before importing it, so a read-only root needs a writable
-  `tmpfs` mount that `ContainerRunSpec` does not model yet. Adding the flag
-  without the mount would break every attestation.
+- **The `SqlClient` wrapper installs its driver into the tmpfs on every run**
+  (`pip install --target /tmp/okf-pkgs`), so it needs network access to a
+  package index and pays the install cost each time.
 - **`executed_sql` is echoed by this host's own wrapper**, so comparing it
   against the sanctioned text proves the wrapper sent what it was given — not
   that the database ran it. Real provenance needs a receipt field the engine

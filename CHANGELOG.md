@@ -42,6 +42,15 @@ and this project adheres to
     value rather than accept it: to docker and podman, zero there means
     *unlimited*, so a profile written with `MemoryBytes = 0` would remove the very
     ceiling it looks like it sets.
+  - **The root filesystem is read-only by default**, with `/tmp` as a
+    memory-backed `tmpfs` that dies with the container — the one writable path the
+    stages genuinely need, named explicitly rather than leaving the whole image
+    writable. The attester bootstrap writes the bundle's module there before
+    importing it, and the SQL wrapper installs its driver there
+    (`pip install --target`). Pinned by an integration test that requires a write
+    outside the tmpfs to fail *and* one inside it to succeed — the first alone
+    would also pass on an image with no such path, the second alone with no
+    hardening at all.
   - **Not published to NuGet**, deliberately, and the `.csproj` carries no
     packaging block — see the root README's project table. Its useful operation
     needs a container engine on `PATH` and a reachable daemon, which no package

@@ -37,7 +37,27 @@ public sealed record ContainerRunSpec(
     long? MemoryBytes,
     double? Cpus,
     int? PidsLimit,
-    TimeSpan? Timeout);
+    TimeSpan? Timeout)
+{
+    /// <summary>
+    /// Passed as <c>--read-only</c> when <see langword="true"/>: the container's root
+    /// filesystem is mounted read-only, so a sanctioned script cannot write anywhere
+    /// the image would otherwise allow. <see langword="false"/> by default, so a spec
+    /// built by hand behaves exactly as it did before this existed; the safe default
+    /// lives on <see cref="ContainerRuntimeProfile"/> instead.
+    /// </summary>
+    public bool ReadOnlyRootFilesystem { get; init; }
+
+    /// <summary>
+    /// Paths mounted as memory-backed <c>--tmpfs</c>, one flag per entry. This is not
+    /// a hole in <see cref="ReadOnlyRootFilesystem"/>: a tmpfs is created empty, never
+    /// touches the host filesystem, and dies with the container. It is the writable
+    /// scratch some stages genuinely need — the attester bootstrap writes its module
+    /// to a temp file before importing it, and the SQL wrapper installs its driver —
+    /// bounded to paths the host names rather than the whole image.
+    /// </summary>
+    public IReadOnlyList<string> TmpfsMounts { get; init; } = [];
+}
 
 /// <summary>One container run's outcome: exit code plus captured (size-bounded) stdout/stderr.</summary>
 public sealed record ContainerRunResult(int ExitCode, string Stdout, string Stderr);

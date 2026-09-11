@@ -73,6 +73,51 @@ public class ContainerIntegrationTests
         Assert.Equal("Hello, Ada!", outcome.Receipt!.Fields["message"]);
     }
 
+    /// <summary>
+    /// Proves <c>--read-only</c> actually reaches the container, rather than being a
+    /// flag we emit and nobody checks. The other tests here pass whether or not the
+    /// root filesystem is writable, so none of them can tell.
+    ///
+    /// Two halves, and both are needed: a write OUTSIDE the tmpfs must fail, and a
+    /// write INSIDE it must succeed. The first alone would also pass if the image
+    /// simply had no <c>/root</c>; the second alone would pass with no hardening at
+    /// all. Together they pin exactly the boundary the profile draws.
+    /// </summary>
+    [SkippableFact]
+    public async Task Read_only_root_blocks_a_write_outside_the_tmpfs_and_allows_one_inside()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var engine = new CliContainerEngine();
+        var profile = new ContainerRuntimeProfile { Image = "python:3.12-slim", Kind = ContainerRuntimeKind.Script };
+
+        // Sanity: the profile is hardened by default. If this ever flips, the rest of
+        // this test would quietly stop testing anything.
+        Assert.True(profile.ReadOnlyRootFilesystem);
+        Assert.Contains("/tmp", profile.TmpfsMounts);
+
+        var executor = new ScriptComputationExecutor(engine, profile);
+        var contract = new AttestedComputationContract("python", [], null, null, null);
+
+        var probe = """
+            import json
+            outside = None
+            try:
+                open('/root/okf-probe', 'w').write('x')
+                outside = 'written'
+            except OSError as e:
+                outside = type(e).__name__
+            open('/tmp/okf-probe', 'w').write('x')
+            print(json.dumps({'outside': outside, 'inside': 'written'}))
+            """;
+
+        var receipt = await executor.ExecuteAsync(
+            new BoundComputation("python", probe, null, new Dictionary<string, object?>()), contract);
+
+        Assert.Equal("OSError", receipt.Fields["outside"]);
+        Assert.Equal("written", receipt.Fields["inside"]);
+    }
+
     [SkippableFact]
     public async Task SqlClient_runtime_runs_a_real_postgres_query()
     {
