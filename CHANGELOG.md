@@ -475,6 +475,20 @@ and this project adheres to
 
 ### Fixed
 
+- **§4.1's `resource` carve-out for an Attested Computation now applies only to
+  an ABSENT key.** The suppression added for S4.1-8 skipped the field before
+  reading its value, so a §10 concept declaring `resource` with an unusable
+  value — `resource: ""`, a bare `resource:`, `resource: []`, and, because
+  `YamlValue.IsEmptyValue` is a falsiness test rather than an emptiness one,
+  `resource: false` and `resource: 0` — was silently accepted. §4.1 licenses
+  *absence* ("**Absent** for concepts that describe abstract ideas rather than
+  physical resources"); it specifies the present form as "a URI that uniquely
+  identifies the underlying asset", which none of those is. A declared-but-
+  unusable `resource` is a malformed value, not a statement of abstractness, so
+  it warns again — identically to `title`/`description`/`tags`, which have always
+  warned on an explicitly empty value. The carve-out now moves one axis only (key
+  presence) and never suppresses the value check. `bundles/acme_retail` is
+  unaffected at 22 warnings: its Attested Computations omit `resource` entirely.
 - **`YamlEmitter`'s nesting guard now throws `YamlEmitException`** (an
   `OkfException`, like the parser's `YamlParseException`) instead of a bare
   `InvalidOperationException`. The parser enforces its 1000-level cap with two

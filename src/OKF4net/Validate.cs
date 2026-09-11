@@ -314,6 +314,8 @@ public static class BundleValidator
 
             foreach (var field in RecommendedFields)
             {
+                var value = fm.Get(field);
+
                 // §4.1 recommends `resource` but qualifies it in the same breath:
                 // "Absent for concepts that describe abstract ideas rather than
                 // physical resources." A §10 Attested Computation is the one concept
@@ -322,12 +324,23 @@ public static class BundleValidator
                 // there would call a well-formed concept deficient. Keyed on that type
                 // alone: §4.1 leaves the type vocabulary open (S4.1-2), so nothing
                 // syntactic decides "abstract" in general -- see S4.1-8.
-                if (field == "resource" && fm.IsAttestedComputation)
+                //
+                // Keyed on `value is null` -- the key being genuinely ABSENT -- and
+                // deliberately read AFTER fm.Get, so the exemption covers only the form
+                // §4.1 licenses. A declared `resource` whose value is unusable
+                // (`resource: ""`, `resource:`, `resource: []`, and -- since
+                // IsEmptyValue is a falsiness test, not an emptiness test --
+                // `resource: false`, `resource: 0`) is a malformed value, not a
+                // statement of abstractness: §4.1 specifies "a URI that uniquely
+                // identifies the underlying asset", and none of those is one. Such a
+                // value keeps warning, exactly as it does for title/description/tags,
+                // so the carve-out moves one axis only (key presence) and never
+                // suppresses the value check.
+                if (value is null && field == "resource" && fm.IsAttestedComputation)
                 {
                     continue;
                 }
 
-                var value = fm.Get(field);
                 if (value is null || value.IsEmptyValue)
                 {
                     diagnostics.Add(new Diagnostic(

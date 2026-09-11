@@ -177,6 +177,40 @@ public class ValidateTests
         Assert.Contains(report.Of(Severity.Warning), d => d.Field == "resource" && d.Code == DiagnosticCode.MissingRecommendedField);
     }
 
+    /// <summary>
+    /// The limit of S4.1-8's carve-out: it suppresses the warning for an
+    /// ABSENT `resource` key only. §4.1's sentence licenses absence
+    /// ("**Absent** for concepts that describe abstract ideas rather than
+    /// physical resources") -- it does not license declaring the key with a
+    /// value that is not the "URI that uniquely identifies the underlying
+    /// asset" §4.1 specifies. An empty string, an explicit null and an empty
+    /// list are each a malformed value, not an expression of abstractness, so
+    /// they keep warning exactly as they do for `title`/`description`/`tags`
+    /// (see <see cref="Empty_recommended_field_values_are_also_warnings"/>).
+    ///
+    /// `false` and `0` are in here because
+    /// <see cref="OKF4net.Yaml.YamlValue.IsEmptyValue"/> is a falsiness test,
+    /// not an emptiness test: a carve-out that skipped the value check
+    /// entirely swallowed those too, and no reading of "absent" covers
+    /// `resource: 0`.
+    /// </summary>
+    [Theory]
+    [InlineData("resource: \"\"")]
+    [InlineData("resource: null")]
+    [InlineData("resource:")]
+    [InlineData("resource: []")]
+    [InlineData("resource: false")]
+    [InlineData("resource: 0")]
+    public void An_attested_computation_is_still_warned_for_a_present_but_empty_resource(string resourceLine)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", $"---\ntype: Attested Computation\nruntime: bigquery\ntitle: T\ndescription: D\ntags: [x]\n{resourceLine}\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        Assert.Contains(report.Of(Severity.Warning), d => d.Field == "resource" && d.Code == DiagnosticCode.MissingRecommendedField);
+    }
+
     [Fact]
     public void Empty_recommended_field_values_are_also_warnings()
     {
