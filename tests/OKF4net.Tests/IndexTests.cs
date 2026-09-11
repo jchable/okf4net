@@ -325,19 +325,16 @@ public class IndexTests
     // need an index.md at all) recurses using lstat-based directory
     // detection, so a symlinked directory is never descended into and never
     // contributes to DirectoriesToIndex. This test requires symlink-creation
-    // privilege and skips itself (via TempDir.TryCreateDirectorySymlink's
+    // privilege and skips itself (Skip.IfNot on TempDir.TryCreateDirectorySymlink's
     // bool return) when unavailable.
     // ----------------------------------------------------------------
 
-    [Fact]
+    [SkippableFact]
     public void Symlinked_subdirectory_does_not_get_its_own_generated_index()
     {
         using var tmp = new TempDir();
         WriteDoc(tmp, "real/a.md", "BigQuery Dataset", "A", "desc");
-        if (!tmp.TryCreateDirectorySymlink("linked", "real"))
-        {
-            return; // no symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateDirectorySymlink("linked", "real"), "no symlink privilege on this machine");
 
         IndexGenerator.RegenerateIndexes(tmp.Path);
 
@@ -374,17 +371,14 @@ public class IndexTests
     // cleanly if unavailable, per the other reparse-point tests' pattern.
     // ----------------------------------------------------------------
 
-    [Fact]
+    [SkippableFact]
     public void Index_write_is_not_written_through_a_directory_substituted_after_collection()
     {
         using var tmp = new TempDir();
         WriteDoc(tmp, "real/a.md", "BigQuery Dataset", "A", "desc");
         using var external = new TempDir();
 
-        if (!tmp.TryCreateJunctionToExternalDir("privilege-probe", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("privilege-probe", external.Path), "no junction/symlink privilege on this machine");
 
         Directory.Delete(Path.Combine(tmp.Path, "privilege-probe"));
 
@@ -439,7 +433,7 @@ public class IndexTests
     // creation privilege; skips cleanly if unavailable.
     // ----------------------------------------------------------------
 
-    [Fact]
+    [SkippableFact]
     public void Index_write_is_skipped_when_the_target_index_md_is_itself_a_planted_symlink()
     {
         using var tmp = new TempDir();
@@ -447,10 +441,7 @@ public class IndexTests
         using var external = new TempDir();
         var externalFile = external.Write("external.md", "external content, must not be overwritten\n");
 
-        if (!tmp.TryCreateFileSymlinkToExternalFile(Path.Combine("tables", "index.md"), externalFile))
-        {
-            return; // no symlink-creation privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateFileSymlinkToExternalFile(Path.Combine("tables", "index.md"), externalFile), "no symlink-creation privilege on this machine");
 
         var before = File.ReadAllText(externalFile);
 
@@ -490,17 +481,14 @@ public class IndexTests
     // pattern.
     // ----------------------------------------------------------------
 
-    [Fact]
+    [SkippableFact]
     public void Symlinked_bundle_root_still_gets_its_index_written()
     {
         using var content = new TempDir();
         WriteDoc(content, "a.md", "BigQuery Dataset", "A", "desc");
 
         using var parent = new TempDir();
-        if (!parent.TryCreateJunctionToExternalDir("bundle-root-link", content.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(parent.TryCreateJunctionToExternalDir("bundle-root-link", content.Path), "no junction/symlink privilege on this machine");
 
         var bundleRoot = Path.Combine(parent.Path, "bundle-root-link");
 

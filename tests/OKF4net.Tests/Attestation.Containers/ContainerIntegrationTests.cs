@@ -254,4 +254,88 @@ public class ContainerIntegrationTests
         p.WaitForExit(10_000);
         return output.Trim();
     }
+
+    /// <summary>
+    /// The 8 Mi-character output cap is a stage failure, not a silent truncation: a
+    /// container that floods stdout must come back as a
+    /// <see cref="ContainerExecutionException"/> naming the ceiling, never as a receipt
+    /// built from a cut-off prefix. The unit-level half of this is
+    /// <c>CliContainerEngineRunTests.The_bounded_reader_reports_when_it_dropped_output</c>;
+    /// this is the same property observed through a real engine.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_container_that_floods_stdout_fails_the_stage_instead_of_being_truncated()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var engine = new CliContainerEngine();
+        var spec = new ContainerRunSpec(
+            Image: "python:3.12-slim",
+            Command: ["python3", "-c", "import sys; sys.stdout.write('x' * (9 * 1024 * 1024))"],
+            Stdin: null,
+            Environment: new Dictionary<string, string>(),
+            NetworkMode: "none",
+            MemoryBytes: 128 * 1024 * 1024,
+            Cpus: 0.5,
+            PidsLimit: 16,
+            Timeout: TimeSpan.FromSeconds(60));
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await engine.RunAsync(spec));
+        Assert.Contains("output ceiling", ex.Message);
+    }
+
+    /// <summary>
+    /// The executable guard behind SqlClientComputationExecutorTests' source-text smoke
+    /// check. Builds a throwaway image with pg8000 vendored in, then runs the SqlClient
+    /// wrapper on it with <c>--network none</c> and a connection string nothing can
+    /// answer. Import-first means the run gets as far as the driver's own connection
+    /// attempt, so the failure names pg8000 and never pip. Install-first — the first
+    /// version — made the documented "vendor the driver and close the network"
+    /// hardening a guaranteed pip failure before any SQL ran, which is the defect this
+    /// pins. The build is cached by the engine after the first run.
+    /// </summary>
+    [SkippableFact]
+    public async Task SqlClient_runtime_with_the_driver_vendored_needs_no_package_index()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        const string image = "okf-test-pg8000-vendored:local";
+        BuildImage(image, "FROM python:3.12-slim\nRUN pip install --quiet pg8000==1.31.5\n");
+
+        var engine = new CliContainerEngine();
+        var profile = new ContainerRuntimeProfile
+        {
+            Image = image,
+            Kind = ContainerRuntimeKind.SqlClient,
+            NetworkMode = "none",
+            Environment = new Dictionary<string, string> { ["OKF_CONN"] = "postgresql://u:p@127.0.0.1:1/nowhere" },
+            Timeout = TimeSpan.FromSeconds(60),
+        };
+        var executor = new SqlClientComputationExecutor(engine, profile);
+        var bound = new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?>());
+        var contract = new AttestedComputationContract(
+            Runtime: "postgres", Parameters: [], ComputationPath: null,
+            Executor: new Executor(null, ["executed_sql", "result"]), Attester: null);
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await executor.ExecuteAsync(bound, contract));
+
+        Assert.DoesNotContain("pip", ex.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pg8000", ex.Stderr, StringComparison.Ordinal);
+    }
+
+    private static void BuildImage(string tag, string dockerfile)
+    {
+        using var p = Process.Start(new ProcessStartInfo("docker", $"build --quiet -t {tag} -")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!;
+        p.StandardInput.Write(dockerfile);
+        p.StandardInput.Close();
+        var stderr = p.StandardError.ReadToEndAsync();
+        p.StandardOutput.ReadToEnd();
+        p.WaitForExit(300_000);
+        Assert.True(p.ExitCode == 0, $"docker build failed: {stderr.Result}");
+    }
 }

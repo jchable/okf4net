@@ -238,7 +238,7 @@ public class HtmlWriterTests
             : char.IsLower(c) ? char.ToUpperInvariant(c)
             : c).ToArray());
 
-    [Fact]
+    [SkippableFact]
     public void Write_refuses_an_out_dir_that_is_a_junction_resolving_inside_the_bundle()
     {
         // Reproduces the demonstrated bypass: `--out` is not lexically inside
@@ -254,10 +254,7 @@ public class HtmlWriterTests
         var insideBundle = Path.Combine(src.Path, "generated-site");
         Directory.CreateDirectory(insideBundle);
 
-        if (!linkHost.TryCreateJunctionToExternalDir("vlink", insideBundle))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(linkHost.TryCreateJunctionToExternalDir("vlink", insideBundle), "no junction/symlink privilege on this machine");
 
         var outDir = Path.Combine(linkHost.Path, "vlink");
 
@@ -265,7 +262,7 @@ public class HtmlWriterTests
         Assert.Contains("bundle", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
+    [SkippableFact]
     public void Write_refuses_when_a_planted_reparse_point_inside_the_output_directory_escapes_it()
     {
         // Mirrors the same underlying flaw (Path.GetFullPath doesn't
@@ -278,10 +275,7 @@ public class HtmlWriterTests
         using var external = new TempDir();
         var site = SiteModel.Build(SampleBundle(src));
 
-        if (!dest.TryCreateJunctionToExternalDir("tables", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(dest.TryCreateJunctionToExternalDir("tables", external.Path), "no junction/symlink privilege on this machine");
 
         var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, dest.Path));
         Assert.Contains("outside", ex.Message, StringComparison.OrdinalIgnoreCase);

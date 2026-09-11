@@ -32,4 +32,23 @@ public class ReceiptParsingTests
         Assert.Equal("hi", receipt.Fields["message"]);
         Assert.Equal(3L, receipt.Fields["count"]);
     }
+
+    /// <summary>
+    /// <c>JsonSerializer.Deserialize&lt;Dictionary&lt;…&gt;&gt;</c> returns <see langword="null"/>
+    /// for the valid JSON literal <c>null</c>, and the first version coalesced that to an
+    /// empty receipt — so a run whose whole stdout was <c>null</c> passed the shape check
+    /// whenever <c>executor.receipt</c> declared no fields. A receipt is a JSON object and
+    /// nothing else; every other JSON shape is one rejection, with one message.
+    /// </summary>
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[1, 2]")]
+    [InlineData("\"text\"")]
+    [InlineData("42")]
+    public void Non_object_stdout_JSON_is_rejected_not_read_as_an_empty_receipt(string stdout)
+    {
+        var ex = Assert.Throws<ContainerExecutionException>(
+            () => ReceiptParsing.Parse(new ContainerRunResult(0, stdout, ""), "script"));
+        Assert.Contains("script stdout was not a JSON object", ex.Message);
+    }
 }

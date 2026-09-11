@@ -93,16 +93,13 @@ public class ReparsePointsTests
     /// walk's scope and must never be inspected; with it, the untrimmed-root
     /// call overshoots into it and wrongly reports a reparse point.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void HasReparsePointAncestor_gives_the_same_result_whether_or_not_the_root_has_a_trailing_separator()
     {
         using var outer = new TempDir();
         using var external = new TempDir();
 
-        if (!outer.TryCreateJunctionToExternalDir("linked", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(outer.TryCreateJunctionToExternalDir("linked", external.Path), "no junction/symlink privilege on this machine");
 
         var root = Path.Combine(outer.Path, "linked", "bundle");
         Directory.CreateDirectory(root);
@@ -151,16 +148,13 @@ public class ReparsePointsTests
     /// this test exercises the helper's own contract in isolation, not a
     /// scenario that depends on other code.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void HasReparsePointAncestor_two_arg_ordinal_does_not_stop_early_on_a_case_variant_root()
     {
         using var outer = new TempDir();
         using var external = new TempDir();
 
-        if (!outer.TryCreateJunctionToExternalDir("Linked", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(outer.TryCreateJunctionToExternalDir("Linked", external.Path), "no junction/symlink privilege on this machine");
 
         var trueRoot = Path.Combine(outer.Path, "Linked", "Bundle");
         Directory.CreateDirectory(trueRoot);

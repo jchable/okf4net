@@ -148,7 +148,7 @@ public class FileMemoryStoreTests
         Assert.Empty(listedAsB);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Reparse_escaped_scope_directory_reports_a_diagnostic_and_never_throws()
     {
         using var tmp = new TempDir();
@@ -156,10 +156,7 @@ public class FileMemoryStoreTests
         var store = UserStore(tmp);
         var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
 
-        if (!tmp.TryCreateJunctionToExternalDir(MemoryPath.For(MemoryTier.User, scope), external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir(MemoryPath.For(MemoryTier.User, scope), external.Path), "no junction/symlink privilege on this machine");
 
         var read = await store.ReadAsync(scope, new KnowledgeQuery("anything"));
 

@@ -45,12 +45,22 @@ public sealed record ContainerRuntimeProfile
     /// hardening is the host's decision: a host that vendors the driver into its own
     /// image can close the SqlClient path down to its database's network, and one that
     /// needs a Script run to fetch something can open it, without either having to fork
-    /// an executor.
+    /// an executor. An explicit <see langword="null"/> is honoured on either kind: it
+    /// means the engine's default, not "unset, fall back to the kind's default".
     /// </summary>
     public string? NetworkMode
     {
-        get => _networkMode ?? (Kind == ContainerRuntimeKind.Script ? "none" : null);
-        init => _networkMode = value;
+        // Whether the host SET the value is tracked separately from the value, because
+        // null is a legitimate setting ("engine default") and not just the absence of
+        // one. Folding the two together (`_networkMode ?? default-for-kind`) meant a
+        // Script profile could never express the one override this doc offers: the
+        // init accessor stored null and the getter substituted "none" right back.
+        get => _networkModeSet ? _networkMode : Kind == ContainerRuntimeKind.Script ? "none" : null;
+        init
+        {
+            _networkMode = value;
+            _networkModeSet = true;
+        }
     }
 
     /// <summary>Default <c>--memory</c> ceiling. 512 MiB. Must be positive: zero or negative means <i>unlimited</i> to docker and podman, so it is rejected rather than silently removing the ceiling.</summary>
@@ -74,14 +84,15 @@ public sealed record ContainerRuntimeProfile
         init => _pidsLimit = ResourceCeiling.Positive(value, nameof(PidsLimit));
     }
 
-    /// <summary>Wall-clock ceiling enforced independently of the caller's <see cref="CancellationToken"/>. Must be positive.</summary>
+    /// <summary>Wall-clock ceiling enforced independently of the caller's <see cref="CancellationToken"/>. Must be a positive duration a timer can count (at most about 49.7 days): <c>Timeout.InfiniteTimeSpan</c> is rejected rather than read as "no ceiling".</summary>
     public TimeSpan Timeout
     {
         get => _timeout;
-        init => _timeout = ResourceCeiling.Positive(value, nameof(Timeout));
+        init => _timeout = ResourceCeiling.Timeout(value, nameof(Timeout));
     }
 
     private readonly string? _networkMode;
+    private readonly bool _networkModeSet;
     private readonly long _memoryBytes = 512L * 1024 * 1024;
     private readonly double _cpus = 1.0;
     private readonly int _pidsLimit = 64;
@@ -91,8 +102,11 @@ public sealed record ContainerRuntimeProfile
 /// <summary>
 /// Configuration for ContainerAttester — always a
 /// fixed, small Python image, independent of whatever image the executor's
-/// <see cref="ContainerRuntimeProfile"/> uses (a <see cref="ContainerRuntimeKind.SqlClient"/>
-/// profile's image has no Python at all).
+/// <see cref="ContainerRuntimeProfile"/> uses. That image is whatever the sanctioned
+/// code needs — a <see cref="ContainerRuntimeKind.Script"/> profile can run on one
+/// with no Python at all — while the attester bootstrap always has its own. (A
+/// <see cref="ContainerRuntimeKind.SqlClient"/> image is the one that <i>must</i> be
+/// Python-capable: the wrapper is <c>python3</c>.)
 /// </summary>
 public sealed record ContainerAttesterOptions
 {
@@ -123,11 +137,11 @@ public sealed record ContainerAttesterOptions
         init => _pidsLimit = ResourceCeiling.Positive(value, nameof(PidsLimit));
     }
 
-    /// <summary>Wall-clock ceiling. Must be positive.</summary>
+    /// <summary>Wall-clock ceiling. Must be a positive duration a timer can count (see <see cref="ContainerRuntimeProfile.Timeout"/>).</summary>
     public TimeSpan Timeout
     {
         get => _timeout;
-        init => _timeout = ResourceCeiling.Positive(value, nameof(Timeout));
+        init => _timeout = ResourceCeiling.Timeout(value, nameof(Timeout));
     }
 
     private readonly long _memoryBytes = 256L * 1024 * 1024;

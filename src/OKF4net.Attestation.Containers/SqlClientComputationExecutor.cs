@@ -19,25 +19,39 @@ namespace OKF4net.Attestation.Containers;
 /// <c>TIMESTAMP</c>, <c>UUID</c>, <c>BYTEA</c> — arrives as its Python
 /// <c>str()</c> form rather than failing the run.</para>
 ///
-/// <para><b>Known trade-off.</b> <see cref="Wrapper"/> pip-installs its
-/// driver on every run, so a run needs network access to a package index and
-/// pays the install cost each time. The alternative, a purpose-built image
-/// with the driver vendored in, is the better answer for anything beyond
-/// local use.</para>
+/// <para><b>Driver policy.</b> <see cref="Wrapper"/> imports its driver first and
+/// pip-installs it — pinned to one version, never whatever the index serves
+/// today into a process holding <c>OKF_CONN</c> — only when the image does not
+/// already provide it. On a bare Python image that means network access to a
+/// package index and the install cost on every run; an image with the driver
+/// vendored in skips the install entirely, can run with
+/// <see cref="ContainerRuntimeProfile.NetworkMode"/> closed down to its database's
+/// network, and is the better answer for anything beyond local use.</para>
 /// </summary>
 public sealed class SqlClientComputationExecutor(IContainerEngine engine, ContainerRuntimeProfile profile) : IComputationExecutor
 {
-    private const string Wrapper = """
-        import sys, os, json, subprocess
-        # stdout is the receipt channel and nothing else: pip's own output must never
-        # land on it. --quiet alone is not enough -- it only makes this usually
-        # invisible, which is what made it a latent, environment-dependent failure
-        # (a warning, a progress line, a resolver message and the receipt is
-        # unparseable). DEVNULL makes it structural. stderr is left alone so a real
-        # install failure is still diagnosable; check=True still aborts on one.
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'pg8000'],
-                       check=True, stdout=subprocess.DEVNULL)
-        import pg8000.native
+    internal const string Wrapper = """
+        import sys, os, json
+        try:
+            # Import first. An image that vendors the driver never reaches for a
+            # package index, which is what lets a host run this profile with its
+            # network closed down to the database. pip is the fallback for a bare
+            # Python image, and only then.
+            import pg8000.native
+        except ImportError:
+            import subprocess
+            # stdout is the receipt channel and nothing else: pip's own output must never
+            # land on it. --quiet alone is not enough -- it only makes this usually
+            # invisible, which is what made it a latent, environment-dependent failure
+            # (a warning, a progress line, a resolver message and the receipt is
+            # unparseable). DEVNULL makes it structural. stderr is left alone so a real
+            # install failure is still diagnosable; check=True still aborts on one.
+            # The version is pinned: this process holds OKF_CONN, so "whatever the
+            # index serves today" is not an acceptable thing to import into it. Keep
+            # it in step with the vendored image ContainerIntegrationTests builds.
+            subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'pg8000==1.31.5'],
+                           check=True, stdout=subprocess.DEVNULL)
+            import pg8000.native
         from urllib.parse import urlparse
         envelope = json.load(sys.stdin)
         sql = envelope['sql']

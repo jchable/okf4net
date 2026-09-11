@@ -230,24 +230,19 @@ public class BundleTests
     //
     // Both tests require symlink-creation privilege
     // (SeCreateSymbolicLinkPrivilege on Windows, absent without Developer
-    // Mode or an elevated process); when it is unavailable they return early on
-    // TempDir.TryCreate*Symlink's bool, which counts as PASSED, not skipped --
-    // so on such a machine they verify nothing and say nothing about it. That
-    // was once justified by xunit v2 having no Assert.Skip; it no longer is,
-    // since this repo now carries Xunit.SkippableFact (see
-    // tests/.../Attestation.Containers/ContainerIntegrationTests.cs). Converting
-    // them would make the silence visible in the run summary.
+    // Mode or an elevated process). When it is unavailable they SKIP, via
+    // Xunit.SkippableFact, so the run summary shows the missing prerequisite.
+    // They used to return early on TempDir.TryCreate*Symlink's bool instead,
+    // which counted as PASSED while verifying nothing -- once justified by
+    // xunit v2 having no Assert.Skip, and not since the package arrived.
     // ----------------------------------------------------------------
 
-    [Fact]
+    [SkippableFact]
     public void Symlinked_markdown_file_is_skipped_not_loaded_as_a_concept()
     {
         using var tmp = new TempDir();
         tmp.Write("real.md", "---\ntype: Note\ntitle: Real\n---\nbody\n");
-        if (!tmp.TryCreateFileSymlink("link.md", "real.md"))
-        {
-            return; // no symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateFileSymlink("link.md", "real.md"), "no symlink privilege on this machine");
 
         var bundle = Bundle.Load(tmp.Path);
         Assert.Equal(1, bundle.Count);
@@ -256,15 +251,12 @@ public class BundleTests
         Assert.Empty(bundle.ParseErrors);
     }
 
-    [Fact]
+    [SkippableFact]
     public void Symlinked_directory_is_not_descended_into()
     {
         using var tmp = new TempDir();
         tmp.Write("real/a.md", "---\ntype: Note\ntitle: A\n---\nbody\n");
-        if (!tmp.TryCreateDirectorySymlink("linked", "real"))
-        {
-            return; // no symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateDirectorySymlink("linked", "real"), "no symlink privilege on this machine");
 
         var bundle = Bundle.Load(tmp.Path);
         Assert.Equal(1, bundle.Count);

@@ -1403,7 +1403,7 @@ public class CliTests
     /// invoking the verb at all -- a black-box failure any process,
     /// including a real filesystem permission error, could produce.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Verify_prints_the_records_that_landed_before_a_later_write_failure()
     {
         using var tmp = new TempDir();
@@ -1422,7 +1422,7 @@ public class CliTests
             try
             {
                 File.WriteAllText(revPath, originalRev);
-                return; // read-only wasn't enforced on this platform/user -- skip.
+                throw new SkipException("read-only is not enforced on this platform/user");
             }
             catch (UnauthorizedAccessException)
             {
