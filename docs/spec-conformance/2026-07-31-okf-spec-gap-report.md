@@ -189,6 +189,27 @@ headings → `OkfDocument.Computation()`.
   (`tests/OKF4net.Tests/ValidateTests.cs`). In `bundles/acme_retail/` this
   took the count from 24 warnings to 22.
 
+  **Scoped to an ABSENT key, not to an empty value.** The sentence §4.1
+  carves out is about *absence*, and the same sentence specifies what the
+  present form must be: "a URI that uniquely identifies the underlying
+  asset". So the suppression is keyed on the key being missing
+  (`fm.Get("resource") is null`), evaluated after the lookup rather than
+  before it. A §10 concept that declares `resource` with a value that is not
+  a URI — `resource: ""`, a bare `resource:`, `resource: []`, and, since
+  `YamlValue.IsEmptyValue` is a falsiness test rather than an emptiness one,
+  `resource: false` and `resource: 0` — still warns. That keeps the carve-out
+  on one axis (key presence) and leaves the value check untouched, which is
+  also what makes `resource` consistent with the other three recommended
+  fields: `title`/`description`/`tags` have always warned on an explicitly
+  empty value (`Empty_recommended_field_values_are_also_warnings`), and an
+  Attested Computation is now treated identically to any other type once the
+  key is present. Test:
+  `An_attested_computation_is_still_warned_for_a_present_but_empty_resource`
+  (a `[Theory]` over all six forms). The first cut skipped the field before
+  reading it, which silenced all six; no bundle in the repo was affected
+  (`acme_retail` stays at 22 — its Attested Computations omit `resource`
+  entirely), so this narrows the rule without moving any count.
+
   **Not implemented for other abstract types**, which is why this is Partial:
   §4.1 draws the line by *meaning* ("abstract ideas" vs "physical
   resources") and `type` values are explicitly not registered centrally
