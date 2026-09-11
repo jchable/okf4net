@@ -136,6 +136,47 @@ public class ValidateTests
         Assert.DoesNotContain(warnings, d => d.Message.Contains("`timestamp`"));
     }
 
+    /// <summary>
+    /// §4.1 qualifies `resource` where it recommends it: "A URI that uniquely
+    /// identifies the underlying asset the concept describes. Absent for
+    /// concepts that describe abstract ideas rather than physical resources."
+    /// A §10 Attested Computation is the one concept the spec itself both
+    /// names normatively (§10.1: "a standalone concept of
+    /// `type: Attested Computation`") and shows without a `resource` in every
+    /// example it gives (§10.2, and all of Appendix A's). Warning there says a
+    /// well-formed concept is deficient, so it is suppressed -- narrowly, and
+    /// only for that type, because §4.1 leaves the type vocabulary open and no
+    /// syntactic test decides "abstract" in general (S4.1-8 in
+    /// docs/spec-conformance/).
+    /// </summary>
+    [Fact]
+    public void Attested_computation_is_not_warned_for_a_missing_resource()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\ntitle: T\ndescription: D\ntags: [x]\n---\n# Computation\n\n```sql\nSELECT 1\n```\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        Assert.DoesNotContain(report.Of(Severity.Warning), d => d.Field == "resource");
+    }
+
+    /// <summary>
+    /// The other half of S4.1-8: the suppression is keyed on the §10 type and
+    /// nothing else. A concept that is equally abstract but carries any other
+    /// `type` still gets the warning, because §4.1's carve-out is stated in
+    /// terms of meaning and only §10.1 supplies a type name to key on.
+    /// </summary>
+    [Fact]
+    public void A_non_computation_concept_is_still_warned_for_a_missing_resource()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m/rev.md", "---\ntype: Metric\ntitle: T\ndescription: D\ntags: [x]\n---\nbody\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        Assert.Contains(report.Of(Severity.Warning), d => d.Field == "resource" && d.Code == DiagnosticCode.MissingRecommendedField);
+    }
+
     [Fact]
     public void Empty_recommended_field_values_are_also_warnings()
     {

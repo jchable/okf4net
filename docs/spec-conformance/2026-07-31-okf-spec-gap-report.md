@@ -164,40 +164,46 @@ headings → `OkfDocument.Computation()`.
   (Major). Same citation as S4.1-3 — no diagnostic/exception is raised for
   an unrecognized field name anywhere.
 - **S4.1-8** (§4.1's carve-out: `resource` is expected to be absent on an
-  abstract concept) — **Divergent, recorded not fixed** (Minor, added
-  2026-09-11). §4.1 lists `resource` among the recommended fields but
-  qualifies it in the same breath (`docs/spec/SPEC.md:196-198`): "A URI that
-  uniquely identifies the underlying asset the concept describes. **Absent
-  for concepts that describe abstract ideas rather than physical
-  resources.**" That sentence makes absence *correct* for such a concept,
-  not a deficiency. `BundleValidator` warns unconditionally:
-  `RecommendedFields = ["title", "description", "resource", "tags"]`
-  (`src/OKF4net/Validate.cs:552`), checked per concept with no regard to
-  `type` (`Validate.cs:315-328`).
+  abstract concept) — **Partial** (Minor, added 2026-09-11). §4.1 lists
+  `resource` among the recommended fields but qualifies it in the same breath
+  (`docs/spec/SPEC.md:196-198`): "A URI that uniquely identifies the
+  underlying asset the concept describes. **Absent for concepts that describe
+  abstract ideas rather than physical resources.**" That sentence makes
+  absence *correct* for such a concept, not a deficiency, and
+  `BundleValidator` used to warn unconditionally.
 
-  How far it reaches: the spec's own example concepts are the ones that
-  trip it. Neither §10.2's Attested Computation
-  (`docs/spec/SPEC.md:610-631`) nor any of Appendix A's three v0.2 concepts
-  — one `Metric`, two `Attested Computation`, from
-  `docs/spec/SPEC.md:894` on — carries a top-level `resource`, so
-  OKF4net emits "missing recommended frontmatter field `resource`" against
-  every one of them. In `bundles/acme_retail/` this is 6 of the 24
-  remaining warnings, all on `Metric`, `Skill` and `Attested Computation`
-  concepts.
+  How far it reached: the spec's own example concepts were the ones tripping
+  it. Neither §10.2's Attested Computation (`docs/spec/SPEC.md:610-631`) nor
+  any of Appendix A's three v0.2 concepts — one `Metric`, two
+  `Attested Computation`, from `docs/spec/SPEC.md:894` on — carries a
+  top-level `resource`.
 
-  Not settled by the golden captures: the only reference-captured bundle
-  that exercises this, `tests/fixtures/appendix_a/`, contains nothing but
-  `BigQuery Table`/`BigQuery Dataset` concepts — physical resources, where
-  warning is right under either reading — so `golden/validate.out` is
-  consistent with both an unconditional warning and a type-aware one.
+  **Implemented for `Attested Computation`** (`src/OKF4net/Validate.cs`, the
+  `RecommendedFields` loop, keyed on `Frontmatter.IsAttestedComputation`).
+  That type is the one case a rule can be keyed on rather than guessed:
+  §10.1 names it normatively ("a standalone concept of
+  `type: Attested Computation`"), and every example the spec gives of one
+  omits `resource`. Tests:
+  `Attested_computation_is_not_warned_for_a_missing_resource` and
+  `A_non_computation_concept_is_still_warned_for_a_missing_resource`
+  (`tests/OKF4net.Tests/ValidateTests.cs`). In `bundles/acme_retail/` this
+  took the count from 24 warnings to 22.
 
-  Left as-is because the fix is not mechanical: the spec draws the line by
-  *meaning* ("abstract ideas" vs "physical resources"), and `type` values
-  are explicitly not registered centrally (S4.1-2), so no syntactic test
-  can decide it. The options — drop `resource` from the recommended set,
-  demote it to `Severity.Info`, or keep the warning — are a product
-  decision, not a conformance one, and all three stay within §11 (S11-8:
-  a missing optional field must never reject a bundle, which it does not).
+  **Not implemented for other abstract types**, which is why this is Partial:
+  §4.1 draws the line by *meaning* ("abstract ideas" vs "physical
+  resources") and `type` values are explicitly not registered centrally
+  (S4.1-2), so no syntactic test decides it. A `Metric` or a `Skill` without
+  a `resource` still warns — 4 of `acme_retail`'s remaining 22.
+
+  Why the suppression stops there rather than going wider: the only
+  reference-captured bundle exercising this, `tests/fixtures/appendix_a/`,
+  contains nothing but `BigQuery Table`/`BigQuery Dataset` concepts, and
+  `golden/validate.out` captures the reference CLI warning about their
+  missing `resource`. Dropping `resource` from the recommended set, or
+  demoting it to `Severity.Info`, would rewrite that byte-exact capture; the
+  type-keyed rule leaves it untouched (verified: no golden changed). All of
+  these stay within §11 either way (S11-8: a missing optional field must
+  never reject a bundle, which it does not).
 - **S4.2-1** (SHOULD, structural markdown over freeform prose) — **N/A**
   (per this skill's own worked example) — pure human-authoring guidance;
   no code judges prose-vs-structure.

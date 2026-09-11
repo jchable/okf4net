@@ -421,8 +421,6 @@ and this project adheres to
   is refused together with `--reset`/`--force` and with `--no-code`, both of which
   would otherwise let an operator believe something was verified that was not.
 
-### Fixed
-
 - **§6.2 path-valued fields: a bare relative path now resolves from the bundle
   root, not from the concept's directory.** `resource`, `sources[].resource`,
   `computation`, `executor.resource` and `attester.resource` are resolved by
@@ -457,6 +455,20 @@ and this project adheres to
   - The drive-relative guard (a raw value like `e:query.sql`, which
     `Path.GetFullPath` resolves against that drive's own current directory)
     now covers both bases rather than only the concept-relative one.
+
+- **`okf validate` no longer reports a missing `resource` on a §10 Attested
+  Computation.** §4.1 recommends `resource` but qualifies it in the same
+  sentence — "Absent for concepts that describe abstract ideas rather than
+  physical resources" — so on such a concept its absence is correct, not a
+  deficiency. `Attested Computation` is the one type a rule can be keyed on
+  instead of guessed: §10.1 names it normatively, and every example the spec
+  gives of one omits `resource`. Other abstract types (`Metric`, `Skill`, …)
+  still warn, because §4.1 draws the line by meaning and leaves the type
+  vocabulary open, so nothing syntactic decides it. `bundles/acme_retail/`
+  goes from 24 warnings to 22. Recorded as **S4.1-8** in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+
+### Fixed
 
 - **`YamlEmitter`'s nesting guard now throws `YamlEmitException`** (an
   `OkfException`, like the parser's `YamlParseException`) instead of a bare

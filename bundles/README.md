@@ -44,19 +44,25 @@ the repo root and the attribution entry in `NOTICE`.
 dotnet run --project src/OKF4net.Cli -- validate bundles/acme_retail
 ```
 
-Exits `0` (conformant): 9 concepts, 0 errors, 24 warnings, 0 info. The
+Exits `0` (conformant): 9 concepts, 0 errors, 22 warnings, 0 info. The
 warnings are expected and harmless:
 
-- 18 of the 24 are `LegacyDateOnlyTimestamp`: 7 `stale_after` values plus
+- 18 of the 22 are `LegacyDateOnlyTimestamp`: 7 `stale_after` values plus
   §5.1 `sources[].last_modified` and `usage_window` bounds written as bare
   `YYYY-MM-DD`. OKF v0.2 §5 requires "an ISO 8601 datetime with an explicit
   UTC offset" for every timestamp-valued key, so the upstream sample is in
   drift with its own spec. The values are still read (normalized to midnight
   UTC); this is upstream drift to report upstream, **not** something to patch
   locally — the bundle is a verbatim copy (see `NOTICE`).
-- The remaining 6 of the 24 are "missing recommended frontmatter field `resource`"
-  on concept types where a `resource` URI doesn't apply (`Metric`, `Skill`,
-  and `Attested Computation`).
+- The remaining 4 of the 22 are "missing recommended frontmatter field
+  `resource`" on `Metric` and `Skill` concepts — abstract concepts, where
+  §4.1 says a `resource` URI is expected to be absent rather than missing.
+  OKF4net still warns, because §4.1 draws that line by meaning and leaves the
+  type vocabulary open, so nothing syntactic decides it. The two
+  `Attested Computation` concepts used to warn here too and no longer do:
+  §10.1 names that type normatively and every example the spec gives of it
+  omits `resource`, which is the one case a rule can be keyed on. See
+  **S4.1-8** in `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
 
 This file previously recorded a third group — twelve `sources[].resource` /
 `executor.resource` / `attester.resource` paths reported as "not found" — and
