@@ -261,6 +261,82 @@ public class FrontmatterResourceTests
     }
 
     /// <summary>
+    /// The drive-relative guard runs on the value AFTER the leading-separator
+    /// strip, so <c>"/e:query.sql"</c> is rejected by the same rule as the bare
+    /// <c>"e:query.sql"</c> of <c>Drive_relative_raw_path_is_unsafe_on_windows</c>.
+    ///
+    /// What the guard buys is a DETERMINISTIC verdict, not containment on its
+    /// own: without it this spelling reaches
+    /// <see cref="System.IO.Path.GetFullPath(string)"/>, which resolves a
+    /// drive-relative value against that drive's own current directory. The
+    /// containment check then usually rejects it -- verified: this test still
+    /// passes with the guard narrowed back to the concept-relative branch --
+    /// but "usually" is the problem, since the outcome depends on where the
+    /// drive's current directory happens to point rather than on the bundle.
+    /// The guard makes the rejection a property of the value. Windows-only:
+    /// only there does <c>e:query.sql</c> read as rooted.
+    /// </summary>
+    [Fact]
+    public void Drive_relative_raw_path_behind_a_leading_separator_is_unsafe_on_windows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        var driveLetter = System.IO.Path.GetPathRoot(tmp.Path)![0];
+
+        Assert.True(bundle.TryResolveResource(concept, $"/{driveLetter}:query.sql", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Unsafe, status);
+        Assert.Null(abs);
+    }
+
+    /// <summary>
+    /// A UNC-looking raw value must not reach the network: the leading-separator
+    /// strip turns <c>\\server\share\x</c> into the ordinary bundle-relative
+    /// <c>server\share\x</c>, so it resolves (and fails to exist) inside the
+    /// bundle rather than naming a remote host.
+    /// </summary>
+    [Fact]
+    public void Unc_shaped_raw_path_stays_inside_the_bundle()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        Assert.True(bundle.TryResolveResource(concept, @"\\server\share\x.sql", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Missing, status);
+        Assert.StartsWith(System.IO.Path.GetFullPath(tmp.Path), abs!, System.StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Only a whole first segment of <c>.</c> or <c>..</c> makes a path
+    /// document-relative. A leading dot that is merely part of a directory name
+    /// (<c>.hidden/</c>) is an ordinary bare path and so resolves from the
+    /// bundle root, like any other.
+    /// </summary>
+    [Fact]
+    public void Leading_dot_in_a_directory_name_is_not_the_document_relative_form()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(".hidden/x.sql", "SELECT 'at the root'\n");
+        tmp.Write("c/.hidden/x.sql", "SELECT 'beside the concept'\n");
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        Assert.True(bundle.TryResolveResource(concept, ".hidden/x.sql", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Resolved, status);
+        Assert.Equal("SELECT 'at the root'\n", bundle.ReadResourceText(abs!));
+    }
+
+    /// <summary>
     /// The other half of the §6.2 rule: <c>./</c> and <c>../</c> are the
     /// explicitly document-relative forms (§6.2's own example is
     /// <c>../computations/revenue.md</c>), so they keep resolving against the
