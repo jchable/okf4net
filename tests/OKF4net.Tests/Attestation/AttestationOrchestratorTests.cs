@@ -299,7 +299,9 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n" +
             "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
-        tmp.Write("c/references/revenue.sql", "SELECT revenue FROM t;\n");
+        // Laid out as Appendix A does: the concept sits in a subdirectory and its
+        // bare `computation` path resolves from the BUNDLE ROOT, not from "c/".
+        tmp.Write("references/revenue.sql", "SELECT revenue FROM t;\n");
         string? capturedText = null;
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
         runtime.BindFunc = (contract, computation, values, ct) =>

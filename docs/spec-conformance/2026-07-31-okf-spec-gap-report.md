@@ -282,6 +282,39 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   list with `Exists=false` rather than dropped or erroring. Test:
   `Broken_links_are_detected_but_not_fatal`,
   `tests/OKF4net.Tests/BundleTests.cs:86-99`.
+- **S6.2-1** (path-valued fields: the base a *relative* path resolves
+  against) — **Underspecified in the spec; interpreted here** (Major, added
+  2026-09-11). §6.2 lists three accepted shapes — an absolute URL, a
+  bundle-relative path beginning with `/`, and "a relative path (for example
+  `../computations/revenue.md`)" — but never states what the third is
+  relative *to*. The spec's own examples settle it, and they require two
+  different bases:
+  - `../computations/revenue.md` (§6.2) and `./other.md` (§6.1) are
+    document-relative by construction.
+  - A **bare** path is not. §6.3 gives `references/attesters/revenue.py`;
+    §10.2's example concept declares `executor.resource:
+    references/skills/run-on-bq.md`; and Appendix A gives that example's
+    layout — `computations/revenue.md` as the concept, with `references/`
+    at the **bundle root**. Resolving the bare path against the concept's
+    directory would point it at `computations/references/…`, which Appendix
+    A's own layout does not contain.
+
+  OKF4net therefore resolves by prefix: a leading `/` → bundle root; an
+  explicit `./` or `../` → the concept's own directory; anything else (a
+  bare path) → bundle root. This is the only rule under which every example
+  in the spec resolves to a file the spec itself places in the bundle.
+  `FrontmatterResourceKind` names the two local cases `BundleRelative` and
+  `ConceptRelative` accordingly. `src/OKF4net/FrontmatterResource.cs`
+  (`FrontmatterResourceClassifier.KindOf`) and
+  `src/OKF4net/Bundle.cs` (`TryResolveResource`). Tests:
+  `Bare_path_resolves_from_the_bundle_root_per_Appendix_A`,
+  `Dot_prefixed_path_resolves_relative_to_the_concept`,
+  `tests/OKF4net.Tests/FrontmatterResourceTests.cs`.
+
+  Observable consequence: `bundles/acme_retail/` — a verbatim copy of an
+  upstream sample, laid out exactly as Appendix A is — is conformant under
+  this reading, and the twelve `… not found` warnings OKF4net used to emit
+  against it were the implementation's error, not the bundle's.
 
 ### §7 Actor convention
 

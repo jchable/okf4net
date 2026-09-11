@@ -15,15 +15,20 @@ public class FrontmatterResourceTests
             "---\ntype: Attested Computation\ncomputation: ../refs/revenue.sql\n" +
             "executor: { resource: /skills/run.md, receipt: [job_id] }\n" +
             "attester: { resource: https://ex/att.py }\n" +
-            "sources:\n  - { id: s, resource: ./policy.md }\n---\nbody\n");
+            "sources:\n  - { id: s, resource: ./policy.md }\n  - { id: t, resource: policies/margin.md }\n---\nbody\n");
         var bundle = Bundle.Load(tmp.Path);
         var doc = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp").Document;
 
         var res = doc.FrontmatterResources();
-        Assert.Contains(res, r => r.Field == "computation" && r.Kind == FrontmatterResourceKind.Relative);
+        Assert.Contains(res, r => r.Field == "computation" && r.Kind == FrontmatterResourceKind.ConceptRelative);
         Assert.Contains(res, r => r.Field == "executor.resource" && r.Kind == FrontmatterResourceKind.BundleRelative);
         Assert.Contains(res, r => r.Field == "attester.resource" && r.Kind == FrontmatterResourceKind.Url);
-        Assert.Contains(res, r => r.Field == "sources[0].resource" && r.Kind == FrontmatterResourceKind.Relative);
+        Assert.Contains(res, r => r.Field == "sources[0].resource" && r.Kind == FrontmatterResourceKind.ConceptRelative);
+
+        // A bare path classifies as BundleRelative: §6.2's relative form is the
+        // explicitly dot-prefixed one, and Appendix A resolves the bare form
+        // from the bundle root.
+        Assert.Contains(res, r => r.Field == "sources[1].resource" && r.Kind == FrontmatterResourceKind.BundleRelative);
     }
 
     [Fact]
@@ -223,5 +228,57 @@ public class FrontmatterResourceTests
         Assert.True(bundle.TryResolveResource(concept, "../linked/secret.sql", out var abs, out var status));
         Assert.Equal(ResourceResolutionStatus.Unsafe, status);
         Assert.Null(abs);
+    }
+
+    /// <summary>
+    /// §6.2 lists three shapes for a path-valued field but never names the base
+    /// a bare relative path resolves against. The spec's own worked example
+    /// settles it: Appendix A lays out <c>computations/revenue.md</c> alongside
+    /// a bundle-root <c>references/</c> directory, and that concept declares
+    /// <c>executor.resource: references/skills/run-on-bq.md</c> and
+    /// <c>attester.resource: references/attesters/sql-equality.py</c> (§10.2,
+    /// echoed by §6.3's <c>references/attesters/revenue.py</c>). Resolving a
+    /// bare path against the concept's own directory would point those at
+    /// <c>computations/references/...</c>, which Appendix A's layout does not
+    /// contain -- so a bare path resolves from the BUNDLE ROOT. The sibling
+    /// decoy file pins that: it is what a concept-relative reading would find.
+    /// </summary>
+    [Fact]
+    public void Bare_path_resolves_from_the_bundle_root_per_Appendix_A()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("references/attesters/sql-equality.py", "# the real attester\n");
+        tmp.Write("computations/references/attesters/sql-equality.py", "# decoy beside the concept\n");
+        tmp.Write("computations/revenue.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "attester: { resource: references/attesters/sql-equality.py }\n---\n# Computation\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "computations/revenue");
+
+        Assert.True(bundle.TryResolveResource(concept, "references/attesters/sql-equality.py", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Resolved, status);
+        Assert.Equal("# the real attester\n", bundle.ReadResourceText(abs!));
+    }
+
+    /// <summary>
+    /// The other half of the §6.2 rule: <c>./</c> and <c>../</c> are the
+    /// explicitly document-relative forms (§6.2's own example is
+    /// <c>../computations/revenue.md</c>), so they keep resolving against the
+    /// concept's directory even though a same-named file sits at the bundle
+    /// root. The root decoy is what the bare-path rule would find.
+    /// </summary>
+    [Fact]
+    public void Dot_prefixed_path_resolves_relative_to_the_concept()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("refs/query.sql", "SELECT 'root decoy'\n");
+        tmp.Write("computations/refs/query.sql", "SELECT 'beside the concept'\n");
+        tmp.Write("computations/comp.md", "---\ntype: Attested Computation\ncomputation: ./refs/query.sql\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "computations/comp");
+
+        Assert.True(bundle.TryResolveResource(concept, "./refs/query.sql", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Resolved, status);
+        Assert.Equal("SELECT 'beside the concept'\n", bundle.ReadResourceText(abs!));
     }
 }

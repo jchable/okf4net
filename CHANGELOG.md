@@ -423,6 +423,31 @@ and this project adheres to
 
 ### Fixed
 
+- **§6.2 path-valued fields: a bare relative path now resolves from the bundle
+  root, not from the concept's directory.** `resource`, `sources[].resource`,
+  `computation`, `executor.resource` and `attester.resource` are resolved by
+  prefix: a leading `/` → bundle root, an explicit `./` or `../` → the
+  concept's own directory, and anything else → bundle root. §6.2 lists the
+  three accepted shapes without saying what a "relative path" is relative to;
+  the spec's own examples require both bases — `../computations/revenue.md`
+  (§6.2) is document-relative, while §6.3's `references/attesters/revenue.py`,
+  §10.2's `executor.resource: references/skills/run-on-bq.md` and Appendix A's
+  layout (that concept in `computations/`, `references/` at the bundle root)
+  only resolve from the root. Resolving everything against the concept
+  directory made the spec's own worked example unresolvable, and made
+  `bundles/acme_retail/` — a verbatim upstream sample laid out exactly as
+  Appendix A is — emit twelve bogus `… not found` warnings while its
+  computations were unrunnable through `AttestationOrchestrator`. Recorded as
+  **S6.2-1** in `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+  - **Breaking (source):** `FrontmatterResourceKind.Relative` is renamed
+    `FrontmatterResourceKind.ConceptRelative`, and a bare path now classifies
+    as `BundleRelative`. The rename is deliberate: it turns a silent change of
+    meaning into a compile error for any consumer that switched on the old
+    member.
+  - The drive-relative guard (a raw value like `e:query.sql`, which
+    `Path.GetFullPath` resolves against that drive's own current directory)
+    now covers both bases rather than only the concept-relative one.
+
 - **`YamlEmitter`'s nesting guard now throws `YamlEmitException`** (an
   `OkfException`, like the parser's `YamlParseException`) instead of a bare
   `InvalidOperationException`. The parser enforces its 1000-level cap with two
