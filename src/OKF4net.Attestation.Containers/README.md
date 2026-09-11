@@ -92,6 +92,14 @@ must reach a database, and a package index unless its image vendors the driver),
 and either can be overridden — including back to the engine's default, with an
 explicit `null`.
 
+The root filesystem is mounted **read-only** by default, with `/tmp` as a
+memory-backed `tmpfs` that dies with the container. That is not a hole in the
+hardening: it is the one writable path the stages genuinely need — the attester
+bootstrap writes the bundle's module there before importing it, and the SQL
+wrapper installs its driver there — named explicitly instead of leaving the
+whole image writable. Both `ReadOnlyRootFilesystem` and `TmpfsMounts` are on the
+profile if a host needs different paths.
+
 ## Limitations in this version
 
 - **Secrets travel as environment variables.** `OKF_CONN` and anything else in
@@ -100,16 +108,12 @@ explicit `null`.
   values, not just connection strings, are readable that way. Do not pass a
   value you would not put in a process listing.
 - **The `SqlClient` wrapper pip-installs its driver when the image lacks it**
-  (pinned to `pg8000==1.31.5`, since the process holds `OKF_CONN`), so on a bare
-  Python image a run needs network access to a package index and pays the
+  (pinned to `pg8000==1.31.5`, since the process holds `OKF_CONN`), into the
+  tmpfs rather than the image, because the root filesystem is read-only. So on a
+  bare Python image a run needs network access to a package index and pays the
   install cost each time. An image with the driver vendored in skips the install
   entirely, can run with `NetworkMode` closed down to its database's network, and
   is the better answer for anything beyond local use.
-- **No `--read-only` root filesystem.** Deliberately not implemented rather
-  than half-implemented: the attester bootstrap writes the module to a
-  temporary file before importing it, so a read-only root needs a writable
-  `tmpfs` mount that `ContainerRunSpec` does not model yet. Adding the flag
-  without the mount would break every attestation.
 - **`executed_sql` is echoed by this host's own wrapper**, so comparing it
   against the sanctioned text proves the wrapper sent what it was given — not
   that the database ran it. Real provenance needs a receipt field the engine

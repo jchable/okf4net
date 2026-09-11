@@ -42,6 +42,17 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             args.Add(network);
         }
 
+        if (spec.ReadOnlyRootFilesystem)
+        {
+            args.Add("--read-only");
+        }
+
+        foreach (var tmpfs in spec.TmpfsMounts)
+        {
+            args.Add("--tmpfs");
+            args.Add(tmpfs);
+        }
+
         // A ceiling is either absent (null -- the flag is omitted and the engine's own
         // default applies) or a real ceiling. It is never zero or negative, because
         // docker and podman read those as UNLIMITED: emitting `--memory 0` would

@@ -73,7 +73,11 @@ public sealed class ContainerAttester(IContainerEngine engine, ContainerAttester
             MemoryBytes: options.MemoryBytes,
             Cpus: options.Cpus,
             PidsLimit: options.PidsLimit,
-            Timeout: options.Timeout);
+            Timeout: options.Timeout)
+        {
+            ReadOnlyRootFilesystem = options.ReadOnlyRootFilesystem,
+            TmpfsMounts = options.TmpfsMounts,
+        };
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         if (result.ExitCode != 0)

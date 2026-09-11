@@ -42,6 +42,15 @@ and this project adheres to
     value rather than accept it: to docker and podman, zero there means
     *unlimited*, so a profile written with `MemoryBytes = 0` would remove the very
     ceiling it looks like it sets.
+  - **The root filesystem is read-only by default**, with `/tmp` as a
+    memory-backed `tmpfs` that dies with the container — the one writable path the
+    stages genuinely need, named explicitly rather than leaving the whole image
+    writable. The attester bootstrap writes the bundle's module there before
+    importing it, and the SQL wrapper installs its driver there
+    (`pip install --target`). Pinned by an integration test that requires a write
+    outside the tmpfs to fail *and* one inside it to succeed — the first alone
+    would also pass on an image with no such path, the second alone with no
+    hardening at all.
   - The `SqlClient` wrapper imports its driver first and pip-installs it — pinned
     to `pg8000==1.31.5`, never "whatever the index serves today" into a process
     holding `OKF_CONN` — only when the image does not already provide it, so an
@@ -62,6 +71,18 @@ and this project adheres to
   - Integration tests that shell to a real engine are excluded from CI by
     decision (`Category=ContainerIntegration`, mirroring `producers/`); they are
     run manually against real Docker.
+
+- **`bundles/meridian_transit/`** — a self-authored bundle built the way
+  `acme_retail` is, but whose computations actually run on the executors above:
+  one `postgres` SQL computation over a real table, and one `python` computation
+  applying a daily fare cap in order. Its two attesters differ in what they can
+  establish, which is the reason it carries both: the fare-cap attester
+  *recomputes* the policy from the run's inputs, so a pass is evidence about the
+  number; the ridership attester can only check invariants of the query's shape,
+  because `executed_sql` is echoed by this host's own wrapper and Postgres mints
+  no equivalent of BigQuery's `job_id`. `references/schema.sql` carries the seed,
+  chosen so a query that drops `status` or `service_date` fails rather than
+  coincides.
 
 - **`okfgen generate --roslyn-timeout <seconds>`** — a wall-clock budget for the
   whole Roslyn stage, the `dotnet msbuild` queries and the compilations after

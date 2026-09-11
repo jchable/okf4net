@@ -35,7 +35,11 @@ public sealed class ScriptComputationExecutor(IContainerEngine engine, Container
             MemoryBytes: profile.MemoryBytes,
             Cpus: profile.Cpus,
             PidsLimit: profile.PidsLimit,
-            Timeout: profile.Timeout);
+            Timeout: profile.Timeout)
+        {
+            ReadOnlyRootFilesystem = profile.ReadOnlyRootFilesystem,
+            TmpfsMounts = profile.TmpfsMounts,
+        };
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         return ReceiptParsing.Parse(result, "script");

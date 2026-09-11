@@ -49,8 +49,16 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             # The version is pinned: this process holds OKF_CONN, so "whatever the
             # index serves today" is not an acceptable thing to import into it. Keep
             # it in step with the vendored image ContainerIntegrationTests builds.
-            subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'pg8000==1.31.5'],
+            #
+            # --target into the tmpfs rather than the image's site-packages, because
+            # the root filesystem is mounted read-only and an ordinary install fails
+            # on /root/.local. The tmpfs is memory-backed and dies with the container,
+            # which is where a per-run driver install belongs anyway. sys.path has to
+            # be told about it before the retry.
+            subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet',
+                            '--target', '/tmp/okf-pkgs', 'pg8000==1.31.5'],
                            check=True, stdout=subprocess.DEVNULL)
+            sys.path.insert(0, '/tmp/okf-pkgs')
             import pg8000.native
         from urllib.parse import urlparse
         envelope = json.load(sys.stdin)
@@ -129,7 +137,11 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             MemoryBytes: profile.MemoryBytes,
             Cpus: profile.Cpus,
             PidsLimit: profile.PidsLimit,
-            Timeout: profile.Timeout);
+            Timeout: profile.Timeout)
+        {
+            ReadOnlyRootFilesystem = profile.ReadOnlyRootFilesystem,
+            TmpfsMounts = profile.TmpfsMounts,
+        };
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         return ReceiptParsing.Parse(result, "SQL wrapper");

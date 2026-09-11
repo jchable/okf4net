@@ -81,6 +81,41 @@ now resolves a bare path from the bundle root, an explicit `./` or `../` from
 the concept's directory, and the twelve warnings are gone. See **S6.2-1** in
 `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
 
+## Meridian Transit
+
+A self-authored bundle (`meridian_transit/`) for a regional transit operator, built
+the way `acme_retail` is — metrics narrating figures, policies as the source of
+truth, a table concept, and one Attested Computation per figure — but with both
+computations **actually runnable** on the executors in
+`src/OKF4net.Attestation.Containers/`.
+
+It carries one of each kind, and the split is the point rather than a demonstration
+of coverage:
+
+- **`computations/daily-ridership.md`** (`runtime: postgres`) is SQL over a real
+  table, bound by the driver, run in a `SqlClient` container.
+- **`computations/capped-fare.md`** (`runtime: python`) applies the daily fare cap
+  to one rider's trips **in order**. It is procedural and order-dependent — what a
+  trip costs depends on every trip before it that day — and pure, reading no
+  database, so it runs with the network off.
+
+**Read the two attesters together; the contrast is the lesson.** `fare_cap.py`
+*recomputes* the policy from the run's own inputs, so a pass is evidence about the
+number being displayed. `ridership_shape.py` can only check invariants of the
+query's shape, and its docstring says why: `executed_sql` is echoed back by the
+host's own wrapper, and Postgres mints no equivalent of BigQuery's `job_id` for a
+consumer to resolve independently. Same bundle, same host, two genuinely different
+strengths of guarantee.
+
+`references/schema.sql` is the table shape and seed data, and
+`references/running.md` has the full recipe. The seed is chosen so a wrong query
+fails rather than coincides: on the reported day, ignoring `status` gives 7 trips
+instead of 5, and ignoring `service_date` gives 7 instead of 5.
+
+`ContainerIntegrationTests.Meridian_transit_bundle_runs_both_runtimes_end_to_end`
+runs this bundle as it ships — not a fixture shaped to suit an assertion — through
+both runtimes against real Docker.
+
 ## Attestation Containers demo
 
 A small, self-authored bundle (`attestation_containers_demo/`) whose two

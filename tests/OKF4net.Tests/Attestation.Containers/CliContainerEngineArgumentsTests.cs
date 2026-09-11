@@ -65,4 +65,51 @@ public class CliContainerEngineArgumentsTests
         Assert.Equal("python3", args[imageIndex + 1]);
         Assert.Equal("-", args[imageIndex + 2]);
     }
+
+    /// <summary>
+    /// A read-only root filesystem stops a sanctioned script from writing anywhere the
+    /// image would otherwise let it — and, more to the point, from leaving anything
+    /// behind for a later stage of the same run to pick up.
+    /// </summary>
+    [Fact]
+    public void Read_only_root_emits_the_flag()
+    {
+        var args = CliContainerEngine.BuildRunArguments(Spec() with { ReadOnlyRootFilesystem = true }, "okf-1");
+        Assert.Contains("--read-only", args);
+    }
+
+    /// <summary>
+    /// Every writable path is named explicitly, one <c>--tmpfs</c> per mount, each its
+    /// own argument element. A tmpfs is memory-backed and dies with the container, so
+    /// naming one is not a hole in the read-only root: it is the writable scratch the
+    /// attester bootstrap and pip need, bounded to a path this host chose.
+    /// </summary>
+    [Fact]
+    public void Each_tmpfs_mount_is_its_own_flag_and_value()
+    {
+        var args = CliContainerEngine.BuildRunArguments(
+            Spec() with { ReadOnlyRootFilesystem = true, TmpfsMounts = ["/tmp", "/var/tmp"] },
+            "okf-1").ToList();
+
+        var first = args.IndexOf("/tmp");
+        Assert.True(first > 0);
+        Assert.Equal("--tmpfs", args[first - 1]);
+
+        var second = args.IndexOf("/var/tmp");
+        Assert.True(second > 0);
+        Assert.Equal("--tmpfs", args[second - 1]);
+    }
+
+    /// <summary>
+    /// Both are opt-in at the spec level: a caller that says nothing gets neither flag,
+    /// so <see cref="ContainerRunSpec"/> keeps behaving exactly as before. The safe
+    /// defaults live on <c>ContainerRuntimeProfile</c>, not here.
+    /// </summary>
+    [Fact]
+    public void Neither_flag_appears_unless_asked_for()
+    {
+        var args = CliContainerEngine.BuildRunArguments(Spec(), "okf-1");
+        Assert.DoesNotContain("--read-only", args);
+        Assert.DoesNotContain("--tmpfs", args);
+    }
 }
