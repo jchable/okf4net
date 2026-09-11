@@ -7,28 +7,23 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
-  <PropertyGroup Label="Packaging">
-    <PackageId>OKF4net.Attestation.Containers</PackageId>
-    <Authors>Julien CHABLE</Authors>
-    <Description>Container-based host implementation of OKF v0.2 §10 Attested Computation contracts: runs sanctioned scripts/queries and attester scripts in real containers (Docker/Podman/nerdctl), never reimplemented in C#.</Description>
-    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
-    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageProjectUrl>https://github.com/jchable/okf4net</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/jchable/okf4net</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
-    <PackageTags>okf;knowledge;attestation;attested-computation;containers</PackageTags>
-    <PublishRepositoryUrl>true</PublishRepositoryUrl>
-    <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-  </PropertyGroup>
+  <!--
+    NOT PACKED, deliberately — same standing as OKF4net.Viewer, which the root
+    README's project table annotates the same way.
 
-  <ItemGroup>
-    <None Include="README.md" Pack="true" PackagePath="\" />
-    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
-    <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
-  </ItemGroup>
+    This project is the only one in the repository whose useful operation needs
+    something that is not a NuGet dependency: a container engine binary
+    (docker / podman / nerdctl) on the host's PATH, a daemon it can reach, and
+    the ability to pull images. A package that restores cleanly and then fails
+    at run time on every machine without that setup is a worse deliverable than
+    no package. Consumers take it by ProjectReference, or vendor it.
+
+    So there is deliberately no PackageId/Description/licence block here and no
+    `Pack (Attestation.Containers)` step in release.yml. If that is ever
+    revisited, both have to come back together — the state this replaces had a
+    fully publish-configured .csproj and no pack step, which is neither shipped
+    nor documented as unshipped.
+  -->
 
   <ItemGroup>
     <ProjectReference Include="..\OKF4net.Attestation\OKF4net.Attestation.csproj" />

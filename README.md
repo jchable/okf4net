@@ -77,6 +77,7 @@ other project layers a specific integration on top and points back to it.
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
 | `OKF4net.Mcp`            | `OKF4net.Mcp`             | Local MCP server exposing an OKF bundle to Claude Desktop / Claude Code.    | [Use OKF in Claude (MCP)](#use-okf-in-claude-mcp) · [README](src/OKF4net.Mcp/README.md) |
 | `OKF4net.Attestation`    | `OKF4net.Attestation`    | Host-plugged §10 attested-computation orchestration (bind → execute → attest). | [Attested computation](#attested-computation-okf4netattestation) · [README](src/OKF4net.Attestation/README.md) |
+| `OKF4net.Attestation.Containers` | — (not packed by `release.yml`; needs a container engine on `PATH`) | Runs a bundle's sanctioned script/SQL and its attester in real containers (Docker/Podman/nerdctl), never reimplemented in C#. | [README](src/OKF4net.Attestation.Containers/README.md) |
 
 ## Library overview
 

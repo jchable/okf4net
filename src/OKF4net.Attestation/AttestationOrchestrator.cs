@@ -67,6 +67,22 @@ public sealed class AttestationOrchestrator
     /// purpose: the sequence IS the specification, and hiding it behind
     /// helpers would cost more than it saved.
     /// </para>
+    /// <para><b>Fail-closed on an unresolvable <c>attester.resource</c>.</b> When a
+    /// concept declares one, it is resolved (§6.2) and read <i>before</i> binding or
+    /// execution, and a value that does not resolve — missing file, or a path that
+    /// would escape the bundle — ends the run with a non-displayable outcome. Nothing
+    /// executes. This is deliberate: an attester the bundle names but the host cannot
+    /// read is an attestation that was specified and then not performed, and §10.6 is
+    /// about not displaying a figure whose check did not happen.
+    ///
+    /// It is also a behaviour change for hosts that predate
+    /// <see cref="AttestationContext.AttesterSourceText"/>, which is to say all of
+    /// them: such a host's <see cref="IAttester"/> supplies its own implementation and
+    /// never wanted the bundle's source, yet a declared-but-broken
+    /// <c>attester.resource</c> now stops its run. The cheapest workaround is deleting
+    /// the <c>attester:</c> block from the bundle, which silently removes attestation
+    /// altogether — so fix the path instead, or point it at a resource the host can
+    /// read.</para>
     /// </summary>
     /// <param name="bundle">The bundle to load the concept from.</param>
     /// <param name="conceptId">The attested-computation concept to run.</param>
