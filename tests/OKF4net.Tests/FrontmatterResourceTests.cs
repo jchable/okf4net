@@ -117,13 +117,10 @@ public class FrontmatterResourceTests
     /// containment guarantee itself is locked portably by the
     /// <c>ReparsePoints.IsWithin</c> (Ordinal) unit test in <c>ReparsePointsTests</c>.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Case_variant_sibling_directory_is_unsafe_on_case_sensitive_filesystem()
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsLinux(), "needs a case-sensitive filesystem that can hold \"Bundle\" and \"bundle\" as distinct siblings.");
 
         using var tmp = new TempDir();
         tmp.Write("Bundle/nested/concept.md", "---\ntype: Attested Computation\n---\n");
@@ -151,13 +148,10 @@ public class FrontmatterResourceTests
     /// accepted instead of rejected. Windows-only: <see cref="System.IO.Path.IsPathRooted(string)"/>
     /// only recognizes this drive-relative shape there.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Drive_relative_raw_path_is_unsafe_on_windows()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: \"E:query.sql\" is an ordinary relative filename elsewhere.");
 
         using var tmp = new TempDir();
         tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
@@ -273,13 +267,10 @@ public class FrontmatterResourceTests
     /// The guard makes the rejection a property of the value. Windows-only:
     /// only there does <c>e:query.sql</c> read as rooted.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Drive_relative_raw_path_behind_a_leading_separator_is_unsafe_on_windows()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: only there does \"e:query.sql\" read as rooted.");
 
         using var tmp = new TempDir();
         tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
@@ -374,12 +365,17 @@ public class FrontmatterResourceTests
     // Drive_relative_raw_path_is_unsafe_on_windows and
     // Drive_relative_raw_path_behind_a_leading_separator_is_unsafe_on_windows.
     //
-    // They are SkippableFact, not Fact with an early return. The difference is
-    // what the run summary says: an early return counts as PASSED, so on Windows
-    // these would report success while verifying nothing -- the exact shape that
-    // left three symlink tests in this repo green while they guarded nothing.
-    // Skip.If makes the absence visible ("3 skipped"), which is the honest
-    // answer, and lets a reader tell "covered" from "not executed here".
+    // They are SkippableFact, not Fact with an early return, as is every
+    // platform-gated test in this file -- including the Windows-side and
+    // Linux-side ones above. The difference is what the run summary says: an
+    // early return counts as PASSED, so a test would report success on the very
+    // platform where it verifies nothing. That is the exact shape that left
+    // three symlink tests in this repo green while they guarded nothing.
+    //
+    // Skip.If/Skip.IfNot makes the absence visible instead, and the asymmetry is
+    // the reason to be consistent about it: on Windows the POSIX three are the
+    // ones that cannot run, on Linux the Windows two are, and the run summary
+    // should say so on both rather than on one.
 
     /// <summary>
     /// The §6.2 hazard that only exists on POSIX: a leading <c>/</c> means the
