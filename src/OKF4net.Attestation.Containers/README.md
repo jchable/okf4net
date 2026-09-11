@@ -6,8 +6,102 @@ A host implementation of `OKF4net.Attestation`'s §10 contracts
 real containers (Docker/Podman/nerdctl) — never a C# reimplementation of a
 bundle's logic. See
 [the design doc](https://github.com/jchable/okf4net/blob/main/docs/superpowers/specs/2026-09-07-attestation-containers-design.md)
-for the full rationale and protocol.
+for the full rationale.
 
 Requires a container engine binary (`docker`, `podman`, or `nerdctl`)
 installed and on `PATH` — this is a runtime prerequisite, not a NuGet
-dependency; the project itself has zero third-party package references.
+dependency; the project itself has zero third-party package references. For
+the same reason it is **not published as a NuGet package**: reference it as a
+project, or vendor it.
+
+## The wire contract
+
+§10 fixes the *interface* and leaves invocation entirely host-defined, so
+everything below is this host's own convention. A bundle whose scripts follow
+it runs unmodified; one written for a different host will not.
+
+### A `Script` computation
+
+The sanctioned text is run as a standalone program by the profile's
+`Interpreter` (default `python3`), fed on **stdin**. Parameter values arrive
+as a JSON object in the environment variable **`OKF_PARAMS_JSON`**, holding
+only the parameters the concept declares — an undeclared key the caller passed
+never reaches the container.
+
+The script must **print its receipt as a single JSON object on stdout** and
+write nothing else there. The declared `executor.receipt` fields are read from
+that object.
+
+```python
+import json, os
+params = json.loads(os.environ['OKF_PARAMS_JSON'])
+print(json.dumps({'message': f"Hello, {params['name']}!"}))
+```
+
+### A `SqlClient` computation
+
+The sanctioned text is SQL, sent to a project-authored Python wrapper that
+binds values through the driver's own native parameter mechanism. **The SQL is
+never edited** — placeholders included — and no value is ever interpolated
+into it. The connection string is read from the environment variable
+**`OKF_CONN`**, which the host supplies through the profile's `Environment`.
+
+The receipt the wrapper produces carries `executed_sql` (the text sent, echoed
+back) and `result` (the rows, as a list of column-keyed objects). A column
+type JSON cannot represent natively — `NUMERIC`, `DATE`, `TIMESTAMP`, `UUID`,
+`BYTEA` — arrives as its Python `str()` form.
+
+Parameters must not be named `sql`, `stream` or `types`: those are the
+driver's own keyword arguments, and the run is refused before any container
+starts rather than failing with a confusing `TypeError` inside it.
+
+### An attester
+
+An attester script is imported as a **library**, not run as a program. It must
+expose:
+
+```python
+def attest(*, sanctioned_computation, receipt, values):
+    return {'ok': True, 'reason': None}
+```
+
+`values` is the same filtered set the executor received. The return value is
+read as `ok` (anything but `true` fails the attestation) and an optional
+`reason`. A stray `print()` inside the module is harmless — the bootstrap
+captures stdout for the whole import-and-call.
+
+The attester always runs on `ContainerAttesterOptions.Image`, never the
+executor's image: a `SqlClient` profile's image need not have Python at all.
+
+## What the host controls
+
+`ContainerRuntimeProfile` carries the image, the interpreter, the environment,
+the `--network` mode, and four per-run ceilings (`--memory`, `--cpus`,
+`--pids-limit`, wall clock). A non-positive ceiling is **rejected**, because to
+docker and podman zero there means *unlimited* — a value that removes the
+ceiling it appears to set.
+
+Network access defaults closed for `Script` and open for `SqlClient` (which
+must reach a database and a package index), and either can be overridden.
+
+## Limitations in this version
+
+- **Secrets travel as environment variables.** `OKF_CONN` and anything else in
+  the profile's `Environment` are visible to `docker inspect` and in the host
+  process list. **`OKF_PARAMS_JSON` is the same exposure class** — parameter
+  values, not just connection strings, are readable that way. Do not pass a
+  value you would not put in a process listing.
+- **The `SqlClient` wrapper pip-installs its driver on every run**, so it needs
+  network access to a package index and pays the install cost each time. A
+  purpose-built image with the driver vendored in is the better answer for
+  anything beyond local use.
+- **No `--read-only` root filesystem.** Deliberately not implemented rather
+  than half-implemented: the attester bootstrap writes the module to a
+  temporary file before importing it, so a read-only root needs a writable
+  `tmpfs` mount that `ContainerRunSpec` does not model yet. Adding the flag
+  without the mount would break every attestation.
+- **`executed_sql` is echoed by this host's own wrapper**, so comparing it
+  against the sanctioned text proves the wrapper sent what it was given — not
+  that the database ran it. Real provenance needs a receipt field the engine
+  itself produces, such as a BigQuery `job_id` resolved against the job's own
+  recorded SQL.

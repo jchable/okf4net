@@ -26,7 +26,7 @@ public sealed class ContainerAttester(IContainerEngine engine, ContainerAttester
     private const string Bootstrap = """
         import sys, json, importlib.util, tempfile, io, contextlib
         envelope = json.load(sys.stdin)
-        f = tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w')
+        f = tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w', encoding='utf-8')
         f.write(envelope['attester_source'])
         f.close()
         buf = io.StringIO()

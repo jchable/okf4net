@@ -67,8 +67,16 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         return args;
     }
 
-    /// <summary>Stdout/stderr are each capped at 8 MiB; a container that floods either past this is a stage failure, not an OOM.</summary>
-    private const int MaxOutputBytes = 8 * 1024 * 1024;
+    /// <summary>
+    /// Stdout/stderr are each capped at 8 Mi <b>characters</b>; a container that
+    /// floods either past this is a stage failure, not an OOM. The name says bytes
+    /// and the cap counts chars, which differ for non-ASCII output — a deliberate
+    /// looseness, since the point is to bound host memory with a decimal order of
+    /// magnitude to spare, not to enforce an exact byte budget. Worst case (4-byte
+    /// UTF-8 throughout) the real ceiling is 32 MiB of source bytes held as 16 MiB
+    /// of UTF-16, still far below anything that threatens the host.
+    /// </summary>
+    private const int MaxOutputChars = 8 * 1024 * 1024;
 
     /// <inheritdoc />
     public async ValueTask<ContainerRunResult> RunAsync(ContainerRunSpec spec, CancellationToken cancellationToken = default)
@@ -97,11 +105,6 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             psi.ArgumentList.Add(arg);
         }
 
-        using var timeoutCts = spec.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
-        using var linked = timeoutCts is null
-            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
         using var process = new Process { StartInfo = psi };
         try
         {
@@ -112,9 +115,23 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             throw new ContainerExecutionException($"container engine '{binaryName}' could not be started", "", e.Message);
         }
 
+        // The wall clock starts once the child is actually running, not while this
+        // process is still assembling arguments.
+        //
+        // Note what it still covers, because it surprises people: `run` pulls the
+        // image when it is absent, and that pull happens INSIDE this child, so a
+        // cold pull is charged against Timeout like any other work. On a slow link a
+        // first run can spend the whole default budget fetching an image and time
+        // out before the computation starts. Pre-pull the image, or raise the
+        // profile's Timeout for the first run.
+        using var timeoutCts = spec.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
+        using var linked = timeoutCts is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
         var stdinTask = WriteStdinAsync(process.StandardInput, spec.Stdin);
-        var stdoutTask = ReadBoundedAsync(process.StandardOutput, MaxOutputBytes);
-        var stderrTask = ReadBoundedAsync(process.StandardError, MaxOutputBytes);
+        var stdoutTask = ReadBoundedAsync(process.StandardOutput, MaxOutputChars);
+        var stderrTask = ReadBoundedAsync(process.StandardError, MaxOutputChars);
 
         try
         {
@@ -207,7 +224,18 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             try
             {
                 kill.Start();
+
+                // Drain both redirected streams before waiting. A child whose pipe
+                // buffer fills blocks on the write and never exits, so a `kill` that
+                // printed enough (an engine that is verbose about an unknown
+                // container, say) would deadlock the teardown it is part of. Reading
+                // to end also means the `catch` below sees a real failure rather than
+                // a hang.
+                var drainOut = kill.StandardOutput.ReadToEndAsync();
+                var drainErr = kill.StandardError.ReadToEndAsync();
                 await kill.WaitForExitAsync().ConfigureAwait(false);
+                await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
+
                 if (kill.ExitCode == 0)
                 {
                     return;
@@ -219,7 +247,12 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 // handles the case where the engine binary itself is gone.
             }
 
-            await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            // Back off only when another attempt follows. Sleeping after the last one
+            // delayed the caller's OperationCanceledException by 250 ms for nothing.
+            if (attempt < 1)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            }
         }
     }
 

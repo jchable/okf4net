@@ -114,6 +114,18 @@ its tool list.
 `bundles/acme_retail/attesters/sql_equality.py` is kept untouched, not
 ported to C#: §10's attestation trust model depends on running the *actual*
 sanctioned script, not a reimplementation that could silently diverge from
-it. Real execution is planned as a separate, later container-based
-execution runtime that runs the sanctioned scripts themselves — see the
-design spec's "Future work" section.
+it.
+
+**This sample still does not execute one** — it demonstrates the agent tools
+over the bundle, nothing more. But the execution runtime this section used to
+call "planned" now exists: `OKF4net.Attestation.Containers` runs a bundle's
+sanctioned script or SQL, and its attester, inside a real container. See
+[`samples/attestation-containers-demo/`](../attestation-containers-demo/README.md)
+for a run end to end, and
+[`src/OKF4net.Attestation.Containers/README.md`](../../src/OKF4net.Attestation.Containers/README.md)
+for what a bundle author has to provide.
+
+Wiring `acme_retail` itself to that runtime is the obvious next step and has
+not been done: its computations target BigQuery, so a faithful run needs a
+BigQuery executor and a receipt carrying a real `job_id`, not the
+Postgres/script pair the demo bundle uses.

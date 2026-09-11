@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading.Tasks;
 using OKF4net;
 using OKF4net.Attestation;
@@ -196,5 +197,56 @@ public class ContainerIntegrationTests
             Timeout: TimeSpan.FromSeconds(60));
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await engine.RunAsync(spec, cts.Token));
+
+        // The name of this test claims the container is killed, so observe that
+        // rather than trusting the exception to imply it. Without this the test
+        // passed just as happily on an engine that abandoned a `python3 -c
+        // "sleep(30)"` container to run for another 30 seconds, which is the whole
+        // failure it exists to catch. Containers are named `okf-<guid>` and run with
+        // --rm, so none should survive; removal is asynchronous, hence the bounded
+        // wait rather than a bare assertion.
+        Assert.True(
+            await NoEngineContainersWithin(TimeSpan.FromSeconds(15)),
+            $"a run container outlived its cancellation: {string.Join(", ", EngineContainers())}");
+    }
+
+    /// <summary>
+    /// <see cref="CliContainerEngine"/> names each run <c>okf-{Guid:N}</c>, so a
+    /// leftover is a name of exactly that shape. Matching a bare <c>okf-</c> prefix
+    /// instead would also catch <c>okf-demo-pg</c> — the Postgres fixture this class's
+    /// own doc comment tells you to start — and report the fixture as a leak on every
+    /// run that uses it.
+    /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex EngineContainerName =
+        new("^okf-[0-9a-f]{32}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static string[] EngineContainers() =>
+        RunDocker("ps -a --filter name=okf- --format {{.Names}}")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(name => EngineContainerName.IsMatch(name))
+            .ToArray();
+
+    private static async Task<bool> NoEngineContainersWithin(TimeSpan budget)
+    {
+        var deadline = DateTime.UtcNow + budget;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (EngineContainers().Length == 0)
+            {
+                return true;
+            }
+
+            await Task.Delay(500);
+        }
+
+        return EngineContainers().Length == 0;
+    }
+
+    private static string RunDocker(string arguments)
+    {
+        using var p = Process.Start(new ProcessStartInfo("docker", arguments) { RedirectStandardOutput = true, RedirectStandardError = true })!;
+        var output = p.StandardOutput.ReadToEnd();
+        p.WaitForExit(10_000);
+        return output.Trim();
     }
 }

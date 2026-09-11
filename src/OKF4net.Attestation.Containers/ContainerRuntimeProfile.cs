@@ -33,6 +33,26 @@ public sealed record ContainerRuntimeProfile
     /// <summary>Environment variables passed to every container run under this profile (e.g. <c>OKF_CONN</c> for a <see cref="ContainerRuntimeKind.SqlClient"/> profile).</summary>
     public IReadOnlyDictionary<string, string> Environment { get; init; } = new Dictionary<string, string>();
 
+    /// <summary>
+    /// The <c>--network</c> mode for every run under this profile, or <see langword="null"/>
+    /// to leave the engine's default. Defaults to <c>"none"</c> for a
+    /// <see cref="ContainerRuntimeKind.Script"/> profile — a sanctioned script has no
+    /// business reaching the network — and to <see langword="null"/> for
+    /// <see cref="ContainerRuntimeKind.SqlClient"/>, which must reach both the database
+    /// and a package index.
+    ///
+    /// It lives here, on the profile, rather than being hardcoded per executor, because
+    /// hardening is the host's decision: a host that vendors the driver into its own
+    /// image can close the SqlClient path down to its database's network, and one that
+    /// needs a Script run to fetch something can open it, without either having to fork
+    /// an executor.
+    /// </summary>
+    public string? NetworkMode
+    {
+        get => _networkMode ?? (Kind == ContainerRuntimeKind.Script ? "none" : null);
+        init => _networkMode = value;
+    }
+
     /// <summary>Default <c>--memory</c> ceiling. 512 MiB. Must be positive: zero or negative means <i>unlimited</i> to docker and podman, so it is rejected rather than silently removing the ceiling.</summary>
     public long MemoryBytes
     {
@@ -61,6 +81,7 @@ public sealed record ContainerRuntimeProfile
         init => _timeout = ResourceCeiling.Positive(value, nameof(Timeout));
     }
 
+    private readonly string? _networkMode;
     private readonly long _memoryBytes = 512L * 1024 * 1024;
     private readonly double _cpus = 1.0;
     private readonly int _pidsLimit = 64;

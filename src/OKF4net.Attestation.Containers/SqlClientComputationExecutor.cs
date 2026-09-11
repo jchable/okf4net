@@ -60,12 +60,35 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             conn.close()
         """;
 
+    /// <summary>
+    /// The keyword arguments <c>pg8000.native.Connection.run</c> takes itself, which a
+    /// declared parameter therefore cannot be named. Kept here rather than in the
+    /// shared filter because the restriction belongs to this transport alone.
+    /// </summary>
+    private static readonly string[] DriverReservedParameterNames = ["sql", "stream", "types"];
+
     /// <inheritdoc />
     public async ValueTask<Receipt> ExecuteAsync(
         BoundComputation bound,
         AttestedComputationContract contract,
         CancellationToken cancellationToken = default)
     {
+        // The wrapper binds with `conn.run(sql, **values)`, so a parameter named like
+        // one of the driver's own keyword arguments collides with its signature. Left
+        // to the container that surfaces as a bare Python TypeError ("got multiple
+        // values for argument 'sql'") blamed on the bundle's query. Caught here, at
+        // this transport only: a Script profile passes values as JSON in an
+        // environment variable and has no reserved names, so this must not live in
+        // the shared DeclaredParameterFilter.
+        foreach (var reserved in DriverReservedParameterNames)
+        {
+            if (bound.Values.ContainsKey(reserved))
+            {
+                throw new ArgumentException(
+                    $"parameter '{reserved}' collides with a reserved keyword argument of the SQL driver; rename it in the concept's `parameters`.");
+            }
+        }
+
         var envelope = JsonSerializer.Serialize(new { sql = bound.BoundText ?? "", values = bound.Values });
 
         var spec = new ContainerRunSpec(
@@ -73,7 +96,7 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             Command: ["python3", "-c", Wrapper],
             Stdin: envelope,
             Environment: profile.Environment,
-            NetworkMode: null,
+            NetworkMode: profile.NetworkMode,
             MemoryBytes: profile.MemoryBytes,
             Cpus: profile.Cpus,
             PidsLimit: profile.PidsLimit,

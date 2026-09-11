@@ -31,7 +31,7 @@ public sealed class ScriptComputationExecutor(IContainerEngine engine, Container
             Command: [profile.Interpreter, "-"],
             Stdin: bound.BoundText ?? "",
             Environment: env,
-            NetworkMode: "none",
+            NetworkMode: profile.NetworkMode,
             MemoryBytes: profile.MemoryBytes,
             Cpus: profile.Cpus,
             PidsLimit: profile.PidsLimit,

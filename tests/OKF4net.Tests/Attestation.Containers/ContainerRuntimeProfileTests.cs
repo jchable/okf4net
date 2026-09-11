@@ -80,6 +80,23 @@ public class ContainerRuntimeProfileTests
     }
 
     /// <summary>
+    /// Network isolation defaults by kind and is overridable on the profile, which
+    /// is the point of moving it off the executors: a host that vendors its SQL
+    /// driver into its own image can close the SqlClient path down, and one that
+    /// needs a Script run to fetch something can open it, without either forking an
+    /// executor. The defaults stay closed where they can be.
+    /// </summary>
+    [Fact]
+    public void Network_mode_defaults_by_kind_and_is_overridable()
+    {
+        Assert.Equal("none", Default().NetworkMode);
+        Assert.Null((Default() with { Kind = ContainerRuntimeKind.SqlClient }).NetworkMode);
+
+        Assert.Equal("my-db-net", (Default() with { NetworkMode = "my-db-net" }).NetworkMode);
+        Assert.Equal("none", (Default() with { Kind = ContainerRuntimeKind.SqlClient, NetworkMode = "none" }).NetworkMode);
+    }
+
+    /// <summary>
     /// The message has to name the property, because the failure surfaces at
     /// host-configuration time where several ceilings are set together.
     /// </summary>

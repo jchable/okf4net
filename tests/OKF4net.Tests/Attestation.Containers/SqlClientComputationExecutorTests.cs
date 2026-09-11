@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -58,5 +59,37 @@ public class SqlClientComputationExecutorTests
         await executor.ExecuteAsync(new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?>()), Contract);
 
         Assert.Equal("postgresql://u:p@host/db", engine.LastSpec!.Environment["OKF_CONN"]);
+    }
+
+    /// <summary>
+    /// The wrapper binds via <c>conn.run(sql, **values)</c>, so a declared
+    /// parameter whose name happens to match one of pg8000's own keyword
+    /// arguments collides with the driver's signature. Left alone that surfaced
+    /// inside the container as a bare Python <c>TypeError</c> — "got multiple
+    /// values for argument 'sql'" — attributed to the bundle's query, which is
+    /// both confusing and a long way from the cause.
+    ///
+    /// Caught here rather than in the shared <c>DeclaredParameterFilter</c>: the
+    /// collision is a property of *this* transport. A Script profile passes its
+    /// values as JSON in an environment variable and has no such reserved names,
+    /// so rejecting them globally would refuse a perfectly good bundle on the
+    /// other path.
+    /// </summary>
+    [Theory]
+    [InlineData("sql")]
+    [InlineData("stream")]
+    [InlineData("types")]
+    public async Task Rejects_a_parameter_name_that_collides_with_the_drivers_own_kwargs(string name)
+    {
+        var engine = new FakeContainerEngine();
+        var executor = new SqlClientComputationExecutor(engine, Profile);
+        var bound = new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?> { [name] = "x" });
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            async () => await executor.ExecuteAsync(bound, Contract));
+
+        Assert.Contains(name, ex.Message, StringComparison.Ordinal);
+        // Nothing was run: the collision is caught before any container starts.
+        Assert.Null(engine.LastSpec);
     }
 }

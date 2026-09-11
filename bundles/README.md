@@ -32,8 +32,11 @@ the repo root and the attribution entry in `NOTICE`.
   or keeps it in sync.
 - `attesters/sql_equality.py` **is** carried over, untouched, as a plain
   reference resource (the `attester.resource` target for
-  `computations/*.md`). OKF4net does not execute Python, and nothing in
-  this repo ports or reimplements its logic in C# — see
+  `computations/*.md`). Nothing in this repo ports or reimplements its logic
+  in C# — that part has never changed, and is the whole point. What has
+  changed is the first half of this sentence: `OKF4net.Attestation.Containers`
+  now runs an attester script like this one *as itself*, inside a container,
+  rather than not at all. See
   [`samples/acme-retail-agent/README.md`](../samples/acme-retail-agent/README.md)
   for why, and what actually running an Attested Computation against this
   bundle would require.
@@ -77,6 +80,28 @@ is laid out exactly that way and was conformant all along. `Bundle.TryResolveRes
 now resolves a bare path from the bundle root, an explicit `./` or `../` from
 the concept's directory, and the twelve warnings are gone. See **S6.2-1** in
 `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+
+## Attestation Containers demo
+
+A small, self-authored bundle (`attestation_containers_demo/`) whose two
+Attested Computations exist to be *run*, not just read — one `python` runtime
+and one `postgres`, each with its own attester script. It is the fixture
+`samples/attestation-containers-demo/` drives through
+`OKF4net.Attestation.Containers` against a real container engine.
+
+Unlike `acme_retail` and `ga4` below, this one is **not** an upstream copy, so
+it is free to be shaped for the demonstration: its paths use the explicit
+`/attesters/…` bundle-root form, and its computations are deliberately trivial
+so that what the sample shows is the *pipeline*, not the query.
+
+One honest caveat, worth knowing before reading its attester: the SQL
+computation's attester compares `receipt.executed_sql` against the sanctioned
+text, and under this host that comparison can never fail — `executed_sql` is
+echoed back by our own wrapper from the very string we sent it. It demonstrates
+the *convention* an attester follows; it is not evidence that the database
+executed the sanctioned text. Real provenance needs a receipt field the engine
+itself produces, such as a BigQuery `job_id` resolved against the job's own
+recorded SQL.
 
 ## GA4
 
