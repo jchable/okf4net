@@ -65,4 +65,42 @@ public class ContainerAttesterTests
         await Assert.ThrowsAsync<ContainerExecutionException>(
             async () => await attester.AttestAsync(Context(null, new Receipt(new Dictionary<string, object?>()))));
     }
+
+    /// <summary>
+    /// The attester is the one stage that executes bundle-authored code against
+    /// caller-supplied data, so the allowlist has to hold here above all. It must
+    /// receive <see cref="BoundComputation.Values"/> — the set
+    /// <see cref="AllowlistParameterBinder"/> filtered and type-checked against the
+    /// concept's declared <c>parameters</c> — and never the caller's raw dictionary.
+    /// A key the concept never declared must not reach the script at all: the design's
+    /// finding #7 applies to this half of the pipeline exactly as it does to the
+    /// executors. Sending the raw dictionary also hands arbitrary caller CLR objects to
+    /// <c>JsonSerializer.Serialize</c>, which can throw and surface as a bogus
+    /// "attester threw".
+    /// </summary>
+    [Fact]
+    public async Task Sends_only_the_declared_values_never_the_raw_caller_dictionary()
+    {
+        var engine = new FakeContainerEngine { Respond = _ => new ContainerRunResult(0, """{"ok": true, "reason": null}""", "") };
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions());
+
+        var context = new AttestationContext(
+            Contract: new AttestedComputationContract("python", [new ComputationParameter("name", "string", true)], null, null, new Attester("att.py")),
+            Computation: new SanctionedComputation(ComputationSource.Inline, "print()", null),
+            // What the binder produced: the declared parameter only.
+            Bound: new BoundComputation("python", "print()", null, new Dictionary<string, object?> { ["name"] = "Ada" }),
+            // What the caller passed: the declared parameter plus an undeclared one.
+            Values: new Dictionary<string, object?> { ["name"] = "Ada", ["undeclared"] = "leaked" },
+            Receipt: new Receipt(new Dictionary<string, object?> { ["message"] = "hi" }),
+            AttesterSourceText: "def attest(**_):\n    return {}\n");
+
+        await attester.AttestAsync(context);
+
+        var values = JsonSerializer.Deserialize<JsonElement>(engine.LastSpec!.Stdin!)
+            .GetProperty("kwargs")
+            .GetProperty("values");
+
+        Assert.Equal("Ada", values.GetProperty("name").GetString());
+        Assert.False(values.TryGetProperty("undeclared", out _));
+    }
 }

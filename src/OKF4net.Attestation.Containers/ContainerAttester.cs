@@ -53,7 +53,14 @@ public sealed class ContainerAttester(IContainerEngine engine, ContainerAttester
             {
                 sanctioned_computation = context.Computation.InlineCode,
                 receipt = context.Receipt.Fields,
-                values = context.Values,
+                // Bound.Values, NOT context.Values: the binder's filtered, type-checked
+                // set, never the caller's raw dictionary. The attester executes
+                // bundle-authored code against caller data, so an undeclared key reaching
+                // it would defeat the allowlist on the half of the pipeline where it
+                // matters most -- and a raw dictionary can also carry an arbitrary CLR
+                // object that JsonSerializer refuses, surfacing as a bogus "attester
+                // threw". Both executors already use this set.
+                values = context.Bound.Values,
             },
         });
 
