@@ -3,7 +3,7 @@ namespace OKF4net.Attestation.Containers;
 
 /// <summary>
 /// Runs one container to completion. The single implementation shipped here
-/// is CliContainerEngine (Task 9/10); this abstraction exists
+/// is CliContainerEngine; this abstraction exists
 /// so a fundamentally different engine (e.g. a future Kubernetes Jobs
 /// backend) can be added without touching any binder/executor/attester.
 /// </summary>

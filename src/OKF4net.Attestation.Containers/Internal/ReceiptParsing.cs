@@ -7,7 +7,7 @@ namespace OKF4net.Attestation.Containers.Internal;
 /// Turns a container's raw <see cref="ContainerRunResult"/> into a
 /// <see cref="Receipt"/>, or throws a <see cref="ContainerExecutionException"/>
 /// explaining why it couldn't. Shared by ScriptComputationExecutor
-/// and SqlClientComputationExecutor (Tasks 4/5) — both need
+/// and SqlClientComputationExecutor — both need
 /// exactly this "non-zero exit is a failure; otherwise the stdout JSON
 /// object's fields, normalized, are the receipt" logic, differing only in
 /// the stage name, which appears in a thrown exception's message.

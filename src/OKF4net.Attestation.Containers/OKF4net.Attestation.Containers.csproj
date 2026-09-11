@@ -36,7 +36,7 @@
 
   <ItemGroup>
     <!-- Lets the test project exercise internal members (JsonValues,
-         CliContainerEngine's argument builder in Task 9) directly. -->
+         CliContainerEngine's argument builder) directly. -->
     <InternalsVisibleTo Include="OKF4net.Tests" />
   </ItemGroup>
 

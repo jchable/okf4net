@@ -12,7 +12,7 @@ namespace OKF4net.Attestation.Containers;
 /// concept's declared <c>parameters</c> (see
 /// <see cref="Internal.DeclaredParameterFilter"/>); dialect-specific
 /// transport (JSON for a script, native driver parameters for SQL) is the
-/// executor's job (Tasks 5/6), not the binder's.
+/// executor's job (the executors), not the binder's.
 /// </summary>
 public sealed class AllowlistParameterBinder : IParameterBinder
 {

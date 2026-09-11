@@ -6,7 +6,7 @@ namespace OKF4net.Attestation.Containers;
 /// bundle <c>runtime</c> name, backed entirely by containers. A host
 /// constructs one per profile and registers it in
 /// <c>AttestationRuntimeRegistry</c> — see the design doc's "Bundle de
-/// validation" section (Tasks 12/13) for a worked example.
+/// validation" section for a worked example.
 /// </summary>
 public sealed class ContainerAttestationRuntime : IAttestationRuntime
 {
