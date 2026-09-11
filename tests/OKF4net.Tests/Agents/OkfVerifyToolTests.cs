@@ -252,7 +252,7 @@ public class OkfVerifyToolTests
     /// guard — some environments (e.g. a CI job running as root on Linux) do
     /// not enforce the read-only bit at all.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Verify_reports_the_records_that_landed_before_a_later_write_failure()
     {
         using var tmp = new TempDir();
@@ -266,7 +266,7 @@ public class OkfVerifyToolTests
             try
             {
                 File.WriteAllText(bPath, originalB);
-                return; // read-only wasn't enforced on this platform/user -- skip.
+                throw new SkipException("read-only is not enforced on this platform/user");
             }
             catch (UnauthorizedAccessException)
             {

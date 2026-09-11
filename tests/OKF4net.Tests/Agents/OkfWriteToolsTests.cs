@@ -179,22 +179,18 @@ public class OkfWriteToolsTests
     // See OkfBundleToolsTests for the Browse counterpart. Requires
     // reparse-point-creation privilege (a Windows junction via mklink /J
     // needs none; the Directory.CreateSymbolicLink fallback does) and, when
-    // neither mechanism is available, returns early on
-    // TryCreateJunctionToExternalDir's bool -- which counts as PASSED, not
-    // skipped, so it verifies nothing and says nothing about it. That was once
-    // justified by xunit v2 having no Assert.Skip; the repo now carries
-    // Xunit.SkippableFact, so converting it would make the silence visible.
-    [Fact]
+    // neither mechanism is available, SKIPS via Xunit.SkippableFact so the run
+    // summary shows it. It used to return early on
+    // TryCreateJunctionToExternalDir's bool instead, which counted as PASSED
+    // while verifying nothing.
+    [SkippableFact]
     public void WriteConcept_refuses_to_write_through_a_junction_and_leaves_the_external_dir_empty()
     {
         using var tmp = new TempDir();
         var tools = NewToolsOverFixtureCopy(tmp);
         using var external = new TempDir();
 
-        if (!tmp.TryCreateJunctionToExternalDir("linked", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("linked", external.Path), "no junction/symlink privilege on this machine");
 
         var result = tools.WriteConcept("linked/x", ValidFrontmatter, "Body.\n");
 
@@ -210,9 +206,9 @@ public class OkfWriteToolsTests
     // WriteConcept has a separate ReparsePoints.IsReparsePoint(targetPath)
     // check for this case; without it, File.WriteAllText would follow the
     // link and silently overwrite the external file. Requires
-    // symlink-creation privilege and skips itself via
-    // TryCreateFileSymlinkToExternalFile's bool return when unavailable.
-    [Fact]
+    // symlink-creation privilege and skips itself (Skip.IfNot on
+    // TryCreateFileSymlinkToExternalFile's bool return) when unavailable.
+    [SkippableFact]
     public void WriteConcept_refuses_to_overwrite_a_target_that_is_itself_a_symlink()
     {
         using var tmp = new TempDir();
@@ -220,10 +216,7 @@ public class OkfWriteToolsTests
         using var external = new TempDir();
         var externalFile = external.Write("secret.md", "do not touch\n");
 
-        if (!tmp.TryCreateFileSymlinkToExternalFile("tables/x.md", externalFile))
-        {
-            return; // no symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateFileSymlinkToExternalFile("tables/x.md", externalFile), "no symlink privilege on this machine");
 
         var result = tools.WriteConcept("tables/x", ValidFrontmatter, "Body.\n");
 
@@ -249,17 +242,14 @@ public class OkfWriteToolsTests
     // Requires junction/symlink privilege; probes for it up front (without
     // mutating anything the real assertion depends on) and skips cleanly if
     // unavailable, per the other reparse-point tests' pattern.
-    [Fact]
+    [SkippableFact]
     public void WriteConcept_late_reparse_recheck_catches_a_substitution_planted_after_the_early_check()
     {
         using var tmp = new TempDir();
         var tools = NewToolsOverFixtureCopy(tmp);
         using var external = new TempDir();
 
-        if (!tmp.TryCreateJunctionToExternalDir("privilege-probe", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("privilege-probe", external.Path), "no junction/symlink privilege on this machine");
 
         Directory.Delete(Path.Combine(tmp.Path, "privilege-probe"));
 
@@ -572,9 +562,9 @@ public class OkfWriteToolsTests
     // stops immediately). The real risk is log.md ITSELF being a planted
     // file symlink pointing at an external file: File.Exists/ReadAllBytes/
     // WriteAllText would all follow it and silently overwrite that external
-    // file. Requires symlink-creation privilege and skips itself via
-    // TryCreateFileSymlinkToExternalFile's bool return when unavailable.
-    [Fact]
+    // file. Requires symlink-creation privilege and skips itself (Skip.IfNot on
+    // TryCreateFileSymlinkToExternalFile's bool return) when unavailable.
+    [SkippableFact]
     public void AppendLog_refuses_to_write_through_a_planted_log_md_symlink()
     {
         using var tmp = new TempDir();
@@ -583,10 +573,7 @@ public class OkfWriteToolsTests
         using var external = new TempDir();
         var externalFile = external.Write("secret.txt", "do not touch\n");
 
-        if (!tmp.TryCreateFileSymlinkToExternalFile("log.md", externalFile))
-        {
-            return; // no symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateFileSymlinkToExternalFile("log.md", externalFile), "no symlink privilege on this machine");
 
         var result = tools.AppendLog("Update", "Should not be written.");
 
@@ -606,7 +593,7 @@ public class OkfWriteToolsTests
     // privilege; probes for it up front (without mutating anything the real
     // assertion depends on) and skips cleanly if unavailable, per the other
     // reparse-point tests' pattern.
-    [Fact]
+    [SkippableFact]
     public void AppendLog_late_reparse_recheck_catches_a_substitution()
     {
         using var tmp = new TempDir();
@@ -615,10 +602,7 @@ public class OkfWriteToolsTests
         using var external = new TempDir();
         var externalFile = external.Write("secret.txt", "do not touch\n");
 
-        if (!tmp.TryCreateFileSymlinkToExternalFile("privilege-probe.txt", externalFile))
-        {
-            return; // no symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateFileSymlinkToExternalFile("privilege-probe.txt", externalFile), "no symlink privilege on this machine");
 
         File.Delete(Path.Combine(tmp.Path, "privilege-probe.txt"));
 

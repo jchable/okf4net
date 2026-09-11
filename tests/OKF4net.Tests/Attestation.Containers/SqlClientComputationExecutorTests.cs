@@ -105,4 +105,28 @@ public class SqlClientComputationExecutorTests
         // Nothing was run: the collision is caught before any container starts.
         Assert.Null(engine.LastSpec);
     }
+
+    /// <summary>
+    /// A SOURCE-TEXT SMOKE CHECK, not proof: xunit runs on .NET and cannot execute the
+    /// Python in <see cref="SqlClientComputationExecutor.Wrapper"/>. It pins two textual
+    /// facts whose executable guard is
+    /// <c>ContainerIntegrationTests.SqlClient_runtime_with_the_driver_vendored_needs_no_package_index</c>,
+    /// run against real Docker. (1) The driver is imported BEFORE any pip call, so an
+    /// image that vendors it — the documented way to run a SqlClient profile with its
+    /// network closed down to the database — never reaches for a package index. (2) The
+    /// fallback install is pinned to one version rather than whatever the index serves
+    /// today, because the wrapper runs with <c>OKF_CONN</c> in its environment.
+    /// </summary>
+    [Fact]
+    public void The_wrapper_imports_the_driver_before_it_would_ever_install_it_and_pins_the_install()
+    {
+        var wrapper = SqlClientComputationExecutor.Wrapper;
+        var firstImport = wrapper.IndexOf("import pg8000.native", StringComparison.Ordinal);
+        var pipInstall = wrapper.IndexOf("'pip', 'install'", StringComparison.Ordinal);
+
+        Assert.True(firstImport >= 0, "the wrapper no longer imports pg8000.native");
+        Assert.True(pipInstall >= 0, "the wrapper no longer has a pip fallback at all");
+        Assert.True(firstImport < pipInstall, "the wrapper installs before it ever tries to import");
+        Assert.Contains("'pg8000==", wrapper, StringComparison.Ordinal);
+    }
 }

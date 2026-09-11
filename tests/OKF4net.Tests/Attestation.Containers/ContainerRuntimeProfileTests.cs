@@ -163,4 +163,49 @@ public class ContainerRuntimeProfileTests
         var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { PidsLimit = 0 });
         Assert.Equal("PidsLimit", ex.ParamName);
     }
+
+    /// <summary>
+    /// <see cref="ContainerRuntimeProfile.NetworkMode"/> documents <see langword="null"/>
+    /// as "leave the engine's default", but the first version stored null and then
+    /// substituted <c>"none"</c> again in the getter — so a Script profile could never
+    /// express the one override its own doc offered.
+    /// </summary>
+    [Fact]
+    public void A_Script_profile_can_explicitly_restore_the_engine_default_network()
+    {
+        Assert.Null((Default() with { NetworkMode = null }).NetworkMode);
+        Assert.Null(new ContainerRuntimeProfile { Image = "x", Kind = ContainerRuntimeKind.Script, NetworkMode = null }.NetworkMode);
+    }
+
+    /// <summary>
+    /// Positivity alone leaves two holes in <see cref="ContainerRuntimeProfile.Timeout"/>.
+    /// <c>Timeout.InfiniteTimeSpan</c> is -1 ms, which a
+    /// <see cref="System.Threading.CancellationTokenSource"/> accepts as "never fire" —
+    /// the ceiling silently gone. Anything above what a timer can count (about 49.7
+    /// days) throws from that constructor at run time, naming neither profile nor
+    /// property.
+    /// </summary>
+    [Fact]
+    public void A_timeout_outside_the_range_a_timer_can_enforce_is_rejected()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = System.Threading.Timeout.InfiniteTimeSpan });
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = TimeSpan.MaxValue });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ContainerAttesterOptions() with { Timeout = TimeSpan.MaxValue });
+    }
+
+    /// <summary>
+    /// The shared ceiling message says a non-positive value "would remove the ceiling
+    /// rather than set one". True of <c>--memory</c>/<c>--cpus</c>/<c>--pids-limit</c>,
+    /// where docker reads zero as unlimited; false of Timeout, where zero is an
+    /// immediate timeout. A security-sensitive setting deserves a diagnosis that is
+    /// about it.
+    /// </summary>
+    [Fact]
+    public void A_rejected_timeout_is_diagnosed_as_a_timeout_not_as_a_removed_ceiling()
+    {
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = TimeSpan.Zero });
+        Assert.Equal("Timeout", ex.ParamName);
+        Assert.DoesNotContain("remove the ceiling", ex.Message);
+        Assert.Contains("Timeout", ex.Message);
+    }
 }

@@ -486,17 +486,14 @@ public class OkfContextProviderMemoryTests
         Assert.Equal(4, tools.GetBundle().Count);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Unwritable_memory_directory_sets_LastMemoryError_without_throwing()
     {
         using var tmp = new TempDir();
         var tools = NewToolsOverFixtureCopy(tmp);
         var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.Enabled });
 
-        if (!tmp.TryMakeDirectoryUnwritable("memory"))
-        {
-            return; // no ACL-modification privilege / non-Windows -- skip.
-        }
+        Skip.IfNot(tmp.TryMakeDirectoryUnwritable("memory"), "no ACL-modification privilege / non-Windows");
 
         await provider.StoreForTest(BuildInvokedContext("hello", "hi there"));
 
@@ -504,7 +501,7 @@ public class OkfContextProviderMemoryTests
         Assert.Empty(Directory.GetFiles(Path.Combine(tmp.Path, "memory"), "*.md"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Reparse_point_memory_directory_is_refused_and_the_external_directory_stays_empty()
     {
         using var tmp = new TempDir();
@@ -512,10 +509,7 @@ public class OkfContextProviderMemoryTests
         var provider = new OkfContextProvider(tools, new OkfContextProviderOptions { MemoryCapture = MemoryCaptureMode.Enabled });
         using var external = new TempDir();
 
-        if (!tmp.TryCreateJunctionToExternalDir("memory", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("memory", external.Path), "no junction/symlink privilege on this machine");
 
         await provider.StoreForTest(BuildInvokedContext("hello", "hi there"));
 

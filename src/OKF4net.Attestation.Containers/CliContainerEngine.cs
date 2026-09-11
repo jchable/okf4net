@@ -92,6 +92,19 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// <inheritdoc />
     public async ValueTask<ContainerRunResult> RunAsync(ContainerRunSpec spec, CancellationToken cancellationToken = default)
     {
+        // Timeout is validated here, before anything is started -- not left to the
+        // CancellationTokenSource that will eventually enforce it. Two reasons. That
+        // constructor ACCEPTS Timeout.InfiniteTimeSpan, as "never fire", so it would
+        // remove the wall-clock ceiling while looking like one; and the values it does
+        // reject would throw AFTER process.Start(), leaving the engine process and
+        // its container running with nothing to tear them down. ContainerRunSpec is
+        // a public record a host can build by hand, so the profile's own check is not
+        // enough -- the same reason BuildRunArguments re-checks the other ceilings.
+        if (spec.Timeout is { } requestedTimeout)
+        {
+            ResourceCeiling.Timeout(requestedTimeout, nameof(spec.Timeout));
+        }
+
         var containerName = $"okf-{Guid.NewGuid():N}";
         var psi = new ProcessStartInfo
         {
@@ -202,16 +215,42 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         await stdinTask.ConfigureAwait(false);
         var stdout = await stdoutTask.ConfigureAwait(false);
         var stderr = await stderrTask.ConfigureAwait(false);
-        return new ContainerRunResult(process.ExitCode, stdout, stderr);
+        if (stdout.Truncated || stderr.Truncated)
+        {
+            // The cap is a stage failure, not a quiet truncation. A cut-off stdout
+            // prefix handed to receipt parsing as if it were complete, or a flooded
+            // stderr waved through with a zero exit code, would both hide the flood --
+            // and the second is not hypothetical: nothing downstream ever reads
+            // stderr's length.
+            var flooded = stdout.Truncated ? "stdout" : "stderr";
+            throw new ContainerExecutionException(
+                $"container run exceeded the output ceiling of {MaxOutputChars} characters on {flooded} (exit code {process.ExitCode})",
+                stdout.Text,
+                stderr.Text);
+        }
+
+        return new ContainerRunResult(process.ExitCode, stdout.Text, stderr.Text);
     }
+
+    /// <summary>
+    /// How long one <c>kill</c> is given before the engine is treated as
+    /// unresponsive. Generous for a healthy engine, whose <c>kill</c> returns in
+    /// well under a second; short enough that a daemon which has gone away does not
+    /// turn the timeout <see cref="RunAsync"/> promised into a hang.
+    /// </summary>
+    private static readonly TimeSpan KillTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Retries <c>binaryName kill</c> once after a short
     /// delay, best-effort: a container whose creation was still in flight
     /// when the first attempt ran reports "no such container" and is caught
-    /// by the retry once it actually starts. Never throws -- a failure here
-    /// only means <see cref="RunAsync"/> also calls <see cref="Process.Kill(bool)"/>
-    /// on its own local process, which is the other half of teardown.
+    /// by the retry once it actually starts. Each attempt is bounded by
+    /// <see cref="KillTimeout"/>, and an attempt that hits that bound is not
+    /// retried -- an engine that did not answer once will not answer a second
+    /// time, and the caller is already past its deadline. Never throws -- a
+    /// failure here only means <see cref="RunAsync"/> also calls
+    /// <see cref="Process.Kill(bool)"/> on its own local process, which is the
+    /// other half of teardown.
     /// </summary>
     private async Task KillContainerAsync(string containerName)
     {
@@ -244,7 +283,28 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 // a hang.
                 var drainOut = kill.StandardOutput.ReadToEndAsync();
                 var drainErr = kill.StandardError.ReadToEndAsync();
-                await kill.WaitForExitAsync().ConfigureAwait(false);
+                using var bound = new CancellationTokenSource(KillTimeout);
+                try
+                {
+                    await kill.WaitForExitAsync(bound.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // The engine itself is not answering. Kill this child (and
+                    // whatever it spawned) so it cannot outlive the run, then give up:
+                    // the retry below exists for a container that was not there YET,
+                    // not for an engine that will not talk.
+                    try
+                    {
+                        kill.Kill(entireProcessTree: true);
+                    }
+                    catch (Exception)
+                    {
+                    }
+
+                    return;
+                }
+
                 await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
 
                 if (kill.ExitCode == 0)
@@ -306,15 +366,18 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// Drains <paramref name="reader"/> to its end regardless of
     /// <paramref name="maxChars"/>, so the child's pipe never backs up and
     /// blocks it — but only the first <paramref name="maxChars"/> characters
-    /// are kept. Runs concurrently with the other stream and with the stdin
+    /// are kept, and <see cref="BoundedRead.Truncated"/> says whether anything was
+    /// dropped, so <see cref="RunAsync"/> can fail the stage instead of passing a
+    /// prefix off as the whole. Runs concurrently with the other stream and with the stdin
     /// write in <see cref="RunAsync"/>, which is what actually avoids the
     /// classic redirected-pipe deadlock.
     /// </summary>
-    private static async Task<string> ReadBoundedAsync(StreamReader reader, int maxChars)
+    internal static async Task<BoundedRead> ReadBoundedAsync(StreamReader reader, int maxChars)
     {
         var buffer = new char[8192];
         var sb = new StringBuilder();
         var total = 0;
+        var truncated = false;
         int read;
         while ((read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
         {
@@ -324,16 +387,21 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 sb.Append(buffer, 0, toKeep);
                 total += toKeep;
             }
+
+            if (toKeep < read)
+            {
+                truncated = true;
+            }
         }
 
-        return sb.ToString();
+        return new BoundedRead(sb.ToString(), truncated);
     }
 
-    private static async Task<string> SafeAwaitAsync(Task<string> task)
+    private static async Task<string> SafeAwaitAsync(Task<BoundedRead> task)
     {
         try
         {
-            return await task.ConfigureAwait(false);
+            return (await task.ConfigureAwait(false)).Text;
         }
         catch
         {
@@ -341,3 +409,6 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
     }
 }
+
+/// <summary>What <see cref="CliContainerEngine"/>'s bounded stream reader kept, and whether it had to drop anything to stay within its cap.</summary>
+internal readonly record struct BoundedRead(string Text, bool Truncated);

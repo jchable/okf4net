@@ -24,17 +24,39 @@ internal static class ReceiptParsing
             throw new ContainerExecutionException($"{stageName} exited with code {result.ExitCode}", result.Stdout, result.Stderr);
         }
 
-        Dictionary<string, JsonElement>? parsed;
+        JsonDocument document;
         try
         {
-            parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(result.Stdout);
+            document = JsonDocument.Parse(result.Stdout);
         }
         catch (JsonException e)
         {
             throw new ContainerExecutionException($"{stageName} stdout was not valid JSON: {e.Message}", result.Stdout, result.Stderr);
         }
 
-        var fields = (parsed ?? []).ToDictionary(kv => kv.Key, kv => JsonValues.Normalize(kv.Value));
-        return new Receipt(fields);
+        using (document)
+        {
+            // A receipt is a JSON OBJECT, and only that. Deserializing straight into a
+            // dictionary looked equivalent but was not: for the valid JSON literal
+            // `null` it returns null, and coalescing that to an empty receipt let a run
+            // whose entire stdout was `null` pass the shape check whenever
+            // executor.receipt declared no fields. Every non-object shape -- null, an
+            // array, a bare string or number -- is one rejection with one message.
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new ContainerExecutionException($"{stageName} stdout was not a JSON object", result.Stdout, result.Stderr);
+            }
+
+            // Indexer assignment, not ToDictionary: a duplicated key is last-wins here,
+            // as it was for the dictionary deserializer this replaces, rather than an
+            // ArgumentException blamed on nothing the bundle author can see.
+            var fields = new Dictionary<string, object?>();
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                fields[property.Name] = JsonValues.Normalize(property.Value);
+            }
+
+            return new Receipt(fields);
+        }
     }
 }
