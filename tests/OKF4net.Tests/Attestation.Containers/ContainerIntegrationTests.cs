@@ -2,6 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using OKF4net;
@@ -29,6 +31,10 @@ namespace OKF4net.Tests.Attestation.Containers;
 /// hostname may need the daemon started with <c>--add-host=host.docker.internal:host-gateway</c>
 /// support, or substitute the host's real LAN/bridge IP instead. Stop the
 /// fixture afterwards with <c>docker stop okf-demo-pg</c>.
+///
+/// The <c>meridian_transit</c> case needs that same fixture to also carry the
+/// bundle's own schema, which is checked in as the bundle's source of truth:
+/// <c>docker exec -i okf-demo-pg psql -U postgres -d demo &lt; bundles/meridian_transit/references/schema.sql</c>.
 /// </summary>
 [Trait("Category", "ContainerIntegration")]
 public class ContainerIntegrationTests
@@ -116,6 +122,80 @@ public class ContainerIntegrationTests
 
         Assert.Equal("OSError", receipt.Fields["outside"]);
         Assert.Equal("written", receipt.Fields["inside"]);
+    }
+
+    /// <summary>
+    /// Runs <c>bundles/meridian_transit</c> — a checked-in bundle, not a fixture this
+    /// test authors — end to end through both runtimes at once, which is the thing no
+    /// other test here does. Everything else builds a one-concept bundle in a TempDir
+    /// shaped to suit the assertion; this one takes the bundle as it ships and has to
+    /// live with it, including its bare `attester.resource` paths resolving from the
+    /// bundle root under §6.2.
+    ///
+    /// The two halves are deliberately unequal, and that is the point of the bundle:
+    /// <list type="bullet">
+    /// <item><c>capped-fare</c> runs on the <c>Script</c> runtime with the network off,
+    /// and its attester <b>recomputes</b> the fare-capping policy from the run's own
+    /// inputs. A pass there is evidence about the number.</item>
+    /// <item><c>daily-ridership</c> runs on <c>SqlClient</c> against a real Postgres,
+    /// and its attester can only check invariants of the query's shape — because
+    /// <c>executed_sql</c> is echoed by this host's own wrapper.</item>
+    /// </list>
+    /// </summary>
+    [SkippableFact]
+    public async Task Meridian_transit_bundle_runs_both_runtimes_end_to_end()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+        var conn = Environment.GetEnvironmentVariable("OKF_DEMO_PG_CONN");
+        Skip.If(string.IsNullOrEmpty(conn), "OKF_DEMO_PG_CONN is not set -- see this class's doc comment for setup");
+
+        var bundle = Bundle.Load(Path.Combine(TestPaths.RepoRoot(), "bundles", "meridian_transit"));
+        var engine = new CliContainerEngine();
+
+        var registry = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["python"] = new ContainerAttestationRuntime(
+                engine,
+                new ContainerRuntimeProfile { Image = "python:3.12-slim", Kind = ContainerRuntimeKind.Script }),
+            ["postgres"] = new ContainerAttestationRuntime(
+                engine,
+                new ContainerRuntimeProfile
+                {
+                    Image = "python:3.12-slim",
+                    Kind = ContainerRuntimeKind.SqlClient,
+                    Environment = new Dictionary<string, string> { ["OKF_CONN"] = conn! },
+                }),
+        });
+        var orchestrator = new AttestationOrchestrator(registry);
+
+        // The Script half. The worked example in policies/fare-capping.md: four 250
+        // fares against a 700 cap charge 700 and waive 300, split [250, 250, 200, 0].
+        var capped = await orchestrator.RunAsync(
+            bundle,
+            ConceptId.Parse("computations/capped-fare"),
+            new Dictionary<string, object?> { ["fares_cents"] = "[250,250,250,250]", ["cap_cents"] = 700 });
+
+        Assert.True(capped.Displayable, string.Join("; ", capped.Reasons));
+        Assert.Equal(700, Convert.ToInt32(capped.Receipt!.Fields["charged_cents"], CultureInfo.InvariantCulture));
+        Assert.Equal(300, Convert.ToInt32(capped.Receipt.Fields["waived_cents"], CultureInfo.InvariantCulture));
+
+        // The SqlClient half, against the seed data in references/schema.sql: on
+        // 2026-09-10 five trips completed across two distinct riders — the two
+        // abandoned trips and the neighbouring service date must both be excluded, so
+        // a query ignoring `status` or `service_date` fails here rather than passing
+        // by coincidence.
+        var ridership = await orchestrator.RunAsync(
+            bundle,
+            ConceptId.Parse("computations/daily-ridership"),
+            new Dictionary<string, object?> { ["service_date"] = "2026-09-10" });
+
+        Assert.True(ridership.Displayable, string.Join("; ", ridership.Reasons));
+        var row = Assert.IsAssignableFrom<System.Collections.IEnumerable>(ridership.Receipt!.Fields["result"])
+            .Cast<object>()
+            .Single();
+        var json = System.Text.Json.JsonSerializer.Serialize(row);
+        Assert.Contains("\"completed_trips\":5", json, StringComparison.Ordinal);
+        Assert.Contains("\"distinct_riders\":2", json, StringComparison.Ordinal);
     }
 
     [SkippableFact]

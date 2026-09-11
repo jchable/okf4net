@@ -59,6 +59,18 @@ and this project adheres to
     decision (`Category=ContainerIntegration`, mirroring `producers/`); they are
     run manually against real Docker.
 
+- **`bundles/meridian_transit/`** — a self-authored bundle built the way
+  `acme_retail` is, but whose computations actually run on the executors above:
+  one `postgres` SQL computation over a real table, and one `python` computation
+  applying a daily fare cap in order. Its two attesters differ in what they can
+  establish, which is the reason it carries both: the fare-cap attester
+  *recomputes* the policy from the run's inputs, so a pass is evidence about the
+  number; the ridership attester can only check invariants of the query's shape,
+  because `executed_sql` is echoed by this host's own wrapper and Postgres mints
+  no equivalent of BigQuery's `job_id`. `references/schema.sql` carries the seed,
+  chosen so a query that drops `status` or `service_date` fails rather than
+  coincides.
+
 - **`okfgen generate --roslyn-timeout <seconds>`** — a wall-clock budget for the
   whole Roslyn stage, the `dotnet msbuild` queries and the compilations after
   them. Absent by default, and absent means unbounded: each query is capped at
