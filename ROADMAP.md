@@ -278,10 +278,12 @@ are the concrete entry points.
 - **Known limitation: without `--repo-url`, `packages/` and `docs/` `resource` paths don't resolve
   against the bundle.** `producers/OkfProducer` records those families' `resource` relative to the
   *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct
-  provenance reference — but `BundleValidator` resolves a bare relative `resource` against the
-  **concept's own directory**, not the bundle root (`Bundle.TryResolveResource`), so
-  `packages/okf4net.md` sends the validator looking under `<bundle>/packages/src/OKF4net/…` and it
-  misses by construction: one "path not found" warning apiece, 10 on this repository.
+  provenance reference — but that path names a file in the *repository*, not in the *bundle*, so
+  `BundleValidator` looks for `<bundle>/src/OKF4net/…` and it misses by construction: one "path
+  not found" warning apiece, 10 on this repository. (Until the §6.2 fix of 2026-09-11 this entry
+  blamed a different mechanism — a bare relative `resource` resolving against the concept's own
+  directory, giving `<bundle>/packages/src/OKF4net/…`. That resolution rule was itself the bug and
+  is gone; the base moved, the miss did not.)
   **`--repo-url` removes all 10**: those families build the same forge URL the `code/` family does,
   and a URL short-circuits the validator's path classifier. The original entry here recorded 20
   warnings and framed the only alternative as embedding copies of referenced files in the bundle;

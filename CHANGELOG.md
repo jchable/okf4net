@@ -421,6 +421,58 @@ and this project adheres to
   is refused together with `--reset`/`--force` and with `--no-code`, both of which
   would otherwise let an operator believe something was verified that was not.
 
+- **§6.2 path-valued fields: a bare relative path now resolves from the bundle
+  root, not from the concept's directory.** `resource`, `sources[].resource`,
+  `computation`, `executor.resource` and `attester.resource` are resolved by
+  prefix: a leading `/` → bundle root, an explicit `./` or `../` → the
+  concept's own directory, and anything else → bundle root. §6.2 lists the
+  three accepted shapes without saying what a "relative path" is relative to;
+  the spec's own examples require both bases — `../computations/revenue.md`
+  (§6.2) is document-relative, while §6.3's `references/attesters/revenue.py`,
+  §10.2's `executor.resource: references/skills/run-on-bq.md` and Appendix A's
+  layout (that concept in `computations/`, `references/` at the bundle root)
+  only resolve from the root. Resolving everything against the concept
+  directory made the spec's own worked example unresolvable, and made
+  `bundles/acme_retail/` — a verbatim upstream sample laid out exactly as
+  Appendix A is — emit twelve bogus `… not found` warnings. The spec does not
+  define the base for a bare path, so this is a change of interpretation
+  rather than a conformance fix: §11 puts path resolution outside the
+  conformance floor entirely, and `acme_retail` was a conformant bundle before
+  and after. What changed is which file a given string names, and therefore
+  the diagnostics. Recorded as **S6.2-1** in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+  - Where it reaches beyond diagnostics: `AttestationOrchestrator` resolves a
+    file-backed `computation:` path (`AttestationOrchestrator.cs:295`), so a
+    bare one now names a different file. It does **not** resolve
+    `executor.resource` or `attester.resource` — those implementations come
+    from the host runtime — so no computation became runnable or unrunnable
+    because of this change.
+  - **Breaking (source):** `FrontmatterResourceKind.Relative` is renamed
+    `FrontmatterResourceKind.ConceptRelative`, and a bare path now classifies
+    as `BundleRelative`. The rename is deliberate: it turns a silent change of
+    meaning into a compile error for any consumer that switched on the old
+    member. Note the limit of that protection: the enum's numeric values are
+    unchanged (`Url=0`, `BundleRelative=1`, the former `Relative=2` now
+    `ConceptRelative=2`), so it only bites on recompilation. A consumer still
+    binary-linked against the previous assembly gets `BundleRelative` where it
+    used to get `Relative` for a bare path, with no error, and changes
+    behaviour silently.
+  - The drive-relative guard (a raw value like `e:query.sql`, which
+    `Path.GetFullPath` resolves against that drive's own current directory)
+    now covers both bases rather than only the concept-relative one.
+
+- **`okf validate` no longer reports a missing `resource` on a §10 Attested
+  Computation.** §4.1 recommends `resource` but qualifies it in the same
+  sentence — "Absent for concepts that describe abstract ideas rather than
+  physical resources" — so on such a concept its absence is correct, not a
+  deficiency. `Attested Computation` is the one type a rule can be keyed on
+  instead of guessed: §10.1 names it normatively, and every example the spec
+  gives of one omits `resource`. Other abstract types (`Metric`, `Skill`, …)
+  still warn, because §4.1 draws the line by meaning and leaves the type
+  vocabulary open, so nothing syntactic decides it. `bundles/acme_retail/`
+  goes from 24 warnings to 22. Recorded as **S4.1-8** in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+
 ### Fixed
 
 - **`YamlEmitter`'s nesting guard now throws `YamlEmitException`** (an

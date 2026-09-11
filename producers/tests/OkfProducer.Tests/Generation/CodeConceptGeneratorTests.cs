@@ -217,7 +217,7 @@ public class CodeConceptGeneratorTests
     public void A_repo_url_that_is_not_an_absolute_url_yields_no_resource()
     {
         // The validator classifies `resource` by shape: without a `scheme://` it is a PATH, resolved
-        // against the concept's own directory. Emitting one would be the warning-per-concept outcome
+        // against the bundle root (§6.2). Emitting one would be the warning-per-concept outcome
         // §4.3 rules out, so a malformed --repo-url degrades to no field, not to a path.
         Assert.Null(Single(Generate(repoUrl: "github.com/o/r"), "code/csharp/n/scanner/scan").Document.Frontmatter.Resource);
     }

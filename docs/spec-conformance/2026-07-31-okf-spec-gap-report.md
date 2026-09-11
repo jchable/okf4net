@@ -163,6 +163,47 @@ headings → `OkfDocument.Computation()`.
 - **S4.1-7** (MUST NOT, reject unrecognized fields) — **Implemented**
   (Major). Same citation as S4.1-3 — no diagnostic/exception is raised for
   an unrecognized field name anywhere.
+- **S4.1-8** (§4.1's carve-out: `resource` is expected to be absent on an
+  abstract concept) — **Partial** (Minor, added 2026-09-11). §4.1 lists
+  `resource` among the recommended fields but qualifies it in the same breath
+  (`docs/spec/SPEC.md:196-198`): "A URI that uniquely identifies the
+  underlying asset the concept describes. **Absent for concepts that describe
+  abstract ideas rather than physical resources.**" That sentence makes
+  absence *correct* for such a concept, not a deficiency, and
+  `BundleValidator` used to warn unconditionally.
+
+  How far it reached: the spec's own example concepts were the ones tripping
+  it. Neither §10.2's Attested Computation (`docs/spec/SPEC.md:610-631`) nor
+  any of Appendix A's three v0.2 concepts — one `Metric`, two
+  `Attested Computation`, from `docs/spec/SPEC.md:894` on — carries a
+  top-level `resource`.
+
+  **Implemented for `Attested Computation`** (`src/OKF4net/Validate.cs`, the
+  `RecommendedFields` loop, keyed on `Frontmatter.IsAttestedComputation`).
+  That type is the one case a rule can be keyed on rather than guessed:
+  §10.1 names it normatively ("a standalone concept of
+  `type: Attested Computation`"), and every example the spec gives of one
+  omits `resource`. Tests:
+  `Attested_computation_is_not_warned_for_a_missing_resource` and
+  `A_non_computation_concept_is_still_warned_for_a_missing_resource`
+  (`tests/OKF4net.Tests/ValidateTests.cs`). In `bundles/acme_retail/` this
+  took the count from 24 warnings to 22.
+
+  **Not implemented for other abstract types**, which is why this is Partial:
+  §4.1 draws the line by *meaning* ("abstract ideas" vs "physical
+  resources") and `type` values are explicitly not registered centrally
+  (S4.1-2), so no syntactic test decides it. A `Metric` or a `Skill` without
+  a `resource` still warns — 4 of `acme_retail`'s remaining 22.
+
+  Why the suppression stops there rather than going wider: the only
+  reference-captured bundle exercising this, `tests/fixtures/appendix_a/`,
+  contains nothing but `BigQuery Table`/`BigQuery Dataset` concepts, and
+  `golden/validate.out` captures the reference CLI warning about their
+  missing `resource`. Dropping `resource` from the recommended set, or
+  demoting it to `Severity.Info`, would rewrite that byte-exact capture; the
+  type-keyed rule leaves it untouched (verified: no golden changed). All of
+  these stay within §11 either way (S11-8: a missing optional field must
+  never reject a bundle, which it does not).
 - **S4.2-1** (SHOULD, structural markdown over freeform prose) — **N/A**
   (per this skill's own worked example) — pure human-authoring guidance;
   no code judges prose-vs-structure.
@@ -282,6 +323,74 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   list with `Exists=false` rather than dropped or erroring. Test:
   `Broken_links_are_detected_but_not_fatal`,
   `tests/OKF4net.Tests/BundleTests.cs:86-99`.
+- **S6.2-1** (path-valued fields: the base a *relative* path resolves
+  against) — **Underspecified in the spec; interpreted here** (Major, added
+  2026-09-11). §6.2 lists three accepted shapes — an absolute URL, a
+  bundle-relative path beginning with `/`, and "a relative path (for example
+  `../computations/revenue.md`)" — but never states what the third is
+  relative *to*. No normative sentence supplies it, so what follows is an
+  interpretation, not a derivation: the spec's own examples point strongly
+  one way, and they require two different bases:
+  - `../computations/revenue.md` (§6.2) and `./other.md` (§6.1) are
+    document-relative by construction.
+  - A **bare** path is not. §6.3 gives `references/attesters/revenue.py`;
+    §10.2's example concept declares `executor.resource:
+    references/skills/run-on-bq.md`; and Appendix A gives that example's
+    layout — `computations/revenue.md` as the concept, with `references/`
+    at the **bundle root**. Resolving the bare path against the concept's
+    directory would point it at `computations/references/…`, which Appendix
+    A's own layout does not contain.
+
+  The strongest counter-reading, and why it does not hold: §5.1
+  (`docs/spec/SPEC.md:305-308`) describes a source `resource` as "an absolute
+  URL, a **bundle-relative path**, or **a path into a `references/`
+  subdirectory**" — three items, the third named *separately from*
+  bundle-relative, which would only be necessary if a bare `references/…`
+  were something other than bundle-relative. That is a phrase; Appendix A is
+  a directory listing, and it puts `references/` at the bundle root while the
+  concept naming it sits in `computations/`. Whatever category the third item
+  belongs to, its target still has to be found where the spec itself puts it.
+  Under this rule the §5.1 item is merely redundant with the second; under the
+  old rule Appendix A is unresolvable. Redundancy in prose loses to a layout
+  that must work.
+
+  OKF4net therefore resolves by prefix: a leading `/` → bundle root; an
+  explicit `./` or `../` → the concept's own directory; anything else (a
+  bare path) → bundle root. Of the readings considered it is the only one
+  under which every example in the spec resolves to a file the spec itself
+  places in the bundle — which is why it was chosen, not a proof that the
+  spec mandates it. A consumer trying both bases in some precedence would
+  also satisfy the examples; the spec defines neither that policy nor its
+  conflict rule, so OKF4net picks the single-base form and says so here.
+  `FrontmatterResourceKind` names the two local cases `BundleRelative` and
+  `ConceptRelative` accordingly. `src/OKF4net/FrontmatterResource.cs`
+  (`FrontmatterResourceClassifier.KindOf`) and
+  `src/OKF4net/Bundle.cs` (`TryResolveResource`). Tests:
+  `Bare_path_resolves_from_the_bundle_root_per_Appendix_A`,
+  `Dot_prefixed_path_resolves_relative_to_the_concept`,
+  `tests/OKF4net.Tests/FrontmatterResourceTests.cs`.
+
+  Observable consequence: `bundles/acme_retail/` — a verbatim copy of an
+  upstream sample, laid out exactly as Appendix A is — is conformant under
+  this reading, and the twelve `… not found` warnings OKF4net used to emit
+  against it were the implementation's error, not the bundle's.
+- **S6.2-2** (a `sources[].resource` scope descriptor is not a path) — **Not
+  implemented** (Minor, recorded 2026-09-11). §6.2 says so two lines above
+  the list of accepted shapes (`docs/spec/SPEC.md:472-473`): "A
+  `sources[].resource` may instead be a scope descriptor (§5.1), in which
+  case **it is not a path**." §5.1 gives the example `all queries in BigQuery
+  project X`, and Appendix A uses one (`resource: dashboards/exec-revenue`,
+  `docs/spec/SPEC.md:947`). `BundleValidator.Validate`
+  (`src/OKF4net/Validate.cs:516-532`) classifies every non-URL value as a
+  path, so a scope descriptor resolves, misses, and raises a
+  `FrontmatterPathMissing` warning it should not raise. Long-standing, not a
+  regression — the previous resolution rule missed them identically — and
+  recorded here rather than fixed because the spec gives no syntactic way to
+  tell a descriptor from a path (§5.1 distinguishes them by *meaning*: "a
+  concrete artifact a consumer can follow" versus "a population or scope
+  descriptor it cannot"), so any detection would be a heuristic that needs
+  its own decision. `bundles/acme_retail/` contains no scope descriptor, so
+  its warning count is unaffected.
 
 ### §7 Actor convention
 

@@ -124,8 +124,9 @@ public class ConceptGeneratorTests
         // The defect this pins. `--repo-url` reached the `code/` family only: these two builders never
         // took GenerateOptions at all, so on a real run of this repository WITH `--repo-url` -- where
         // every code concept's `resource` becomes a resolving permalink -- the ten `packages/*` and
-        // `docs/*` concepts still emitted a bare repo-relative path the validator resolves against the
-        // concept's own directory and misses. Measured before the fix: 20 of the 55 remaining warnings.
+        // `docs/*` concepts still emitted a bare repo-relative path, which names a file in the
+        // repository rather than in the bundle and so misses wherever the validator resolves it
+        // from. Measured before the fix: 20 of the 55 remaining warnings.
         //
         // No line span, unlike a code concept's: the concept is about the whole file, and there is no
         // declaration to point a reader at inside it.
