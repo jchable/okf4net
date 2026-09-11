@@ -10,14 +10,33 @@ namespace OKF4net.Attestation.Containers;
 /// included — through <see cref="Wrapper"/>, a fixed Python program that
 /// binds <see cref="BoundComputation.Values"/> via a pure-Python database
 /// driver's own native parameter mechanism (never string interpolation into
-/// the SQL). <see cref="Wrapper"/> pip-installs its driver at run time —
-/// see the plan task's "known trade-off" note.
+/// the SQL).
+///
+/// <para><b>Receipt contract.</b> <c>stdout</c> carries one JSON object and
+/// nothing else: <c>executed_sql</c> (the text sent, echoed back) and
+/// <c>result</c> (the rows, as a list of column-keyed objects). A column value
+/// JSON cannot represent natively — <c>NUMERIC</c>, <c>DATE</c>,
+/// <c>TIMESTAMP</c>, <c>UUID</c>, <c>BYTEA</c> — arrives as its Python
+/// <c>str()</c> form rather than failing the run.</para>
+///
+/// <para><b>Known trade-off.</b> <see cref="Wrapper"/> pip-installs its
+/// driver on every run, so a run needs network access to a package index and
+/// pays the install cost each time. The alternative, a purpose-built image
+/// with the driver vendored in, is the better answer for anything beyond
+/// local use.</para>
 /// </summary>
 public sealed class SqlClientComputationExecutor(IContainerEngine engine, ContainerRuntimeProfile profile) : IComputationExecutor
 {
     private const string Wrapper = """
         import sys, os, json, subprocess
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'pg8000'], check=True)
+        # stdout is the receipt channel and nothing else: pip's own output must never
+        # land on it. --quiet alone is not enough -- it only makes this usually
+        # invisible, which is what made it a latent, environment-dependent failure
+        # (a warning, a progress line, a resolver message and the receipt is
+        # unparseable). DEVNULL makes it structural. stderr is left alone so a real
+        # install failure is still diagnosable; check=True still aborts on one.
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'pg8000'],
+                       check=True, stdout=subprocess.DEVNULL)
         import pg8000.native
         from urllib.parse import urlparse
         envelope = json.load(sys.stdin)
@@ -29,7 +48,14 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             rows = conn.run(sql, **values)
             cols = [c['name'] for c in conn.columns] if conn.columns else []
             result = [dict(zip(cols, row)) for row in rows]
-            sys.stdout.write(json.dumps({'executed_sql': sql, 'result': result}))
+            # default=str: Postgres returns plenty of types json.dumps cannot encode --
+            # NUMERIC as Decimal, DATE/TIMESTAMP as date/datetime, UUID, BYTEA as bytes.
+            # Without it the dump raises TypeError AFTER the query has already run
+            # against the live database, so the receipt is lost and the run reports a
+            # bare "SQL wrapper exited with code 1" for a query that actually succeeded.
+            # The receipt contract is therefore: non-JSON-native column values arrive as
+            # their Python str() form.
+            sys.stdout.write(json.dumps({'executed_sql': sql, 'result': result}, default=str))
         finally:
             conn.close()
         """;

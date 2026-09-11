@@ -52,7 +52,7 @@ public class ContainerIntegrationTests
         Skip.IfNot(DockerAvailable(), "docker is not on PATH");
 
         using var tmp = new TempDir();
-        tmp.Write("c/greet.py", "def attest(*, sanctioned_computation, receipt, values):\n    return {'ok': receipt.get('message') == f\"Hello, {values['name']}!\"}\n");
+        tmp.Write("greet.py", "def attest(*, sanctioned_computation, receipt, values):\n    return {'ok': receipt.get('message') == f\"Hello, {values['name']}!\"}\n");
         tmp.Write("c/greet.md",
             "---\ntype: Attested Computation\nruntime: python\n" +
             "parameters:\n  - { name: name, type: string, required: true }\n" +
@@ -80,7 +80,7 @@ public class ContainerIntegrationTests
         Skip.If(string.IsNullOrEmpty(conn), "OKF_DEMO_PG_CONN is not set -- see this class's doc comment for setup");
 
         using var tmp = new TempDir();
-        tmp.Write("c/count.py",
+        tmp.Write("count.py",
             "def attest(*, sanctioned_computation, receipt, values):\n" +
             "    executed = receipt.get('executed_sql')\n" +
             "    return {'ok': executed is not None and executed.strip() == sanctioned_computation.strip()}\n");
@@ -106,6 +106,73 @@ public class ContainerIntegrationTests
         var outcome = await orchestrator.RunAsync(bundle, ConceptId.Parse("c/count"), new Dictionary<string, object?> { ["min_id"] = 1 });
 
         Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+    }
+
+    /// <summary>
+    /// The two container-side defects the original real-Docker run could not surface,
+    /// pinned here because only a real database can produce them.
+    ///
+    /// <para><b>Non-JSON-native column types.</b> The other SqlClient test selects
+    /// <c>count(*)</c>, a plain integer, so it never asked <c>json.dumps</c> to encode
+    /// anything it cannot. A <c>NUMERIC</c> comes back as <c>Decimal</c>, a <c>DATE</c>
+    /// as <c>date</c>, a <c>UUID</c> as <c>UUID</c> — each raising <c>TypeError</c>
+    /// AFTER the query has already run, losing the receipt and reporting a bare "SQL
+    /// wrapper exited with code 1" for a query that in fact succeeded. This selects all
+    /// three plus a <c>BYTEA</c> and requires the receipt to come back intact.</para>
+    ///
+    /// <para><b>Receipt-channel purity.</b> The wrapper pip-installs its driver on
+    /// every run. With pip writing to the same stdout the receipt is parsed from,
+    /// <c>--quiet</c> only made corruption unlikely, not impossible. Asserting the
+    /// receipt parses and carries exactly the declared fields is what makes the
+    /// DEVNULL redirect load-bearing rather than decorative.</para>
+    ///
+    /// Needs the same Postgres fixture as the test above, plus one extra table:
+    /// <c>docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE typed(amount numeric(12,2), booked date, ref uuid, blob bytea); INSERT INTO typed VALUES (1234.56, '2026-09-11', '00000000-0000-0000-0000-000000000001', '\\x4f4b46');"</c>
+    /// </summary>
+    [SkippableFact]
+    public async Task SqlClient_runtime_returns_a_receipt_for_non_json_native_column_types()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+        var conn = Environment.GetEnvironmentVariable("OKF_DEMO_PG_CONN");
+        Skip.If(string.IsNullOrEmpty(conn), "OKF_DEMO_PG_CONN is not set -- see this class's doc comment for setup");
+
+        using var tmp = new TempDir();
+        tmp.Write("typed.py",
+            "def attest(*, sanctioned_computation, receipt, values):\n" +
+            "    rows = receipt.get('result') or []\n" +
+            "    return {'ok': len(rows) == 1 and all(k in rows[0] for k in ('amount', 'booked', 'ref', 'blob'))}\n");
+        tmp.Write("c/typed.md",
+            "---\ntype: Attested Computation\nruntime: postgres\n" +
+            "executor: { receipt: [executed_sql, result] }\n" +
+            "attester: { resource: typed.py }\n---\n" +
+            "# Computation\n\n```sql\nSELECT amount, booked, ref, blob FROM typed\n```\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        var engine = new CliContainerEngine();
+        var profile = new ContainerRuntimeProfile
+        {
+            Image = "python:3.12-slim",
+            Kind = ContainerRuntimeKind.SqlClient,
+            Environment = new Dictionary<string, string> { ["OKF_CONN"] = conn! },
+        };
+        var runtime = new ContainerAttestationRuntime(engine, profile);
+        var registry = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["postgres"] = runtime });
+        var orchestrator = new AttestationOrchestrator(registry);
+
+        var outcome = await orchestrator.RunAsync(bundle, ConceptId.Parse("c/typed"), new Dictionary<string, object?>());
+
+        // A TypeError inside the wrapper, or pip output on the receipt channel, both land
+        // here as a non-displayable outcome -- so the reasons are worth printing.
+        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.NotNull(outcome.Receipt);
+
+        // The receipt parsed, which is the #3 guarantee: nothing but JSON reached stdout.
+        Assert.True(outcome.ReceiptShapeOk);
+
+        // And it carries the values, which is the #2 guarantee: the Decimal/date/UUID/bytes
+        // were encoded (as their str() form) instead of aborting the dump.
+        var rows = Assert.IsAssignableFrom<System.Collections.IEnumerable>(outcome.Receipt!.Fields["result"]);
+        Assert.Contains("1234.56", System.Text.Json.JsonSerializer.Serialize(rows));
     }
 
     [SkippableFact]
