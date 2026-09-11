@@ -163,6 +163,41 @@ headings → `OkfDocument.Computation()`.
 - **S4.1-7** (MUST NOT, reject unrecognized fields) — **Implemented**
   (Major). Same citation as S4.1-3 — no diagnostic/exception is raised for
   an unrecognized field name anywhere.
+- **S4.1-8** (§4.1's carve-out: `resource` is expected to be absent on an
+  abstract concept) — **Divergent, recorded not fixed** (Minor, added
+  2026-09-11). §4.1 lists `resource` among the recommended fields but
+  qualifies it in the same breath (`docs/spec/SPEC.md:196-198`): "A URI that
+  uniquely identifies the underlying asset the concept describes. **Absent
+  for concepts that describe abstract ideas rather than physical
+  resources.**" That sentence makes absence *correct* for such a concept,
+  not a deficiency. `BundleValidator` warns unconditionally:
+  `RecommendedFields = ["title", "description", "resource", "tags"]`
+  (`src/OKF4net/Validate.cs:552`), checked per concept with no regard to
+  `type` (`Validate.cs:315-328`).
+
+  How far it reaches: the spec's own example concepts are the ones that
+  trip it. Neither §10.2's Attested Computation
+  (`docs/spec/SPEC.md:610-631`) nor any of Appendix A's three v0.2 concepts
+  — one `Metric`, two `Attested Computation`, from
+  `docs/spec/SPEC.md:894` on — carries a top-level `resource`, so
+  OKF4net emits "missing recommended frontmatter field `resource`" against
+  every one of them. In `bundles/acme_retail/` this is 6 of the 24
+  remaining warnings, all on `Metric`, `Skill` and `Attested Computation`
+  concepts.
+
+  Not settled by the golden captures: the only reference-captured bundle
+  that exercises this, `tests/fixtures/appendix_a/`, contains nothing but
+  `BigQuery Table`/`BigQuery Dataset` concepts — physical resources, where
+  warning is right under either reading — so `golden/validate.out` is
+  consistent with both an unconditional warning and a type-aware one.
+
+  Left as-is because the fix is not mechanical: the spec draws the line by
+  *meaning* ("abstract ideas" vs "physical resources"), and `type` values
+  are explicitly not registered centrally (S4.1-2), so no syntactic test
+  can decide it. The options — drop `resource` from the recommended set,
+  demote it to `Severity.Info`, or keep the warning — are a product
+  decision, not a conformance one, and all three stay within §11 (S11-8:
+  a missing optional field must never reject a bundle, which it does not).
 - **S4.2-1** (SHOULD, structural markdown over freeform prose) — **N/A**
   (per this skill's own worked example) — pure human-authoring guidance;
   no code judges prose-vs-structure.
