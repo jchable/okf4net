@@ -74,7 +74,10 @@ read as `ok` (anything but `true` fails the attestation) and an optional
 captures stdout for the whole import-and-call.
 
 The attester always runs on `ContainerAttesterOptions.Image`, never the
-executor's image: a `SqlClient` profile's image need not have Python at all.
+executor's image. So the executor's image is whatever the sanctioned code needs
+— a `Script` profile can run on an image with no Python at all — while the
+bootstrap keeps its own. (A `SqlClient` image is the one that *must* be
+Python-capable: the wrapper is `python3`.)
 
 ## What the host controls
 
@@ -85,7 +88,9 @@ docker and podman zero there means *unlimited* — a value that removes the
 ceiling it appears to set.
 
 Network access defaults closed for `Script` and open for `SqlClient` (which
-must reach a database and a package index), and either can be overridden.
+must reach a database, and a package index unless its image vendors the driver),
+and either can be overridden — including back to the engine's default, with an
+explicit `null`.
 
 The root filesystem is mounted **read-only** by default, with `/tmp` as a
 memory-backed `tmpfs` that dies with the container. That is not a hole in the
@@ -102,13 +107,13 @@ profile if a host needs different paths.
   process list. **`OKF_PARAMS_JSON` is the same exposure class** — parameter
   values, not just connection strings, are readable that way. Do not pass a
   value you would not put in a process listing.
-- **The `SqlClient` wrapper pip-installs its driver on every run**, so it needs
-  network access to a package index and pays the install cost each time. A
-  purpose-built image with the driver vendored in is the better answer for
-  anything beyond local use.
-- **The `SqlClient` wrapper installs its driver into the tmpfs on every run**
-  (`pip install --target /tmp/okf-pkgs`), so it needs network access to a
-  package index and pays the install cost each time.
+- **The `SqlClient` wrapper pip-installs its driver when the image lacks it**
+  (pinned to `pg8000==1.31.5`, since the process holds `OKF_CONN`), into the
+  tmpfs rather than the image, because the root filesystem is read-only. So on a
+  bare Python image a run needs network access to a package index and pays the
+  install cost each time. An image with the driver vendored in skips the install
+  entirely, can run with `NetworkMode` closed down to its database's network, and
+  is the better answer for anything beyond local use.
 - **`executed_sql` is echoed by this host's own wrapper**, so comparing it
   against the sanctioned text proves the wrapper sent what it was given — not
   that the database ran it. Real provenance needs a receipt field the engine

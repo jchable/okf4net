@@ -1,5 +1,5 @@
-// samples/attestation-containers-demo/Program.cs
 // SPDX-License-Identifier: LGPL-3.0-or-later
+// samples/attestation-containers-demo/Program.cs
 using OKF4net;
 using OKF4net.Attestation;
 using OKF4net.Attestation.Containers;

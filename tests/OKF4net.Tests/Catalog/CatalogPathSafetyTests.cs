@@ -157,17 +157,14 @@ public class CatalogPathSafetyTests
     // skips cleanly if unavailable, per the repo's other reparse-point
     // tests (see IndexTests.cs, OkfBundleToolsTests.cs).
     // ----------------------------------------------------------------
-    [Fact]
+    [SkippableFact]
     public void Rejects_reparse_point_ancestor_within_root()
     {
         using var tmp = new TempDir();
         using var external = new TempDir();
         Directory.CreateDirectory(Path.Combine(external.Path, "inner"));
 
-        if (!tmp.TryCreateJunctionToExternalDir("link", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("link", external.Path), "no junction/symlink privilege on this machine");
 
         var ok = CatalogPathResolver.TryResolve(
             tmp.Path, tmp.Path, Path.Combine("link", "inner"), out var resolved, out var diagnostic);
@@ -182,16 +179,13 @@ public class CatalogPathSafetyTests
     // ancestor of it) is the junction/symlink. Requires junction/symlink-
     // creation privilege; skips cleanly if unavailable.
     // ----------------------------------------------------------------
-    [Fact]
+    [SkippableFact]
     public void Rejects_reparse_point_target_itself()
     {
         using var tmp = new TempDir();
         using var external = new TempDir();
 
-        if (!tmp.TryCreateJunctionToExternalDir("link", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("link", external.Path), "no junction/symlink privilege on this machine");
 
         var ok = CatalogPathResolver.TryResolve(tmp.Path, tmp.Path, "link", out var resolved, out var diagnostic);
 
@@ -236,17 +230,14 @@ public class CatalogPathSafetyTests
     // and the root. Requires junction/symlink-creation privilege; skips
     // cleanly if unavailable.
     // ----------------------------------------------------------------
-    [Fact]
+    [SkippableFact]
     public void Accepts_symlinked_catalog_root_itself()
     {
         using var content = new TempDir();
         Directory.CreateDirectory(Path.Combine(content.Path, "docs"));
 
         using var parent = new TempDir();
-        if (!parent.TryCreateJunctionToExternalDir("root-link", content.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(parent.TryCreateJunctionToExternalDir("root-link", content.Path), "no junction/symlink privilege on this machine");
 
         var catalogRoot = Path.Combine(parent.Path, "root-link");
 

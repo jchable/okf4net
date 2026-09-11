@@ -208,7 +208,7 @@ public class FrontmatterResourceTests
     /// catching the escape the OS would otherwise silently follow the moment
     /// the resolved path is actually read.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void TryResolveResource_rejects_a_path_through_a_reparse_point()
     {
         using var tmp = new TempDir();
@@ -217,10 +217,7 @@ public class FrontmatterResourceTests
         tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
         external.Write("secret.sql", "SELECT 1\n");
 
-        if (!tmp.TryCreateJunctionToExternalDir("linked", external.Path))
-        {
-            return; // no junction/symlink privilege on this machine -- skip.
-        }
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("linked", external.Path), "no junction/symlink privilege on this machine");
 
         var bundle = Bundle.Load(tmp.Path);
         var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");

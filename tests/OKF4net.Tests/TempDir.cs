@@ -94,7 +94,7 @@ public sealed class TempDir : IDisposable
     /// <c>mklink</c> is unavailable or fails (e.g. non-Windows). Returns
     /// <c>false</c> instead of throwing if neither mechanism succeeds, so
     /// callers can skip the reparse-point-dependent assertions
-    /// (<c>if (!created) return;</c>) rather than fail the whole run on a
+    /// (<c>Skip.IfNot(created, …)</c>) rather than fail the whole run on a
     /// machine where neither can be created.
     /// </summary>
     public bool TryCreateJunctionToExternalDir(string relativeLink, string externalTarget)
@@ -152,7 +152,7 @@ public sealed class TempDir : IDisposable
     /// <c>SeCreateSymbolicLinkPrivilege</c> as <see cref="TryCreateFileSymlink"/>.
     /// Returns <c>false</c> instead of throwing when unavailable, so callers
     /// can skip the reparse-point-dependent assertions
-    /// (<c>if (!created) return;</c>) rather than fail the whole run.
+    /// (<c>Skip.IfNot(created, …)</c>) rather than fail the whole run.
     /// </summary>
     public bool TryCreateFileSymlinkToExternalFile(string relativeLink, string externalTarget)
     {
@@ -187,7 +187,7 @@ public sealed class TempDir : IDisposable
     /// best-effort recursive delete still succeeds afterward. Returns
     /// <c>false</c> instead of throwing on a non-Windows platform or if the
     /// ACL change itself is denied, so callers can skip the
-    /// permission-dependent assertion (<c>if (!denied) return;</c>) rather
+    /// permission-dependent assertion (<c>Skip.IfNot(denied, …)</c>) rather
     /// than fail the whole run on a machine/platform where this cannot be
     /// set up.
     /// </summary>

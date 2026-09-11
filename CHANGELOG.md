@@ -51,6 +51,19 @@ and this project adheres to
     outside the tmpfs to fail *and* one inside it to succeed — the first alone
     would also pass on an image with no such path, the second alone with no
     hardening at all.
+  - The `SqlClient` wrapper imports its driver first and pip-installs it — pinned
+    to `pg8000==1.31.5`, never "whatever the index serves today" into a process
+    holding `OKF_CONN` — only when the image does not already provide it, so an
+    image that vendors the driver runs with its network closed down to the
+    database. An explicit `NetworkMode = null` is honoured on either kind as "the
+    engine's default".
+  - Every run's stdout and stderr are capped at 8 Mi characters, and exceeding
+    the cap fails the stage rather than truncating quietly. `Timeout` must be a
+    duration a timer can enforce — `Timeout.InfiniteTimeSpan` is rejected rather
+    than read as "no ceiling" — and is checked before any process starts; a
+    `kill` the engine never answers is abandoned after five seconds, so a
+    timed-out run still returns. A receipt is a JSON object and nothing else: a
+    run whose stdout is the literal `null` is rejected, not read as empty.
   - **Not published to NuGet**, deliberately, and the `.csproj` carries no
     packaging block — see the root README's project table. Its useful operation
     needs a container engine on `PATH` and a reachable daemon, which no package
