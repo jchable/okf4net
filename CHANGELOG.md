@@ -451,7 +451,12 @@ and this project adheres to
     `FrontmatterResourceKind.ConceptRelative`, and a bare path now classifies
     as `BundleRelative`. The rename is deliberate: it turns a silent change of
     meaning into a compile error for any consumer that switched on the old
-    member.
+    member. Note the limit of that protection: the enum's numeric values are
+    unchanged (`Url=0`, `BundleRelative=1`, the former `Relative=2` now
+    `ConceptRelative=2`), so it only bites on recompilation. A consumer still
+    binary-linked against the previous assembly gets `BundleRelative` where it
+    used to get `Relative` for a bare path, with no error, and changes
+    behaviour silently.
   - The drive-relative guard (a raw value like `e:query.sql`, which
     `Path.GetFullPath` resolves against that drive's own current directory)
     now covers both bases rather than only the concept-relative one.
