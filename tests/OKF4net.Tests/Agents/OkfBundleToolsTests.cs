@@ -312,8 +312,11 @@ public class OkfBundleToolsTests
     // the moment Browse actually touches disk, escaping the bundle. This
     // test requires reparse-point-creation privilege (a Windows junction via
     // mklink /J needs none; the Directory.CreateSymbolicLink fallback does)
-    // and skips itself via TryCreateJunctionToExternalDir's bool return when
-    // neither mechanism is available, per xunit v2 having no Assert.Skip.
+    // and, when neither mechanism is available, returns early on
+    // TryCreateJunctionToExternalDir's bool -- which counts as PASSED, not
+    // skipped, so it verifies nothing and says nothing about it. That was once
+    // justified by xunit v2 having no Assert.Skip; the repo now carries
+    // Xunit.SkippableFact, so converting it would make the silence visible.
     // ----------------------------------------------------------------
 
     [Fact]

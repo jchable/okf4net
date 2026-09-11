@@ -24,8 +24,7 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\n" +
             "parameters:\n  - { name: year, type: integer, required: true }\n" +
-            "executor: { resource: references/run.md, receipt: [job_id, result] }\n" +
-            "attester: { resource: references/att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+            "executor: { receipt: [job_id, result] }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
         return (Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"));
     }
 
@@ -467,5 +466,136 @@ public class AttestationOrchestratorTests
         Assert.False(outcome.Displayable);
         Assert.Contains(outcome.Reasons, r => r.Contains("year"));
         Assert.Null(outcome.Receipt); // never reached bind/execute
+    }
+
+    private static (Bundle, ConceptId) InlineComputationWithAttesterFile(TempDir tmp, string attesterBody)
+    {
+        // Laid out as §6.2 resolves it and as Appendix A shows it: the concept sits in a
+        // subdirectory, its bare `attester.resource` resolves from the BUNDLE ROOT, and the
+        // attester file lives there -- the shape bundles/acme_retail/ uses for its shared
+        // attesters. Co-locating the script with the concept needs the explicit `./` form
+        // instead, which Attester_resource_can_be_concept_relative below covers.
+        tmp.Write("att.py", attesterBody);
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "parameters:\n  - { name: year, type: integer, required: true }\n" +
+            "executor: { receipt: [job_id, result] }\n" +
+            "attester: { resource: att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        return (Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"));
+    }
+
+    [Fact]
+    public async Task AttesterSourceText_carries_the_resolved_attester_script()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputationWithAttesterFile(tmp, "def attest(**_):\n    return {}\n");
+
+        AttestationContext? captured = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (ctx, _) =>
+        {
+            captured = ctx;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.NotNull(captured);
+        Assert.Equal("def attest(**_):\n    return {}\n", captured!.AttesterSourceText);
+    }
+
+    /// <summary>
+    /// The other §6.2 base, through the one consumer that READS and then hands off what it
+    /// resolves: an `attester.resource` written `./att.py` resolves beside the concept, not
+    /// from the bundle root. Pinned with a decoy at the root, which is what the bare form
+    /// would have found -- this interaction is what broke two tests when the §6.2 change
+    /// landed, and neither of them could tell the two bases apart.
+    /// </summary>
+    [Fact]
+    public async Task Attester_resource_can_be_concept_relative()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("att.py", "def attest(**_):\n    return {}  # root decoy\n");
+        tmp.Write("c/att.py", "def attest(**_):\n    return {}  # beside the concept\n");
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "parameters:\n  - { name: year, type: integer, required: true }\n" +
+            "executor: { receipt: [job_id, result] }\n" +
+            "attester: { resource: ./att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        AttestationContext? captured = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (ctx, _) =>
+        {
+            captured = ctx;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        await orch.RunAsync(bundle, ConceptId.Parse("c/rev"), new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.NotNull(captured);
+        Assert.Equal("def attest(**_):\n    return {}  # beside the concept\n", captured!.AttesterSourceText);
+    }
+
+    [Fact]
+    public async Task Missing_attester_resource_file_fails_early_without_calling_the_attester()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputationWithAttesterFile(tmp, "def attest(**_):\n    return {}\n");
+        // Overwrite with a concept whose attester.resource does not exist on disk.
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "parameters:\n  - { name: year, type: integer, required: true }\n" +
+            "executor: { receipt: [job_id, result] }\n" +
+            "attester: { resource: does-not-exist.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        var bundle2 = Bundle.Load(tmp.Path);
+
+        var attested = false;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (_, _) =>
+        {
+            attested = true;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var outcome = await orch.RunAsync(bundle2, id, new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.False(outcome.Displayable);
+        Assert.Contains(outcome.Reasons, r => r.Contains("attester resource", StringComparison.Ordinal));
+        Assert.False(attested, "the attester ran despite its own resource being unresolvable");
+    }
+
+    [Fact]
+    public async Task Absent_attester_declaration_yields_null_source_text_not_a_failure()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "parameters:\n  - { name: year, type: integer, required: true }\n" +
+            "executor: { receipt: [job_id, result] }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var id = ConceptId.Parse("c/rev");
+
+        AttestationContext? captured = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (ctx, _) =>
+        {
+            captured = ctx;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.True(outcome.Displayable);
+        Assert.Null(captured!.AttesterSourceText);
     }
 }

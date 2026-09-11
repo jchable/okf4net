@@ -38,7 +38,13 @@ jobs:
           fi
 
       - name: Test
-        run: dotnet test OKF4net.sln -c Release
+        # Same exclusion as ci.yml: the ContainerIntegration tests shell to a real
+        # container engine and pull images, so without the filter a tagged release
+        # would be gated on Docker being present, reachable and able to reach a
+        # registry. ubuntu-latest would actually run them (it has working Docker);
+        # a Windows runner defaults to Windows containers and would fail outright
+        # rather than skip. Excluded by decision, like producers/ — see CLAUDE.md.
+        run: dotnet test OKF4net.sln -c Release --filter "Category!=ContainerIntegration"
 
       - name: Pack
         run: >

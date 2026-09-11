@@ -34,12 +34,20 @@ public readonly record struct AttestationVerdict(bool Passed, string? Detail);
 /// <param name="Bound">The bound artifact that was executed.</param>
 /// <param name="Values">The parameter values supplied for this run.</param>
 /// <param name="Receipt">The receipt produced by the executor.</param>
+/// <param name="AttesterSourceText">
+/// The attester's script source, already resolved and read via §6.2
+/// (mirrors how <see cref="Computation"/> is resolved) — <see langword="null"/>
+/// when the concept declares no attester, an empty resource, or a URL
+/// resource. No <see cref="IAttester"/> implementation needs a
+/// <see cref="Bundle"/> or <see cref="Concept"/> as a result.
+/// </param>
 public sealed record AttestationContext(
     AttestedComputationContract Contract,
     SanctionedComputation Computation,
     BoundComputation Bound,
     IReadOnlyDictionary<string, object?> Values,
-    Receipt Receipt);
+    Receipt Receipt,
+    string? AttesterSourceText);
 
 /// <summary>Whether a concept's lifecycle admits it as fresh, stale, or undetermined, under the gating policy (§10.6).</summary>
 public enum StaleState

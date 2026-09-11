@@ -10,6 +10,46 @@ and this project adheres to
 
 ### Added
 
+- **`OKF4net.Attestation.Containers`** — a host implementation of the §10
+  `IParameterBinder` / `IComputationExecutor` / `IAttester` contracts that runs a
+  bundle's *actual* sanctioned script or SQL, and its *actual* attester, inside a
+  real container. Nothing a bundle references is ported or reimplemented in C#,
+  which is the whole point: a computation OKF4net reimplemented would no longer
+  be the sanctioned one, and attesting it would attest the reimplementation.
+  - One `IContainerEngine` abstraction over any `run`-compatible CLI — Docker,
+    Podman, nerdctl — with `CliContainerEngine` as its only real implementation.
+  - **No container is ever given a bind-mounted volume.** Every *code* payload —
+    script text, SQL text, attester module source — travels on stdin as text or
+    JSON, and the container's own command is always a short fixed string: an
+    interpreter invocation, or a project-authored wrapper. Arguments are built
+    exclusively through `ProcessStartInfo.ArgumentList`, never a concatenated
+    shell string, and never with `UseShellExecute`.
+  - **Parameter values travel differently per runtime, and it matters for
+    exposure.** A `SqlClient` run carries them on stdin alongside the SQL; a
+    `Script` run carries them in the `OKF_PARAMS_JSON` environment variable, which
+    is visible to `docker inspect` and in the host process list — the same exposure
+    class as a connection string. The project README's Limitations section says so;
+    do not pass a value you would not put in a process listing.
+  - Two executors: `Script` (the bound text is a standalone program) and
+    `SqlClient` (the bound text is SQL, bound by a driver's own native parameter
+    mechanism — never interpolated into the query).
+  - One shared `AllowlistParameterBinder` filters and type-checks supplied values
+    against the concept's declared `parameters` and **never edits the sanctioned
+    text**, placeholders included. Both executors and the attester receive only
+    that filtered set.
+  - `ContainerRuntimeProfile` / `ContainerAttesterOptions` carry per-run ceilings
+    (`--memory`, `--cpus`, `--pids-limit`, wall clock) and reject a non-positive
+    value rather than accept it: to docker and podman, zero there means
+    *unlimited*, so a profile written with `MemoryBytes = 0` would remove the very
+    ceiling it looks like it sets.
+  - **Not published to NuGet**, deliberately, and the `.csproj` carries no
+    packaging block — see the root README's project table. Its useful operation
+    needs a container engine on `PATH` and a reachable daemon, which no package
+    restore can provide.
+  - Integration tests that shell to a real engine are excluded from CI by
+    decision (`Category=ContainerIntegration`, mirroring `producers/`); they are
+    run manually against real Docker.
+
 - **`okfgen generate --roslyn-timeout <seconds>`** — a wall-clock budget for the
   whole Roslyn stage, the `dotnet msbuild` queries and the compilations after
   them. Absent by default, and absent means unbounded: each query is capped at
@@ -213,6 +253,25 @@ and this project adheres to
   the spec itself settles.
 
 ### Changed
+
+- **`OKF4net.Attestation`: a declared but unresolvable `attester.resource` now
+  fails the run, and `AttestationContext` gained a field.** Both are breaking for
+  existing consumers of a published package, so state them plainly:
+  - `AttestationOrchestrator` now resolves a concept's `attester.resource` (§6.2)
+    and reads it *before* binding or execution, surfacing it as the new
+    `AttestationContext.AttesterSourceText`. A declared value that does not
+    resolve — missing file, or a path that would escape the bundle — ends the run
+    with a non-displayable outcome and nothing executes. **Source-breaking:**
+    `AttestationContext` takes a sixth positional parameter, so any host that
+    constructs one directly must be updated.
+  - The new failure mode reaches hosts that never wanted the bundle's attester
+    source, which before this release was all of them: their `IAttester` supplies
+    its own implementation, yet a broken `attester.resource` now stops the run.
+    Failing closed is the intent — an attester the bundle names but the host
+    cannot read is an attestation that was specified and then not performed, and
+    §10.6 is about not displaying a figure whose check did not happen. The
+    cheapest workaround, deleting the `attester:` block, silently removes
+    attestation altogether; fix the path instead.
 
 - **`okf_search` and the agent context provider now return diversified results.**
   Scores are presence-based and capped at 6 per term, so ties are the common

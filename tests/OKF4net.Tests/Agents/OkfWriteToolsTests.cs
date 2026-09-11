@@ -178,9 +178,12 @@ public class OkfWriteToolsTests
     // (Directory.CreateDirectory/File.WriteAllText), escaping the bundle.
     // See OkfBundleToolsTests for the Browse counterpart. Requires
     // reparse-point-creation privilege (a Windows junction via mklink /J
-    // needs none; the Directory.CreateSymbolicLink fallback does) and skips
-    // itself via TryCreateJunctionToExternalDir's bool return when neither
-    // mechanism is available, per xunit v2 having no Assert.Skip.
+    // needs none; the Directory.CreateSymbolicLink fallback does) and, when
+    // neither mechanism is available, returns early on
+    // TryCreateJunctionToExternalDir's bool -- which counts as PASSED, not
+    // skipped, so it verifies nothing and says nothing about it. That was once
+    // justified by xunit v2 having no Assert.Skip; the repo now carries
+    // Xunit.SkippableFact, so converting it would make the silence visible.
     [Fact]
     public void WriteConcept_refuses_to_write_through_a_junction_and_leaves_the_external_dir_empty()
     {

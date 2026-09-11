@@ -230,9 +230,13 @@ public class BundleTests
     //
     // Both tests require symlink-creation privilege
     // (SeCreateSymbolicLinkPrivilege on Windows, absent without Developer
-    // Mode or an elevated process); they skip themselves via
-    // TempDir.TryCreate*Symlink's bool return when unavailable, per xunit v2
-    // having no Assert.Skip.
+    // Mode or an elevated process); when it is unavailable they return early on
+    // TempDir.TryCreate*Symlink's bool, which counts as PASSED, not skipped --
+    // so on such a machine they verify nothing and say nothing about it. That
+    // was once justified by xunit v2 having no Assert.Skip; it no longer is,
+    // since this repo now carries Xunit.SkippableFact (see
+    // tests/.../Attestation.Containers/ContainerIntegrationTests.cs). Converting
+    // them would make the silence visible in the run summary.
     // ----------------------------------------------------------------
 
     [Fact]

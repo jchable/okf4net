@@ -213,16 +213,22 @@ are the concrete entry points.
   existing open-source project's markdown docs into an OKF bundle via
   `okf fmt`/`index`/`validate`, as a concrete "here's how you'd actually
   adopt this" walkthrough rather than a synthetic sample bundle.
-- **Attested Computation (§10), executed for real.** `samples/acme-retail-agent`
-  is deliberately read-only for `Attested Computation` concepts — it
-  inspects (`okf_get_computation`) but never runs
-  (`okf_run_computation`) `bundles/acme_retail`'s sanctioned SQL, because
-  trusting a C# reimplementation of `attesters/sql_equality.py` would
-  undermine the whole point of attestation. Actually running one end to
-  end needs a sandboxed container-based `IComputationExecutor`/`IAttester`
-  runtime, scoped in
-  [that sample's design spec](docs/superpowers/specs/2026-07-30-acme-retail-bundle-and-agent-sample-design.md#future-work-a-container-based-execution-runtime)
-  — its own design pass before implementation.
+- **Attested Computation (§10): wire `acme_retail` itself to the container
+  runtime.** The runtime this item used to call for now exists —
+  `src/OKF4net.Attestation.Containers/` runs a bundle's sanctioned script or SQL,
+  and its attester, inside a real container, and
+  `samples/attestation-containers-demo/` drives one end to end against
+  `bundles/attestation_containers_demo/`.
+
+  What has not been done is pointing it at `bundles/acme_retail`.
+  `samples/acme-retail-agent` stays read-only for `Attested Computation`
+  concepts — it inspects (`okf_get_computation`) but never runs
+  (`okf_run_computation`) — and a faithful run there needs more than wiring: those
+  computations target BigQuery, so they need a BigQuery executor and a receipt
+  carrying a real `job_id`, not the Postgres/script pair the demo bundle uses.
+  That `job_id` is also what would make the provenance check meaningful, since the
+  demo's `executed_sql` is echoed back by this host's own wrapper and so proves
+  only what the wrapper sent.
 - **Open question upstream: concept id character set.** The spec (§2) does not
   restrict which characters a concept id may contain; `ConceptId.ValidateSegment`
   currently restricts to ASCII regardless. Whether to allow full Unicode (any

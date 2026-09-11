@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!--
+    NOT PACKED, deliberately — same standing as OKF4net.Viewer, which the root
+    README's project table annotates the same way.
+
+    This project is the only one in the repository whose useful operation needs
+    something that is not a NuGet dependency: a container engine binary
+    (docker / podman / nerdctl) on the host's PATH, a daemon it can reach, and
+    the ability to pull images. A package that restores cleanly and then fails
+    at run time on every machine without that setup is a worse deliverable than
+    no package. Consumers take it by ProjectReference, or vendor it.
+
+    So there is deliberately no PackageId/Description/licence block here and no
+    `Pack (Attestation.Containers)` step in release.yml. If that is ever
+    revisited, both have to come back together — the state this replaces had a
+    fully publish-configured .csproj and no pack step, which is neither shipped
+    nor documented as unshipped.
+  -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\OKF4net.Attestation\OKF4net.Attestation.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets the test project exercise internal members (JsonValues,
+         CliContainerEngine's argument builder) directly. -->
+    <InternalsVisibleTo Include="OKF4net.Tests" />
+  </ItemGroup>
+
+</Project>

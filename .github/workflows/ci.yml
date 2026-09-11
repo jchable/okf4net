@@ -41,7 +41,7 @@ jobs:
         run: dotnet build OKF4net.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test OKF4net.sln -c Release --no-build
+        run: dotnet test OKF4net.sln -c Release --no-build --filter "Category!=ContainerIntegration"
 
   format:
     name: code style
