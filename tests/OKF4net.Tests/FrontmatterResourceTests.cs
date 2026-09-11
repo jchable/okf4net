@@ -376,6 +376,13 @@ public class FrontmatterResourceTests
     // a drive separator on Windows. The Windows-side counterparts are
     // Drive_relative_raw_path_is_unsafe_on_windows and
     // Drive_relative_raw_path_behind_a_leading_separator_is_unsafe_on_windows.
+    //
+    // They are SkippableFact, not Fact with an early return. The difference is
+    // what the run summary says: an early return counts as PASSED, so on Windows
+    // these would report success while verifying nothing -- the exact shape that
+    // left three symlink tests in this repo green while they guarded nothing.
+    // Skip.If makes the absence visible ("3 skipped"), which is the honest
+    // answer, and lets a reader tell "covered" from "not executed here".
 
     /// <summary>
     /// The §6.2 hazard that only exists on POSIX: a leading <c>/</c> means the
@@ -385,13 +392,10 @@ public class FrontmatterResourceTests
     /// <see cref="System.IO.Path.Combine(string, string)"/> is never handed
     /// something it would treat as rooted.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Posix_absolute_looking_path_names_a_file_inside_the_bundle()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // POSIX-only: "/etc/passwd" is not an absolute path on Windows.
-        }
+        Skip.If(OperatingSystem.IsWindows(), "POSIX-only: \"/etc/passwd\" is not an absolute path on Windows.");
 
         using var tmp = new TempDir();
         tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
@@ -410,13 +414,10 @@ public class FrontmatterResourceTests
     /// and it is pinned against a file this test creates rather than a system
     /// one, so it asserts containment without depending on the host's contents.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Posix_absolute_path_to_an_existing_outside_file_is_not_read()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // POSIX-only, as above.
-        }
+        Skip.If(OperatingSystem.IsWindows(), "POSIX-only, as above.");
 
         using var tmp = new TempDir();
         using var external = new TempDir();
@@ -442,13 +443,10 @@ public class FrontmatterResourceTests
     /// from the bundle root like any other bare path, not be rejected as
     /// <see cref="ResourceResolutionStatus.Unsafe"/>.
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public void Colon_in_a_filename_is_an_ordinary_bare_path_on_posix()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // POSIX-only: on Windows this same string IS drive-relative.
-        }
+        Skip.If(OperatingSystem.IsWindows(), "POSIX-only: on Windows this same string IS drive-relative.");
 
         using var tmp = new TempDir();
         tmp.Write("c:query.sql", "SELECT 1\n");
