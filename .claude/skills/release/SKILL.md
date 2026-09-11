@@ -187,6 +187,23 @@ Append a short install line (`dotnet add package OKF4net --version X.Y.Z`).
 
 ## 7. Post-release
 
+- **Verify the winget submission actually happened.** nuget.org is not the
+  only channel, and this one fails *silently*: `winget-submit` skips green
+  (a `::notice::`, not a failed job) whenever its prerequisites are missing,
+  so an all-green `release.yml` proves nothing about winget. Check the job,
+  then the PR:
+  ```sh
+  gh run view <release-run-id> --json jobs -q '.jobs[] | select(.name|test("winget")) | "\(.name): \(.conclusion)"'
+  gh api "search/issues?q=repo:microsoft/winget-pkgs+Coderise.OKF4net+in:title&sort=created&order=desc" --jq '.items[] | "\(.number) \(.state) \(.title)"'
+  ```
+  If no PR was opened, submit the Release's manifests by hand
+  (`wingetcreate submit`, see `packaging/winget/README.md`). Either way the
+  PR is **not** the end of the job: community PRs wait on a winget-pkgs
+  moderator, which has taken ~3 weeks per version on this package. Say so
+  explicitly — `winget install Coderise.OKF4net` keeps serving the previous
+  version until it merges. v0.5.0 reached nuget.org on 2026-07-31 while
+  winget stayed on 0.2.0; nobody noticed until a user filed issue #88 six
+  weeks later.
 - Confirm the README badges resolve (CI, NuGet version).
 - If other branches are active (e.g. a phase branch), remind the user to
   `git merge main` there so version/changelog changes propagate.

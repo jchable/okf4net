@@ -117,6 +117,27 @@ public class YamlRoundtripTests
             v = new YamlSequence([v]);
         }
 
-        Assert.Throws<InvalidOperationException>(() => v.ToYamlString());
+        // YamlEmitException, NOT InvalidOperationException: the type is what
+        // makes this errors-as-data everywhere. Every layer that converts
+        // library failures into data catches OkfException (the writer's
+        // RunTool, the CLI's top-level handler); a bare
+        // InvalidOperationException matched neither filter and escaped both.
+        Assert.Throws<YamlEmitException>(() => v.ToYamlString());
+    }
+
+    /// <summary>
+    /// The reachable version of the guard above: not a tree assembled in
+    /// memory, but a document a bundle can hold. The parser counts block and
+    /// flow nesting on two independent counters while the emitter counts both
+    /// on one, so 600 + 600 levels parse and then fail to emit — proving the
+    /// throw is reachable from ordinary input, which is what makes its type
+    /// matter.
+    /// </summary>
+    [Fact]
+    public void A_document_can_parse_and_still_exceed_the_emitters_depth()
+    {
+        var document = OkfDocument.Parse(DeepYamlDocument.Text());
+
+        Assert.Throws<YamlEmitException>(() => document.Frontmatter.AsMapping().ToYamlString());
     }
 }

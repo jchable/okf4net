@@ -298,7 +298,9 @@ public class AttestationOrchestratorTests
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n" +
             "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
-        tmp.Write("c/references/revenue.sql", "SELECT revenue FROM t;\n");
+        // Laid out as Appendix A does: the concept sits in a subdirectory and its
+        // bare `computation` path resolves from the BUNDLE ROOT, not from "c/".
+        tmp.Write("references/revenue.sql", "SELECT revenue FROM t;\n");
         string? capturedText = null;
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
         runtime.BindFunc = (contract, computation, values, ct) =>
@@ -445,7 +447,12 @@ public class AttestationOrchestratorTests
 
     private static (Bundle, ConceptId) InlineComputationWithAttesterFile(TempDir tmp, string attesterBody)
     {
-        tmp.Write("c/att.py", attesterBody);
+        // Laid out as §6.2 resolves it and as Appendix A shows it: the concept sits in a
+        // subdirectory, its bare `attester.resource` resolves from the BUNDLE ROOT, and the
+        // attester file lives there -- the shape bundles/acme_retail/ uses for its shared
+        // attesters. Co-locating the script with the concept needs the explicit `./` form
+        // instead, which Attester_resource_can_be_concept_relative below covers.
+        tmp.Write("att.py", attesterBody);
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\n" +
             "parameters:\n  - { name: year, type: integer, required: true }\n" +
@@ -474,6 +481,42 @@ public class AttestationOrchestratorTests
 
         Assert.NotNull(captured);
         Assert.Equal("def attest(**_):\n    return {}\n", captured!.AttesterSourceText);
+    }
+
+    /// <summary>
+    /// The other §6.2 base, through the one consumer that READS and then hands off what it
+    /// resolves: an `attester.resource` written `./att.py` resolves beside the concept, not
+    /// from the bundle root. Pinned with a decoy at the root, which is what the bare form
+    /// would have found -- this interaction is what broke two tests when the §6.2 change
+    /// landed, and neither of them could tell the two bases apart.
+    /// </summary>
+    [Fact]
+    public async Task Attester_resource_can_be_concept_relative()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("att.py", "def attest(**_):\n    return {}  # root decoy\n");
+        tmp.Write("c/att.py", "def attest(**_):\n    return {}  # beside the concept\n");
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "parameters:\n  - { name: year, type: integer, required: true }\n" +
+            "executor: { receipt: [job_id, result] }\n" +
+            "attester: { resource: ./att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        AttestationContext? captured = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (ctx, _) =>
+        {
+            captured = ctx;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        await orch.RunAsync(bundle, ConceptId.Parse("c/rev"), new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.NotNull(captured);
+        Assert.Equal("def attest(**_):\n    return {}  # beside the concept\n", captured!.AttesterSourceText);
     }
 
     [Fact]

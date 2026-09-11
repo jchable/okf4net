@@ -1,7 +1,19 @@
 version: 2
+
+# `target-branch: "dev"` on every entry, because the repository's default branch
+# is `main` while the actual flow is feature -> `dev` -> `main`. Without it
+# dependabot cuts its branches from `main`, which trails `dev` by well over a
+# hundred commits: PR #85 (Microsoft.Agents.AI 1.19.0 -> 1.20.0) went green
+# against code that old, and retargeting it to `dev` triggered no re-run, so the
+# checks that said "mergeable" had never seen the code it was being merged into.
+#
+# This does NOT cover dependabot SECURITY updates. Those come from the repository's
+# alerts rather than from this file, and always open against the default branch --
+# PR #87 (@vitest/mocker, npm under web/) is one, and no entry here produces it.
 updates:
   - package-ecosystem: "nuget"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     groups:
@@ -9,5 +21,6 @@ updates:
         patterns: ["*"]
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"

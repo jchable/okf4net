@@ -325,14 +325,16 @@ public sealed class Bundle
     /// <paramref name="status"/> is <see cref="ResourceResolutionStatus.Url"/>.
     ///
     /// Otherwise the candidate path is computed and checked for containment
-    /// within the bundle root: a <see cref="FrontmatterResourceKind.BundleRelative"/>
-    /// value (leading <c>/</c> or <c>\</c>) is combined with <see cref="Root"/>
-    /// after stripping the leading separator(s) -- <see cref="Path.Combine(string, string)"/>
+    /// within the bundle root. A <see cref="FrontmatterResourceKind.BundleRelative"/>
+    /// value -- one with a leading <c>/</c> or <c>\</c>, and equally one written
+    /// bare, per Appendix A -- is combined with <see cref="Root"/> after
+    /// stripping any leading separator(s); <see cref="Path.Combine(string, string)"/>
     /// otherwise discards <paramref name="concept"/>'s directory (or, here,
     /// <see cref="Root"/>) whenever the second argument looks rooted, which on
     /// Windows an absolute-looking <c>/x</c> does. A
-    /// <see cref="FrontmatterResourceKind.Relative"/> value is combined with
-    /// the concept's own directory instead.
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> value (an explicit
+    /// <c>./</c> or <c>../</c> prefix) is combined with the concept's own
+    /// directory instead.
     ///
     /// The candidate is <see cref="ResourceResolutionStatus.Unsafe"/> if it
     /// would escape the bundle root, or if it (or any ancestor directory up to
@@ -360,30 +362,32 @@ public sealed class Bundle
         string candidate;
         try
         {
-            if (kind == FrontmatterResourceKind.BundleRelative)
-            {
-                // BundleRelative: strip the leading separator(s) BEFORE combining
-                // with Root -- Path.Combine(root, "/x") discards `root` entirely
-                // on Windows, since "/x" looks rooted to it.
-                var stripped = rawPath.TrimStart('/', '\\');
-                candidate = Path.GetFullPath(Path.Combine(Root, stripped));
-            }
-            else
-            {
-                if (Path.IsPathRooted(rawPath))
-                {
-                    // A Relative-classified path that is still rooted on this OS is a drive-relative
-                    // or drive-absolute form (e.g. "e:query.sql", "C:\x") that must NOT be treated as
-                    // concept-relative -- Path.Combine/GetFullPath would resolve it against a drive's
-                    // current directory, escaping the concept dir. Reject as Unsafe.
-                    absolutePath = null;
-                    status = ResourceResolutionStatus.Unsafe;
-                    return true;
-                }
+            // Strip the leading separator(s) BEFORE combining -- Path.Combine(base, "/x")
+            // discards `base` entirely on Windows, since "/x" looks rooted to it. A
+            // ConceptRelative value starts with "." and so is never affected.
+            var relative = rawPath.TrimStart('/', '\\');
 
-                var conceptDir = Path.GetDirectoryName(concept.Path) ?? Root;
-                candidate = Path.GetFullPath(Path.Combine(conceptDir, rawPath));
+            if (Path.IsPathRooted(relative))
+            {
+                // Still rooted after stripping: a drive-relative or drive-absolute form
+                // (e.g. "e:query.sql", "C:\x", or "/e:query.sql"). Path.Combine/GetFullPath
+                // would resolve it against that drive's own current directory rather than
+                // the base we chose -- unpredictable, and potentially inside the bundle
+                // root by accident, which the containment check below would then accept.
+                // Reject as Unsafe.
+                absolutePath = null;
+                status = ResourceResolutionStatus.Unsafe;
+                return true;
             }
+
+            // §6.2: only an explicit "./" or "../" resolves against the concept's own
+            // directory. Everything else -- a leading "/", and equally a bare path --
+            // resolves from the bundle root (see the remarks above).
+            var basis = kind == FrontmatterResourceKind.ConceptRelative
+                ? Path.GetDirectoryName(concept.Path) ?? Root
+                : Root;
+
+            candidate = Path.GetFullPath(Path.Combine(basis, relative));
         }
         catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
         {

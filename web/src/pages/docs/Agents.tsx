@@ -21,8 +21,8 @@ const wireUpHtml = `<span class="k">using</span> OKF4net.Agents;
 });`
 
 /**
- * `/docs/agents` — reference for `OKF4net.Agents`: the ten `OkfBundleTools`
- * (eleven when an attestation orchestrator is wired in), `OkfContextProvider`
+ * `/docs/agents` — reference for `OKF4net.Agents`: the twelve `OkfBundleTools`
+ * (thirteen when an attestation orchestrator is wired in), `OkfContextProvider`
  * (budget-bounded injection, V1 single-bundle and V2 scoped-memory modes).
  * Every claim here traces to a direct read of `src/OKF4net.Agents/*.cs`, not
  * to the README (see the audit in
@@ -32,7 +32,7 @@ export default function Agents() {
   return (
     <DocsLayout
       title="Agents — OKF4net docs"
-      description="Expose an OKF bundle to the Microsoft Agent Framework as ten AIFunction tools (eleven when wired for §10 attested computation), plus OkfContextProvider — budget-bounded context injection and deterministic, opt-in memory capture, single-bundle or scoped across tenants/users/sessions."
+      description="Expose an OKF bundle to the Microsoft Agent Framework as twelve AIFunction tools (thirteen when wired for §10 attested computation), plus OkfContextProvider — budget-bounded context injection and deterministic, opt-in memory capture, single-bundle or scoped across tenants/users/sessions."
       current="agents"
     >
       <PageDoc
@@ -49,8 +49,8 @@ export default function Agents() {
         }
         lede={
           <>
-            <code>OKF4net.Agents</code> exposes a bundle two ways: <strong>ten tools</strong> an agent calls
-            directly (<code>OkfBundleTools</code>), an eleventh — <code>okf_run_computation</code> — when an{' '}
+            <code>OKF4net.Agents</code> exposes a bundle two ways: <strong>twelve tools</strong> an agent calls
+            directly (<code>OkfBundleTools</code>), a thirteenth — <code>okf_run_computation</code> — when an{' '}
             <code>OKF4net.Attestation</code> orchestrator is wired in, and a <strong>context provider</strong>{' '}
             that injects bounded reference data automatically (<code>OkfContextProvider</code>). Neither ever
             throws — every failure comes back as data, not an exception the invocation pipeline has to handle.
@@ -67,7 +67,7 @@ export default function Agents() {
           </p>
         </Chapter>
 
-        <Chapter id="tools" title="The ten (or eleven) tools" refText="OkfBundleTools.GetTools()">
+        <Chapter id="tools" title="The twelve (or thirteen) tools" refText="OkfBundleTools.GetTools()">
           <p>
             Each tool is a plain string in, string out <code>AIFunction</code>. On any failure — the tool
             returns a plain-text failure message (<code>Error: ...</code>, <code>Concept '...' not found</code>,
@@ -102,10 +102,25 @@ export default function Agents() {
                 </>,
               ],
               [
+                'okf_audit',
+                <>
+                  Audit the bundle's trust (§5.3), lifecycle (§5.4) and staleness (§5.5) signals — counts by tier
+                  and status, plus the concepts needing attention. Read-only.
+                </>,
+              ],
+              [
                 'okf_write_concept',
                 <>
                   Validate and write a concept atomically, under a per-bundle lock, auto-stamping{' '}
                   <code>generated</code> (§5.2) when the caller didn't supply one.
+                </>,
+              ],
+              [
+                'okf_verify',
+                <>
+                  Record a review (§5.2): adds — or, from the same actor, replaces — a{' '}
+                  <code>{'{by, at}'}</code> entry in each named concept's <code>verified</code> list. A dated
+                  declaration, not a proof — never inferred from a PR approval.
                 </>,
               ],
               [
@@ -139,9 +154,9 @@ export default function Agents() {
             ]}
           />
           <p>
-            <code>okf_write_concept</code> and the scoped memory store both funnel through the same core
-            primitive, <code>OKF4net.BundleConceptWriter</code> — one atomic, per-path-locked, reparse-guarded
-            write path, not two.
+            <code>okf_write_concept</code>, <code>okf_verify</code>, and the scoped memory store all funnel
+            through the same core primitive, <code>OKF4net.BundleConceptWriter</code> — one atomic,
+            per-path-locked, reparse-guarded write path, not two or three.
           </p>
         </Chapter>
 

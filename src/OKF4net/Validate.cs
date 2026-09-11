@@ -314,6 +314,19 @@ public static class BundleValidator
 
             foreach (var field in RecommendedFields)
             {
+                // §4.1 recommends `resource` but qualifies it in the same breath:
+                // "Absent for concepts that describe abstract ideas rather than
+                // physical resources." A §10 Attested Computation is the one concept
+                // the spec both names normatively (§10.1) and shows without a
+                // `resource` in every example it gives (§10.2, Appendix A), so warning
+                // there would call a well-formed concept deficient. Keyed on that type
+                // alone: §4.1 leaves the type vocabulary open (S4.1-2), so nothing
+                // syntactic decides "abstract" in general -- see S4.1-8.
+                if (field == "resource" && fm.IsAttestedComputation)
+                {
+                    continue;
+                }
+
                 var value = fm.Get(field);
                 if (value is null || value.IsEmptyValue)
                 {

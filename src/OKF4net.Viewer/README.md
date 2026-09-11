@@ -5,8 +5,9 @@ Static HTML site generation for OKF knowledge bundles: one page per concept
 
 Zero third-party runtime dependencies — references only `OKF4net`.
 
-Consumed by the `okf render` CLI verb. See the
-[OKF4net repository](https://github.com/jchable/okf4net) for usage.
+Consumed by the standalone `okf-render` binary (`OKF4net.Render`), not by
+`okf` itself. See the [OKF4net repository](https://github.com/jchable/okf4net)
+for usage.
 
 ## Licensing
 

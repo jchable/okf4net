@@ -2,3 +2,17 @@ tests/fixtures/** -text
 bundles/acme_retail/** -text
 bundles/ga4/** -text
 docs/spec/SPEC.md -text
+
+# Shell scripts run via `sh` (or piped straight into it, e.g.
+# packaging/install.sh via curl) need LF endings, not the CRLF a Windows
+# contributor's autocrlf=true checkout would otherwise apply -- a `\r` inside
+# a case pattern or before a keyword is enough to break dash/bash parsing.
+# Force LF in both directions regardless of local git config.
+*.sh text eol=lf
+
+# The producer's golden bundle and the fixture repository it is generated from are compared BYTE FOR
+# BYTE by `producers/tests/OkfProducer.Tests/Generation/CheckTests.cs`. Without -text, git would
+# translate line endings on checkout and the comparison would fail on a fresh clone for a reason no
+# diff of those files would show. `producers/` is outside CI, so nothing else would catch it.
+# Note the discipline there is the OPPOSITE of tests/fixtures/ -- see that directory's own README.
+producers/tests/OkfProducer.Tests/fixtures/** -text

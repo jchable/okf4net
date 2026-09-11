@@ -5,7 +5,7 @@ description: Declares the computation both inline and via a computation path; ke
 resource: https://example.com/computations/malformed-both
 tags: [malformed]
 runtime: bigquery
-computation: refs/query.sql
+computation: ./refs/query.sql
 ---
 
 # Computation

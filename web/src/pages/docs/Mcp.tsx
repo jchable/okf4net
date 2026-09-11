@@ -68,7 +68,7 @@ export default function Mcp() {
         }
         lede={
           <>
-            <code>okf-mcp</code> is a small <strong>MCP server</strong>. Point it at a bundle and its ten
+            <code>okf-mcp</code> is a small <strong>MCP server</strong>. Point it at a bundle and its twelve
             operations become tools inside <strong>Claude</strong> — and any MCP client — so you read, search, and
             write concepts from a conversation. It's the same tools as the Agent Framework layer, spoken over
             the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>.
@@ -81,7 +81,7 @@ export default function Mcp() {
           <p>
             MCP is the open protocol Claude Desktop, Claude Code, and editors like Cursor use to talk to local tools.{' '}
             <code>okf-mcp</code> is a <strong>thin façade</strong> over the same <code>OkfBundleTools</code> the CLI
-            and the Agent Framework layer use — one bundle per server, ten tools, read and write. Everything runs
+            and the Agent Framework layer use — one bundle per server, twelve tools, read and write. Everything runs
             through the library, so path-safety, producer validation, and permissive loading come for free.
           </p>
           <MapTable
@@ -91,7 +91,21 @@ export default function Mcp() {
               ['okf_browse', 'Progressive-disclosure listing of a directory (§8)'],
               ['okf_search', 'Ranked full-text search over titles, tags, and bodies'],
               ['okf_graph', "Link stats, or one concept's links, backlinks, broken links (§6)"],
+              [
+                'okf_audit',
+                <>
+                  Trust (§5.3), lifecycle (§5.4) and staleness (§5.5) across the bundle — counts plus the
+                  concepts needing attention
+                </>,
+              ],
               ['okf_write_concept', 'Create or update a concept — producer validation first (§11)'],
+              [
+                'okf_verify',
+                <>
+                  Record a review (§5.2) — adds or replaces a <code>{'{by, at}'}</code> entry in a concept's{' '}
+                  <code>verified</code> list
+                </>,
+              ],
               [
                 'okf_append_log',
                 <>
@@ -116,7 +130,7 @@ export default function Mcp() {
             ]}
           />
           <p>
-            <code>okf-mcp</code> doesn't wire an attestation runtime, so the eleventh, execution-capable{' '}
+            <code>okf-mcp</code> doesn't wire an attestation runtime, so the thirteenth, execution-capable{' '}
             <code>okf_run_computation</code> tool (see <Link to="/docs/agents">docs/agents.md</Link>) isn't
             exposed here — only the read-only <code>okf_get_computation</code> above.
           </p>
@@ -263,8 +277,8 @@ export default function Mcp() {
 
         <Chapter id="read-only" title="Read-only by default" refText="consultation unless you opt in">
           <p>
-            <code>okf-mcp</code> registers only the read tools unless you ask for more — the three writers
-            (<code>okf_write_concept</code>, <code>okf_append_log</code>,{' '}
+            <code>okf-mcp</code> registers only the eight read tools unless you ask for more — the four writers
+            (<code>okf_write_concept</code>, <code>okf_verify</code>, <code>okf_append_log</code>,{' '}
             <code>okf_regenerate_indexes</code>) are left out entirely. Set <code>OKF_MCP_WRITABLE=1</code> to add
             them, which you want for a working bundle the model maintains, and do not want for a shared reference
             bundle it should only consult.

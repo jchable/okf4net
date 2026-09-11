@@ -48,6 +48,20 @@ const auditQueryHtml = `<span class="c"># any filter flag switches to one line p
 $ okf audit bundles/acme_retail --trust unverified
 skills/run-on-bq  no-stale-after  unverified  stable`
 
+const verifyHtml = `$ okf verify bundles/acme_retail metrics/revenue --by human:ada --at 2026-08-28T09:14:00Z
+recorded metrics/revenue  human:ada  2026-08-28T09:14:00Z
+
+<span class="c"># a repeat review from the same actor replaces its own stamp</span>
+$ okf verify bundles/acme_retail metrics/revenue --by human:ada --at 2026-09-15T09:00:00Z
+recorded metrics/revenue  human:ada  2026-09-15T09:00:00Z  (replaces 2026-08-28T09:14:00Z)`
+
+const verifyLoopHtml = `<span class="c"># "-" reads concept ids from standard input, one per line -- audit's worklist becomes verify's input</span>
+$ okf audit bundles/acme_retail --trust unverified | cut -d' ' -f1 | okf verify bundles/acme_retail --by human:ada -
+recorded skills/run-on-bq  human:ada  2026-08-28T21:22:23Z`
+
+const verifyDryRunHtml = `$ okf verify bundles/acme_retail metrics/gross-margin --by human:ada --dry-run
+would record metrics/gross-margin  human:ada  (now)`
+
 const infoHtml = `$ okf info tests/fixtures/appendix_a
 bundle:     tests/fixtures/appendix_a
 concepts:   4
@@ -126,16 +140,12 @@ timestamp: 2026-05-28T00:00:00Z
 
 Part of the [sales dataset](/datasets/sales.md). FK to [customers](/tables/customers.md).`
 
-const renderHtml = `$ okf render tests/fixtures/appendix_a --out ./site
-wrote 8 files to ./site
-
-$ ls ./site
-assets/  datasets/  index.html  tables/`
-
 const ciSnippetHtml = `<span class="c"># any pipeline — fail the build on non-conformant knowledge</span>
 okf validate ./bundles/ga4`
 
 const wingetInstallHtml = `$ winget install Coderise.OKF4net`
+
+const curlInstallHtml = `$ curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh`
 
 const buildHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># self-contained okf binary</span>`
@@ -148,7 +158,7 @@ export default function Cli() {
   return (
     <DocsLayout
       title="CLI reference — OKF4net docs"
-      description="Reference for the okf command-line tool: validate, info, index, graph, parse, fmt and render — arguments, flags, real output, and exit codes. A self-contained Native AOT binary."
+      description="Reference for the okf command-line tool: validate, audit, verify, info, index, graph, parse and fmt — arguments, flags, real output, and exit codes. A self-contained Native AOT binary."
       current="cli"
     >
       <PageDoc
@@ -199,6 +209,16 @@ export default function Cli() {
               </tr>
               <tr>
                 <td>
+                  <a href="#verify">verify</a>
+                </td>
+                <td>&lt;bundle&gt; &lt;id&gt;…</td>
+                <td>
+                  Record a review (§5.2) with <code>--by &lt;actor&gt;</code>; clears the unverified worklist,
+                  not staleness
+                </td>
+              </tr>
+              <tr>
+                <td>
                   <a href="#info">info</a>
                 </td>
                 <td>&lt;bundle&gt;</td>
@@ -236,17 +256,15 @@ export default function Cli() {
                   Normalize by parse + re-serialize (<code>-w</code> writes)
                 </td>
               </tr>
-              <tr>
-                <td>
-                  <a href="#render">render</a>
-                </td>
-                <td>
-                  &lt;bundle&gt; <code>--out</code> &lt;dir&gt;
-                </td>
-                <td>Generate a browsable static HTML site from the bundle</td>
-              </tr>
             </tbody>
           </table>
+          <p>
+            Static HTML site generation lives in a separate{' '}
+            <a href="https://github.com/jchable/okf4net/releases">okf-render</a> binary, not in <code>okf</code>{' '}
+            itself: <code>okf</code> is meant to stay small and dependency-free for CI, and the site generator pulls
+            in a vendored copy of <a href="https://github.com/markedjs/marked">marked</a> that a CI job running{' '}
+            <code>validate</code> never executes.
+          </p>
           <p>
             Global options: <code>-h</code>/<code>--help</code> prints usage; <code>-V</code>/<code>--version</code>{' '}
             prints the build and spec version; <code>--as-of &lt;YYYY-MM-DD&gt;</code> pins today's date for{' '}
@@ -258,7 +276,9 @@ export default function Cli() {
             <code>okf fmt -- notes.md -w</code> treats <code>-w</code> as a second filename rather than as the
             write-in-place flag; write it as <code>okf fmt -w -- notes.md</code> if that is what you meant. A value
             belonging to an option is likewise only ever a value: in <code>okf audit b --type --stale</code>,{' '}
-            <code>--stale</code> is the type being searched for, not a filter.
+            <code>--stale</code> is the type being searched for, not a filter. A lone <code>-</code> is never a
+            flag — it is POSIX's "read standard input" argument, which is what lets{' '}
+            <a href="#verify">verify</a>'s <code>&lt;id&gt;…</code> read concept ids from a pipe.
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: versionHtml }} />
         </Chapter>
@@ -304,6 +324,45 @@ export default function Cli() {
             The question this exists for — <em>which concepts are past their <code>stale_after</code> instant and have
             never been verified by a human?</em> — is <code>--stale --trust unverified,machine-confirmed</code>: both
             tiers, because &ldquo;machine-confirmed&rdquo; also means no human ever looked.
+          </p>
+        </Chapter>
+
+        <Chapter id="verify" title="verify <bundle> <id>… --by <actor>" refText="§5.2 — the verb that answers audit">
+          <p>
+            Records a review: adds — or, for a repeat review from the same actor, replaces — a{' '}
+            <code>{'{by, at}'}</code> entry in each named concept's <code>verified</code> list. Every id is checked
+            for existence and §11 conformance <strong>before anything is written</strong>, so a batch with one bad id
+            is rejected as a whole at that stage; a failure partway through the write phase (I/O, permissions) can
+            still leave the concepts already written stamped, and the output says exactly what landed. Exits{' '}
+            <code>0</code> on success, <code>1</code> otherwise.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: verifyHtml }} />
+          <p>
+            <code>&lt;id&gt;…</code> also accepts a single <code>-</code>, reading one concept id per line from
+            standard input — which is what lets <code>okf audit</code>'s worklist feed <code>okf verify</code>
+            directly, closing the loop in one line:
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: verifyLoopHtml }} />
+          <p>
+            An empty stream there is <em>nothing to do</em>, not an error: <code>okf audit</code> exits{' '}
+            <code>0</code> printing nothing when the worklist is empty, and <code>okf verify -</code> on that stream
+            writes nothing and exits <code>0</code> too — so the loop is idempotent and safe under{' '}
+            <code>set -e</code> on a healthy bundle. Naming no concept at all (<code>okf verify &lt;bundle&gt;</code>)
+            is still an error.
+          </p>
+          <p>
+            Re-running <code>okf audit … --trust unverified</code> afterward prints nothing — the concept it just
+            stamped left the worklist. <code>--dry-run</code> shows what would be recorded without writing;{' '}
+            <code>--at &lt;yyyy-MM-ddTHH:mm:ssZ&gt;</code> overrides the default of "now" for reproducible scripting.
+          </p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: verifyDryRunHtml }} />
+          <p>
+            <strong>A stamp is a dated declaration, not a proof.</strong> It guarantees the entry is well-formed,
+            dated, and attached to the concepts named — it does not, and cannot, guarantee the signer's identity or
+            that anyone read the concept: no zero-dependency tool can authenticate <code>--by</code>, and{' '}
+            <code>okf_write_concept</code> can write the same field with no ceremony at all. What makes a stamp
+            credible is where it lands — in a diff a human reviewed — never a stamp inferred from a PR approval; see
+            the <a href="https://github.com/jchable/okf4net#as-a-cli">project README</a> for the full reasoning.
           </p>
         </Chapter>
 
@@ -357,35 +416,6 @@ export default function Cli() {
           <pre className="block" dangerouslySetInnerHTML={{ __html: fmtHtml }} />
         </Chapter>
 
-        <Chapter id="render" title="render <bundle> --out <dir>" refText="a self-contained static site">
-          <p>
-            Generates a browsable HTML site from the bundle: one page per concept (a frontmatter table, in document
-            order, with unknown producer keys preserved, followed by the rendered body) plus a generated index page
-            built from the same logic as <code>okf index</code>. Inter-concept links are rewired to the generated
-            pages, with backlinks (&ldquo;Referenced by&rdquo;) added on each target page; a link to a concept that
-            doesn't exist is flagged and left non-clickable rather than silently dropped or pointed at a 404.
-            External links and in-page anchors are left untouched.
-          </p>
-          <pre className="block" dangerouslySetInnerHTML={{ __html: renderHtml }} />
-          <p>
-            The output is <strong>self-contained</strong> — it opens straight from the filesystem
-            (<code>file://</code>) with no server required. Markdown renders <strong>client-side</strong>, via a
-            vendored copy of <a href="https://github.com/markedjs/marked">marked</a> v15.0.12 (MIT, credited in{' '}
-            <code>NOTICE</code>); a DOM sanitizer strips anything the fixed template doesn't expect. GFM task list
-            items survive sanitization as real, disabled <code>&lt;input type=&quot;checkbox&quot;&gt;</code> elements
-            with the correct checked state, so a screen reader announces them as checkboxes rather than as
-            decorative text.
-          </p>
-          <p>
-            There's no full-text search in this slice — a static site has no server to run the shared{' '}
-            <code>ConceptSearch</code> scorer against, and duplicating its ranking logic in JavaScript would fork the
-            one place that scorer is meant to live. Search arrives with the planned <code>okf serve</code> companion
-            (the live-server half of this work). Backed by the new, zero-dependency <code>OKF4net.Viewer</code>{' '}
-            project, which ships inside the <code>okf</code> binary — it isn't published as a separate NuGet
-            package.
-          </p>
-        </Chapter>
-
         <Chapter id="ci" title="Exit codes & CI" refText="copy the file, run it">
           <MapTable
             head={['Code', 'Meaning']}
@@ -406,12 +436,22 @@ export default function Cli() {
           </Next>
         </Chapter>
 
-        <Chapter id="install" title="Install it" refText="winget on Windows, or Native AOT publish">
+        <Chapter id="install" title="Install it" refText="winget on Windows, install.sh on Linux/macOS, or Native AOT publish">
           <p>
             On Windows, install via <a href="https://github.com/microsoft/winget-pkgs">winget</a>:
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: wingetInstallHtml }} />
-          <p>On any OS, build it from source:</p>
+          <p>On Linux or macOS, install a release binary with the install script:</p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: curlInstallHtml }} />
+          <p>
+            It detects your OS/architecture, downloads the matching archive from the latest{' '}
+            <a href="https://github.com/jchable/okf4net/releases">GitHub Release</a>, verifies its SHA-256
+            checksum, and installs to <code>/usr/local/bin</code> (falling back to <code>~/.local/bin</code> when
+            that isn't writable — it never calls <code>sudo</code>). Pass <code>--bin okf-render</code> to install
+            the site generator instead, <code>--version &lt;tag&gt;</code> to pin a release, or <code>--dry-run</code>{' '}
+            to see what it would do first; <code>-h</code> lists every option.
+          </p>
+          <p>On any OS, you can also build it from source:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: buildHtml }} />
         </Chapter>
       </div>

@@ -12,11 +12,27 @@ public enum FrontmatterResourceKind
     /// <summary>An absolute URL (<c>scheme://...</c>), e.g. <c>https://example.com/x</c>. Never resolved to a local path.</summary>
     Url,
 
-    /// <summary>A path rooted at the bundle root, starting with <c>/</c> or <c>\</c>, e.g. <c>/skills/run.md</c>.</summary>
+    /// <summary>
+    /// A path resolved from the bundle root: either explicitly rooted there
+    /// with a leading <c>/</c> or <c>\</c> (e.g. <c>/skills/run.md</c>), or
+    /// written bare, with no <c>./</c> or <c>../</c> prefix (e.g.
+    /// <c>references/attesters/revenue.py</c>). §6.2 never names the base for
+    /// the bare form; OKF4net reads it as bundle-rooted because the spec's own
+    /// worked example only resolves that way — Appendix A's
+    /// <c>computations/revenue.md</c> declares <c>references/skills/run-on-bq.md</c>
+    /// against a <c>references/</c> directory that sits at the bundle root, not
+    /// under <c>computations/</c>. This is OKF4net's interpretation of an
+    /// underspecified field, recorded as S6.2-1 in
+    /// <c>docs/spec-conformance/</c>, not a rule the specification states.
+    /// </summary>
     BundleRelative,
 
-    /// <summary>A path relative to the concept's own directory, e.g. <c>./policy.md</c> or <c>../refs/revenue.sql</c>.</summary>
-    Relative,
+    /// <summary>
+    /// A path resolved from the concept's own directory, written with an
+    /// explicit <c>./</c> or <c>../</c> prefix, e.g. <c>./policy.md</c> or
+    /// <c>../refs/revenue.sql</c> (§6.2's own example of the relative form).
+    /// </summary>
+    ConceptRelative,
 }
 
 /// <summary>The outcome of resolving a §6.2 path-valued frontmatter field to a filesystem path via <see cref="Bundle.TryResolveResource"/>.</summary>
@@ -57,7 +73,15 @@ internal static class FrontmatterResourceClassifier
     // scheme := ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) followed by "://" (RFC 3986 §3.1).
     private static readonly Regex UrlScheme = new(@"^[A-Za-z][A-Za-z0-9+.\-]*://", RegexOptions.Compiled);
 
-    /// <summary>Classifies a raw frontmatter path/URL value per §6.2: <see cref="FrontmatterResourceKind.Url"/> for a <c>scheme://</c> value, <see cref="FrontmatterResourceKind.BundleRelative"/> for a leading <c>/</c> or <c>\</c>, otherwise <see cref="FrontmatterResourceKind.Relative"/>.</summary>
+    /// <summary>
+    /// Classifies a raw frontmatter path/URL value per §6.2:
+    /// <see cref="FrontmatterResourceKind.Url"/> for a <c>scheme://</c> value,
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> for an explicit
+    /// <c>./</c> or <c>../</c> prefix (the only form §6.2 illustrates as
+    /// relative), otherwise <see cref="FrontmatterResourceKind.BundleRelative"/>
+    /// -- covering both a leading <c>/</c> and the bare form the spec's own
+    /// Appendix A resolves from the bundle root.
+    /// </summary>
     internal static FrontmatterResourceKind KindOf(string rawPath)
     {
         if (UrlScheme.IsMatch(rawPath))
@@ -65,11 +89,21 @@ internal static class FrontmatterResourceClassifier
             return FrontmatterResourceKind.Url;
         }
 
-        if (rawPath.Length > 0 && (rawPath[0] == '/' || rawPath[0] == '\\'))
-        {
-            return FrontmatterResourceKind.BundleRelative;
-        }
+        return IsDotPrefixed(rawPath)
+            ? FrontmatterResourceKind.ConceptRelative
+            : FrontmatterResourceKind.BundleRelative;
+    }
 
-        return FrontmatterResourceKind.Relative;
+    /// <summary>
+    /// True when the raw value's first segment is <c>.</c> or <c>..</c> -- the
+    /// explicitly document-relative forms. A leading dot alone does not count
+    /// (<c>.hidden/x.sql</c> is a bare path naming a dot-directory), so the
+    /// check is on a whole first segment, not on a character.
+    /// </summary>
+    private static bool IsDotPrefixed(string rawPath)
+    {
+        var end = rawPath.IndexOfAny(['/', '\\']);
+        var firstSegment = end < 0 ? rawPath : rawPath[..end];
+        return firstSegment is "." or "..";
     }
 }

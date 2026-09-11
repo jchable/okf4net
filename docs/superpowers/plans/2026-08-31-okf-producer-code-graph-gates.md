@@ -432,7 +432,9 @@ git commit -m "fix(agents): diversify search and context selection so generated 
 ### Task 3: The Roslyn compilation prototype — ✅ **DONE 2026-08-31**
 
 > **Executed. Verdict: the route works — zero errors on all three probed projects.**
-> Prototype committed at `producers/spikes/RoslynCompilationSpike/`, results and commands in `producers/spikes/README.md`, spec §7.2 rewritten with the measurement.
+> Spec §7.2 rewritten with the measurement and the exact MSBuild command, so it reads without the prototype.
+>
+> The prototype itself was **removed from the working tree afterwards** — it is a spike, and a spike's deliverable is the answer. It stays recoverable in history at commit `0db6e9a` (`git checkout 0db6e9a -- producers/spikes`), which is what the earlier tree-sitter spike lacked: that one was never committed at all, so nobody could re-run it and two of its wrong conclusions survived into the design.
 >
 > Three corrections came out of it, and the second is the one that changes the downstream design:
 > 1. `-t:ResolveReferences` alone omits generated sources; `-t:GenerateGlobalUsings -t:GenerateAssemblyInfo` are required under `ImplicitUsings`.

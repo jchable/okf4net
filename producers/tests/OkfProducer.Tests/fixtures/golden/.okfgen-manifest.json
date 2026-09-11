@@ -1,0 +1,223 @@
+{
+  "version": 2,
+  "ownedPrefix": "code",
+  "scope": {
+    "includeTests": false,
+    "includeInternal": false
+  },
+  "extractedFiles": [
+    "src/Registry.cs",
+    "src/Scanner.cs",
+    "src/Shapes.cs",
+    "src/Sub/Formatter.cs"
+  ],
+  "concepts": [
+    {
+      "id": "code/csharp/n",
+      "sources": [
+        "src/Registry.cs",
+        "src/Scanner.cs",
+        "src/Shapes.cs",
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/registry",
+      "sources": [
+        "src/Registry.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/registry/count",
+      "sources": [
+        "src/Registry.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/registry/register",
+      "sources": [
+        "src/Registry.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/gone",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/normalize",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/root",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/scanner/scan",
+      "sources": [
+        "src/Scanner.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/boxed",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/builder",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/builder/build",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/changed",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/boxed/render",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/corner",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-1",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-1/value",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-2",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder-2/find",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/holder/count",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/i-shape",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/i-shape/render",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/point",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/point/x",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/point/y",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/shapes/size",
+      "sources": [
+        "src/Shapes.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/sub",
+      "sources": [
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/sub/formatter",
+      "sources": [
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "code/csharp/n/sub/formatter/format",
+      "sources": [
+        "src/Sub/Formatter.cs"
+      ]
+    },
+    {
+      "id": "docs/fixture-repository",
+      "sources": []
+    },
+    {
+      "id": "overview",
+      "sources": []
+    },
+    {
+      "id": "packages/fixture",
+      "sources": []
+    }
+  ]
+}

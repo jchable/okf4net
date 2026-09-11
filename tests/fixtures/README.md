@@ -113,8 +113,8 @@ them a re-capture from the (removed) Rust binary:
   like `okf_v02/` above: no reference binary implements §10 either.
   - `computations/revenue.md` — a fully well-formed **inline** Attested
     Computation (`runtime: bigquery`, a `parameters` entry, `executor`/
-    `attester` resources resolving to real files under
-    `computations/references/`, `generated`/`verified`/`sources`, and a
+    `attester` resources resolving to real files under the bundle root's
+    `references/`, `generated`/`verified`/`sources`, and a
     future `stale_after`), plus its `# Computation` fenced SQL block.
     Contributes exactly two diagnostics, both deliberate: its `stale_after`
     and its `sources[].last_modified` keep the legacy date-only form on
@@ -124,9 +124,9 @@ them a re-capture from the (removed) Rust binary:
   - `computations/revenue-file.md` — the **file-based** variant
     (`computation: references/computations/revenue.sql`, no fence).
     Contributes zero diagnostics.
-  - `computations/references/skills/run-on-bq.md` and
-    `computations/references/attesters/revenue.py` /
-    `computations/references/computations/revenue.sql` are the path-valued
+  - `references/skills/run-on-bq.md` and
+    `references/attesters/revenue.py` /
+    `references/computations/revenue.sql` are the path-valued
     targets the two concepts above point at; the `.md` one is itself a
     plain, conformant `Skill` concept (every `.md` file under a bundle root
     is loaded as a concept, §3), the other two are non-`.md` plain-text
@@ -206,6 +206,39 @@ them a re-capture from the (removed) Rust binary:
   `audit` is an OKF4net verb with no upstream counterpart. The `--as-of` date
   is pinned so the output cannot drift with the calendar.
 
+## `okf verify` goldens (2026-08-28)
+
+- `golden/verify.out` — output of `okf verify <copy of okf_v02> metrics/dau
+  metrics/legacy --by human:ada --at 2026-08-28T09:14:00Z`. **Hand-authored**,
+  verified against the design spec's stated output format rather than captured
+  from a reference CLI: `verify` is an OKF4net verb with no upstream
+  counterpart. The two lines were written into the plan before that run, then
+  confirmed byte-for-byte against its actual stdout — the same run that
+  produced `verify-dau.md` below. The bundle is a throwaway copy because the
+  verb writes. The first line carries a `(replaces …)` suffix because
+  `okf_v02/metrics/dau.md` already holds a `human:ada` stamp, so that run
+  exercises the replace path while the second line exercises the append path.
+- `golden/verify-dau.md` — `metrics/dau.md` as it stands **after** that same
+  run. Pins what stdout cannot: that the stamp replaced the existing `human:ada`
+  entry **in place** (still the second entry, after `process:nightly`, which is
+  untouched), that `generated` was neither rewritten nor refreshed, and that no
+  key was added, dropped or reordered. Note that the frontmatter is re-emitted in
+  the YAML emitter's canonical block style, so the source fixture's flow mappings,
+  inline list, and compact entries (`tags: [engagement]`, `generated: { … }`,
+  `usage_window: { … }`, and the `verified`/`sources` entries) appear here
+  expanded. That reflow is pre-existing behaviour of every bundle write, not
+  something `verify` does, and pinning it is deliberate. Every scalar value
+  other than the replaced `at` is unchanged, as is the body. Produced by running
+  the command once on a copy, then **read line by line and justified by hand**
+  before being frozen — the inspection is the provenance, not the capture.
+  Revised once, when the §5 temporal-form pass gave the source fixture explicit
+  UTC offsets: this golden is *derived* from `okf_v02/metrics/dau.md`, so a
+  deliberate change to its input has to reach it. Four values moved with the
+  source (`sources[].last_modified`, both `usage_window` bounds, `stale_after`)
+  and nothing else did — re-checked by hand, not re-captured blindly: the
+  `human:ada` stamp is still replaced in place as the second `verified` entry
+  after an untouched `process:nightly`, `generated` is still neither rewritten
+  nor refreshed, and no key was added, dropped or reordered.
 ## Temporal form (§5) (2026-08-31)
 
 OKF v0.2 §5 requires every timestamp-valued key to be an ISO 8601 datetime with
@@ -260,3 +293,55 @@ rather than blanket-regenerated:
 `AuditVocabulary.Freshness` renders the *parsed* date as `yyyy-MM-dd`, so it
 still reads `stale 2099-01-01` for the now-conformant value. That is the
 invariant to preserve if this rendering is ever revisited.
+
+## §6.2 path-valued field bases (2026-09-11)
+
+`okf_v02_computation/` was **relaid out**, and one of its concepts edited, to
+match the structure the spec itself uses. No golden capture was touched: the
+byte-exact `golden/validate-computation.out` is unchanged, and
+`Validate_computation_fixture_matches_golden` passes against it as-is. That is
+the point of recording this here — the fixture moved, the captured output did
+not.
+
+Why it was allowed at all: this fixture is not a capture of a reference
+binary. As the §10 section above states, no reference implementation
+implements §10, so `okf_v02_computation/` was **hand-authored and
+hand-verified against the v0.2 spec text**. That hand-verification was wrong
+on one point, and the fixture had been shaped around the error rather than
+around the spec:
+
+- `computations/revenue.md` declares `executor.resource:
+  references/skills/run-on-bq.md`, copied from §10.2. Appendix A gives that
+  example's layout, with the concept in `computations/` and `references/` at
+  the **bundle root**. The fixture instead placed `references/` *under*
+  `computations/`, which is where OKF4net's then-current concept-relative
+  resolution looked — so the fixture illustrated the implementation rather
+  than the spec, and could never have caught the defect. See **S6.2-1** in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+
+What changed:
+
+- `computations/references/` → `references/` (a `git mv`; the three target
+  files are byte-identical). The declarations in `computations/revenue.md`
+  and `computations/revenue-file.md` are untouched — they were already right;
+  it was the tree around them that was wrong.
+- `malformed/both.md`'s `computation: refs/query.sql` → `./refs/query.sql`.
+  That file's `refs/` directory is genuinely a sibling of the concept, so
+  under the corrected rule it needs the explicit document-relative prefix.
+  This also gives the fixture coverage of the `./` form alongside the bare
+  one. The file's single intended diagnostic (a `computation:` path declared
+  together with an inline fence) is unaffected, which is why the golden does
+  not move.
+
+  State the alternative plainly, since this one is a judgement call: left
+  alone, that bare `refs/query.sql` would have resolved from the root, missed,
+  and added a sixth `… not found` warning — so the fixture INPUT was changed
+  to hold the captured OUTPUT still. The justification is that `./` is the
+  spelling that expresses what that file actually means under the adopted
+  reading of §6.2 (S6.2-1), not that the
+  golden was inconvenient; had the concept genuinely intended a root-relative
+  path, the right move would have been to re-bless the capture and say so.
+
+`malformed/broken-exec.md` keeps its bare `does-not-exist.md`: it names a file
+that exists at neither base, so it still contributes exactly the one
+`… not found` warning it is there for, with the same message text.

@@ -33,6 +33,8 @@ okf validate ./bundles/ga4`
 
 const wingetInstallHtml = `$ winget install Coderise.OKF4net`
 
+const curlInstallHtml = `$ curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh`
+
 const buildSnippetHtml = `$ git clone https://github.com/jchable/okf4net
 $ dotnet publish src/OKF4net.Cli -c Release   <span class="c"># Native AOT, self-contained okf binary</span>`
 
@@ -40,7 +42,7 @@ export default function Cli() {
   return (
     <Layout
       title="The okf CLI — OKF4net"
-      description="The okf command-line tool: validate, info, index, graph, parse, fmt and render — a self-contained Native AOT binary that drops straight into CI."
+      description="The okf command-line tool: validate, audit, verify, info, index, graph, parse and fmt — a self-contained Native AOT binary that drops straight into CI."
       current="cli"
     >
       <PageDoc
@@ -76,6 +78,13 @@ export default function Cli() {
                   <code>--stale</code>, <code>--trust</code>, <code>--status</code>, <code>--type</code>
                 </>,
               ],
+              [
+                'okf verify <bundle> <id>…',
+                <>
+                  Record a review (§5.2) — adds or replaces a <code>{'{by, at}'}</code> stamp; clears the
+                  unverified worklist, not staleness
+                </>,
+              ],
               ['okf info <bundle>', 'Summarize a bundle — concepts, types, links, version'],
               ['okf index <bundle>', '(Re)generate every index.md in the bundle (§8)'],
               [
@@ -91,12 +100,15 @@ export default function Cli() {
                   Normalize a document by parse + re-serialize (<code>-w</code> writes in place)
                 </>,
               ],
-              [
-                'okf render <bundle> --out <dir>',
-                'Generate a self-contained, browsable static HTML site from the bundle',
-              ],
             ]}
           />
+          <p>
+            Static HTML site generation moved to a separate binary,{' '}
+            <a href="https://github.com/jchable/okf4net/releases">okf-render</a> — <code>okf</code> is meant to stay
+            small and dependency-free for CI, and the site generator pulls in a vendored copy of{' '}
+            <a href="https://github.com/markedjs/marked">marked</a> that a CI job running <code>okf validate</code>{' '}
+            never executes.
+          </p>
         </Chapter>
 
         <Chapter id="session" title="A session" refText="what it looks like">
@@ -117,12 +129,22 @@ export default function Cli() {
           <p>Because the binary is self-contained, the CI image needs no .NET runtime, no SDK, no package restore — copy the file, run it.</p>
         </Chapter>
 
-        <Chapter id="install" title="Install it" refText="winget on Windows, or Native AOT publish">
+        <Chapter id="install" title="Install it" refText="winget on Windows, install.sh on Linux/macOS, or Native AOT publish">
           <p>
             On Windows, install via <a href="https://github.com/microsoft/winget-pkgs">winget</a>:
           </p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: wingetInstallHtml }} />
-          <p>On any OS, build it from source:</p>
+          <p>On Linux or macOS, install a release binary with the install script:</p>
+          <pre className="block" dangerouslySetInnerHTML={{ __html: curlInstallHtml }} />
+          <p>
+            It detects your OS/architecture, downloads the matching archive from the latest{' '}
+            <a href="https://github.com/jchable/okf4net/releases">GitHub Release</a>, verifies its SHA-256
+            checksum, and installs to <code>/usr/local/bin</code> (falling back to <code>~/.local/bin</code> when
+            that isn't writable — it never calls <code>sudo</code>). Pass <code>--bin okf-render</code> to install
+            the site generator instead, <code>--version &lt;tag&gt;</code> to pin a release, or <code>--dry-run</code>{' '}
+            to see what it would do first; <code>-h</code> lists every option.
+          </p>
+          <p>On any OS, you can also build it from source:</p>
           <pre className="block" dangerouslySetInnerHTML={{ __html: buildSnippetHtml }} />
           <Next>
             → <Link to="/contributing">contributing.md</Link> — build, test, and submit changes

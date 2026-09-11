@@ -387,4 +387,86 @@ public class RepositoryScannerTests
             Directory.Delete(repo, recursive: true);
         }
     }
+
+    [Fact]
+    public void Scan_finds_the_projects_of_a_solution_nested_below_the_root_solution()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            WriteProject(Path.Combine(repo, "src", "Root"), "RootLib");
+            WriteProject(Path.Combine(repo, "nested", "src", "Leaf"), "LeafLib");
+            WriteProject(Path.Combine(repo, "orphan"), "OrphanLib");
+
+            File.WriteAllText(Path.Combine(repo, "Root.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RootLib", "src\Root\RootLib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                """);
+            File.WriteAllText(Path.Combine(repo, "nested", "Nested.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LeafLib", "src\Leaf\LeafLib.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            // The root solution no longer decides the whole answer: the nested solution's project is
+            // detected too. OrphanLib, referenced by neither, stays out -- the recursive .csproj walk
+            // is still only the fallback for repositories with no solution at all.
+            Assert.Equal(
+                ["LeafLib", "RootLib"],
+                snapshot.Packages.Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Scan_ignores_a_solution_project_reference_that_escapes_the_repository()
+    {
+        var repo = CreateTempRepo();
+        var outside = Path.Combine(Path.GetDirectoryName(repo)!, Path.GetFileName(repo) + "-outside");
+        try
+        {
+            WriteProject(Path.Combine(repo, "src", "Inside"), "InsideLib");
+            WriteProject(outside, "OutsideLib");
+
+            var escape = Path.GetRelativePath(repo, Path.Combine(outside, "OutsideLib.csproj")).Replace('/', '\\');
+            File.WriteAllText(Path.Combine(repo, "Escape.sln"), $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InsideLib", "src\Inside\InsideLib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OutsideLib", "{{escape}}", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            // The escaping project exists and the solution names it, so only the containment check
+            // keeps it out. Were it admitted, its `resource` would be a `../` path relative to a
+            // bundle root it has no relation to.
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("InsideLib", pkg.Name);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    private static void WriteProject(string directory, string packageId)
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, packageId + ".csproj"), $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <PackageId>{packageId}</PackageId>
+              </PropertyGroup>
+            </Project>
+            """);
+    }
 }

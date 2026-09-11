@@ -10,6 +10,77 @@ and this project adheres to
 
 ### Added
 
+- **`okfgen generate --roslyn-timeout <seconds>`** — a wall-clock budget for the
+  whole Roslyn stage, the `dotnet msbuild` queries and the compilations after
+  them. Absent by default, and absent means unbounded: each query is capped at
+  two minutes on its own, but nothing caps their sum, so a large repository runs
+  for as long as it runs. It is not a default because a budget makes the emitted
+  bundle a function of how fast the machine is, and determinism is pinned at a
+  fixed extractor version, not a fixed CPU. If the budget runs out the stage is
+  abandoned **whole**, never truncated: the run lands in exactly the
+  `--no-msbuild` state, with a note naming the same two losses, rather than
+  emitting a bundle whose exact and name-matched links are divided by machine
+  speed with nothing recording where the line fell.
+- **`okfgen` gains a C# code-graph stage** (`producers/OkfProducer`, outside
+  `OKF4net.sln` and outside CI by decision). `generate` now emits one `code/`
+  concept per namespace, type and member, with resolved `## Calls` links. Two
+  engines behind one contract: tree-sitter extracts symbols and call sites
+  language-agnostically, and Roslyn resolves C# call sites exactly — without
+  `MSBuildWorkspace`, querying project inputs through a bounded `msbuild -getItem`
+  subprocess — with a name-match resolver covering what Roslyn cannot reach. Call
+  sites are identified by UTF-8 byte offset, since the two engines natively speak
+  UTF-16.
+- **`okfgen generate` prints a completeness report** to stderr, prefixed `run: `,
+  on every run that reaches the generation stage: files visited and how many fell
+  to each cause, whether the traversal was complete, projects detected and how
+  many of the closure compiled, exact-resolver coverage, and how many `code`
+  concepts are reachable from `overview`. It exists because every other account a
+  run gives of itself is a note gated on its own trigger, so a run printing
+  nothing was indistinguishable from a mechanism that did not fire. On stderr, so
+  no CI gate reading stdout changes and nothing lands in the bundle.
+- **`okfgen generate --check`** compares a regenerated bundle against the one on
+  disk, over a copy, and reports drift without writing. Backed by a golden
+  fixture.
+- **Project detection follows every `*.sln` in the tree**, not only one at the
+  repository root. A root-only lookup let the first root solution decide the whole
+  answer: measured on this repository, 9 of 17 `.csproj` were detected, and the
+  194 `code` concepts of the undetected projects belonged to no package concept
+  and were unreachable from `overview` — which `okf validate` does not report,
+  because an orphan dangles nothing. A `.csproj` that no solution references is
+  still not a package.
+- **`okfgen generate --repo-url <url>` / `--rev <ref>`** make each concept's
+  `resource` a forge permalink — to its declaration for a `code/` concept, to the
+  file for a `packages/` or `docs/` one. The two families differ without the
+  flags: a `code/` concept then carries no `resource` at all, while a
+  `packages/`/`docs/` one falls back to the repository-relative path. A
+  `--repo-url` that is not an absolute http/https URL is refused rather than
+  silently dropping every permalink. `--rev` defaults to the current branch name
+  and never to a sha — a sha would rewrite every code concept's `resource` on the
+  next commit — and is required for permalinks on a detached HEAD, where there is
+  no branch name to read.
+- **Scope and size flags on `generate`**: `--include-tests` and
+  `--include-internal` widen what the code stage emits, `--no-code` skips the
+  stage entirely, and `--max-file-size <bytes>` (2 MiB by default) caps the
+  largest source file either engine will read. The tree-sitter engine counts what
+  it skips, which holds back the concepts that file owned; the rest of the bundle
+  is pruned as usual.
+- **A generate is a function of the commit, not of the clock.** `overview`'s
+  `generated.at` and `revision` are stamped from the HEAD commit's committer date
+  and sha — the wall clock is only the fallback for a tree git cannot answer for —
+  and the output ordering is deterministic, so re-running over the same commit
+  does not churn the bundle. Writes land in a staging directory and are committed
+  at the end, so a run that fails while generating leaves the previous bundle
+  where it was.
+- **`ConceptSearch.TopDiversified`** — picks the top N of a scored result set
+  while rotating across top-level id families, so one family cannot take every
+  slot in a truncated window. `ConceptSearch.Search` is unchanged; this is an
+  added selection step, not a second scorer.
+- **`ConceptSearch.TopDiversifiedBy`** — the same rotation for a list the caller
+  has already ordered by something the scores cannot express (a catalog
+  resolver's source interleave, for instance): families are visited in the order
+  they first appear rather than re-sorted by score, so the two orderings compose
+  instead of one silently undoing the other. Pass `items.Count` for a full
+  reordering when what bounds the list is a budget rather than a slot count.
 - **`OkfBundleTools.GetTools(OkfToolMode)`** — chooses how the three
   write-capable tools are exposed. `ReadOnly` omits them; `RequireApprovalForWrites`
   wraps exactly those in `ApprovalRequiredAIFunction` so the Agent Framework
@@ -53,19 +124,60 @@ and this project adheres to
   `--stale`, `--trust`, `--status`, `--type`, `--as-of` and `--json`. Backed by
   the new `ConceptAudit` in the core library and exposed to agents as the
   read-only `okf_audit` tool.
-- **`okf render <bundle> --out <dir>`** generates a self-contained, browsable
-  HTML site from a bundle: one page per concept (frontmatter table + rendered
-  body), a generated index, navigable cross-links with broken links flagged,
-  and backlinks. Backed by the new zero-dependency `OKF4net.Viewer` project.
-  Markdown renders client-side via a vendored copy of marked (MIT); raw HTML
-  is neutralized by sanitizing the parsed DOM in `viewer.js` (element
+- **`okf verify <bundle> <id>… --by <actor>`** — the verb that answers what
+  `okf audit` asks about trust: it records a review (§5.2) by adding, or
+  from the same actor replacing, a `{by, at}` entry in each named concept's
+  `verified` list, so — for a `human:` actor — the concept clears audit's
+  trust-filtered (`--trust unverified`/`unverified,machine-confirmed`)
+  selection. A `process:` or `<producer>/<version>` actor is accepted symmetrically (§7) but
+  only moves the concept from `unverified` to `machine-confirmed`, which
+  that same filter still selects. Verification only moves the trust
+  dimension (§5.3) — it never touches
+  `stale_after`, so a just-reviewed concept can still appear in `okf audit`'s
+  *default* worklist, which selects on staleness alone. `<id>…` also accepts
+  a single `-`, reading concept ids from standard input, so
+  `okf audit … --trust unverified | cut -d' ' -f1 | okf verify … --by
+  human:ada -` closes the loop in one line. An empty stream on that pipeline
+  is "nothing to do", not an error: `verify -` writes nothing and exits 0,
+  matching `audit`'s own empty-worklist exit, so the loop stays idempotent
+  and safe under `set -e` when the bundle needs no attention. Naming no
+  concept at all (`okf verify <bundle>`) is still an error. An actor carrying
+  a control character is refused by `RecordVerifications` itself, so a `--by`
+  value can never forge a line in the verb's own line-oriented output; reading
+  an actor out of an existing bundle (`Actor.Parse`, `Trust.DeriveTier`) stays
+  permissive, as it must. `--dry-run` shows what would be
+  recorded without writing; `--at <yyyy-MM-ddTHH:mm:ssZ>` overrides the
+  default of "now" (a bare date, an offset, or fractional seconds are
+  rejected). A batch is validated (existence, §11 conformance, no duplicate id) before the
+  first write, but writing several files cannot be atomic — a mid-batch I/O
+  failure still leaves the earlier concepts stamped, and is reported as
+  such. Backed by the new `BundleConceptWriter.RecordVerifications` in the
+  core library — the single governed writer of `verified` — and exposed to
+  agents as the `okf_verify` tool. **A `verified` stamp is a dated
+  declaration, not a proof**: it cannot and does not authenticate the
+  signer's identity, nor confirm anyone read the concept. Credibility comes
+  from where the stamp lands — a diff a human reviewed — never from
+  inferring one out of a PR approval.
+- **A new `okf-render <bundle> --out <dir>` binary** generates a
+  self-contained, browsable HTML site from a bundle: one page per concept
+  (frontmatter table + rendered body), a generated index, navigable
+  cross-links with broken links flagged, and backlinks. Backed by the new
+  zero-dependency `OKF4net.Viewer` project, consumed by the new
+  `OKF4net.Render` project rather than by `okf` itself — `okf` is meant to
+  stay the small, dependency-free CI validator winget distributes, and the
+  viewer's vendored JavaScript is dead weight in a binary that never executes
+  it. Markdown renders client-side via a vendored copy of marked (MIT); raw
+  HTML is neutralized by sanitizing the parsed DOM in `viewer.js` (element
   allowlist, per-tag attribute allowlist, URL-scheme validation) rather than
   by patching marked's renderer hooks, which cannot bound the attack surface
   in general (see `CLAUDE.md`). GFM task list items survive sanitization as
   real `<input type="checkbox" disabled>` elements with correct checked
   state, so a screen reader announces them as checkboxes rather than as
-  decorative text. No full-text search yet — that lands with the planned
-  `okf serve` companion.
+  decorative text. No full-text search: a static site has no server to run
+  the shared `ConceptSearch` scorer, and mirroring its weights in JavaScript
+  would fork it. (This started life as `okf`'s `render` verb; it
+  moved to its own binary before ever shipping in a release, so there is no
+  deprecated verb or shim to call out here.)
 - **A `sources[]` entry can now carry its own `usage_window` override
   (§5.1).** `Provenance.ParseSources` reads a per-entry `usage_window`
   through the same `ParseUsageWindow` the shared, top-level one already
@@ -101,6 +213,31 @@ and this project adheres to
   the spec itself settles.
 
 ### Changed
+
+- **`okf_search` and the agent context provider now return diversified results.**
+  Scores are presence-based and capped at 6 per term, so ties are the common
+  case, and ties were broken by `ConceptId` order — which is ordinal by segment.
+  On a bundle whose concepts are dominated by one id family, that family took
+  every slot in the 20-result search window and the 5-concept injection window.
+  Measured on a 396-concept bundle: curated concepts held 1 of 55 top-5 slots,
+  and 5 of 11 broad queries returned none at all in the top 20; after the change,
+  23 of 55 and 0 of 11. The trade is deliberate — a higher-scoring concept can
+  now be displaced by a lower-scoring one from a family that would otherwise be
+  absent. Small bundles, where every family already fits in the window, are
+  unaffected. `okf_search`'s tool description says so now: the printed scores no
+  longer descend monotonically, and a model reading that description was
+  previously told they would.
+  There are **three** truncated windows, not two: the scoped (V2) context
+  provider — the one hosts are steered towards, the V1 provider's
+  `MemoryDirectory` being `[Obsolete]` — bounds its passage list by token budget
+  rather than by slot count, which is a truncation all the same. It is
+  diversified too, with `TopDiversifiedBy` so that `KnowledgeQuery.FairnessQuota`
+  (which interleaves *sources*, not id families) keeps working alongside it.
+  Measured on the same corpus with generated descriptions sharing the curated
+  vocabulary: 38 of 336 passages rendered, and zero curated concepts injected on
+  6 of 7 broad queries. The memory surface is deliberately *not* diversified —
+  `FileMemoryStore` concatenates one ranked list per tier in its read order, so a
+  family rotation there would interleave the tiers and override that precedence.
 
 - **Breaking: `okf-mcp` serves a bundle read-only by default.** The three write
   tools are registered only when `OKF_MCP_WRITABLE=1` is set. Writes used to be
@@ -202,6 +339,27 @@ and this project adheres to
   are unaffected. The same rewrite also fixes a token consumed as a flag's value
   still counting as a flag: `okf audit b --type --stale` no longer sets the
   stale filter.
+- **`OkfCli.Run` gains a `TextReader stdin` parameter** (now
+  `Run(args, stdin, stdout, stderr)`), so `verify -` can read concept ids
+  from standard input without every other verb paying for a blocking read.
+  This is a breaking change to a public API signature, but it breaks no
+  external caller: `OKF4net.Cli` is the only project under `src/` with no
+  `PackageId`/`IsPackable` — it ships only as the `okf` binary, never
+  published as a library — and the sole call site outside `Program.cs` is
+  the test suite's `TestPaths.cs`, updated alongside it.
+- **`--` now keeps the positionals given before it, instead of discarding
+  them.** The separator used to let the token right after it take the single
+  positional slot outright, so `okf <verb> a -- b` resolved to `b`; verbs now
+  keep every positional in order, `--` included, so the same invocation
+  resolves to `a`. This is what makes `verify <bundle> <id>…`'s multiple
+  positionals possible — a single "the positional" slot could never have
+  held more than one concept id.
+- **A lone `-` is now a positional argument, not a flag.** The flag scan
+  previously matched any token starting with `-`, including the bare
+  character, so `-` was silently absorbed as a valueless, meaningless flag.
+  It now falls through to the positional list, which is what lets
+  `okf verify <bundle> -` mean "read concept ids from standard input" — the
+  POSIX convention — instead of being swallowed before `verify` ever sees it.
 - **`okf validate` gains `--as-of <YYYY-MM-DD>`**, pinning the date its §5.5
   staleness warning is evaluated against. `BundleValidator.Validate` already
   accepted a clock, but the verb exposed no way to set one, so its
@@ -218,9 +376,155 @@ and this project adheres to
   unless a `WINGET_TOKEN` secret is configured, so releases stay green until
   the package is published and the token/fork exist — see
   `packaging/winget/README.md`.
+- **`okfgen` is packaged per-RID** (`win-x64;linux-x64;osx-arm64`), which it was
+  not at 0.5.0: the code-graph stage pulls `Microsoft.CodeAnalysis.CSharp` and
+  `TreeSitter.DotNet`, and the latter ships native binaries. `producers/` keeps
+  every other bit of the status it had at 0.5.0 — its own solution
+  (`producers/OkfProducer.sln`), referencing `src/OKF4net` by project reference,
+  **not** part of `OKF4net.sln`, **not** in CI (a decision taken 2026-08-01, not
+  an omission), **not** published to NuGet, and exempt from the zero-dependency
+  rule. `OkfProducer.Core` itself still references only `OKF4net`. Because
+  nothing on a pull request builds this solution, the guarantee is one local
+  command — `dotnet test producers/OkfProducer.sln` — and `producers/README.md`
+  now opens with it.
+- **Breaking (producer): `okfgen generate` now runs the scanned repository's
+  build logic.** The exact call-site resolver gets its reference set by spawning
+  `dotnet msbuild` once per project, in that project's own directory, and an
+  MSBuild *evaluation* is the execution of repository-authored logic — there is no
+  read-only mode to ask for. `Directory.Build.props`/`.targets` and everything they
+  import, any target hooked on `BeforeTargets="ResolveReferences"`, and a
+  `RoslynCodeTaskFactory` inline `<Code>` task all run as the user running
+  `okfgen`; a `Directory.Build.rsp` in that directory even adds switches to the
+  producer's own invocation (measured on this host: a one-line rsp containing
+  `-t:Pwn` made the query run a target it never requested). **Only point `okfgen`
+  at a repository you would be willing to build.** `--no-msbuild` is the way out —
+  no msbuild is spawned and no MSBuild logic from the scanned tree is evaluated —
+  at the cost of name-matching-only call resolution (which refuses an ambiguous
+  name rather than guessing, so what is lost is edges, not correctness) and of
+  emitting no `packages` → namespace containment link at all. It is off by default
+  on purpose: defaulting it on would silently degrade every run that exists today.
+  Note that `--no-msbuild` does not make the run process-free: `okfgen` still runs
+  `git` in the scanned tree (two to five `show -s`/`rev-parse`/`symbolic-ref`
+  invocations, depending on the flags) to stamp `overview`. `producers/README.md`
+  carries the full threat model.
+- **Breaking (producer): `--update` no longer preserves everything.** Under the
+  `code` prefix, a concept the previous run claimed and this one no longer produces
+  is pruned — otherwise a deleted type would leave its concept behind forever.
+  Outside `code`, hand-written concepts are preserved exactly as before. The gate
+  is the *traversal*: a run prunes only when it visited every eligible file, and
+  one cut short — the extraction budget elapsed, the run cancelled, the walk
+  itself failing — prunes nothing, so it cannot delete what it never reached.
+  Deliberately not "every file parsed cleanly": the vendored tree-sitter grammar
+  mis-parses an empty collection expression, ordinary modern C#, so gating on that
+  would make pruning dead code. A file that was visited but not extracted holds
+  back only the concepts it owned, one candidate at a time. `--check`
+  is refused together with `--reset`/`--force` and with `--no-code`, both of which
+  would otherwise let an operator believe something was verified that was not.
+
+- **§6.2 path-valued fields: a bare relative path now resolves from the bundle
+  root, not from the concept's directory.** `resource`, `sources[].resource`,
+  `computation`, `executor.resource` and `attester.resource` are resolved by
+  prefix: a leading `/` → bundle root, an explicit `./` or `../` → the
+  concept's own directory, and anything else → bundle root. §6.2 lists the
+  three accepted shapes without saying what a "relative path" is relative to;
+  the spec's own examples require both bases — `../computations/revenue.md`
+  (§6.2) is document-relative, while §6.3's `references/attesters/revenue.py`,
+  §10.2's `executor.resource: references/skills/run-on-bq.md` and Appendix A's
+  layout (that concept in `computations/`, `references/` at the bundle root)
+  only resolve from the root. Resolving everything against the concept
+  directory made the spec's own worked example unresolvable, and made
+  `bundles/acme_retail/` — a verbatim upstream sample laid out exactly as
+  Appendix A is — emit twelve bogus `… not found` warnings. The spec does not
+  define the base for a bare path, so this is a change of interpretation
+  rather than a conformance fix: §11 puts path resolution outside the
+  conformance floor entirely, and `acme_retail` was a conformant bundle before
+  and after. What changed is which file a given string names, and therefore
+  the diagnostics. Recorded as **S6.2-1** in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+  - Where it reaches beyond diagnostics: `AttestationOrchestrator` resolves a
+    file-backed `computation:` path (`AttestationOrchestrator.cs:295`), so a
+    bare one now names a different file. It does **not** resolve
+    `executor.resource` or `attester.resource` — those implementations come
+    from the host runtime — so no computation became runnable or unrunnable
+    because of this change.
+  - **Breaking (source):** `FrontmatterResourceKind.Relative` is renamed
+    `FrontmatterResourceKind.ConceptRelative`, and a bare path now classifies
+    as `BundleRelative`. The rename is deliberate: it turns a silent change of
+    meaning into a compile error for any consumer that switched on the old
+    member. Note the limit of that protection: the enum's numeric values are
+    unchanged (`Url=0`, `BundleRelative=1`, the former `Relative=2` now
+    `ConceptRelative=2`), so it only bites on recompilation. A consumer still
+    binary-linked against the previous assembly gets `BundleRelative` where it
+    used to get `Relative` for a bare path, with no error, and changes
+    behaviour silently.
+  - The drive-relative guard (a raw value like `e:query.sql`, which
+    `Path.GetFullPath` resolves against that drive's own current directory)
+    now covers both bases rather than only the concept-relative one.
+
+- **`okf validate` no longer reports a missing `resource` on a §10 Attested
+  Computation.** §4.1 recommends `resource` but qualifies it in the same
+  sentence — "Absent for concepts that describe abstract ideas rather than
+  physical resources" — so on such a concept its absence is correct, not a
+  deficiency. `Attested Computation` is the one type a rule can be keyed on
+  instead of guessed: §10.1 names it normatively, and every example the spec
+  gives of one omits `resource`. Other abstract types (`Metric`, `Skill`, …)
+  still warn, because §4.1 draws the line by meaning and leaves the type
+  vocabulary open, so nothing syntactic decides it. `bundles/acme_retail/`
+  goes from 24 warnings to 22. Recorded as **S4.1-8** in
+  `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
 
 ### Fixed
 
+- **`YamlEmitter`'s nesting guard now throws `YamlEmitException`** (an
+  `OkfException`, like the parser's `YamlParseException`) instead of a bare
+  `InvalidOperationException`. The parser enforces its 1000-level cap with two
+  independent counters — one for block nesting, one for flow — while the
+  emitter has a single counter covering both, so a frontmatter mixing the two
+  can parse and then fail to re-emit. That exception matched no catch filter
+  in the library: it escaped `BundleConceptWriter`'s errors-as-data contract,
+  threw out of the `okf_verify` tool into its host, and killed the CLI with a
+  stack trace. Every existing filter already covers `OkfException`, so the
+  failure is now data on all three paths. Reconciling the two counters with
+  the one is a separate, read-path question and is left open.
+- **`okf` reports an unanticipated library failure as `error: <message>`,
+  exit 1**, instead of a stack trace and exit 127. `OkfCli.Run` caught only
+  its own internal `CliOperationException`; it now also catches
+  `OkfException`, the library's expected-error base. Applies to all eight
+  verbs. An unexpected BCL exception still crashes loudly, on purpose.
+- **`generated.by` is an actor again, and the engine versions moved to
+  `generated.engines`.** §5.2 makes that field an actor and §7 defines an actor as
+  exactly one of `<producer>/<version>`, `human:<id>`, `process:<id>`. It was written
+  as `okfgen/0.1.0 tree-sitter/1.3.0 roslyn/5.3.0`, which is none of them — and the
+  failure was silent, because `Actor.Parse` splits on the first `/` and reported it
+  well-formed with a version of `0.1.0 tree-sitter/1.3.0 roslyn/5.3.0`. `okf validate`
+  called such a bundle clean while every consumer reading the version got a string
+  naming no release. The provenance is preserved in a sibling key, which OKF keeps
+  across a round-trip. **Regenerate to update an existing bundle's `overview`.**
+- **Scope filters on effective visibility.** A `public` member of an `internal` type is
+  capped at internal by C#, so it is now out of scope by default. It used to be emitted
+  with `--include-internal` off *and* tagged `public` — a visibility the language does
+  not give it — so a bundle generated to exclude internal API published it anyway.
+  **This removes concepts from regenerated bundles**, which is the point.
+- **Generic types are disambiguated with a backtick, not `_`.** `Holder<T>` was spelled
+  `Holder_1`, drawn from the C# identifier alphabet, so a type genuinely named
+  `Holder_1` collapsed into the same concept — both signatures under one description.
+  The ids move from `holder_1` to `holder-1`.
+- **`okfgen` no longer names Roslyn in `generated.engines` on a run where Roslyn never
+  ran** — including the common one, where every project failed to query or compile
+  (an unrestored checkout, no `dotnet` on `PATH`). That field is a determinism claim
+  — *these engine versions produced these bytes* — so naming an engine the run never
+  invoked makes it false in the direction that matters, by promising reproducibility
+  against a tool that was not there. It was written unconditionally on every run that
+  was not `--no-code`, which also covers `--no-msbuild`, a repository with no project
+  file, and an exhausted `--roslyn-timeout`. The golden fixture could not catch this:
+  the fixture harness had the rule right while the shipped CLI did not, so the two
+  disagreed about the same repository.
+- **`--roslyn-timeout` is read invariantly, and its whole range is validated.** Without
+  a custom parser the value was converted with the machine's culture and
+  `AllowThousands`: `1.5` meant 15 on a comma-decimal locale, silently, and was refused
+  outright on another. Values above `TimeSpan`'s range and below one tick escaped the
+  range guard as unhandled exceptions. `--roslyn-timeout 0` was accepted and meant
+  *unbounded*, the opposite of the smallest bound; it is refused now.
 - **Cancelling an attested computation now stops it, whatever the host stage
   does.** The orchestrator handed its token to each stage and trusted them to
   observe it; a stage that ignores its token — any client predating cancellation
@@ -283,7 +587,7 @@ and this project adheres to
   never writes — but the leftovers are now named rather than dropped.
 
 - **`okf index` no longer reports success for a bundle root that does not
-  exist.** Every other bundle verb (`validate`/`info`/`graph`/`render`) routes
+  exist.** Every other bundle verb (`validate`/`info`/`graph`) routes
   through `Bundle.Load`, which rejects a non-directory root; `index` hands its
   path straight to `IndexGenerator.RegenerateIndexes`, whose documented contract
   is to return an empty list rather than throw. The CLI rendered that as
@@ -370,6 +674,12 @@ and this project adheres to
   drifted: the 0.2.0 winget package shipped a binary printing
   `okf 0.1.0-alpha.1`, which the previous test did not catch (it only asserted
   the `okf ` prefix).
+- **`okfgen --reset` no longer empties the bundle and then fails.** The delete
+  moved to the commit boundary, so a run that fails while generating leaves the
+  previous bundle intact (a run interrupted during the commit itself still leaves
+  a half-written directory — `--update` is the flag with no such window). A `--out`
+  that is, or contains, `--repo` is now refused, as is one holding a symbolic link
+  or junction.
 
 ## [0.5.0] - 2026-07-31
 

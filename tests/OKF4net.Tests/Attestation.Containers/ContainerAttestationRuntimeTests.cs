@@ -56,7 +56,9 @@ public class ContainerAttestationRuntimeTests
     public async Task Runs_end_to_end_through_AttestationOrchestrator_with_a_fake_engine()
     {
         using var tmp = new OKF4net.Tests.TempDir();
-        tmp.Write("c/greet.py", "def attest(*, sanctioned_computation, receipt, values):\n    return {'ok': receipt.get('message') == f\"Hello, {values['name']}!\"}\n");
+        // Bundle-root layout: a bare `attester.resource` resolves from the root (§6.2,
+        // as Appendix A lays it out), not from the concept's directory.
+        tmp.Write("greet.py", "def attest(*, sanctioned_computation, receipt, values):\n    return {'ok': receipt.get('message') == f\"Hello, {values['name']}!\"}\n");
         tmp.Write("c/greet.md",
             "---\ntype: Attested Computation\nruntime: python\n" +
             "parameters:\n  - { name: name, type: string, required: true }\n" +

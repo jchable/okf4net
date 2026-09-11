@@ -69,8 +69,9 @@ other project layers a specific integration on top and points back to it.
 | Project                  | NuGet package             | Responsibility                                                              | Deep dive                                                     |
 |--------------------------|---------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------|
 | `OKF4net`                | `OKF4net`                 | Zero-dependency core library: parse, validate, index, graph OKF bundles.   | [Library overview](#library-overview)                        |
-| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`info`/`index`/`graph`/`parse`/`fmt`/`render`). | [As a CLI](#as-a-cli)                                    |
-| `OKF4net.Viewer`         | — (ships inside the `okf` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs the `okf render` verb. | [As a CLI](#as-a-cli)                                        |
+| `OKF4net.Cli`            | — (Native AOT `okf` binary, no PackageId) | The `okf` command-line tool (`validate`/`audit`/`verify`/`info`/`index`/`graph`/`parse`/`fmt`). | [As a CLI](#as-a-cli)                                    |
+| `OKF4net.Render`         | — (Native AOT `okf-render` binary, no PackageId) | Standalone CLI: generates a browsable HTML site from a bundle. | [As a CLI](#as-a-cli)                                        |
+| `OKF4net.Viewer`         | — (ships inside the `okf-render` binary, not packed by `release.yml`) | Static HTML site generation for a bundle; backs `okf-render`. | [As a CLI](#as-a-cli)                                        |
 | `OKF4net.Agents`         | `OKF4net.Agents`          | Microsoft Agent Framework tools + `OkfContextProvider` (context & memory). | [Microsoft Agent Framework](#using-okf4net-with-microsoft-agent-framework) |
 | `OKF4net.Catalog`        | `OKF4net.Catalog`         | Local catalog of OKF bundles: `catalog.json` manifest + source resolver.   | [Local catalog](#local-catalog-okf4netcatalog) · [README](src/OKF4net.Catalog/README.md) |
 | `OKF4net.Catalog.Hosting`| `OKF4net.Catalog.Hosting` | `IServiceCollection` integration (`AddKnowledge`) for the catalog.         | [README](src/OKF4net.Catalog.Hosting/README.md)              |
@@ -172,17 +173,34 @@ On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
 winget install Coderise.OKF4net
 ```
 
-On any OS, build from source — see [Building & testing](#building--testing).
+On Linux or macOS, install a release binary with the install script:
+
+```sh
+curl -sSL https://raw.githubusercontent.com/jchable/okf4net/main/packaging/install.sh | sh
+```
+
+It detects your OS/architecture, downloads the matching archive from the
+latest [GitHub Release](https://github.com/jchable/okf4net/releases),
+verifies its SHA-256 checksum, and installs to `/usr/local/bin` (falling back
+to `~/.local/bin` when that isn't writable — it never calls `sudo`). Pass
+`--bin okf-render` to install the site generator instead of `okf`, `--version
+<tag>` to pin a release, `--dir <path>` to override the destination, or
+`--dry-run` to see what it would do without touching disk or network beyond
+resolving the version. Run it with `-h` for the full option list; see
+[`packaging/install.sh`](packaging/install.sh) for the implementation.
+
+On any OS, you can also build from source — see
+[Building & testing](#building--testing).
 
 ```
 okf validate <bundle>    Check a bundle against OKF v0.2 conformance (§11)
 okf audit    <bundle>    Report trust, freshness and lifecycle across the bundle
+okf verify   <bundle> <id>…   Record a review of one or more concepts (--by <actor>)
 okf info     <bundle>    Summarize a bundle (concepts, types, links, version)
 okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
 okf parse    <file>      Parse one concept document and print its structure
 okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes)
-okf render   <bundle> --out <dir>   Generate a browsable HTML site from a bundle
 ```
 
 Every verb takes `-h`/`--help` for its own usage and option list. Arguments are
@@ -220,29 +238,111 @@ verdict should pin the date rather than let the calendar move under it. Note the
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 
-Generate a browsable HTML site from a bundle:
+`okf verify <bundle> <id>… --by <actor>` records a review (§5.2): it adds — or,
+for a repeat review from the same actor, replaces — a `{ by, at }` entry in
+each named concept's `verified` list. It is the verb that answers what
+`okf audit` asks about trust: audit finds concepts a human has never reviewed
+(`--trust unverified` / `unverified,machine-confirmed`), verify records that
+the review happened, and — for a `human:` actor — the reviewed concept
+clears that trust-filtered selection. A `process:` or `<producer>/<version>` actor is accepted
+symmetrically (§7), but only moves the concept from `unverified` to
+`machine-confirmed` (§5.3), which `--trust unverified,machine-confirmed`
+still selects. Verification only moves the trust dimension (§5.3) — it never
+touches `stale_after`, so a concept just reviewed can still show up in
+`okf audit`'s *default* worklist, which selects on staleness alone (see
+above). `<id>…` also accepts a single `-`, reading one concept id per line
+from standard input, so the two verbs compose into one line:
 
 ```sh
-okf render bundles/ga4 --out /tmp/ga4-site
-# then open /tmp/ga4-site/index.html
+okf audit bundles/acme_retail --trust unverified | cut -d' ' -f1 | okf verify bundles/acme_retail --by human:ada -
 ```
 
-The generated site is self-contained and opens straight off the filesystem —
-no server needed. It is read-only; full-text search arrives with the planned
-`okf serve` companion.
+An empty stream there is "nothing to do", not an error: `okf audit` exits 0
+printing nothing when the worklist is empty, and `okf verify -` on that
+stream writes nothing and exits 0 too, so the loop is idempotent and safe
+under `set -e` on a healthy bundle. Naming no concept at all
+(`okf verify <bundle>`) is still an error — that is the mistyped-`validate`
+case, and it stays loud.
+
+Every named concept is checked for existence and §11 conformance before
+anything is written, so a batch is rejected as a whole at that stage; a
+mid-batch I/O failure can still leave the concepts already written stamped
+(`okf verify` lists the concepts it wrote before it stopped). `--dry-run` prints what
+would be recorded without writing anything; `--at <yyyy-MM-ddTHH:mm:ssZ>`
+overrides the default of "now" for reproducible scripting — a bare date, a
+numeric offset, or fractional seconds are all rejected, not silently rounded.
+
+> **What a `verified` stamp does and doesn't prove.** It guarantees the
+> stamp is well-formed, dated, and attached to the concepts named — nothing
+> more. It does **not** guarantee the signer's identity, nor that anyone
+> actually read the concept: no zero-dependency tool can authenticate `--by`,
+> and `okf_write_concept` can write the exact same field with no ceremony at
+> all — deliberately unguarded, since a full frontmatter rewrite (importing a
+> bundle, correcting a concept) has to be able to touch `verified` too.
+> Credibility comes from *where the stamp lands*: in a diff a human reviewed,
+> under branch protection, where the reviewer sees the assertion and can
+> reject it. That argument only works if the diff is legible: like every
+> write path in this library, `verify` re-serializes the whole document in
+> canonical form (the same shape `okf fmt` produces) — a flow-style mapping
+> or an inline list expands to one entry per line, so a three-line stamp can
+> land as a much larger diff with the new `verified` entry buried inside a
+> reformat. The body is normalized too, to LF line endings, so on a bundle
+> checked out with CRLF the reformat is *the entire file* and the assertion a
+> reviewer is supposed to see is one changed line in a wall of them. Run
+> `okf fmt -w` on the bundle first, as its own reviewed commit, if you want a
+> review's diff to be the stamp and nothing else — it produces the same
+> canonical shape, so a `verify` run after it differs only by the stamp
+> lines. **Never infer
+> a stamp from a PR approval** — that turns "a human
+> approved this diff" into "a human vouches for this knowledge," which are
+> different every time a PR touches a file for a reason other than reviewing
+> it (which is most of the time). Doing so would mass-promote every concept
+> the diff happens to touch and silently empty the very worklist this feature
+> exists to populate.
 
 `okf` is `OKF4net.Cli`, published as a self-contained, Native AOT
 single-file binary — no .NET runtime installation required on the target
 machine. Full command reference with real output samples:
 [CLI docs on the site](https://jchable.github.io/okf4net/docs/cli/).
 
+#### `okf-render` — generate a static HTML site
+
+Static HTML site generation lives in a **separate** binary, `okf-render`
+(`OKF4net.Render`), not in `okf` itself — `okf` is meant to be the small,
+dependency-free CI validator winget distributes, and the site generator pulls
+in a vendored copy of [marked](https://github.com/markedjs/marked) (MIT) that
+a CI job running `okf validate` never executes. `OKF4net.Mcp` already
+established the pattern this follows: a leaf executable owns the dependencies
+its one job needs, instead of pushing them into the shared core.
+
+```sh
+dotnet publish src/OKF4net.Render -c Release   # Native AOT, self-contained okf-render binary
+okf-render bundles/ga4 --out /tmp/ga4-site
+# then open /tmp/ga4-site/index.html
+```
+
+The generated site is self-contained and opens straight off the filesystem —
+no server needed. It is read-only, and has no full-text search: a static site
+has no server to run the shared `ConceptSearch` scorer, and mirroring its
+weights in JavaScript would fork it. Interactive browsing with search is
+planned as a VS Code extension instead (see `ROADMAP.md`), not as a local
+server. `okf-render` has its own winget package,
+**`Coderise.OKF4net.Render`**, built and attached to each Release the same way
+as `okf`'s — but its *first* submission to `winget-pkgs` is a manual, one-time
+step (see [`packaging/winget/README.md`](packaging/winget/README.md)) that has
+not happened yet, so `winget install Coderise.OKF4net.Render` will not resolve
+until it does. Until then, on Linux or macOS install it with the same script
+as `okf` above (`--bin okf-render`), or on any OS grab a prebuilt archive from
+a [GitHub Release](https://github.com/jchable/okf4net/releases) or build it
+from source as shown above.
+
 ### Using OKF4net with Microsoft Agent Framework
 
 `src/OKF4net.Agents/` exposes bundle operations as function tools for the
 [Microsoft Agent Framework](https://github.com/microsoft/agent-framework):
 `OkfBundleTools` wraps one bundle root and its `GetTools()` method returns
-eleven ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
-agent's tool list, plus a twelfth — `okf_run_computation` — only when the
+twelve ready-to-use `AITool`s unconditionally, which `AsAIAgent` turns into an
+agent's tool list, plus a thirteenth — `okf_run_computation` — only when the
 tool set is constructed with an `OKF4net.Attestation` orchestrator wired in
 (see [Attested computation](#attested-computation-okf4netattestation)).
 
@@ -261,18 +361,19 @@ var response = await agent.RunAsync("Search the bundle for concepts about refund
 Console.WriteLine(response.Text);
 ```
 
-The eleven unconditional tools, plus the twelfth conditional on an attestation
+The twelve unconditional tools, plus the thirteenth conditional on an attestation
 orchestrator being wired (read → browse → graph → search → audit → write →
-append → regenerate → validate → changes-since → get-computation → run-computation):
+verify → append → regenerate → validate → changes-since → get-computation → run-computation):
 
 | Tool                     | Description                                                                                                                                                                                                    |
 |--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `okf_read_concept`       | Read one concept from the OKF bundle: its frontmatter, body, outgoing links and backlinks.                                                                                                                    |
 | `okf_browse`             | Browse the bundle via its index files (progressive disclosure). Without a path, lists the bundle root.                                                                                                        |
 | `okf_graph`              | Inspect the cross-link graph. With a concept id: its outgoing links, backlinks and broken links. Without: bundle-wide stats.                                                                                  |
-| `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns matching concept ids ranked by relevance.                                                                                      |
+| `okf_search`             | Full-text search across concept titles, descriptions, tags and bodies. Returns the best-matching concept id first, then spreads the remaining results across top-level id families, so the list is not in descending score order. |
 | `okf_audit`              | Audit the bundle's trust, freshness and lifecycle signals (§5.3–§5.5): counts by trust tier and status, plus the concepts needing attention. Read-only.                                                       |
 | `okf_write_concept`      | Create or update a concept document. The frontmatter must contain non-empty type, title and description (producer-grade validation is enforced before writing).                                               |
+| `okf_verify`             | Record a review (§5.2): adds or replaces the caller's `{by, at}` entry in each concept's `verified` list — a dated declaration, not a proof; never infer one from a PR approval.                            |
 | `okf_append_log`         | Append an entry to the bundle root log.md under today's date (ISO). Note: log.md is re-rendered through the strict §9 model, so non-conforming prose or comments in a hand-authored log.md are not preserved. |
 | `okf_regenerate_indexes` | Regenerate every index.md in the bundle (progressive-disclosure listings). Run after adding or changing concepts.                                                                                             |
 | `okf_validate_bundle`    | Validate the bundle against OKF v0.2 conformance (§11). Returns the diagnostics report.                                                                                                                        |
@@ -286,8 +387,8 @@ another agent or a human contributor — and is never injected into the
 conversation with a `system` role; it only ever reaches the model as tool
 output.
 
-That matters most for the three write-capable tools (`okf_write_concept`,
-`okf_append_log`, `okf_regenerate_indexes`), because an injection carried in a
+That matters most for the four write-capable tools (`okf_write_concept`,
+`okf_verify`, `okf_append_log`, `okf_regenerate_indexes`), because an injection carried in a
 concept body is only dangerous if it can reach a persistent write.
 **`GetTools()` returns them ungated**, and nothing asks on your behalf: the
 Agent Framework's approval mechanism is not active by default, so a plain
@@ -552,7 +653,7 @@ Then point Claude Desktop at a bundle in `claude_desktop_config.json`:
 ```
 
 `okf-mcp` serves the bundle **read-only by default**; set `OKF_MCP_WRITABLE=1`
-to register the three write tools as well. See
+to register the four write tools as well. See
 [`src/OKF4net.Mcp/README.md`](src/OKF4net.Mcp/README.md) for the full tool list, or the
 [MCP setup guide on the site](https://jchable.github.io/okf4net/docs/mcp/).
 
@@ -568,6 +669,7 @@ This table is also published as the
 | §4 Concept documents                  | `OKF4net.OkfDocument`, `OKF4net.Frontmatter`                   |
 | §4.2 Body headings                    | `OkfDocument.Computation()` (fenced `# Computation` heading)   |
 | §5 Provenance, trust, and lifecycle   | `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/`Status`/`StaleAfter`, `Actor`/`Trust`/`Provenance`/`Lifecycle` |
+| §5.2 Generation and verification stamps | `Frontmatter.Generated`/`Verified`, `BundleConceptWriter.RecordVerifications` — the governed writer behind `okf verify` and `okf_verify` |
 | §5.3–§5.5 trust, lifecycle, staleness | `ConceptAudit`, `AuditQuery`, `AuditReport` — the corpus-level query behind `okf audit` and `okf_audit` |
 | §6 Cross-linking and paths            | `OKF4net.LinkScanner`, `Bundle.LinksFrom` / `Bundle.Backlinks` |
 | §6.2 Path-valued fields               | `OkfDocument.FrontmatterResources()`, `Bundle.TryResolveResource` / `Bundle.ReadResourceText` |
@@ -607,9 +709,10 @@ no framework to learn before you can help.
 ## Building & testing
 
 ```sh
-dotnet build OKF4net.sln           # core library + okf CLI + test project
+dotnet build OKF4net.sln           # core library + okf CLI + okf-render + test project
 dotnet test OKF4net.sln            # unit + integration tests (incl. golden CLI comparisons)
-dotnet publish src/OKF4net.Cli -c Release  # Native AOT, self-contained okf binary
+dotnet publish src/OKF4net.Cli -c Release     # Native AOT, self-contained okf binary
+dotnet publish src/OKF4net.Render -c Release  # Native AOT, self-contained okf-render binary
 ```
 
 Just want the `okf` binary on Windows, not a source build? `winget install
