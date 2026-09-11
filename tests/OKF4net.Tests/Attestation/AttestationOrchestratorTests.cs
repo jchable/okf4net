@@ -323,7 +323,13 @@ public class AttestationOrchestratorTests
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
         Assert.False(outcome.Displayable);
-        Assert.Contains(outcome.Reasons, r => r.Contains("missing.sql"));
+        // Asserts the RESOLUTION arm specifically. "missing.sql" alone also
+        // appears in the read/decode arm's message, so a bare substring match
+        // cannot tell the two failures apart -- which is how a layout change
+        // once left the two decode tests below green while they silently
+        // stopped reaching the decoder at all.
+        Assert.Contains(outcome.Reasons, r => r.Contains("computation file 'references/missing.sql' could not be resolved (Missing)", StringComparison.Ordinal));
+        Assert.DoesNotContain(outcome.Reasons, r => r.Contains("could not be read", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -332,7 +338,11 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
-        var sqlPath = System.IO.Path.Combine(tmp.Path, "c", "references", "revenue.sql");
+        // At the BUNDLE ROOT, because a bare `computation` path resolves from
+        // there (§6.2) -- same layout as File_based_computation_resolved_and_read,
+        // so the only thing that differs between the two is the file's BYTES,
+        // which is the variable under test here.
+        var sqlPath = System.IO.Path.Combine(tmp.Path, "references", "revenue.sql");
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sqlPath)!);
         // Lone UTF-8 continuation bytes with no leading byte: invalid UTF-8 that
         // isn't also a recognized BOM prefix (unlike e.g. 0xFF 0xFE), so it reliably
@@ -342,7 +352,13 @@ public class AttestationOrchestratorTests
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
         Assert.False(outcome.Displayable);
-        Assert.Contains(outcome.Reasons, r => r.Contains("revenue.sql"));
+        // Pinned to the READ arm, and to the decoder exception specifically:
+        // "revenue.sql" on its own also matches the resolution arm's
+        // "could not be resolved (Missing)", so the old substring assertion
+        // stayed green when the file stopped resolving and the decoder was
+        // never reached.
+        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read: DecoderFallbackException", StringComparison.Ordinal));
+        Assert.DoesNotContain(outcome.Reasons, r => r.Contains("could not be resolved", StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -369,13 +385,20 @@ public class AttestationOrchestratorTests
         using var tmp = new TempDir();
         tmp.Write("c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: references/revenue.sql\n---\n");
-        var sqlPath = System.IO.Path.Combine(tmp.Path, "c", "references", "revenue.sql");
+        // At the BUNDLE ROOT: a bare `computation` path resolves from there (§6.2).
+        var sqlPath = System.IO.Path.Combine(tmp.Path, "references", "revenue.sql");
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(sqlPath)!);
         File.WriteAllBytes(sqlPath, new byte[] { 0xFF, 0xFE, 0x00, 0xD8 });
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
         var outcome = await new AttestationOrchestrator(reg).RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
         Assert.False(outcome.Displayable);
-        Assert.Contains(outcome.Reasons, r => r.Contains("revenue.sql"));
+        // The regression this test exists for is a SILENT SUCCESS (the BOM was
+        // sniffed, the file decoded as UTF-16, the run proceeded), so the
+        // assertion has to name the decoder failure. `Displayable == false`
+        // plus a shared "revenue.sql" substring is satisfied by a file that
+        // never resolved, which proves nothing about BOM sniffing.
+        Assert.Contains(outcome.Reasons, r => r.Contains("could not be read: DecoderFallbackException", StringComparison.Ordinal));
+        Assert.DoesNotContain(outcome.Reasons, r => r.Contains("could not be resolved", StringComparison.Ordinal));
     }
 
     /// <summary>
