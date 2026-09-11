@@ -367,4 +367,97 @@ public class FrontmatterResourceTests
         Assert.Equal(ResourceResolutionStatus.Resolved, status);
         Assert.Equal("SELECT 'beside the concept'\n", bundle.ReadResourceText(abs!));
     }
+
+    // The three tests below are POSIX-only and therefore do NOT run on a Windows
+    // developer machine -- CI's ubuntu-latest and macos-latest legs are what
+    // exercises them. They exist because §6.2's shapes read differently on the
+    // two platforms: a leading "/" is an absolute filesystem path on POSIX but
+    // not on Windows, and a colon is an ordinary filename character on POSIX but
+    // a drive separator on Windows. The Windows-side counterparts are
+    // Drive_relative_raw_path_is_unsafe_on_windows and
+    // Drive_relative_raw_path_behind_a_leading_separator_is_unsafe_on_windows.
+
+    /// <summary>
+    /// The §6.2 hazard that only exists on POSIX: a leading <c>/</c> means the
+    /// BUNDLE root, never the filesystem root. <c>/etc/passwd</c> must name a
+    /// (missing) file inside the bundle, not the real one -- the leading
+    /// separator is stripped before the value is ever combined with a base, so
+    /// <see cref="System.IO.Path.Combine(string, string)"/> is never handed
+    /// something it would treat as rooted.
+    /// </summary>
+    [Fact]
+    public void Posix_absolute_looking_path_names_a_file_inside_the_bundle()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // POSIX-only: "/etc/passwd" is not an absolute path on Windows.
+        }
+
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        Assert.True(bundle.TryResolveResource(concept, "/etc/passwd", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Missing, status);
+        Assert.StartsWith(System.IO.Path.GetFullPath(tmp.Path), abs!, System.StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The same hazard where the target actually exists outside the bundle: the
+    /// resolver must still stay inside, so the outside file is never read. This
+    /// is the case that would matter — a real <c>/etc/passwd</c>-shaped read —
+    /// and it is pinned against a file this test creates rather than a system
+    /// one, so it asserts containment without depending on the host's contents.
+    /// </summary>
+    [Fact]
+    public void Posix_absolute_path_to_an_existing_outside_file_is_not_read()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // POSIX-only, as above.
+        }
+
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        external.Write("secret.sql", "SELECT 'outside the bundle'\n");
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        var outsideAbsolute = System.IO.Path.Combine(System.IO.Path.GetFullPath(external.Path), "secret.sql");
+        Assert.True(bundle.TryResolveResource(concept, outsideAbsolute, out var abs, out var status));
+        Assert.NotEqual(ResourceResolutionStatus.Resolved, status);
+        if (abs is not null)
+        {
+            Assert.StartsWith(System.IO.Path.GetFullPath(tmp.Path), abs, System.StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The drive-relative guard must not misfire on POSIX, where a colon is an
+    /// ordinary filename character: <c>c:query.sql</c> is a legitimate bare
+    /// relative path there, not a drive-relative form, and
+    /// <see cref="System.IO.Path.IsPathRooted(string)"/> agrees. It must resolve
+    /// from the bundle root like any other bare path, not be rejected as
+    /// <see cref="ResourceResolutionStatus.Unsafe"/>.
+    /// </summary>
+    [Fact]
+    public void Colon_in_a_filename_is_an_ordinary_bare_path_on_posix()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // POSIX-only: on Windows this same string IS drive-relative.
+        }
+
+        using var tmp = new TempDir();
+        tmp.Write("c:query.sql", "SELECT 1\n");
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\n---\n");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single(c => c.Id.ToString() == "c/comp");
+
+        Assert.True(bundle.TryResolveResource(concept, "c:query.sql", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Resolved, status);
+        Assert.Equal("SELECT 1\n", bundle.ReadResourceText(abs!));
+    }
 }
