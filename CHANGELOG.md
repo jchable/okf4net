@@ -594,6 +594,9 @@ and this project adheres to
 
 ### Fixed
 
+- A §5 timestamp with no date part (`stale_after: 10:00Z`) is now unreadable —
+  warned and never evaluated — instead of being read as today at that time,
+  which made staleness flip during the day, per machine, ignoring `--as-of`.
 - `okf verify`, `okf_verify` and `RecordVerifications` now quote-escape a
   concept id in every error they echo, closing for the positional the
   line-forging hole `LineSafeText` closed for `--by`/`--at`; `okf verify -`

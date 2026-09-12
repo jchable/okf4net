@@ -131,7 +131,8 @@ internal static class OkfTimestamp
         // runs against the raw text, not the parsed value — DateTimeOffset does
         // not remember whether its source used "Z" or "z", "+02:00" or "+0200".
         if (HasExplicitOffset(raw)
-            && DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var withOffset))
+            && DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var withOffset)
+            && CarriesADate(raw))
         {
             instant = withOffset.ToUniversalTime();
             return IsConformantSpelling(raw) ? TimestampForm.Conformant : TimestampForm.NonIso8601;
@@ -234,6 +235,20 @@ internal static class OkfTimestamp
     /// on the spelling — the forms listed above that §5 rejects pass here and
     /// are classified <see cref="TimestampForm.NonIso8601"/> there.
     /// </summary>
+    /// <summary>
+    /// §5 requires a full <c>YYYY-MM-DDThh:mm[...]</c> datetime, so a
+    /// time-only value (<c>10:00Z</c>) is not a §5 timestamp under any
+    /// spelling — but <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
+    /// fills a missing date with the machine's wall-clock date, so `10:00Z`
+    /// read as "today at 10:00" -- a staleness that flipped within the day,
+    /// per machine, ignoring --as-of. DateTimeOffset does not support
+    /// NoCurrentDateDefault, so the date's presence is probed through DateTime,
+    /// where it does: a value with no date lands on year 1.
+    /// </summary>
+    private static bool CarriesADate(string raw) =>
+        DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.NoCurrentDateDefault | DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var probe)
+        && probe.Year > 1;
+
     private static bool HasExplicitOffset(string raw)
     {
         var s = raw.AsSpan().Trim();

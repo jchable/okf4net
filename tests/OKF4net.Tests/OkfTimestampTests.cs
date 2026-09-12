@@ -290,4 +290,36 @@ public class OkfTimestampTests
         Assert.Equal(TimestampForm.Unreadable, OkfTimestamp.Classify("2020-06-30T24:00:00Z", out var instant));
         Assert.Equal(default, instant);
     }
+
+    /// <summary>
+    /// <see cref="DateTimeOffset.TryParse(string, IFormatProvider, System.Globalization.DateTimeStyles, out DateTimeOffset)"/>
+    /// fills a missing date part with the machine's wall-clock date, so a
+    /// time-only value would read as "today at that time" -- staleness that
+    /// flips within the day, differs per machine, and ignores
+    /// <c>--as-of</c>. §5's grammar is a full <c>YYYY-MM-DDThh:mm[...]</c>
+    /// datetime, so a value with no date part at all is not a §5 timestamp
+    /// under any spelling and must classify Unreadable rather than being
+    /// evaluated.
+    /// </summary>
+    [Theory]
+    [InlineData("10:00Z")]
+    [InlineData("10:00+02:00")]
+    [InlineData("T10:00:00Z")]
+    public void A_value_without_a_date_is_unreadable_not_todays_date(string raw)
+    {
+        Assert.Equal(TimestampForm.Unreadable, OkfTimestamp.Classify(raw, out _));
+    }
+
+    /// <summary>
+    /// The date-presence guard must not catch a value that genuinely has a
+    /// date but is spelled non-ISO-8601 (a space instead of <c>T</c>) --
+    /// that still classifies <see cref="TimestampForm.NonIso8601"/> and keeps
+    /// its instant, exactly as before.
+    /// </summary>
+    [Fact]
+    public void A_readable_non_iso_spelling_that_has_a_date_is_still_evaluated()
+    {
+        Assert.Equal(TimestampForm.NonIso8601, OkfTimestamp.Classify("2026-06-30 10:00Z", out var instant));
+        Assert.Equal(new DateTimeOffset(2026, 6, 30, 10, 0, 0, TimeSpan.Zero), instant);
+    }
 }
