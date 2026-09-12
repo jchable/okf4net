@@ -315,6 +315,37 @@ public class ContainerIntegrationTests
         Assert.Contains("1234.56", System.Text.Json.JsonSerializer.Serialize(rows));
     }
 
+    /// <summary>
+    /// libpq spells a password containing `@` as `%40`; the wrapper must
+    /// percent-decode userinfo or that password never authenticates. And a
+    /// sanctioned statement that returns no rows (`CREATE TEMP TABLE …`) must
+    /// yield an empty `result`, not a TypeError after the statement already ran.
+    /// </summary>
+    [SkippableFact]
+    public async Task SqlClient_wrapper_decodes_userinfo_and_survives_a_statement_without_rows()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+        var conn = Environment.GetEnvironmentVariable("OKF_DEMO_PG_CONN");
+        Skip.If(string.IsNullOrEmpty(conn), "OKF_DEMO_PG_CONN is not set");
+
+        // Same credentials, password spelled percent-encoded ("demo" -> "d%65mo").
+        var encoded = conn!.Replace("postgres:demo@", "postgres:d%65mo@", StringComparison.Ordinal);
+        var profile = new ContainerRuntimeProfile
+        {
+            Image = "python:3.12-slim",
+            Kind = ContainerRuntimeKind.SqlClient,
+            Environment = new Dictionary<string, string> { ["OKF_CONN"] = encoded },
+        };
+        var executor = new SqlClientComputationExecutor(new CliContainerEngine(), profile);
+        var bound = new BoundComputation("postgres", "CREATE TEMP TABLE okf_probe(id int)", null, new Dictionary<string, object?>());
+        var contract = new AttestedComputationContract(Runtime: "postgres", Parameters: [], ComputationPath: null, Executor: new Executor(null, ["executed_sql", "result"]), Attester: null);
+
+        var receipt = await executor.ExecuteAsync(bound, contract);
+
+        Assert.Equal("CREATE TEMP TABLE okf_probe(id int)", receipt.Fields["executed_sql"]);
+        Assert.Empty(Assert.IsType<List<object?>>(receipt.Fields["result"]));
+    }
+
     [SkippableFact]
     public async Task Cancellation_kills_the_container_and_propagates_as_OperationCanceledException()
     {

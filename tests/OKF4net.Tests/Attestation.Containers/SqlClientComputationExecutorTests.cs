@@ -129,4 +129,18 @@ public class SqlClientComputationExecutorTests
         Assert.True(firstImport < pipInstall, "the wrapper installs before it ever tries to import");
         Assert.Contains("'pg8000==", wrapper, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// A SOURCE-TEXT SMOKE CHECK, not proof: xunit runs on .NET and cannot execute the
+    /// Python in <see cref="SqlClientComputationExecutor.Wrapper"/>. Its executable
+    /// guard is
+    /// <c>ContainerIntegrationTests.SqlClient_wrapper_decodes_userinfo_and_survives_a_statement_without_rows</c>,
+    /// run against real Docker + Postgres.
+    /// </summary>
+    [Fact]
+    public void Wrapper_decodes_userinfo_and_tolerates_a_rowless_statement_SMOKE_CHECK()
+    {
+        Assert.Contains("unquote(u.password", SqlClientComputationExecutor.Wrapper, StringComparison.Ordinal);
+        Assert.Contains("(rows or [])", SqlClientComputationExecutor.Wrapper, StringComparison.Ordinal);
+    }
 }

@@ -808,6 +808,12 @@ and this project adheres to
   a half-written directory — `--update` is the flag with no such window). A `--out`
   that is, or contains, `--repo` is now refused, as is one holding a symbolic link
   or junction.
+- **The SQL wrapper percent-decodes `OKF_CONN`'s userinfo and survives a
+  statement without a result set.** `urlparse` keeps `p%40ss` encoded (libpq
+  decodes it), so the only URL spelling of a password containing `@` failed
+  authentication; and `pg8000` returns `None` for DDL/INSERT, which the
+  wrapper iterated — after the statement had run against the live database —
+  reporting a completed side effect as a failed run.
 
 ## [0.5.0] - 2026-07-31
 

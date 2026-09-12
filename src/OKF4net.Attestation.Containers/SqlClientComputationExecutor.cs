@@ -60,16 +60,24 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
                            check=True, stdout=subprocess.DEVNULL)
             sys.path.insert(0, '/tmp/okf-pkgs')
             import pg8000.native
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, unquote
         envelope = json.load(sys.stdin)
         sql = envelope['sql']
         values = envelope.get('values') or {}
         u = urlparse(os.environ['OKF_CONN'])
-        conn = pg8000.native.Connection(user=u.username, password=u.password, host=u.hostname, port=u.port or 5432, database=u.path.lstrip('/'))
+        # urlparse hands userinfo back still percent-encoded; libpq decodes it,
+        # so a password spelled `p%40ss` (the only way to write `p@ss` in a URL)
+        # must be decoded here or it never authenticates.
+        conn = pg8000.native.Connection(
+            user=unquote(u.username or ''), password=unquote(u.password or ''),
+            host=u.hostname, port=u.port or 5432, database=unquote(u.path.lstrip('/')))
         try:
             rows = conn.run(sql, **values)
+            # A statement with no result set (DDL, INSERT without RETURNING)
+            # returns None, and iterating it raised AFTER the statement had
+            # already run -- a side-effecting run reported as a failure.
             cols = [c['name'] for c in conn.columns] if conn.columns else []
-            result = [dict(zip(cols, row)) for row in rows]
+            result = [dict(zip(cols, row)) for row in (rows or [])]
             # default=str: Postgres returns plenty of types json.dumps cannot encode --
             # NUMERIC as Decimal, DATE/TIMESTAMP as date/datetime, UUID, BYTEA as bytes.
             # Without it the dump raises TypeError AFTER the query has already run
