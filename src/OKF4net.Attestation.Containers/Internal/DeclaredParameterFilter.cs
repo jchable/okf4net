@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Attestation;
+
 namespace OKF4net.Attestation.Containers.Internal;
 
 /// <summary>
@@ -60,7 +62,7 @@ internal static class DeclaredParameterFilter
 
         if (!ok)
         {
-            throw new ArgumentException($"parameter value for declared type '{declaredType}' has an incompatible CLR type: {value.GetType().Name}");
+            throw new AttestationDiagnosticException($"parameter value for declared type '{declaredType}' has an incompatible CLR type: {value.GetType().Name}");
         }
 
         return value;

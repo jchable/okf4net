@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Attestation;
+
 namespace OKF4net.Attestation.Containers;
 
 /// <summary>
 /// A container run failed to produce a usable result (non-zero exit,
-/// malformed JSON, missing prerequisite). The exception message and
-/// <see cref="Stdout"/>/<see cref="Stderr"/> may carry bundle-derived detail
-/// (a query, a stack trace) — safe only for host-side inspection via
-/// <c>AttestationOutcome.Error</c>, never for the model-facing <c>Reasons</c>
-/// list, which the orchestrator populates from this exception's TYPE alone.
+/// malformed JSON, missing prerequisite). The <see cref="Exception.Message"/>
+/// itself — "SQL wrapper exited with code 1", "script stdout was not a JSON
+/// object" — is authored by this library and safe for the orchestrator to
+/// render into <c>AttestationOutcome.Reasons</c> (see
+/// <see cref="AttestationDiagnosticException"/>); <see cref="Stdout"/> and
+/// <see cref="Stderr"/> are not, and stay host-side-only via
+/// <c>AttestationOutcome.Error</c>.
 /// </summary>
-public sealed class ContainerExecutionException : Exception
+public sealed class ContainerExecutionException : AttestationDiagnosticException
 {
     /// <summary>Creates the exception with the captured stdout/stderr.</summary>
     public ContainerExecutionException(string message, string stdout, string stderr)

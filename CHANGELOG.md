@@ -288,6 +288,17 @@ and this project adheres to
 
 ### Changed
 
+- **Stage failures the library itself diagnosed now say why.** A new
+  `AttestationDiagnosticException` (`OKF4net.Attestation`) marks a message
+  authored by an OKF4net component — `ContainerExecutionException` derives
+  from it, and the allowlist binder's type rejection and the SQL executor's
+  reserved-name refusal throw it. The orchestrator renders such a message into
+  `Reasons` (`executor threw: ContainerExecutionException: SQL wrapper exited
+  with code 1`); every other exception is still reported by type only, since a
+  host runtime's message can carry a connection string. Before, a missing
+  attester, a Python crash, an unpullable image and a timeout all read as the
+  same `attester threw: ContainerExecutionException`.
+
 - **Breaking (`OKF4net.Attestation.Containers`, unpublished): containers run
   as uid 65534 with every capability dropped and `no-new-privileges`, by
   default.** The isolation settings — user, capabilities, privilege

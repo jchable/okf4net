@@ -1786,13 +1786,18 @@ public sealed class OkfBundleTools
 
         if (outcome.Error is not null)
         {
-            // The TYPE, never the message. This exception comes from a
-            // host-plugged runtime -- code this library does not control -- and
+            // The TYPE, never the message, for a foreign exception: it comes from
+            // a host-plugged runtime -- code this library does not control -- and
             // its message can name a connection string, a query, or the row it
-            // choked on. The exception object stays on outcome.Error for the
-            // host, which is the right audience; this line crosses into the
-            // model's context, which is not.
-            sb.Append('\n').Append("Error: ").Append(outcome.Error.GetType().Name).Append('\n');
+            // choked on. An AttestationDiagnosticException's message, by
+            // contrast, was authored by an OKF4net component (see that type's
+            // remarks) and is safe to render here, same as the orchestrator
+            // already renders it into Reasons. The exception object stays on
+            // outcome.Error for the host either way.
+            var errorLine = outcome.Error is AttestationDiagnosticException diagnostic
+                ? $"{diagnostic.GetType().Name}: {diagnostic.Message}"
+                : outcome.Error.GetType().Name;
+            sb.Append('\n').Append("Error: ").Append(errorLine).Append('\n');
         }
 
         return sb.ToString();

@@ -245,6 +245,34 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
+    /// Counterpart to <see cref="A_runtime_failure_does_not_render_the_exception_message_to_the_model"/>:
+    /// an <see cref="AttestationDiagnosticException"/>'s message was authored by
+    /// an OKF4net component (a binder's type rejection, an executor's malformed
+    /// receipt, a failed container) and carries no host secret, so
+    /// <c>FormatOutcome</c> must render it -- unlike the foreign exception above,
+    /// whose message stays off the model-facing text entirely.
+    /// </summary>
+    [Fact]
+    public async Task A_diagnostic_exceptions_message_is_rendered_but_a_foreign_ones_is_not()
+    {
+        const string diagnosis = "receipt was not a JSON object";
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.ThrowingExecutor(new AttestationDiagnosticException(diagnosis)),
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.Contains(diagnosis, rendered, StringComparison.Ordinal);
+        Assert.Contains("displayable: no", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Regression test: <see cref="OkfBundleTools.ReadConcept"/>'s Attested-Computation
     /// enrichment must not advertise <c>okf_run_computation</c> when no orchestrator is
     /// wired -- <see cref="OkfBundleTools.GetTools"/> only exposes that tool when

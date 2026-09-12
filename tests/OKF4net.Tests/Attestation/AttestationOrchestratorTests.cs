@@ -262,6 +262,27 @@ public class AttestationOrchestratorTests
     }
 
     [Fact]
+    public async Task A_diagnostic_exception_reports_its_message_a_foreign_one_only_its_type()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);   // the class's existing fixture helper (runtime "bigquery", parameter `year`)
+        var diagnostic = FakeRuntime.Passing();
+        diagnostic.ExecuteFunc = (_, _, _) => throw new AttestationDiagnosticException("receipt was not a JSON object");
+        var foreign = FakeRuntime.Passing();
+        foreign.ExecuteFunc = (_, _, _) => throw new InvalidOperationException("Host=db;Password=hunter2");
+
+        static AttestationOrchestrator Orch(FakeRuntime r) =>
+            new(new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = r }), clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var values = new Dictionary<string, object?> { ["year"] = 2026 };
+        var a = await Orch(diagnostic).RunAsync(bundle, id, values);
+        var b = await Orch(foreign).RunAsync(bundle, id, values);
+
+        Assert.Contains("executor threw: AttestationDiagnosticException: receipt was not a JSON object", a.Reasons);
+        Assert.Contains("executor threw: InvalidOperationException", b.Reasons);
+        Assert.DoesNotContain(b.Reasons, r => r.Contains("hunter2", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Executor_exception_is_captured_not_thrown()
     {
         using var tmp = new TempDir();

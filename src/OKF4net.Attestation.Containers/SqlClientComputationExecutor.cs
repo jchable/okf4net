@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text.Json;
+using OKF4net.Attestation;
 using OKF4net.Attestation.Containers.Internal;
 
 namespace OKF4net.Attestation.Containers;
@@ -129,7 +130,7 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
         {
             if (bound.Values.ContainsKey(reserved))
             {
-                throw new ArgumentException(
+                throw new AttestationDiagnosticException(
                     $"parameter '{reserved}' collides with a reserved keyword argument of the SQL driver; rename it in the concept's `parameters`.");
             }
         }

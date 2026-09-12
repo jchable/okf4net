@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using OKF4net;
+using OKF4net.Attestation;
 using OKF4net.Attestation.Containers;
 using Xunit;
 
@@ -39,7 +40,7 @@ public class AllowlistParameterBinderTests
     public async Task Rejects_a_declared_value_of_the_wrong_CLR_type()
     {
         var binder = new AllowlistParameterBinder();
-        await Assert.ThrowsAsync<ArgumentException>(
+        await Assert.ThrowsAsync<AttestationDiagnosticException>(
             async () => await binder.BindAsync(Contract, Computation, new Dictionary<string, object?> { ["name"] = 42 }));
     }
 

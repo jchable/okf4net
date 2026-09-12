@@ -48,14 +48,10 @@ public sealed class AttestationOrchestrator
     /// <para>
     /// When a host-plugged stage throws, the resulting
     /// <see cref="AttestationOutcome.Reasons"/> entry names the stage and the
-    /// exception TYPE ("executor threw: TimeoutException"), never its message.
-    /// The exception itself is on <see cref="AttestationOutcome.Error"/>, which
-    /// is where a host reads the detail. The split is deliberate: reasons are
-    /// rendered into an agent's context by <c>OkfBundleTools</c>, and the
-    /// message on an exception from code this library does not control can
-    /// carry a connection string, a query, or the data that broke it. Nothing
-    /// is lost to the host; what changes is what crosses into a model's
-    /// context.
+    /// exception TYPE ("executor threw: TimeoutException") — see
+    /// <see cref="RunStageAsync{T}"/>'s remarks for the one exception to that
+    /// rule. The exception itself is always on <see cref="AttestationOutcome.Error"/>,
+    /// which is where a host reads the full detail regardless.
     /// </para>
     ///
     /// <para>
@@ -152,58 +148,23 @@ public sealed class AttestationOrchestrator
         // stage and could return a DISPLAYABLE success: for §10 that means a
         // computation actually ran, possibly against a live warehouse, after
         // the caller had withdrawn.
-        cancellationToken.ThrowIfCancellationRequested();
-
-        BoundComputation bound;
-        try
+        var (bindOk, bound, bindReason, bindError) = await RunStageAsync(
+            "binder",
+            ct => runtime.Binder.BindAsync(contract, resolved, parameterValues, ct),
+            cancellationToken).ConfigureAwait(false);
+        if (!bindOk)
         {
-            bound = await runtime.Binder.BindAsync(contract, resolved, parameterValues, cancellationToken).ConfigureAwait(false);
-        }
-        // Cancellation is control flow, not data: errors-as-data is the contract
-        // for FAILURES, and a cancellation the CALLER asked for is not one.
-        // Caught by a bare `catch (Exception)` it became a business outcome, so
-        // a caller that cancelled got a normal-looking result and could not
-        // tell "the stage failed" from "I asked it to stop".
-        //
-        // But the exception TYPE alone does not identify that: HttpClient
-        // raises TaskCanceledException on its own request timeout with nobody's
-        // token cancelled, and a host executor calling one is the ordinary
-        // case. Filtering on the type alone let that escape as a raw exception
-        // — a downstream timeout is a stage failure like any other. The token's
-        // state is what actually distinguishes the two. Same filter on all
-        // three stages below.
-        // Caller cancellation arriving WRAPPED is still cancellation, but it has
-        // to reach the caller in the shape they catch. A direct
-        // OperationCanceledException falls through both clauses uncaught, which
-        // keeps its original stack trace.
-        catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
-        {
-            throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
-        }
-        catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
-        {
-            return Fail([$"binder threw: {e.GetType().Name}"], stale, e);
+            return Fail([bindReason!], stale, bindError);
         }
 
         // Step 6: execute.
-        cancellationToken.ThrowIfCancellationRequested();
-
-        Receipt receipt;
-        try
+        var (execOk, receipt, execReason, execError) = await RunStageAsync(
+            "executor",
+            ct => runtime.Executor.ExecuteAsync(bound, contract, ct),
+            cancellationToken).ConfigureAwait(false);
+        if (!execOk)
         {
-            receipt = await runtime.Executor.ExecuteAsync(bound, contract, cancellationToken).ConfigureAwait(false);
-        }
-        // Caller cancellation arriving WRAPPED is still cancellation, but it has
-        // to reach the caller in the shape they catch. A direct
-        // OperationCanceledException falls through both clauses uncaught, which
-        // keeps its original stack trace.
-        catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
-        {
-            throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
-        }
-        catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
-        {
-            return Fail([$"executor threw: {e.GetType().Name}"], stale, e);
+            return Fail([execReason!], stale, execError);
         }
 
         // Step 7: validate the receipt shape (no declared executor.receipt fields ⇒ trivially ok).
@@ -245,8 +206,7 @@ public sealed class AttestationOrchestrator
     /// value, because a non-passing verdict and a throwing attester contribute
     /// the same kind of entry to the same list the caller is already building.
     /// Behaviour is unchanged from when this was inline in <see cref="RunAsync"/>,
-    /// including the exact reason wording and the deliberate choice to report
-    /// the exception TYPE rather than its message.
+    /// including the exact reason wording.
     /// </summary>
     /// <param name="runtime">The resolved runtime whose attester to invoke.</param>
     /// <param name="context">The §10.5 attestation context for this run.</param>
@@ -258,28 +218,72 @@ public sealed class AttestationOrchestrator
         List<string> reasons,
         CancellationToken cancellationToken)
     {
+        var (ok, verdict, reason, error) = await RunStageAsync(
+            "attester",
+            ct => runtime.Attester.AttestAsync(context, ct),
+            cancellationToken).ConfigureAwait(false);
+        if (!ok)
+        {
+            reasons.Add(reason!);
+            return (null, error);
+        }
+
+        if (verdict is { Passed: false } failed)
+        {
+            reasons.Add(string.IsNullOrEmpty(failed.Detail) ? "attestation did not pass" : $"attestation did not pass: {failed.Detail}");
+        }
+
+        return (verdict, null);
+    }
+
+    /// <summary>
+    /// Runs one host-plugged stage under the single cancellation and
+    /// reporting policy: a caller cancellation (direct or wrapped) propagates
+    /// as an <see cref="OperationCanceledException"/> tied to the caller's
+    /// token; any other exception becomes a reason — the message included
+    /// only for an <see cref="AttestationDiagnosticException"/>, the type
+    /// alone for everything else (see that type's remarks for why).
+    ///
+    /// Cancellation is control flow, not data: errors-as-data is the contract
+    /// for FAILURES, and a cancellation the CALLER asked for is not one. A
+    /// bare `catch (Exception)` would turn it into a business outcome, so a
+    /// caller that cancelled got a normal-looking result and could not tell
+    /// "the stage failed" from "I asked it to stop".
+    ///
+    /// But the exception TYPE alone does not identify that: HttpClient raises
+    /// TaskCanceledException on its own request timeout with nobody's token
+    /// cancelled, and a host executor calling one is the ordinary case —
+    /// that is a stage failure like any other. The token's state is what
+    /// actually distinguishes the two.
+    ///
+    /// Caller cancellation arriving WRAPPED is still cancellation, but it has
+    /// to reach the caller in the shape they catch. A direct
+    /// OperationCanceledException falls through both clauses uncaught, which
+    /// keeps its original stack trace.
+    /// </summary>
+    /// <param name="stage">The stage's name, as it appears in a reason string ("binder threw: ...").</param>
+    /// <param name="run">The host-plugged stage to invoke.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    private static async ValueTask<(bool Ok, T Result, string? Reason, Exception? Error)> RunStageAsync<T>(
+        string stage,
+        Func<CancellationToken, ValueTask<T>> run,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            var verdict = await runtime.Attester.AttestAsync(context, cancellationToken).ConfigureAwait(false);
-            if (verdict is { Passed: false } failed)
-            {
-                reasons.Add(string.IsNullOrEmpty(failed.Detail) ? "attestation did not pass" : $"attestation did not pass: {failed.Detail}");
-            }
-
-            return (verdict, null);
+            return (true, await run(cancellationToken).ConfigureAwait(false), null, null);
         }
-        // Caller cancellation arriving WRAPPED is still cancellation, but it has
-        // to reach the caller in the shape they catch. A direct
-        // OperationCanceledException falls through both clauses uncaught, which
-        // keeps its original stack trace.
         catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
         {
             throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
         }
         catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
         {
-            reasons.Add($"attester threw: {e.GetType().Name}");
-            return (null, e);
+            var reason = e is AttestationDiagnosticException
+                ? $"{stage} threw: {e.GetType().Name}: {e.Message.ReplaceLineEndings(" ")}"
+                : $"{stage} threw: {e.GetType().Name}";
+            return (false, default!, reason, e);
         }
     }
 

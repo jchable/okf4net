@@ -98,7 +98,7 @@ public class SqlClientComputationExecutorTests
         var executor = new SqlClientComputationExecutor(engine, Profile);
         var bound = new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?> { [name] = "x" });
 
-        var ex = await Assert.ThrowsAsync<ArgumentException>(
+        var ex = await Assert.ThrowsAsync<AttestationDiagnosticException>(
             async () => await executor.ExecuteAsync(bound, Contract));
 
         Assert.Contains(name, ex.Message, StringComparison.Ordinal);
