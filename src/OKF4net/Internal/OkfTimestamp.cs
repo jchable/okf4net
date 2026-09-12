@@ -228,10 +228,13 @@ internal static class OkfTimestamp
     /// time-only value (<c>10:00Z</c>) is not a §5 timestamp under any
     /// spelling — but <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
     /// fills a missing date with the machine's wall-clock date, so `10:00Z`
-    /// read as "today at 10:00" -- a staleness that flipped within the day,
+    /// read as "today at 10:00" — a staleness that flipped within the day,
     /// per machine, ignoring --as-of. DateTimeOffset does not support
     /// NoCurrentDateDefault, so the date's presence is probed through DateTime,
-    /// where it does: a value with no date lands on year 1.
+    /// where it does: a value with no date lands on year 1. That coincides
+    /// with <c>NoCurrentDateDefault</c>'s own year-1 sentinel, so a literal
+    /// <c>0001-01-01T00:00:00Z</c> would misclassify as date-less too — not a
+    /// spelling any real <c>stale_after</c> or <c>generated.at</c> uses.
     /// </summary>
     private static bool CarriesADate(string raw) =>
         DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.NoCurrentDateDefault | DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var probe)
