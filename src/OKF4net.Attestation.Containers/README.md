@@ -82,23 +82,34 @@ Python-capable: the wrapper is `python3`.)
 ## What the host controls
 
 `ContainerRuntimeProfile` carries the image, the interpreter, the environment,
-the `--network` mode, and four per-run ceilings (`--memory`, `--cpus`,
-`--pids-limit`, wall clock). A non-positive ceiling is **rejected**, because to
-docker and podman zero there means *unlimited* — a value that removes the
-ceiling it appears to set.
+and the `--network` mode. Everything about how hardened the container itself
+is lives on one shared `ContainerIsolation` record (`profile.Isolation` /
+`ContainerAttesterOptions.Isolation`), so a hardening decision reaches the
+script executor, the SQL executor and the attester at once instead of landing
+on two of the three and missing the third:
 
-Network access defaults closed for `Script` and open for `SqlClient` (which
-must reach a database, and a package index unless its image vendors the driver),
-and either can be overridden — including back to the engine's default, with an
-explicit `null`.
+- **`User`** — passed as `--user`; defaults to `65534:65534` (`nobody` on every
+  mainstream image), so bundle-authored code never runs as the image's default
+  user (root, on most images). A host whose image insists on its own user sets
+  this to `null`, knowingly.
+- **`DropAllCapabilities`** — `--cap-drop ALL` when true (default).
+- **`NoNewPrivileges`** — `--security-opt no-new-privileges` when true (default).
+- **`ReadOnlyRootFilesystem`** / **`TmpfsMounts`** — the root filesystem is
+  mounted **read-only** by default, with `/tmp` as a memory-backed `tmpfs` that
+  dies with the container. That is not a hole in the hardening: it is the one
+  writable path the stages genuinely need — the attester bootstrap writes the
+  bundle's module there before importing it, and the SQL wrapper installs its
+  driver there — named explicitly instead of leaving the whole image writable.
+- **The four per-run ceilings** (`MemoryBytes`/`--memory`, `Cpus`/`--cpus`,
+  `PidsLimit`/`--pids-limit`, `Timeout`, wall clock). A non-positive ceiling is
+  **rejected**, because to docker and podman zero there means *unlimited* — a
+  value that removes the ceiling it appears to set.
 
-The root filesystem is mounted **read-only** by default, with `/tmp` as a
-memory-backed `tmpfs` that dies with the container. That is not a hole in the
-hardening: it is the one writable path the stages genuinely need — the attester
-bootstrap writes the bundle's module there before importing it, and the SQL
-wrapper installs its driver there — named explicitly instead of leaving the
-whole image writable. Both `ReadOnlyRootFilesystem` and `TmpfsMounts` are on the
-profile if a host needs different paths.
+Network access is the one isolation setting that stays on the profile rather
+than `ContainerIsolation`, because it defaults *by kind*: closed for `Script`
+and open for `SqlClient` (which must reach a database, and a package index
+unless its image vendors the driver). Either can be overridden — including
+back to the engine's default, with an explicit `null`.
 
 ## Limitations in this version
 
@@ -119,3 +130,9 @@ profile if a host needs different paths.
   that the database ran it. Real provenance needs a receipt field the engine
   itself produces, such as a BigQuery `job_id` resolved against the job's own
   recorded SQL.
+- **`--user` is a uid, not a sandbox.** Non-root plus `--cap-drop ALL` and
+  `no-new-privileges` removes the ordinary escalation paths; it does not add
+  user namespaces, seccomp/AppArmor profiles beyond the engine's defaults, or
+  gVisor/Kata-class isolation. An image whose entrypoint requires root will
+  fail under the default profile — set `Isolation = new() { User = null }` to
+  keep the image's user, knowingly.

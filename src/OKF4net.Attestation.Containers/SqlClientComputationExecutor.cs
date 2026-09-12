@@ -128,20 +128,7 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
 
         var envelope = JsonSerializer.Serialize(new { sql = bound.BoundText ?? "", values = bound.Values });
 
-        var spec = new ContainerRunSpec(
-            Image: profile.Image,
-            Command: ["python3", "-c", Wrapper],
-            Stdin: envelope,
-            Environment: profile.Environment,
-            NetworkMode: profile.NetworkMode,
-            MemoryBytes: profile.MemoryBytes,
-            Cpus: profile.Cpus,
-            PidsLimit: profile.PidsLimit,
-            Timeout: profile.Timeout)
-        {
-            ReadOnlyRootFilesystem = profile.ReadOnlyRootFilesystem,
-            TmpfsMounts = profile.TmpfsMounts,
-        };
+        var spec = profile.Isolation.ToRunSpec(profile.Image, ["python3", "-c", Wrapper], envelope, profile.Environment, profile.NetworkMode);
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         return ReceiptParsing.Parse(result, "SQL wrapper");

@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using OKF4net.Attestation.Containers.Internal;
-
 namespace OKF4net.Attestation.Containers;
 
 /// <summary>Which execution protocol a <see cref="ContainerRuntimeProfile"/> uses.</summary>
@@ -63,57 +61,11 @@ public sealed record ContainerRuntimeProfile
         }
     }
 
-    /// <summary>
-    /// Mount the container's root filesystem read-only (<c>--read-only</c>). On by
-    /// default, for both kinds: a sanctioned computation has no reason to write into
-    /// the image, and the writable scratch the stages genuinely need is named
-    /// explicitly by <see cref="TmpfsMounts"/> instead of being the whole filesystem.
-    /// Verified against real Docker for all three paths, including the SQL wrapper's
-    /// driver install — which is why this is a default rather than an opt-in.
-    /// </summary>
-    public bool ReadOnlyRootFilesystem { get; init; } = true;
-
-    /// <summary>
-    /// The writable paths under <see cref="ReadOnlyRootFilesystem"/>, memory-backed and
-    /// destroyed with the container. <c>/tmp</c> by default, which is what the attester
-    /// bootstrap's temp module and the SQL wrapper's <c>--target</c> install both use.
-    /// </summary>
-    public IReadOnlyList<string> TmpfsMounts { get; init; } = ["/tmp"];
-
-    /// <summary>Default <c>--memory</c> ceiling. 512 MiB. Must be positive: zero or negative means <i>unlimited</i> to docker and podman, so it is rejected rather than silently removing the ceiling.</summary>
-    public long MemoryBytes
-    {
-        get => _memoryBytes;
-        init => _memoryBytes = ResourceCeiling.Positive(value, nameof(MemoryBytes));
-    }
-
-    /// <summary>Default <c>--cpus</c> ceiling. Must be positive (see <see cref="MemoryBytes"/>).</summary>
-    public double Cpus
-    {
-        get => _cpus;
-        init => _cpus = ResourceCeiling.Positive(value, nameof(Cpus));
-    }
-
-    /// <summary>Default <c>--pids-limit</c> ceiling. Must be positive (see <see cref="MemoryBytes"/>).</summary>
-    public int PidsLimit
-    {
-        get => _pidsLimit;
-        init => _pidsLimit = ResourceCeiling.Positive(value, nameof(PidsLimit));
-    }
-
-    /// <summary>Wall-clock ceiling enforced independently of the caller's <see cref="CancellationToken"/>. Must be a positive duration a timer can count (at most about 49.7 days): <c>Timeout.InfiniteTimeSpan</c> is rejected rather than read as "no ceiling".</summary>
-    public TimeSpan Timeout
-    {
-        get => _timeout;
-        init => _timeout = ResourceCeiling.Timeout(value, nameof(Timeout));
-    }
+    /// <summary>Who the container runs as, what it keeps, and the four ceilings. Hardened by default — see <see cref="ContainerIsolation"/>.</summary>
+    public ContainerIsolation Isolation { get; init; } = new();
 
     private readonly string? _networkMode;
     private readonly bool _networkModeSet;
-    private readonly long _memoryBytes = 512L * 1024 * 1024;
-    private readonly double _cpus = 1.0;
-    private readonly int _pidsLimit = 64;
-    private readonly TimeSpan _timeout = TimeSpan.FromMinutes(2);
 }
 
 /// <summary>
@@ -133,42 +85,12 @@ public sealed record ContainerAttesterOptions
     /// <summary>Environment variables passed to every attester run.</summary>
     public IReadOnlyDictionary<string, string> Environment { get; init; } = new Dictionary<string, string>();
 
-    /// <summary>Mount the attester container's root filesystem read-only. On by default — an attester is a pure function over its inputs.</summary>
-    public bool ReadOnlyRootFilesystem { get; init; } = true;
-
-    /// <summary>The writable paths under <see cref="ReadOnlyRootFilesystem"/>. <c>/tmp</c> by default: the bootstrap writes the bundle's attester module there before importing it.</summary>
-    public IReadOnlyList<string> TmpfsMounts { get; init; } = ["/tmp"];
-
-    /// <summary>Default <c>--memory</c> ceiling. 256 MiB — an attester is a pure function over its inputs, never a network call. Must be positive: zero or negative means <i>unlimited</i> to docker and podman.</summary>
-    public long MemoryBytes
+    /// <summary>Who the container runs as, what it keeps, and the four ceilings. Hardened by default — see <see cref="ContainerIsolation"/> — with the attester's smaller ceilings (256 MiB, 0.5 CPU, 32 pids, 30 s): an attester is a pure function over its inputs, never a network call.</summary>
+    public ContainerIsolation Isolation { get; init; } = new()
     {
-        get => _memoryBytes;
-        init => _memoryBytes = ResourceCeiling.Positive(value, nameof(MemoryBytes));
-    }
-
-    /// <summary>Default <c>--cpus</c> ceiling. Must be positive (see <see cref="MemoryBytes"/>).</summary>
-    public double Cpus
-    {
-        get => _cpus;
-        init => _cpus = ResourceCeiling.Positive(value, nameof(Cpus));
-    }
-
-    /// <summary>Default <c>--pids-limit</c> ceiling. Must be positive (see <see cref="MemoryBytes"/>).</summary>
-    public int PidsLimit
-    {
-        get => _pidsLimit;
-        init => _pidsLimit = ResourceCeiling.Positive(value, nameof(PidsLimit));
-    }
-
-    /// <summary>Wall-clock ceiling. Must be a positive duration a timer can count (see <see cref="ContainerRuntimeProfile.Timeout"/>).</summary>
-    public TimeSpan Timeout
-    {
-        get => _timeout;
-        init => _timeout = ResourceCeiling.Timeout(value, nameof(Timeout));
-    }
-
-    private readonly long _memoryBytes = 256L * 1024 * 1024;
-    private readonly double _cpus = 0.5;
-    private readonly int _pidsLimit = 32;
-    private readonly TimeSpan _timeout = TimeSpan.FromSeconds(30);
+        MemoryBytes = 256L * 1024 * 1024,
+        Cpus = 0.5,
+        PidsLimit = 32,
+        Timeout = TimeSpan.FromSeconds(30),
+    };
 }

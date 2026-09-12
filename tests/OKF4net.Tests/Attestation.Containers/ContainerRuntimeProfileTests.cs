@@ -28,10 +28,10 @@ public class ContainerRuntimeProfileTests
     public void A_default_profile_is_valid()
     {
         var profile = Default();
-        Assert.True(profile.MemoryBytes > 0);
-        Assert.True(profile.Cpus > 0);
-        Assert.True(profile.PidsLimit > 0);
-        Assert.True(profile.Timeout > TimeSpan.Zero);
+        Assert.True(profile.Isolation.MemoryBytes > 0);
+        Assert.True(profile.Isolation.Cpus > 0);
+        Assert.True(profile.Isolation.PidsLimit > 0);
+        Assert.True(profile.Isolation.Timeout > TimeSpan.Zero);
     }
 
     [Theory]
@@ -39,27 +39,27 @@ public class ContainerRuntimeProfileTests
     [InlineData(-1L)]
     public void A_non_positive_memory_ceiling_is_rejected(long bytes) =>
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => Default() with { MemoryBytes = bytes });
+            () => Default() with { Isolation = new() { MemoryBytes = bytes } });
 
     [Theory]
     [InlineData(0d)]
     [InlineData(-0.5d)]
     public void A_non_positive_cpu_ceiling_is_rejected(double cpus) =>
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => Default() with { Cpus = cpus });
+            () => Default() with { Isolation = new() { Cpus = cpus } });
 
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
     public void A_non_positive_pids_ceiling_is_rejected(int pids) =>
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => Default() with { PidsLimit = pids });
+            () => Default() with { Isolation = new() { PidsLimit = pids } });
 
     [Fact]
     public void A_non_positive_timeout_is_rejected()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = TimeSpan.Zero });
-        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = TimeSpan.FromSeconds(-1) });
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Isolation = new() { Timeout = TimeSpan.Zero } });
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Isolation = new() { Timeout = TimeSpan.FromSeconds(-1) } });
     }
 
     /// <summary>
@@ -72,12 +72,12 @@ public class ContainerRuntimeProfileTests
     public void The_attester_options_enforce_the_same_ceilings()
     {
         var options = new ContainerAttesterOptions();
-        Assert.True(options.MemoryBytes > 0);
+        Assert.True(options.Isolation.MemoryBytes > 0);
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => options with { MemoryBytes = 0 });
-        Assert.Throws<ArgumentOutOfRangeException>(() => options with { Cpus = 0 });
-        Assert.Throws<ArgumentOutOfRangeException>(() => options with { PidsLimit = 0 });
-        Assert.Throws<ArgumentOutOfRangeException>(() => options with { Timeout = TimeSpan.Zero });
+        Assert.Throws<ArgumentOutOfRangeException>(() => options with { Isolation = new() { MemoryBytes = 0 } });
+        Assert.Throws<ArgumentOutOfRangeException>(() => options with { Isolation = new() { Cpus = 0 } });
+        Assert.Throws<ArgumentOutOfRangeException>(() => options with { Isolation = new() { PidsLimit = 0 } });
+        Assert.Throws<ArgumentOutOfRangeException>(() => options with { Isolation = new() { Timeout = TimeSpan.Zero } });
     }
 
     /// <summary>
@@ -151,7 +151,7 @@ public class ContainerRuntimeProfileTests
     /// </summary>
     [Fact]
     public void An_infinite_cpu_ceiling_is_rejected() =>
-        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Cpus = double.PositiveInfinity });
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Isolation = new() { Cpus = double.PositiveInfinity } });
 
     /// <summary>
     /// The message has to name the property, because the failure surfaces at
@@ -160,7 +160,7 @@ public class ContainerRuntimeProfileTests
     [Fact]
     public void The_rejection_names_the_offending_property()
     {
-        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { PidsLimit = 0 });
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Isolation = new() { PidsLimit = 0 } });
         Assert.Equal("PidsLimit", ex.ParamName);
     }
 
@@ -188,9 +188,9 @@ public class ContainerRuntimeProfileTests
     [Fact]
     public void A_timeout_outside_the_range_a_timer_can_enforce_is_rejected()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = System.Threading.Timeout.InfiniteTimeSpan });
-        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = TimeSpan.MaxValue });
-        Assert.Throws<ArgumentOutOfRangeException>(() => new ContainerAttesterOptions() with { Timeout = TimeSpan.MaxValue });
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Isolation = new() { Timeout = System.Threading.Timeout.InfiniteTimeSpan } });
+        Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Isolation = new() { Timeout = TimeSpan.MaxValue } });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ContainerAttesterOptions() with { Isolation = new() { Timeout = TimeSpan.MaxValue } });
     }
 
     /// <summary>
@@ -203,7 +203,7 @@ public class ContainerRuntimeProfileTests
     [Fact]
     public void A_rejected_timeout_is_diagnosed_as_a_timeout_not_as_a_removed_ceiling()
     {
-        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Timeout = TimeSpan.Zero });
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => Default() with { Isolation = new() { Timeout = TimeSpan.Zero } });
         Assert.Equal("Timeout", ex.ParamName);
         Assert.DoesNotContain("remove the ceiling", ex.Message);
         Assert.Contains("Timeout", ex.Message);

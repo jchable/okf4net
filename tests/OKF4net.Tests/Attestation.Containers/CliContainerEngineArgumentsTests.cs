@@ -112,4 +112,35 @@ public class CliContainerEngineArgumentsTests
         Assert.DoesNotContain("--read-only", args);
         Assert.DoesNotContain("--tmpfs", args);
     }
+
+    [Fact]
+    public void Emits_user_cap_drop_and_no_new_privileges_when_set()
+    {
+        var spec = Spec() with { User = "65534:65534", DropAllCapabilities = true, NoNewPrivileges = true };
+        var args = CliContainerEngine.BuildRunArguments(spec, "okf-1").ToList();
+        Assert.Equal("65534:65534", args[args.IndexOf("--user") + 1]);
+        Assert.Equal("ALL", args[args.IndexOf("--cap-drop") + 1]);
+        Assert.Equal("no-new-privileges", args[args.IndexOf("--security-opt") + 1]);
+    }
+
+    [Fact]
+    public void A_raw_spec_omits_the_isolation_flags_by_default()
+    {
+        var args = CliContainerEngine.BuildRunArguments(Spec(), "okf-1");
+        Assert.DoesNotContain("--user", args);
+        Assert.DoesNotContain("--cap-drop", args);
+        Assert.DoesNotContain("--security-opt", args);
+    }
+
+    [Fact]
+    public void A_profile_built_spec_carries_the_hardened_defaults()
+    {
+        var profile = new ContainerRuntimeProfile { Image = "python:3.12-slim", Kind = ContainerRuntimeKind.Script };
+        var spec = profile.Isolation.ToRunSpec(profile.Image, ["python3", "-"], "print()", profile.Environment, profile.NetworkMode);
+        var args = CliContainerEngine.BuildRunArguments(spec, "okf-1").ToList();
+        Assert.Equal("65534:65534", args[args.IndexOf("--user") + 1]);
+        Assert.Contains("--cap-drop", args);
+        Assert.Contains("--security-opt", args);
+        Assert.Contains("--read-only", args);
+    }
 }

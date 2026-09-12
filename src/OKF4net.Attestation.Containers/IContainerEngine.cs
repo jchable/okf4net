@@ -57,6 +57,27 @@ public sealed record ContainerRunSpec(
     /// bounded to paths the host names rather than the whole image.
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts { get; init; } = [];
+
+    /// <summary>
+    /// Passed as <c>--user</c> when non-null; <see langword="null"/> (the default)
+    /// leaves the image's own default user in place, exactly as a hand-built spec
+    /// behaved before this existed. The safe non-root default lives on
+    /// <see cref="ContainerIsolation"/>, not here.
+    /// </summary>
+    public string? User { get; init; }
+
+    /// <summary>
+    /// Passed as <c>--cap-drop ALL</c> when <see langword="true"/>. <see langword="false"/>
+    /// by default, like <see cref="ReadOnlyRootFilesystem"/>: a spec built by hand keeps
+    /// the engine's default capability set unless it opts in.
+    /// </summary>
+    public bool DropAllCapabilities { get; init; }
+
+    /// <summary>
+    /// Passed as <c>--security-opt no-new-privileges</c> when <see langword="true"/>.
+    /// <see langword="false"/> by default (see <see cref="DropAllCapabilities"/>).
+    /// </summary>
+    public bool NoNewPrivileges { get; init; }
 }
 
 /// <summary>One container run's outcome: exit code plus captured (size-bounded) stdout/stderr.</summary>

@@ -53,6 +53,24 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             args.Add(tmpfs);
         }
 
+        if (spec.User is { } user)
+        {
+            args.Add("--user");
+            args.Add(user);
+        }
+
+        if (spec.DropAllCapabilities)
+        {
+            args.Add("--cap-drop");
+            args.Add("ALL");
+        }
+
+        if (spec.NoNewPrivileges)
+        {
+            args.Add("--security-opt");
+            args.Add("no-new-privileges");
+        }
+
         // A ceiling is either absent (null -- the flag is omitted and the engine's own
         // default applies) or a real ceiling. It is never zero or negative, because
         // docker and podman read those as UNLIMITED: emitting `--memory 0` would

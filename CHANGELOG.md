@@ -288,6 +288,18 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking (`OKF4net.Attestation.Containers`, unpublished): containers run
+  as uid 65534 with every capability dropped and `no-new-privileges`, by
+  default.** The isolation settings — user, capabilities, privilege
+  escalation, read-only root, tmpfs mounts and the four ceilings — moved off
+  `ContainerRuntimeProfile`/`ContainerAttesterOptions` onto one shared
+  `ContainerIsolation` record (`Isolation = new() { … }`), so a hardening
+  decision reaches the script executor, the SQL executor and the attester at
+  once. A hand-built `ContainerRunSpec` stays opt-in, as `ReadOnlyRootFilesystem`
+  already was. Found by an external review: untrusted bundle code ran as the
+  image's default user (root on `python:3.12-slim`) with Docker's default
+  capability set.
+
 - **`OKF4net.Attestation`: a declared but unresolvable `attester.resource` now
   fails the run, and `AttestationContext` gained a field.** Both are breaking for
   existing consumers of a published package, so state them plainly:

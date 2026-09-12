@@ -64,20 +64,7 @@ public sealed class ContainerAttester(IContainerEngine engine, ContainerAttester
             },
         });
 
-        var spec = new ContainerRunSpec(
-            Image: options.Image,
-            Command: ["python3", "-c", Bootstrap],
-            Stdin: envelope,
-            Environment: options.Environment,
-            NetworkMode: "none",
-            MemoryBytes: options.MemoryBytes,
-            Cpus: options.Cpus,
-            PidsLimit: options.PidsLimit,
-            Timeout: options.Timeout)
-        {
-            ReadOnlyRootFilesystem = options.ReadOnlyRootFilesystem,
-            TmpfsMounts = options.TmpfsMounts,
-        };
+        var spec = options.Isolation.ToRunSpec(options.Image, ["python3", "-c", Bootstrap], envelope, options.Environment, "none");
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         if (result.ExitCode != 0)

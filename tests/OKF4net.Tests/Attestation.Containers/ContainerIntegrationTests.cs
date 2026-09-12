@@ -86,8 +86,17 @@ public class ContainerIntegrationTests
     ///
     /// Two halves, and both are needed: a write OUTSIDE the tmpfs must fail, and a
     /// write INSIDE it must succeed. The first alone would also pass if the image
-    /// simply had no <c>/root</c>; the second alone would pass with no hardening at
-    /// all. Together they pin exactly the boundary the profile draws.
+    /// simply had no writable directory at all; the second alone would pass with no
+    /// hardening at all. Together they pin exactly the boundary the profile draws.
+    ///
+    /// The outside probe targets <c>/var/tmp</c>, not <c>/root</c>: the profile now
+    /// also runs as uid 65534 by default (see <see cref="ContainerIsolation.User"/>),
+    /// and <c>/root</c> is <c>0700</c> root-owned, so a non-root writer is refused by
+    /// ordinary Unix permissions (<c>PermissionError</c>) before the read-only mount
+    /// is ever consulted -- which would prove the wrong thing here. <c>/var/tmp</c> is
+    /// world-writable (<c>1777</c>) on this image, so ordinary permissions let the
+    /// write through and it is the read-only root itself that then refuses it with a
+    /// bare <c>OSError</c> (no more specific subclass -- Python has none for EROFS).
     /// </summary>
     [SkippableFact]
     public async Task Read_only_root_blocks_a_write_outside_the_tmpfs_and_allows_one_inside()
@@ -99,8 +108,8 @@ public class ContainerIntegrationTests
 
         // Sanity: the profile is hardened by default. If this ever flips, the rest of
         // this test would quietly stop testing anything.
-        Assert.True(profile.ReadOnlyRootFilesystem);
-        Assert.Contains("/tmp", profile.TmpfsMounts);
+        Assert.True(profile.Isolation.ReadOnlyRootFilesystem);
+        Assert.Contains("/tmp", profile.Isolation.TmpfsMounts);
 
         var executor = new ScriptComputationExecutor(engine, profile);
         var contract = new AttestedComputationContract("python", [], null, null, null);
@@ -109,7 +118,7 @@ public class ContainerIntegrationTests
             import json
             outside = None
             try:
-                open('/root/okf-probe', 'w').write('x')
+                open('/var/tmp/okf-probe', 'w').write('x')
                 outside = 'written'
             except OSError as e:
                 outside = type(e).__name__
@@ -434,7 +443,7 @@ public class ContainerIntegrationTests
             Kind = ContainerRuntimeKind.SqlClient,
             NetworkMode = "none",
             Environment = new Dictionary<string, string> { ["OKF_CONN"] = "postgresql://u:p@127.0.0.1:1/nowhere" },
-            Timeout = TimeSpan.FromSeconds(60),
+            Isolation = new() { Timeout = TimeSpan.FromSeconds(60) },
         };
         var executor = new SqlClientComputationExecutor(engine, profile);
         var bound = new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?>());
