@@ -239,6 +239,12 @@ verdict should pin the date rather than let the calendar move under it. Note the
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 
+Both commands' `--json` document carries `asOf` (the evaluation date) and
+`evaluatedAt` (the exact instant, `yyyy-MM-ddTHH:mm:ssZ`) right beside it —
+`asOf` is `evaluatedAt`'s date only, both read from one clock read per run, so
+an archived report can be told apart from an unpinned run down to the second,
+not just the day.
+
 `okf verify <bundle> <id>… --by <actor>` records a review (§5.2): it adds — or,
 for a repeat review from the same actor, replaces — a `{ by, at }` entry in
 each named concept's `verified` list. It is the verb that answers what

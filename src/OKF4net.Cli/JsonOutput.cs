@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using OKF4net.Internal;
 
 namespace OKF4net.Cli;
 
@@ -18,6 +19,7 @@ internal sealed record DiagnosticJson(
 internal sealed record ValidateJsonResult(
     string Bundle,
     string AsOf,
+    string EvaluatedAt,
     bool Conformant,
     int ConceptCount,
     int ErrorCount,
@@ -77,6 +79,7 @@ internal sealed record AuditFindingJson(
 internal sealed record AuditJsonResult(
     string Bundle,
     string AsOf,
+    string EvaluatedAt,
     int ConceptCount,
     AuditQueryJson Query,
     TrustCountsJson Trust,
@@ -106,18 +109,19 @@ internal static class JsonOutput
     /// <summary>Writes <c>okf validate --json</c>'s result to <paramref name="stdout"/> as a single line-terminated JSON document.</summary>
     /// <param name="stdout">Where the document is written.</param>
     /// <param name="bundlePath">The bundle path, echoed as given on the command line.</param>
-    /// <param name="asOf">
-    /// The date of the instant staleness (§5.5) was evaluated at — the whole
-    /// point of <c>--as-of</c>. Without it in the document, an archived report
-    /// cannot be told apart from an unpinned run, so the reproducibility the
-    /// flag buys is not visible in the artefact itself.
+    /// <param name="evaluatedAt">
+    /// The exact instant staleness (§5.5) was evaluated at — the single clock
+    /// read the caller took, and the whole point of <c>--as-of</c>. Without it
+    /// in the document, an archived report cannot be told apart from an
+    /// unpinned run, so the reproducibility the flag buys is not visible in
+    /// the artefact itself. <c>asOf</c> is this instant's date only.
     /// </param>
     /// <param name="bundle">The validated bundle.</param>
     /// <param name="report">The validator's findings.</param>
     internal static void WriteValidate(
         TextWriter stdout,
         string bundlePath,
-        DateOnly asOf,
+        DateTimeOffset evaluatedAt,
         Bundle bundle,
         ValidationReport report)
     {
@@ -133,7 +137,8 @@ internal static class JsonOutput
 
         var result = new ValidateJsonResult(
             bundlePath,
-            asOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            DateOnly.FromDateTime(evaluatedAt.UtcDateTime).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            OkfTimestamp.FormatUtc(evaluatedAt.UtcDateTime),
             report.IsConformant,
             bundle.Count,
             report.ErrorCount,
@@ -207,6 +212,7 @@ internal static class JsonOutput
         var result = new AuditJsonResult(
             bundlePath,
             report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            OkfTimestamp.FormatUtc(report.EvaluatedAt.UtcDateTime),
             report.ConceptCount,
             new AuditQueryJson(
                 query.StaleOnly,

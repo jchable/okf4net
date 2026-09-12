@@ -288,6 +288,12 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking (0.x):** `IOkfClock.Now` is the required member and `Today`
+  derives from it — a `Today`-only clock written against 0.5.0 evaluated every
+  §5.5 instant comparison at 00:00Z without a compile-time hint; it now fails
+  to compile instead. `validate --json` and `audit --json` report
+  `evaluatedAt`, the exact instant staleness was evaluated at (`asOf` remains
+  its date), read from the clock exactly once per run.
 - A valued flag given twice (`--by`, `--at`, `--as-of`, `--trust`, `--status`,
   `--type`) is now `error: option … given more than once` instead of silently
   keeping the first.

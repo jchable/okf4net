@@ -72,6 +72,7 @@ public readonly record struct AuditFinding(
 public sealed class AuditReport
 {
     internal AuditReport(
+        DateTimeOffset evaluatedAt,
         DateOnly asOf,
         int conceptCount,
         IReadOnlyDictionary<TrustTier, int> trustCounts,
@@ -79,6 +80,7 @@ public sealed class AuditReport
         int staleCount,
         IReadOnlyList<AuditFinding> findings)
     {
+        EvaluatedAt = evaluatedAt;
         AsOf = asOf;
         ConceptCount = conceptCount;
         TrustCounts = trustCounts;
@@ -86,6 +88,14 @@ public sealed class AuditReport
         StaleCount = staleCount;
         Findings = findings;
     }
+
+    /// <summary>
+    /// The exact instant §5.5 staleness was evaluated at -- the single clock
+    /// read <see cref="ConceptAudit.Run"/> takes. <see cref="AsOf"/> is this
+    /// instant's date only; use this field, not <c>AsOf</c>, wherever the
+    /// comparison input itself (not its display stamp) is needed.
+    /// </summary>
+    public DateTimeOffset EvaluatedAt { get; }
 
     /// <summary>
     /// The UTC date of the instant the report was run at -- a display stamp,
@@ -314,6 +324,6 @@ public static class ConceptAudit
 
         findings.Sort(static (a, b) => a.Id.CompareTo(b.Id));
 
-        return new AuditReport(asOf, bundle.Count, trustCounts, statusCounts, staleCount, findings);
+        return new AuditReport(now, asOf, bundle.Count, trustCounts, statusCounts, staleCount, findings);
     }
 }

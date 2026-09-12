@@ -634,16 +634,19 @@ public static class OkfCli
 
         // --as-of is parsed before the positional, so an unvalued flag names
         // itself rather than surfacing as "missing <bundle>".
-        // Resolved once so the date the validator used is the same one --json
-        // reports, whether it came from --as-of or from the system clock.
         var clock = ParseAsOf(parsed) ?? new SystemClock();
+        // ONE read: the instant staleness is evaluated at is the instant the
+        // report says it evaluated at. Two reads straddling midnight produced an
+        // asOf that omitted a concept stale on that very date.
+        var evaluatedAt = clock.Now;
+        var pinned = new FixedClock(evaluatedAt);
         var path = parsed.Positional("<bundle>");
         var bundle = Load(path);
-        var report = BundleValidator.Validate(bundle, clock);
+        var report = BundleValidator.Validate(bundle, pinned);
 
         if (parsed.Has("--json"))
         {
-            JsonOutput.WriteValidate(stdout, path, clock.Today, bundle, report);
+            JsonOutput.WriteValidate(stdout, path, evaluatedAt, bundle, report);
             return report.IsConformant ? 0 : 1;
         }
 

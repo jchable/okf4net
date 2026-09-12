@@ -205,6 +205,9 @@ them a re-capture from the (removed) Rust binary:
   §5.4 statuses, §5.5 staleness) rather than captured from the reference CLI:
   `audit` is an OKF4net verb with no upstream counterpart. The `--as-of` date
   is pinned so the output cannot drift with the calendar.
+  - 2026-09-12: gained `evaluatedAt` (the §5.5 evaluation instant; `asOf` is
+    its date) — hand-verified against §5.5, this fixture is a v0.2
+    hand-authored capture, not a reference-binary capture.
 
 ## `okf verify` goldens (2026-08-28)
 

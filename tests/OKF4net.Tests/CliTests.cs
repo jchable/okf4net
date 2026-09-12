@@ -275,6 +275,17 @@ public class CliTests
     }
 
     /// <summary>
+    /// `asOf` is that instant's date only; `evaluatedAt` is the exact instant
+    /// §5.5 staleness was evaluated at, from the same single clock read.
+    /// </summary>
+    [Fact]
+    public void Validate_json_reports_the_instant_it_evaluated_at()
+    {
+        var (_, out_, _) = Run("validate", OkfV02, "--as-of", "2099-06-01", "--json");
+        Assert.Contains("\"asOf\":\"2099-06-01\",\"evaluatedAt\":\"2099-06-01T00:00:00Z\"", out_, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// One document, one spelling: a consumer grouping findings by trust tier
     /// must be able to look that tier straight up in the counts object.
     /// </summary>
