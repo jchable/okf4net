@@ -927,23 +927,18 @@ public class CliTests
     }
 
     /// <summary>
-    /// A repeated flag resolves to its FIRST occurrence, the rule every verb
-    /// inherited from the original `Array.IndexOf` lookup and which the design
-    /// spec (§4.1) documents. The later occurrence still consumes its own
-    /// value, so that value never lands in the positional slot.
+    /// A repeated valued flag is refused rather than resolved to its first
+    /// occurrence: a script that appends an override flag (e.g. a later
+    /// `--as-of`) got the earlier value with no diagnostic otherwise -- the
+    /// exact "silently different behaviour than asked for" this scanner
+    /// exists to stop.
     /// </summary>
     [Fact]
-    public void Audit_a_repeated_flag_resolves_to_its_first_occurrence()
+    public void A_valued_flag_given_twice_is_refused_rather_than_first_wins()
     {
-        var r = Run("audit", V02BundlePath, "--trust", "human-reviewed", "--trust", "unverified", "--json");
-
-        Assert.Equal(0, r.Code);
-
-        using var doc = JsonDocument.Parse(r.Out);
-        var trust = doc.RootElement.GetProperty("query").GetProperty("trust")
-            .EnumerateArray().Select(e => e.GetString()).ToList();
-
-        Assert.Equal(["human-reviewed"], trust);
+        var (code, _, err) = Run("audit", OkfV02, "--as-of", "2020-01-01", "--as-of", "2099-01-01");
+        Assert.Equal(1, code);
+        Assert.Equal("error: option --as-of given more than once\n", err);
     }
 
     [Fact]

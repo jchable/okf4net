@@ -288,6 +288,9 @@ and this project adheres to
 
 ### Changed
 
+- A valued flag given twice (`--by`, `--at`, `--as-of`, `--trust`, `--status`,
+  `--type`, `--out`) is now `error: option … given more than once` instead of
+  silently keeping the first.
 - **Stage failures the library itself diagnosed now say why.** A new
   `AttestationDiagnosticException` (`OKF4net.Attestation`) marks a message
   authored by an OKF4net component — `ContainerExecutionException` derives

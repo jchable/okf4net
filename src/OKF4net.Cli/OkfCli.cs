@@ -436,12 +436,15 @@ public static class OkfCli
         {
             var hasValue = CliArgScanning.HasFollowingValue(args, i);
 
-            // First occurrence wins. A later one still consumes its own value,
-            // so that value can never be read as the positional.
-            if (!_flags.ContainsKey(token))
+            // Refused, not first-wins: a script that appends an override flag
+            // got the EARLIER value with no diagnostic, the exact "silently
+            // different behaviour than asked for" this scanner exists to stop.
+            if (_flags.ContainsKey(token))
             {
-                _flags[token] = hasValue ? args[i + 1] : null;
+                throw new CliOperationException($"option {token} given more than once");
             }
+
+            _flags[token] = hasValue ? args[i + 1] : null;
 
             return hasValue ? i + 1 : i;
         }
