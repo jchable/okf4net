@@ -1815,10 +1815,17 @@ public sealed class OkfBundleTools
     }
 
     /// <summary>
-    /// Scalars print as before; a list or map (what ReceiptParsing produces
-    /// for a JSON array/object) prints as compact JSON, because
-    /// `List`1[System.Object]` tells the model nothing about the rows the
-    /// computation returned.
+    /// Renders a receipt value the way JSON renders it, not the way
+    /// <see cref="object.ToString()"/> does: a string prints as itself, a
+    /// boolean prints lowercase (<c>true</c>/<c>false</c>, not the CLR
+    /// <c>True</c>/<c>False</c>), a number prints under the invariant
+    /// culture (never the current thread's -- a French decimal comma handed
+    /// to a model reading a receipt is a value that gets re-parsed wrong),
+    /// and a list or map (what <c>ReceiptParsing</c>/<c>JsonValues.Normalize</c>
+    /// produce for a JSON array/object) prints as compact JSON, because
+    /// <c>List&lt;object&gt;</c>'s type name tells the model nothing about
+    /// the rows the computation returned. This deliberately changes how a
+    /// bool- or double-valued field printed before this method existed.
     /// </summary>
     private static string FormatReceiptValue(object? value) => value switch
     {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -425,5 +426,47 @@ public class OkfComputationToolsTests
         var text = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
         Assert.Contains("- result: [{\"active_users\":2}]", text, StringComparison.Ordinal);
         Assert.DoesNotContain("System.Collections", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// FormatReceiptValue deliberately prints a bool receipt field lowercase
+    /// (<c>true</c>/<c>false</c>, not the CLR <c>True</c>/<c>False</c> that
+    /// <c>value?.ToString()</c> produced) and a numeric one under the
+    /// invariant culture rather than the current thread's -- both changes
+    /// from the pre-JSON-rendering behaviour. Runs under <c>fr-FR</c>,
+    /// restored in <see langword="finally"/>, because a double formatted
+    /// under that culture prints "0,95": an assertion that would pass under
+    /// any culture (e.g. the runner's own default) would prove nothing about
+    /// the invariant-culture claim. The long field pins that an ordinary
+    /// integral receipt field's rendering is unchanged.
+    /// </summary>
+    [Fact]
+    public async Task Bool_double_and_long_receipt_fields_render_as_lowercase_invariant_json_scalars()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+        try
+        {
+            using var tmp = new TempDir();
+            tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [flag, ratio, count] }\n---\n# Computation\n\n```\nX\n```\n");
+            var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?>
+            {
+                ["flag"] = true,
+                ["ratio"] = 0.95,
+                ["count"] = 42L,
+            }));
+            var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+            var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+            var text = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+            Assert.Contains("- flag: true", text, StringComparison.Ordinal);
+            Assert.Contains("- ratio: 0.95", text, StringComparison.Ordinal);
+            Assert.Contains("- count: 42", text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
     }
 }

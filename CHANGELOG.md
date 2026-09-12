@@ -593,7 +593,11 @@ and this project adheres to
 
 - `okf_run_computation` renders list- and object-valued receipt fields as
   compact JSON instead of the CLR type name, so a SQL result actually reaches
-  the model.
+  the model. The same rendering pass now also prints a boolean receipt field
+  lowercase (`true`/`false`, not the CLR `True`/`False`) and a numeric one
+  under the invariant culture rather than the current thread's, so a
+  double-valued field no longer prints a locale-dependent decimal separator
+  (e.g. `0,95` under `fr-FR`) into a receipt a model has to re-parse.
 - **`okf_run_computation` now delivers native CLR parameter values to the
   binder.** `AIFunctionFactory` binds an `object`-typed dictionary's values as
   `JsonElement`s, which `OKF4net.Attestation.Containers`' allowlist binder
