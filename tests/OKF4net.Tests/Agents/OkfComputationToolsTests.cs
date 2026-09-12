@@ -410,4 +410,20 @@ public class OkfComputationToolsTests
         Assert.Contains("displayable: no", lower);
         Assert.Contains("missing required parameter", lower);
     }
+
+    [Fact]
+    public async Task A_list_valued_receipt_field_renders_as_json_not_a_type_name()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [result] }\n---\n# Computation\n\n```\nX\n```\n");
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?>
+        {
+            ["result"] = new List<object?> { new Dictionary<string, object?> { ["active_users"] = 2L } },
+        }));
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+        var text = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+        Assert.Contains("- result: [{\"active_users\":2}]", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Collections", text, StringComparison.Ordinal);
+    }
 }

@@ -591,6 +591,9 @@ and this project adheres to
 
 ### Fixed
 
+- `okf_run_computation` renders list- and object-valued receipt fields as
+  compact JSON instead of the CLR type name, so a SQL result actually reaches
+  the model.
 - **`okf_run_computation` now delivers native CLR parameter values to the
   binder.** `AIFunctionFactory` binds an `object`-typed dictionary's values as
   `JsonElement`s, which `OKF4net.Attestation.Containers`' allowlist binder

@@ -2,6 +2,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents.Internal;
 using OKF4net.Attestation;
@@ -1770,7 +1771,7 @@ public sealed class OkfBundleTools
             sb.Append("- receipt:").Append('\n');
             foreach (var (key, value) in receipt.Fields)
             {
-                sb.Append("  - ").Append(key).Append(": ").Append(value?.ToString() ?? NoneLine).Append('\n');
+                sb.Append("  - ").Append(key).Append(": ").Append(FormatReceiptValue(value)).Append('\n');
             }
         }
         else
@@ -1812,6 +1813,21 @@ public sealed class OkfBundleTools
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Scalars print as before; a list or map (what ReceiptParsing produces
+    /// for a JSON array/object) prints as compact JSON, because
+    /// `List`1[System.Object]` tells the model nothing about the rows the
+    /// computation returned.
+    /// </summary>
+    private static string FormatReceiptValue(object? value) => value switch
+    {
+        null => NoneLine,
+        string s => s,
+        bool b => b ? "true" : "false",
+        IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
+        _ => JsonSerializer.Serialize(value),
+    };
 
     private static string StaleLabel(StaleState stale) => stale switch
     {
