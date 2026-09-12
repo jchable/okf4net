@@ -183,8 +183,10 @@ public sealed class AttestationOrchestrator
         Exception? error = null;
         if (receiptShapeOk)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
+            // No separate ThrowIfCancellationRequested here: RunStageAsync (via
+            // AttestAsync) checks at its own entry, same as bind/execute above,
+            // which stopped needing one of their own the moment they moved onto
+            // that helper.
             var context = new AttestationContext(contract, resolved, bound, parameterValues, receipt, attesterSourceText);
             (verdict, error) = await AttestAsync(runtime, context, reasons, cancellationToken).ConfigureAwait(false);
         }
@@ -283,6 +285,8 @@ public sealed class AttestationOrchestrator
             var reason = e is AttestationDiagnosticException
                 ? $"{stage} threw: {e.GetType().Name}: {e.Message.ReplaceLineEndings(" ")}"
                 : $"{stage} threw: {e.GetType().Name}";
+            // default! is never read: Ok is false here, and every caller checks
+            // it before touching Result.
             return (false, default!, reason, e);
         }
     }

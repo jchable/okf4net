@@ -1794,8 +1794,18 @@ public sealed class OkfBundleTools
             // remarks) and is safe to render here, same as the orchestrator
             // already renders it into Reasons. The exception object stays on
             // outcome.Error for the host either way.
+            //
+            // ReplaceLineEndings(" "), matching the orchestrator's own
+            // RunStageAsync: this text lands in the same agent-facing markdown
+            // blob as Reasons (see this method's doc comment), and a
+            // diagnostic message CAN carry an embedded newline -- e.g. a
+            // ContainerExecutionException whose message interpolates a
+            // downstream JsonException.Message built from bundle-influenced
+            // stdout (Internal/ReceiptParsing.cs). Left unneutralized here, an
+            // untrusted newline could spoof extra "- " bullet lines or section
+            // headers in the rendered output.
             var errorLine = outcome.Error is AttestationDiagnosticException diagnostic
-                ? $"{diagnostic.GetType().Name}: {diagnostic.Message}"
+                ? $"{diagnostic.GetType().Name}: {diagnostic.Message.ReplaceLineEndings(" ")}"
                 : outcome.Error.GetType().Name;
             sb.Append('\n').Append("Error: ").Append(errorLine).Append('\n');
         }

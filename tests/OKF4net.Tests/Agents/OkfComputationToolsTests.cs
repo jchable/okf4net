@@ -245,15 +245,22 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
-    /// Counterpart to <see cref="A_runtime_failure_does_not_render_the_exception_message_to_the_model"/>:
-    /// an <see cref="AttestationDiagnosticException"/>'s message was authored by
-    /// an OKF4net component (a binder's type rejection, an executor's malformed
-    /// receipt, a failed container) and carries no host secret, so
-    /// <c>FormatOutcome</c> must render it -- unlike the foreign exception above,
-    /// whose message stays off the model-facing text entirely.
+    /// Counterpart to <see cref="A_runtime_failure_does_not_render_the_exception_message_to_the_model"/>,
+    /// pinned to the <c>Error: ...</c> line specifically -- not the <c>Reasons</c>
+    /// section, which <see cref="AttestationOrchestrator"/>'s <c>RunStageAsync</c>
+    /// already renders with the diagnostic's message regardless of what
+    /// <c>FormatOutcome</c>'s own <c>Error:</c> line does (a bare
+    /// <c>Assert.Contains(diagnosis, rendered)</c> would pass from that Reasons
+    /// entry alone and prove nothing about <c>FormatOutcome</c>'s own ternary).
+    /// The two renderings use different prefixes ("- executor threw: ..." vs.
+    /// "Error: ..."), so asserting the exact <c>Error: TypeName: message</c>
+    /// text only succeeds when <c>FormatOutcome</c> itself renders the
+    /// message -- it would fail if that ternary were reverted to
+    /// type-only, even though the Reasons section would still carry the
+    /// diagnosis via the orchestrator.
     /// </summary>
     [Fact]
-    public async Task A_diagnostic_exceptions_message_is_rendered_but_a_foreign_ones_is_not()
+    public async Task A_diagnostic_exceptions_message_is_rendered_in_the_error_line()
     {
         const string diagnosis = "receipt was not a JSON object";
         using var tmp = new TempDir();
@@ -268,8 +275,42 @@ public class OkfComputationToolsTests
 
         var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
 
-        Assert.Contains(diagnosis, rendered, StringComparison.Ordinal);
+        Assert.Contains($"Error: {nameof(AttestationDiagnosticException)}: {diagnosis}", rendered, StringComparison.Ordinal);
         Assert.Contains("displayable: no", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Regression guard for the newline-neutralization fix on
+    /// <c>FormatOutcome</c>'s <c>Error:</c> line: a diagnostic message can
+    /// legitimately embed a newline (e.g. a <c>ContainerExecutionException</c>
+    /// whose message interpolates a downstream <c>JsonException.Message</c>
+    /// built from bundle-influenced stdout), and left unneutralized that
+    /// newline would inject an uncontrolled line break into the rendered
+    /// agent-facing markdown -- able to spoof an extra "- " bullet or section
+    /// heading. <see cref="AttestationOrchestrator"/>'s own <c>RunStageAsync</c>
+    /// already applies <c>ReplaceLineEndings(" ")</c> to the same message
+    /// before it enters <c>Reasons</c>; this test pins that
+    /// <c>FormatOutcome</c>'s independent <c>Error:</c> rendering does the
+    /// same, rather than assuming the two can never diverge.
+    /// </summary>
+    [Fact]
+    public async Task A_diagnostic_messages_embedded_newline_is_neutralized_in_the_error_line()
+    {
+        const string diagnosisWithNewline = "line one\nline two";
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.ThrowingExecutor(new AttestationDiagnosticException(diagnosisWithNewline)),
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.Contains("Error: AttestationDiagnosticException: line one line two", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("Error: AttestationDiagnosticException: line one\nline two", rendered, StringComparison.Ordinal);
     }
 
     /// <summary>
