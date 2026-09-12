@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System;
 using System.Collections.Generic;
 using OKF4net.Attestation.Containers;
 using OKF4net.Attestation.Containers.Internal;
@@ -50,5 +51,14 @@ public class ReceiptParsingTests
         var ex = Assert.Throws<ContainerExecutionException>(
             () => ReceiptParsing.Parse(new ContainerRunResult(0, stdout, ""), "script"));
         Assert.Contains("script stdout was not a JSON object", ex.Message);
+    }
+
+    [Fact]
+    public void ParseJson_rejects_a_non_zero_exit_then_invalid_json_with_the_stage_name()
+    {
+        var ex1 = Assert.Throws<ContainerExecutionException>(() => ReceiptParsing.ParseJson(new ContainerRunResult(3, "", "boom"), "attester"));
+        Assert.Equal("attester exited with code 3", ex1.Message);
+        var ex2 = Assert.Throws<ContainerExecutionException>(() => ReceiptParsing.ParseJson(new ContainerRunResult(0, "nope", ""), "attester"));
+        Assert.StartsWith("attester stdout was not valid JSON", ex2.Message, StringComparison.Ordinal);
     }
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text.Json;
+using OKF4net.Attestation.Containers.Internal;
 
 namespace OKF4net.Attestation.Containers;
 
@@ -67,20 +68,8 @@ public sealed class ContainerAttester(IContainerEngine engine, ContainerAttester
         var spec = options.Isolation.ToRunSpec(options.Image, ["python3", "-c", Bootstrap], envelope, options.Environment, "none");
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new ContainerExecutionException($"attester exited with code {result.ExitCode}", result.Stdout, result.Stderr);
-        }
-
-        JsonElement verdict;
-        try
-        {
-            verdict = JsonSerializer.Deserialize<JsonElement>(result.Stdout);
-        }
-        catch (JsonException e)
-        {
-            throw new ContainerExecutionException($"attester stdout was not valid JSON: {e.Message}", result.Stdout, result.Stderr);
-        }
+        using var document = ReceiptParsing.ParseJson(result, "attester");
+        var verdict = document.RootElement;
 
         var passed = verdict.ValueKind == JsonValueKind.Object
             && verdict.TryGetProperty("ok", out var okProp)
