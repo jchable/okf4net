@@ -27,7 +27,7 @@ Two riders with the same trips in a different order pay the same total, but the
 what a rider disputes. The sanctioned computation therefore returns the per-trip
 split, not only the total.
 
-# Worked example
+# Examples
 
 A cap of 700, with fares of 250, 250, 250, 250:
 
