@@ -594,6 +594,9 @@ and this project adheres to
 
 ### Fixed
 
+- `okf_audit`'s `type` filter is now trimmed like `status`/`trust` already are
+  — a model copying a label from prose that brings surrounding whitespace no
+  longer silently selects nothing.
 - `StalePolicy.Tolerate`'s grace window now excludes its far edge, like
   `Lifecycle.IsStale` (§5.5: `now >= stale_after`) — at the exact instant
   `stale_after` falls due, `Tolerate(0)` used to admit a concept `Strict`

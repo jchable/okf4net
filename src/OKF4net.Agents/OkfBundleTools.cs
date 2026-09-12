@@ -574,10 +574,16 @@ public sealed class OkfBundleTools
             parsedStatus = value;
         }
 
+        // Same treatment as status/trust: a model copying a label from prose
+        // brings whitespace, and AuditQuery's match is
+        // string.Equals(..., Ordinal), so an untrimmed value would silently
+        // select nothing.
+        var trimmedType = string.IsNullOrWhiteSpace(type) ? null : type.Trim();
+
         // The CLI's rule, restated: with no filter flag it reports the stale
         // worklist; the moment one is given, staleness stops being implied.
         // An explicit `stale` always wins over that default.
-        var otherFilterGiven = tiers is not null || parsedStatus is not null || !string.IsNullOrWhiteSpace(type);
+        var otherFilterGiven = tiers is not null || parsedStatus is not null || trimmedType is not null;
         var staleOnly = stale ?? !otherFilterGiven;
 
         // Everything that can touch the filesystem goes through RunTool, the
@@ -591,7 +597,7 @@ public sealed class OkfBundleTools
         {
             var report = ConceptAudit.Run(
                 GetBundle(),
-                new AuditQuery(staleOnly, tiers, parsedStatus, type),
+                new AuditQuery(staleOnly, tiers, parsedStatus, trimmedType),
 
                 // Pinned to Now -- the same UtcNow seam ReadConcept and
                 // Search use -- so the tool's output never depends on the day
