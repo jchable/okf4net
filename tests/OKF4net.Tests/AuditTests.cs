@@ -295,6 +295,9 @@ public class AuditTests
         var report = ConceptAudit.Run(Load(tmp), default, new SkewedClock());
 
         Assert.Equal(new DateOnly(2026, 8, 21), report.AsOf);
+        // EvaluatedAt is the exact instant AsOf's date was derived from --
+        // same clock read, not a second one that could disagree.
+        Assert.Equal(new DateTimeOffset(2026, 8, 21, 23, 59, 59, TimeSpan.Zero), report.EvaluatedAt);
     }
 
     /// <summary>A clock whose <c>Today</c> contradicts its <c>Now</c>.</summary>

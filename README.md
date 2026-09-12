@@ -241,7 +241,7 @@ a worklist, not an inventory (use `okf info --json` for that).
 
 Both commands' `--json` document carries `asOf` (the evaluation date) and
 `evaluatedAt` (the exact instant, `yyyy-MM-ddTHH:mm:ssZ`) right beside it —
-`asOf` is `evaluatedAt`'s date only, both read from one clock read per run, so
+`asOf` is `evaluatedAt`'s date only, both coming from a single clock read per run, so
 an archived report can be told apart from an unpinned run down to the second,
 not just the day.
 

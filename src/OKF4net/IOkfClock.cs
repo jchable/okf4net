@@ -41,7 +41,7 @@ public sealed class FixedClock : IOkfClock
     public FixedClock(DateTimeOffset instant) => Now = instant.ToUniversalTime();
 
     /// <summary>Pins the clock to midnight UTC on <paramref name="today"/>.</summary>
-    /// <param name="today">The date <see cref="IOkfClock.Today"/> returns.</param>
+    /// <param name="today">The date <see cref="Today"/> returns.</param>
     public FixedClock(DateOnly today)
         : this(new DateTimeOffset(today.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero))
     {
@@ -49,4 +49,7 @@ public sealed class FixedClock : IOkfClock
 
     /// <inheritdoc/>
     public DateTimeOffset Now { get; }
+
+    /// <summary>Today's date, derived from <see cref="Now"/> (UTC) -- kept semantically identical to the interface default, declared explicitly so a concretely-typed <c>FixedClock</c> local can call it directly (a default interface member is not promoted onto the implementing class's own member list).</summary>
+    public DateOnly Today => DateOnly.FromDateTime(Now.UtcDateTime);
 }
