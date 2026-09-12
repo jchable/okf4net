@@ -224,18 +224,6 @@ internal static class OkfTimestamp
         s.EndsWith("-00:00", StringComparison.Ordinal) || s.EndsWith("-00", StringComparison.Ordinal);
 
     /// <summary>
-    /// Whether the raw value carries an explicit zone designator at all: a
-    /// trailing <c>Z</c> (either case), or a sign anywhere past the date part —
-    /// <c>±hh</c>, <c>±hh:mm</c> and the basic <c>±hhmm</c> alike.
-    /// <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
-    /// happily supplies the local offset for a zoneless value, so the raw text
-    /// is the only reliable way to tell the two apart. Deliberately looser than
-    /// the §5 grammar: this only routes a value to the offset-bearing parse
-    /// branch, and <see cref="IsConformantSpelling"/> stays the sole authority
-    /// on the spelling — the forms listed above that §5 rejects pass here and
-    /// are classified <see cref="TimestampForm.NonIso8601"/> there.
-    /// </summary>
-    /// <summary>
     /// §5 requires a full <c>YYYY-MM-DDThh:mm[...]</c> datetime, so a
     /// time-only value (<c>10:00Z</c>) is not a §5 timestamp under any
     /// spelling — but <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
@@ -249,6 +237,18 @@ internal static class OkfTimestamp
         DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.NoCurrentDateDefault | DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var probe)
         && probe.Year > 1;
 
+    /// <summary>
+    /// Whether the raw value carries an explicit zone designator at all: a
+    /// trailing <c>Z</c> (either case), or a sign anywhere past the date part —
+    /// <c>±hh</c>, <c>±hh:mm</c> and the basic <c>±hhmm</c> alike.
+    /// <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
+    /// happily supplies the local offset for a zoneless value, so the raw text
+    /// is the only reliable way to tell the two apart. Deliberately looser than
+    /// the §5 grammar: this only routes a value to the offset-bearing parse
+    /// branch, and <see cref="IsConformantSpelling"/> stays the sole authority
+    /// on the spelling — the forms listed above that §5 rejects pass here and
+    /// are classified <see cref="TimestampForm.NonIso8601"/> there.
+    /// </summary>
     private static bool HasExplicitOffset(string raw)
     {
         var s = raw.AsSpan().Trim();
