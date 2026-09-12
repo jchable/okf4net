@@ -33,7 +33,10 @@ public readonly record struct StalePolicy(StaleMode Mode, int GraceDays)
     {
         StaleMode.Use => true,
         StaleMode.Strict => !lc.IsStale(now),
-        StaleMode.Tolerate => lc.StaleAfter is not { } d || now <= d.AddDays(GraceDays),
+        // IsStale is `now >= stale_after` (§5.5), so the grace window's far
+        // edge is exclusive too: Tolerate(0) and Strict now answer
+        // identically at the boundary.
+        StaleMode.Tolerate => lc.StaleAfter is not { } d || now < d.AddDays(GraceDays),
         _ => true,
     };
 }
