@@ -344,7 +344,7 @@ public class OkfVerifyToolTests
 
         var text = ToolsOver(tmp).Verify("a, b", "human:ada");
 
-        Assert.Contains("concept 'b' has no `type` and is not §11-conformant", text);
+        Assert.Contains("concept \"b\" has no `type` and is not §11-conformant", text);
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "a.md")));
     }
 }

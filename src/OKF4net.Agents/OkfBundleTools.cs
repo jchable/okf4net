@@ -669,21 +669,25 @@ public sealed class OkfBundleTools
             // reads, parses and validates every concept before writing any —
             // so this loop is not what stops a half-stamped batch. What it
             // buys is message quality: naming the offender directly ("concept
-            // 'x' does not exist" / "concept 'x' has no `type`...") instead of
+            // "x" does not exist" / "concept "x" has no `type`...") instead of
             // the writer's unattributed "Missing required frontmatter keys:
             // type", which would leave an agent bisecting an eight-id batch by
             // hand to find which one lacks `type`.
             var bundle = GetBundle();
             foreach (var id in ids)
             {
+                // `id` is caller-supplied and unvalidated here -- echoed via
+                // DebugQuote.Quote rather than interpolated raw, so a
+                // newline in it cannot forge a plausible extra line in the
+                // tool's text response.
                 if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
                 {
-                    return $"Error: concept '{id}' does not exist.";
+                    return $"Error: concept {DebugQuote.Quote(id)} does not exist.";
                 }
 
                 if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
                 {
-                    return $"Error: concept '{id}' has no `type` and is not §11-conformant.";
+                    return $"Error: concept {DebugQuote.Quote(id)} has no `type` and is not §11-conformant.";
                 }
             }
 

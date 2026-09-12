@@ -662,7 +662,7 @@ public sealed class BundleConceptWriter
             {
                 if (!seenPaths.Add(targets[i].TargetPath))
                 {
-                    return $"Error: concept '{conceptIds[i]}' is named more than once.";
+                    return $"Error: concept {DebugQuote.Quote(conceptIds[i])} is named more than once.";
                 }
             }
 
@@ -679,7 +679,7 @@ public sealed class BundleConceptWriter
                     var target = targets[i];
                     if (!File.Exists(target.TargetPath))
                     {
-                        return $"Error: concept '{conceptIds[i]}' does not exist.";
+                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])} does not exist.";
                     }
 
                     var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
@@ -853,7 +853,7 @@ public sealed class BundleConceptWriter
 
         if (!ConceptId.TryParse(conceptId, out var id))
         {
-            return $"Error: invalid concept id '{conceptId}'. Concept ids are '/'-separated "
+            return $"Error: invalid concept id {DebugQuote.Quote(conceptId)}. Concept ids are '/'-separated "
                 + "segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.";
         }
 

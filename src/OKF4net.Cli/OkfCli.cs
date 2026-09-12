@@ -925,7 +925,7 @@ public static class OkfCli
         var duplicate = ids.GroupBy(id => id, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
         if (duplicate is not null)
         {
-            throw new CliOperationException($"concept '{duplicate.Key}' is named more than once");
+            throw new CliOperationException($"concept {DebugQuote.Quote(duplicate.Key)} is named more than once");
         }
 
         // The writer itself already refuses the whole batch atomically if any
@@ -938,14 +938,20 @@ public static class OkfCli
         // type", which does not say which of several ids was at fault.
         foreach (var id in ids)
         {
+            // The id is caller-supplied and unvalidated here (ConceptId.Parse
+            // rejects only an empty id) -- echoed via DebugQuote.Quote rather
+            // than interpolated raw, so a newline in it cannot forge a
+            // plausible "recorded …" line on stderr for a run that wrote
+            // nothing (the same class of hole LineSafeText.ContainsControlCharacter
+            // closed for --by/--at on the write path).
             if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
             {
-                throw new CliOperationException($"unknown concept \"{id}\"");
+                throw new CliOperationException($"unknown concept {DebugQuote.Quote(id)}");
             }
 
             if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
             {
-                throw new CliOperationException($"concept \"{id}\" has no `type` and is not §11-conformant");
+                throw new CliOperationException($"concept {DebugQuote.Quote(id)} has no `type` and is not §11-conformant");
             }
         }
 
@@ -994,6 +1000,16 @@ public static class OkfCli
         var ids = new List<string>();
         while (stdin.ReadLine() is { } line)
         {
+            // Console.In (and a redirected file/pipe generally) does not
+            // strip a UTF-8 BOM preamble the way File.ReadAllText does, and
+            // U+FEFF is not Unicode whitespace, so Trim() below leaves it
+            // stuck to the first id. Stripped only from the very first line
+            // read, matching where a BOM can actually occur.
+            if (ids.Count == 0 && line.StartsWith('\uFEFF'))
+            {
+                line = line[1..];
+            }
+
             var trimmed = line.Trim();
             if (trimmed.Length > 0)
             {

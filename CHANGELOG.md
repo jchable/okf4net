@@ -591,6 +591,10 @@ and this project adheres to
 
 ### Fixed
 
+- `okf verify`, `okf_verify` and `RecordVerifications` now quote-escape a
+  concept id in every error they echo, closing for the positional the
+  line-forging hole `LineSafeText` closed for `--by`/`--at`; `okf verify -`
+  tolerates a UTF-8 BOM on the first line.
 - `okf_run_computation` renders list- and object-valued receipt fields as
   compact JSON instead of the CLR type name, so a SQL result actually reaches
   the model. The same rendering pass now also prints a boolean receipt field

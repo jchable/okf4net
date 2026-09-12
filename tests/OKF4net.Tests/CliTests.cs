@@ -25,6 +25,8 @@ public class CliTests
     private static readonly string V02BundlePath =
         Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02");
 
+    private static readonly string OkfV02 = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02");
+
     private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
 
     [Fact]
@@ -1187,6 +1189,39 @@ public class CliTests
     }
 
     /// <summary>
+    /// §7-adjacent line-forging hole for the positional concept id: `okf
+    /// verify` echoes an unresolved id verbatim in "unknown concept …", so an
+    /// id containing a newline could forge a plausible "recorded …" line on
+    /// stderr for a run that wrote nothing — the same class of attack
+    /// `LineSafeText.ContainsControlCharacter` already closed for `--by`/`--at`
+    /// on the write path. The id must come back quote-escaped
+    /// (<see cref="OKF4net.Internal.DebugQuote"/>) instead of raw.
+    /// </summary>
+    [Fact]
+    public void Verify_escapes_a_control_bearing_concept_id_instead_of_forging_a_line()
+    {
+        var forged = "metrics/nope\nrecorded metrics/dau  human:ada  2026-01-01T00:00:00Z";
+        var (code, _, err) = Run("verify", OkfV02, forged, "--by", "human:ada");
+        Assert.Equal(1, code);
+        Assert.Equal("error: unknown concept \"metrics/nope\\nrecorded metrics/dau  human:ada  2026-01-01T00:00:00Z\"\n", err);
+    }
+
+    /// <summary>
+    /// §13.1: redirected stdin is not guaranteed free of a UTF-8 BOM (a
+    /// preamble byte sequence, not a Unicode whitespace code point), and
+    /// <c>Console.In</c> does not strip one on its own; <c>Trim()</c> does not
+    /// treat U+FEFF as whitespace either. Without an explicit strip, the first
+    /// id read from `okf verify -` on a BOM-prefixed stream fails to resolve.
+    /// </summary>
+    [Fact]
+    public void Verify_from_stdin_ignores_a_leading_byte_order_mark()
+    {
+        var (code, out_, _) = TestPaths.RunWithStdin("\uFEFFmetrics/dau\n", "verify", OkfV02, "--by", "human:ada", "--dry-run", "-");
+        Assert.Equal(0, code);
+        Assert.Equal("would record metrics/dau  human:ada  (now)\n", out_);
+    }
+
+    /// <summary>
     /// A document with no `type` loads into the bundle but is refused at
     /// write time by <c>BundleConceptWriter.RecordVerifications</c> itself,
     /// which validates every concept before writing any — so this pins that
@@ -1218,7 +1253,7 @@ public class CliTests
         var r = Run("verify", bundle, "metrics/dau", "metrics/dau", "--by", "human:ada");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: concept 'metrics/dau' is named more than once\n", r.Err);
+        Assert.Equal("error: concept \"metrics/dau\" is named more than once\n", r.Err);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
 
@@ -1492,7 +1527,7 @@ public class CliTests
         var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "--by", "human:ada");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: concept 'metrics//dau' is named more than once.\n", r.Err);
+        Assert.Equal("error: concept \"metrics//dau\" is named more than once.\n", r.Err);
         Assert.Equal(string.Empty, r.Out);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
