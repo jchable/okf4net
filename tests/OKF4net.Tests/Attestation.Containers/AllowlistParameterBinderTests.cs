@@ -86,4 +86,20 @@ public class AllowlistParameterBinderTests
         // that dropped values entirely would also satisfy the assertion above.
         Assert.Equal(value, bound.Values[parameter]);
     }
+
+    /// <summary>
+    /// The tool path normalizes JsonElements before the orchestrator; this
+    /// pins that the binder's CLR checks and that normalization agree, so a
+    /// JSON `2026` for an `integer` parameter is accepted end to end.
+    /// </summary>
+    [Fact]
+    public async Task Accepts_the_long_the_tool_path_produces_for_a_json_integer()
+    {
+        var contract = new AttestedComputationContract(
+            Runtime: "python",
+            Parameters: [new ComputationParameter("year", "integer", Required: true)],
+            ComputationPath: null, Executor: null, Attester: null);
+        var bound = await new AllowlistParameterBinder().BindAsync(contract, Computation, new Dictionary<string, object?> { ["year"] = 2026L });
+        Assert.Equal(2026L, bound.Values["year"]);
+    }
 }

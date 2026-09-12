@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using Microsoft.Extensions.AI;
+using OKF4net.Agents.Internal;
 using OKF4net.Attestation;
 using OKF4net.Internal;
 using OKF4net.Yaml;
@@ -1267,8 +1268,10 @@ public sealed class OkfBundleTools
         }
 
         // See RunComputation's remarks: an AIFunction-bound call can pass null
-        // despite the non-nullable static type.
-        parameterValues ??= new Dictionary<string, object?>();
+        // despite the non-nullable static type. And what it does pass is a
+        // dictionary of JsonElements, never native values -- normalized here,
+        // once, for every binder (see ParameterValues).
+        parameterValues = ParameterValues.Normalize(parameterValues ?? new Dictionary<string, object?>());
 
         // Arming the timeout is validated rather than left to
         // CancellationTokenSource's own throw: it happens outside the try

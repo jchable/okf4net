@@ -568,6 +568,13 @@ and this project adheres to
 
 ### Fixed
 
+- **`okf_run_computation` now delivers native CLR parameter values to the
+  binder.** `AIFunctionFactory` binds an `object`-typed dictionary's values as
+  `JsonElement`s, which `OKF4net.Attestation.Containers`' allowlist binder
+  rejected for every declared `type` (`integer`, `string`, `boolean`,
+  `number`) — the container runtime was unusable through the tool and MCP for
+  any typed parameter, while the same call from C# succeeded. Values are now
+  normalized once in the tool (`ParameterValues`), for every binder.
 - **§4.1's `resource` carve-out for an Attested Computation now applies only to
   an ABSENT key.** The suppression added for S4.1-8 skipped the field before
   reading its value, so a §10 concept declaring `resource` with an unusable

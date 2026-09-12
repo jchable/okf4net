@@ -298,13 +298,12 @@ public class AIFunctionExposureTests
         Assert.NotNull(captured);
         Assert.True(captured!.ContainsKey("threshold"), "the bound parameter values should carry the 'threshold' key supplied via JSON.");
 
-        // Keys alone aren't proof the values made it through intact -- confirmed
-        // empirically that an `object?`-typed dictionary value round-trips as a
-        // JsonElement (System.Text.Json's default representation), not a native
-        // int/string, so fidelity has to be checked through it rather than via a
-        // direct CLR-type comparison.
-        Assert.Equal(42, ((JsonElement)captured!["threshold"]!).GetInt32());
-        Assert.Equal("q3", ((JsonElement)captured!["label"]!).GetString());
+        // Values reach the binder as native CLR values (ParameterValues
+        // normalizes the JsonElements AIFunctionFactory binds), so a binder
+        // that type-checks against the declared `parameters` sees an integer
+        // where the caller sent one.
+        Assert.Equal(42L, captured!["threshold"]);
+        Assert.Equal("q3", captured!["label"]);
     }
 
     /// <summary>
