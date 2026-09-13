@@ -643,7 +643,7 @@ public sealed class OkfContextProvider : AIContextProvider
             return (content, false, lineCount);
         }
 
-        var lines = content.Split('\n');
+        var lines = LfLines.Split(content);
         var sb = new StringBuilder();
         var kept = 0;
 

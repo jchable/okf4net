@@ -600,6 +600,10 @@ and this project adheres to
 
 ### Fixed
 
+- `OkfContextProvider`'s budget truncation now splits a concept's body on
+  `LfLines.Split` instead of a bare `'\n'`, so a CRLF-bodied concept truncated
+  to a small token budget no longer keeps a stray trailing `\r` on its last
+  kept line.
 - `okf_audit`'s `type` filter is now trimmed like `status`/`trust` already are
   — a model copying a label from prose that brings surrounding whitespace no
   longer silently selects nothing.

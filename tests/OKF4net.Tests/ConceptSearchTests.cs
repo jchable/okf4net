@@ -189,6 +189,25 @@ public class ConceptSearchTests
         Assert.Equal("Leading and trailing whitespace around orders.", ConceptSearch.Excerpt(body, "orders"));
     }
 
+    /// <summary>
+    /// Regression guard for the switch to <see cref="OKF4net.Internal.LfLines.Split"/>:
+    /// a CRLF body's matching line must come back with no trailing <c>'\r'</c>.
+    /// Note this was already true before that switch, because every candidate
+    /// line goes through <c>.Trim()</c>, which strips a lone trailing <c>'\r'</c>
+    /// along with any other whitespace — so there was no RED for this case; it
+    /// guards the refactor rather than a fixed bug.
+    /// </summary>
+    [Fact]
+    public void Excerpt_on_a_CRLF_body_returns_a_line_with_no_stray_CR()
+    {
+        var body = "Irrelevant line.\r\nThis line mentions orders.\r\n";
+
+        var excerpt = ConceptSearch.Excerpt(body, "orders");
+
+        Assert.Equal("This line mentions orders.", excerpt);
+        Assert.DoesNotContain('\r', excerpt!);
+    }
+
     // ---- TopDiversified: scarce slots across top-level id families ---------
 
     /// <summary>
