@@ -219,6 +219,33 @@ public class RecordVerificationTests
         Assert.DoesNotContain("verified", Read(tmp, "metrics/dau.md"));
     }
 
+    /// <summary>
+    /// C13: a §11 non-conformance failing later in a batch must name the
+    /// OFFENDING concept, not the writer's old, unattributed
+    /// "Error: Missing required frontmatter keys: type" (which
+    /// <c>reparsed.ValidateConformance()</c> throws with no concept id at
+    /// all, forcing a caller bisecting a multi-id batch by hand to find which
+    /// one lacks <c>type</c>). Also proves the batch is still refused
+    /// atomically: nothing lands for the earlier, perfectly good concept.
+    /// </summary>
+    [Fact]
+    public void A_later_concept_failing_conformance_names_the_offender()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        tmp.Write("metrics/notype.md", "---\ntitle: No type\n---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/notype"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Equal(
+            "Error: concept \"metrics/notype\" has no `type` and is not §11-conformant.",
+            outcome.Message);
+        Assert.Empty(outcome.Records);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
     [Theory]
     [InlineData("human:", "not a well-formed")]
     [InlineData("", "not a well-formed")]

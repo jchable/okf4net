@@ -1298,6 +1298,87 @@ public class CliTests
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
 
+    // --- C13 guards -----------------------------------------------------
+    // These three pin behaviour the C13 refactor (BundleConceptWriter.
+    // CheckVerificationTargets replacing CmdVerify's own per-id loop) must
+    // NOT change. Written and confirmed green BEFORE that refactor so a
+    // regression it could introduce -- most concretely, `--dry-run` no
+    // longer failing on an unknown id because the CLI's pre-check was
+    // deleted outright instead of kept ahead of the dry-run branch -- would
+    // be caught by them turning red, not by a golden byte diff (`verify.out`
+    // only captures the two success lines).
+
+    /// <summary>
+    /// `--dry-run` must still fail on an unknown id rather than print "would
+    /// record" for a concept the batch was never going to write -- the exact
+    /// regression a version of the C13 refactor that dropped the CLI's
+    /// pre-check instead of keeping an equivalent ahead of `--dry-run` would
+    /// introduce.
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_still_fails_on_an_unknown_id()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/nope", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown concept \"metrics/nope\"\n", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// A concept whose frontmatter never even PARSES (as opposed to one that
+    /// parses but lacks `type`) is, like today, simply absent from the bundle
+    /// -- `Bundle.Load` is permissive and skips it -- so the CLI reports the
+    /// same "unknown concept" it reports for a missing id, not a bare parse
+    /// error. `BundleConceptWriter.CheckVerificationTargets` reads the file
+    /// directly (no `Bundle.Load`), so this pins that its own parse-failure
+    /// path collapses into the same CLI wording as before, rather than
+    /// leaking a raw YAML/frontmatter error message.
+    /// </summary>
+    [Fact]
+    public void Verify_reports_an_unparseable_concept_as_unknown()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        // Unterminated frontmatter block: OkfDocument.Parse throws
+        // DocumentParseException rather than returning a document with an
+        // empty `type`.
+        tmp.Write("metrics/broken.md", "---\ntype: Metric\n");
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/broken", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown concept \"metrics/broken\"\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// `verify` must fail the same way every other bundle verb does on a
+    /// bundle root that does not exist, now that it no longer calls
+    /// <c>Load(path)</c> at all (it reads only the concept files it is asked
+    /// about). Compared against `validate`'s stderr rather than a hardcoded
+    /// string, the same way <c>Index_on_a_missing_bundle_root_exits_one_like_the_other_bundle_verbs</c>
+    /// pins `index` against it, so the two guards cannot drift apart.
+    /// </summary>
+    [Fact]
+    public void Verify_on_a_missing_bundle_root_exits_one_like_the_other_bundle_verbs()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "okf-missing-" + Guid.NewGuid().ToString("N"));
+
+        var verify = Run("verify", missing, "metrics/dau", "--by", "human:ada");
+        var validate = Run("validate", missing);
+
+        Assert.Equal(1, verify.Code);
+        Assert.StartsWith("error:", verify.Err);
+        Assert.DoesNotContain("at OKF4net", verify.Err);
+        Assert.Equal(validate.Err, verify.Err);
+        Assert.Equal("", verify.Out);
+    }
+
     /// <summary>
     /// An actor carrying a newline could otherwise forge a whole <c>recorded
     /// …</c> line — the renderer interpolates <c>by</c> into a line-oriented

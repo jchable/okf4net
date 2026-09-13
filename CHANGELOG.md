@@ -288,6 +288,15 @@ and this project adheres to
 
 ### Changed
 
+- `BundleConceptWriter.RecordVerifications` (§11) now names the offending
+  concept when it refuses a batch — an unparseable concept or one missing
+  `type` used to escape as an unattributed "Missing required frontmatter
+  keys: type", leaving a caller to bisect a multi-id batch by hand. The check
+  (`CheckVerificationTargets`, internal) is the single place `okf verify` and
+  `okf_verify` now defer to for their own "nicer" pre-write message too,
+  instead of each re-implementing an id-validity/existence/conformance loop
+  of their own; `okf verify` also no longer loads the whole bundle to answer
+  a k-id question, reading only the named concept files.
 - **Breaking (combined effect on 0.5.0 bundles): a bare `attester.resource` /
   `computation` path that used to resolve beside the concept now resolves
   from the bundle root (§6.2), AND an unresolvable `attester.resource` now

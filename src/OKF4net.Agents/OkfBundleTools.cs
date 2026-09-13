@@ -669,36 +669,31 @@ public sealed class OkfBundleTools
 
         return RunTool(() =>
         {
-            // Pre-resolved like the CLI (OkfCli.cs's CmdVerify). The writer
-            // already refuses the whole batch atomically on its own if any id
-            // is unknown or non-conformant — RecordVerifications resolves,
-            // reads, parses and validates every concept before writing any —
-            // so this loop is not what stops a half-stamped batch. What it
-            // buys is message quality: naming the offender directly ("concept
-            // "x" does not exist" / "concept "x" has no `type`...") instead of
-            // the writer's unattributed "Missing required frontmatter keys:
-            // type", which would leave an agent bisecting an eight-id batch by
-            // hand to find which one lacks `type`.
-            var bundle = GetBundle();
-            foreach (var id in ids)
+            // The single governed §11 floor (BundleConceptWriter.CheckVerificationTargets,
+            // also called first thing inside RecordVerifications itself, same
+            // as the CLI's CmdVerify) — this call is not what stops a
+            // half-stamped batch (the real write below refuses the whole
+            // batch atomically on its own). What it buys is message quality:
+            // naming the offender directly ("concept \"x\" does not exist" /
+            // "concept \"x\" has no `type`...") instead of the writer's own
+            // message shape, and it reads the k named files directly rather
+            // than going through the tool's cached bundle (unaffected by
+            // whether that cache is stale).
+            //
+            // DuplicateName is deliberately not intercepted here: two
+            // spellings resolving to the same file are left to the real
+            // RecordVerifications call below, whose own message is what the
+            // agent sees.
+            var targetProblem = _writer.CheckVerificationTargets(ids);
+            if (targetProblem is { Kind: not VerificationTargetProblemKind.DuplicateName } problem)
             {
-                // `id` is caller-supplied and unvalidated here -- echoed via
-                // DebugQuote.Quote rather than interpolated raw, so a
-                // newline in it cannot forge a plausible extra line in the
-                // tool's text response.
-                if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
-                {
-                    return $"Error: concept {DebugQuote.Quote(id)} does not exist.";
-                }
-
-                if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
-                {
-                    return $"Error: concept {DebugQuote.Quote(id)} has no `type` and is not §11-conformant.";
-                }
+                return problem.Kind == VerificationTargetProblemKind.NotConformant
+                    ? $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant."
+                    : $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.";
             }
 
             // One batch call — the validation guarantee comes from the writer, so the
-            // pre-resolution above is only there to give a nicer message.
+            // pre-check above is only there to give a nicer message.
             // `at` is passed through untouched, null included: the writer owns
             // the clock seam and reports the timestamp it used, so the tool
             // never dates anything itself.

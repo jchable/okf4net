@@ -51,6 +51,38 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
 
 /// <summary>
+/// What is wrong with one id passed to <see cref="BundleConceptWriter.CheckVerificationTargets"/>.
+/// </summary>
+internal enum VerificationTargetProblemKind
+{
+    /// <summary><see cref="ConceptId.TryParse(string, out ConceptId?)"/> rejects it, it resolves outside the
+    /// bundle root, it is the reserved <c>index</c>/<c>log</c> name, or it resolves through/to a reparse
+    /// point -- see <see cref="BundleConceptWriter"/>'s private <c>ValidateConceptTarget</c>.</summary>
+    InvalidId,
+
+    /// <summary>The id resolves to a well-formed path, but no file exists there.</summary>
+    NotFound,
+
+    /// <summary>The file exists but its content is not a well-formed OKF document (<see cref="DocumentParseException"/> or a strict-UTF-8 decode failure).</summary>
+    ParseFailure,
+
+    /// <summary>The document parses but has no non-empty <c>type</c> — §11's floor.</summary>
+    NotConformant,
+
+    /// <summary>Two or more ids in the batch resolve to the same file.</summary>
+    DuplicateName,
+}
+
+/// <summary>
+/// One offending id found by <see cref="BundleConceptWriter.CheckVerificationTargets"/>, carrying
+/// enough for a caller to phrase its own message — see that method's remarks for why this returns
+/// only the FIRST offender rather than every problem in the batch.
+/// </summary>
+/// <param name="Kind">What is wrong with <paramref name="ConceptId"/>.</param>
+/// <param name="ConceptId">The offending id, exactly as given by the caller (not normalized).</param>
+internal readonly record struct VerificationTargetProblem(VerificationTargetProblemKind Kind, string ConceptId);
+
+/// <summary>
 /// The core, thread-safe write primitive for OKF bundles: producer-validated,
 /// reparse-guarded, atomically-serialized create/update of a concept and an
 /// atomic read-modify-write append-to-concept, over a single bundle root.
@@ -645,6 +677,38 @@ public sealed class BundleConceptWriter
         var records = new List<VerificationRecord>(conceptIds.Count);
         var message = RunTool(() =>
         {
+            // Checked FIRST for four of its five kinds, so THIS method's own
+            // refusal names the offender: before this call existed, an
+            // unparseable concept escaped as an unattributed, generic
+            // "Error: {yaml/parse message}" naming no concept at all -- the
+            // exact gap the CLI verb and the okf_verify tool each worked
+            // around with their own duplicate pre-loop.
+            //
+            // NotConformant is deliberately EXCLUDED here (left to fall
+            // through to the unchanged prepare loop below, where
+            // ValidateConformance already runs): a concept missing `type`
+            // can ALSO be one of the hostile shapes below it -- a fence
+            // misdetected inside a block-scalar body (finding #C7-A), a
+            // corrupted round-trip, an unemittable deep nesting -- and those
+            // failures are strictly MORE specific and were surfacing first
+            // long before this method existed (Parse's own line-based fence
+            // scan can misplace `type` into what it reads as the body, e.g.
+            // A_hidden_verified_entry_behind_an_indented_fence_is_refused_not_silently_orphaned's
+            // fixture, which is simultaneously "no type" AND the exact fence
+            // shape that must refuse with "indented" instead). Short-circuiting
+            // on NotConformant here would let §11's generic message pre-empt
+            // that specific, better diagnostic. Bailing out here for the
+            // OTHER four kinds carries no such risk: an invalid id, a missing
+            // file, an unparseable document or a resolved-path duplicate are
+            // all structurally prior to any edit attempt in the unchanged
+            // loop below too, so moving their detection earlier changes
+            // nothing about what would eventually have been reported.
+            var targetProblem = CheckVerificationTargets(conceptIds);
+            if (targetProblem is { Kind: not VerificationTargetProblemKind.NotConformant } problem)
+            {
+                return FormatVerificationTargetProblem(problem);
+            }
+
             // Resolved outside the lock, like AppendToConceptAtomic does.
             var targets = new List<ConceptTarget>(conceptIds.Count);
             foreach (var conceptId in conceptIds)
@@ -756,7 +820,24 @@ public sealed class BundleConceptWriter
                     // first since equality alone would not refuse a document
                     // that was already missing `type` before this edit ran.
                     var reparsed = OkfDocument.Parse(content);
-                    reparsed.ValidateConformance();
+
+                    // Attributed here, at the SAME point this check has
+                    // always run (deliberately not moved earlier -- see the
+                    // early CheckVerificationTargets call above, which
+                    // excludes NotConformant for exactly this reason): a
+                    // bare DocumentValidationException naming no concept at
+                    // all is what CmdVerify and okf_verify used to work
+                    // around with a pre-loop of their own.
+                    try
+                    {
+                        reparsed.ValidateConformance();
+                    }
+                    catch (DocumentValidationException)
+                    {
+                        return FormatVerificationTargetProblem(
+                            new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptIds[i]));
+                    }
+
                     if (!reparsed.Equals(document))
                     {
                         // Diagnosable, not just "no": a bare "could not be
@@ -1045,6 +1126,112 @@ public sealed class BundleConceptWriter
         target = new ConceptTarget(id, targetPath);
         return null;
     }
+
+    /// <summary>
+    /// Checks whether every id in <paramref name="conceptIds"/> names a valid, existing,
+    /// parseable, §11-conformant concept, with no two ids resolving to the same file — the single
+    /// governed check behind <see cref="RecordVerifications"/> (called first thing, so its own
+    /// refusal names the offender), the <c>okf verify</c> CLI verb, and the <c>okf_verify</c> tool.
+    /// Before this method existed, the CLI and the tool each re-implemented an id-validity/existence/
+    /// conformance loop of their own purely to phrase a nicer message than <see cref="RecordVerifications"/>'s
+    /// own (then-unattributed) refusal — three spellings of the same §11 floor. This is the one.
+    ///
+    /// Reads only the <c>k</c> concept files named in <paramref name="conceptIds"/> (via
+    /// <see cref="ValidateConceptTarget"/> and a direct <see cref="File.Exists(string)"/>/parse of
+    /// each target path) — never <see cref="Bundle.Load(string)"/> — so answering a k-id question
+    /// costs O(k) file reads, not a full bundle parse.
+    /// </summary>
+    /// <returns>
+    /// <see langword="null"/> if every id is a valid, existing, parseable, conformant concept with
+    /// no duplicate among the resolved paths; otherwise the FIRST offender, in <paramref name="conceptIds"/>
+    /// order and checked in the same precedence <see cref="RecordVerifications"/> always has (id
+    /// validity for every id, then the duplicate-by-resolved-path rule, then existence/parse/§11 in
+    /// order) — a batch with more than one problem reports only the earliest, exactly like today.
+    /// </returns>
+    internal VerificationTargetProblem? CheckVerificationTargets(IReadOnlyList<string> conceptIds)
+    {
+        var targets = new List<ConceptTarget>(conceptIds.Count);
+        for (var i = 0; i < conceptIds.Count; i++)
+        {
+            if (ValidateConceptTarget(conceptIds[i], out var target) is not null)
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.InvalidId, conceptIds[i]);
+            }
+
+            targets.Add(target);
+        }
+
+        // Same rule as RecordVerifications's own duplicate guard: resolved
+        // TARGET PATH, case-insensitively -- not the raw id string -- so two
+        // spellings that COULD collide on a case-insensitive volume are
+        // refused rather than silently double-reporting one stamp.
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < targets.Count; i++)
+        {
+            if (!seenPaths.Add(targets[i].TargetPath))
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.DuplicateName, conceptIds[i]);
+            }
+        }
+
+        for (var i = 0; i < targets.Count; i++)
+        {
+            var targetPath = targets[i].TargetPath;
+            if (!File.Exists(targetPath))
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.NotFound, conceptIds[i]);
+            }
+
+            OkfDocument document;
+            try
+            {
+                var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(targetPath));
+                document = OkfDocument.Parse(text);
+            }
+            catch (Exception ex) when (ex is OkfException or System.Text.DecoderFallbackException)
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.ParseFailure, conceptIds[i]);
+            }
+
+            if (document.Frontmatter.Get("type") is not { IsEmptyValue: false })
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptIds[i]);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Renders a <see cref="VerificationTargetProblem"/> in the exact wording
+    /// <see cref="RecordVerifications"/> has always used for
+    /// <see cref="VerificationTargetProblemKind.NotFound"/>, <see cref="VerificationTargetProblemKind.NotConformant"/>
+    /// and <see cref="VerificationTargetProblemKind.DuplicateName"/> — an <c>Error: </c>-prefixed,
+    /// period-terminated sentence, matching what the <c>okf_verify</c> tool already reads today too.
+    /// <see cref="VerificationTargetProblemKind.InvalidId"/> re-derives <see cref="ValidateConceptTarget"/>'s
+    /// own message (it already names the id and varies by sub-case — reserved name, outside the
+    /// bundle root, a reparse point — so it is not worth collapsing into one generic sentence here);
+    /// re-running that pure, no-I/O check a second time is cheap and keeps this one byte-identical to
+    /// what <see cref="RecordVerifications"/> returned for these ids before this method existed.
+    /// <see cref="VerificationTargetProblemKind.ParseFailure"/> has no pre-existing writer-level
+    /// wording to match (it used to escape unattributed through <see cref="RunTool"/>'s generic
+    /// <c>OkfException</c> catch), so this is the first time it is phrased at all.
+    /// </summary>
+    private string FormatVerificationTargetProblem(VerificationTargetProblem problem) => problem.Kind switch
+    {
+        VerificationTargetProblemKind.InvalidId =>
+            ValidateConceptTarget(problem.ConceptId, out _)
+                ?? throw new InvalidOperationException("CheckVerificationTargets reported InvalidId for an id ValidateConceptTarget now accepts."),
+        VerificationTargetProblemKind.NotFound =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+        VerificationTargetProblemKind.ParseFailure =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document.",
+        VerificationTargetProblemKind.NotConformant =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
+        VerificationTargetProblemKind.DuplicateName =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} is named more than once.",
+        _ => throw new ArgumentOutOfRangeException(nameof(problem)),
+    };
 
     /// <summary>
     /// Parses <paramref name="frontmatterYaml"/> once and delegates the auto-stamp decision to

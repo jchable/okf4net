@@ -891,7 +891,10 @@ public static class OkfCli
             }
         }
 
-        var bundle = Load(path);
+        // Replaces the old Load(path): verify never needed the WHOLE bundle,
+        // only to check that the root itself exists (the writer's own check
+        // below reads just the k concept files actually named).
+        RequireBundleRoot(path);
 
         // Refused here as well as in the writer, so the message reads like its
         // siblings (the writer's ends with a period; the CLI's do not).
@@ -901,31 +904,34 @@ public static class OkfCli
             throw new CliOperationException($"concept {DebugQuote.Quote(duplicate.Key)} is named more than once");
         }
 
-        // The writer itself already refuses the whole batch atomically if any
-        // id is unknown or non-conformant (BundleConceptWriter.RecordVerifications
-        // resolves, reads, parses and validates every concept before writing
-        // any) — this loop does not exist to prevent a half-stamped batch.
-        // What it buys is message quality: naming the offending id directly
-        // ("unknown concept \"x\"" / "concept \"x\" has no `type`...") instead
-        // of the writer's unattributed "Missing required frontmatter keys:
-        // type", which does not say which of several ids was at fault.
-        foreach (var id in ids)
-        {
-            // The id is caller-supplied and unvalidated here (ConceptId.Parse
-            // rejects only an empty id) -- echoed via DebugQuote.Quote rather
-            // than interpolated raw, so a newline in it cannot forge a
-            // plausible "recorded …" line on stderr for a run that wrote
-            // nothing (the same class of hole LineSafeText.ContainsControlCharacter
-            // closed for --by/--at on the write path).
-            if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
-            {
-                throw new CliOperationException($"unknown concept {DebugQuote.Quote(id)}");
-            }
+        // Constructed here rather than after the dry-run check below: the
+        // writer's own CheckVerificationTargets (immediately below) is what
+        // gives the CLI its nicer message, and it must run before --dry-run
+        // decides anything — otherwise `--dry-run` on an unknown id would
+        // print "would record" for a concept the batch was never going to
+        // write. Constructing a BundleConceptWriter performs no I/O of its
+        // own (see its constructor) and writes nothing.
+        var writer = new BundleConceptWriter(path);
 
-            if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
-            {
-                throw new CliOperationException($"concept {DebugQuote.Quote(id)} has no `type` and is not §11-conformant");
-            }
+        // The single governed §11 floor (BundleConceptWriter.CheckVerificationTargets,
+        // also called first thing inside RecordVerifications itself) — this
+        // call does not exist to prevent a half-stamped batch, since the real
+        // write below refuses the whole batch atomically on its own. What it
+        // buys is message quality: naming the offending id directly
+        // ("unknown concept \"x\"" / "concept \"x\" has no `type`...") BEFORE
+        // the dry-run branch, instead of the writer's own message shape.
+        //
+        // A concept named more than once by two DIFFERENT spellings that
+        // resolve to the SAME file is deliberately left unhandled here (the
+        // raw-string check above only catches identical spellings): that one
+        // case reaches the real writer call below, whose own message is what
+        // the caller sees (see Verify_reports_a_writer_failure_without_doubling_the_error_prefix).
+        var problem = writer.CheckVerificationTargets(ids);
+        if (problem is { Kind: not VerificationTargetProblemKind.DuplicateName } p)
+        {
+            throw new CliOperationException(p.Kind == VerificationTargetProblemKind.NotConformant
+                ? $"concept {DebugQuote.Quote(p.ConceptId)} has no `type` and is not §11-conformant"
+                : $"unknown concept {DebugQuote.Quote(p.ConceptId)}");
         }
 
         if (parsed.Has("--dry-run"))
@@ -940,9 +946,6 @@ public static class OkfCli
 
             return 0;
         }
-
-        // Constructed only now: a dry run above never needs a writer at all.
-        var writer = new BundleConceptWriter(path);
 
         // One batch call: the writer prepares every concept before writing any,
         // so nothing is half-stamped if a later one turns out unwritable.
