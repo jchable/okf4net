@@ -10,8 +10,9 @@ namespace OKF4net.Attestation.Containers;
 /// known function with fixed kwarg names — this project's own convention
 /// (§10 leaves invocation entirely host-defined). Always runs on
 /// <see cref="ContainerAttesterOptions.Image"/>, never the executor's
-/// profile image (a <see cref="ContainerRuntimeKind.SqlClient"/> image has
-/// no Python at all).
+/// profile image: that image is whatever the sanctioned code needs (a
+/// <see cref="ContainerRuntimeKind.Script"/> image may have no Python at all),
+/// so the bootstrap cannot assume one.
 /// </summary>
 public sealed class ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options) : IAttester
 {

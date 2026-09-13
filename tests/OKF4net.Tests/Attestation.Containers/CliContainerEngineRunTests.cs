@@ -99,6 +99,10 @@ public class CliContainerEngineRunTests
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
+            // A .cmd as FileName with UseShellExecute = false does launch: .NET passes no
+            // lpApplicationName, and CreateProcess then runs a batch file through cmd.exe
+            // itself. No cmd.exe /c wrapper needed, and a launch failure would not hide:
+            // it surfaces as "could not be started", which fails the timeout assertion.
             // ping pauses one second between echoes, so N+1 echoes is about N seconds.
             return tmp.Write("engine.cmd", $"@echo off\r\nping -n {seconds + 1} 127.0.0.1 >nul\r\n");
         }
