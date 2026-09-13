@@ -763,17 +763,18 @@ public sealed class BundleConceptWriter
                         // check on every verify, even a perfectly clean edit.
                         // Not fixed here (changing YamlValue's equality is out
                         // of scope for this method); named explicitly instead,
-                        // alongside the other diagnosable case -- the body
-                        // changing at all is never something this edit does
-                        // on purpose, so it is worth calling out separately
-                        // from "some other frontmatter key moved".
+                        // alongside the other diagnosable cases below. The
+                        // body case is checked first since this edit never
+                        // touches the body on purpose, so a body difference
+                        // is worth calling out distinctly from any
+                        // frontmatter-shaped explanation.
                         var detail = !string.Equals(reparsed.Body, document.Body, StringComparison.Ordinal)
                             ? "the body changed, which this edit never does on purpose"
                             : ContainsNaN(document.Frontmatter.AsMapping())
                                 ? "the frontmatter contains a NaN value, which never compares equal to "
                                     + "itself, so this check cannot confirm the edit either way -- inspect "
                                     + "the file by hand"
-                                : "a frontmatter key other than 'verified' changed";
+                                : DescribeFrontmatterDivergence(document.Frontmatter.AsMapping(), reparsed.Frontmatter.AsMapping());
                         return $"Error: concept {DebugQuote.Quote(conceptIds[i])}: the verified block could not be edited in place ({detail}).";
                     }
 
@@ -886,6 +887,58 @@ public sealed class BundleConceptWriter
         YamlSequence s => s.Items.Any(ContainsNaN),
         _ => false,
     };
+
+    /// <summary>
+    /// Names WHICH part of the frontmatter actually diverged, for the
+    /// equality-refusal message in <see cref="RecordVerifications"/> --
+    /// cheaply, from the two already-parsed mappings, rather than asserting a
+    /// fixed "some OTHER key changed" that is simply wrong whenever the
+    /// divergence is inside <c>verified</c> itself (the common case: an edit
+    /// that mis-located the block's own boundary re-parses to a `verified`
+    /// value that does not match the one <see cref="UpsertStamp"/> computed,
+    /// while every other key is untouched). Checks <c>verified</c> FIRST for
+    /// exactly that reason. If neither `verified` nor any single OTHER
+    /// top-level key can be pinned as the sole difference (e.g. the key SETS
+    /// themselves differ), this returns an honest, unlocated description
+    /// rather than guessing which key -- per the rule that a message should
+    /// name a cause it actually checked, not one it merely suspects.
+    /// </summary>
+    private static string DescribeFrontmatterDivergence(YamlMapping expected, YamlMapping actual)
+    {
+        var expectedVerified = expected.Get("verified");
+        var actualVerified = actual.Get("verified");
+        var verifiedMatches = expectedVerified is null
+            ? actualVerified is null
+            : expectedVerified.Equals(actualVerified);
+        if (!verifiedMatches)
+        {
+            return "the verified block itself did not round-trip";
+        }
+
+        var expectedOthers = expected.Entries.Where(NotVerified).ToList();
+        var actualOthers = actual.Entries.Where(NotVerified).ToList();
+        if (expectedOthers.Count == actualOthers.Count)
+        {
+            for (var i = 0; i < expectedOthers.Count; i++)
+            {
+                var (expectedKey, expectedValue) = expectedOthers[i];
+                var (actualKey, actualValue) = actualOthers[i];
+                if (!expectedKey.Equals(actualKey) || !expectedValue.Equals(actualValue))
+                {
+                    var name = expectedKey.AsDisplayString() ?? expectedKey.AsString() ?? "<non-string key>";
+                    return $"the frontmatter key '{name}' changed";
+                }
+            }
+        }
+
+        // verified matches and no single other key could be pinned (e.g. the
+        // key SETS differ in count/order beyond a simple positional swap) --
+        // say so honestly instead of naming a key that was never checked.
+        return "the frontmatter changed outside the verified block";
+
+        static bool NotVerified((YamlValue Key, YamlValue Value) entry) =>
+            !string.Equals(entry.Key.AsString(), "verified", StringComparison.Ordinal);
+    }
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
     private readonly record struct ConceptTarget(ConceptId Id, string TargetPath);

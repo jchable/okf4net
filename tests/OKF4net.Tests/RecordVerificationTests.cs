@@ -742,22 +742,32 @@ public class RecordVerificationTests
     }
 
     /// <summary>
-    /// Finding #C7-B (round 2): the structural-equality refusal branch
-    /// (<c>!reparsed.Equals(document)</c>) IS reachable through the public
-    /// path, with nothing written -- this test exists specifically so it
-    /// goes RED if that check is ever weakened back to something like a bare
-    /// <c>verified</c>-entry count (the exact regression that let finding
-    /// #C7-1 through in the base commit). The shape (round-2 review's "k16"):
-    /// a NO-BREAK SPACE (U+00A0) sitting on its own line between two
-    /// <c>verified</c> sequence entries. The real YAML parser's blank-line
-    /// check (<c>string.TrimStart()</c>) treats U+00A0 as whitespace and
-    /// skips it, so the document parses fine and both stamps are visible to
-    /// <c>UpsertStamp</c>; but <c>FrontmatterBlockEdit</c>'s own continuation
-    /// scan only recognizes ASCII space/tab as a blank-line stand-in, so it
-    /// stops absorbing lines at the NBSP line -- excluding the SECOND
-    /// sequence entry from the replaced range while the emitted replacement
-    /// (built from the correctly-merged, fully-parsed value) still includes
-    /// it, corrupting the file if the equality check did not catch it.
+    /// A clean refusal with NOTHING WRITTEN for a hostile shape (round-2
+    /// review's "k16"): a NO-BREAK SPACE (U+00A0) sitting on its own line
+    /// between two <c>verified</c> sequence entries. The real YAML parser's
+    /// blank-line check (<c>string.TrimStart()</c>) treats U+00A0 as
+    /// whitespace and skips it, so the document parses fine and both stamps
+    /// are visible to <c>UpsertStamp</c>; but <c>FrontmatterBlockEdit</c>'s
+    /// own continuation scan only recognizes ASCII space/tab as a
+    /// blank-line stand-in, so it stops absorbing lines at the NBSP line --
+    /// excluding the SECOND sequence entry from the replaced range while the
+    /// emitted replacement (built from the correctly-merged, fully-parsed
+    /// value) still includes it.
+    ///
+    /// <b>This test does NOT, by itself, prove the check discriminates from
+    /// a weaker one.</b> A round-3 review found that for THIS shape, the OLD
+    /// stamp-COUNT check (<c>Verified.Count != upserted.Count</c>) refuses
+    /// too, by coincidence: the re-parsed file ends up with 4 `verified`
+    /// entries against 3 expected, so a bare count comparison catches it
+    /// just as well as full equality -- reverting to the count check would
+    /// leave this test green. <see cref="A_stray_indented_line_inside_a_verified_entry_is_refused_a_count_check_would_miss"/>
+    /// is the one that actually discriminates (verified by temporarily
+    /// weakening the check and confirming THAT test goes red while this one
+    /// and the form-feed test below stay green -- see the C7 fix report,
+    /// round 3). This test still earns its place: it is an independent,
+    /// hostile input that must never corrupt the file, and every refusal
+    /// path deserves its own "nothing written" proof regardless of which
+    /// internal check caught it.
     /// </summary>
     [Fact]
     public void A_no_break_space_line_inside_the_verified_sequence_is_refused_not_corrupted()
@@ -779,7 +789,14 @@ public class RecordVerificationTests
     /// Same failure mode as the NBSP test above, with a FORM FEED (U+000C)
     /// line instead (round-2 review's "x09") -- a second, independently
     /// constructed shape hitting the same gap between the real parser's
-    /// blank-line predicate and this editor's ASCII-only one.
+    /// blank-line predicate and this editor's ASCII-only one. Same caveat as
+    /// the NBSP test: a bare stamp-count check would ALSO refuse this exact
+    /// shape (it too re-parses to 4 entries against 3 expected), so this
+    /// test does not by itself discriminate full equality from a count
+    /// comparison -- <see cref="A_stray_indented_line_inside_a_verified_entry_is_refused_a_count_check_would_miss"/>
+    /// is the one proven (by deliberately weakening the check) to need full
+    /// equality. Kept for the same reason: an independent hostile input that
+    /// must end in a clean refusal, whichever check catches it.
     /// </summary>
     [Fact]
     public void A_form_feed_line_inside_the_verified_sequence_is_refused_not_corrupted()
@@ -819,6 +836,58 @@ public class RecordVerificationTests
 
         Assert.False(outcome.Recorded);
         Assert.Contains("NaN", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Round-3 finding, the test that actually pins full structural equality
+    /// against the OLD stamp-count check: <c>verified:\n  - by: human:bob\n</c>
+    /// then a lone NO-BREAK-SPACE line, then an indented continuation
+    /// <c>    note: x</c>, then <c>title: T</c>. The real parser folds
+    /// <c>note: x</c> into `bob`'s own sequence-item mapping (the NBSP line
+    /// is skipped as blank, so `note` sits at the same indent as `by` and
+    /// joins it) -- so the ORIGINAL document's `verified` is
+    /// <c>[{by: bob, note: x}]</c>, and <c>UpsertStamp</c> appends a clean
+    /// <c>{by: ada, at: …}</c>, giving an EXPECTED, two-entry
+    /// <c>[{by: bob, note: x}, {by: ada, at: …}]</c>.
+    /// <c>FrontmatterBlockEdit</c>'s own continuation scan, though, stops
+    /// absorbing at the NBSP line (ASCII-only blank check), so the emitted
+    /// replacement (which correctly re-includes bob's `note: x`, since
+    /// <c>UpsertStamp</c> read it off the real parse) is followed by the
+    /// SAME, now-orphaned <c>note: x</c> line surviving untouched in the
+    /// text -- which the real parser then folds into `ada`'s item instead
+    /// (nothing stops it: `note: x` sits at ada's own indent too), giving a
+    /// RE-PARSED <c>[{by: bob, note: x}, {by: ada, at: …, note: x}]</c>.
+    ///
+    /// The item COUNT is identical (2 == 2) -- the OLD stamp-count check
+    /// (<c>Verified.Count != upserted.Count</c>, the one finding #C7-1
+    /// exploited) would see nothing wrong and report success with `note: x`
+    /// silently duplicated onto `ada`'s stamp. Only comparing the actual
+    /// VALUES (full <see cref="OkfDocument.Equals(OkfDocument?)"/>) sees
+    /// `ada`'s extra key and refuses. Proven, not asserted: see the C7 fix
+    /// report's round-3 section for the RED output from temporarily
+    /// reverting the check to the count comparison and running this exact
+    /// test.
+    /// </summary>
+    [Fact]
+    public void A_stray_indented_line_inside_a_verified_entry_is_refused_a_count_check_would_miss()
+    {
+        using var tmp = new TempDir();
+        var nbsp = char.ConvertFromUtf32(0x00A0);
+        const string note = "    note: x\n";
+        var before = "---\ntype: M\nverified:\n  - by: human:bob\n" + nbsp + "\n" + note + "title: T\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        // The corrected, LOCATED message (round 3, item 2): the divergence
+        // is genuinely INSIDE the verified block, not "some other key" --
+        // asserted exactly, not just contains(), since a wrong-but-plausible
+        // message is exactly what item 2 exists to catch.
+        Assert.Equal(
+            "Error: concept \"metrics/x\": the verified block could not be edited in place (the verified block itself did not round-trip).",
+            outcome.Message);
         Assert.Equal(before, Read(tmp, "metrics/x.md"));
     }
 }
