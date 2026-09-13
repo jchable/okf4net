@@ -3,6 +3,7 @@ using System.Linq;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
+using OKF4net.Internal;
 
 namespace OKF4net.Tests.Agents;
 
@@ -550,6 +551,36 @@ public class OkfContextProviderMemoryTests
 
         Assert.Null(provider.LastMemoryError);
         Assert.False(Directory.Exists(Path.Combine(tmp.Path, "memory")));
+    }
+
+    /// <summary>
+    /// Unit-level RED for Task C12: <c>MemoryFrontmatter</c> used to build its
+    /// YAML by hand-concatenation, so a hostile <c>dateStr</c> (never actually
+    /// reachable through a real capture -- see below) breaks the frontmatter
+    /// or silently corrupts a field. No production-path RED exists here: the
+    /// real caller always formats <c>dateStr</c> as <c>yyyy-MM-dd</c>
+    /// (<see cref="OkfContextProvider.StoreAIContextAsync"/>'s
+    /// <c>now.ToString("yyyy-MM-dd", ...)</c>), so the hand-emitter's quoting
+    /// gap can never be reached through <see cref="OkfContextProvider.StoreForTest"/>.
+    /// This test instead calls the internal <c>MemoryFrontmatter</c> directly
+    /// with a value no real caller produces, to pin the emitter's behavior
+    /// once it goes through <c>YamlEmitter</c> instead of string
+    /// concatenation.
+    /// </summary>
+    [Fact]
+    public void MemoryFrontmatter_quotes_a_hostile_date_string_so_it_round_trips()
+    {
+        var now = new DateTime(2026, 7, 1, 10, 15, 30, DateTimeKind.Utc);
+        const string dateStr = "2026-07-01\": trap # not-a-comment";
+
+        var frontmatterYaml = OkfContextProvider.MemoryFrontmatter(dateStr, now);
+        var text = $"---\n{frontmatterYaml}---\n\nbody\n";
+
+        Assert.True(OkfDocument.TryParse(text, out var doc, out var error), error);
+        Assert.Equal($"Agent memory {dateStr}", doc!.Frontmatter.Title);
+        Assert.Equal($"Captured user/agent exchanges for {dateStr}.", doc.Frontmatter.Description);
+        Assert.Equal("okf4net/" + OkfSpec.Version, doc.Frontmatter.Generated?.By?.Raw);
+        Assert.Equal(OkfTimestamp.FormatUtc(now), doc.Frontmatter.Generated?.At);
     }
 
     /// <summary>

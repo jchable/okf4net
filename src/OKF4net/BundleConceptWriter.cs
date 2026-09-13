@@ -138,8 +138,19 @@ public sealed class BundleConceptWriter
     /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
+    /// <summary>
+    /// The §7 actor spelling this library uses when it stamps
+    /// <c>generated.by</c> itself: <c>"okf4net/" + OkfSpec.Version</c>. The
+    /// single source of that spelling — <see cref="ProducerActor"/> defaults
+    /// to it, and <c>OKF4net.Agents</c>' <c>OkfContextProvider.MemoryFrontmatter</c>
+    /// reads it directly rather than re-spelling <c>"okf4net/" + OkfSpec.Version</c>
+    /// a second time on a path that never goes through <see cref="ProducerActor"/>
+    /// itself (see that method's remarks).
+    /// </summary>
+    internal static string DefaultProducerActor => "okf4net/" + OkfSpec.Version;
+
     /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
-    internal string ProducerActor { get; set; } = "okf4net/" + OkfSpec.Version;
+    internal string ProducerActor { get; set; } = DefaultProducerActor;
 
     /// <summary>Creates a writer rooted at <paramref name="bundleRoot"/>.</summary>
     /// <param name="bundleRoot">The bundle's root directory.</param>
