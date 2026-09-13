@@ -171,8 +171,13 @@ and this project adheres to
   two parameters (pinned by a characterization test, since the design depends
   on that upstream behaviour and a change would fail silently). The synchronous
   `RunComputation` is `[Obsolete]` for one version and now delegates.
+  `[Obsolete]` is a build error under `TreatWarningsAsErrors` — migrate the
+  call or suppress CS0618 for one version.
 - **`OkfBundleTools.ComputationTimeout`** — a wall-clock ceiling on one run,
-  default two minutes, combined with the caller's own token. §10 sets no time
+  default two minutes, combined with the caller's own token. **Breaking
+  (behaviour):** a run that used to complete after more than two minutes now
+  reports a timeout unless the host sets `ComputationTimeout`
+  (`Timeout.InfiniteTimeSpan` restores 0.5.0's unbounded wait). §10 sets no time
   limit; this is a host guard, because bind/execute/attest are host-plugged code
   that may do unbounded I/O. Elapsing is reported to the model as a normal
   non-displayable outcome rather than thrown at a caller who never asked to
@@ -393,8 +398,9 @@ and this project adheres to
   `FileMemoryStore` concatenates one ranked list per tier in its read order, so a
   family rotation there would interleave the tiers and override that precedence.
 
-- **Breaking: `okf-mcp` serves a bundle read-only by default.** The three write
-  tools are registered only when `OKF_MCP_WRITABLE=1` is set. Writes used to be
+- **Breaking: `okf-mcp` serves a bundle read-only by default.** The four write
+  tools (`okf_write_concept`, `okf_append_log`, `okf_regenerate_indexes`,
+  `okf_verify`) are registered only when `OKF_MCP_WRITABLE=1` is set. Writes used to be
   the default, which put unconfirmed write access to the corpus behind nothing
   on the surface most people actually deploy — a desktop client's MCP config —
   while bundle content is untrusted by design, so an injection carried in a
@@ -914,6 +920,8 @@ and this project adheres to
   a future mis-edit is refused rather than silently written.
 - `okf-render` treats a lone `-` as an argument, like `okf` (the two
   scanners had drifted; there is now one).
+- `samples/acme-retail-agent` restores again (NU1605 after the
+  `Microsoft.Agents.AI` 1.20.0 bump).
 
 ## [0.5.0] - 2026-07-31
 
