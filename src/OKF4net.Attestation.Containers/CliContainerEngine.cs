@@ -76,7 +76,7 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         // docker and podman read those as UNLIMITED: emitting `--memory 0` would
         // remove the ceiling while looking like it set one.
         //
-        // ContainerRuntimeProfile already rejects such a value in its init accessors,
+        // ContainerIsolation already rejects such a value in its init accessors,
         // but ContainerRunSpec is a public record a host can build by hand and pass
         // straight to this engine, so the guarantee cannot live only up there.
         if (spec.MemoryBytes is { } memory)

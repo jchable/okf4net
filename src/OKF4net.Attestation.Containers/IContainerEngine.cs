@@ -44,7 +44,7 @@ public sealed record ContainerRunSpec(
     /// filesystem is mounted read-only, so a sanctioned script cannot write anywhere
     /// the image would otherwise allow. <see langword="false"/> by default, so a spec
     /// built by hand behaves exactly as it did before this existed; the safe default
-    /// lives on <see cref="ContainerRuntimeProfile"/> instead.
+    /// lives on <see cref="ContainerIsolation"/> instead.
     /// </summary>
     public bool ReadOnlyRootFilesystem { get; init; }
 

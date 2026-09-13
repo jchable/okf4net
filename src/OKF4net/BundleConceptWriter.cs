@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Concurrent;
-using System.Globalization;
 using OKF4net.Internal;
 using OKF4net.Yaml;
 
@@ -696,7 +695,7 @@ public sealed class BundleConceptWriter
         var records = new List<VerificationRecord>(conceptIds.Count);
         var message = RunTool(() =>
         {
-            // Checked FIRST for four of its five kinds, so THIS method's own
+            // Checked FIRST for five of its six kinds, so THIS method's own
             // refusal names the offender: before this call existed, an
             // unparseable concept escaped as an unattributed, generic
             // "Error: {yaml/parse message}" naming no concept at all -- the
@@ -1152,10 +1151,20 @@ public sealed class BundleConceptWriter
     /// </summary>
     /// <returns>
     /// <see langword="null"/> if every id is a valid, existing, parseable, conformant concept with
-    /// no duplicate among the resolved paths; otherwise the FIRST offender, in <paramref name="conceptIds"/>
-    /// order and checked in the same precedence <see cref="RecordVerifications"/> always has (id
-    /// validity for every id, then the duplicate-by-resolved-path rule, then existence/parse/§11 in
-    /// order) — a batch with more than one problem reports only the earliest, exactly like today.
+    /// no duplicate among the resolved paths; otherwise the FIRST offender this method finds,
+    /// checking id validity for every id first, then the duplicate-by-resolved-path rule across
+    /// every id, then existence/parse/§11 per id in <paramref name="conceptIds"/> order. For any
+    /// ONE id, this is the same order <see cref="RecordVerifications"/>'s own prepare loop checks
+    /// that id in afterwards, up through §11 conformance (the loop's own remaining checks — the
+    /// fence/NaN-float/deep-nesting refusals — start only past that point, since this method's
+    /// conformance check does not cover them). It is NOT the same ACROSS ids in a batch with more
+    /// than one problem: this method resolves validity, duplicates and existence/parse/§11 for the
+    /// WHOLE batch before the prepare loop ever starts, so a LATER id's not-found, unparseable,
+    /// unreadable, invalid-id or duplicate problem (all caught here) now wins over an EARLIER id's
+    /// fence, NaN-float or deep-nesting refusal (caught only downstream, in the prepare loop this
+    /// method now runs ahead of) — the reverse of what the old single combined per-id loop
+    /// reported. Both answers are correct refusals of the same batch; only which one is named
+    /// first can move.
     /// </returns>
     internal VerificationTargetProblem? CheckVerificationTargets(IReadOnlyList<string> conceptIds)
     {

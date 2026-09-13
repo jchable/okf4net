@@ -303,14 +303,22 @@ and this project adheres to
   for their own "nicer" pre-write message too, instead of each
   re-implementing an id-validity/existence/conformance loop of their own;
   `okf verify` also no longer loads the whole bundle to answer a k-id
-  question, reading only the named concept files. One observable side
-  effect for a batch with more than one problem: id validity, then a
+  question, reading only the named concept files. Id validity, then a
   resolved-path duplicate, is now checked across every id before existence/
-  parseability/§11 is checked for any of them — the earlier, sequential
-  per-id loop meant a batch mixing (say) a duplicate later in the list with
-  a non-existent concept earlier in it could report either one depending on
-  its own internal order; the check now always resolves and de-duplicates
-  the whole batch first.
+  parseability/§11 is checked for any of them — the old CLI and tool
+  pre-checks were already deterministic on their own (each reported the
+  first unknown id in list order; the writer already checked duplicates
+  across the whole batch before existence), so this is not a fix to
+  nondeterminism. What actually changes for a batch with more than one
+  problem: a later id's not-found, unparseable or unreadable problem (all
+  caught by the new front-loaded `CheckVerificationTargets` check) now wins
+  over an earlier id's fence, NaN-float or deep-nesting refusal (caught only
+  downstream, in the writer's per-id prepare loop) — the reverse of what the
+  old single combined per-id loop reported. `RecordVerifications` also now
+  refuses a case-variant id (`METRICS/DAU`) on a case-insensitive volume
+  instead of silently stamping the differently-named on-disk file
+  (`metrics/dau.md`), and reports an unreadable concept file as its own
+  problem rather than an unhandled exception.
 - **Breaking (combined effect on 0.5.0 bundles): a bare `attester.resource` /
   `computation` path that used to resolve beside the concept now resolves
   from the bundle root (§6.2), AND an unresolvable `attester.resource` now

@@ -22,6 +22,8 @@ namespace OKF4net.Tests.Attestation.Containers;
 /// The SqlClient case needs a reachable Postgres instance. Start one first:
 /// <c>docker run --rm -d --name okf-demo-pg -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo -p 5544:5432 postgres:16-alpine</c>,
 /// then seed it: <c>docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE users(id int, active boolean); INSERT INTO users VALUES (1,true),(2,true),(3,false);"</c>,
+/// plus the extra table <c>SqlClient_runtime_returns_a_receipt_for_non_json_native_column_types</c>
+/// needs: <c>docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE typed(amount numeric(12,2), booked date, ref uuid, blob bytea); INSERT INTO typed VALUES (1234.56, '2026-09-11', '00000000-0000-0000-0000-000000000001', '\\x4f4b46');"</c>,
 /// and set <c>OKF_DEMO_PG_CONN=postgresql://postgres:demo@host.docker.internal:5544/demo</c>
 /// before running these tests -- <c>host.docker.internal</c>, not
 /// <c>localhost</c>: the connection string is read by the .NET test process

@@ -1691,18 +1691,35 @@ public class CliTests
         Assert.StartsWith("error: ", r.Err);
         Assert.Contains("nesting depth limit exceeded", r.Err);
         Assert.DoesNotContain("   at ", r.Err);
+        // This is the test that actually reaches CmdVerify's
+        // outcome.Message.Replace("Error: ", …) call: deep nesting is not one
+        // of CheckVerificationTargets's checked kinds, so this failure surfaces
+        // only from the real write attempt inside RecordVerifications, whose
+        // own message is prefixed "Error: ". StartsWith("error: ") alone would
+        // still pass "error: Error: nesting depth limit exceeded…" if that
+        // Replace were ever dropped; this pins the prefix is stripped, not
+        // just present.
+        Assert.DoesNotContain("Error:", r.Err);
     }
 
     /// <summary>
-    /// The one path where the writer's own message reaches stderr: two
-    /// spellings of one concept ("metrics/dau" and "metrics//dau") differ as
-    /// strings, so the CLI's own duplicate check passes them, and both resolve
-    /// to the same file, so the writer's resolved-path check refuses the
-    /// batch. <c>CmdVerify</c> strips the writer's <c>Error: </c> prefix
-    /// before rethrowing, because the CLI adds its own <c>error: </c> —
-    /// dropping that <c>Replace</c> ships <c>error: Error: …</c>, and no test
-    /// asserted the stderr of a failed <c>okf verify</c> at all until this
-    /// one.
+    /// Two spellings of one concept ("metrics/dau" and "metrics//dau") differ
+    /// as strings, so <c>CmdVerify</c>'s own raw-string duplicate check passes
+    /// them, and both resolve to the same file, so
+    /// <c>writer.CheckVerificationTargets</c>'s resolved-path check refuses
+    /// the batch — with the writer's own <c>DuplicateName</c> wording
+    /// (trailing period), formatted directly by <c>CmdVerify</c>'s own
+    /// <c>switch</c> over <see cref="OKF4net.VerificationTargetProblemKind"/>,
+    /// never through <c>RecordVerifications</c> or its
+    /// <c>outcome.Message.Replace("Error: ", …)</c> call — this case is
+    /// caught by the pre-check before the writer ever attempts a write. This
+    /// pins that a same-file duplicate refuses the whole batch (nothing
+    /// written) with exactly one <c>error: </c> prefix, whichever of the two
+    /// checks (the CLI's raw-string one or the writer's resolved-path one)
+    /// catches it. The doubled-prefix case this test's name still refers to —
+    /// a failure that DOES reach <c>RecordVerifications</c>'s own write
+    /// attempt and that <c>Replace</c> call — is guarded instead by
+    /// <see cref="A_document_that_cannot_be_re_emitted_exits_cleanly_rather_than_crashing"/>.
     /// </summary>
     [Fact]
     public void Verify_reports_a_writer_failure_without_doubling_the_error_prefix()

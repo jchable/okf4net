@@ -14,7 +14,7 @@ namespace OKF4net.Tests.Attestation.Containers;
 /// flags, and to docker and podman a <b>zero or negative</b> value there does not
 /// mean "invalid" — it means <b>unlimited</b>. So a profile built with
 /// <c>MemoryBytes = 0</c> silently removed the very ceiling it appeared to set,
-/// and a negative <see cref="ContainerRuntimeProfile.Timeout"/> surfaced much
+/// and a negative <see cref="ContainerIsolation.Timeout"/> surfaced much
 /// later as a raw <see cref="ArgumentOutOfRangeException"/> out of a
 /// <see cref="System.Threading.CancellationTokenSource"/> constructor, naming
 /// neither the profile nor the property.
@@ -178,7 +178,7 @@ public class ContainerRuntimeProfileTests
     }
 
     /// <summary>
-    /// Positivity alone leaves two holes in <see cref="ContainerRuntimeProfile.Timeout"/>.
+    /// Positivity alone leaves two holes in <see cref="ContainerIsolation.Timeout"/>.
     /// <c>Timeout.InfiniteTimeSpan</c> is -1 ms, which a
     /// <see cref="System.Threading.CancellationTokenSource"/> accepts as "never fire" —
     /// the ceiling silently gone. Anything above what a timer can count (about 49.7
