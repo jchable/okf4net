@@ -48,6 +48,49 @@ internal static class YamlParser
     }
 
     /// <summary>
+    /// If <paramref name="line"/> is a top-level YAML mapping-entry line by
+    /// this parser's own rules (<see cref="SplitKeyValue"/>) -- e.g.
+    /// <c>key: value</c>, <c>key:</c>, <c>"key": value</c>, <c>'key':</c>, or
+    /// <c>key : value</c> (whitespace before the colon) -- returns the
+    /// DECODED key name (quoting resolved: exactly what
+    /// <see cref="YamlMapping.Get"/> would find this entry under) and whether
+    /// the line carries an inline value. A null or comment-only remainder
+    /// means it does not, which is exactly the condition under which
+    /// <see cref="BlockParser.ParseNested"/> looks for a nested block --
+    /// including YAML's indentless block-sequence form -- on the FOLLOWING
+    /// lines instead of on this one. Returns <see langword="null"/> when the
+    /// line is not a mapping-entry line at all (blank, a comment, a sequence
+    /// item, ...).
+    ///
+    /// Does not itself require or check that <paramref name="line"/> is
+    /// unindented; the caller decides what counts as "top-level" for its own
+    /// purposes, exactly as <c>BlockParser.ParseMappingCore</c> does by
+    /// slicing off <c>indent</c> columns before calling <see cref="SplitKeyValue"/> on
+    /// what remains. Never throws: any quote <see cref="SplitKeyValue"/>
+    /// accepted as part of the key is, by construction, already closed
+    /// within that same substring (its own scan requires <c>quote == null</c>
+    /// at the split point), so re-decoding it here cannot hit an unterminated
+    /// quote.
+    ///
+    /// Shared by <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> so it
+    /// locates exactly the key line this parser's own real parse would --
+    /// see finding #C7-1: a hand-rolled column-0-<c>"key:"</c>-PREFIX check
+    /// that did not go through this same key-splitting logic silently missed
+    /// <c>"key":</c>/<c>'key':</c>/<c>key :</c> spellings, each of which
+    /// <see cref="YamlMapping.Get"/> (first-wins) finds without trouble.
+    /// </summary>
+    internal static (string? KeyName, bool HasInlineValue)? TryReadTopLevelKeyLine(string line)
+    {
+        var split = SplitKeyValue(line);
+        if (split is null)
+        {
+            return null;
+        }
+
+        return (ParseScalar(split.Value.Key, 0).AsDisplayString(), split.Value.Rest is not null);
+    }
+
+    /// <summary>
     /// A single key/optional-rest split of a (left-trimmed) mapping-entry line.
     /// </summary>
     private readonly record struct KeyValueSplit(string Key, string? Rest);

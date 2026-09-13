@@ -507,8 +507,17 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Records a review of every concept in <paramref name="conceptIds"/>:
     /// adds — or replaces, at its position — the <c>{ by, at }</c> entry of
-    /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list,
-    /// preserving every other frontmatter key and the body.
+    /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list.
+    ///
+    /// <b>Byte-preservation guarantee.</b> Every other frontmatter key and the
+    /// body are preserved byte for byte: the <c>verified:</c> block is edited
+    /// IN PLACE in the raw text (<see cref="FrontmatterBlockEdit"/>), never by
+    /// re-emitting the whole document, so CRLF line endings, YAML comments,
+    /// and flow/folded scalar spellings elsewhere all survive untouched — a
+    /// property this method's own re-parse-and-compare check enforces (full
+    /// structural <see cref="OkfDocument.Equals(OkfDocument?)"/> against the
+    /// intended result, not merely a stamp count), refusing the write rather
+    /// than risk a silently wrong file if the edit ever disagrees.
     ///
     /// Fully validated before the first write: every concept id is resolved
     /// to a target path before the bundle lock is taken (like
@@ -687,21 +696,31 @@ public sealed class BundleConceptWriter
                     var map = document.Frontmatter.AsMapping();
 
                     var upserted = UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt);
+
+                    // LOAD-BEARING, not just "kept for replacedAt" (replacedAt
+                    // is UpsertStamp's own out-parameter, unaffected by this
+                    // call): `map` is the LIVE mapping `document.Frontmatter`
+                    // wraps (Frontmatter.AsMapping returns the instance
+                    // itself, no defensive copy -- see its own doc comment),
+                    // so this mutates `document` in place into exactly the
+                    // structure the edit below is SUPPOSED to produce. The
+                    // equality check further down compares the edit's actual
+                    // re-parsed result against THIS object -- without this
+                    // call, `document` would still hold the OLD `verified`
+                    // value and the equality check would fail on every
+                    // legitimate stamp.
                     map.Insert("verified", upserted);
 
                     // Surgical, not a re-emit: only the `verified:` block is
                     // touched in the RAW text, so every other frontmatter key
                     // -- comments, CRLF endings, folded/flow scalar spellings,
                     // key order -- survives byte for byte. This is what
-                    // RecordVerifications's own doc comment already promised
+                    // RecordVerifications's own doc comment already promises
                     // ("preserving every other frontmatter key and the body")
                     // and a full-frontmatter re-emit through YamlEmitter did
                     // not deliver: YamlEmitter normalizes CRLF to LF, drops
                     // comments, and reflows folded/flow scalars (see
-                    // FrontmatterBlockEdit's own doc comment). `map` above is
-                    // still built and mutated exactly as before, so
-                    // UpsertStamp/replacedAt are computed identically; it is
-                    // only the SERIALIZATION step that changes. Deliberately
+                    // FrontmatterBlockEdit's own doc comment). Deliberately
                     // does NOT go through MaybeStampGenerated: this path
                     // stamps `verified` only, never `generated`.
                     var one = new YamlMapping();
@@ -709,12 +728,24 @@ public sealed class BundleConceptWriter
                     var stampBlock = YamlEmitter.Emit(one);
                     var content = FrontmatterBlockEdit.ReplaceTopLevelKey(text, "verified", stampBlock);
 
-                    // Re-parsed and validated: the edit is textual, so this is
-                    // the proof the result is still a conformant (§11) document
-                    // and the stamp landed where a reader will find it.
+                    // The edit is textual (FrontmatterBlockEdit does not
+                    // itself validate YAML), so re-parsing and checking FULL
+                    // STRUCTURAL EQUALITY against `document` -- which already
+                    // holds the exact intended result, per the load-bearing
+                    // `map.Insert` above -- is the proof that nothing else
+                    // moved: same frontmatter (key set, order, and every
+                    // OTHER value) and the same body, ordinally
+                    // (OkfDocument.Equals). A weaker check (e.g. only
+                    // counting `verified` entries) can pass on a genuinely
+                    // corrupted edit -- a mis-located key spelling that
+                    // inserted a shadowed duplicate elsewhere still re-parses
+                    // to the same COUNT while leaving a stale value in the
+                    // file (finding #C7-1). ValidateConformance (§11) runs
+                    // first since equality alone would not refuse a document
+                    // that was already missing `type` before this edit ran.
                     var reparsed = OkfDocument.Parse(content);
                     reparsed.ValidateConformance();
-                    if (reparsed.Frontmatter.Verified.Count != Trust.ParseVerified(upserted).Count)
+                    if (!reparsed.Equals(document))
                     {
                         return $"Error: concept {DebugQuote.Quote(conceptIds[i])}: the verified block could not be edited in place.";
                     }

@@ -859,7 +859,20 @@ and this project adheres to
   `RecordVerifications` now edits the `verified:` block in place
   (`FrontmatterBlockEdit`), so CRLF endings, YAML comments and folded/flow
   spellings elsewhere survive — the contract's "preserving every other
-  frontmatter key" was previously false.
+  frontmatter key" was previously false. The edit locates `verified` the
+  same way this library's own YAML parser does (`"verified":`, `'verified':`,
+  and `verified :` are all recognized, not just a bare column-0
+  `verified:` prefix — a spelling the old prefix check missed used to insert
+  a silently shadowed duplicate instead of replacing the existing stamp), and
+  shares the frontmatter fence's own detection with `OkfDocument.Parse`
+  (`OkfDocument.IsFenceLine`) so the two can never disagree about where the
+  frontmatter ends. YAML's indentless block-sequence form under `verified:`
+  is now absorbed correctly instead of truncating the block, and a mixed-
+  line-ending document keeps every UNTOUCHED line's own terminator exactly
+  (no more CRLF-izing the whole file because one line happened to use it).
+  The result is checked by full structural equality against the intended
+  document — frontmatter and body — rather than a `verified`-entry count, so
+  a future mis-edit is refused rather than silently written.
 
 ## [0.5.0] - 2026-07-31
 

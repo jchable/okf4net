@@ -527,4 +527,173 @@ public class RecordVerificationTests
         var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
         Assert.Equal(2, stamps.Count);
     }
+
+    // --- End-to-end regression coverage for the review round (#C7-1..4) ----
+    // FrontmatterBlockEditTests covers the mechanical text edit in isolation;
+    // these prove the SAME shapes through the real writer -- UpsertStamp's
+    // merge semantics, the equality-based corruption guard, and the actual
+    // file on disk -- which is the only way to see whether a "fixed" block
+    // edit still adds up to a correct end-to-end stamp.
+
+    /// <summary>
+    /// Finding #C7-3: a document that is otherwise all-LF but has ONE CRLF
+    /// line in the BODY must keep that one CRLF exactly where it was --
+    /// compared as bytes, since <c>OkfDocument.Parse</c> strips '\r' on read
+    /// and could never see a regression here.
+    /// </summary>
+    [Fact]
+    public void A_single_CRLF_body_line_in_an_LF_document_is_not_normalized()
+    {
+        using var tmp = new TempDir();
+        const string before = "---\ntype: Metric\ntitle: Daily Active Users\n---\n\nbody line1\r\nline2\n";
+        tmp.Write("metrics/dau.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal(
+            "---\ntype: Metric\ntitle: Daily Active Users\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n---\n\nbody line1\r\nline2\n",
+            Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-3, the other direction: a document that is otherwise
+    /// all-LF but has ONE CRLF frontmatter line (not the one being edited)
+    /// must keep it, compared as bytes.
+    /// </summary>
+    [Fact]
+    public void A_single_CRLF_frontmatter_line_in_an_LF_document_is_not_normalized()
+    {
+        using var tmp = new TempDir();
+        const string before = "---\ntype: Metric\ntitle: Daily Active Users\r\n---\n\nbody\n";
+        tmp.Write("metrics/dau.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal(
+            "---\ntype: Metric\ntitle: Daily Active Users\r\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n---\n\nbody\n",
+            Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-2: a bare "---" line INSIDE a <c>verified: |</c> block
+    /// scalar's own body is, by <see cref="OkfDocument.Parse"/>'s own
+    /// (pre-existing, line-based) fence scan, mistaken for the closing fence
+    /// -- so the document's real "frontmatter" is just <c>type</c> and the
+    /// malformed <c>verified</c> block scalar, and everything from
+    /// <c>title: T</c> onward is already, per <c>Parse</c> itself, the BODY.
+    /// The fix does not correct that pre-existing quirk (goldens must not
+    /// move) -- it makes <c>FrontmatterBlockEdit</c> see the SAME boundary
+    /// <c>Parse</c> does, so the edit and the equality check it is graded
+    /// against agree, instead of the edit finding a boundary five lines later
+    /// than the read did (the silent body-into-frontmatter corruption this
+    /// finding is named for).
+    /// </summary>
+    [Fact]
+    public void A_bare_fence_inside_a_verified_block_scalar_body_stays_consistent_with_Parse()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/x.md", "---\ntype: M\nverified: |\n  ---\ntitle: T\n---\nBody\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n  ---\ntitle: T\n---\nBody\n",
+            Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-1, end to end: a space-before-the-colon spelling of the
+    /// key must be REPLACED in place (merging the existing <c>human:ada</c>
+    /// stamp), not left stale with a shadowed duplicate inserted before the
+    /// fence -- the exact "reports success while writing a stale, duplicated
+    /// key" failure mode the finding is named for.
+    /// </summary>
+    [Fact]
+    public void A_space_before_the_colon_key_is_replaced_not_duplicated_end_to_end()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/x.md",
+            "---\ntype: M\nverified : [{by: human:ada, at: 2025-01-01T00:00:00Z}]\ntitle: T\n---\nbody\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal("2025-01-01T00:00:00Z", outcome.Records.Single().ReplacedAt);
+        var after = Read(tmp, "metrics/x.md");
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\nbody\n",
+            after);
+        // Belt and braces on the exact corruption the finding described: only
+        // ONE `verified` stamp on disk, not a shadowed duplicate.
+        Assert.Single(OkfDocument.Parse(after).Frontmatter.Verified);
+    }
+
+    /// <summary>Finding #C7-2, the same mechanism with a real (non-malformed) <c>verified</c> sequence preceding the stray indented fence.</summary>
+    [Fact]
+    public void A_bare_fence_indented_inside_a_verified_sequence_stays_consistent_with_Parse()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/x.md",
+            "---\ntype: M\nverified:\n  - {by: human:ada, at: 2025-01-01T00:00:00Z}\n  ---\ntags: [x]\n---\nBody\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal("2025-01-01T00:00:00Z", outcome.Records.Single().ReplacedAt);
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n  ---\ntags: [x]\n---\nBody\n",
+            Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-4: YAML's indentless block-sequence form must be absorbed
+    /// into the block, not mistaken for the next top-level key -- proven
+    /// end-to-end (a merge that both keeps the untouched <c>process:nightly</c>-
+    /// style entry AND appends the new one, through a real write).
+    /// </summary>
+    [Fact]
+    public void An_indentless_sequence_is_stampable_end_to_end()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/x.md",
+            "---\ntype: M\nverified:\n- by: human:bob\n  at: 2025-01-01T00:00:00Z\ntitle: T\n---\nbody\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Null(outcome.Records.Single().ReplacedAt);
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:bob\n    at: 2025-01-01T00:00:00Z\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\nbody\n",
+            Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Minor finding #9: a pathologically deep value under an UNRELATED key
+    /// (the same shape <see cref="DeepYamlDocument"/> uses to make
+    /// <c>YamlEmitter</c> throw when the WHOLE frontmatter is re-emitted) is
+    /// now stampable at all -- <c>RecordVerifications</c> never hands it to
+    /// the emitter -- and survives completely byte-identical.
+    /// </summary>
+    [Fact]
+    public void A_deep_value_under_an_unrelated_key_is_stampable_and_survives_byte_identical()
+    {
+        using var tmp = new TempDir();
+        var before = DeepYamlDocument.Text(key: "deep");
+        tmp.Write("metrics/deep.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/deep"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        var insertPoint = before.LastIndexOf("---\n\nbody\n", StringComparison.Ordinal);
+        Assert.True(insertPoint > 0);
+        Assert.Equal(
+            before[..insertPoint] + "verified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n---\n\nbody\n",
+            Read(tmp, "metrics/deep.md"));
+    }
 }

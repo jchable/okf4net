@@ -17,6 +17,29 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
 {
     private const string FrontmatterDelim = "---";
 
+    /// <summary>
+    /// Whether <paramref name="line"/> is a frontmatter fence by this parser's
+    /// exact rule: its TRIMMED content (leading and trailing whitespace
+    /// stripped) equals <c>---</c>. Deliberately not indentation-aware -- an
+    /// INDENTED <c>---</c> (e.g. inside a <c>verified: |</c> block scalar's
+    /// own body) still matches, which is a real quirk of <see cref="Parse"/>'s
+    /// line-based fence scan (it runs before any YAML block-scalar parsing,
+    /// so it cannot tell such a line apart from a genuine fence) -- not
+    /// something this predicate fixes, since fixing it would move which line
+    /// <see cref="Parse"/> treats as the closing fence for documents already
+    /// captured in <c>tests/fixtures/golden/</c>.
+    ///
+    /// The single shared predicate <see cref="Parse"/> and
+    /// <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> both call: the two
+    /// USED to disagree (<see cref="Parse"/> trimmed, the surgical editor
+    /// compared for exact equality with no trim), so a document whose real
+    /// closing fence carried trailing whitespace, or whose block-scalar body
+    /// happened to contain a bare <c>---</c> line, could have the two decide
+    /// the frontmatter/body boundary sat at two DIFFERENT lines -- silently
+    /// moving body content into the edited frontmatter. See finding #C7-2.
+    /// </summary>
+    internal static bool IsFenceLine(string line) => line.Trim() == FrontmatterDelim;
+
     /// <summary>The YAML frontmatter block (empty if the file had none).</summary>
     public Frontmatter Frontmatter { get; }
 
@@ -44,7 +67,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     public static OkfDocument Parse(string text)
     {
         var lines = LfLines.Split(text);
-        if (lines.Count == 0 || lines[0].Trim() != FrontmatterDelim)
+        if (lines.Count == 0 || !IsFenceLine(lines[0]))
         {
             return new OkfDocument(new Frontmatter(), text);
         }
@@ -52,7 +75,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
         var endIdx = -1;
         for (var i = 1; i < lines.Count; i++)
         {
-            if (lines[i].Trim() == FrontmatterDelim)
+            if (IsFenceLine(lines[i]))
             {
                 endIdx = i;
                 break;

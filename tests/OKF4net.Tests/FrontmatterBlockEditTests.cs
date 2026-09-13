@@ -73,4 +73,136 @@ public class FrontmatterBlockEditTests
         var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
         Assert.Equal(doc, edited);
     }
+
+    // --- Regression coverage for the review round (finding #C7-1..3) -------
+
+    /// <summary>
+    /// Finding #C7-1: the parser reads a whitespace-shifted <c>key :</c> as
+    /// the key <c>key</c> (<c>YamlMapping.Get</c> would find it there too), so
+    /// the edit must locate it there as well — a hand-rolled
+    /// column-0-<c>"verified:"</c>-PREFIX check does not, and used to insert a
+    /// silently shadowed second block instead of replacing this one.
+    /// </summary>
+    [Fact]
+    public void A_space_before_the_colon_is_still_recognized_as_the_key()
+    {
+        var doc = "---\ntype: Metric\nverified : [{by: human:bob, at: 2025-01-01T00:00:00Z}]\ntitle: T\n---\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: Metric\n" + Block + "title: T\n---\n", edited);
+    }
+
+    /// <summary>Finding #C7-1, the double-quoted spelling.</summary>
+    [Fact]
+    public void A_double_quoted_key_is_still_recognized_as_the_key()
+    {
+        var doc = "---\ntype: Metric\n\"verified\": [{by: human:bob, at: 2025-01-01T00:00:00Z}]\ntitle: T\n---\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: Metric\n" + Block + "title: T\n---\n", edited);
+    }
+
+    /// <summary>Finding #C7-1, the single-quoted spelling.</summary>
+    [Fact]
+    public void A_single_quoted_key_is_still_recognized_as_the_key()
+    {
+        var doc = "---\ntype: Metric\n'verified': [{by: human:bob, at: 2025-01-01T00:00:00Z}]\ntitle: T\n---\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: Metric\n" + Block + "title: T\n---\n", edited);
+    }
+
+    /// <summary>
+    /// Finding #C7-1's "worse" case: a quoted AND a later plain
+    /// <c>verified:</c> line are two GENUINELY separate entries (the real
+    /// parser keeps duplicate keys via <c>PushRaw</c>, and
+    /// <c>YamlMapping.Get</c>/<c>Insert</c> are first-wins) — only the FIRST
+    /// (quoted) one may be touched; the second must survive completely
+    /// untouched, not silently destroyed.
+    /// </summary>
+    [Fact]
+    public void A_quoted_key_followed_by_a_separate_plain_duplicate_touches_only_the_first()
+    {
+        var doc = "---\ntype: Metric\n\"verified\": [{by: human:ada, at: 2025-01-01T00:00:00Z}]\nverified: [{by: human:bob, at: 2025-02-02T00:00:00Z}]\ntitle: T\n---\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal(
+            "---\ntype: Metric\n" + Block + "verified: [{by: human:bob, at: 2025-02-02T00:00:00Z}]\ntitle: T\n---\n",
+            edited);
+    }
+
+    /// <summary>
+    /// Finding #C7-2 (closing fence): <see cref="OkfDocument.Parse"/> accepts
+    /// a closing fence with trailing whitespace (its own predicate trims), so
+    /// this type must too, via the shared <see cref="OkfDocument.IsFenceLine"/>.
+    /// </summary>
+    [Fact]
+    public void A_closing_fence_with_trailing_whitespace_is_recognized()
+    {
+        var doc = "---\ntype: Metric\ntitle: T\n---  \nbody\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: Metric\ntitle: T\n" + Block + "---  \nbody\n", edited);
+    }
+
+    /// <summary>Finding #C7-2, the opening fence.</summary>
+    [Fact]
+    public void An_opening_fence_with_trailing_whitespace_is_recognized()
+    {
+        var doc = "--- \ntype: Metric\ntitle: T\n---\nbody\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("--- \ntype: Metric\ntitle: T\n" + Block + "---\nbody\n", edited);
+    }
+
+    /// <summary>
+    /// Finding #C7-4: YAML's indentless block-sequence form
+    /// (<c>OkfDocument.Parse</c> accepts it via
+    /// <c>BlockParser.ParseNested</c>) must not be mistaken for "the next
+    /// top-level key" and cut the block off mid-sequence.
+    /// </summary>
+    [Fact]
+    public void An_indentless_block_sequence_is_absorbed_into_the_block()
+    {
+        var doc = "---\ntype: M\nverified:\n- by: human:bob\n  at: 2025-01-01T00:00:00Z\ntitle: T\n---\nbody\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: M\n" + Block + "title: T\n---\nbody\n", edited);
+
+        // Also prove it re-parses cleanly (the original symptom was a
+        // downstream "unexpected trailing content" YAML error, not just a
+        // wrong string).
+        var reparsed = OkfDocument.Parse(edited);
+        Assert.Equal(["type", "verified", "title"], reparsed.Frontmatter.AsMapping().Keys);
+        Assert.Equal("body", reparsed.Body);
+    }
+
+    /// <summary>
+    /// Minor finding #6: a trailing blank line between the block and the next
+    /// key is formatting, not part of the value — it must survive, unlike the
+    /// (documented, deliberate) column-0-comment case.
+    /// </summary>
+    [Fact]
+    public void A_trailing_blank_line_after_the_block_survives()
+    {
+        var doc = "---\ntype: M\nverified:\n  - by: human:bob\n    at: 2025-01-01T00:00:00Z\n\ntitle: T\n---\nbody\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: M\n" + Block + "\ntitle: T\n---\nbody\n", edited);
+    }
+
+    /// <summary>
+    /// Minor finding #9: a pathologically deep value under an UNRELATED key
+    /// is carried through byte-for-byte, never touched — the direct
+    /// consequence of editing only the named key's own block. (The
+    /// end-to-end version, proving this through the whole
+    /// <c>RecordVerifications</c> pipeline including <c>YamlEmitter</c> never
+    /// seeing the deep key, lives in <c>RecordVerificationTests</c>.)
+    /// </summary>
+    [Fact]
+    public void A_deep_value_under_an_unrelated_key_is_carried_through_untouched()
+    {
+        var deep = DeepYamlDocument.Text(key: "deep");
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(deep, "verified", Block);
+
+        // Prefix up to the `deep:` block and the block's own content must be
+        // byte-identical; only the appended `verified:` block (inserted
+        // before the closing fence) and the fence/body after it differ.
+        var deepBlockEnd = deep.IndexOf("---\n\nbody\n", StringComparison.Ordinal);
+        Assert.True(deepBlockEnd > 0);
+        Assert.StartsWith(deep[..deepBlockEnd], edited, StringComparison.Ordinal);
+        Assert.Equal(deep[..deepBlockEnd] + Block + "---\n\nbody\n", edited);
+    }
 }
