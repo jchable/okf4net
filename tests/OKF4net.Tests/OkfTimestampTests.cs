@@ -84,6 +84,17 @@ public class OkfTimestampTests
         Assert.False(legacy);
     }
 
+    [Theory]
+    [InlineData("2026-07-01T00:00:00Z", true)]
+    [InlineData("2026-07-01T00:00:00+00:00", false)]
+    [InlineData("2026-07-01", false)]
+    [InlineData("2026-07-01T00:00:00.000Z", false)]
+    public void IsEmittedUtcForm_accepts_exactly_what_FormatUtc_writes(string raw, bool expected)
+    {
+        Assert.Equal(expected, OkfTimestamp.IsEmittedUtcForm(raw));
+        Assert.True(OkfTimestamp.IsEmittedUtcForm(OkfTimestamp.FormatUtc(new DateTime(2026, 7, 1, 12, 30, 0, DateTimeKind.Utc))));
+    }
+
     /// <summary>
     /// The oracle the §5 grammar answers to: every timestamp literal the spec
     /// itself writes must classify <see cref="TimestampForm.Conformant"/>. A

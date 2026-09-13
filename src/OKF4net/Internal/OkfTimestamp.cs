@@ -105,13 +105,20 @@ internal static class OkfTimestamp
         @"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.,][0-9]+)?)?(Z|[+-][0-9]{2}(:[0-9]{2})?)$",
         RegexOptions.Compiled);
 
+    /// <summary>The exact shape <see cref="FormatUtc"/> writes; the writer and the CLI check `--at` against this and nothing else.</summary>
+    internal const string EmittedUtcFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+
     /// <summary>
     /// Formats <paramref name="utc"/> as <c>yyyy-MM-ddTHH:mm:ssZ</c> under the
     /// invariant culture. The caller is responsible for passing a UTC instant;
     /// the trailing <c>Z</c> is a literal designator, not a computed offset.
     /// </summary>
     internal static string FormatUtc(DateTime utc) =>
-        utc.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        utc.ToString(EmittedUtcFormat, CultureInfo.InvariantCulture);
+
+    /// <summary>Whether <paramref name="raw"/> is spelled exactly as <see cref="FormatUtc"/> spells a stamp.</summary>
+    internal static bool IsEmittedUtcForm(string raw) =>
+        DateTime.TryParseExact(raw, EmittedUtcFormat, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out _);
 
     /// <summary>
     /// Classifies a §5 timestamp and, whenever it is readable at all, yields its

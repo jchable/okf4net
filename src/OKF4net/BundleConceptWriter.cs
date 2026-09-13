@@ -626,12 +626,7 @@ public sealed class BundleConceptWriter
             return Failed("Error: a timestamp must not contain control characters.");
         }
 
-        if (!DateTime.TryParseExact(
-                stampedAt,
-                "yyyy-MM-dd'T'HH:mm:ss'Z'",
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                out _))
+        if (!OkfTimestamp.IsEmittedUtcForm(stampedAt))
         {
             return Failed($"Error: '{stampedAt}' is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ.");
         }

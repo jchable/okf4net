@@ -883,12 +883,7 @@ public static class OkfCli
         // The writer applies the same strict UTC rule; checking here too turns a
         // generic write error into a message naming the flag. Deliberately NOT
         // BundleValidator.IsIso8601DateTime, which only validates the date part.
-        if (at is not null && !DateTime.TryParseExact(
-                at,
-                "yyyy-MM-dd'T'HH:mm:ss'Z'",
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                out _))
+        if (at is not null && !OkfTimestamp.IsEmittedUtcForm(at))
         {
             throw new CliOperationException($"--at is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ: \"{at}\"");
         }
