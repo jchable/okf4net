@@ -349,5 +349,145 @@ check("a mixed task list keeps checked and unchecked items distinct via checkbox
   assert(secondInput && secondInput.hasAttribute("checked"), "expected the second item's checkbox checked");
 });
 
+console.log("Content preservation and lookup hardening:");
+
+check("a disallowed wrapper keeps its sanitized children, not just their text", () => {
+  // The links table is keyed by the raw destination and valued by
+  // {href, exists} (see viewer.js's rewiring loop and every other renderBody
+  // call in this file that passes a links table) -- not a bare string.
+  const body = renderBody("<details><summary>S</summary>\n\n**bold** [l](a.md)\n\n</details>", {
+    "a.md": { href: "a.html", exists: true },
+  });
+  assert(body.querySelector("strong"), "the <strong> inside the wrapper was flattened away");
+  const a = body.querySelector("a");
+  assert(a && a.getAttribute("href") === "a.html", "the rewired link inside the wrapper was lost");
+  assert(!body.querySelector("details"), "<details> itself must not survive");
+});
+
+check("a table inside a disallowed <div> survives", () => {
+  const body = renderBody("<div>\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n</div>");
+  assert(body.querySelector("table"), "the table collapsed to text");
+});
+
+check("an Object.prototype key does not satisfy the input type constraint", () => {
+  const body = renderBody('<input type="constructor">');
+  assert(!body.querySelector("input"), "<input type=constructor> survived as a live input");
+});
+
+check("Object.prototype keys are not allowed attributes", () => {
+  const body = renderBody('<a href="x.md" constructor="1" __proto__="2">l</a>', { "x.md": "x.html" });
+  const a = body.querySelector("a");
+  assert(a && !a.hasAttribute("constructor") && !a.hasAttribute("__proto__"), "prototype-named attributes survived");
+});
+
+check("script inside svg is dropped with its source text", () => {
+  const body = renderBody("<svg><script>alert(1)</script></svg>");
+  assert(!body.textContent.includes("alert(1)"), "script source leaked as visible text");
+});
+
+check("raw-text elements (iframe, xmp, noembed, noframes) are dropped with their source", () => {
+  for (const tag of ["iframe", "xmp", "noembed", "noframes"]) {
+    const body = renderBody(`<${tag}><script>alert(1)</script></${tag}>`);
+    assert(!body.textContent.includes("alert(1)"), `${tag} source leaked as visible text`);
+  }
+});
+
+console.log("\nScheme obfuscation (each rule of isSafeUrl has a case):");
+for (const [name, href] of [
+  ["entity-encoded tab", "java&#9;script:alert(1)"],
+  ["percent-encoded tab", "java%09script:alert(1)"],
+  ["double-encoded tab", "java%2509script:alert(1)"],
+  ["newline inside the scheme", "java\nscript:alert(1)"],
+  ["leading control characters", "javascript:alert(1)"],
+]) {
+  check(`${name} does not produce a live javascript: href`, () => {
+    const body = renderBody(`<a href="${href}">t</a>`);
+    const a = body.querySelector("a");
+    assert(a && !a.hasAttribute("href"), `href survived for ${name}`);
+  });
+}
+
+check("<template> content is never rendered", () => {
+  const body = renderBody("<template><img src=x onerror=alert(1)></template>");
+  assert(!body.querySelector("img") && !body.innerHTML.includes("onerror"), "template content leaked");
+});
+
+check("<base> is dropped", () => {
+  assert(!renderBody('<base href="javascript:alert(1)//">').querySelector("base"), "<base> survived");
+});
+
+check("srcset is not an allowed attribute", () => {
+  const img = renderBody('<img src="a.png" srcset="javascript:alert(1)">').querySelector("img");
+  assert(img && !img.hasAttribute("srcset"), "srcset survived");
+});
+
+// --- mutation-XSS: the unwrap changes tree shape, so re-parenting payloads
+// that rely on browser parsing quirks (foster parenting, table/form/math
+// scoping rules) get a fresh, explicit check rather than trusting that the
+// earlier "flatten to text" behaviour happened to be safe for the same
+// reason. -----------------------------------------------------------------
+
+console.log("\nMutation XSS (re-parenting payloads must yield nothing executable):");
+
+/**
+ * Walks every element under `body` and asserts none of it is executable:
+ * no on* handler attribute, no SCRIPT/STYLE/IFRAME element, no href/src
+ * carrying a scheme outside SAFE_SCHEMES (a bare structural check, not a
+ * one-off string search, because the unwrap can relocate nodes in ways a
+ * substring match over serialized HTML would not reliably catch).
+ * @param {Element} body
+ */
+function assertNothingExecutable(body) {
+  const all = body.querySelectorAll("*");
+  for (const el of all) {
+    for (const attr of Array.from(el.attributes)) {
+      assert(!/^on/i.test(attr.name), `live event handler attribute survived: ${attr.name} on <${el.tagName}>`);
+    }
+    assert(
+      !["SCRIPT", "STYLE", "IFRAME"].includes(el.tagName),
+      `an executable element survived: <${el.tagName}>`
+    );
+    for (const attrName of ["href", "src"]) {
+      const value = el.getAttribute(attrName);
+      if (value === null) { continue; }
+      assert(
+        !/^\s*javascript:/i.test(value) && !/^\s*data:/i.test(value),
+        `${attrName} carries an unsafe scheme on <${el.tagName}>: ${value}`
+      );
+    }
+  }
+}
+
+check("noscript/title re-parenting payload yields nothing executable", () => {
+  const body = renderBody('<noscript><p title="</noscript><img src=x onerror=alert(1)>">hi</noscript>');
+  assertNothingExecutable(body);
+});
+
+check("math/mtext/table/mglyph/style re-parenting payload yields nothing executable", () => {
+  const body = renderBody("<math><mtext><table><mglyph><style><img src=x onerror=alert(1)>");
+  assertNothingExecutable(body);
+});
+
+check("svg/style/id re-parenting payload yields nothing executable", () => {
+  const body = renderBody('<svg></p><style><a id="</style><img src=1 onerror=alert(1)>"></svg>');
+  assertNothingExecutable(body);
+});
+
+check("form/math/mglyph/style re-parenting payload yields nothing executable", () => {
+  const body = renderBody(
+    "<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>"
+  );
+  assertNothingExecutable(body);
+});
+
+check("svg-namespace <a xlink:href> is unwrapped with no href/xlink:href carried anywhere", () => {
+  const body = renderBody('<svg><a xlink:href="javascript:alert(1)">x</a></svg>');
+  const all = body.querySelectorAll("*");
+  for (const el of all) {
+    assert(!el.hasAttribute("href"), `an element carries a live href: <${el.tagName}>`);
+    assert(!el.hasAttribute("xlink:href"), `an element carries a live xlink:href: <${el.tagName}>`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);

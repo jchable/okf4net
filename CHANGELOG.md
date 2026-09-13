@@ -649,6 +649,16 @@ and this project adheres to
 
 ### Fixed
 
+- The viewer sanitizer unwraps a disallowed element instead of flattening its
+  subtree to text (a link or table inside `<details>`/`<div>` survives); its
+  constraint and attribute allowlists are own-property lookups (`<input
+  type="constructor">` and `constructor=`/`__proto__=` attributes no longer
+  pass); `<script>`/`<style>` in a foreign namespace and raw-text elements
+  (`iframe`, `xmp`, `noembed`, `noframes`, `plaintext`, `template`, `base`)
+  are dropped with their source. Every scheme-obfuscation rule and four
+  mutation-XSS re-parenting payloads now have a harness case in
+  `tools/viewer-security-check/run.js`. None of these was an XSS; all three
+  were gaps between the sanitizer's comments and its code.
 - `OkfContextProvider`'s budget truncation now splits a concept's body on
   `LfLines.Split` instead of a bare `'\n'`, so a CRLF-bodied concept truncated
   to a small token budget no longer keeps a stray trailing `\r` on its last

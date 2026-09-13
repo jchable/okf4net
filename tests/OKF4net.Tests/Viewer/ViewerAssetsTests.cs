@@ -98,11 +98,16 @@ public class ViewerAssetsTests
         Assert.Contains("ALLOWED_TAGS", ViewerAssets.ViewerJs);
         Assert.Contains("ALLOWED_ATTRS", ViewerAssets.ViewerJs);
         Assert.Contains("DOMParser", ViewerAssets.ViewerJs);
-        Assert.DoesNotContain("IFRAME:", ViewerAssets.ViewerJs);
-        // SCRIPT and STYLE are deliberately named elsewhere (OPAQUE_TAGS,
-        // see the next assertion) as elements to drop entirely rather than
-        // fall into the generic "keep the text" branch -- that reference is
-        // legitimate and is not the same thing as allowlisting them.
+        // IFRAME (like SCRIPT/STYLE/etc.) is deliberately named elsewhere
+        // (OPAQUE_TAGS, dropped-with-source-text) -- that is legitimate and
+        // not the same thing as allowlisting it, so scope the "not allowed"
+        // check to the ALLOWED_TAGS table's own text instead of the whole
+        // file (a bare whole-file DoesNotContain broke the moment IFRAME was
+        // added to OPAQUE_TAGS, even though it still isn't on ALLOWED_TAGS).
+        var allowedTagsStart = ViewerAssets.ViewerJs.IndexOf("var ALLOWED_TAGS", StringComparison.Ordinal);
+        var allowedTagsEnd = ViewerAssets.ViewerJs.IndexOf("};", allowedTagsStart, StringComparison.Ordinal);
+        var allowedTagsBlock = ViewerAssets.ViewerJs[allowedTagsStart..allowedTagsEnd];
+        Assert.DoesNotContain("IFRAME", allowedTagsBlock);
         Assert.Contains("OPAQUE_TAGS", ViewerAssets.ViewerJs);
     }
 

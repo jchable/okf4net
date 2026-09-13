@@ -93,18 +93,35 @@
   var URL_ATTRS = { href: 1, src: 1 };
   var SAFE_SCHEMES = { "http:": 1, "https:": 1, "mailto:": 1 };
 
-  // Tags whose element content is source, not prose: SCRIPT and STYLE are
-  // "raw text" elements per the HTML parsing spec, so `.textContent` on one
-  // returns its literal script/CSS source verbatim, unparsed. The generic
-  // disallowed-element branch below keeps `.textContent` specifically so a
-  // wrapper like `<div>` or `<details>` does not silently delete the prose
-  // it wraps -- but there is no prose inside a SCRIPT or STYLE element to
-  // preserve, only code, and dumping that code as visible page text (e.g. a
-  // raw `<script>alert(1)</script>` turning into the literal words
-  // "alert(1)" on the page) is never the right outcome. These tags are
-  // dropped with no replacement at all instead of falling into the
-  // keep-the-text branch.
-  var OPAQUE_TAGS = { SCRIPT: 1, STYLE: 1 };
+  // Tags whose element content is source, not prose, plus tags whose content
+  // must never be exposed as page text at all: SCRIPT and STYLE (and MathML's
+  // raw-text equivalents) are "raw text"/"escapable raw text" elements per
+  // the HTML parsing spec, so `.textContent` on one returns its literal
+  // script/CSS source verbatim, unparsed. IFRAME, NOEMBED, NOFRAMES, XMP and
+  // PLAINTEXT are the same shape (raw text elements whose children are never
+  // parsed as markup by a real browser). The generic disallowed-element
+  // branch below unwraps and keeps an element's *sanitized descendant
+  // elements and text* so a wrapper like `<div>` or `<details>` does not
+  // silently delete the prose (or a link, or a table) it wraps -- but there
+  // is no prose inside any of these tags to preserve, only source text, and
+  // exposing that source as visible page content (e.g. a raw
+  // `<script>alert(1)</script>` turning into the literal words "alert(1)" on
+  // the page, or an <iframe>'s markup leaking the same way) is never the
+  // right outcome. TEMPLATE's content lives in a separate inert document
+  // fragment that plain DOM traversal never even walks into, but it is
+  // listed here too, defensively, in case that ever changes. BASE is not a
+  // raw-text element but is dropped outright regardless of admission rules:
+  // it can redirect every relative URL on the page. These tags are removed
+  // entirely, before the disallowed-element branch below ever runs, so their
+  // content can never reach an unwrap. Compared via `.toUpperCase()` on
+  // `tagName`, not a bare equality/lookup on `tagName` itself: a
+  // foreign-namespace element (SVG, MathML) reports a lowercase `tagName`
+  // (e.g. `"script"`, not `"SCRIPT"`), and a `<script>` nested inside an
+  // `<svg>` is still a script.
+  var OPAQUE_TAGS = {
+    SCRIPT: 1, STYLE: 1, IFRAME: 1, NOEMBED: 1, NOFRAMES: 1,
+    XMP: 1, PLAINTEXT: 1, TEMPLATE: 1, BASE: 1,
+  };
 
   // Strips every ASCII control character and space (code points 0 to 32
   // inclusive, plus DEL, 127) wherever it appears. Built with charCodeAt
@@ -169,8 +186,20 @@
     for (var i = 0; i < el.attributes.length; i++) { names.push(el.attributes[i].name); }
     for (var j = 0; j < names.length; j++) {
       var name = names[j].toLowerCase();
-      if (!allowed[name]) { el.removeAttribute(names[j]); continue; }
-      if (URL_ATTRS[name] && !isSafeUrl(el.getAttribute(names[j]))) {
+      // Own-property lookups, not bare `allowed[name]`/`URL_ATTRS[name]`:
+      // a bracket lookup on a plain object also resolves inherited
+      // Object.prototype members, so an attribute literally named
+      // "constructor", "__proto__", "hasOwnProperty", etc. would otherwise
+      // read back a function/object instead of undefined and pass a truthy
+      // check it never earned a table entry for.
+      if (!Object.prototype.hasOwnProperty.call(allowed, name)) {
+        el.removeAttribute(names[j]);
+        continue;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(URL_ATTRS, name) &&
+        !isSafeUrl(el.getAttribute(names[j]))
+      ) {
         el.removeAttribute(names[j]);
       }
     }
@@ -182,10 +211,15 @@
   // set for that tag; false means it must be treated exactly like a tag
   // that was never on ALLOWED_TAGS at all.
   function passesTagValueConstraint(node) {
-    var constraint = TAG_VALUE_CONSTRAINTS[node.tagName];
+    // Own-property lookups for the same reason as sanitizeAttributes above:
+    // a tag or attribute value named "constructor" (etc.) must not resolve
+    // an inherited Object.prototype member instead of "no entry here".
+    var constraint = Object.prototype.hasOwnProperty.call(TAG_VALUE_CONSTRAINTS, node.tagName)
+      ? TAG_VALUE_CONSTRAINTS[node.tagName]
+      : null;
     if (!constraint) { return true; }
     var actual = (node.getAttribute(constraint.attr) || "").toLowerCase();
-    return !!constraint.values[actual];
+    return Object.prototype.hasOwnProperty.call(constraint.values, actual);
   }
 
   function sanitize(root) {
@@ -206,21 +240,30 @@
     for (var i = all.length - 1; i >= 0; i--) {
       var node = all[i];
       if (!node.parentNode) { continue; } // already detached by a descendant/ancestor's removal
-      if (Object.prototype.hasOwnProperty.call(OPAQUE_TAGS, node.tagName)) {
+      // node.tagName.toUpperCase(), not a bare comparison: a foreign-namespace
+      // element (SVG, MathML) reports a lowercase tagName, so an SVG-nested
+      // <script> ("script") must still match the OPAQUE_TAGS entry ("SCRIPT").
+      if (Object.prototype.hasOwnProperty.call(OPAQUE_TAGS, node.tagName.toUpperCase())) {
         node.parentNode.removeChild(node);
         continue;
       }
       var admitted = Object.prototype.hasOwnProperty.call(ALLOWED_TAGS, node.tagName)
         && passesTagValueConstraint(node);
       if (!admitted) {
-        // Drop the element but keep its text so a disallowed wrapper does
-        // not silently delete surrounding prose; nothing about its markup
-        // (attributes, nested elements) survives the swap. This also covers
+        // Drop the element but KEEP its children (already sanitized: the walk is
+        // back-to-front, so every descendant was resolved before its ancestor).
+        // Replacing with .textContent flattened sanitized links and tables inside
+        // a <details> or <div> into prose -- a milder form of the content loss
+        // that got marked's renderer hooks removed. Nothing about the element
+        // itself (tag, attributes) survives; its subtree does. This also covers
         // an INPUT that failed TAG_VALUE_CONSTRAINTS (any type other than
-        // checkbox): it gets no special treatment for having almost
-        // qualified as an allowed tag.
-        var replacement = node.ownerDocument.createTextNode(node.textContent || "");
-        node.parentNode.replaceChild(replacement, node);
+        // checkbox): it gets no special treatment for having almost qualified
+        // as an allowed tag. Opaque tags (SCRIPT/STYLE/IFRAME/etc.) never reach
+        // this branch at all -- they were removed above, so their raw source
+        // text can never be exposed by this unwrap.
+        var parent = node.parentNode;
+        while (node.firstChild) { parent.insertBefore(node.firstChild, node); }
+        parent.removeChild(node);
         continue;
       }
       sanitizeAttributes(node);
