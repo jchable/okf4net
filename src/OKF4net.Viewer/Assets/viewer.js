@@ -120,14 +120,16 @@
   // container). Both stay in this table as defence in depth against that
   // reasoning changing under a future browser/jsdom behaviour, not because
   // today's harness can distinguish "present" from "absent" for them. These
-  // tags are removed entirely, before the disallowed-element branch below
-  // ever runs, so their content can never reach an unwrap -- including when
-  // a *non-opaque* disallowed wrapper is itself nested inside one of these
-  // (e.g. `<iframe><div>x</div></iframe>`): the DIV gets queued for the
-  // unwrap phase like any other disallowed element, but by the time that
-  // phase runs, IFRAME's removal has already detached the whole subtree
-  // (DIV included) from the document, which the unwrap phase checks for --
-  // see the `isConnected` comment in sanitize() below. Compared via
+  // tags are removed with their whole subtree in sanitize()'s first phase,
+  // before anything is unwrapped, so their content can never reach an
+  // unwrap -- including a *non-opaque* disallowed element nested inside one
+  // of them. In HTML that nesting cannot come from `<iframe><div>` (an
+  // iframe's content is raw text, so no DIV element is ever created), but
+  // foreign content does produce it: in
+  // `<svg><style><a><g>x</g></a></style></svg>` the SVG <style>'s children
+  // parse as real elements. The first phase marks <a> and <g> for unwrapping
+  // before it reaches and removes <style>; the unwrap phase walks only what
+  // is still under the root, so it never meets them. Compared via
   // `.toUpperCase()` on `tagName`, not a bare equality/lookup on `tagName`
   // itself: a foreign-namespace element (SVG, MathML) reports a lowercase
   // `tagName` (e.g. `"script"`, not `"SCRIPT"`), and a `<script>` nested
@@ -240,56 +242,21 @@
   }
 
   function sanitize(root) {
-    // Snapshot every descendant element up front: removing/unwrapping a
-    // disallowed element below mutates the tree, which would desync a live
-    // traversal (and querySelectorAll always returns elements in document
-    // order -- parents before their descendants -- which phase 2 below
-    // relies on).
+    // Phase 1 decides and cleans; phase 2 only restructures.
     //
-    // Two phases, not one, and each walks the snapshot in a different
-    // direction, for a performance reason with no correctness stake in
-    // it -- an earlier one-phase version of this function unwrapped
-    // disallowed elements immediately, back-to-front (innermost first), and
-    // that ordering used to matter because an ancestor read `.textContent`
-    // to decide what to keep. That read is gone (unwrapping moves live
-    // nodes, it never re-derives text), so back-to-front is no longer
-    // required for correctness -- but it is actively harmful for
-    // performance if kept for the unwrap step itself: unwrapping innermost
-    // first means every surviving disallowed ancestor re-moves the *entire*
-    // already-unwrapped subtree of everything below it up one more level,
-    // which is quadratic in nested-wrapper depth times child width. Measured
-    // against 500 nested disallowed `<div>`s wrapping 20,000 allowed
-    // `<em>`s: back-to-front unwrap ~3s in Chromium (~55ms for the
-    // equivalent old flatten-to-text code, ~40s in jsdom for a smaller but
-    // still illustrative 1000x1 case); unwrapping outermost-first instead
-    // brings that down to real-browser sub-second time for the same shape
-    // (measured via Playwright against a real Chromium, not jsdom -- see
-    // task-D1-report.md), because each element then moves its *own* direct
-    // children exactly once, never a subtree assembled by earlier unwraps.
-    // See the nested-wrapper harness case below for the linearity proof kept
-    // under CI (sized down from the shape above so it runs in seconds under
-    // jsdom, which has its own, unrelated superlinear cost for large DOM
-    // mutations that a real browser does not -- see that case's own comment).
-    //
-    // Phase 1 (back-to-front, as before): remove opaque elements, sanitize
-    // attributes and force `disabled` on admitted elements, and COLLECT
-    // (do not yet unwrap) every disallowed element, into `toUnwrap`. Two
-    // separate reasons phase 1 still has to walk back-to-front, both load
-    // bearing:
-    //   1. It guarantees an opaque removal always happens after everything
-    //      nested inside it has already been classified (see the
-    //      `isConnected` comment in phase 2 for why that ordering is exactly
-    //      what phase 2 needs to detect).
-    //   2. Walking back-to-front is what makes `toUnwrap` come out in
-    //      *descending* document order (deepest queued first), which phase 2
-    //      below relies on to iterate it in reverse and get outermost-first
-    //      -- walking phase 1 ascending instead silently reverses that
-    //      assumption and phase 2 goes back to unwrapping innermost-first:
-    //      output still correct, but the quadratic cost is back. Confirmed
-    //      by mutation-testing this exact change against the harness; the
-    //      nested-wrapper case below is what catches it.
+    // Phase 1 walks a static snapshot of every descendant element
+    // (querySelectorAll lists them in document order) back-to-front, so
+    // every element is visited after all of its descendants. Each element is
+    // either removed outright with its whole subtree (OPAQUE_TAGS), or
+    // admitted and cleaned in place (attribute allowlist, URL check, forced
+    // `disabled`), or marked for unwrapping (every other element). Nothing in
+    // this version depends on that walk direction: a front-to-back walk
+    // would also clean or mark elements inside an opaque subtree it had
+    // already removed -- wasted work on detached nodes, which phase 2 never
+    // meets (see below) -- and the harness stays green with it.
     var all = root.querySelectorAll("*");
-    var toUnwrap = [];
+    var unwrapAt = [];
+    var unwrapCount = 0;
     for (var i = all.length - 1; i >= 0; i--) {
       var node = all[i];
       // node.tagName.toUpperCase(), not a bare comparison: a foreign-namespace
@@ -302,15 +269,17 @@
       var admitted = Object.prototype.hasOwnProperty.call(ALLOWED_TAGS, node.tagName)
         && passesTagValueConstraint(node);
       if (!admitted) {
-        // Queue for phase 2 rather than unwrapping here -- see the block
-        // comment above this loop for why phase 2 needs its own pass, in
-        // the opposite direction, to stay linear. This also covers an INPUT
-        // that failed TAG_VALUE_CONSTRAINTS (any type other than checkbox):
-        // it gets no special treatment for having almost qualified as an
-        // allowed tag. Opaque tags (SCRIPT/STYLE/IFRAME/etc.) never reach
-        // this branch at all -- they were removed above, so their raw
-        // source text can never be exposed by phase 2's unwrap.
-        toUnwrap.push(node);
+        // Mark for phase 2 rather than unwrapping here: unwrapping one
+        // element at a time is what made the unwrap superlinear (see phase
+        // 2). This also covers an INPUT that failed TAG_VALUE_CONSTRAINTS
+        // (any type other than checkbox): it gets no special treatment for
+        // having almost qualified as an allowed tag. Its attributes are never
+        // cleaned, because the element itself never reaches the page. Opaque
+        // tags (SCRIPT/STYLE/IFRAME/etc.) never reach this branch at all --
+        // they were removed above, so their raw source text can never be
+        // exposed by phase 2's unwrap.
+        unwrapAt[i] = true;
+        unwrapCount++;
         continue;
       }
       sanitizeAttributes(node);
@@ -325,47 +294,130 @@
         node.setAttribute("disabled", "disabled");
       }
     }
-    // Phase 2: unwrap the collected elements in DOCUMENT order (outermost
-    // first), so each element's direct children move exactly once -- linear
-    // in total node count rather than quadratic in depth times width. Every
-    // node was already sanitized in phase 1, so phase 2 only re-parents
-    // already-clean nodes; it never re-examines a tag, attribute, or URL.
-    // `toUnwrap` was built by walking `all` back-to-front, so it holds
-    // disallowed elements in *descending* document order (deepest queued
-    // first) -- iterate it in reverse to get outermost first.
-    for (var k = toUnwrap.length - 1; k >= 0; k--) {
-      var disallowed = toUnwrap[k];
-      // A queued element can be detached by the time phase 2 reaches it:
-      // if a disallowed, non-opaque wrapper is itself nested inside an
-      // OPAQUE ancestor -- e.g. `<iframe><div>x</div></iframe>` -- phase 1
-      // classifies the inner DIV (a descendant, visited first in the
-      // back-to-front walk) and queues it here *before* it later reaches
-      // the outer IFRAME and removes it, which detaches DIV's whole subtree
-      // from the document along with it. Unwrapping a detached node would
-      // be harmless (it only rearranges an already-invisible subtree that
-      // nothing under `root` can ever reference again) but it is still
-      // pointless work on every such subtree, so skip it explicitly rather
-      // than silently rely on that harmlessness. `isConnected` (not a bare
-      // `.parentNode` truthiness check) is what actually detects this: a
-      // detached node's `.parentNode` is still non-null -- it points at
-      // whatever removed ancestor it was nested under -- so only a real
-      // "is this reachable from a Document" check catches the case.
-      if (!disallowed.isConnected) { continue; }
-      var parent = disallowed.parentNode;
-      // Move every child in one structural operation via a detached
-      // DocumentFragment, rather than one insertBefore call per child
-      // directly against the live, attached tree: an element with many
-      // direct children (concretely, the innermost of many nested
-      // disallowed wrappers, which by the time phase 2 reaches it holds
-      // everything every wrapper above it ever contained) costs one
-      // attached-tree mutation per child with the naive loop -- measured
-      // far slower, on both jsdom and a real engine, than moving the same
-      // children into a fragment (cheap: the fragment has no document to
-      // notify) and swapping the whole fragment in with a single
-      // replaceChild call.
-      var fragment = disallowed.ownerDocument.createDocumentFragment();
-      while (disallowed.firstChild) { fragment.appendChild(disallowed.firstChild); }
-      parent.replaceChild(fragment, disallowed);
+    if (unwrapCount === 0) { return root; }
+
+    // Phase 2 unwraps every marked element: the element goes, its children
+    // take its place, in order. Moving a node in the DOM drags its whole
+    // subtree with it (the DOM Standard's remove and insert algorithms each
+    // visit every descendant of the node they move), so what matters is not
+    // how many moves are made but how many nodes they drag. Unwrapping
+    // marked elements one at a time drags the same nodes again and again,
+    // whatever the order: innermost-first re-moves the content below a
+    // wrapper once for every wrapper above it (D wrappers around M nodes of
+    // content: about D x M), and outermost-first moves each wrapper's
+    // children as whole subtrees, the next wrapper included (a chain of D
+    // wrappers: about D x N). Both were
+    // committed in intermediate, unreleased versions of this change; the
+    // unwrap-cost cases in tools/viewer-security-check/run.js measure the
+    // innermost-first one at 44.5 x N for 50 wrappers around 200 children,
+    // and the outermost-first one at 94.2 x N for that shape and 201.0 x N
+    // for a 200-deep chain.
+    //
+    // So phase 2 instead records, in one walk over every node still under
+    // `root`, each node's current parent and its parent-to-be (the nearest
+    // ancestor that is not being unwrapped, or `root`); then detaches every
+    // node bottom-up (last in document order first, so each node has no
+    // children left when it is removed) and re-appends every kept node
+    // top-down to its parent-to-be (first in document order first, so each
+    // node has no children yet when it is appended). Every DOM mutation
+    // thus moves a single childless node: one removal per node and at most
+    // one insertion, so phase 2 drags at most 2 x N nodes (N = nodes under
+    // `root`), and phase 1's opaque removals at most N more, since a
+    // removed subtree no longer holds the opaque elements already removed
+    // from inside it. The run.js unwrap-cost cases count exactly this --
+    // every node dragged by every structural mutation during sanitize(),
+    // with every other mutation API made to throw -- and assert it stays
+    // within 4 x N on three shapes (measured: 1.9, 1.0 and 1.5 x N). The
+    // walk itself does constant work per node.
+    //
+    // The walk uses a TreeWalker rooted at `root`, so it meets exactly the
+    // nodes under `root` and nothing else. That is also what keeps this
+    // fail-closed: an element marked in phase 1 and later removed with an
+    // opaque ancestor (in HTML, `<iframe><div>` cannot produce one, an
+    // iframe's content being raw text, but foreign content can:
+    // `<svg><style><a><g>x</g></a></style></svg>`, where the SVG <style>'s
+    // children parse as elements) is simply never met, and every marked
+    // element that IS under `root` is always unwrapped, whether or not
+    // `root` itself is attached to a document. (An earlier version skipped
+    // marked elements that were not `isConnected`, which on a detached root
+    // kept every one of them, attributes uncleaned; run.js has a case.)
+    //
+    // Marks are matched to the walk by identity, merge-style, rather than
+    // with a Set or Map (this file sticks to ES5): take a second snapshot of
+    // the elements still under `root` -- a subsequence of `all`, in the same
+    // order, since phase 1 only removed subtrees -- and carry each mark over
+    // with one forward pointer into `all`; the walk then meets those same
+    // elements in that same order, so a second forward pointer tells it
+    // which node is the next element and whether it is marked. Both
+    // pointers only move forward, so the matching is linear too.
+    var live = root.querySelectorAll("*");
+    var liveUnwrap = [];
+    var fromAll = 0;
+    for (var l = 0; l < live.length; l++) {
+      while (fromAll < all.length && all[fromAll] !== live[l]) { fromAll++; }
+      if (fromAll === all.length) {
+        // Unreachable (every element under root was in the phase 1
+        // snapshot), but an element phase 1 never examined must never be
+        // rendered: abort instead.
+        throw new Error("sanitize: an element escaped phase 1");
+      }
+      liveUnwrap[l] = unwrapAt[fromAll] === true;
+      fromAll++;
+    }
+
+    var nodes = [];
+    var oldParents = [];
+    var newParents = [];
+    var keep = [];
+    // One entry per open level of the walk: the parent the nodes at that
+    // level have now, and the one they will have after unwrapping.
+    var oldParentStack = [root];
+    var newParentStack = [root];
+    var nextElement = 0;
+    var walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ALL);
+    var current = walker.firstChild();
+    while (current) {
+      var unwrap = false;
+      if (nextElement < live.length && current === live[nextElement]) {
+        unwrap = liveUnwrap[nextElement];
+        nextElement++;
+      }
+      var newParent = newParentStack[newParentStack.length - 1];
+      nodes.push(current);
+      oldParents.push(oldParentStack[oldParentStack.length - 1]);
+      newParents.push(newParent);
+      keep.push(!unwrap);
+      var firstChild = walker.firstChild();
+      if (firstChild) {
+        oldParentStack.push(current);
+        newParentStack.push(unwrap ? newParent : current);
+        current = firstChild;
+        continue;
+      }
+      current = null;
+      for (;;) {
+        var sibling = walker.nextSibling();
+        if (sibling) { current = sibling; break; }
+        var up = walker.parentNode();
+        if (up === null || up === root) { break; }
+        oldParentStack.pop();
+        newParentStack.pop();
+      }
+    }
+    if (nextElement !== live.length) {
+      // Unreachable for the same reason: the walk must have met every
+      // element under root, or some of them were never classified.
+      throw new Error("sanitize: the phase 2 walk missed an element");
+    }
+
+    // Parents come from the walk rather than from reading `parentNode` back
+    // off each node: when a node is detached, only nodes after it in
+    // document order have moved, so its recorded parent is still its parent.
+    for (var d = nodes.length - 1; d >= 0; d--) {
+      oldParents[d].removeChild(nodes[d]);
+    }
+    for (var n = 0; n < nodes.length; n++) {
+      if (keep[n]) { newParents[n].appendChild(nodes[n]); }
     }
     return root;
   }

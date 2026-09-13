@@ -28,10 +28,13 @@ validation on `href`/`src`, and an opaque-tags table (`<script>`, `<style>`,
 `<base>`) dropped with no content kept at all, since it is source, not prose.
 A disallowed tag that is *not* on that opaque table (e.g. `<div>`,
 `<details>`) is unwrapped instead: the element itself is dropped, but its
-already-sanitized children move up in its place, in one pass sized to the
-tree (not to depth times width -- see the "Unwrap correctness and
-performance" cases in `run.js` for the linearity proof and the real-browser
-timing behind it). That sanitizer is the whole defense, not one layer of it.
+already-sanitized children move up in its place. The unwrap detaches every
+node bottom-up and re-appends each kept node top-down, so every DOM mutation
+moves one childless node; the "Unwrap cost" cases in `run.js` count the nodes
+every mutation drags while sanitizing and assert that stays within 4 × N
+(N = nodes in the parsed body) on three shapes -- a deterministic count, not
+a timing, and no case in the harness asserts a wall-clock bound. That
+sanitizer is the whole defense, not one layer of it.
 
 An earlier version of this file also patched marked's `renderer.html` hooks
 (the main `Renderer` and its separate `TextRenderer`) to suppress raw-HTML

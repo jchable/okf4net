@@ -32,8 +32,11 @@ const viewerSource = fs.readFileSync(path.join(ASSETS, "viewer.js"), "utf8");
  * @param {object} [links] The generation-time link-rewiring table
  *   (`payload.links`), keyed exactly as `SiteModel`/`HtmlWriter` would emit
  *   it. Defaults to `{}` for tests that don't exercise rewiring.
+ * @param {(window: object) => void} [instrument] Called with the jsdom window
+ *   after marked.min.js is loaded and before viewer.js runs, so a case can
+ *   wrap DOM APIs (see the unwrap-cost cases at the end of this file).
  */
-function renderBody(markdown, links) {
+function renderBody(markdown, links, instrument) {
   const dom = new JSDOM(
     `<!doctype html><html><body>
       <div id="okf-body"></div>
@@ -52,6 +55,7 @@ function renderBody(markdown, links) {
   // <script src="assets/marked.min.js"> then <script src="assets/viewer.js">
   // tags do.
   window.eval(markedSource);
+  if (instrument) { instrument(window); }
   window.eval(viewerSource);
 
   return window.document.getElementById("okf-body");
@@ -465,64 +469,6 @@ check("srcset is not an allowed attribute", () => {
   assert(img && !img.hasAttribute("srcset"), "srcset survived");
 });
 
-console.log("\nUnwrap correctness and performance (two-phase design):");
-
-check("~200 nested disallowed wrappers around ~2,000 allowed children unwrap correctly, well inside a bound that separates linear from quadratic", () => {
-  // Proves the linearity the two-phase design exists for -- picking the
-  // bound relative to two directly measured numbers, not a guess. A
-  // one-phase back-to-front unwrap (unwrap immediately, innermost first)
-  // moves the entire already-unwrapped subtree up one more level for every
-  // surviving ancestor wrapper, which is quadratic in depth x width: on this
-  // machine, in jsdom, this EXACT shape (200 nested wrappers around 2,000
-  // children) measures ~2.6s with the two-phase design below vs ~15.9s with
-  // a stand-in for the reverted one-phase code (both figures reproduced in
-  // task-D1-report.md, which also has real-browser numbers via Playwright
-  // for the reviewer's original 500-wrapper/20,000-child shape: ~565ms
-  // two-phase vs ~3.0s one-phase vs ~75ms for the pre-unwrap
-  // flatten-to-text code -- all three consistent with the reviewer's own
-  // Chromium measurement). jsdom's own per-mutation cost does not scale
-  // linearly with tree size the way a real browser's does (confirmed
-  // separately, not a defect in the two-phase design: even a plain
-  // `insertBefore` chain shows the same superlinear jsdom overhead), which
-  // is why this case is sized down from the 500/20,000 shape used for the
-  // real-browser numbers above -- large enough to separate the two
-  // algorithms by roughly 6x on this machine, small enough to run in a few
-  // seconds under `npm test`. The bound below sits between the two
-  // measurements (well above the observed two-phase time, well below the
-  // observed one-phase time), so a regression back to innermost-first
-  // unwrapping fails this case long before anyone has to eyeball a
-  // stopwatch.
-  const DEPTH = 200;
-  const WIDTH = 2000;
-  const md = "<div>".repeat(DEPTH) + "<em>x</em>".repeat(WIDTH) + "</div>".repeat(DEPTH);
-  const t0 = Date.now();
-  const body = renderBody(md);
-  const ms = Date.now() - t0;
-  assert(!body.querySelector("div"), "a disallowed <div> wrapper survived");
-  const ems = body.querySelectorAll("em");
-  assert(ems.length === WIDTH, `expected ${WIDTH} <em> elements to survive, found ${ems.length}`);
-  assert(
-    ms < 8000,
-    `unwrap took ${ms}ms for ${DEPTH} nested wrappers around ${WIDTH} children -- ` +
-      "want it well under the quadratic cost of an innermost-first unwrap (~15.9s for this shape on the machine that set this bound)"
-  );
-});
-
-check("a disallowed wrapper nested inside an opaque element leaves nothing behind, and does not crash phase 2", () => {
-  // <div> here is disallowed-but-not-opaque, so phase 1 queues it for
-  // phase-2 unwrapping same as any other disallowed element -- but <div> is
-  // nested inside <iframe>, which IS opaque, so phase 1 removes the whole
-  // <iframe> subtree (the queued <div> included) before phase 2 ever runs.
-  // By the time phase 2 reaches the queued <div>, it is no longer connected
-  // to the document; this proves that case is handled (skipped, not thrown,
-  // not resurrected) rather than merely reasoned about in a comment.
-  const body = renderBody("<iframe><div><strong>hidden</strong></div></iframe>");
-  assert(!body.querySelector("iframe"), "<iframe> survived");
-  assert(!body.querySelector("div"), "<div> survived");
-  assert(!body.querySelector("strong"), "<strong> resurfaced outside the removed <iframe>");
-  assert(!body.textContent.includes("hidden"), "opaque element's nested content leaked as text");
-});
-
 // --- mutation-XSS: the unwrap changes tree shape, so re-parenting payloads
 // that rely on browser parsing quirks (foster parenting, table/form/math
 // scoping rules) get a fresh, explicit check rather than trusting that the
@@ -531,19 +477,18 @@ check("a disallowed wrapper nested inside an opaque element leaves nothing behin
 
 console.log("\nMutation XSS (re-parenting payloads must yield nothing executable):");
 
-// Mirrors viewer.js's own ALLOWED_TAGS exactly (kept in sync by hand -- a
-// drift here is a bug in this test, not in viewer.js, but the mutation
-// harness (mutate.js, not committed) plus the "svg-namespace <a>" case below
-// are what would actually catch a real ALLOWED_TAGS regression; this list
-// exists so assertNothingExecutable can assert the *positive* property "every
-// surviving element is on the allowlist", not just a curated negative list of
-// three tag names.
+// Mirrors viewer.js's own ALLOWED_TAGS, kept in sync by hand: nothing checks
+// the two lists against each other, so a drift here is a bug in this test,
+// not in viewer.js. It exists so assertNothingExecutable can assert the
+// *positive* property "every surviving element is an XHTML element on the
+// allowlist", not just a curated negative list of a few tag names.
 const ALLOWED_TAGS_MIRROR = new Set([
   "P", "H1", "H2", "H3", "H4", "H5", "H6",
   "UL", "OL", "LI", "A", "IMG", "CODE", "PRE", "BLOCKQUOTE",
   "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TH", "TD",
   "STRONG", "EM", "DEL", "HR", "BR", "INPUT",
 ]);
+const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
 // Mirrors viewer.js's SAFE_SCHEMES plus its isSafeUrl() control-character
 // strip and bounded percent-decode loop, so this assertion judges a scheme
@@ -580,9 +525,8 @@ function hasUnsafeScheme(raw) {
 
 /**
  * Walks every element under `body` and asserts none of it is executable:
- * every surviving element's tag (compared uppercased, so a foreign-namespace
- * SCRIPT/STYLE reporting a lowercase tagName is still caught) is on
- * ALLOWED_TAGS_MIRROR; no on-star, style, srcdoc, formaction or action
+ * every surviving element is in the XHTML namespace and its tag (compared
+ * uppercased) is on ALLOWED_TAGS_MIRROR; no on-star, style, srcdoc, formaction or action
  * attribute survives anywhere (by name, not by tag -- an attacker-controlled attribute
  * name is exactly what must never survive regardless of which element it
  * landed on after re-parenting); and href/src/xlink:href never carry a
@@ -596,6 +540,13 @@ function hasUnsafeScheme(raw) {
 function assertNothingExecutable(body) {
   const all = body.querySelectorAll("*");
   for (const el of all) {
+    // Namespace first: the tag comparison below is uppercased, so without
+    // this an SVG- or MathML-namespace <a> ("a") would pass as an allowed
+    // XHTML "A". viewer.js admits no foreign-namespace element at all.
+    assert(
+      el.namespaceURI === XHTML_NS,
+      `a foreign-namespace element survived: <${el.tagName}> (${el.namespaceURI})`
+    );
     const tag = el.tagName.toUpperCase();
     assert(ALLOWED_TAGS_MIRROR.has(tag), `an element survived off the allowlist: <${el.tagName}>`);
     for (const attr of Array.from(el.attributes)) {
@@ -638,11 +589,257 @@ check("form/math/mglyph/style re-parenting payload yields nothing executable", (
 
 check("svg-namespace <a xlink:href> is unwrapped with no href/xlink:href carried anywhere", () => {
   const body = renderBody('<svg><a xlink:href="javascript:alert(1)">x</a></svg>');
+  // The namespace check inside assertNothingExecutable is what fails here if
+  // the SVG <a> is ever admitted as an allowed "A" (e.g. by uppercasing
+  // tagName before the ALLOWED_TAGS lookup) even with its attributes stripped.
+  assertNothingExecutable(body);
   const all = body.querySelectorAll("*");
   for (const el of all) {
     assert(!el.hasAttribute("href"), `an element carries a live href: <${el.tagName}>`);
     assert(!el.hasAttribute("xlink:href"), `an element carries a live xlink:href: <${el.tagName}>`);
   }
+});
+
+// --- unwrap: structural cost, counted rather than timed ----------------------
+//
+// Moving a node in the DOM is not O(1): it drags the node's whole subtree
+// with it (the DOM Standard's remove and insert algorithms visit every
+// descendant of the node they move). An unwrap that moves already-assembled
+// subtrees again and again is therefore superlinear however few moves it
+// makes: the outermost-first unwrap this replaced dragged 94.2 x N nodes for
+// 50 wrappers around 200 children and 201.0 x N for a 200-deep chain, and
+// the innermost-first one before it 44.5 x N and 26.0 x N on the first and
+// third shapes below. Wall-clock bounds cannot guard this (machine- and
+// jsdom-dependent, and loose enough to pass a quadratic algorithm at any
+// size small enough to run quickly), so no case in this harness asserts a
+// time. Instead these cases count, deterministically, the
+// nodes dragged by every structural DOM mutation while sanitize() runs, and
+// bound that work by a small multiple of N, the node count of the parsed body.
+
+/** Inclusive node count of `node`'s subtree. */
+function subtreeSize(node) {
+  let count = 0;
+  const stack = [node];
+  while (stack.length) {
+    const n = stack.pop();
+    count++;
+    for (let c = n.firstChild; c; c = c.nextSibling) { stack.push(c); }
+  }
+  return count;
+}
+
+const WORK_BOUND = 4;
+
+/**
+ * Renders `markdown` like renderBody, counting the structural work viewer.js
+ * does between DOMParser.parseFromString returning and the pipeline's next
+ * `document.getElementById` call (the lookup of #okf-body that follows
+ * sanitize()) -- i.e. the work of sanitize() itself.
+ *
+ * Counted: appendChild, insertBefore, removeChild and replaceChild, each
+ * charged the size of every subtree it moves or removes (a DocumentFragment
+ * argument is charged for its children, which is what actually moves).
+ * Every other DOM API that can move or remove nodes throws while counting,
+ * so a sanitizer cannot dodge the count by switching APIs; each is looked up
+ * as an own property of the prototype jsdom defines it on, and a missing one
+ * is a harness setup error rather than a silently unguarded API.
+ *
+ * @returns {{ body: Element, nodes: number, work: number, parsed: boolean, violations: string[] }}
+ */
+function renderBodyCountingWork(markdown) {
+  const state = { counting: false, parsed: false, nodes: 0, work: 0, violations: [] };
+  const body = renderBody(markdown, {}, (window) => {
+    const own = (proto, name, owner) => {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, name);
+      if (!descriptor) {
+        throw new Error(`harness setup: ${owner}.prototype.${name} not found -- update renderBodyCountingWork for this jsdom`);
+      }
+      return descriptor;
+    };
+    const charge = (node) => {
+      if (node.nodeType !== 11) { return subtreeSize(node); }
+      let sum = 0;
+      for (let c = node.firstChild; c; c = c.nextSibling) { sum += subtreeSize(c); }
+      return sum;
+    };
+
+    const parserProto = window.DOMParser.prototype;
+    const parseFromString = own(parserProto, "parseFromString", "DOMParser").value;
+    parserProto.parseFromString = function (...args) {
+      const doc = parseFromString.apply(this, args);
+      state.nodes = subtreeSize(doc.body);
+      state.parsed = true;
+      state.counting = true;
+      return doc;
+    };
+    const getElementById = window.document.getElementById;
+    window.document.getElementById = function (...args) {
+      state.counting = false;
+      return getElementById.apply(this, args);
+    };
+
+    const nodeProto = window.Node.prototype;
+    for (const name of ["appendChild", "insertBefore", "removeChild"]) {
+      const original = own(nodeProto, name, "Node").value;
+      nodeProto[name] = function (node, ...rest) {
+        if (state.counting) { state.work += charge(node); }
+        return original.call(this, node, ...rest);
+      };
+    }
+    const replaceChild = own(nodeProto, "replaceChild", "Node").value;
+    nodeProto.replaceChild = function (node, child) {
+      if (state.counting) { state.work += charge(node) + subtreeSize(child); }
+      return replaceChild.call(this, node, child);
+    };
+
+    const forbiddenMethods = {
+      Node: ["normalize"],
+      Element: [
+        "append", "prepend", "before", "after", "replaceWith", "remove", "replaceChildren",
+        "insertAdjacentElement", "insertAdjacentHTML", "insertAdjacentText",
+      ],
+      CharacterData: ["before", "after", "replaceWith", "remove"],
+      DocumentFragment: ["append", "prepend", "replaceChildren"],
+      Document: ["append", "prepend", "replaceChildren", "adoptNode"],
+      Range: ["insertNode", "surroundContents", "extractContents", "deleteContents"],
+    };
+    for (const [owner, names] of Object.entries(forbiddenMethods)) {
+      const proto = window[owner].prototype;
+      for (const name of names) {
+        const original = own(proto, name, owner).value;
+        proto[name] = function (...args) {
+          if (state.counting) {
+            state.violations.push(`${owner}.${name}`);
+            throw new Error(`uncounted DOM mutation API used during sanitize(): ${owner}.${name}`);
+          }
+          return original.apply(this, args);
+        };
+      }
+    }
+    for (const [owner, name] of [["Node", "textContent"], ["Element", "innerHTML"], ["Element", "outerHTML"]]) {
+      const proto = window[owner].prototype;
+      const descriptor = own(proto, name, owner);
+      Object.defineProperty(proto, name, {
+        ...descriptor,
+        set(value) {
+          if (state.counting) {
+            state.violations.push(`${owner}.${name} setter`);
+            throw new Error(`uncounted DOM mutation API used during sanitize(): ${owner}.${name} setter`);
+          }
+          descriptor.set.call(this, value);
+        },
+      });
+    }
+  });
+  return { body, ...state };
+}
+
+/**
+ * One unwrap-cost case: the work bound, then nothing executable, then the
+ * shape-specific output check.
+ */
+function checkUnwrapWork(label, markdown, verifyOutput) {
+  check(`${label}: unwrap work <= ${WORK_BOUND} x N, and the output is exactly the allowed content`, () => {
+    const r = renderBodyCountingWork(markdown);
+    assert(r.parsed, "DOMParser.parseFromString never ran -- the counter measured nothing");
+    assert(r.violations.length === 0, `uncounted DOM mutation APIs used: ${r.violations.join(", ")}`);
+    const multiple = (r.work / r.nodes).toFixed(1);
+    console.log(`        work: ${r.work} nodes dragged for N = ${r.nodes} (${multiple} x N)`);
+    assert(r.work > 0, "no structural DOM work counted for a shape that must unwrap -- the counter is not wired");
+    assert(
+      r.work <= WORK_BOUND * r.nodes,
+      `sanitize() dragged ${r.work} nodes through DOM moves for N = ${r.nodes} (${multiple} x N, bound ${WORK_BOUND} x N)`
+    );
+    assertNothingExecutable(r.body);
+    assert(!r.body.querySelector("div"), "a disallowed <div> wrapper survived");
+    verifyOutput(r.body);
+  });
+}
+
+console.log("\nUnwrap cost (deterministic work count, never wall-clock) and correctness:");
+
+{
+  const DEPTH = 50;
+  const WIDTH = 200;
+  const children = Array.from({ length: WIDTH }, (_, i) => `<em>${i}</em>`).join("");
+  checkUnwrapWork(`${DEPTH} nested <div>s around ${WIDTH} <em>s`, "<div>".repeat(DEPTH) + children + "</div>".repeat(DEPTH), (body) => {
+    const texts = Array.from(body.querySelectorAll("em"), (em) => em.textContent);
+    assert(texts.length === WIDTH, `expected ${WIDTH} <em>s to survive, found ${texts.length}`);
+    for (let i = 0; i < WIDTH; i++) {
+      assert(texts[i] === String(i), `<em> #${i} out of order: found ${JSON.stringify(texts[i])}`);
+    }
+  });
+}
+
+{
+  const DEPTH = 200;
+  checkUnwrapWork(`a ${DEPTH}-deep chain of <div>s around one <em>`, "<div>".repeat(DEPTH) + "<em>x</em>" + "</div>".repeat(DEPTH), (body) => {
+    const ems = body.querySelectorAll("em");
+    assert(ems.length === 1 && ems[0].textContent === "x", `expected one <em>x</em>, found ${ems.length}: ${body.innerHTML.slice(0, 200)}`);
+  });
+}
+
+{
+  const DEPTH = 100;
+  checkUnwrapWork(`${DEPTH} alternating <div><em> levels`, "<div><em>".repeat(DEPTH) + "x" + "</em></div>".repeat(DEPTH), (body) => {
+    // Each surviving <em> must hold exactly the next one: the <div> between
+    // every pair is gone, the nesting and the innermost text are not.
+    let em = body.querySelector("em");
+    for (let level = 1; level <= DEPTH; level++) {
+      assert(em && em.tagName === "EM", `level ${level}: expected an <em>, found ${em ? `<${em.tagName}>` : "nothing"}`);
+      if (level < DEPTH) {
+        assert(em.childNodes.length === 1, `level ${level}: expected exactly one child, found ${em.childNodes.length}`);
+        em = em.firstChild;
+      }
+    }
+    assert(em.childNodes.length === 1 && em.firstChild.nodeType === 3 && em.firstChild.data === "x", "the innermost text was lost");
+  });
+}
+
+check("sanitize() fails closed on a root that is not connected to any document", () => {
+  // viewer.js always hands sanitize() `parsed.body`, which is connected to
+  // the DOMParser document. A sanitizer must not depend on that: an earlier
+  // version skipped every collected disallowed element that was not
+  // `isConnected`, so on a detached root it unwrapped nothing, and since
+  // attributes are only sanitized on *admitted* elements, <div onclick> and
+  // <svg onload> survived intact. This hands sanitize() a detached root
+  // through the real pipeline (no test hook in viewer.js): the parsed body's
+  // children are moved into a fresh, unattached <div> that stands in for
+  // `parsed.body`.
+  let detached = false;
+  const body = renderBody('<div onclick="alert(1)"><svg onload="alert(1)"><em>kept</em></svg></div>', {}, (window) => {
+    const parserProto = window.DOMParser.prototype;
+    const parseFromString = parserProto.parseFromString;
+    parserProto.parseFromString = function (...args) {
+      const doc = parseFromString.apply(this, args);
+      const holder = doc.createElement("div");
+      while (doc.body.firstChild) { holder.appendChild(doc.body.firstChild); }
+      detached = !holder.isConnected;
+      Object.defineProperty(doc, "body", { value: holder });
+      return doc;
+    };
+  });
+  assert(detached, "the stand-in root was connected -- this case tested nothing");
+  assertNothingExecutable(body);
+  const em = body.querySelector("em");
+  assert(em && em.textContent === "kept", `the allowed <em> inside the wrappers was lost: ${body.innerHTML}`);
+});
+
+check("a disallowed element nested inside an opaque one is never resurrected", () => {
+  // In HTML, an <iframe>'s content is raw text, so `<iframe><div>` never
+  // produces a DIV element at all. Foreign content is where a disallowed
+  // element really does sit inside an opaque one: inside <svg>, <style> is an
+  // ordinary SVG element whose children parse as elements, so the <a> and
+  // <g> below are real (SVG-namespace, hence disallowed) elements. Phase 1
+  // walks back-to-front, so it collects them for unwrapping before it
+  // reaches the enclosing <style> and removes it; they must not come back,
+  // and neither may their text. The <em> breaks out of foreign content at
+  // parse time and lands after the <svg>, so it is legitimate and survives.
+  const body = renderBody("para\n\n<svg><style><a><g>secret<em>x</em></g></a></style></svg>\n\nafter");
+  assertNothingExecutable(body);
+  assert(!body.textContent.includes("secret"), "text inside the removed <style> was resurrected");
+  const em = body.querySelector("em");
+  assert(em && em.textContent === "x", `the <em> that broke out of foreign content was lost: ${body.innerHTML}`);
 });
 
 console.log(`\n${passed} passed, ${failures} failed`);
