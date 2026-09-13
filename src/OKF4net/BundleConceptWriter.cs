@@ -60,11 +60,21 @@ internal enum VerificationTargetProblemKind
     /// point -- see <see cref="BundleConceptWriter"/>'s private <c>ValidateConceptTarget</c>.</summary>
     InvalidId,
 
-    /// <summary>The id resolves to a well-formed path, but no file exists there.</summary>
+    /// <summary>The id resolves to a well-formed path, but no file exists there with that EXACT
+    /// case for every segment — an id differing only in case from the real on-disk entry (e.g.
+    /// <c>METRICS/DAU</c> naming an on-disk <c>metrics/dau.md</c>) is, correctly, a DIFFERENT,
+    /// nonexistent concept id, matching what <c>bundle.Get</c> (ordinal <see cref="ConceptId"/>
+    /// equality against ids <see cref="Bundle.Load(string)"/> builds from the real directory
+    /// listing) has always answered — not a case-insensitive alias for it.</summary>
     NotFound,
 
-    /// <summary>The file exists but its content is not a well-formed OKF document (<see cref="DocumentParseException"/> or a strict-UTF-8 decode failure).</summary>
+    /// <summary>The file exists (with the right case) but its content is not a well-formed OKF
+    /// document (<see cref="DocumentParseException"/> or a strict-UTF-8 decode failure).</summary>
     ParseFailure,
+
+    /// <summary>The file exists but could not be read — an <see cref="IOException"/> (e.g. held
+    /// open exclusively by another process) or <see cref="UnauthorizedAccessException"/>.</summary>
+    Unreadable,
 
     /// <summary>The document parses but has no non-empty <c>type</c> — §11's floor.</summary>
     NotConformant,
@@ -80,7 +90,16 @@ internal enum VerificationTargetProblemKind
 /// </summary>
 /// <param name="Kind">What is wrong with <paramref name="ConceptId"/>.</param>
 /// <param name="ConceptId">The offending id, exactly as given by the caller (not normalized).</param>
-internal readonly record struct VerificationTargetProblem(VerificationTargetProblemKind Kind, string ConceptId);
+/// <param name="Detail">
+/// The specific reason, for kinds whose wording varies by cause: <c>BundleConceptWriter</c>'s
+/// private <c>ValidateConceptTarget</c>'s own message for <see cref="VerificationTargetProblemKind.InvalidId"/>, or the underlying
+/// exception's message for <see cref="VerificationTargetProblemKind.ParseFailure"/> and
+/// <see cref="VerificationTargetProblemKind.Unreadable"/>. Captured once, here, rather than
+/// re-derived by a renderer — re-running a disk check a second time to recover a string it already
+/// had is both wasted I/O and, for a reparse-point check, a second window for the answer to change
+/// underneath it. <see langword="null"/> for every other kind.
+/// </param>
+internal readonly record struct VerificationTargetProblem(VerificationTargetProblemKind Kind, string ConceptId, string? Detail = null);
 
 /// <summary>
 /// The core, thread-safe write primitive for OKF bundles: producer-validated,
@@ -698,11 +717,21 @@ public sealed class BundleConceptWriter
             // shape that must refuse with "indented" instead). Short-circuiting
             // on NotConformant here would let §11's generic message pre-empt
             // that specific, better diagnostic. Bailing out here for the
-            // OTHER four kinds carries no such risk: an invalid id, a missing
-            // file, an unparseable document or a resolved-path duplicate are
-            // all structurally prior to any edit attempt in the unchanged
-            // loop below too, so moving their detection earlier changes
-            // nothing about what would eventually have been reported.
+            // OTHER five kinds carries no such risk FOR THE SAME ID: an
+            // invalid id, a missing file, an unreadable file, an unparseable
+            // document or a resolved-path duplicate are all structurally
+            // prior to any edit attempt in the unchanged loop below too, so
+            // moving THAT id's detection earlier changes nothing about what
+            // would eventually have been reported for it. This does NOT hold
+            // ACROSS ids in a batch with more than one problem: e.g. a batch
+            // `[concept-with-a-NaN-float, metrics/nope]` used to refuse on
+            // index 0 (the NaN concept, reached first by the old sequential
+            // per-index loop below); bailing out here on CheckVerificationTargets's
+            // own id-validity/existence/duplicate scan instead reports index
+            // 1 (`metrics/nope`, "does not exist") first, since that scan
+            // runs its OWN passes over every id before this method's prepare
+            // loop ever starts. Both are correct refusals of the same batch;
+            // which one is named first can move.
             var targetProblem = CheckVerificationTargets(conceptIds);
             if (targetProblem is { Kind: not VerificationTargetProblemKind.NotConformant } problem)
             {
@@ -722,35 +751,15 @@ public sealed class BundleConceptWriter
                 targets.Add(target);
             }
 
-            // Duplicates are refused, not silently collapsed: preparing the same
-            // file twice would build both versions from the same original
-            // content and write it twice, reporting two records for the single
-            // stamp that survives — a result that reads like two reviews.
-            //
-            // Checked on the RESOLVED target path, not the raw id string that
-            // was passed in, and case-INSENSITIVELY. Note this is NOT the
-            // "Windows/macOS are case-insensitive" heuristic Bundle.cs
-            // explicitly rejects (see Bundle.PathComparison): case-sensitivity
-            // is a property of the volume, not the OS, so no OS test could
-            // decide this correctly either way. The comparison is deliberately
-            // pessimistic instead — a batch is refused whenever two ids COULD
-            // name one file — because the cost of the two errors is not
-            // symmetric: collapsing two spellings on a case-insensitive volume
-            // silently double-reports a single stamp, while the residual here
-            // is that on a case-SENSITIVE volume genuinely holding both
-            // metrics/dau.md and metrics/DAU.md, a batch naming both is
-            // refused and must be run as two. Stated rather than reasoned
-            // away: that refusal is real, and this is the same call the
-            // BundleLocks registry above makes for the same class of bug.
-            var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (var i = 0; i < targets.Count; i++)
-            {
-                if (!seenPaths.Add(targets[i].TargetPath))
-                {
-                    return $"Error: concept {DebugQuote.Quote(conceptIds[i])} is named more than once.";
-                }
-            }
-
+            // No duplicate-by-path check here any more (a prior review round
+            // singled this exact loop out as dead code once the early
+            // CheckVerificationTargets call above ran first): that call
+            // applies the identical resolved-path, case-insensitive rule to
+            // every id in the batch before this line is ever reached, so a
+            // batch containing any duplicate already returned via
+            // FormatVerificationTargetProblem above. See
+            // CheckVerificationTargets's own duplicate-check block for the
+            // rule's rationale (moved there from this comment).
             lock (_bundleLock)
             {
                 // PREPARE every concept — read, parse, upsert the stamp, and
@@ -1153,18 +1162,39 @@ public sealed class BundleConceptWriter
         var targets = new List<ConceptTarget>(conceptIds.Count);
         for (var i = 0; i < conceptIds.Count; i++)
         {
-            if (ValidateConceptTarget(conceptIds[i], out var target) is not null)
+            var targetError = ValidateConceptTarget(conceptIds[i], out var target);
+            if (targetError is not null)
             {
-                return new VerificationTargetProblem(VerificationTargetProblemKind.InvalidId, conceptIds[i]);
+                return new VerificationTargetProblem(VerificationTargetProblemKind.InvalidId, conceptIds[i], targetError);
             }
 
             targets.Add(target);
         }
 
-        // Same rule as RecordVerifications's own duplicate guard: resolved
-        // TARGET PATH, case-insensitively -- not the raw id string -- so two
-        // spellings that COULD collide on a case-insensitive volume are
-        // refused rather than silently double-reporting one stamp.
+        // Duplicates are refused, not silently collapsed: preparing the same
+        // file twice would build both versions from the same original
+        // content and write it twice, reporting two records for the single
+        // stamp that survives — a result that reads like two reviews.
+        //
+        // Checked on the RESOLVED target path, not the raw id string that was
+        // passed in, and case-INSENSITIVELY. Note this is NOT the
+        // "Windows/macOS are case-insensitive" heuristic Bundle.cs explicitly
+        // rejects (see Bundle.PathComparison): case-sensitivity is a property
+        // of the volume, not the OS, so no OS test could decide this
+        // correctly either way. The comparison is deliberately pessimistic
+        // instead — a batch is refused whenever two ids COULD name one file —
+        // because the cost of the two errors is not symmetric: collapsing two
+        // spellings on a case-insensitive volume silently double-reports a
+        // single stamp, while the residual here is that on a case-SENSITIVE
+        // volume genuinely holding both metrics/dau.md and metrics/DAU.md, a
+        // batch naming both is refused and must be run as two. Stated rather
+        // than reasoned away: that refusal is real, and this is the same call
+        // the BundleLocks registry makes for the same class of bug.
+        //
+        // Formerly duplicated inside RecordVerifications's own prepare loop;
+        // that copy is gone now that this method runs first and applies the
+        // identical rule to the whole batch before the prepare loop's targets
+        // list is even built, making the old copy unreachable dead code.
         var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < targets.Count; i++)
         {
@@ -1176,26 +1206,47 @@ public sealed class BundleConceptWriter
 
         for (var i = 0; i < targets.Count; i++)
         {
-            var targetPath = targets[i].TargetPath;
-            if (!File.Exists(targetPath))
+            var target = targets[i];
+
+            // File.Exists alone answers case-INSENSITIVELY on Windows/macOS,
+            // so an id like "METRICS/DAU" would otherwise read as "found" for
+            // an on-disk metrics/dau.md — a different, wrong answer than
+            // Bundle.Load gives: it builds each concept's id from the REAL
+            // on-disk casing its directory walk returns, and ConceptId
+            // equality is ordinal, so bundle.Get("METRICS/DAU") has always
+            // returned null (a genuinely different, nonexistent id) rather
+            // than resolving to the lowercase file. ExistsWithExactCase
+            // mirrors that by checking the real directory entries.
+            if (!File.Exists(target.TargetPath) || !ExistsWithExactCase(BundleRoot, target.Id))
             {
                 return new VerificationTargetProblem(VerificationTargetProblemKind.NotFound, conceptIds[i]);
             }
 
-            OkfDocument document;
             try
             {
-                var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(targetPath));
-                document = OkfDocument.Parse(text);
+                var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
+
+                // One spelling of §11 conformance (OkfDocument.ValidateConformance
+                // itself), not a second hand-rolled `Get("type")` check beside it.
+                OkfDocument.Parse(text).ValidateConformance();
+            }
+            catch (DocumentValidationException)
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptIds[i]);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Never let an expected I/O condition (a file held open
+                // exclusively by another process, a permissions error)
+                // escape as an unhandled exception -- Bundle.Load wraps the
+                // same two exception types into BundleLoadException so
+                // `okf validate`/`info`/etc. report a clean `error:` line
+                // instead of a stack trace; this check owes verify the same.
+                return new VerificationTargetProblem(VerificationTargetProblemKind.Unreadable, conceptIds[i], ex.Message);
             }
             catch (Exception ex) when (ex is OkfException or System.Text.DecoderFallbackException)
             {
-                return new VerificationTargetProblem(VerificationTargetProblemKind.ParseFailure, conceptIds[i]);
-            }
-
-            if (document.Frontmatter.Get("type") is not { IsEmptyValue: false })
-            {
-                return new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptIds[i]);
+                return new VerificationTargetProblem(VerificationTargetProblemKind.ParseFailure, conceptIds[i], ex.Message);
             }
         }
 
@@ -1203,29 +1254,78 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
-    /// Renders a <see cref="VerificationTargetProblem"/> in the exact wording
-    /// <see cref="RecordVerifications"/> has always used for
-    /// <see cref="VerificationTargetProblemKind.NotFound"/>, <see cref="VerificationTargetProblemKind.NotConformant"/>
-    /// and <see cref="VerificationTargetProblemKind.DuplicateName"/> — an <c>Error: </c>-prefixed,
-    /// period-terminated sentence, matching what the <c>okf_verify</c> tool already reads today too.
-    /// <see cref="VerificationTargetProblemKind.InvalidId"/> re-derives <see cref="ValidateConceptTarget"/>'s
-    /// own message (it already names the id and varies by sub-case — reserved name, outside the
-    /// bundle root, a reparse point — so it is not worth collapsing into one generic sentence here);
-    /// re-running that pure, no-I/O check a second time is cheap and keeps this one byte-identical to
-    /// what <see cref="RecordVerifications"/> returned for these ids before this method existed.
-    /// <see cref="VerificationTargetProblemKind.ParseFailure"/> has no pre-existing writer-level
-    /// wording to match (it used to escape unattributed through <see cref="RunTool"/>'s generic
-    /// <c>OkfException</c> catch), so this is the first time it is phrased at all.
+    /// Whether <paramref name="id"/> names a file that exists under <paramref name="bundleRoot"/>
+    /// with EXACTLY this case for every path segment — not merely a case-insensitive match, the way
+    /// <see cref="File.Exists(string)"/> answers on Windows/macOS. Walks the real directory entries
+    /// segment by segment (mirroring what <see cref="Bundle.Load(string)"/>'s own enumeration would
+    /// find: it builds each concept's <see cref="ConceptId"/> from the REAL on-disk casing the OS
+    /// returns, and <see cref="ConceptId"/> equality is ordinal) rather than trusting the
+    /// case-insensitive path <paramref name="id"/> resolves to.
     /// </summary>
-    private string FormatVerificationTargetProblem(VerificationTargetProblem problem) => problem.Kind switch
+    private static bool ExistsWithExactCase(string bundleRoot, ConceptId id)
     {
-        VerificationTargetProblemKind.InvalidId =>
-            ValidateConceptTarget(problem.ConceptId, out _)
-                ?? throw new InvalidOperationException("CheckVerificationTargets reported InvalidId for an id ValidateConceptTarget now accepts."),
+        var dir = bundleRoot;
+        for (var i = 0; i < id.Segments.Count; i++)
+        {
+            var isLastSegment = i == id.Segments.Count - 1;
+            var wantName = isLastSegment ? id.Segments[i] + ".md" : id.Segments[i];
+
+            string[] entries;
+            try
+            {
+                entries = isLastSegment ? Directory.GetFiles(dir) : Directory.GetDirectories(dir);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // File.Exists already answered true for the case-insensitively
+                // resolved path, so a listing failure here is an edge case
+                // (e.g. a permissions change racing this call) rather than
+                // the common case -- treated as "not found" rather than
+                // surfacing a second, differently-shaped error for what is
+                // fundamentally the same existence question.
+                return false;
+            }
+
+            var match = entries.FirstOrDefault(entry => string.Equals(Path.GetFileName(entry), wantName, StringComparison.Ordinal));
+            if (match is null)
+            {
+                return false;
+            }
+
+            dir = isLastSegment ? dir : match;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Renders a <see cref="VerificationTargetProblem"/> in the wording <see cref="RecordVerifications"/>
+    /// and the <c>okf_verify</c> tool already read for <see cref="VerificationTargetProblemKind.NotFound"/>
+    /// and <see cref="VerificationTargetProblemKind.DuplicateName"/> — an <c>Error: </c>-prefixed,
+    /// period-terminated sentence. <see cref="VerificationTargetProblemKind.NotConformant"/> is
+    /// phrased the same way for the first time HERE (it used to reach a caller only as the bare,
+    /// unattributed <see cref="DocumentValidationException"/> message); so is
+    /// <see cref="VerificationTargetProblemKind.ParseFailure"/> and
+    /// <see cref="VerificationTargetProblemKind.Unreadable"/>, both of which append
+    /// <see cref="VerificationTargetProblem.Detail"/> — the underlying exception's own message —
+    /// since a bare "could not be parsed"/"could not be read" with no cause is a worse diagnostic
+    /// than the writer already had before this method existed (the unattributed message at least
+    /// carried the parser's own detail). <see cref="VerificationTargetProblemKind.InvalidId"/>
+    /// returns <see cref="VerificationTargetProblem.Detail"/> as captured by
+    /// <see cref="CheckVerificationTargets"/> from <see cref="ValidateConceptTarget"/>'s own return
+    /// value — not re-derived here, since <see cref="ValidateConceptTarget"/> also probes the
+    /// filesystem for a reparse point, and re-running it a second time is both wasted I/O and a
+    /// second window for that answer to change underneath it.
+    /// </summary>
+    private static string FormatVerificationTargetProblem(VerificationTargetProblem problem) => problem.Kind switch
+    {
+        VerificationTargetProblemKind.InvalidId => problem.Detail!,
         VerificationTargetProblemKind.NotFound =>
             $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
         VerificationTargetProblemKind.ParseFailure =>
-            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document.",
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.Detail}.",
+        VerificationTargetProblemKind.Unreadable =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.Detail}.",
         VerificationTargetProblemKind.NotConformant =>
             $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
         VerificationTargetProblemKind.DuplicateName =>

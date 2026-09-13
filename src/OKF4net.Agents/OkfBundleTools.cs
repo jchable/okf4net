@@ -679,17 +679,19 @@ public sealed class OkfBundleTools
             // message shape, and it reads the k named files directly rather
             // than going through the tool's cached bundle (unaffected by
             // whether that cache is stale).
-            //
-            // DuplicateName is deliberately not intercepted here: two
-            // spellings resolving to the same file are left to the real
-            // RecordVerifications call below, whose own message is what the
-            // agent sees.
             var targetProblem = _writer.CheckVerificationTargets(ids);
-            if (targetProblem is { Kind: not VerificationTargetProblemKind.DuplicateName } problem)
+            if (targetProblem is { } problem)
             {
-                return problem.Kind == VerificationTargetProblemKind.NotConformant
-                    ? $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant."
-                    : $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.";
+                return problem.Kind switch
+                {
+                    VerificationTargetProblemKind.NotConformant =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
+                    VerificationTargetProblemKind.DuplicateName =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} is named more than once.",
+                    VerificationTargetProblemKind.Unreadable =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.Detail}.",
+                    _ => $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+                };
             }
 
             // One batch call — the validation guarantee comes from the writer, so the

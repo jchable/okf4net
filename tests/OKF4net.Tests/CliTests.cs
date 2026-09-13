@@ -1380,6 +1380,100 @@ public class CliTests
     }
 
     /// <summary>
+    /// Post-review regression (IMPORTANT 1): a resolved-path duplicate in the
+    /// batch used to make <c>CheckVerificationTargets</c> return at
+    /// <c>DuplicateName</c> before the existence/parse/type loop ever looked
+    /// at the OTHER ids, and the CLI ignored that kind entirely — so
+    /// `--dry-run` fell straight through to printing "would record" for
+    /// every id, including a genuinely unknown one, and exited 0. This is
+    /// the exact regression class <see cref="Verify_dry_run_still_fails_on_an_unknown_id"/>
+    /// exists to guard, in the one variant it does not cover (no duplicate).
+    /// `metrics/dau` and `metrics//dau` resolve to the SAME file (empty path
+    /// segments are dropped by <c>ConceptId.Parse</c>), so this is refused as
+    /// a duplicate before <c>metrics/nope</c>'s absence is ever reached — the
+    /// point is that it refuses and prints nothing, not which message wins.
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_still_fails_when_a_duplicate_hides_an_unknown_id()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "metrics/nope", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept \"metrics//dau\" is named more than once.\n", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Post-review regression (IMPORTANT 2): <c>CheckVerificationTargets</c>'s
+    /// <c>File.ReadAllBytes</c> used to sit outside any exception filter that
+    /// covered <c>IOException</c>/<c>UnauthorizedAccessException</c>, and
+    /// <c>OkfCli.Run</c> catches only <c>CliOperationException</c> and
+    /// <c>OkfException</c> — so a concept file held open exclusively by
+    /// another process crashed the whole CLI with an unhandled
+    /// <c>System.IO.IOException</c> and a stack trace, where <c>Bundle.Load</c>
+    /// (used by every other bundle verb) has always wrapped the same two
+    /// exception types into a clean <c>error:</c> line. Skipped where the
+    /// platform/filesystem does not actually enforce <c>FileShare.None</c>
+    /// against a second reader, the same probe-before-asserting shape
+    /// <see cref="Verify_prints_the_records_that_landed_before_a_later_write_failure"/>
+    /// uses for its own platform-dependent lock.
+    /// </summary>
+    [SkippableFact]
+    public void Verify_reports_a_locked_concept_file_cleanly_instead_of_crashing()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var dauPath = Path.Combine(bundle, "metrics", "dau.md");
+
+        using var exclusive = new FileStream(dauPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        try
+        {
+            using var probe = new FileStream(dauPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            throw new SkipException("exclusive file locks are not enforced on this platform/filesystem");
+        }
+        catch (IOException)
+        {
+            // Expected: a second reader really is denied here, continue.
+        }
+
+        var r = Run("verify", bundle, "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error: concept \"metrics/dau\" could not be read:", r.Err);
+        Assert.DoesNotContain("Unhandled exception", r.Err);
+        Assert.DoesNotContain("   at ", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Minor (post-review): an id differing only in case from the real
+    /// on-disk file must still be "unknown", exactly like before this task's
+    /// refactor — <c>bundle.Get</c> compares <c>ConceptId</c>s ordinally, and
+    /// <c>Bundle.Load</c> builds them from the real directory-listing casing,
+    /// so <c>METRICS/DAU</c> was never an alias for an on-disk
+    /// <c>metrics/dau.md</c>. Without <c>ExistsWithExactCase</c>,
+    /// <c>File.Exists</c> alone answers case-insensitively on Windows/macOS
+    /// and would accept it. Passes identically on a case-sensitive
+    /// filesystem too (there, <c>File.Exists</c> itself already says no).
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_rejects_a_case_variant_of_an_existing_concept_id()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "METRICS/DAU", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown concept \"METRICS/DAU\"\n", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
     /// An actor carrying a newline could otherwise forge a whole <c>recorded
     /// …</c> line — the renderer interpolates <c>by</c> into a line-oriented
     /// result with no escaping — naming a concept the command never touched,

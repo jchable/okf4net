@@ -543,16 +543,20 @@ public static class OkfCli
     /// Fails into the CLI's error arm when <paramref name="path"/> is not an
     /// existing directory.
     ///
-    /// Only <c>index</c> needs this explicitly. Every other bundle verb goes
-    /// through <see cref="Load"/>, and so inherits the identical check
-    /// <see cref="Bundle.Load"/> performs; <c>index</c> hands its path straight
-    /// to <see cref="IndexGenerator.RegenerateIndexes"/>, whose documented
-    /// contract is to return an empty list rather than throw — which the CLI
-    /// used to render as "no index files written (empty bundle?)" and exit 0,
-    /// making <c>index</c> the one verb that reported success for a target that
-    /// does not exist. The wording is deliberately identical to
-    /// <see cref="Bundle.Load"/>'s; <c>CliTests</c> asserts the two verbs emit
-    /// the same stderr so this copy cannot drift from it.
+    /// <c>index</c> and <c>verify</c> need this explicitly; every other bundle
+    /// verb goes through <see cref="Load"/> and so inherits the identical
+    /// check <see cref="Bundle.Load"/> performs. <c>index</c> hands its path
+    /// straight to <see cref="IndexGenerator.RegenerateIndexes"/>, whose
+    /// documented contract is to return an empty list rather than throw —
+    /// which the CLI used to render as "no index files written (empty
+    /// bundle?)" and exit 0, making <c>index</c> the one verb that reported
+    /// success for a target that does not exist. <c>verify</c> stopped
+    /// calling <see cref="Load"/> at all (it reads only the concept files
+    /// named on the command line via <see cref="BundleConceptWriter.CheckVerificationTargets"/>,
+    /// not the whole bundle), so it needs this same guard for the same
+    /// reason. The wording is deliberately identical to <see cref="Bundle.Load"/>'s;
+    /// <c>CliTests</c> asserts all three verbs emit the same stderr so this
+    /// copy cannot drift from it.
     /// </summary>
     private static void RequireBundleRoot(string path)
     {
@@ -920,18 +924,32 @@ public static class OkfCli
         // buys is message quality: naming the offending id directly
         // ("unknown concept \"x\"" / "concept \"x\" has no `type`...") BEFORE
         // the dry-run branch, instead of the writer's own message shape.
+        // Checked BEFORE --dry-run below, not after: a batch containing a
+        // resolved-path duplicate together with a genuinely unknown id (e.g.
+        // `verify b metrics/dau metrics//dau metrics/nope --dry-run`) must
+        // still refuse and exit 1, not silently print "would record" for
+        // every id including the unknown one.
         //
-        // A concept named more than once by two DIFFERENT spellings that
-        // resolve to the SAME file is deliberately left unhandled here (the
-        // raw-string check above only catches identical spellings): that one
-        // case reaches the real writer call below, whose own message is what
-        // the caller sees (see Verify_reports_a_writer_failure_without_doubling_the_error_prefix).
+        // DuplicateName gets the writer's OWN wording here (period included,
+        // matching FormatVerificationTargetProblem) rather than the
+        // raw-string check's above (no period): a concept named more than
+        // once by two DIFFERENT spellings that resolve to the SAME file is
+        // exactly what that check does not catch, and this is the layer that
+        // does (see Verify_reports_a_writer_failure_without_doubling_the_error_prefix,
+        // which pins the with-period wording for that exact case).
         var problem = writer.CheckVerificationTargets(ids);
-        if (problem is { Kind: not VerificationTargetProblemKind.DuplicateName } p)
+        if (problem is { } p)
         {
-            throw new CliOperationException(p.Kind == VerificationTargetProblemKind.NotConformant
-                ? $"concept {DebugQuote.Quote(p.ConceptId)} has no `type` and is not §11-conformant"
-                : $"unknown concept {DebugQuote.Quote(p.ConceptId)}");
+            throw new CliOperationException(p.Kind switch
+            {
+                VerificationTargetProblemKind.NotConformant =>
+                    $"concept {DebugQuote.Quote(p.ConceptId)} has no `type` and is not §11-conformant",
+                VerificationTargetProblemKind.DuplicateName =>
+                    $"concept {DebugQuote.Quote(p.ConceptId)} is named more than once.",
+                VerificationTargetProblemKind.Unreadable =>
+                    $"concept {DebugQuote.Quote(p.ConceptId)} could not be read: {p.Detail}",
+                _ => $"unknown concept {DebugQuote.Quote(p.ConceptId)}",
+            });
         }
 
         if (parsed.Has("--dry-run"))
