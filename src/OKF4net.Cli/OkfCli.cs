@@ -107,13 +107,12 @@ public static class OkfCli
     /// relaxed globally for the one verb that needs it.
     /// </summary>
     private sealed record VerbSpec(
-        string Name,
         string UsageLine,
         string Summary,
         string[] ValuedFlags,
         string[] ValuelessFlags,
         string[] OptionLines,
-        Func<CliArgs, TextWriter, int> Run,
+        Func<CliArgs, TextReader, TextWriter, int> Run,
         bool Variadic = false);
 
     /// <summary>
@@ -129,14 +128,14 @@ public static class OkfCli
     private static readonly Dictionary<string, VerbSpec> Verbs = new(StringComparer.Ordinal)
     {
         ["validate"] = new(
-            "validate", "okf validate <bundle> [--as-of <date>] [--json]",
+            "okf validate <bundle> [--as-of <date>] [--json]",
             "Check a bundle against OKF v0.2 conformance (§11).",
             [AsOfFlag], ["--json"],
             ["    --as-of <date>   Evaluate staleness (§5.5) as of YYYY-MM-DD, not today",
              "    --json           Machine-readable output"],
             CmdValidate),
         ["audit"] = new(
-            "audit", "okf audit <bundle> [filters] [--as-of <date>] [--json]",
+            "okf audit <bundle> [filters] [--as-of <date>] [--json]",
             "Report trust, freshness and lifecycle across the bundle (§5.3–§5.5).",
             AuditValuedFlags, ["--stale", "--json"],
             ["    --stale           Only concepts past their stale_after",
@@ -147,7 +146,7 @@ public static class OkfCli
              "    --json            Machine-readable output"],
             CmdAudit),
         ["verify"] = new(
-            "verify", "okf verify <bundle> <id>… | - [--by <actor>] [--at <ts>] [--dry-run]",
+            "okf verify <bundle> <id>… | - [--by <actor>] [--at <ts>] [--dry-run]",
             "Record a review of one or more concepts (§5.2).",
             ["--by", "--at"], ["--dry-run"],
             ["    --by <actor>     Who is recording the review (required)",
@@ -158,29 +157,29 @@ public static class OkfCli
             // ids, or `-` to read them from stdin one per line.
             Variadic: true),
         ["info"] = new(
-            "info", "okf info <bundle> [--json]",
+            "okf info <bundle> [--json]",
             "Summarize a bundle (concepts, types, links, version).",
             [], ["--json"],
             ["    --json           Machine-readable output"],
             CmdInfo),
         ["index"] = new(
-            "index", "okf index <bundle>",
+            "okf index <bundle>",
             "(Re)generate every index.md in the bundle (§8).",
             [], [], [],
             CmdIndex),
         ["graph"] = new(
-            "graph", "okf graph <bundle> [--dot]",
+            "okf graph <bundle> [--dot]",
             "Print the cross-link graph (§6).",
             [], ["--dot"],
             ["    --dot            Emit Graphviz DOT instead of plain text"],
             CmdGraph),
         ["parse"] = new(
-            "parse", "okf parse <file>",
+            "okf parse <file>",
             "Parse one concept document and print its structure.",
             [], [], [],
             CmdParse),
         ["fmt"] = new(
-            "fmt", "okf fmt <file> [-w]",
+            "okf fmt <file> [-w]",
             "Normalize a document by parse + re-serialize.",
             [], ["-w", "--write"],
             ["    -w, --write      Rewrite the file in place instead of printing to stdout"],
@@ -262,16 +261,21 @@ public static class OkfCli
             // positional, so `okf validate --help` used to answer
             // "error: missing <bundle>" -- the one question a user asks when
             // they do not know what that argument is.
-            var parsed = CliArgs.Scan(rest, spec, stdin);
+            var parsed = CliArgs.Scan(rest, spec.ValuedFlags, spec.ValuelessFlags, spec.Variadic, HelpFlags);
             if (parsed.WantsHelp)
             {
                 stdout.Write(HelpFor(spec));
                 return 0;
             }
 
-            return spec.Run(parsed, stdout);
+            return spec.Run(parsed, stdin, stdout);
         }
         catch (CliOperationException e)
+        {
+            stderr.Write($"error: {e.Message}\n");
+            return 1;
+        }
+        catch (CliArgumentException e)
         {
             stderr.Write($"error: {e.Message}\n");
             return 1;
@@ -298,232 +302,6 @@ public static class OkfCli
     {
         stderr.Write($"unknown subcommand: {other}\n\n{Usage}\n");
         return 1;
-    }
-
-    // ----------------------------------------------------------------
-    // Argument parsing helpers.
-    // ----------------------------------------------------------------
-
-    /// <summary>
-    /// One command's arguments, scanned once so every later question agrees on
-    /// what each token is.
-    ///
-    /// Scanning left to right, a flag listed in <c>valuedFlags</c> consumes the
-    /// following token as its value; every other <c>-</c>-prefixed token is a
-    /// valueless flag; anything else is positional. A <c>--</c> separator ends
-    /// the scan: everything after it is positional, never a flag (so a path
-    /// beginning with <c>-</c> works).
-    ///
-    /// Scanning once is the point. When presence, value and positional were
-    /// three independent scans of the raw array, they disagreed: a token
-    /// consumed as a value was still seen as a flag by the presence check, so
-    /// <c>okf audit b --type --stale</c> set the stale filter even though
-    /// <c>--stale</c> was <c>--type</c>'s value, and only the positional scan
-    /// honoured <c>--</c>.
-    /// </summary>
-    private sealed class CliArgs
-    {
-        /// <summary>
-        /// Every flag given, mapped to the value it consumed: <c>null</c> both
-        /// for a valueless flag and for a valued one left without a value. Key
-        /// absent means the flag was not given — one dictionary rather than a
-        /// presence set beside a value map, so presence and value cannot drift
-        /// apart.
-        /// </summary>
-        private readonly Dictionary<string, string?> _flags = new(StringComparer.Ordinal);
-
-        /// <summary>
-        /// The positional tokens, in order. `--` ends option parsing without
-        /// discarding what came before it, so a verb taking several positionals
-        /// (`verify <bundle> <id>…`) keeps them all.
-        /// </summary>
-        private readonly List<string> _positionals = [];
-
-        /// <summary>The flags this scan was told consume a value, kept so <see cref="Value"/> can tell a user's mistake from the caller's.</summary>
-        private string[] _valuedFlags = [];
-
-        /// <summary>Whether the verb declared it takes more than one positional — see <see cref="VerbSpec.Variadic"/>.</summary>
-        private bool _variadic;
-
-        /// <summary>
-        /// Standard input, carried here rather than passed to every handler:
-        /// stdin is one of the invocation's inputs, like the arguments beside
-        /// it, and only <c>verify -</c> reads it. Widening the dispatch
-        /// delegate instead would have added a parameter seven other verbs
-        /// never use.
-        /// </summary>
-        private TextReader _stdin = TextReader.Null;
-
-        private CliArgs()
-        {
-        }
-
-        /// <summary>Standard input for the verbs that read it — in practice only <c>verify -</c>.</summary>
-        internal TextReader Stdin => _stdin;
-
-        /// <summary>
-        /// Scans <paramref name="args"/> against <paramref name="spec"/>'s declared
-        /// contract, rejecting anything it does not define.
-        ///
-        /// Two rejections the scan did not used to make. An option in neither of
-        /// the spec's flag lists is <c>unknown option</c> rather than a silently
-        /// kept valueless flag, and a second positional is
-        /// <c>unexpected argument</c> rather than silently dropped.
-        ///
-        /// That second rule now applies after <c>--</c> too, which narrows the
-        /// separator's old behaviour: it used to let the first token after the
-        /// separator OVERRIDE an earlier positional and swallow the rest, so
-        /// <c>okf audit -- b --json</c> resolved <c>b</c> and ignored
-        /// <c>--json</c> entirely. The separator's actual contract — nothing
-        /// after it is ever a flag — is unchanged and still enforced here; what
-        /// changes is that the ignored leftovers are now named instead of
-        /// discarded. The guarantee that matters is strictly stronger: a
-        /// side-effecting flag parked after the separator (<c>fmt -- f -w</c>)
-        /// still never writes, and now says why.
-        /// </summary>
-        internal static CliArgs Scan(string[] args, VerbSpec spec, TextReader stdin)
-        {
-            var valuedFlags = spec.ValuedFlags;
-            var scanned = new CliArgs { _valuedFlags = valuedFlags, _variadic = spec.Variadic, _stdin = stdin };
-
-            for (var i = 0; i < args.Length; i++)
-            {
-                var token = args[i];
-
-                if (token == "--")
-                {
-                    // Nothing past the separator is a flag -- that is what it is
-                    // for (a path starting with `-`). They are positionals, and
-                    // so bound by the verb's declared arity like any other.
-                    for (var j = i + 1; j < args.Length; j++)
-                    {
-                        scanned.TakePositional(args[j]);
-                    }
-
-                    break;
-                }
-
-                if (Array.IndexOf(valuedFlags, token) >= 0)
-                {
-                    i = scanned.TakeValuedFlag(args, i, token);
-                    continue;
-                }
-
-                // A lone "-" is POSIX's "read from standard input" — an
-                // argument, not an option. Only a token with something after
-                // the dash is a flag.
-                if (token.Length > 1 && token.StartsWith('-'))
-                {
-                    scanned.TakeOption(token, spec);
-                    continue;
-                }
-
-                scanned.TakePositional(token);
-            }
-
-            return scanned;
-        }
-
-        /// <summary>
-        /// Records a flag that consumes the following token as its value, and
-        /// returns the index the scan continues from — one past the value when
-        /// there was one, otherwise unchanged.
-        /// </summary>
-        /// <param name="args">The full argument array being scanned.</param>
-        /// <param name="i">The index of <paramref name="token"/> itself.</param>
-        /// <param name="token">The valued flag.</param>
-        private int TakeValuedFlag(string[] args, int i, string token)
-        {
-            var hasValue = CliArgScanning.HasFollowingValue(args, i);
-
-            // Refused, not first-wins: a script that appends an override flag
-            // got the EARLIER value with no diagnostic, the exact "silently
-            // different behaviour than asked for" this scanner exists to stop.
-            if (_flags.ContainsKey(token))
-            {
-                throw new CliOperationException($"option {token} given more than once");
-            }
-
-            _flags[token] = hasValue ? args[i + 1] : null;
-
-            return hasValue ? i + 1 : i;
-        }
-
-        /// <summary>
-        /// Records a valueless flag, rejecting one this verb does not declare.
-        /// The allowlist is per-verb plus the universal help flags, so a flag
-        /// another verb defines is still unknown here.
-        /// </summary>
-        /// <param name="token">The <c>-</c>-prefixed token.</param>
-        /// <param name="spec">The verb whose contract decides what is accepted.</param>
-        private void TakeOption(string token, VerbSpec spec)
-        {
-            if (Array.IndexOf(spec.ValuelessFlags, token) < 0 && Array.IndexOf(HelpFlags, token) < 0)
-            {
-                throw new CliOperationException($"unknown option: {token}");
-            }
-
-            _flags[token] = null;
-        }
-
-        /// <summary>
-        /// Appends a positional, enforcing the arity the verb declared. A verb
-        /// that takes one — every verb but <c>verify</c> — still reports the
-        /// surplus token rather than dropping it; a variadic one keeps them all
-        /// in order, since <c>verify &lt;bundle&gt; &lt;id&gt;…</c> is the whole
-        /// point of that flag.
-        /// </summary>
-        private void TakePositional(string token)
-        {
-            if (!_variadic && _positionals.Count > 0)
-            {
-                throw new CliOperationException($"unexpected argument: {token}");
-            }
-
-            _positionals.Add(token);
-        }
-
-        /// <summary>Whether help was asked for. Answered centrally in <see cref="Run"/>, before any command body runs.</summary>
-        internal bool WantsHelp => Has("-h") || Has("--help");
-
-        /// <summary>True if <paramref name="flag"/> was given as a flag — not as another flag's value, and not after <c>--</c>.</summary>
-        internal bool Has(string flag) => _flags.ContainsKey(flag);
-
-        /// <summary>
-        /// The value <paramref name="flag"/> consumed, or <c>null</c> when the
-        /// flag is absent. Throws when the flag is present but unvalued.
-        /// </summary>
-        internal string? Value(string flag)
-        {
-            if (!_flags.TryGetValue(flag, out var value))
-            {
-                return null;
-            }
-
-            if (value is not null)
-            {
-                return value;
-            }
-
-            // Present with nothing attached. That is a user mistake only if the
-            // flag was declared as taking a value; otherwise the caller asked a
-            // question about a flag the scan was never told to value, and
-            // reporting "requires a value" would blame the user for a bug here.
-            if (Array.IndexOf(_valuedFlags, flag) < 0)
-            {
-                throw new InvalidOperationException(
-                    $"{flag} was not declared as a valued flag in this command's CliArgs.Scan call");
-            }
-
-            throw new CliOperationException($"{flag} requires a value");
-        }
-
-        /// <summary>The first positional argument, or throws naming <paramref name="what"/>.</summary>
-        internal string Positional(string what) =>
-            _positionals.Count > 0 ? _positionals[0] : throw new CliOperationException($"missing {what}");
-
-        /// <summary>Every positional argument, in order — the first is what <see cref="Positional"/> returns.</summary>
-        internal IReadOnlyList<string> Positionals => _positionals;
     }
 
     /// <summary>Loads a bundle, converting a failure into the CLI's error arm.</summary>
@@ -633,7 +411,7 @@ public static class OkfCli
     // ----------------------------------------------------------------
 
     /// <summary>Implements the <c>validate</c> subcommand.</summary>
-    private static int CmdValidate(CliArgs parsed, TextWriter stdout)
+    private static int CmdValidate(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
 
         // --as-of is parsed before the positional, so an unvalued flag names
@@ -676,7 +454,7 @@ public static class OkfCli
     }
 
     /// <summary>Implements the <c>audit</c> subcommand.</summary>
-    private static int CmdAudit(CliArgs parsed, TextWriter stdout)
+    private static int CmdAudit(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
         // Flag values are read BEFORE the positional is asked for. An unvalued
         // flag is the more specific diagnosis, so `okf audit --as-of` -- the
@@ -798,7 +576,7 @@ public static class OkfCli
     }
 
     /// <summary>Implements the <c>verify</c> subcommand.</summary>
-    private static int CmdVerify(CliArgs parsed, TextWriter stdout)
+    private static int CmdVerify(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
         // Both values are READ first, so a flag present without a value names
         // itself ("--by requires a value") rather than surfacing later as a
@@ -873,7 +651,7 @@ public static class OkfCli
         // from the argument list alone.
         if (readFromStdin)
         {
-            ids = ReadIdsFrom(parsed.Stdin);
+            ids = ReadIdsFrom(stdin);
 
             // An empty stream is "nothing to do", not an error. This is the
             // documented `okf audit … --trust unverified | cut … | okf verify
@@ -1015,7 +793,7 @@ public static class OkfCli
     }
 
     /// <summary>Implements the <c>info</c> subcommand.</summary>
-    private static int CmdInfo(CliArgs parsed, TextWriter stdout)
+    private static int CmdInfo(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
         var path = parsed.Positional("<bundle>");
         var bundle = Load(path);
@@ -1070,7 +848,7 @@ public static class OkfCli
     }
 
     /// <summary>Implements the <c>index</c> subcommand.</summary>
-    private static int CmdIndex(CliArgs parsed, TextWriter stdout)
+    private static int CmdIndex(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
         var path = parsed.Positional("<bundle>");
         RequireBundleRoot(path);
@@ -1108,7 +886,7 @@ public static class OkfCli
     /// methods because they share nothing but the bundle — the shape that was
     /// obscured while both loop nests sat inline in one <c>if/else</c>.
     /// </summary>
-    private static int CmdGraph(CliArgs parsed, TextWriter stdout)
+    private static int CmdGraph(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
         var bundle = Load(parsed.Positional("<bundle>"));
 
@@ -1171,7 +949,7 @@ public static class OkfCli
     }
 
     /// <summary>Implements the <c>parse</c> subcommand.</summary>
-    private static int CmdParse(CliArgs parsed, TextWriter stdout)
+    private static int CmdParse(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
         var path = parsed.Positional("<file>");
         var text = ReadFileStrict(path);
@@ -1225,7 +1003,7 @@ public static class OkfCli
     }
 
     /// <summary>Implements the <c>fmt</c> subcommand.</summary>
-    private static int CmdFmt(CliArgs parsed, TextWriter stdout)
+    private static int CmdFmt(CliArgs parsed, TextReader stdin, TextWriter stdout)
     {
         var path = parsed.Positional("<file>");
         var write = parsed.Has("-w") || parsed.Has("--write");

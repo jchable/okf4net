@@ -626,6 +626,12 @@ and this project adheres to
   vocabulary open, so nothing syntactic decides it. `bundles/acme_retail/`
   goes from 24 warnings to 22. Recorded as **S4.1-8** in
   `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+- **`okf` and `okf-render` now share one `CliArgs` argument scanner**
+  (`OKF4net.Internal.CliArgs`) instead of two hand-rolled copies that had
+  already drifted: `okf-render` now treats a lone `-` as an argument like
+  `okf` does, and a repeated `--out` is refused (`option --out given more
+  than once`) instead of silently keeping the first value, matching `okf`'s
+  own repeated-flag refusal for every other valued flag.
 
 ### Fixed
 
@@ -906,6 +912,8 @@ and this project adheres to
   The result is checked by full structural equality against the intended
   document — frontmatter and body — rather than a `verified`-entry count, so
   a future mis-edit is refused rather than silently written.
+- `okf-render` treats a lone `-` as an argument, like `okf` (the two
+  scanners had drifted; there is now one).
 
 ## [0.5.0] - 2026-07-31
 

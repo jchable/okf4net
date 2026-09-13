@@ -169,20 +169,32 @@ public class OkfRenderCliTests
     }
 
     [Fact]
-    public void Repeated_out_flag_keeps_the_first_value_and_still_consumes_the_second()
+    public void Repeated_out_flag_is_refused()
     {
-        // Regression guard: a later "--out" no longer overwrites the first
-        // recorded value, but it must still consume its own following token
-        // -- otherwise that token falls through to the positional scan and
-        // is misread as a second, unexpected argument.
+        // Now shares okf's CliArgs scanner (since C2, a repeated valued flag
+        // is refused rather than first-wins): a later "--out" is an error,
+        // not silently ignored.
         using var dest = new TempDir();
         var outDir = Path.Combine(dest.Path, "site");
 
         var r = Run(BundlePath, "--out", outDir, "--out", "somewhere-else");
 
-        Assert.Equal(0, r.Code);
-        Assert.Equal("", r.Err);
-        Assert.True(File.Exists(Path.Combine(outDir, "index.html")));
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: option --out given more than once\n", r.Err);
+        Assert.False(Directory.Exists(outDir));
+    }
+
+    [Fact]
+    public void Lone_dash_is_a_positional_not_an_unknown_option()
+    {
+        // Now shares okf's CliArgs scanner: a lone "-" is POSIX's "read from
+        // standard input" -- an argument, not an option -- so with the
+        // bundle already given, it is a second positional and rejected as
+        // "unexpected argument: -", not "unknown option: -".
+        var r = Run(BundlePath, "-", "--out", "d");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unexpected argument: -\n", r.Err);
     }
 
     [Fact]
