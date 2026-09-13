@@ -225,13 +225,12 @@ them a re-capture from the (removed) Rust binary:
   run. Pins what stdout cannot: that the stamp replaced the existing `human:ada`
   entry **in place** (still the second entry, after `process:nightly`, which is
   untouched), that `generated` was neither rewritten nor refreshed, and that no
-  key was added, dropped or reordered. Note that the frontmatter is re-emitted in
-  the YAML emitter's canonical block style, so the source fixture's flow mappings,
-  inline list, and compact entries (`tags: [engagement]`, `generated: { … }`,
-  `usage_window: { … }`, and the `verified`/`sources` entries) appear here
-  expanded. That reflow is pre-existing behaviour of every bundle write, not
-  something `verify` does, and pinning it is deliberate. Every scalar value
-  other than the replaced `at` is unchanged, as is the body. Produced by running
+  key was added, dropped or reordered. The 2026-08-28 capture re-emitted the
+  *whole* frontmatter through the YAML emitter's canonical block style, so the
+  source fixture's flow mappings, inline list, and compact entries
+  (`tags: [engagement]`, `generated: { … }`, `usage_window: { … }`, and the
+  `sources` entry) appeared here expanded. Every scalar value other than the
+  replaced `at` was unchanged, as was the body. Produced by running
   the command once on a copy, then **read line by line and justified by hand**
   before being frozen — the inspection is the provenance, not the capture.
   Revised once, when the §5 temporal-form pass gave the source fixture explicit
@@ -242,6 +241,36 @@ them a re-capture from the (removed) Rust binary:
   `human:ada` stamp is still replaced in place as the second `verified` entry
   after an untouched `process:nightly`, `generated` is still neither rewritten
   nor refreshed, and no key was added, dropped or reordered.
+  - **2026-09-13 revision (Task C7, finding #11, §5.2):** `RecordVerifications`
+    used to build its output by fully re-serializing the parsed frontmatter
+    through `YamlEmitter`, exactly like every other write path in this
+    library — which is what the paragraph above described and pinned as
+    deliberate. That turned out to be a bug specific to `verify`: its own doc
+    comment already promised "preserving every other frontmatter key and the
+    body", which a full re-emit does not do (it also normalizes CRLF to LF and
+    drops YAML comments, neither of which this fixture exercises, but both of
+    which a CRLF or commented bundle would hit). `RecordVerifications` now
+    edits the `verified:` block **in place** in the raw text
+    (`FrontmatterBlockEdit`) and never touches any other key. This golden is
+    revised to match: `tags: [engagement]`, `generated: { by: …, at: … }`,
+    the `sources` entry (`- id: ga4` on one line), and
+    `usage_window: { from: …, to: … }` now appear exactly as
+    `okf_v02/metrics/dau.md` itself writes them, in their original flow/inline
+    spelling — nothing outside `verified` moved. The clause above calling the
+    reflow "pre-existing behaviour of every bundle write, not something
+    `verify` does" is no longer true of `verify`: it is still true of
+    `WriteConcept`/`AppendToConceptAtomic`, which still fully re-serialize, but
+    `verify` is now the one write path that does not. Re-checked by hand
+    against the same four properties as the prior revision: the `verified`
+    block is still the emitter's canonical block style, with `human:ada`
+    replaced in place as the second entry after an untouched `process:nightly`;
+    `generated` is still neither rewritten nor refreshed; no key was added,
+    dropped or reordered; the body is still byte-identical. Confirmed by
+    running the command on a fresh copy and diffing the result against both
+    the source fixture (the only difference is the `verified:` block) and the
+    prior golden (the only difference is `tags`/`generated`/`sources`/
+    `usage_window` reverting to the source's own spelling) before freezing the
+    new bytes.
 ## Temporal form (§5) (2026-08-31)
 
 OKF v0.2 §5 requires every timestamp-valued key to be an ISO 8601 datetime with

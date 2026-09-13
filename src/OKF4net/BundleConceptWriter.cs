@@ -686,12 +686,38 @@ public sealed class BundleConceptWriter
                     var document = OkfDocument.Parse(text);
                     var map = document.Frontmatter.AsMapping();
 
-                    map.Insert("verified", UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt));
+                    var upserted = UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt);
+                    map.Insert("verified", upserted);
 
-                    // Throws DocumentValidationException on a failed §11 check,
-                    // caught by RunTool -- nothing in `prepared` so far has been
-                    // written, so the whole batch is rejected cleanly.
-                    var content = BuildConformantContent(map, document.Body);
+                    // Surgical, not a re-emit: only the `verified:` block is
+                    // touched in the RAW text, so every other frontmatter key
+                    // -- comments, CRLF endings, folded/flow scalar spellings,
+                    // key order -- survives byte for byte. This is what
+                    // RecordVerifications's own doc comment already promised
+                    // ("preserving every other frontmatter key and the body")
+                    // and a full-frontmatter re-emit through YamlEmitter did
+                    // not deliver: YamlEmitter normalizes CRLF to LF, drops
+                    // comments, and reflows folded/flow scalars (see
+                    // FrontmatterBlockEdit's own doc comment). `map` above is
+                    // still built and mutated exactly as before, so
+                    // UpsertStamp/replacedAt are computed identically; it is
+                    // only the SERIALIZATION step that changes. Deliberately
+                    // does NOT go through MaybeStampGenerated: this path
+                    // stamps `verified` only, never `generated`.
+                    var one = new YamlMapping();
+                    one.Insert("verified", upserted);
+                    var stampBlock = YamlEmitter.Emit(one);
+                    var content = FrontmatterBlockEdit.ReplaceTopLevelKey(text, "verified", stampBlock);
+
+                    // Re-parsed and validated: the edit is textual, so this is
+                    // the proof the result is still a conformant (§11) document
+                    // and the stamp landed where a reader will find it.
+                    var reparsed = OkfDocument.Parse(content);
+                    reparsed.ValidateConformance();
+                    if (reparsed.Frontmatter.Verified.Count != Trust.ParseVerified(upserted).Count)
+                    {
+                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])}: the verified block could not be edited in place.";
+                    }
 
                     prepared.Add((target, content, conceptIds[i], replacedAt));
                 }
@@ -779,27 +805,6 @@ public sealed class BundleConceptWriter
 
         items.Add(stamp);
         return new YamlSequence(items);
-    }
-
-    /// <summary>
-    /// Serializes after §11 conformance validation only (non-empty <c>type</c>),
-    /// unlike <see cref="BuildValidatedContent(YamlValue, string)"/>'s
-    /// producer-grade check. Deliberate: recording a review is not producing
-    /// content, and refusing a reviewer because a third party omitted a
-    /// <c>description</c> would make precisely the concepts an audit surfaces
-    /// unstampable. Unlike the <see cref="YamlValue"/>-based overload above,
-    /// there is no "not a mapping" case to report here — the caller always
-    /// passes an already-typed <see cref="YamlMapping"/> — so this returns the
-    /// serialized content directly rather than an <c>(Content, Error)</c> pair
-    /// whose <c>Error</c> half could never be anything but <see langword="null"/>.
-    /// Throws <see cref="DocumentValidationException"/> on a failed conformance
-    /// check, caught by the caller's <see cref="RunTool"/> wrapper.
-    /// </summary>
-    private static string BuildConformantContent(YamlMapping frontmatter, string body)
-    {
-        var document = new OkfDocument(Frontmatter.FromMapping(frontmatter), body);
-        document.ValidateConformance();
-        return document.Serialize();
     }
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>

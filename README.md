@@ -288,18 +288,20 @@ numeric offset, or fractional seconds are all rejected, not silently rounded.
 > bundle, correcting a concept) has to be able to touch `verified` too.
 > Credibility comes from *where the stamp lands*: in a diff a human reviewed,
 > under branch protection, where the reviewer sees the assertion and can
-> reject it. That argument only works if the diff is legible: like every
-> write path in this library, `verify` re-serializes the whole document in
-> canonical form (the same shape `okf fmt` produces) — a flow-style mapping
-> or an inline list expands to one entry per line, so a three-line stamp can
-> land as a much larger diff with the new `verified` entry buried inside a
-> reformat. The body is normalized too, to LF line endings, so on a bundle
-> checked out with CRLF the reformat is *the entire file* and the assertion a
-> reviewer is supposed to see is one changed line in a wall of them. Run
-> `okf fmt -w` on the bundle first, as its own reviewed commit, if you want a
-> review's diff to be the stamp and nothing else — it produces the same
-> canonical shape, so a `verify` run after it differs only by the stamp
-> lines. **Never infer
+> reject it. That argument only works if the diff is legible, which is why
+> `verify` is deliberately **not** like every other write path in this
+> library: instead of re-serializing the whole document, it edits the
+> `verified:` block **in place** in the raw text (`FrontmatterBlockEdit`) and
+> leaves every other byte untouched — CRLF line endings, YAML comments, and
+> flow-style/folded scalar spellings elsewhere (`tags: [a, b]`, `generated: {
+> by: …, at: … }`, `description: >`) survive exactly as the bundle had them.
+> The one exception is a column-0 comment sitting *inside* the `verified:`
+> block itself (between the `verified:` line and the next top-level key): it
+> is replaced along with the block it comments on, since there is no way to
+> know which of the stamp's lines it was meant to annotate. A reviewer's diff
+> for a `verify` run is therefore just the changed `verified:` lines, with no
+> `okf fmt -w` step needed first to keep the reformat from swallowing it.
+> **Never infer
 > a stamp from a PR approval** — that turns "a human
 > approved this diff" into "a human vouches for this knowledge," which are
 > different every time a PR touches a file for a reason other than reviewing

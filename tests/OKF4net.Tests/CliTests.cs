@@ -1497,12 +1497,18 @@ public class CliTests
     /// process died with a stack trace. The emitter now raises an
     /// <c>OkfException</c> and <c>Run</c> catches that base type, which is a
     /// strict improvement for all nine verbs — no golden pinned a crash.
+    ///
+    /// The deep nesting must live IN <c>verified</c> itself: since C7
+    /// (<c>FrontmatterBlockEdit</c>), <c>RecordVerifications</c> re-emits only
+    /// the <c>verified</c> block, so nesting depth anywhere else in the
+    /// frontmatter is carried through as untouched raw text and never reaches
+    /// <c>YamlEmitter</c> at all.
     /// </summary>
     [Fact]
     public void A_document_that_cannot_be_re_emitted_exits_cleanly_rather_than_crashing()
     {
         using var tmp = new TempDir();
-        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text(key: "verified"));
 
         var r = Run("verify", tmp.Path, "metrics/deep", "--by", "human:ada");
 

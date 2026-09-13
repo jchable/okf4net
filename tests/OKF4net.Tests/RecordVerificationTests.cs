@@ -322,13 +322,22 @@ public class RecordVerificationTests
     ///
     /// The throw lands in the PREPARE loop, before any write, so batch
     /// atomicity holds: nothing is written and <c>Records</c> is empty.
+    ///
+    /// Since C7 (<see cref="FrontmatterBlockEdit"/>), this method only ever
+    /// re-emits the <c>verified</c> block itself through <c>YamlEmitter</c> —
+    /// every other key survives as untouched raw text, so the deep nesting
+    /// has to live IN the pre-existing <c>verified</c> value for this
+    /// scenario to still be reachable (<c>DeepYamlDocument.Text(key: "verified")</c>);
+    /// nesting it under an unrelated key, as this test did before C7, would
+    /// now be silently carried through untouched and never reach the emitter
+    /// at all — the surgical edit's whole point.
     /// </summary>
     [Fact]
     public void A_document_that_parses_but_cannot_be_emitted_is_reported_not_thrown()
     {
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
-        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text(key: "verified"));
         var before = Read(tmp, "metrics/dau.md");
 
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/deep"], "human:ada");
@@ -448,6 +457,55 @@ public class RecordVerificationTests
 
         writer.RecordVerifications(["metrics/dau"], "human:ada");
         Assert.Equal(TrustTier.HumanReviewed, Bundle.Load(tmp.Path).Concepts[0].Document.Frontmatter.TrustTier);
+    }
+
+    /// <summary>
+    /// The C7 fix, proven at the writer level (not just <see cref="FrontmatterBlockEditTests"/>,
+    /// which never touches <c>RecordVerifications</c> or a real bundle file):
+    /// a CRLF document with a column-0 comment, a folded <c>description: &gt;</c>
+    /// scalar, and a flow-style <c>tags: [a, b]</c> list is stamped, and the
+    /// on-disk result differs from the original by ONLY the <c>verified:</c>
+    /// lines — every CRLF ending, the comment, and the folded/flow spellings
+    /// survive. Asserted by stripping the <c>verified:</c> block out of both
+    /// texts and comparing what remains byte-for-byte, which a substring
+    /// assertion on the stamp alone would not catch (it would miss e.g. a
+    /// silently normalized CRLF elsewhere in the file).
+    /// </summary>
+    [Fact]
+    public void Only_the_verified_lines_change_on_disk_everything_else_is_byte_identical()
+    {
+        using var tmp = new TempDir();
+        const string before =
+            "---\r\n"
+            + "type: Metric\r\n"
+            + "title: Daily Active Users\r\n"
+            + "# reviewed quarterly\r\n"
+            + "description: >\r\n"
+            + "  Daily\r\n"
+            + "  active users.\r\n"
+            + "tags: [engagement, kpi]\r\n"
+            + "---\r\n"
+            + "\r\n"
+            + "# Body\r\n";
+        tmp.Write("metrics/dau.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
+        Assert.True(outcome.Recorded);
+
+        var after = Read(tmp, "metrics/dau.md");
+
+        // The stamped fields, checked structurally.
+        var stamp = Assert.Single(OkfDocument.Parse(after).Frontmatter.Verified);
+        Assert.Equal("human:ada", stamp.By!.Value.Raw);
+        Assert.Equal("2026-08-28T09:14:00Z", stamp.At);
+
+        // Every other byte, checked by removing the `verified:` lines from
+        // both texts and comparing what remains. The stamp was appended
+        // (no `verified:` key existed before), so the CRLF-joined lines
+        // added are exactly these three.
+        var verifiedBlockCrlf = "verified:\r\n  -\r\n    by: human:ada\r\n    at: 2026-08-28T09:14:00Z\r\n";
+        Assert.Contains(verifiedBlockCrlf, after);
+        Assert.Equal(before, after.Replace(verifiedBlockCrlf, string.Empty));
     }
 
     /// <summary>

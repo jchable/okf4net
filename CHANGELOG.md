@@ -855,6 +855,11 @@ and this project adheres to
   authentication; and `pg8000` returns `None` for DDL/INSERT, which the
   wrapper iterated — after the statement had run against the live database —
   reporting a completed side effect as a failed run.
+- **`okf verify` / `okf_verify` no longer rewrite the whole frontmatter:**
+  `RecordVerifications` now edits the `verified:` block in place
+  (`FrontmatterBlockEdit`), so CRLF endings, YAML comments and folded/flow
+  spellings elsewhere survive — the contract's "preserving every other
+  frontmatter key" was previously false.
 
 ## [0.5.0] - 2026-07-31
 

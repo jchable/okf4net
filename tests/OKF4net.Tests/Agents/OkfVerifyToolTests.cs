@@ -87,12 +87,18 @@ public class OkfVerifyToolTests
     /// both <c>RunTool</c> filters — so the exception left the
     /// <c>AIFunction</c> and landed in the MCP host. A tool must always answer
     /// with a string.
+    ///
+    /// The deep nesting must live IN <c>verified</c> itself: since C7
+    /// (<c>FrontmatterBlockEdit</c>), <c>RecordVerifications</c> re-emits only
+    /// the <c>verified</c> block, so nesting depth anywhere else in the
+    /// frontmatter is carried through as untouched raw text and never reaches
+    /// <c>YamlEmitter</c> at all.
     /// </summary>
     [Fact]
     public void Verify_returns_an_error_string_for_a_document_that_cannot_be_re_emitted()
     {
         using var tmp = new TempDir();
-        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text(key: "verified"));
 
         var text = ToolsOver(tmp).Verify("metrics/deep", "human:ada");
 
