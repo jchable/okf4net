@@ -568,8 +568,25 @@ public static class BundleValidator
     /// path is already rooted (a leading <c>/</c> or <c>\</c> is an explicit
     /// root-relative statement -- suggesting <c>./</c> would contradict it),
     /// or no file exists at the concept-relative candidate.
+    ///
+    /// The <see cref="FrontmatterResourceKind.BundleRelative"/> guard cannot be
+    /// exercised end-to-end through <see cref="Validate"/>: for a
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource, the
+    /// candidate this method would compute (<paramref name="bundle"/>'s root
+    /// combined with the concept's own directory and the raw path) is
+    /// byte-for-byte the same candidate <see cref="Bundle.TryResolveResource"/>
+    /// already tried to resolve *that very resource* -- both use the concept's
+    /// directory as the base. A sibling file placed there therefore flips the
+    /// caller's resolution status to <see cref="ResourceResolutionStatus.Resolved"/>
+    /// before this method is ever reached, for identical reasons with or
+    /// without the guard, so no <see cref="Validate"/>-level test can turn red
+    /// by only deleting the guard. <c>internal</c> so
+    /// <c>OKF4net.Tests</c> can call it directly with a hand-built
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> resource and an
+    /// existing candidate file, independent of what <see cref="Bundle.TryResolveResource"/>
+    /// would say about it.
     /// </summary>
-    private static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource)
+    internal static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource)
     {
         if (resource.Kind != FrontmatterResourceKind.BundleRelative
             || resource.RawPath.StartsWith('/') || resource.RawPath.StartsWith('\\'))

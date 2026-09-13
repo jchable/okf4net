@@ -665,18 +665,22 @@ public class ValidateTests
     }
 
     /// <summary>
-    /// The hint's first guard: a leading <c>/</c> is an explicit statement
-    /// that the path is root-relative (still <see cref="FrontmatterResourceKind.BundleRelative"/>,
-    /// per <c>FrontmatterResourceClassifier.KindOf</c>), so suggesting the
+    /// The hint's first guard: a leading <c>/</c> or <c>\</c> is an explicit
+    /// statement that the path is root-relative (still
+    /// <see cref="FrontmatterResourceKind.BundleRelative"/>, per
+    /// <c>FrontmatterResourceClassifier.KindOf</c>), so suggesting the
     /// concept-relative <c>./</c> form would contradict what was written --
     /// even though a file happens to sit beside the concept under the bare
-    /// name.
+    /// name. Covers both accepted root-relative spellings; the code handles
+    /// them symmetrically (<c>StartsWith('/') || StartsWith('\\')</c>).
     /// </summary>
-    [Fact]
-    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists()
+    [Theory]
+    [InlineData("/query.sql")]
+    [InlineData("\\query.sql")]
+    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists(string rootedRawPath)
     {
         using var tmp = new TempDir();
-        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: /query.sql\n---\n");
+        tmp.Write("computations/rev.md", $"---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: {rootedRawPath}\n---\n");
         tmp.Write("computations/query.sql", "SELECT 1");
         tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
@@ -685,10 +689,13 @@ public class ValidateTests
     }
 
     /// <summary>
-    /// The hint's second guard: a <see cref="FrontmatterResourceKind.ConceptRelative"/>
-    /// path (<c>./</c>/<c>../</c>) is already concept-relative, so the hint --
-    /// which only ever suggests the concept-relative form -- would be
-    /// nonsense for it and must never fire.
+    /// The hint's second guard, pinned at the black-box (<see cref="BundleValidator.Validate"/>)
+    /// level: an unadorned missing <c>./</c> path never gets a hint. This alone
+    /// does not prove the <see cref="FrontmatterResourceKind.ConceptRelative"/>
+    /// guard is load-bearing -- see
+    /// <see cref="ConceptRelativeHint_never_fires_for_an_already_concept_relative_path"/>
+    /// for why no <see cref="BundleValidator.Validate"/>-level test can prove
+    /// that, and for the test that actually does.
     /// </summary>
     [Fact]
     public void A_missing_concept_relative_path_gets_no_hint()
@@ -699,6 +706,43 @@ public class ValidateTests
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
         Assert.DoesNotContain("a file exists at", d.Message);
+    }
+
+    /// <summary>
+    /// The hint's second guard, genuinely pinned: <c>BundleValidator.ConceptRelativeHint</c>
+    /// is called directly with a hand-built <see cref="FrontmatterResourceKind.ConceptRelative"/>
+    /// resource whose candidate file DOES exist, bypassing <see cref="Bundle.TryResolveResource"/>
+    /// entirely.
+    ///
+    /// This is not a style choice: no test that goes through
+    /// <see cref="BundleValidator.Validate"/> can turn red by deleting the
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> guard. For that
+    /// route, the hint's candidate for a concept-relative resource is the
+    /// concept's own directory combined with the raw path -- byte-for-byte the
+    /// SAME candidate <see cref="Bundle.TryResolveResource"/> already tries for
+    /// that resource, since both use the concept's directory as the base for a
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> path. Confirmed
+    /// empirically before writing this test: with the Kind check deleted from
+    /// <c>ConceptRelativeHint</c>, running this method's exact setup (a
+    /// concept at <c>computations/rev.md</c> with <c>computation: ./query.sql</c>
+    /// and a sibling <c>computations/query.sql</c>) through
+    /// <c>BundleValidator.Validate</c> produced zero
+    /// <see cref="DiagnosticCode.FrontmatterPathMissing"/> diagnostics -- the
+    /// sibling file resolves the reference outright
+    /// (<see cref="ResourceResolutionStatus.Resolved"/>), so
+    /// <c>ConceptRelativeHint</c> is never even reached, guard or no guard.
+    /// </summary>
+    [Fact]
+    public void ConceptRelativeHint_never_fires_for_an_already_concept_relative_path()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: ./query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = Assert.Single(bundle.Concepts);
+        var resource = new FrontmatterResource("computation", "./query.sql", FrontmatterResourceKind.ConceptRelative);
+
+        Assert.Null(BundleValidator.ConceptRelativeHint(bundle, concept, resource));
     }
 
     [Fact]
