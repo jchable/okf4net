@@ -339,8 +339,8 @@ public sealed class OkfBundleTools
             var stale = lc.IsStale(Now);
             if (lc.Status != ConceptStatus.Stable || trust != TrustTier.Unverified || stale)
             {
-                sb.Append("> status: ").Append(StatusLabel(lc.Status))
-                  .Append(" | trust: ").Append(TrustLabel(trust))
+                sb.Append("> status: ").Append(AuditVocabulary.Name(lc.Status))
+                  .Append(" | trust: ").Append(AuditVocabulary.Name(trust))
                   .Append(" | stale: ").Append(stale ? "yes" : "no")
                   .Append("\n\n");
             }
@@ -704,15 +704,15 @@ public sealed class OkfBundleTools
             // never dates anything itself.
             var outcome = _writer.RecordVerifications(ids, by, at);
 
-            // The same line shape as the CLI verb, deliberately re-implemented
-            // rather than shared: the CLI's bytes are golden-locked and must not
-            // move because an agent-facing string was tuned. The tool's tests
-            // assert this exact shape so the two cannot drift unnoticed.
+            // The same line shape as the CLI verb, via the shared AuditText:
+            // the CLI's bytes are golden-locked, so the wording must not move
+            // because an agent-facing string was tuned. The tool's tests
+            // still assert this exact shape so a change here cannot drift
+            // unnoticed.
             var lines = new StringBuilder();
             foreach (var record in outcome.Records)
             {
-                var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
-                lines.Append($"recorded {record.ConceptId}  {by}  {record.At}{replaces}").Append('\n');
+                lines.Append(AuditText.FormatVerificationRecord(record, by)).Append('\n');
             }
 
             // A rejected batch has no records and yields the message alone; a
@@ -1489,27 +1489,14 @@ public sealed class OkfBundleTools
     private static string RenderAudit(AuditReport report, bool staleOnly)
     {
         const int MaxResults = 20;
-        var sb = new StringBuilder();
+        var sw = new StringWriter();
 
-        sb.Append("as of:      ").Append(report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append('\n');
-        sb.Append("concepts:   ").Append(report.ConceptCount).Append('\n');
-
-        // Same rule as the CLI renderer: labels from AuditVocabulary, never
-        // literals. The two renderers are separate on purpose (the CLI's bytes
-        // are golden-locked), but they must not spell the vocabulary twice.
-        sb.Append("\ntrust:\n");
-        foreach (var tier in AuditVocabulary.TrustTiersInOrder.Reverse())
-        {
-            sb.Append($"  {report.TrustCounts[tier],4}  {AuditVocabulary.Name(tier)}\n");
-        }
-
-        sb.Append("\nstatus:\n");
-        foreach (var status in AuditVocabulary.StatusesInOrder)
-        {
-            sb.Append($"  {report.StatusCounts[status],4}  {AuditVocabulary.Name(status)}\n");
-        }
-
-        sb.Append($"\nstale:      {report.StaleCount} of {report.ConceptCount} past stale_after\n");
+        // Same summary bytes as the CLI renderer, via the shared AuditText --
+        // the two renderers stay separate on purpose (the CLI's bytes are
+        // golden-locked), but the vocabulary/summary text is not spelled
+        // twice.
+        AuditText.WriteSummary(sw, report);
+        var sb = sw.GetStringBuilder();
 
         var heading = staleOnly ? "needs attention" : "selected";
 
@@ -1522,14 +1509,7 @@ public sealed class OkfBundleTools
         sb.Append($"\n{heading} ({report.Findings.Count}):\n");
         foreach (var finding in report.Findings.Take(MaxResults))
         {
-            var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
-
-            sb.Append("  ")
-              .Append(finding.Id)
-              .Append("  ").Append(freshness)
-              .Append("  ").Append(AuditVocabulary.Name(finding.Trust))
-              .Append("  ").Append(AuditVocabulary.Name(finding.Lifecycle.Status))
-              .Append('\n');
+            sb.Append("  ").Append(AuditText.FormatFinding(finding)).Append('\n');
         }
 
         if (report.Findings.Count > MaxResults)
@@ -1654,20 +1634,6 @@ public sealed class OkfBundleTools
             sb.Append(NoneLine).Append('\n');
         }
     }
-
-    private static string StatusLabel(ConceptStatus status) => status switch
-    {
-        ConceptStatus.Draft => "draft",
-        ConceptStatus.Deprecated => "deprecated",
-        _ => "stable",
-    };
-
-    private static string TrustLabel(TrustTier tier) => tier switch
-    {
-        TrustTier.HumanReviewed => "human-reviewed",
-        TrustTier.MachineConfirmed => "machine-confirmed",
-        _ => "unverified",
-    };
 
     private static void AppendFrontmatterBlock(StringBuilder sb, Frontmatter frontmatter)
     {

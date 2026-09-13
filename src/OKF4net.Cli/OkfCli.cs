@@ -700,7 +700,7 @@ public static class OkfCli
         {
             foreach (var finding in report.Findings)
             {
-                stdout.Write(FormatAuditFinding(finding));
+                stdout.Write(AuditText.FormatFinding(finding));
                 stdout.Write("\n");
             }
 
@@ -772,39 +772,11 @@ public static class OkfCli
             args.Value("--type"));
     }
 
-    /// <summary>Renders one concept line: id, freshness, trust tier, status -- two spaces between fields.</summary>
-    private static string FormatAuditFinding(AuditFinding finding)
-    {
-        var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
-
-        return $"{finding.Id}  {freshness}  {AuditVocabulary.Name(finding.Trust)}  {AuditVocabulary.Name(finding.Lifecycle.Status)}";
-    }
-
     /// <summary>Renders the report form: summary counters over the whole bundle, then the worklist.</summary>
     private static void WriteAuditReport(TextWriter stdout, string bundlePath, AuditReport report)
     {
         stdout.Write($"bundle:     {bundlePath}\n");
-        stdout.Write($"as of:      {report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}\n");
-        stdout.Write($"concepts:   {report.ConceptCount}\n");
-
-        // Labels always come from AuditVocabulary -- never as literals here.
-        // Duplicating them in each renderer is exactly the drift the shared
-        // vocabulary exists to prevent. Only the ORDER is decided locally: the
-        // report shows the strongest tier first, so it walks the canonical
-        // (weakest-first) list in reverse.
-        stdout.Write("\ntrust:\n");
-        foreach (var tier in AuditVocabulary.TrustTiersInOrder.Reverse())
-        {
-            stdout.Write($"  {report.TrustCounts[tier],4}  {AuditVocabulary.Name(tier)}\n");
-        }
-
-        stdout.Write("\nstatus:\n");
-        foreach (var status in AuditVocabulary.StatusesInOrder)
-        {
-            stdout.Write($"  {report.StatusCounts[status],4}  {AuditVocabulary.Name(status)}\n");
-        }
-
-        stdout.Write($"\nstale:      {report.StaleCount} of {report.ConceptCount} past stale_after\n");
+        AuditText.WriteSummary(stdout, report);
 
         if (report.Findings.Count == 0)
         {
@@ -816,7 +788,7 @@ public static class OkfCli
         foreach (var finding in report.Findings)
         {
             stdout.Write("  ");
-            stdout.Write(FormatAuditFinding(finding));
+            stdout.Write(AuditText.FormatFinding(finding));
             stdout.Write("\n");
         }
     }
@@ -983,8 +955,8 @@ public static class OkfCli
         {
             // record.At is the timestamp the writer actually used — the CLI
             // reports it rather than recomputing one that could differ.
-            var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
-            stdout.Write($"recorded {record.ConceptId}  {by}  {record.At}{replaces}\n");
+            stdout.Write(AuditText.FormatVerificationRecord(record, by));
+            stdout.Write("\n");
         }
 
         if (!outcome.Recorded)
