@@ -288,6 +288,17 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking (combined effect on 0.5.0 bundles): a bare `attester.resource` /
+  `computation` path that used to resolve beside the concept now resolves
+  from the bundle root (§6.2), AND an unresolvable `attester.resource` now
+  fails the run closed — together, a bundle whose attester script sits next
+  to its concept goes from running under 0.5.0 to never executing.** There is
+  deliberately no fallback (the spec's Appendix A resolves bare paths from the
+  root); instead `okf validate` now says where the file was found and what to
+  write (`./script.py`). Also: `resource` is omitted from an Attested
+  Computation's recommended fields by `Frontmatter.RecommendedFieldsFor`, the
+  one definition of §4.1's carve-out.
+
 - **Breaking (0.x):** `IOkfClock.Now` is the required member and `Today`
   derives from it — a `Today`-only clock written against 0.5.0 evaluated every
   §5.5 instant comparison at 00:00Z without a compile-time hint; it now fails

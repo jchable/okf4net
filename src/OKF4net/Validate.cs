@@ -312,34 +312,9 @@ public static class BundleValidator
                     "type"));
             }
 
-            foreach (var field in RecommendedFields)
+            foreach (var field in Frontmatter.RecommendedFieldsFor(fm))
             {
                 var value = fm.Get(field);
-
-                // §4.1 recommends `resource` but qualifies it in the same breath:
-                // "Absent for concepts that describe abstract ideas rather than
-                // physical resources." A §10 Attested Computation is the one concept
-                // the spec both names normatively (§10.1) and shows without a
-                // `resource` in every example it gives (§10.2, Appendix A), so warning
-                // there would call a well-formed concept deficient. Keyed on that type
-                // alone: §4.1 leaves the type vocabulary open (S4.1-2), so nothing
-                // syntactic decides "abstract" in general -- see S4.1-8.
-                //
-                // Keyed on `value is null` -- the key being genuinely ABSENT -- and
-                // deliberately read AFTER fm.Get, so the exemption covers only the form
-                // §4.1 licenses. A declared `resource` whose value is unusable
-                // (`resource: ""`, `resource:`, `resource: null`, `resource: []`,
-                // `resource: {}`, and -- since IsEmptyValue is a falsiness test, not
-                // an emptiness test -- `resource: false`, `resource: 0`) is a
-                // malformed value, not a statement of abstractness: §4.1 specifies
-                // "a URI that uniquely identifies the underlying asset", and none of
-                // those is one. Such a value keeps warning, exactly as it does for
-                // title/description/tags, so the carve-out moves one axis only (key
-                // presence) and never suppresses the value check.
-                if (value is null && field == "resource" && fm.IsAttestedComputation)
-                {
-                    continue;
-                }
 
                 if (value is null || value.IsEmptyValue)
                 {
@@ -549,7 +524,14 @@ public static class BundleValidator
                 bundle.TryResolveResource(concept, resource.RawPath, out _, out var resolutionStatus);
                 if (resolutionStatus == ResourceResolutionStatus.Missing)
                 {
-                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, $"frontmatter path '{resource.Field}' → '{resource.RawPath}' not found", DiagnosticCode.FrontmatterPathMissing, resource.Field));
+                    var message = $"frontmatter path '{resource.Field}' → '{resource.RawPath}' not found";
+                    var hint = ConceptRelativeHint(bundle, concept, resource);
+                    if (hint is not null)
+                    {
+                        message += hint;
+                    }
+
+                    diagnostics.Add(new Diagnostic(Severity.Warning, concept.Path, concept.Id, message, DiagnosticCode.FrontmatterPathMissing, resource.Field));
                 }
                 else if (resolutionStatus == ResourceResolutionStatus.Unsafe)
                 {
@@ -575,7 +557,47 @@ public static class BundleValidator
         return new ValidationReport(diagnostics);
     }
 
-    private static readonly string[] RecommendedFields = ["title", "description", "resource", "tags"];
+    /// <summary>
+    /// For a bare §6.2 path that resolved to <see cref="ResourceResolutionStatus.Missing"/>,
+    /// looks for a file at the concept-relative location the path would have
+    /// named under a caller's likely mental model (beside the concept, the
+    /// pre-existing behaviour before bare paths were read as bundle-rooted),
+    /// and if one exists there, returns a suffix pointing at it. Returns
+    /// <see langword="null"/> when no hint applies: <paramref name="resource"/>
+    /// is not <see cref="FrontmatterResourceKind.BundleRelative"/>, its raw
+    /// path is already rooted (a leading <c>/</c> or <c>\</c> is an explicit
+    /// root-relative statement -- suggesting <c>./</c> would contradict it),
+    /// or no file exists at the concept-relative candidate.
+    /// </summary>
+    private static string? ConceptRelativeHint(Bundle bundle, Concept concept, FrontmatterResource resource)
+    {
+        if (resource.Kind != FrontmatterResourceKind.BundleRelative
+            || resource.RawPath.StartsWith('/') || resource.RawPath.StartsWith('\\'))
+        {
+            return null;
+        }
+
+        string candidate;
+        try
+        {
+            var conceptDir = concept.Id.Parent?.ToString() ?? string.Empty;
+            candidate = Path.GetFullPath(Path.Combine(bundle.Root, conceptDir, resource.RawPath));
+        }
+        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            // Same permissive stance as TryResolveResource: a malformed raw
+            // path must never throw out of validation (§11).
+            return null;
+        }
+
+        if (!File.Exists(candidate) || !ReparsePoints.IsWithinBundleRoot(bundle.Root, candidate))
+        {
+            return null;
+        }
+
+        var relativeToRoot = Path.GetRelativePath(bundle.Root, candidate).Replace('\\', '/');
+        return $" — a file exists at {relativeToRoot}; a bare path resolves from the bundle root (§6.2) — write ./{resource.RawPath} for the concept-relative form";
+    }
 
     /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§11), without relying on exceptions for control flow.</summary>
     private static bool HasConformantType(OkfDocument document)

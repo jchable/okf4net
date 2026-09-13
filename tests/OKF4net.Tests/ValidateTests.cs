@@ -213,6 +213,21 @@ public class ValidateTests
         Assert.Contains(report.Of(Severity.Warning), d => d.Field == "resource" && d.Code == DiagnosticCode.MissingRecommendedField);
     }
 
+    /// <summary>
+    /// <see cref="Frontmatter.RecommendedFieldsFor"/> is the single definition
+    /// of the §4.1 carve-out the validator loop above now delegates to --
+    /// pinned directly here, independent of <c>BundleValidator</c>, so the two
+    /// stay in sync.
+    /// </summary>
+    [Fact]
+    public void RecommendedFieldsFor_omits_resource_for_an_attested_computation_without_the_key()
+    {
+        var fm = OkfDocument.Parse("---\ntype: Attested Computation\nruntime: python\n---\n").Frontmatter;
+        Assert.DoesNotContain("resource", Frontmatter.RecommendedFieldsFor(fm));
+        var withEmpty = OkfDocument.Parse("---\ntype: Attested Computation\nresource: {}\n---\n").Frontmatter;
+        Assert.Contains("resource", Frontmatter.RecommendedFieldsFor(withEmpty));
+    }
+
     [Fact]
     public void Empty_recommended_field_values_are_also_warnings()
     {
@@ -627,6 +642,63 @@ public class ValidateTests
             "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: ./missing.md, receipt: [job_id] }\n---\n# Computation\n\n```\nSELECT 1\n```\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("not found") && d.Code == DiagnosticCode.FrontmatterPathMissing && d.Field == "executor.resource");
+    }
+
+    /// <summary>
+    /// The §6.2 concept-relative hint: a bare path that resolves from the
+    /// bundle root (S6.2-1) and doesn't exist there, but a file sits beside
+    /// the concept under that exact name -- the location a bare path resolved
+    /// to before this branch's bundle-root read. There is deliberately no
+    /// resolution fallback (Appendix A resolves bare paths from the root);
+    /// instead the diagnostic says where the file was found and what to write.
+    /// </summary>
+    [Fact]
+    public void A_missing_bare_path_that_exists_beside_the_concept_gets_a_concept_relative_hint()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+        Assert.Contains("a file exists at computations/query.sql; a bare path resolves from the bundle root (§6.2) — write ./query.sql for the concept-relative form", d.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The hint's first guard: a leading <c>/</c> is an explicit statement
+    /// that the path is root-relative (still <see cref="FrontmatterResourceKind.BundleRelative"/>,
+    /// per <c>FrontmatterResourceClassifier.KindOf</c>), so suggesting the
+    /// concept-relative <c>./</c> form would contradict what was written --
+    /// even though a file happens to sit beside the concept under the bare
+    /// name.
+    /// </summary>
+    [Fact]
+    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: /query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+        Assert.DoesNotContain("a file exists at", d.Message);
+    }
+
+    /// <summary>
+    /// The hint's second guard: a <see cref="FrontmatterResourceKind.ConceptRelative"/>
+    /// path (<c>./</c>/<c>../</c>) is already concept-relative, so the hint --
+    /// which only ever suggests the concept-relative form -- would be
+    /// nonsense for it and must never fire.
+    /// </summary>
+    [Fact]
+    public void A_missing_concept_relative_path_gets_no_hint()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: ./query.sql\n---\n");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+        Assert.DoesNotContain("a file exists at", d.Message);
     }
 
     [Fact]
