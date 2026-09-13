@@ -517,7 +517,13 @@ public sealed class BundleConceptWriter
     /// property this method's own re-parse-and-compare check enforces (full
     /// structural <see cref="OkfDocument.Equals(OkfDocument?)"/> against the
     /// intended result, not merely a stamp count), refusing the write rather
-    /// than risk a silently wrong file if the edit ever disagrees.
+    /// than risk a silently wrong file if the edit ever disagrees. The ONE
+    /// exception: a column-0 comment sitting INSIDE the <c>verified:</c>
+    /// block (between the <c>verified:</c> line and the next top-level key),
+    /// and any blank line immediately before it there, is replaced along with
+    /// the block — there is no way to know which of the stamp's lines such a
+    /// comment was meant to annotate, so it cannot be preserved separately
+    /// from the value it comments on.
     ///
     /// Fully validated before the first write: every concept id is resolved
     /// to a target path before the bundle lock is taken (like
@@ -747,7 +753,28 @@ public sealed class BundleConceptWriter
                     reparsed.ValidateConformance();
                     if (!reparsed.Equals(document))
                     {
-                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])}: the verified block could not be edited in place.";
+                        // Diagnosable, not just "no": a bare "could not be
+                        // edited in place" gives a reader no way to tell a
+                        // real corruption apart from the one KNOWN false
+                        // positive this check has -- a NaN float anywhere in
+                        // the frontmatter never compares equal to itself
+                        // (YamlValue's float equality is IEEE-754 `==`), so a
+                        // concept with, say, `threshold: .nan` fails this
+                        // check on every verify, even a perfectly clean edit.
+                        // Not fixed here (changing YamlValue's equality is out
+                        // of scope for this method); named explicitly instead,
+                        // alongside the other diagnosable case -- the body
+                        // changing at all is never something this edit does
+                        // on purpose, so it is worth calling out separately
+                        // from "some other frontmatter key moved".
+                        var detail = !string.Equals(reparsed.Body, document.Body, StringComparison.Ordinal)
+                            ? "the body changed, which this edit never does on purpose"
+                            : ContainsNaN(document.Frontmatter.AsMapping())
+                                ? "the frontmatter contains a NaN value, which never compares equal to "
+                                    + "itself, so this check cannot confirm the edit either way -- inspect "
+                                    + "the file by hand"
+                                : "a frontmatter key other than 'verified' changed";
+                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])}: the verified block could not be edited in place ({detail}).";
                     }
 
                     prepared.Add((target, content, conceptIds[i], replacedAt));
@@ -837,6 +864,28 @@ public sealed class BundleConceptWriter
         items.Add(stamp);
         return new YamlSequence(items);
     }
+
+    /// <summary>
+    /// Whether <paramref name="value"/> contains a NaN <see cref="YamlFloat"/>
+    /// anywhere in its tree (recursing into mappings and sequences). Exists
+    /// solely to make the equality-refusal message in
+    /// <see cref="RecordVerifications"/> diagnosable: <see cref="YamlValue"/>'s
+    /// structural equality compares floats with IEEE-754 <c>==</c>, under
+    /// which NaN never equals itself, so a frontmatter containing one (e.g.
+    /// <c>threshold: .nan</c>) makes <c>reparsed.Equals(document)</c> return
+    /// <see langword="false"/> on every verify attempt regardless of whether
+    /// the edit itself was correct. Not a fix for that comparison (out of
+    /// scope for this method) -- just enough to tell a caller WHY the check
+    /// could not confirm the edit, instead of the generic message implying a
+    /// real corruption.
+    /// </summary>
+    private static bool ContainsNaN(YamlValue value) => value switch
+    {
+        YamlFloat f => double.IsNaN(f.Value),
+        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Value)),
+        YamlSequence s => s.Items.Any(ContainsNaN),
+        _ => false,
+    };
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
     private readonly record struct ConceptTarget(ConceptId Id, string TargetPath);

@@ -34,14 +34,29 @@ namespace OKF4net.Internal;
 /// the block off mid-sequence. A column-0 comment line inside the block
 /// belongs to it and is replaced with it (documented in the README); a
 /// TRAILING run of blank lines does not (see
-/// <see cref="ReplaceTopLevelKey"/>'s implementation) and survives untouched.
+/// <see cref="ReplaceTopLevelKey"/>'s implementation) and normally survives
+/// untouched -- EXCEPT a blank line sitting immediately before an absorbed
+/// trailing comment, which is boxed in and replaced along with it, since the
+/// trim only strips blanks that are themselves the very last absorbed lines.
 /// The frontmatter fence itself is located by
 /// <see cref="OkfDocument.IsFenceLine"/> — the SAME predicate
 /// <see cref="OkfDocument.Parse"/> uses, so the two can never disagree about
 /// where the frontmatter/body boundary sits (finding #C7-2: they used to,
 /// which let a fence-shaped line inside another key's block-scalar body
 /// silently swap places with the real closing fence for one of the two
-/// readers but not the other).</para>
+/// readers but not the other). The CLOSING fence <see cref="ReplaceTopLevelKey"/>
+/// locates via that predicate must itself start at column 0 -- if it does
+/// not (an indented <c>---</c>, e.g. inside another key's block-scalar body,
+/// which <c>Parse</c>'s own indentation-blind scan can mistake for the real
+/// fence), the edit REFUSES outright rather than editing against a boundary
+/// a §3 reader would not accept as a fence (finding #C7-A): the equality
+/// check alone is not enough here, because a document that misreads this way
+/// can have `document` and the re-parsed result agree with EACH OTHER while
+/// both are wrong relative to what the file visibly contains -- a genuine
+/// `verified` entry that Parse's misread boundary puts in the "body" is
+/// invisible to this edit, so stamping proceeds as if it did not exist,
+/// silently orphaning it. Trailing whitespace after a column-0 fence is
+/// still accepted (only LEADING whitespace triggers the refusal).</para>
 ///
 /// <para>The document is re-parsed by the caller after the edit, and the
 /// caller is expected to verify the result by FULL STRUCTURAL EQUALITY
@@ -111,6 +126,31 @@ internal static class FrontmatterBlockEdit
         if (close < 0)
         {
             throw new DocumentValidationException("document has no closing frontmatter fence", []);
+        }
+
+        // Refuse rather than edit against a MISREAD boundary: OkfDocument.Parse's
+        // fence scan is not indentation-aware (OkfDocument.IsFenceLine trims),
+        // so an indented "---" inside another key's block-scalar body -- e.g.
+        // "description: |\n  ---\n" -- can be the line Parse itself already
+        // treats as the closing fence, meaning content after it (a genuine
+        // "verified:" line included) is, per Parse, already part of the BODY
+        // and invisible to this edit. Silently proceeding there can leave a
+        // stale/duplicated `verified` line sitting inertly in the body while
+        // still re-parsing "successfully" against the (equally misread)
+        // `document` baseline -- finding #C7-A. This check is scoped to what
+        // FrontmatterBlockEdit itself locates and does NOT touch
+        // OkfDocument.Parse's own indentation-blind fence rule (that quirk
+        // reaches validate/info/search too and is out of scope here); a
+        // genuinely column-0 closing fence with TRAILING whitespace (e.g.
+        // "---  ") is still accepted, matching OkfDocument.IsFenceLine.
+        var closeContent = Content(close);
+        if (closeContent.Length == 0 || closeContent[0] != '-')
+        {
+            throw new DocumentValidationException(
+                "the document's frontmatter appears to close on an indented '---' line, "
+                + "which is not a valid fence (a fence must start at column 0); refusing "
+                + "rather than editing based on a misread frontmatter/body boundary",
+                []);
         }
 
         // Locate the line that DEFINES `key` at the top level (column 0),

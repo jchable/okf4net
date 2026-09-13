@@ -140,6 +140,49 @@ public class FrontmatterBlockEditTests
         Assert.Equal("---\ntype: Metric\ntitle: T\n" + Block + "---  \nbody\n", edited);
     }
 
+    /// <summary>
+    /// Round-2 finding #C7-A: a CLOSING fence with LEADING whitespace (unlike
+    /// trailing whitespace, accepted above) is refused, not edited against.
+    /// <see cref="OkfDocument.Parse"/>'s own fence scan is indentation-blind
+    /// and can mistake such a line for the real closing fence (e.g. one
+    /// sitting inside another key's block-scalar body), which would put
+    /// content after it -- a genuine <c>verified</c> entry included -- into
+    /// what <c>Parse</c> already considers the BODY, invisible to this edit;
+    /// stamping would then silently proceed as if that entry did not exist.
+    /// The end-to-end version of this scenario lives in
+    /// <c>RecordVerificationTests</c>.
+    /// </summary>
+    [Fact]
+    public void A_closing_fence_that_is_actually_indented_is_refused()
+    {
+        var doc = "---\ntype: Metric\ntitle: T\n  ---\nbody\n";
+        var ex = Assert.Throws<DocumentValidationException>(() => FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block));
+        Assert.Contains("indented", ex.Message);
+    }
+
+    /// <summary>
+    /// Finding #C7-3's fallback path: when the closing fence being inserted
+    /// before is ALSO the file's last line with no trailing newline (so it
+    /// has no terminator of its own to copy), the inserted block falls back
+    /// to LF when the document has no CRLF anywhere else.
+    /// </summary>
+    [Fact]
+    public void Inserting_before_a_terminatorless_closing_fence_falls_back_to_LF()
+    {
+        var doc = "---\ntype: Metric\n---";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: Metric\n" + Block + "---", edited);
+    }
+
+    /// <summary>Same fallback path, but the document uses CRLF elsewhere, so the fallback is CRLF too.</summary>
+    [Fact]
+    public void Inserting_before_a_terminatorless_closing_fence_falls_back_to_CRLF_when_the_document_uses_it_elsewhere()
+    {
+        var doc = "---\r\ntype: Metric\r\n---";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\r\ntype: Metric\r\nverified:\r\n  - by: human:ada\r\n    at: 2026-07-01T00:00:00Z\r\n---", edited);
+    }
+
     /// <summary>Finding #C7-2, the opening fence.</summary>
     [Fact]
     public void An_opening_fence_with_trailing_whitespace_is_recognized()

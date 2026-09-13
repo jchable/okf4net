@@ -577,31 +577,40 @@ public class RecordVerificationTests
     }
 
     /// <summary>
-    /// Finding #C7-2: a bare "---" line INSIDE a <c>verified: |</c> block
-    /// scalar's own body is, by <see cref="OkfDocument.Parse"/>'s own
-    /// (pre-existing, line-based) fence scan, mistaken for the closing fence
-    /// -- so the document's real "frontmatter" is just <c>type</c> and the
-    /// malformed <c>verified</c> block scalar, and everything from
-    /// <c>title: T</c> onward is already, per <c>Parse</c> itself, the BODY.
-    /// The fix does not correct that pre-existing quirk (goldens must not
-    /// move) -- it makes <c>FrontmatterBlockEdit</c> see the SAME boundary
-    /// <c>Parse</c> does, so the edit and the equality check it is graded
-    /// against agree, instead of the edit finding a boundary five lines later
-    /// than the read did (the silent body-into-frontmatter corruption this
-    /// finding is named for).
+    /// Finding #C7-2 / #C7-A (round 2): a bare "---" line INSIDE a
+    /// <c>verified: |</c> block scalar's own body is, by
+    /// <see cref="OkfDocument.Parse"/>'s own (pre-existing, line-based) fence
+    /// scan, mistaken for the closing fence -- so the document's real
+    /// "frontmatter" is just <c>type</c> and the malformed <c>verified</c>
+    /// block scalar, and everything from <c>title: T</c> onward is already,
+    /// per <c>Parse</c> itself, the BODY. The fix does not correct that
+    /// pre-existing quirk (it reaches <c>validate</c>/<c>info</c>/<c>search</c>
+    /// too and is out of scope here, not because it would move a golden byte
+    /// -- no fixture has a fence line with leading or trailing whitespace).
+    /// What round 2 adds: <c>FrontmatterBlockEdit</c> now REFUSES outright
+    /// when the closing fence line it locates is not itself at column 0,
+    /// rather than editing against that misread boundary and merely hoping
+    /// the equality check catches anything that went wrong with it -- round
+    /// 1 made the edit see the SAME boundary <c>Parse</c> does (closing the
+    /// silent body-into-frontmatter corruption #C7-2 was named for), but that
+    /// alone was not enough: this exact shape then re-passed the equality
+    /// check anyway (both sides consistently misread the same way) and wrote
+    /// a file whose visible <c>verified:</c> line sits between two pieces of
+    /// a split <c>description</c>, which a spec reader would not accept as a
+    /// fence and should never be edited against.
     /// </summary>
     [Fact]
-    public void A_bare_fence_inside_a_verified_block_scalar_body_stays_consistent_with_Parse()
+    public void A_bare_fence_inside_a_verified_block_scalar_body_is_refused()
     {
         using var tmp = new TempDir();
-        tmp.Write("metrics/x.md", "---\ntype: M\nverified: |\n  ---\ntitle: T\n---\nBody\n");
+        const string before = "---\ntype: M\nverified: |\n  ---\ntitle: T\n---\nBody\n";
+        tmp.Write("metrics/x.md", before);
 
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
 
-        Assert.True(outcome.Recorded);
-        Assert.Equal(
-            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n  ---\ntitle: T\n---\nBody\n",
-            Read(tmp, "metrics/x.md"));
+        Assert.False(outcome.Recorded);
+        Assert.Contains("indented", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
     }
 
     /// <summary>
@@ -632,22 +641,57 @@ public class RecordVerificationTests
         Assert.Single(OkfDocument.Parse(after).Frontmatter.Verified);
     }
 
-    /// <summary>Finding #C7-2, the same mechanism with a real (non-malformed) <c>verified</c> sequence preceding the stray indented fence.</summary>
+    /// <summary>
+    /// Finding #C7-2 / #C7-A (round 2): the same mechanism as the block-scalar
+    /// case above, but with a real (non-malformed) <c>verified</c> sequence
+    /// preceding the stray indented fence -- the key search WOULD find and
+    /// correctly merge it (this is not the "hidden verified" shape), but the
+    /// closing fence <c>FrontmatterBlockEdit</c> located is still indented,
+    /// so it refuses before ever reaching the key search, on the same
+    /// column-0 rule as the block-scalar case.
+    /// </summary>
     [Fact]
-    public void A_bare_fence_indented_inside_a_verified_sequence_stays_consistent_with_Parse()
+    public void A_bare_fence_indented_inside_a_verified_sequence_is_refused()
     {
         using var tmp = new TempDir();
-        tmp.Write(
-            "metrics/x.md",
-            "---\ntype: M\nverified:\n  - {by: human:ada, at: 2025-01-01T00:00:00Z}\n  ---\ntags: [x]\n---\nBody\n");
+        const string before = "---\ntype: M\nverified:\n  - {by: human:ada, at: 2025-01-01T00:00:00Z}\n  ---\ntags: [x]\n---\nBody\n";
+        tmp.Write("metrics/x.md", before);
 
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
 
-        Assert.True(outcome.Recorded);
-        Assert.Equal("2025-01-01T00:00:00Z", outcome.Records.Single().ReplacedAt);
-        Assert.Equal(
-            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n  ---\ntags: [x]\n---\nBody\n",
-            Read(tmp, "metrics/x.md"));
+        Assert.False(outcome.Recorded);
+        Assert.Contains("indented", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-A, the exact regression the round-2 review named "x04":
+    /// unlike the two shapes above, this one has a GENUINE, pre-existing
+    /// <c>verified: [bob]</c> line that Parse's indented-fence misread pushes
+    /// into what it considers the BODY -- invisible to the edit entirely.
+    /// Before this fix, the edit found no <c>verified</c> key (correctly, per
+    /// its own — Parse-consistent — view), inserted a brand-new one before
+    /// the misread fence, and the structural-equality check passed (both
+    /// `document` and the re-parsed result agreed, since both misread the
+    /// SAME way) -- reporting success while the file ended up holding TWO
+    /// visible <c>verified:</c> lines, bob's stamp permanently stale and
+    /// invisible to every OKF4net tool from then on, and <c>description</c>
+    /// split across the inserted block. The column-0 fence check refuses
+    /// this before any of that happens.
+    /// </summary>
+    [Fact]
+    public void A_hidden_verified_entry_behind_an_indented_fence_is_refused_not_silently_orphaned()
+    {
+        using var tmp = new TempDir();
+        const string before =
+            "---\ndescription: |\n  Intro\n  ---\n  Details\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\ntitle: T\n---\n";
+        tmp.Write("metrics/x04.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x04"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("indented", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x04.md"));
     }
 
     /// <summary>
@@ -695,5 +739,86 @@ public class RecordVerificationTests
         Assert.Equal(
             before[..insertPoint] + "verified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n---\n\nbody\n",
             Read(tmp, "metrics/deep.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-B (round 2): the structural-equality refusal branch
+    /// (<c>!reparsed.Equals(document)</c>) IS reachable through the public
+    /// path, with nothing written -- this test exists specifically so it
+    /// goes RED if that check is ever weakened back to something like a bare
+    /// <c>verified</c>-entry count (the exact regression that let finding
+    /// #C7-1 through in the base commit). The shape (round-2 review's "k16"):
+    /// a NO-BREAK SPACE (U+00A0) sitting on its own line between two
+    /// <c>verified</c> sequence entries. The real YAML parser's blank-line
+    /// check (<c>string.TrimStart()</c>) treats U+00A0 as whitespace and
+    /// skips it, so the document parses fine and both stamps are visible to
+    /// <c>UpsertStamp</c>; but <c>FrontmatterBlockEdit</c>'s own continuation
+    /// scan only recognizes ASCII space/tab as a blank-line stand-in, so it
+    /// stops absorbing lines at the NBSP line -- excluding the SECOND
+    /// sequence entry from the replaced range while the emitted replacement
+    /// (built from the correctly-merged, fully-parsed value) still includes
+    /// it, corrupting the file if the equality check did not catch it.
+    /// </summary>
+    [Fact]
+    public void A_no_break_space_line_inside_the_verified_sequence_is_refused_not_corrupted()
+    {
+        using var tmp = new TempDir();
+        var nbsp = char.ConvertFromUtf32(0x00A0);
+        var before = "---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\n" + nbsp
+            + "\n  - {by: human:carol, at: 2025-02-02T00:00:00Z}\ntitle: T\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("could not be edited in place", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Same failure mode as the NBSP test above, with a FORM FEED (U+000C)
+    /// line instead (round-2 review's "x09") -- a second, independently
+    /// constructed shape hitting the same gap between the real parser's
+    /// blank-line predicate and this editor's ASCII-only one.
+    /// </summary>
+    [Fact]
+    public void A_form_feed_line_inside_the_verified_sequence_is_refused_not_corrupted()
+    {
+        using var tmp = new TempDir();
+        var formFeed = char.ConvertFromUtf32(0x000C);
+        var before = "---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\n" + formFeed
+            + "\n  - {by: human:carol, at: 2025-02-02T00:00:00Z}\ntitle: T\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("could not be edited in place", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Minor finding (round 2): a NaN float ANYWHERE in the frontmatter (§4.1
+    /// places no constraint against one) makes <c>YamlValue</c>'s structural
+    /// equality -- which compares floats with IEEE-754 <c>==</c>, under which
+    /// NaN never equals itself -- return false on every verify attempt for
+    /// that concept, even a perfectly correct edit. Not fixed (changing
+    /// <c>YamlValue.Equals</c> is out of scope here): the refusal message
+    /// must at least name the real cause instead of implying real corruption.
+    /// Still a clean refusal with nothing written -- a false positive on
+    /// "could this be verified", not a false negative on corruption.
+    /// </summary>
+    [Fact]
+    public void A_NaN_float_elsewhere_in_the_frontmatter_is_refused_with_a_diagnosable_message()
+    {
+        using var tmp = new TempDir();
+        const string before = "---\ntype: M\nthreshold: .nan\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("NaN", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
     }
 }

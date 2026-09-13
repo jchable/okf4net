@@ -24,10 +24,17 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     /// INDENTED <c>---</c> (e.g. inside a <c>verified: |</c> block scalar's
     /// own body) still matches, which is a real quirk of <see cref="Parse"/>'s
     /// line-based fence scan (it runs before any YAML block-scalar parsing,
-    /// so it cannot tell such a line apart from a genuine fence) -- not
-    /// something this predicate fixes, since fixing it would move which line
-    /// <see cref="Parse"/> treats as the closing fence for documents already
-    /// captured in <c>tests/fixtures/golden/</c>.
+    /// so it cannot tell such a line apart from a genuine fence): this
+    /// predicate does not fix that quirk. It is deliberately OUT OF SCOPE
+    /// here, not because fixing it would move any existing golden byte (it
+    /// would not -- no fixture or sample bundle in this repo has a fence
+    /// line with leading or trailing whitespace, checked by grep) but
+    /// because the quirk reaches every OTHER reader of a document
+    /// (<c>validate</c>, <c>info</c>, <c>search</c>, ...), not just this
+    /// editor, and deserves its own pass rather than a narrower fix smuggled
+    /// in here. <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> instead
+    /// refuses outright when the closing fence line IT locates via this
+    /// predicate is not itself at column 0 -- see its own remarks.
     ///
     /// The single shared predicate <see cref="Parse"/> and
     /// <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> both call: the two
