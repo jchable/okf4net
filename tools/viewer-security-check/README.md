@@ -12,8 +12,9 @@ no dangerous URL schemes, no raw `<script>`/`<svg onload>`/`<iframe>`/
 second battery of ordinary markdown (heading, list, bold, fenced code,
 relative link, plain image, GFM task-list checkboxes rendering with correct
 checked/unchecked state, disallowed wrapper tags like `<details>`/`<div>`
-keeping their text) asserts the sanitizer isn't so aggressive it breaks
-normal rendering.
+being unwrapped -- dropped themselves, but with their already-sanitized
+children, links and tables included, kept in place) asserts the sanitizer
+isn't so aggressive it breaks normal rendering.
 
 ## Why this exists
 
@@ -22,9 +23,15 @@ normal rendering.
 allowlist (a handful of tags gated further by an attribute-value constraint,
 e.g. `<input>` survives only as `type="checkbox"`, forced `disabled`), a
 per-tag attribute allowlist that drops every `on*` handler, URL-scheme
-validation on `href`/`src`, and an opaque-tags table (`<script>`/`<style>`)
-dropped with no text kept, since their content is source, not prose. That
-sanitizer is the whole defense, not one layer of it.
+validation on `href`/`src`, and an opaque-tags table (`<script>`, `<style>`,
+`<iframe>`, `<noembed>`, `<noframes>`, `<xmp>`, `<plaintext>`, `<template>`,
+`<base>`) dropped with no content kept at all, since it is source, not prose.
+A disallowed tag that is *not* on that opaque table (e.g. `<div>`,
+`<details>`) is unwrapped instead: the element itself is dropped, but its
+already-sanitized children move up in its place, in one pass sized to the
+tree (not to depth times width -- see the "Unwrap correctness and
+performance" cases in `run.js` for the linearity proof and the real-browser
+timing behind it). That sanitizer is the whole defense, not one layer of it.
 
 An earlier version of this file also patched marked's `renderer.html` hooks
 (the main `Renderer` and its separate `TextRenderer`) to suppress raw-HTML

@@ -375,7 +375,9 @@ check("an Object.prototype key does not satisfy the input type constraint", () =
 });
 
 check("Object.prototype keys are not allowed attributes", () => {
-  const body = renderBody('<a href="x.md" constructor="1" __proto__="2">l</a>', { "x.md": "x.html" });
+  const body = renderBody('<a href="x.md" constructor="1" __proto__="2">l</a>', {
+    "x.md": { href: "x.html", exists: true },
+  });
   const a = body.querySelector("a");
   assert(a && !a.hasAttribute("constructor") && !a.hasAttribute("__proto__"), "prototype-named attributes survived");
 });
@@ -385,11 +387,53 @@ check("script inside svg is dropped with its source text", () => {
   assert(!body.textContent.includes("alert(1)"), "script source leaked as visible text");
 });
 
-check("raw-text elements (iframe, xmp, noembed, noframes) are dropped with their source", () => {
-  for (const tag of ["iframe", "xmp", "noembed", "noframes"]) {
+check("raw-text elements (iframe, xmp, noembed) are dropped with their source", () => {
+  for (const tag of ["iframe", "xmp", "noembed"]) {
     const body = renderBody(`<${tag}><script>alert(1)</script></${tag}>`);
     assert(!body.textContent.includes("alert(1)"), `${tag} source leaked as visible text`);
   }
+});
+
+check("noframes is dropped with its source", () => {
+  // NOT `<noframes>...` as the very first content: per the HTML parsing
+  // spec, base/link/meta/noframes/script/style/template/title are all
+  // processed via the "in head" raw-text rules regardless of where they
+  // appear in the markup -- if nothing has yet forced "in body" insertion
+  // mode (i.e. this tag is literally the first content), the element lands
+  // in <head> and never reaches <div id="okf-body"> at all, making an
+  // assertion against body content pass vacuously, having tested nothing.
+  // A leading paragraph forces "in body" mode first.
+  const body = renderBody("para\n\n<noframes><script>alert(1)</script></noframes>\n\nafter");
+  assert(!body.textContent.includes("alert(1)"), "noframes source leaked as visible text");
+});
+
+check("<style> in HTML context is dropped with its source", () => {
+  // Same head-hoisting quirk as noframes above -- needs a leading paragraph,
+  // or a bare `<style>` lands in <head> and this tests nothing.
+  const body = renderBody("para\n\n<style>body{display:none}</style>\n\nafter");
+  assert(!body.textContent.includes("display:none"), "style source leaked as visible text");
+  assert(!body.querySelector("style"), "<style> element survived");
+});
+
+check("<style> inside <svg> is dropped with its source", () => {
+  const body = renderBody("para\n\n<svg><style>x{color:red}</style></svg>\n\nafter");
+  assert(!body.textContent.includes("color:red"), "svg-namespace style source leaked as visible text");
+  assert(!body.querySelector("style"), "<style> element survived");
+});
+
+check("<plaintext> is dropped along with the rest of the body it swallows", () => {
+  // <plaintext> is the most aggressive raw-text element in the HTML parsing
+  // spec: once the tokenizer sees the start tag it never leaves the
+  // PLAINTEXT state again for the rest of the document -- there is no
+  // closing tag; "</plaintext>" is itself just more literal text. Everything
+  // from that point to EOF becomes a single text node, so dropping the
+  // <plaintext> element necessarily drops that whole trailing text with it.
+  // Real behaviour change from the old flatten-to-text code, noted in
+  // CHANGELOG: the rest of the body vanishes instead of surfacing as source
+  // text.
+  const body = renderBody("<plaintext><script>alert(1)</script></plaintext>after");
+  assert(!body.textContent.includes("alert(1)"), "plaintext source leaked as visible text");
+  assert(!body.textContent.includes("after"), "content after <plaintext> unexpectedly survived");
 });
 
 console.log("\nScheme obfuscation (each rule of isSafeUrl has a case):");
@@ -421,6 +465,64 @@ check("srcset is not an allowed attribute", () => {
   assert(img && !img.hasAttribute("srcset"), "srcset survived");
 });
 
+console.log("\nUnwrap correctness and performance (two-phase design):");
+
+check("~200 nested disallowed wrappers around ~2,000 allowed children unwrap correctly, well inside a bound that separates linear from quadratic", () => {
+  // Proves the linearity the two-phase design exists for -- picking the
+  // bound relative to two directly measured numbers, not a guess. A
+  // one-phase back-to-front unwrap (unwrap immediately, innermost first)
+  // moves the entire already-unwrapped subtree up one more level for every
+  // surviving ancestor wrapper, which is quadratic in depth x width: on this
+  // machine, in jsdom, this EXACT shape (200 nested wrappers around 2,000
+  // children) measures ~2.6s with the two-phase design below vs ~15.9s with
+  // a stand-in for the reverted one-phase code (both figures reproduced in
+  // task-D1-report.md, which also has real-browser numbers via Playwright
+  // for the reviewer's original 500-wrapper/20,000-child shape: ~565ms
+  // two-phase vs ~3.0s one-phase vs ~75ms for the pre-unwrap
+  // flatten-to-text code -- all three consistent with the reviewer's own
+  // Chromium measurement). jsdom's own per-mutation cost does not scale
+  // linearly with tree size the way a real browser's does (confirmed
+  // separately, not a defect in the two-phase design: even a plain
+  // `insertBefore` chain shows the same superlinear jsdom overhead), which
+  // is why this case is sized down from the 500/20,000 shape used for the
+  // real-browser numbers above -- large enough to separate the two
+  // algorithms by roughly 6x on this machine, small enough to run in a few
+  // seconds under `npm test`. The bound below sits between the two
+  // measurements (well above the observed two-phase time, well below the
+  // observed one-phase time), so a regression back to innermost-first
+  // unwrapping fails this case long before anyone has to eyeball a
+  // stopwatch.
+  const DEPTH = 200;
+  const WIDTH = 2000;
+  const md = "<div>".repeat(DEPTH) + "<em>x</em>".repeat(WIDTH) + "</div>".repeat(DEPTH);
+  const t0 = Date.now();
+  const body = renderBody(md);
+  const ms = Date.now() - t0;
+  assert(!body.querySelector("div"), "a disallowed <div> wrapper survived");
+  const ems = body.querySelectorAll("em");
+  assert(ems.length === WIDTH, `expected ${WIDTH} <em> elements to survive, found ${ems.length}`);
+  assert(
+    ms < 8000,
+    `unwrap took ${ms}ms for ${DEPTH} nested wrappers around ${WIDTH} children -- ` +
+      "want it well under the quadratic cost of an innermost-first unwrap (~15.9s for this shape on the machine that set this bound)"
+  );
+});
+
+check("a disallowed wrapper nested inside an opaque element leaves nothing behind, and does not crash phase 2", () => {
+  // <div> here is disallowed-but-not-opaque, so phase 1 queues it for
+  // phase-2 unwrapping same as any other disallowed element -- but <div> is
+  // nested inside <iframe>, which IS opaque, so phase 1 removes the whole
+  // <iframe> subtree (the queued <div> included) before phase 2 ever runs.
+  // By the time phase 2 reaches the queued <div>, it is no longer connected
+  // to the document; this proves that case is handled (skipped, not thrown,
+  // not resurrected) rather than merely reasoned about in a comment.
+  const body = renderBody("<iframe><div><strong>hidden</strong></div></iframe>");
+  assert(!body.querySelector("iframe"), "<iframe> survived");
+  assert(!body.querySelector("div"), "<div> survived");
+  assert(!body.querySelector("strong"), "<strong> resurfaced outside the removed <iframe>");
+  assert(!body.textContent.includes("hidden"), "opaque element's nested content leaked as text");
+});
+
 // --- mutation-XSS: the unwrap changes tree shape, so re-parenting payloads
 // that rely on browser parsing quirks (foster parenting, table/form/math
 // scoping rules) get a fresh, explicit check rather than trusting that the
@@ -429,31 +531,85 @@ check("srcset is not an allowed attribute", () => {
 
 console.log("\nMutation XSS (re-parenting payloads must yield nothing executable):");
 
+// Mirrors viewer.js's own ALLOWED_TAGS exactly (kept in sync by hand -- a
+// drift here is a bug in this test, not in viewer.js, but the mutation
+// harness (mutate.js, not committed) plus the "svg-namespace <a>" case below
+// are what would actually catch a real ALLOWED_TAGS regression; this list
+// exists so assertNothingExecutable can assert the *positive* property "every
+// surviving element is on the allowlist", not just a curated negative list of
+// three tag names.
+const ALLOWED_TAGS_MIRROR = new Set([
+  "P", "H1", "H2", "H3", "H4", "H5", "H6",
+  "UL", "OL", "LI", "A", "IMG", "CODE", "PRE", "BLOCKQUOTE",
+  "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TH", "TD",
+  "STRONG", "EM", "DEL", "HR", "BR", "INPUT",
+]);
+
+// Mirrors viewer.js's SAFE_SCHEMES plus its isSafeUrl() control-character
+// strip and bounded percent-decode loop, so this assertion judges a scheme
+// the same way the sanitizer itself does rather than a narrower javascript:
+// /data: blocklist that a scheme like vbscript: or an obfuscated encoding
+// could slip past unnoticed.
+const SAFE_SCHEMES_MIRROR = new Set(["http:", "https:", "mailto:"]);
+function stripControlCharactersMirror(value) {
+  let stripped = "";
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code > 32 && code !== 127) { stripped += value.charAt(i); }
+  }
+  return stripped;
+}
+function hasUnsafeScheme(raw) {
+  if (!raw) { return false; }
+  let value = String(raw);
+  for (let round = 0; round < 5; round++) {
+    value = stripControlCharactersMirror(value);
+    let decoded;
+    try {
+      decoded = decodeURIComponent(value);
+    } catch (e) {
+      break;
+    }
+    if (decoded === value) { break; }
+    value = decoded;
+  }
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(value);
+  if (!scheme) { return false; }
+  return !SAFE_SCHEMES_MIRROR.has(scheme[1].toLowerCase() + ":");
+}
+
 /**
  * Walks every element under `body` and asserts none of it is executable:
- * no on* handler attribute, no SCRIPT/STYLE/IFRAME element, no href/src
- * carrying a scheme outside SAFE_SCHEMES (a bare structural check, not a
+ * every surviving element's tag (compared uppercased, so a foreign-namespace
+ * SCRIPT/STYLE reporting a lowercase tagName is still caught) is on
+ * ALLOWED_TAGS_MIRROR; no on-star, style, srcdoc, formaction or action
+ * attribute survives anywhere (by name, not by tag -- an attacker-controlled attribute
+ * name is exactly what must never survive regardless of which element it
+ * landed on after re-parenting); and href/src/xlink:href never carry a
+ * scheme outside SAFE_SCHEMES, judged by the same decode/strip logic
+ * isSafeUrl() itself uses (a bare javascript:/data: blocklist would miss
+ * vbscript: and obfuscated encodings). A bare structural check, not a
  * one-off string search, because the unwrap can relocate nodes in ways a
- * substring match over serialized HTML would not reliably catch).
+ * substring match over serialized HTML would not reliably catch.
  * @param {Element} body
  */
 function assertNothingExecutable(body) {
   const all = body.querySelectorAll("*");
   for (const el of all) {
+    const tag = el.tagName.toUpperCase();
+    assert(ALLOWED_TAGS_MIRROR.has(tag), `an element survived off the allowlist: <${el.tagName}>`);
     for (const attr of Array.from(el.attributes)) {
-      assert(!/^on/i.test(attr.name), `live event handler attribute survived: ${attr.name} on <${el.tagName}>`);
+      const name = attr.name.toLowerCase();
+      assert(!/^on/.test(name), `live event handler attribute survived: ${attr.name} on <${el.tagName}>`);
+      assert(
+        !["style", "srcdoc", "formaction", "action"].includes(name),
+        `dangerous attribute survived: ${attr.name} on <${el.tagName}>`
+      );
     }
-    assert(
-      !["SCRIPT", "STYLE", "IFRAME"].includes(el.tagName),
-      `an executable element survived: <${el.tagName}>`
-    );
-    for (const attrName of ["href", "src"]) {
+    for (const attrName of ["href", "src", "xlink:href"]) {
       const value = el.getAttribute(attrName);
       if (value === null) { continue; }
-      assert(
-        !/^\s*javascript:/i.test(value) && !/^\s*data:/i.test(value),
-        `${attrName} carries an unsafe scheme on <${el.tagName}>: ${value}`
-      );
+      assert(!hasUnsafeScheme(value), `${attrName} carries an unsafe scheme on <${el.tagName}>: ${value}`);
     }
   }
 }
