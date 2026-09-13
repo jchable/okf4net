@@ -38,8 +38,10 @@ public sealed record ContainerRuntimeProfile
     /// to leave the engine's default. Defaults to <c>"none"</c> for a
     /// <see cref="ContainerRuntimeKind.Script"/> profile — a sanctioned script has no
     /// business reaching the network — and to <see langword="null"/> for
-    /// <see cref="ContainerRuntimeKind.SqlClient"/>, which must reach both the database
-    /// and a package index.
+    /// <see cref="ContainerRuntimeKind.SqlClient"/>, which must reach its database —
+    /// and a package index too, but only when <see cref="Image"/> lacks the driver
+    /// and the wrapper falls back to installing it (see
+    /// <see cref="SqlClientComputationExecutor"/>).
     ///
     /// It lives here, on the profile, rather than being hardcoded per executor, because
     /// hardening is the host's decision: a host that vendors the driver into its own
