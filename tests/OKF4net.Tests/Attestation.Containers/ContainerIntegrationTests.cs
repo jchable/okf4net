@@ -53,6 +53,14 @@ public class ContainerIntegrationTests
         }
     }
 
+    /// <summary>
+    /// The failure message for an outcome that should have been displayable. Its
+    /// <c>Reasons</c> name only the exception type, by design (they reach the model); the
+    /// exception on <c>Error</c> carries the container's stderr, which is what says why.
+    /// </summary>
+    private static string Why(AttestationOutcome outcome) =>
+        string.Join("; ", outcome.Reasons) + (outcome.Error is null ? "" : "\n" + outcome.Error);
+
     [SkippableFact]
     public async Task Script_runtime_runs_a_real_python_container()
     {
@@ -75,7 +83,7 @@ public class ContainerIntegrationTests
 
         var outcome = await orchestrator.RunAsync(bundle, ConceptId.Parse("c/greet"), new Dictionary<string, object?> { ["name"] = "Ada" });
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
         Assert.Equal("Hello, Ada!", outcome.Receipt!.Fields["message"]);
     }
 
@@ -185,7 +193,7 @@ public class ContainerIntegrationTests
         });
         var outcome = await new AttestationOrchestrator(registry).RunAsync(bundle, ConceptId.Parse("c/probe"), new Dictionary<string, object?>());
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
         Assert.Equal("OSError", outcome.Receipt!.Fields["tmp"]);
         Assert.StartsWith("/scratch/", (string)outcome.Receipt.Fields["scratch"]!, StringComparison.Ordinal);
     }
@@ -232,7 +240,7 @@ public class ContainerIntegrationTests
         });
         var outcome = await new AttestationOrchestrator(registry).RunAsync(bundle, ConceptId.Parse("c/count"), new Dictionary<string, object?>());
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
     }
 
     /// <summary>
@@ -289,7 +297,7 @@ public class ContainerIntegrationTests
             ConceptId.Parse("computations/capped-fare"),
             new Dictionary<string, object?> { ["fares_cents"] = "[250,250,250,250]", ["cap_cents"] = 700 });
 
-        Assert.True(capped.Displayable, string.Join("; ", capped.Reasons));
+        Assert.True(capped.Displayable, Why(capped));
         Assert.Equal(700, Convert.ToInt32(capped.Receipt!.Fields["charged_cents"], CultureInfo.InvariantCulture));
         Assert.Equal(300, Convert.ToInt32(capped.Receipt.Fields["waived_cents"], CultureInfo.InvariantCulture));
 
@@ -303,7 +311,7 @@ public class ContainerIntegrationTests
             ConceptId.Parse("computations/daily-ridership"),
             new Dictionary<string, object?> { ["service_date"] = "2026-09-10" });
 
-        Assert.True(ridership.Displayable, string.Join("; ", ridership.Reasons));
+        Assert.True(ridership.Displayable, Why(ridership));
         var row = Assert.IsAssignableFrom<System.Collections.IEnumerable>(ridership.Receipt!.Fields["result"])
             .Cast<object>()
             .Single();
@@ -366,7 +374,7 @@ public class ContainerIntegrationTests
         }
 
         var correct = await AttestSplit(250, 250, 200, 0);
-        Assert.True(correct.Displayable, string.Join("; ", correct.Reasons));
+        Assert.True(correct.Displayable, Why(correct));
         Assert.True(correct.Verdict?.Passed);
 
         var wrong = await AttestSplit(0, 250, 250, 200);
@@ -375,6 +383,65 @@ public class ContainerIntegrationTests
         Assert.False(wrong.Displayable);
         Assert.False(wrong.Verdict?.Passed ?? true, "the attester passed a per-trip split in the wrong order");
         Assert.Contains("sequential split", wrong.Verdict!.Value.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #98: <c>fare_cap.py</c> checked that the cap was an integer,
+    /// never that it was a cap. For one 250 fare against a cap of -1, the recomputed
+    /// split is <c>[0]</c>, and a receipt charging 0 and waiving 250 matches it on every
+    /// check — a pass for inputs outside any fare policy's domain. A negative fare is
+    /// the same kind of input; the bounds check happened to fail it, but under a reason
+    /// about the receipt rather than the inputs.
+    ///
+    /// The receipts below are each exactly what the sanctioned computation would return
+    /// for its inputs, so only the input check can fail them. A 0 cap — every trip
+    /// free — is a real policy and stays a pass, which also shows the attester does
+    /// not fail everything.
+    /// </summary>
+    [SkippableFact]
+    public async Task Meridian_fare_cap_attester_rejects_negative_amounts_in_its_inputs()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var bundle = Bundle.Load(Path.Combine(TestPaths.RepoRoot(), "bundles", "meridian_transit"));
+        var engine = new CliContainerEngine();
+        var binder = new AllowlistParameterBinder();
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions());
+
+        async Task<AttestationOutcome> Attest(string fares, int cap, long charged, long waived, params long[] perTrip)
+        {
+            var runtime = new Tests.Attestation.FakeRuntime
+            {
+                BindFunc = (contract, computation, values, ct) => binder.BindAsync(contract, computation, values, ct),
+                ExecuteFunc = (_, _, _) => ValueTask.FromResult(new Receipt(new Dictionary<string, object?>
+                {
+                    ["charged_cents"] = charged,
+                    ["waived_cents"] = waived,
+                    ["per_trip_cents"] = perTrip.Cast<object?>().ToList(),
+                })),
+                AttestFunc = (context, ct) => attester.AttestAsync(context, ct),
+            };
+            var orchestrator = new AttestationOrchestrator(
+                new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["python"] = runtime }));
+
+            return await orchestrator.RunAsync(
+                bundle,
+                ConceptId.Parse("computations/capped-fare"),
+                new Dictionary<string, object?> { ["fares_cents"] = fares, ["cap_cents"] = cap });
+        }
+
+        var freeDay = await Attest("[250]", 0, 0, 250, 0);
+        Assert.True(freeDay.Displayable, Why(freeDay));
+
+        var negativeCap = await Attest("[250]", -1, 0, 250, 0);
+        Assert.Null(negativeCap.Error);
+        Assert.False(negativeCap.Verdict?.Passed ?? true, "the attester passed a negative cap");
+        Assert.Contains("cap_cents", negativeCap.Verdict!.Value.Detail, StringComparison.Ordinal);
+
+        var negativeFare = await Attest("[-100]", 700, 0, -100, 0);
+        Assert.Null(negativeFare.Error);
+        Assert.False(negativeFare.Verdict?.Passed ?? true, "the attester passed a negative fare");
+        Assert.Contains("fares_cents", negativeFare.Verdict!.Value.Detail, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -444,6 +511,52 @@ public class ContainerIntegrationTests
         }
     }
 
+    /// <summary>
+    /// Raised by Copilot on #98: <c>active_user_count_attester.py</c>'s boolean guard is a
+    /// real behaviour change in shipped Python that nothing executed — the other Docker
+    /// tests run the Meridian modules or attesters written inline. The module as it ships
+    /// runs here. A genuine count passes first, so the rejections below cannot come from
+    /// an attester that fails everything; <c>true</c> and <c>false</c> are the cases a
+    /// plain <c>isinstance(_, int)</c> check lets through, since Python's <c>bool</c>
+    /// subclasses <c>int</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task Demo_active_user_count_attester_accepts_only_a_genuine_non_negative_count()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        const string sql = "SELECT count(*) AS active_users FROM users WHERE active = true AND id >= :min_id";
+        var source = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "bundles", "attestation_containers_demo", "attesters", "active_user_count_attester.py"));
+        var attester = new ContainerAttester(new CliContainerEngine(), new ContainerAttesterOptions());
+
+        Task<AttestationVerdict> Attest(object? count) => attester.AttestAsync(new AttestationContext(
+            Contract: new AttestedComputationContract(
+                "postgres",
+                [new ComputationParameter("min_id", "integer", true)],
+                null,
+                new Executor(null, ["executed_sql", "result"]),
+                new Attester("/attesters/active_user_count_attester.py")),
+            Computation: new SanctionedComputation(ComputationSource.Inline, sql, null),
+            Bound: new BoundComputation("postgres", sql, null, new Dictionary<string, object?> { ["min_id"] = 1L }),
+            Values: new Dictionary<string, object?> { ["min_id"] = 1L },
+            Receipt: new Receipt(new Dictionary<string, object?>
+            {
+                ["executed_sql"] = sql,
+                ["result"] = new List<object?> { new Dictionary<string, object?> { ["active_users"] = count } },
+            }),
+            AttesterSourceText: source)).AsTask();
+
+        var genuine = await Attest(2L);
+        Assert.True(genuine.Passed, genuine.Detail);
+
+        foreach (var (label, count) in new (string, object?)[] { ("true", true), ("false", false), ("string", "2"), ("float", 2.5), ("negative", -1L) })
+        {
+            var verdict = await Attest(count);
+            Assert.False(verdict.Passed, $"{label}: the attester accepted active_users = {count ?? "null"}");
+            Assert.Contains("active_users is not a non-negative integer", verdict.Detail ?? "", StringComparison.Ordinal);
+        }
+    }
+
     [SkippableFact]
     public async Task SqlClient_runtime_runs_a_real_postgres_query()
     {
@@ -477,7 +590,7 @@ public class ContainerIntegrationTests
 
         var outcome = await orchestrator.RunAsync(bundle, ConceptId.Parse("c/count"), new Dictionary<string, object?> { ["min_id"] = 1 });
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
     }
 
     /// <summary>
@@ -540,7 +653,7 @@ public class ContainerIntegrationTests
 
         // A TypeError inside the wrapper, or pip output on the receipt channel, both land
         // here as a non-displayable outcome -- so the reasons are worth printing.
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
         Assert.NotNull(outcome.Receipt);
 
         // The receipt parsed, which is the #3 guarantee: nothing but JSON reached stdout.

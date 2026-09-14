@@ -56,6 +56,13 @@ def attest(*, sanctioned_computation, receipt, values):
         return {"ok": False, "reason": "inputs unusable: fares_cents is not a JSON array of integers"}
     if not _is_int(cap):
         return {"ok": False, "reason": "inputs unusable: cap_cents is not an integer"}
+    # Amounts of money, outside the policy's domain when negative. Without this, a cap
+    # of -1 recomputes to an all-zero split that a matching receipt passes on every
+    # check below. A 0 cap (every trip free) is a real policy and stays in.
+    if cap < 0:
+        return {"ok": False, "reason": f"inputs unusable: cap_cents is negative: {cap}"}
+    if any(fare < 0 for fare in fares):
+        return {"ok": False, "reason": "inputs unusable: fares_cents holds a negative fare"}
 
     if not isinstance(receipt, dict):
         return {"ok": False, "reason": "receipt is not an object"}
