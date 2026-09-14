@@ -305,8 +305,9 @@ and this project adheres to
   `NonConventionalHeading` (warning) when the concept carries no exact
   `# Examples` / `# Schema`; beside the conventional heading, a related one is a
   subsection and is not warned. A heading is read as it renders — raw HTML, code
-  spans and link destinations left out, so `# <span>Examples</span>` is the
-  conventional heading and `# Glossary <!-- schema -->` names no schema — and
+  span backticks and link destinations left out, a code span's content kept, so
+  `# <span>Examples</span>` is the conventional heading, ``# `Worked example` ``
+  is a variant of it, and `# Glossary <!-- schema -->` names no schema — and
   wherever it stands, a block quote or list item included. A heuristic: it matches
   words, not meaning.
   `# Computation` is left out — a heading that merely mentions a computation is
@@ -337,7 +338,13 @@ and this project adheres to
   cases: outside footnote brackets, no case regresses from `dev`, about 6 550 of
   every 40 000 are fixed, and 5 in 120 000 still differ, all one case:
   commonmark.js letting a later duplicate definition above a setext underline
-  win, where §4.7 says "the first one takes precedence". No bundle or
+  win, where §4.7 says "the first one takes precedence". An external audit then
+  found a definition missed after `>` and a tab (`>\t[x]: /`): a paragraph's lines
+  lose their leading whitespace (§4.8), so a definition may now follow any spaces
+  and tabs. On 150 000 more bodies built around tabs and containers, the only
+  other difference is commonmark.js itself: it skips spaces but not tabs between
+  a link's parts, which §6.3 allows ("spaces, tabs, and up to one line ending"),
+  so `[t](x\t)` is a link here as the spec has it. No bundle or
   fixture uses a reference link, so `okf graph` and `okf validate` output is
   byte-identical on all of them.
 

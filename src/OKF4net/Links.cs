@@ -313,24 +313,27 @@ public static class LinkScanner
     /// <summary>
     /// The body's ATX headings (<c>#</c> through <c>######</c>), in order — inside block
     /// quotes and list items too — as their level, their text with any closing <c>#</c>
-    /// sequence removed, and that text as it reads: raw HTML, code spans and link
-    /// destinations dropped, whitespace collapsed. Code is skipped, so a <c># comment</c>
-    /// in a Python or shell fence is not a heading. Setext headings (text underlined with
-    /// <c>===</c>/<c>---</c>) are not recognized.
+    /// sequence removed, and that text as it reads: raw HTML, code span delimiters and link
+    /// destinations dropped, whitespace collapsed — a code span's content is text a reader
+    /// sees. Code is skipped, so a <c># comment</c> in a Python or shell fence is not a
+    /// heading. Setext headings (text underlined with <c>===</c>/<c>---</c>) are not
+    /// recognized.
     /// </summary>
     internal static IReadOnlyList<(int Level, string Text, string Visible)> ExtractAtxHeadings(string body)
     {
         var headings = new List<(int, string, string)>();
-        var offsets = new List<(int Index, int Offset)>();
-        var lines = CodeFreeLinePairs(body, headings: offsets);
-        foreach (var (index, offset) in offsets)
+        var found = new List<(int Index, int Offset, string Visible)>();
+        var lines = CodeFreeLinePairs(body, headings: found);
+        foreach (var (index, offset, visibleLine) in found)
         {
-            // Past the container markers, what indentation is left is under four columns.
-            var (raw, blanked) = lines[index];
-            if (TryParseAtxHeading(raw[offset..].TrimStart(' ', '\t'), out var level, out var text)
-                && TryParseAtxHeading(blanked[offset..].TrimStart(' ', '\t'), out _, out var visible))
+            // The heading's bounds come from the line as written — a closing `#` sequence is
+            // found before inline parsing — and apply to both strings, which align.
+            var raw = lines[index].Raw[offset..];
+            if (AtxHeadingContent(raw) is { } heading)
             {
-                headings.Add((level, text, string.Join(' ', visible.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))));
+                var text = raw.Substring(heading.Start, heading.Length);
+                var visible = visibleLine.Substring(heading.Start, heading.Length);
+                headings.Add((heading.Level, text, string.Join(' ', visible.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))));
             }
         }
 
@@ -346,41 +349,81 @@ public static class LinkScanner
     /// </summary>
     private static bool TryParseAtxHeading(string line, out int level, out string text)
     {
-        level = 0;
-        text = string.Empty;
-
         var i = 0;
         while (i < line.Length && i < 4 && line[i] == ' ')
         {
             i++;
         }
 
-        var hashes = i < 4 ? RunLength(line, i, '#') : 0;
+        if (i < 4 && AtxHeadingContentAt(line, i) is { } heading)
+        {
+            level = heading.Level;
+            text = line.Substring(heading.Start, heading.Length);
+            return true;
+        }
+
+        level = 0;
+        text = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// <see cref="TryParseAtxHeading"/> for a heading line the block pass already found, past
+    /// its container markers, where the indentation left may hold the rest of a tab: its
+    /// level and where its text starts and how long it is.
+    /// </summary>
+    private static (int Level, int Start, int Length)? AtxHeadingContent(string line)
+    {
+        var i = 0;
+        while (i < line.Length && line[i] is ' ' or '\t')
+        {
+            i++;
+        }
+
+        return AtxHeadingContentAt(line, i);
+    }
+
+    private static (int Level, int Start, int Length)? AtxHeadingContentAt(string line, int i)
+    {
+        var hashes = RunLength(line, i, '#');
         var rest = i + hashes;
         if (hashes is < 1 or > 6 || (rest < line.Length && line[rest] is not (' ' or '\t')))
         {
-            return false;
+            return null;
         }
 
-        var s = line.AsSpan(rest).Trim(" \t");
-        var end = s.Length;
-        while (end > 0 && s[end - 1] == '#')
+        var start = rest;
+        var stop = line.Length;
+        while (start < stop && line[start] is ' ' or '\t')
+        {
+            start++;
+        }
+
+        while (stop > start && line[stop - 1] is ' ' or '\t')
+        {
+            stop--;
+        }
+
+        var end = stop;
+        while (end > start && line[end - 1] == '#')
         {
             end--;
         }
 
-        if (end == 0)
+        if (end == start)
         {
-            s = default;
+            stop = start;
         }
-        else if (end < s.Length && s[end - 1] is ' ' or '\t')
+        else if (end < stop && line[end - 1] is ' ' or '\t')
         {
-            s = s[..end].TrimEnd(" \t");
+            stop = end;
+            while (stop > start && line[stop - 1] is ' ' or '\t')
+            {
+                stop--;
+            }
         }
 
-        level = hashes;
-        text = s.ToString();
-        return true;
+        return (hashes, start, stop - start);
     }
 
     /// <summary>
@@ -600,7 +643,7 @@ public static class LinkScanner
         string body,
         Dictionary<string, string>? definitions = null,
         List<LocatedLink>? links = null,
-        List<(int Index, int Offset)>? headings = null)
+        List<(int Index, int Offset, string Visible)>? headings = null)
     {
         var result = new List<(string, string)>();
         var containers = new List<BlockContainer>();
@@ -621,7 +664,7 @@ public static class LinkScanner
         // link reference definitions it opens with, read once the whole body is: a reference
         // link may use a definition that comes after it, and whether it forms decides what
         // after its `]` is a span or a tag.
-        var inline = new List<((int Index, int Offset)[] Lines, int DefinitionsEnd)>();
+        var inline = new List<((int Index, int Offset)[] Lines, int DefinitionsEnd, bool Heading)>();
 
         void EndParagraph()
         {
@@ -633,7 +676,7 @@ public static class LinkScanner
             // Link reference definitions at the start of a paragraph are not rendered
             // (§4.7), so they are blanked whole; inline parsing sees only what follows.
             var joined = string.Join('\n', paragraph.Select(p => result[p.Index].Item1[p.Offset..]));
-            inline.Add(([.. paragraph], LinkReferenceDefinitionsEnd(joined, definitions)));
+            inline.Add(([.. paragraph], LinkReferenceDefinitionsEnd(joined, definitions), false));
             paragraph.Clear();
         }
 
@@ -645,7 +688,7 @@ public static class LinkScanner
             var (firstIndex, firstOffset) = paragraph[0];
             var first = result[firstIndex].Item1;
             var start = firstOffset;
-            while (start < first.Length && first[start] == ' ')
+            while (start < first.Length && first[start] is ' ' or '\t')
             {
                 start++;
             }
@@ -857,8 +900,7 @@ public static class LinkScanner
                     continue;
                 }
 
-                headings?.Add((result.Count, inner.Offset));
-                inline.Add(([(result.Count, inner.Offset)], 0));
+                inline.Add(([(result.Count, inner.Offset)], 0, true));
                 result.Add((line, line));
                 continue;
             }
@@ -874,7 +916,7 @@ public static class LinkScanner
 
         EndParagraph();
 
-        foreach (var (lines, definitionsEnd) in inline)
+        foreach (var (lines, definitionsEnd, heading) in inline)
         {
             var joined = string.Join('\n', lines.Select(p => result[p.Index].Item1[p.Offset..]));
             var hidden = joined.ToCharArray(0, definitionsEnd);
@@ -910,6 +952,18 @@ public static class LinkScanner
                 var (index, offset) = lines[k];
                 var raw = result[index].Item1;
                 result[index] = (raw, string.Concat(raw.AsSpan(0, offset), blanked[k]));
+            }
+
+            if (heading && headings is not null)
+            {
+                // A heading as it reads: blanked, but with what its code spans show put back.
+                var visible = scan.Blanked.ToCharArray();
+                foreach (var (from, to) in scan.CodeSpanContents)
+                {
+                    joined.CopyTo(from, visible, from, to - from);
+                }
+
+                headings.Add((lines[0].Index, lines[0].Offset, new string(visible)));
             }
         }
 
@@ -975,13 +1029,16 @@ public static class LinkScanner
     {
         label = string.Empty;
         destination = string.Empty;
+        // A paragraph's lines lose their leading whitespace (§4.8), so any spaces and tabs may
+        // come first — the rest of a tab after `>`, a continuation line's indentation. The
+        // paragraph's first line is never indented code: the block pass has ruled that out.
         var i = pos;
-        while (i < s.Length && s[i] == ' ' && i - pos < 4)
+        while (i < s.Length && s[i] is ' ' or '\t')
         {
             i++;
         }
 
-        if (i - pos > 3 || i + 1 >= s.Length || s[i] != '[' || s[i + 1] == '^')
+        if (i + 1 >= s.Length || s[i] != '[' || s[i + 1] == '^')
         {
             return -1;
         }
@@ -1823,6 +1880,9 @@ public static class LinkScanner
         /// <summary>The content with its code spans, raw HTML and what each link consumes after its <c>]</c> blanked to spaces, line endings kept; set by <see cref="Scan"/>.</summary>
         public string Blanked { get; private set; } = string.Empty;
 
+        /// <summary>The offsets each code span's content runs from and to, delimiters excluded; set by <see cref="Scan"/>.</summary>
+        public List<(int From, int To)> CodeSpanContents { get; } = [];
+
         /// <summary>Every link and image found, as its start offset (the <c>[</c>, or the <c>!</c> of an image), the offset past it, and the link, in document order.</summary>
         public List<(int Start, int End, ConceptLink Link)> Scan()
         {
@@ -1874,6 +1934,7 @@ public static class LinkScanner
 
                     var close = runs[closer[run]];
                     Blank(chars!, runs[run].Start + (escaped[run] ? 1 : 0), close.Start + close.Length);
+                    CodeSpanContents.Add((runs[run].Start + runs[run].Length, close.Start));
                     i = close.Start + close.Length;
                     run = closer[run] + 1;
                     continue;

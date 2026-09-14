@@ -1542,6 +1542,8 @@ public class ValidateTests
     [InlineData("## Examples", "Examples")]
     [InlineData("# Table schema", "Schema")]
     [InlineData("# Schemas", "Schema")]
+    [InlineData("# `Worked example`", "Examples")]
+    [InlineData("# The `schema` table", "Schema")]
     public void A_variant_of_a_conventional_heading_is_a_warning(string heading, string conventional)
     {
         using var tmp = new TempDir();
@@ -1561,6 +1563,7 @@ public class ValidateTests
     [InlineData("# Schema")]
     [InlineData("# Usage")]
     [InlineData("# Counterexamples")]
+    [InlineData("# `Examples`\n\n## Example with a cap")]
     public void Conventional_and_unrelated_headings_are_not_warned(string heading)
     {
         using var tmp = new TempDir();

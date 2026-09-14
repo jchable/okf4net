@@ -864,6 +864,41 @@ public class LinksTests
     }
 
     /// <summary>
+    /// Found by external audit of #105: a paragraph's lines lose their leading whitespace
+    /// (§4.8), so a definition may follow any spaces or tabs — the rest of a tab after
+    /// <c>&gt;</c> or a list marker, or the indentation of a continuation line — and it is
+    /// global wherever it stands (§4.7). Expected targets are commonmark.js 0.31.2's.
+    /// </summary>
+    [Theory]
+    [InlineData(">\t[x]: /\n\n[x]\n", "/")]
+    [InlineData("[x]\n\n>\t[x]: /\n", "/")]
+    [InlineData(">  \t[x]: /\n\n[x]\n", "/")]
+    [InlineData("- a\n\n \t[x]: /\n\n[x]\n", "/")]
+    [InlineData("[a]: /a\n    [b]: /b\n\n[b]\n", "/b")]
+    [InlineData("> [a]: /a\n>\t[b]: /b\n\n[b]\n", "/b")]
+    [InlineData(">\t\t[x]: /\n\n[x]\n", "")]
+    public void Reference_definitions_may_follow_spaces_and_tabs(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], Targets(body));
+    }
+
+    /// <summary>
+    /// A heading's visible text keeps what its code spans show and drops raw HTML, and its
+    /// bounds come from the line as written: a <c>#</c> inside a trailing code span is text,
+    /// not a closing sequence. The rest of a tab after <c>&gt;</c> is indentation.
+    /// </summary>
+    [Theory]
+    [InlineData("# `Worked example`\n", "`Worked example`", "Worked example")]
+    [InlineData("# Examples `#`\n", "Examples `#`", "Examples #")]
+    [InlineData("# <span>Examples</span> #\n", "<span>Examples</span>", "Examples")]
+    [InlineData(">\t# Worked example\n", "Worked example", "Worked example")]
+    public void Headings_read_as_they_render(string body, string text, string visible)
+    {
+        var heading = Assert.Single(LinkScanner.ExtractAtxHeadings(body));
+        Assert.Equal((text, visible), (heading.Text, heading.Visible));
+    }
+
+    /// <summary>
     /// A setext underline does not make a heading of a paragraph that holds only link
     /// reference definitions — there is no text left to head (commonmark.js) — so the
     /// underline continues that paragraph, and a definition after it is no longer at the
