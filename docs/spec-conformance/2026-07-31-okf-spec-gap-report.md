@@ -320,23 +320,37 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   whole paragraph, never across a block boundary) and a fence opened on a list
   marker's own line.
 
-  **Closed 2026-09-15 — block quotes and raw HTML.** The last forms of markdown
-  that hide text were still read as prose: code inside a block quote, and HTML —
-  so a `[^x]` inside `<!-- -->` raised `CitationMissingSourceId`.
-  `CodeFreeLinePairs` now follows CommonMark's block-parsing strategy (§5): a
-  stack of containers (block quotes and list items) matched line by line, with
-  lazy continuation, and the seven HTML block kinds of §4.6; `BlankInline`
-  blanks inline raw HTML (§6.6) and code spans left to right, whichever starts
-  first. Tests: `Code_inside_a_block_quote_is_code`,
-  `Links_inside_a_block_quote_are_links`, `Nothing_inside_an_html_block_is_a_link`,
-  `An_html_block_ends_where_commonmark_ends_it`, `Raw_inline_html_is_not_markdown`,
-  `Html_lookalikes_are_text`, the linear-time and fuzz tests in `LinksTests.cs`,
-  and citation and heading cases in `ValidateTests.cs`. Still unmodelled: setext
-  headings and link reference definitions, which never decide whether text is
-  code or raw HTML; and the finer list interruption rules (an ordered list
-  interrupts a paragraph only from `1`, an empty item not at all) — here any
-  marker opens an item, which can move the indentation base for the lines after
-  it in that rare case.
+  **Closed 2026-09-14 — block quotes, raw HTML, and what else hides text.** The
+  last forms of markdown that hide text were still read as prose: code inside a
+  block quote, and HTML — so a `[^x]` inside `<!-- -->` raised
+  `CitationMissingSourceId`. `CodeFreeLinePairs` now follows CommonMark's
+  block-parsing strategy (§5): a stack of containers (block quotes and list
+  items) matched line by line with lazy continuation, columns counted with tab
+  stops from the line start and partly consumed tabs (§2.2), the seven HTML block
+  kinds of §4.6, setext underlines, the list interruption rules and the
+  blank-line end of an empty item (§5.2), and link reference definitions (§4.7),
+  whose destination and title are not text. `BlankInline` blanks inline raw HTML
+  (§6.6) and code spans left to right, whichever starts first.
+
+  Two readings were settled against the normative text and the reference
+  implementation rather than assumed: a closing tag alone on its line — `</pre>`
+  included — opens an HTML block of kind 7 (§4.6 excludes the raw-text names only
+  from *open* tags), and a link reference definition line may end in spaces but
+  not tabs (§4.7 says "No further character may occur"; commonmark.js tolerates
+  trailing spaces only). Nesting is capped at 100 containers, as markdown-it caps
+  it, since matching every line against unbounded nesting is quadratic.
+
+  Verified against commonmark.js 0.31.2 on 300 000 random bodies built from these
+  constructs: no difference in which footnote references are visible, except
+  reference links (`[^k][label]` with `label` defined renders as a link), which no
+  scanner here reads — a separate feature, not a question of code or HTML. Tests:
+  `Code_inside_a_block_quote_is_code`, `Links_inside_a_block_quote_are_links`,
+  `Nothing_inside_an_html_block_is_a_link`, `An_html_block_ends_where_commonmark_ends_it`,
+  `Raw_inline_html_is_not_markdown`, `Html_lookalikes_are_text`,
+  `Tabs_count_from_the_start_of_the_line_and_may_be_partly_consumed`,
+  `Paragraph_boundaries_follow_commonmark`, `An_empty_list_item_ends_at_a_blank_line`,
+  `Link_reference_definitions_are_not_text`, the linear-time and fuzz tests in
+  `LinksTests.cs`, and citation and heading cases in `ValidateTests.cs`.
 - **S5.1-3** (§5.1, per-entry `usage_window` override) — **Missing**
   (Minor). `src/OKF4net/Provenance.cs:7` — the `Source` record has no
   `UsageWindow` field (`Id, Resource, Title, Author, UsageCount,

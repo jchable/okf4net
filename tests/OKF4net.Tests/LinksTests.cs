@@ -502,6 +502,7 @@ public class LinksTests
     [InlineData("<span class=\"x\">\n[in](/in.md)\n\n[after](/after.md)\n")]
     [InlineData("- <pre>\n  [in](/in.md)\n\n[after](/after.md)\n")]
     [InlineData("> <!--\n> [in](/in.md)\n\n[after](/after.md)\n")]
+    [InlineData("</pre>\n[in](/in.md)\n\n[after](/after.md)\n")]
     public void Nothing_inside_an_html_block_is_a_link(string body)
     {
         Assert.Equal(["/after.md"], Targets(body));
@@ -550,6 +551,86 @@ public class LinksTests
     public void Html_lookalikes_are_text(string body)
     {
         Assert.Equal(["/a.md"], Targets(body));
+    }
+
+    /// <summary>
+    /// Raised in review of dbbd3b1. Tabs count to the next multiple of four from the start
+    /// of the line, and a container that needs only part of a tab leaves the rest as
+    /// indentation (CommonMark §2.2): here the two list items consume the first tab, so
+    /// the second makes the last line indented code; after a quote marker and its space,
+    /// a tab reaches only column 4, so the line stays prose.
+    /// </summary>
+    [Theory]
+    [InlineData("- a\n  - b\n\n\t\tSELECT [in](/in.md)\n\n[after](/after.md)\n", "/after.md")]
+    [InlineData("> \tMore [a](/a.md)\n", "/a.md")]
+    [InlineData("1.\tStep\n\n        code [in](/in.md)\n\n[after](/after.md)\n", "/after.md")]
+    public void Tabs_count_from_the_start_of_the_line_and_may_be_partly_consumed(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Raised in review of dbbd3b1: the paragraph rules that decide where code spans and
+    /// inline HTML may reach. A setext underline ends its paragraph, so a backtick above it
+    /// cannot pair with one below; an ordered list not starting at 1 cannot interrupt a
+    /// paragraph, so <c>2) &lt;div&gt;</c> is paragraph text, not an HTML block; and a
+    /// quote's <c>&gt;</c> markers are not part of the paragraph's text, so a tag's
+    /// attribute can continue on the next quoted line.
+    /// </summary>
+    [Theory]
+    [InlineData("Setup `x\n===\n[a](/a.md) and `y`\n", "/a.md")]
+    [InlineData("Note\n2) <div>[a](/a.md)\n", "/a.md")]
+    [InlineData("> Note\n2) <div>[in](/in.md)\n\n[after](/after.md)\n", "/after.md")]
+    [InlineData("> A `span\n===\n[in](/in.md)` end [after](/after.md)\n", "/after.md")]
+    [InlineData("> Use <b\n> title=\"[in](/in.md)\">x</b> [after](/after.md)\n", "/after.md")]
+    public void Paragraph_boundaries_follow_commonmark(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Raised in review of dbbd3b1. A link reference definition (CommonMark §4.7) at the
+    /// start of a paragraph is not rendered, so its destination and title are not text;
+    /// what follows it in the paragraph is. A <c>[^label]:</c> line is a footnote
+    /// definition (GFM), whose text is rendered, and a definition cannot interrupt a
+    /// paragraph.
+    /// </summary>
+    [Theory]
+    [InlineData("[ref]: /url \"[in](/in.md)\"\n[after](/after.md)\n", "/after.md")]
+    [InlineData("  [ref]: <[in](/in.md)>\n\n[after](/after.md)\n", "/after.md")]
+    [InlineData("[^note]: See [a](/a.md).\n", "/a.md")]
+    [InlineData("Prose.\n[ref]: /url \"[a](/a.md)\"\n", "/a.md")]
+    public void Link_reference_definitions_are_not_text(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Raised in review of dbbd3b1. A list item that begins with a blank line ends at the
+    /// next blank line (CommonMark §5.2), so indentation after that is measured from the
+    /// margin again and four columns is indented code.
+    /// </summary>
+    [Fact]
+    public void An_empty_list_item_ends_at_a_blank_line()
+    {
+        Assert.Equal(["/after.md"], Targets("-\n\n    [in](/in.md)\n\n[after](/after.md)\n"));
+    }
+
+    /// <summary>
+    /// Raised in review of dbbd3b1: every line matched every open container, so deep
+    /// nesting followed by many blank lines was quadratic (~20 s for 80 000 nested items
+    /// and 160 000 blank lines). Nesting is capped, as markdown-it caps it.
+    /// </summary>
+    [Fact]
+    public void Deep_nesting_followed_by_many_lines_is_scanned_in_linear_time()
+    {
+        var body = string.Concat(Enumerable.Repeat("* - ", 80_000)) + new string('\n', 160_000) + "[a](/a.md)\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Targets(body);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
     }
 
     /// <summary>
@@ -602,6 +683,9 @@ public class LinksTests
     [InlineData("<a b=\"\n")]
     [InlineData("<!--\n")]
     [InlineData("> > > > ```\n")]
+    [InlineData("[x]: /u\n")]
+    [InlineData("[x]: /u '")]
+    [InlineData("[x]: /u '\n")]
     public void Html_and_container_constructs_are_scanned_in_linear_time(string unit)
     {
         var body = string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "\n\n[a](/a.md)\n";

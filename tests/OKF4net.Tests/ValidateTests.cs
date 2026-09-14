@@ -1577,6 +1577,9 @@ public class ValidateTests
     [InlineData("<!--\n[^x]\n-->\n")]
     [InlineData("A note <!-- see [^x] --> in passing.\n")]
     [InlineData("> ```\n> [^x]\n> ```\n")]
+    [InlineData("[ref]: /url[^x]\n")]
+    [InlineData("[a]: /one\n[b]: /two '[^x]'\n")]
+    [InlineData("[ref]:\n  /url\n  \"a title\n  citing [^x]\"\n")]
     public void Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation(string body)
     {
         using var tmp = new TempDir();
@@ -1596,6 +1599,10 @@ public class ValidateTests
     [InlineData("A path C:\\\\[^k] cites.\n")]
     [InlineData("The span `C:\\` ends at its backslash, so this cites.[^k] Then `more`.\n")]
     [InlineData("> A quoted claim.[^k]\n")]
+    [InlineData("> \tA claim after a quote marker and a tab.[^k]\n")]
+    [InlineData("[ref]: /url not a title, so this is prose.[^k]\n")]
+    [InlineData("A paragraph first.\n[ref]: /url[^k]\n")]
+    [InlineData("[^note]: A footnote definition that itself cites.[^k]\n")]
     [InlineData("A <b>bold</b> claim.[^k] <!-- a note -->\n")]
     [InlineData("* An item.\n\n    Its continuation cites this.[^k]\n")]
     public void Real_citations_next_to_those_forms_are_still_citations(string body)
