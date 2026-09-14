@@ -1356,7 +1356,9 @@ public class ValidateTests
 
     /// <summary>
     /// An item that opens with inline code does not start with a link, even when a link
-    /// follows — the code span is visible text, not whitespace.
+    /// follows — the code span is visible text, not whitespace — so it is not an entry
+    /// whose description is checked. It does contain a link a reader can follow, so it
+    /// is not warned as having none either.
     /// </summary>
     [Fact]
     public void Index_list_item_opening_with_inline_code_before_a_link_is_not_an_entry()
@@ -1367,8 +1369,28 @@ public class ValidateTests
 
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
 
-        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
         Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// Raised in review of #99: an item that renders a link without opening on one — a
+    /// bold link, an icon before the link — gives a reader something to follow, so it is
+    /// not warned as having no link. Only an item with no link at all is.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* **[Revenue](revenue.md)** - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* ![icon](icon.png) [Revenue](revenue.md) - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* Revenue, recognized:\n  [Revenue](revenue.md)\n")]
+    public void Index_list_item_containing_a_link_anywhere_is_not_warned_as_having_none(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
     }
 
     /// <summary>
@@ -1588,6 +1610,7 @@ public class ValidateTests
     [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n* [Other](other.md) - other\n")]
     [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n\nSome prose after the list.\n")]
     [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n# Next section\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n```text\nfoo\n```\nSome prose after a fence.\n")]
     public void What_follows_an_entry_without_a_description_is_not_its_description(string index)
     {
         using var tmp = new TempDir();

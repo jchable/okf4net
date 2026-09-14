@@ -322,20 +322,60 @@ public static class LinkScanner
         var headings = new List<(int, string)>();
         foreach (var (raw, _) in CodeFreeLinePairs(body))
         {
-            var m = AtxHeading.Match(raw);
-            if (m.Success)
+            if (TryParseAtxHeading(raw, out var level, out var text))
             {
-                headings.Add((m.Groups[1].Length, m.Groups[2].Value));
+                headings.Add((level, text));
             }
         }
 
         return headings;
     }
 
-    // An ATX heading: up to three spaces, one to six `#`, then either the end of the line
-    // or whitespace and the text; an optional closing run of `#` is not part of the text.
-    private static readonly System.Text.RegularExpressions.Regex AtxHeading =
-        new(@"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    /// <summary>
+    /// Parses an ATX heading: up to three spaces, one to six <c>#</c>, then the end of the
+    /// line or a space or tab and the text, less any closing run of <c>#</c> that follows
+    /// whitespace. Hand-written rather than a regex, which is what it replaced: a lazy
+    /// <c>(.*?)</c> before an optional closing sequence retried that sequence at every
+    /// character, so one long line of spaces took tens of seconds.
+    /// </summary>
+    private static bool TryParseAtxHeading(string line, out int level, out string text)
+    {
+        level = 0;
+        text = string.Empty;
+
+        var i = 0;
+        while (i < line.Length && i < 4 && line[i] == ' ')
+        {
+            i++;
+        }
+
+        var hashes = i < 4 ? RunLength(line, i, '#') : 0;
+        var rest = i + hashes;
+        if (hashes is < 1 or > 6 || (rest < line.Length && line[rest] is not (' ' or '\t')))
+        {
+            return false;
+        }
+
+        var s = line.AsSpan(rest).Trim(" \t");
+        var end = s.Length;
+        while (end > 0 && s[end - 1] == '#')
+        {
+            end--;
+        }
+
+        if (end == 0)
+        {
+            s = default;
+        }
+        else if (end < s.Length && s[end - 1] is ' ' or '\t')
+        {
+            s = s[..end].TrimEnd(" \t");
+        }
+
+        level = hashes;
+        text = s.ToString();
+        return true;
+    }
 
     /// <summary>
     /// Extracts the entries of an <c>index.md</c> body (§8): each list item whose
@@ -352,7 +392,7 @@ public static class LinkScanner
     internal static IReadOnlyList<(ConceptLink Link, string Description)> ExtractIndexEntries(string body)
     {
         var entries = new List<(ConceptLink, string)>();
-        foreach (var (link, text) in ExtractIndexListItems(body))
+        foreach (var (link, text, _) in ExtractIndexListItems(body))
         {
             if (link is not null)
             {
@@ -367,12 +407,14 @@ public static class LinkScanner
     /// Every non-empty list item of an <c>index.md</c> body, in order. An item that
     /// begins with an inline link carries that link and the description after it, as
     /// <see cref="ExtractIndexEntries"/> returns them; any other item carries a
-    /// <c>null</c> link and its whole text as written. Thematic breaks (<c>* * *</c>,
-    /// <c>- - -</c>) are not items, and fenced code is skipped.
+    /// <c>null</c> link and its first line's text as written, and says whether a link
+    /// appears anywhere in it — a bold link, a link after an icon, a link on a
+    /// continuation line. Thematic breaks (<c>* * *</c>, <c>- - -</c>) are not items, and
+    /// code is skipped.
     /// </summary>
-    internal static IReadOnlyList<(ConceptLink? Link, string Text)> ExtractIndexListItems(string body)
+    internal static IReadOnlyList<(ConceptLink? Link, string Text, bool ContainsLink)> ExtractIndexListItems(string body)
     {
-        var items = new List<(ConceptLink?, string)>();
+        var items = new List<(ConceptLink?, string, bool)>();
         var lines = CodeFreeLinePairs(body);
         for (var n = 0; n < lines.Count; n++)
         {
@@ -384,8 +426,16 @@ public static class LinkScanner
 
             if (blanked[i] != '[' || ParseInlineLink(blanked.ToCharArray(), i) is not { } p)
             {
+                var containsLink = HasLink(blanked[i..]);
+                var start = n;
+                while (n + 1 < lines.Count && IsParagraphContinuation(lines[n + 1]))
+                {
+                    n++;
+                    containsLink |= HasLink(lines[n].Blanked);
+                }
+
                 // Same offset in both strings (blanking preserves length).
-                items.Add((null, raw[i..].Trim()));
+                items.Add((null, lines[start].Raw[i..].Trim(), containsLink));
                 continue;
             }
 
@@ -402,10 +452,17 @@ public static class LinkScanner
                 description = lines[n].Raw.Trim().TrimStart('-', '–', '—', ':').Trim();
             }
 
-            items.Add((link, description));
+            items.Add((link, description, true));
         }
 
         return items;
+    }
+
+    private static bool HasLink(string blankedLine)
+    {
+        var links = new List<ConceptLink>();
+        ScanLineLinks(blankedLine, links);
+        return links.Count != 0;
     }
 
     /// <summary>
@@ -442,12 +499,17 @@ public static class LinkScanner
         return i < raw.Length ? i : null;
     }
 
+    /// <summary>
+    /// Whether a line continues the paragraph above it. Code lines reach here as the empty
+    /// placeholders <see cref="CodeFreeLinePairs"/> leaves in their place, so a fence or
+    /// indented code block ends a paragraph just as a blank line does.
+    /// </summary>
     private static bool IsParagraphContinuation((string Raw, string Blanked) line)
     {
         var content = line.Raw.TrimStart(' ', '\t');
         return content.Length != 0
-            && !ListMarker.IsMatch(content)
-            && !AtxHeading.IsMatch(content)
+            && ListItemContentColumn(0, content) is null
+            && !TryParseAtxHeading(content, out _, out _)
             && !ThematicBreak.IsMatch(content)
             && OpensFence(content) is null;
     }
@@ -476,84 +538,116 @@ public static class LinkScanner
         CodeFreeLinePairs(body).ConvertAll(pair => pair.Blanked);
 
     /// <summary>
-    /// The one implementation of "skip code": each line of the body outside code blocks,
-    /// paired as it was written (<c>Raw</c>) and with its inline code spans blanked
-    /// to spaces (<c>Blanked</c>). Blanking replaces one character with one space, so
-    /// both strings have the same length and every offset means the same position in
-    /// each — which lets a caller find structure on <c>Blanked</c> (so nothing inside
-    /// code is mistaken for a link) and still read visible text from <c>Raw</c>.
+    /// The one implementation of "skip code": every line of the body, paired as it was
+    /// written (<c>Raw</c>) and with its inline code spans blanked to spaces
+    /// (<c>Blanked</c>) — except a line of a code block, which becomes an empty pair, so
+    /// line adjacency survives and code still separates what comes before it from what
+    /// comes after. Blanking replaces one character with one space, so both strings have
+    /// the same length and every offset means the same position in each — which lets a
+    /// caller find structure on <c>Blanked</c> (so nothing inside code is mistaken for a
+    /// link) and still read visible text from <c>Raw</c>.
     ///
-    /// Code is recognized as CommonMark defines it, within a line-by-line scan:
+    /// Code is recognized as CommonMark defines it, within a single line-by-line pass
+    /// that tracks the open list items (by the column their content starts at) and
+    /// whether a paragraph is open. Indentation is measured from the innermost open list
+    /// item's content, not from the margin:
     /// <list type="bullet">
-    /// <item>A fence opens on three or more backticks or tildes, and closes only on a run
-    /// of the same character at least as long, with nothing after it but whitespace — so
-    /// a <c>```</c> inside a <c>````</c> fence, or <c>```python</c> inside a <c>```</c>
-    /// one, is content.</item>
-    /// <item>A line indented four or more columns, after a blank line or another such
-    /// line, is an indented code block — except inside a list, where that indentation is
-    /// the item's own content (a nested item, a continuation paragraph). A list lasts
-    /// until a heading, a thematic break, or an unindented line after a blank line.</item>
+    /// <item>A fence opens on three or more backticks or tildes indented at most three
+    /// columns, and closes only on a run of the same character at least as long, indented
+    /// at most three columns, with nothing after it but whitespace — so a <c>```</c>
+    /// inside a <c>````</c> fence, a <c>```python</c> line, or an over-indented run is
+    /// content. A fence opened inside a list item ends when the item does.</item>
+    /// <item>A line indented four or more columns while no paragraph is open is indented
+    /// code; inside an open paragraph it is continuation text.</item>
+    /// <item>A list item ends at a line indented less than its content, unless that line
+    /// is lazy continuation text of the item's open paragraph.</item>
     /// <item>Inline code spans are blanked by <see cref="BlankInlineCode"/>.</item>
     /// </list>
+    /// Not modelled: block quotes, HTML blocks, and code spans that cross lines.
     /// </summary>
     private static List<(string Raw, string Blanked)> CodeFreeLinePairs(string body)
     {
         var result = new List<(string, string)>();
-        char fenceChar = '\0';
-        var fenceLength = 0;
+        var listContent = new Stack<int>();
+        (char Char, int Length, int Container)? fence = null;
         var previousBlank = true;
-        var inIndentedCode = false;
-        var inList = false;
+        var inParagraph = false;
         foreach (var line in LfLines.Split(body))
         {
             var (indent, contentStart) = Indentation(line);
             var content = line[contentStart..];
+            var blank = content.Length == 0;
 
-            if (fenceLength > 0)
+            if (fence is { } open)
             {
-                if (RunLength(content, 0, fenceChar) >= fenceLength && content.AsSpan(RunLength(content, 0, fenceChar)).IsWhiteSpace())
+                if (blank || indent >= open.Container)
                 {
-                    fenceLength = 0;
+                    var run = RunLength(content, 0, open.Char);
+                    if (!blank && indent - open.Container <= 3 && run >= open.Length && content.AsSpan(run).IsWhiteSpace())
+                    {
+                        fence = null;
+                    }
+
+                    result.Add((string.Empty, string.Empty));
+                    previousBlank = blank;
+                    continue;
                 }
 
-                continue;
+                // Less indented than the list item that holds the fence: the item has
+                // ended, and the fence with it. The line is read as ordinary markdown.
+                fence = null;
             }
 
-            if (content.Length == 0)
+            if (blank)
             {
                 result.Add((line, line));
                 previousBlank = true;
+                inParagraph = false;
                 continue;
             }
 
-            if (indent >= 4 && !inList && (previousBlank || inIndentedCode))
+            var thematicBreak = ThematicBreak.IsMatch(content);
+            var markerContent = thematicBreak ? null : ListItemContentColumn(indent, content);
+            var opensFence = OpensFence(content);
+            var startsBlock = thematicBreak || markerContent is not null || opensFence is not null
+                || TryParseAtxHeading(content, out _, out _);
+
+            var lazy = inParagraph && !previousBlank && !startsBlock;
+            while (!lazy && listContent.Count > 0 && indent < listContent.Peek())
             {
-                inIndentedCode = true;
-                continue;
+                listContent.Pop();
             }
 
-            inIndentedCode = false;
-            var wasBlank = previousBlank;
             previousBlank = false;
+            var relative = indent - (listContent.Count > 0 ? listContent.Peek() : 0);
 
-            if (OpensFence(content) is { } fence)
+            if (relative >= 4 && !inParagraph)
             {
-                (fenceChar, fenceLength) = fence;
+                result.Add((string.Empty, string.Empty));
                 continue;
             }
 
-            // Thematic break first: `* * *` also opens like a list item.
-            if (indent < 4 && (AtxHeading.IsMatch(content) || ThematicBreak.IsMatch(content)))
+            if (relative <= 3 && opensFence is { } fenceOpen)
             {
-                inList = false;
+                fence = (fenceOpen.Char, fenceOpen.Length, listContent.Count > 0 ? listContent.Peek() : 0);
+                result.Add((string.Empty, string.Empty));
+                inParagraph = false;
+                continue;
             }
-            else if (ListMarker.IsMatch(content))
+
+            if (relative <= 3 && startsBlock && markerContent is null)
             {
-                inList = true;
+                // A heading or thematic break: never part of a paragraph.
+                inParagraph = false;
             }
-            else if (wasBlank && indent < 2)
+            else if (relative <= 3 && markerContent is { } column)
             {
-                inList = false;
+                listContent.Push(column);
+                inParagraph = true;
+            }
+            else
+            {
+                inParagraph = true;
             }
 
             result.Add((line, BlankInlineCode(line)));
@@ -562,10 +656,52 @@ public static class LinkScanner
         return result;
     }
 
-    // A bullet (`*`, `-`, `+`) or ordered (`1.`, `1)`) list marker followed by a space, a
-    // tab or the end of the line, at the start of a line's content.
-    private static readonly System.Text.RegularExpressions.Regex ListMarker =
-        new(@"^(?:[*+\-]|[0-9]{1,9}[.)])(?:[ \t]|$)", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    /// <summary>
+    /// The column a list item's content starts at when <paramref name="content"/> (the
+    /// line past its <paramref name="indent"/> columns) opens one — a bullet (<c>*</c>,
+    /// <c>-</c>, <c>+</c>) or an ordered marker (<c>1.</c>, <c>1)</c>, up to nine digits)
+    /// followed by whitespace or the end of the line — or <c>null</c> when it does not.
+    /// As CommonMark counts it: one to four columns after the marker, or one when there
+    /// are five or more (the item then opens with indented code) or nothing follows.
+    /// </summary>
+    private static int? ListItemContentColumn(int indent, string content)
+    {
+        int width;
+        if (content.Length > 0 && content[0] is '*' or '+' or '-')
+        {
+            width = 1;
+        }
+        else
+        {
+            var digits = 0;
+            while (digits < content.Length && digits < 10 && char.IsAsciiDigit(content[digits]))
+            {
+                digits++;
+            }
+
+            if (digits is 0 or > 9 || digits >= content.Length || content[digits] is not ('.' or ')'))
+            {
+                return null;
+            }
+
+            width = digits + 1;
+        }
+
+        if (width == content.Length)
+        {
+            return indent + width + 1;
+        }
+
+        if (content[width] is not (' ' or '\t'))
+        {
+            return null;
+        }
+
+        var (spaces, start) = Indentation(content[width..]);
+        return start == content.Length - width || spaces >= 5
+            ? indent + width + 1
+            : indent + width + spaces;
+    }
 
     /// <summary>
     /// A line's indentation in columns (a tab advancing to the next multiple of four, as
@@ -610,7 +746,7 @@ public static class LinkScanner
     /// three or more backticks or tildes, where a backtick fence's info string may not
     /// itself contain a backtick (that line is inline code, not a fence).
     /// </summary>
-    private static (char, int)? OpensFence(string content)
+    private static (char Char, int Length)? OpensFence(string content)
     {
         foreach (var c in (ReadOnlySpan<char>)['`', '~'])
         {

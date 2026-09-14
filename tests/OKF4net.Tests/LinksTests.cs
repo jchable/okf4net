@@ -187,6 +187,75 @@ public class LinksTests
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
     }
 
+    /// <summary>
+    /// Raised in review of #99: the ATX heading regex's lazy <c>(.*?)</c> retried its
+    /// optional closing sequence at every character, so this very input — <c># a</c>,
+    /// 150 000 spaces, then <c>x</c> — took 25 s to scan, and the scan runs on every line
+    /// outside code. Same loose bound as above.
+    /// </summary>
+    [Fact]
+    public void A_long_heading_line_is_scanned_in_linear_time()
+    {
+        var body = "# a" + new string(' ', 150_000) + "x\n[a](/a.md)\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var targets = Targets(body);
+        watch.Stop();
+
+        Assert.Equal(["/a.md"], targets);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
+
+    /// <summary>
+    /// Raised in review of #99. A closing fence may be indented at most three columns
+    /// past its container (CommonMark §4.5); a further-indented run is content.
+    /// </summary>
+    [Fact]
+    public void A_closing_fence_indented_four_columns_is_content()
+    {
+        Assert.Equal(["/after.md"], Targets("```\n    ```\n[in](/in.md)\n```\n[after](/after.md)\n"));
+    }
+
+    /// <summary>
+    /// Raised in review of #99. Four columns of indent inside a paragraph is paragraph
+    /// continuation: neither an indented code block (which cannot interrupt a paragraph)
+    /// nor a fence (indented too far) — so it must not hide the rest of the document.
+    /// </summary>
+    [Fact]
+    public void An_indented_fence_line_inside_a_paragraph_is_paragraph_text()
+    {
+        Assert.Equal(["/a.md"], Targets("Run this:\n    ```\nSee [a](/a.md).\n"));
+    }
+
+    /// <summary>
+    /// Raised in review of #99. A fence opened inside a list item ends with the item; an
+    /// unclosed one used to hide everything to the end of the document.
+    /// </summary>
+    [Fact]
+    public void A_fence_inside_a_list_item_ends_with_the_item()
+    {
+        Assert.Equal(["/x.md"], Targets("- a\n\n  ```\n  [in](/in.md)\n\nafter [x](/x.md)\n"));
+    }
+
+    /// <summary>
+    /// Raised in review of #99. An indented code block needs only that no paragraph is
+    /// open — a heading or a closing fence ends one as surely as a blank line — and
+    /// indentation counts from the list item's content, so a list ended by an unindented
+    /// fence, or by a line indented less than a <c>10.</c> item's content, no longer
+    /// shields what follows. The last case is code inside an item: four columns past its
+    /// content.
+    /// </summary>
+    [Theory]
+    [InlineData("# Example\n    [in](/in.md)\n")]
+    [InlineData("```\nx\n```\n    [in](/in.md)\n")]
+    [InlineData("- item\n\n```\nx\n```\n\n    [in](/in.md)\n")]
+    [InlineData("10. item\n\n  para\n\n    [in](/in.md)\n")]
+    [InlineData("* a\n\n      [in](/in.md)\n")]
+    public void Indented_code_is_recognized_wherever_no_paragraph_is_open(string body)
+    {
+        Assert.Empty(Targets(body));
+    }
+
     /// <summary>A backtick run with no closing run of the same length is literal text, not code to the end of the line.</summary>
     [Fact]
     public void An_unmatched_backtick_is_literal_text()

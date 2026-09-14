@@ -285,6 +285,30 @@ and this project adheres to
   stops there — a per-field merge would be inventing a rule the spec does not
   state, so this is a deliberate interpretation on our part, not something
   the spec itself settles.
+- **`okf validate` warns on an `index.md` list item with no link.** §8 shows
+  every entry as `* [Title](relative-url) - description`; an entry naming a file
+  in inline code gives a reader nothing to follow. It raises `IndexEntryNotALink`
+  (warning). §8 gives that format by example rather than by rule, so this is a
+  heuristic, kept to items with no link anywhere: one that renders a link without
+  opening on one — `**[A](a.md)**`, an icon before the link, a link on a
+  continuation line — is not warned. Thematic breaks (`* * *`), prose and code are
+  not items. Reading items off the code-blanked line had also let an item opening
+  with inline code (`` * `x` [a](b) ``) pass as an entry whose description is
+  checked, and a prose line such as `` `code` - [a](b) `` pass as a bulleted one;
+  whitespace is now read on the line as written.
+- **`okf validate` warns on a heading that names examples or a schema without
+  §4.2's conventional heading.** A heading containing the word *example(s)* or
+  *schema(s)* — `# Worked example`, `# Table schema`, `## Examples` — raises
+  `NonConventionalHeading` (warning) when the concept carries no exact
+  `# Examples` / `# Schema`; beside the conventional heading, a related one is a
+  subsection and is not warned. A heuristic: it matches words, not meaning.
+  `# Computation` is left out — a heading that merely mentions a computation is
+  ordinary structure (acme_retail's `# Why no attested computation`), and a
+  misspelled one on an Attested Computation already raises
+  `ComputationMissingBody`. Both rules emit nothing on any bundle in `bundles/`
+  or any fixture, and both flag the drift `bundles/meridian_transit` had before
+  it was corrected by hand (`# Worked example`, three index entries in inline
+  code). Both new `DiagnosticCode` members are appended.
 
 ### Changed
 
@@ -565,6 +589,16 @@ and this project adheres to
   vocabulary open, so nothing syntactic decides it. `bundles/acme_retail/`
   goes from 24 warnings to 22. Recorded as **S4.1-8** in
   `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+- **`ContainerExecutionException.ToString()` now includes the container's
+  output, so a failed run says why in the host's logs.** It carried only
+  "attester exited with code 1"; the container's stderr, where the cause was
+  ("No usable temporary directory", a missing table), sat unread on the `Stderr`
+  property. It now appends the last 4096 characters of each non-empty captured
+  stream. `Message` is unchanged, and so is what reaches the model:
+  `AttestationOutcome.Reasons` and `okf_run_computation` still name only the
+  exception type, now guarded by a test that puts a secret in a container's
+  stdout and stderr. The container integration tests print the exception on
+  failure too, rather than only the type-only `Reasons`.
 
 ### Fixed
 
@@ -616,31 +650,9 @@ and this project adheres to
   `attestation_containers_demo`'s active-user attester rejected those but, like
   any plain `isinstance(_, int)` check in Python, accepted `true` and `false`,
   since `bool` subclasses `int`. Both now reject strings, floats and booleans.
-- **`okf validate` warns on an `index.md` list item that is not a link.** §8
-  shows every entry as `* [Title](relative-url) - description`; an entry naming
-  a file in inline code gives a reader nothing to follow. It raises
-  `IndexEntryNotALink` (warning). §8 gives that format by example rather than
-  by rule, so this is a heuristic: thematic breaks (`* * *`), prose and fenced
-  code are not items. Reading items off the code-blanked line had also let an
-  item opening with inline code (`` * `x` [a](b) ``) pass as a link entry, and
-  a prose line such as `` `code` - [a](b) `` pass as a bulleted one; whitespace
-  is now read on the line as written.
-- **`okf validate` warns on a heading that names examples or a schema without
-  §4.2's conventional heading.** A heading containing the word *example(s)* or
-  *schema(s)* — `# Worked example`, `# Table schema`, `## Examples` — raises
-  `NonConventionalHeading` (warning) when the concept carries no exact
-  `# Examples` / `# Schema`; beside the conventional heading, a related one is a
-  subsection and is not warned. A heuristic: it matches words, not meaning.
-  `# Computation` is left out — a heading that merely mentions a computation is
-  ordinary structure (acme_retail's `# Why no attested computation`), and a
-  misspelled one on an Attested Computation already raises
-  `ComputationMissingBody`. Both rules emit nothing on any bundle in `bundles/`
-  or any fixture, and both flag the drift `bundles/meridian_transit` had before
-  it was corrected by hand (`# Worked example`, three index entries in inline
-  code). Both new `DiagnosticCode` members are appended.
 - **The link, citation and index scanners now recognize code and escapes as
-  CommonMark defines them.** Raised by Copilot on #98, each confirmed by a
-  failing test first. `CitationMissingSourceId` warned on footnote syntax
+  CommonMark defines them.** Raised by Copilot on #98 and by review of #99,
+  each confirmed by a failing test first. `CitationMissingSourceId` warned on footnote syntax
   markdown does not render as a footnote: an escaped `\[^a-z]`, an indented code
   block, or a double-backtick span (the one-character code toggle left
   `` `` [^x] `` `` visible). A fence closed on any line opening with three
@@ -649,17 +661,26 @@ and this project adheres to
   code was scanned as prose. An unmatched backtick hid the rest of its line, links
   included. And in an `index.md`, a tab after the list marker was not a list item,
   and a description wrapped onto the next line read as missing, so
-  `IndexEntryMissingDescription` fired on an entry that has one. Fences now close
-  only on a run of the same character at least as long with no info string; a
-  four-column indent after a blank line is code outside a list and content inside
-  one; code spans match runs of equal length, an unmatched run is literal, and a
-  backslash escapes an opener but never a closer (`` `C:\` `` is a complete span).
-  All of this lives in the one shared "skip code" pass, so `okf graph`'s links
-  change too; its output and `okf validate`'s were compared before and after on
-  every bundle in `bundles/` and every fixture, and are byte-identical.
-  Matching code spans is linear: a first version searched for each opener's closer
-  from scratch, which a hostile 1.4 MB line of unclosable backtick runs took 14 s
-  to validate.
+  `IndexEntryMissingDescription` fired on an entry that has one — or, when the
+  line after it was code, took the prose after the code as its description. The
+  pass now tracks open list items by the column their content starts at, and
+  whether a paragraph is open, and measures indentation from the innermost item:
+  a fence opens and closes only within three columns of it, closes only on a run
+  of the same character at least as long with no info string, and ends with its
+  list item; four columns is indented code wherever no paragraph is open (after a
+  heading or a closing fence as much as after a blank line) and continuation text
+  inside one; a code line leaves an empty line behind, so it still separates what
+  surrounds it. Code spans match runs of equal length, an unmatched run is
+  literal, and a backslash escapes an opener but never a closer (`` `C:\` `` is a
+  complete span). Block quotes, HTML blocks and code spans that cross lines are
+  still not modelled. All of this lives in the one shared "skip code" pass, so
+  `okf graph`'s links change too; its output and `okf validate`'s were compared
+  before and after on every bundle in `bundles/` and every fixture, and are
+  byte-identical. The pass is linear on hostile input: a first version of code-span
+  matching searched for each opener's closer from scratch (14 s on a 1.4 MB line
+  of unclosable backtick runs), and the ATX heading regex's lazy `(.*?)` retried
+  its closing sequence at every character (25 s to scan `# a`, 150 000 spaces, `x`);
+  both are hand-written scans now, with tests.
 - **`bundles/meridian_transit`'s fare-cap attester rejects negative amounts.**
   Raised by Copilot on #98: it checked `cap_cents` was an integer, never that it
   was a cap, so a cap of `-1` recomputed to an all-zero split that a matching
@@ -667,16 +688,6 @@ and this project adheres to
   cap of `0` still passes. `attestation_containers_demo`'s active-user attester,
   whose boolean guard nothing executed, now runs as it ships in a Docker-gated
   test with a genuine count as control.
-- **A failed container run now says why in the host's logs.**
-  `ContainerExecutionException.ToString()` — what every logger writes — carried
-  only "attester exited with code 1"; the container's stderr, where the cause
-  was ("No usable temporary directory", a missing table), sat unread on the
-  `Stderr` property. It now appends the last 4096 characters of each non-empty
-  captured stream. `Message` is unchanged, and so is what reaches the model:
-  `AttestationOutcome.Reasons` and `okf_run_computation` still name only the
-  exception type, now guarded by a test that puts a secret in a container's
-  stdout and stderr. The container integration tests print the exception on
-  failure too, rather than only the type-only `Reasons`.
 
 - **§4.1's `resource` carve-out for an Attested Computation now applies only to
   an ABSENT key.** The suppression added for S4.1-8 skipped the field before

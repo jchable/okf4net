@@ -307,8 +307,17 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   `Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation`,
   `Footnote_syntax_inside_a_longer_fence_is_not_a_citation`, and — so the
   new rules cannot swallow real citations —
-  `Real_citations_next_to_those_forms_are_still_citations`. The scan remains
-  line-by-line: a code span spanning lines is not recognized.
+  `Real_citations_next_to_those_forms_are_still_citations`.
+
+  Review of #99 then found the first version of those rules still line-local:
+  indentation was measured from the margin rather than from the enclosing list
+  item, so indented code after a heading or a closing fence read as prose, an
+  over-indented closing fence closed, and an unclosed fence in a list item hid
+  the rest of the document. The pass now tracks open list items and whether a
+  paragraph is open (`CodeFreeLinePairs`' doc comment gives the rules; tests in
+  `tests/OKF4net.Tests/LinksTests.cs`). Still not modelled: block quotes, HTML
+  blocks (a `[^x]` inside `<!-- -->` is still read as a citation), and code
+  spans that cross lines.
 - **S5.1-3** (§5.1, per-entry `usage_window` override) — **Missing**
   (Minor). `src/OKF4net/Provenance.cs:7` — the `Source` record has no
   `UsageWindow` field (`Id, Resource, Title, Author, UsageCount,
@@ -533,11 +542,15 @@ README mapping: `OKF4net.IndexGenerator`.
   **Update 2026-09-14 — entry format.** §8 shows each entry as
   `* [Title](relative-url) - description`, by example rather than by rule.
   `CheckIndexEntriesAreLinks` now raises `IndexEntryNotALink` (Warning) for an
-  `index.md` list item that does not begin with a link — the drift
+  `index.md` list item that contains no link at all — the drift
   `bundles/meridian_transit` had in `attesters/` and `references/`, listing
-  files in inline code. Items come from `LinkScanner.ExtractIndexListItems`,
-  the one parser behind `ExtractIndexEntries` too; thematic breaks, prose and
-  fenced code are not items. Writing it exposed a defect in the shared parser:
+  files in inline code. An item that renders a link without opening on one
+  (`**[A](a.md)**`, an icon before the link, a link on a continuation line) is
+  not warned: review of #99 showed a "does not begin with a link" rule flagging
+  those, and they give a reader something to follow. Items come from
+  `LinkScanner.ExtractIndexListItems`, the one parser behind
+  `ExtractIndexEntries` too; thematic breaks, prose and code are not items.
+  Writing it exposed a defect in the shared parser:
   whitespace was skipped on the code-blanked line, where an inline code span is
   spaces, so `` * `x` [a](b) `` read as a link entry, and so did a prose line
   such as `` `code` - [a](b) ``. Whitespace is now read on the raw line. Emits
@@ -553,7 +566,10 @@ README mapping: `OKF4net.IndexGenerator`.
   or fence — supplies the description. Tests:
   `Index_entry_with_a_tab_after_its_marker_is_an_entry`,
   `Index_entry_whose_description_wraps_onto_the_next_line_is_not_warned`, and
-  `What_follows_an_entry_without_a_description_is_not_its_description`.
+  `What_follows_an_entry_without_a_description_is_not_its_description`. Review
+  of #99 found that continuation lookup stepping over removed code lines, so
+  prose after a fence became the entry's description; a code line now leaves an
+  empty line behind, which ends the paragraph as a blank line does.
 - **S8-4** (MAY, producers auto-generate `index.md`) — **Implemented**
   (Minor). `src/OKF4net/IndexGenerator.cs:95-96`: `public static
   IReadOnlyList<string> RegenerateIndexes(string bundleRoot) =>

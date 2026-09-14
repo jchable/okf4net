@@ -210,9 +210,9 @@ public enum DiagnosticCode
     CitationMissingSourceId,
 
     /// <summary>
-    /// A list item in an <c>index.md</c> does not begin with a link (§8 shows each
-    /// entry as <c>* [Title](relative-url) - description</c>). §8 states the format by
-    /// example rather than by rule, so this is a heuristic.
+    /// A list item in an <c>index.md</c> contains no link (§8 shows each entry as
+    /// <c>* [Title](relative-url) - description</c>). §8 states the format by example
+    /// rather than by rule, so this is a heuristic.
     /// </summary>
     IndexEntryNotALink,
 
@@ -642,23 +642,6 @@ public static class BundleValidator
         return value is not null && !value.IsEmptyValue;
     }
 
-    /// <summary>
-    /// §8: "Entries SHOULD include the description from the linked concept's
-    /// frontmatter." Warns for an entry that links to a concept which has a
-    /// <c>description</c>, when the entry carries no description text at all.
-    ///
-    /// Deliberately a presence check, not a verbatim comparison: §8's own
-    /// illustration is "<c>- short description of item 1</c>", and upstream samples
-    /// routinely shorten, so demanding an exact copy would warn on the spec's own
-    /// sample practice. An entry linking to something that is not a concept — a
-    /// subdirectory's index, a script, the reserved <c>log.md</c> — has no linked
-    /// concept frontmatter to include, so it is not checked.
-    ///
-    /// Entries resolve exactly as concept links do (§6.1), through
-    /// <see cref="ConceptLink.Resolve"/> with the index's own location as the source,
-    /// so a relative entry resolves from the index's directory and a <c>/</c> entry
-    /// from the bundle root — no second implementation of link resolution.
-    /// </summary>
     // §4.2's conventional headings this heuristic watches for, each with the words that
     // mark a heading as holding that kind of section. `# Computation` is left out: a
     // heading that merely mentions a computation is ordinary structure (acme_retail's
@@ -703,14 +686,16 @@ public static class BundleValidator
     }
 
     /// <summary>
-    /// Warns on each <c>index.md</c> list item that does not begin with a link (§8
-    /// shows every entry as <c>* [Title](relative-url) - description</c>).
+    /// Warns on each <c>index.md</c> list item that contains no link at all (§8 shows
+    /// every entry as <c>* [Title](relative-url) - description</c>). An item that renders
+    /// a link without opening on one — <c>**[A](a.md)**</c>, an icon before the link —
+    /// still gives a reader something to follow, and is not warned.
     /// </summary>
     private static void CheckIndexEntriesAreLinks(string indexPath, string body, List<Diagnostic> diagnostics)
     {
-        foreach (var (link, text) in LinkScanner.ExtractIndexListItems(body))
+        foreach (var (link, text, containsLink) in LinkScanner.ExtractIndexListItems(body))
         {
-            if (link is not null)
+            if (link is not null || containsLink)
             {
                 continue;
             }
@@ -719,11 +704,28 @@ public static class BundleValidator
                 Severity.Warning,
                 indexPath,
                 null,
-                $"index entry \"{text}\" is not a link (§8 lists entries as `* [Title](relative-url) - description`)",
+                $"index entry \"{text}\" contains no link (§8 lists entries as `* [Title](relative-url) - description`)",
                 DiagnosticCode.IndexEntryNotALink));
         }
     }
 
+    /// <summary>
+    /// §8: "Entries SHOULD include the description from the linked concept's
+    /// frontmatter." Warns for an entry that links to a concept which has a
+    /// <c>description</c>, when the entry carries no description text at all.
+    ///
+    /// Deliberately a presence check, not a verbatim comparison: §8's own
+    /// illustration is "<c>- short description of item 1</c>", and upstream samples
+    /// routinely shorten, so demanding an exact copy would warn on the spec's own
+    /// sample practice. An entry linking to something that is not a concept — a
+    /// subdirectory's index, a script, the reserved <c>log.md</c> — has no linked
+    /// concept frontmatter to include, so it is not checked.
+    ///
+    /// Entries resolve exactly as concept links do (§6.1), through
+    /// <see cref="ConceptLink.Resolve"/> with the index's own location as the source,
+    /// so a relative entry resolves from the index's directory and a <c>/</c> entry
+    /// from the bundle root — no second implementation of link resolution.
+    /// </summary>
     private static void CheckIndexEntryDescriptions(Bundle bundle, string indexPath, string body, List<Diagnostic> diagnostics)
     {
         ConceptId source;
