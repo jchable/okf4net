@@ -639,10 +639,17 @@ const WORK_BOUND = 4;
  * Counted: appendChild, insertBefore, removeChild and replaceChild, each
  * charged the size of every subtree it moves or removes (a DocumentFragment
  * argument is charged for its children, which is what actually moves).
- * Every other DOM API that can move or remove nodes throws while counting,
- * so a sanitizer cannot dodge the count by switching APIs; each is looked up
- * as an own property of the prototype jsdom defines it on, and a missing one
- * is a harness setup error rather than a silently unguarded API.
+ * Every other *generic* node-moving API (the ChildNode/ParentNode mixin
+ * methods, insertAdjacent*, normalize, adoptNode, the mutating Range methods,
+ * and the textContent/innerHTML/outerHTML setters) throws while counting, so
+ * a sanitizer cannot dodge the count by switching to one of them; each is
+ * looked up as an own property of the prototype jsdom defines it on, and a
+ * missing one is a harness setup error rather than a silently unguarded API.
+ * Element-specific mutators are NOT intercepted -- e.g.
+ * HTMLSelectElement.remove(index), the table deleteRow/deleteCell methods,
+ * the tHead/tFoot/caption setters, HTMLAnchorElement's text setter -- and
+ * deleteRow removes a row without going through removeChild. None of them
+ * can implement a generic unwrap, which is what these cases guard.
  *
  * @returns {{ body: Element, nodes: number, work: number, parsed: boolean, violations: string[] }}
  */
@@ -739,7 +746,7 @@ function renderBodyCountingWork(markdown) {
  * shape-specific output check.
  */
 function checkUnwrapWork(label, markdown, verifyOutput) {
-  check(`${label}: unwrap work <= ${WORK_BOUND} x N, and the output is exactly the allowed content`, () => {
+  check(`${label}: sanitize() work <= ${WORK_BOUND} x N, and the output is exactly the allowed content`, () => {
     const r = renderBodyCountingWork(markdown);
     assert(r.parsed, "DOMParser.parseFromString never ran -- the counter measured nothing");
     assert(r.violations.length === 0, `uncounted DOM mutation APIs used: ${r.violations.join(", ")}`);
@@ -796,6 +803,24 @@ console.log("\nUnwrap cost (deterministic work count, never wall-clock) and corr
   });
 }
 
+{
+  // Nested OPAQUE elements, not just nested wrappers: inside <svg>, <style>
+  // is an ordinary SVG element whose children parse as elements, so this
+  // parses (checked against marked + DOMParser) to <p><svg> holding a
+  // DEPTH-deep chain of <style> elements, each also holding a <g>t</g>.
+  // Phase 1's removals stay within N only because it walks back-to-front:
+  // each <style> is removed before any enclosing <style>, so no removal
+  // drags a subtree an earlier removal already took. Walking front-to-back
+  // removes the outermost <style> first and then every nested one again
+  // from its already-detached parent -- quadratic, and invisible to the
+  // three wrapper-only shapes above.
+  const DEPTH = 80;
+  checkUnwrapWork(`a ${DEPTH}-deep chain of nested <style>s inside <svg>`, "<svg>" + "<style><g>t</g>".repeat(DEPTH) + "</style>".repeat(DEPTH) + "</svg>", (body) => {
+    assert(!body.querySelector("svg, style, g"), `an <svg>/<style>/<g> survived: ${body.innerHTML.slice(0, 200)}`);
+    assert(body.textContent.trim() === "", `opaque content leaked as text: ${JSON.stringify(body.textContent.slice(0, 80))}`);
+  });
+}
+
 check("sanitize() fails closed on a root that is not connected to any document", () => {
   // viewer.js always hands sanitize() `parsed.body`, which is connected to
   // the DOMParser document. A sanitizer must not depend on that: an earlier
@@ -823,6 +848,41 @@ check("sanitize() fails closed on a root that is not connected to any document",
   assertNothingExecutable(body);
   const em = body.querySelector("em");
   assert(em && em.textContent === "kept", `the allowed <em> inside the wrappers was lost: ${body.innerHTML}`);
+});
+
+check("sanitize() aborts when its phase-2 walk meets an element with no phase-1 classification", () => {
+  // Fault injection, not a reachable input. Phase 2 matches the nodes its
+  // walk meets against a second querySelectorAll("*") snapshot; here that
+  // second call (on the parsed document, not the page) is made to omit every
+  // <div>, so the walk meets a <div style> that is not the next snapshot
+  // entry. A one-sided consistency check -- only "every snapshot element was
+  // met" -- treats that <div> as kept and renders it, attributes uncleaned,
+  // without throwing. sanitize() must throw instead, which aborts rendering
+  // before #okf-body is touched.
+  let win = null;
+  let snapshots = 0;
+  let injected = false;
+  let thrown = null;
+  try {
+    renderBody('<div style="color:red">x</div>', {}, (window) => {
+      win = window;
+      const querySelectorAll = window.Element.prototype.querySelectorAll;
+      window.Element.prototype.querySelectorAll = function (selector) {
+        const result = querySelectorAll.call(this, selector);
+        if (selector === "*" && this.ownerDocument !== window.document && ++snapshots === 2) {
+          injected = true;
+          return Array.from(result).filter((el) => el.tagName !== "DIV");
+        }
+        return result;
+      };
+    });
+  } catch (err) {
+    thrown = err;
+  }
+  assert(injected, "the fault was never injected (no second snapshot any more?) -- this case tests nothing; rewrite it");
+  assert(thrown && /^sanitize:/.test(thrown.message), `expected sanitize() to throw, got: ${thrown ? thrown.message : "no error"}`);
+  const target = win.document.getElementById("okf-body");
+  assert(target.innerHTML === "", `rendering was not aborted: ${target.innerHTML}`);
 });
 
 check("a disallowed element nested inside an opaque one is never resurrected", () => {

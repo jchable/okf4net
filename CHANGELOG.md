@@ -653,9 +653,10 @@ and this project adheres to
   subtree to text (a link or table inside `<details>`/`<div>` survives). It
   marks disallowed elements, then detaches every node bottom-up and
   re-appends each kept node top-down under its nearest kept ancestor, so
-  every DOM mutation moves a single childless node: on the harness's shapes
-  (wide, deep chain, alternating) sanitizing drags 1.0–1.9 × N nodes for an
-  N-node body.
+  every unwrap mutation moves a single childless node (removing an opaque
+  element still drags its subtree, innermost opaque element first): on the
+  harness's shapes (wide, deep chain, alternating, nested opaque) sanitizing
+  drags 1.0–1.9 × N nodes for an N-node body.
   Two intermediate, never-released versions of this same fix unwrapped one
   element at a time instead and were superlinear, because moving a node
   drags its whole subtree: innermost-first and outermost-first alike dragged
@@ -674,7 +675,8 @@ and this project adheres to
   Every scheme-obfuscation rule, `<style>` (HTML and SVG context),
   `<plaintext>`, a corrected `<noframes>` case, five mutation-XSS re-parenting
   payloads, a disallowed element nested inside an opaque one, a sanitize root
-  detached from any document, and three unwrap-cost cases now have a harness
+  detached from any document, a phase-2 consistency check reached by fault
+  injection, and four unwrap-cost cases now have a harness
   case in `tools/viewer-security-check/run.js`. The unwrap-cost cases count
   the nodes every DOM mutation drags during sanitizing and bound them at
   4 × N — deterministically, never by wall-clock time — and fail against

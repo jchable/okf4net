@@ -249,11 +249,15 @@
     // every element is visited after all of its descendants. Each element is
     // either removed outright with its whole subtree (OPAQUE_TAGS), or
     // admitted and cleaned in place (attribute allowlist, URL check, forced
-    // `disabled`), or marked for unwrapping (every other element). Nothing in
-    // this version depends on that walk direction: a front-to-back walk
-    // would also clean or mark elements inside an opaque subtree it had
-    // already removed -- wasted work on detached nodes, which phase 2 never
-    // meets (see below) -- and the harness stays green with it.
+    // `disabled`), or marked for unwrapping (every other element). The
+    // back-to-front order is load-bearing for cost: it removes every opaque
+    // subtree once, before any enclosing opaque element is removed, so no
+    // removal drags nodes an earlier removal already took and opaque
+    // removals stay within N nodes dragged in total. A front-to-back walk
+    // removes the outermost opaque element first and then each nested one
+    // again from its already-detached parent -- quadratic for nested opaque
+    // elements: run.js's unwrap-cost case with 80 nested <style>s inside
+    // <svg> measures 39.9 x N front-to-back against 1.0 x N back-to-front.
     var all = root.querySelectorAll("*");
     var unwrapAt = [];
     var unwrapCount = 0;
@@ -319,16 +323,16 @@
     // node bottom-up (last in document order first, so each node has no
     // children left when it is removed) and re-appends every kept node
     // top-down to its parent-to-be (first in document order first, so each
-    // node has no children yet when it is appended). Every DOM mutation
+    // node has no children yet when it is appended). Every unwrap mutation
     // thus moves a single childless node: one removal per node and at most
     // one insertion, so phase 2 drags at most 2 x N nodes (N = nodes under
-    // `root`), and phase 1's opaque removals at most N more, since a
-    // removed subtree no longer holds the opaque elements already removed
-    // from inside it. The run.js unwrap-cost cases count exactly this --
-    // every node dragged by every structural mutation during sanitize(),
-    // with every other mutation API made to throw -- and assert it stays
-    // within 4 x N on three shapes (measured: 1.9, 1.0 and 1.5 x N). The
-    // walk itself does constant work per node.
+    // `root`). Phase 1's opaque removals do drag whole subtrees, at most N
+    // nodes more in total thanks to its back-to-front order (see above). The
+    // run.js unwrap-cost cases count exactly this -- every node dragged by
+    // every structural mutation during sanitize(), with the other generic
+    // node-moving APIs made to throw -- and assert it stays within 4 x N on
+    // four shapes (measured: 1.9, 1.0, 1.5 and 1.0 x N). The walk
+    // itself does constant work per node.
     //
     // The walk uses a TreeWalker rooted at `root`, so it meets exactly the
     // nodes under `root` and nothing else. That is also what keeps this
@@ -381,6 +385,11 @@
       if (nextElement < live.length && current === live[nextElement]) {
         unwrap = liveUnwrap[nextElement];
         nextElement++;
+      } else if (current.nodeType === 1) {
+        // Unreachable (the walk and `live` list the same elements in the
+        // same order), but an element that is not the next `live` entry has
+        // no classification: keeping it would render it uncleaned, so abort.
+        throw new Error("sanitize: the phase 2 walk met an unclassified element");
       }
       var newParent = newParentStack[newParentStack.length - 1];
       nodes.push(current);
@@ -405,8 +414,9 @@
       }
     }
     if (nextElement !== live.length) {
-      // Unreachable for the same reason: the walk must have met every
-      // element under root, or some of them were never classified.
+      // Unreachable for the same reason. Together with the check inside the
+      // walk, this verifies both directions: every element the walk met was
+      // the next `live` entry, and every `live` entry was met.
       throw new Error("sanitize: the phase 2 walk missed an element");
     }
 
