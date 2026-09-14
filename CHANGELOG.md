@@ -1273,6 +1273,19 @@ and this project adheres to
   refusal applies unconditionally, even on a case-sensitive volume where both
   files would render fine: a site that renders differently depending on the
   filesystem it lands on is not a site.
+- Teardown after a container timeout is bounded by a single 3-second budget
+  instead of 5 seconds per kill attempt. `CliContainerEngine.KillContainerAsync`
+  bounded each of its two `kill` attempts (plus the delay between them) by its
+  own 5 s `CancellationTokenSource`, so a daemon that answered slowly but
+  reliably could stretch teardown to ~10 s, and a responsive engine's 750 ms
+  `kill` still cost the caller up to 5 s if the daemon later went
+  unresponsive — a Medium external-audit finding (a 750 ms-per-call `kill`
+  measured stretching a 30 ms `Timeout` to ~1.74 s). One 3 s deadline, computed
+  once, now covers both attempts and the delay between them; the retry is
+  skipped once fewer than 500 ms of the budget remain, so an unresponsive
+  engine cannot turn the timeout `RunAsync` promised into a multi-attempt
+  hang (§10, `docs/spec/SPEC.md`: the requested timeout bounds the whole run,
+  and teardown after it fires is part of what the caller is still waiting on).
 
 ## [0.5.0] - 2026-07-31
 

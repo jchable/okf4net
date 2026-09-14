@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using OKF4net.Attestation.Containers;
@@ -248,23 +249,120 @@ public class CliContainerEngineRunTests
     /// Teardown after a timeout runs <c>engine kill</c>, and the first version waited
     /// for that child with no bound at all: an engine whose daemon has gone away hangs
     /// on <c>kill</c>, which turned the timeout <see cref="CliContainerEngine.RunAsync"/>
-    /// promised into a hang. The "engine" here is a script that sleeps 20 s whatever it
-    /// is asked, standing in for exactly that daemon. The run must still come back as
-    /// a timeout well inside those 20 s — and must not retry a kill that already hung
-    /// once, which is why the budget is well under two sleeps.
+    /// promised into a hang. The "engine" here always hangs on <c>run</c> (so the
+    /// outer run genuinely times out) and hangs 20 s on <c>kill</c> too, standing in
+    /// for exactly that unresponsive daemon, and records one line per <c>kill</c>
+    /// invocation to a marker file so this test can also assert no retry was
+    /// attempted -- a kill that already hung once will not answer a second time
+    /// either, and the caller is already past its own deadline.
+    /// <para>
+    /// <see cref="CliContainerEngine.TeardownBudget"/> is shrunk to 1 s here instead of
+    /// asserting against its 3 s production default: the old, unbounded-per-attempt
+    /// behaviour this replaces takes at least 5 s regardless of that budget (its bound
+    /// was a hardcoded per-attempt 5 s, never a shared deadline), so a 1 s budget still
+    /// gives a wide, CI-safe margin either side of the 4 s assertion below, wider than
+    /// a straight 3 s-budget-vs-old-5 s comparison would on a loaded runner.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_hung_engine_kill_does_not_hang_the_timed_out_run()
     {
         using var tmp = new TempDir();
-        var engine = new CliContainerEngine(HangingEngine(tmp, seconds: 20));
+        var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.Hang))
+        {
+            TeardownBudget = TimeSpan.FromSeconds(1),
+        };
         var clock = Stopwatch.StartNew();
 
         var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
             async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(300))));
 
         Assert.Contains("exceeded its timeout", ex.Message);
-        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(15), $"the timed-out run took {clock.Elapsed}");
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(4), $"the timed-out run took {clock.Elapsed}");
+        Assert.Equal(1, CountMarkerLines(marker));
+    }
+
+    /// <summary>
+    /// The other half of the same budget: a <c>kill</c> that answers -- slowly, and
+    /// with failure -- must still get its retry, because the retry exists for a
+    /// container whose creation was still in flight, not only for a dead engine. The
+    /// "engine" here sleeps 750 ms then exits non-zero on every <c>kill</c> call and
+    /// records one marker line per call, so this test can assert the retry actually
+    /// happened (two lines) while still finishing comfortably inside
+    /// <see cref="CliContainerEngine.TeardownBudget"/>'s 3 s production default
+    /// (750 ms + a 250 ms delay + 750 ms ≈ 1.75 s).
+    /// </summary>
+    [Fact]
+    public async Task A_slow_failing_kill_still_gets_retried_within_the_budget()
+    {
+        using var tmp = new TempDir();
+        var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail));
+        var clock = Stopwatch.StartNew();
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
+            async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(30))));
+
+        Assert.Contains("exceeded its timeout", ex.Message);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(3.5), $"the timed-out run took {clock.Elapsed}");
+        Assert.Equal(2, CountMarkerLines(marker));
+    }
+
+    private static int CountMarkerLines(string markerFile) =>
+        File.Exists(markerFile)
+            ? File.ReadAllLines(markerFile).Count(static line => line.Length > 0)
+            : 0;
+
+    private enum KillMode
+    {
+        /// <summary>Hangs for 20 s and never exits on its own -- the unresponsive-daemon case.</summary>
+        Hang,
+
+        /// <summary>Sleeps 750 ms then exits non-zero -- the slow-but-responsive, still-failing case.</summary>
+        SlowFail,
+    }
+
+    /// <summary>
+    /// An "engine" that dispatches on its first argument the way a real one does:
+    /// <c>run</c> always hangs for <paramref name="runHangSeconds"/> (so
+    /// <see cref="CliContainerEngine.RunAsync"/> genuinely times out and proceeds to
+    /// teardown), while <c>kill</c> appends one line to <paramref name="markerFile"/>
+    /// -- so a test can count how many kill attempts actually ran -- and then behaves
+    /// per <paramref name="killMode"/>.
+    /// </summary>
+    private static string DispatchingEngine(TempDir tmp, string markerFile, int runHangSeconds, KillMode killMode)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            var killBody = killMode == KillMode.Hang
+                ? "ping -n 21 127.0.0.1 >nul\r\nexit /b 1\r\n"
+                : "ping -n 1 -w 750 192.0.2.1 >nul\r\nexit /b 1\r\n";
+            return tmp.Write(
+                "engine.cmd",
+                "@echo off\r\n"
+                + "if \"%1\"==\"kill\" goto kill\r\n"
+                + $"ping -n {runHangSeconds + 1} 127.0.0.1 >nul\r\n"
+                + "exit /b 0\r\n"
+                + ":kill\r\n"
+                + $"echo x >> \"{markerFile}\"\r\n"
+                + killBody);
+        }
+
+        var killBodySh = killMode == KillMode.Hang
+            ? "sleep 20\n"
+            : "sleep 0.75\nexit 1\n";
+        var path = tmp.Write(
+            "engine.sh",
+            "#!/bin/sh\n"
+            + "if [ \"$1\" = \"kill\" ]; then\n"
+            + $"  echo x >> '{markerFile}'\n"
+            + $"  {killBodySh}"
+            + "else\n"
+            + $"  sleep {runHangSeconds}\n"
+            + "fi\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return path;
     }
 
     private static MemoryStream StreamOver(string text) =>
@@ -324,20 +422,4 @@ public class CliContainerEngineRunTests
         }
     }
 
-    private static string HangingEngine(TempDir tmp, int seconds)
-    {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            // A .cmd as FileName with UseShellExecute = false does launch: .NET passes no
-            // lpApplicationName, and CreateProcess then runs a batch file through cmd.exe
-            // itself. No cmd.exe /c wrapper needed, and a launch failure would not hide:
-            // it surfaces as "could not be started", which fails the timeout assertion.
-            // ping pauses one second between echoes, so N+1 echoes is about N seconds.
-            return tmp.Write("engine.cmd", $"@echo off\r\nping -n {seconds + 1} 127.0.0.1 >nul\r\n");
-        }
-
-        var path = tmp.Write("engine.sh", $"#!/bin/sh\nsleep {seconds}\n");
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
 }

@@ -289,97 +289,167 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     }
 
     /// <summary>
-    /// How long one <c>kill</c> is given before the engine is treated as
-    /// unresponsive. Generous for a healthy engine, whose <c>kill</c> returns in
-    /// well under a second; short enough that a daemon which has gone away does not
-    /// turn the timeout <see cref="RunAsync"/> promised into a hang.
+    /// The whole teardown budget for <see cref="KillContainerAsync"/>: both attempts
+    /// AND the delay between them together, not a per-attempt bound. A slow but
+    /// responsive engine (a few hundred ms per <c>kill</c>) finishes well inside it;
+    /// an engine whose daemon has gone away and never answers is cut off here rather
+    /// than being allowed to turn the timeout <see cref="RunAsync"/> promised into a
+    /// multi-attempt hang (a Medium external-audit finding: a 750 ms-per-call `kill`
+    /// previously stretched a 30 ms <see cref="ContainerRunSpec.Timeout"/> to ~1.74 s,
+    /// and the old worst case -- two 5 s per-attempt bounds plus the delay -- was
+    /// closer to 10 s). §10 requires the requested timeout to bound the whole run;
+    /// teardown after that timeout fires is part of what the caller is waiting on.
     /// </summary>
-    private static readonly TimeSpan KillTimeout = TimeSpan.FromSeconds(5);
+    private const int TeardownBudgetSeconds = 3;
+
+    /// <summary>Default value of <see cref="TeardownBudget"/>; see that property.</summary>
+    internal static readonly TimeSpan DefaultTeardownBudget = TimeSpan.FromSeconds(TeardownBudgetSeconds);
 
     /// <summary>
-    /// Retries <c>binaryName kill</c> once after a short
-    /// delay, best-effort: a container whose creation was still in flight
-    /// when the first attempt ran reports "no such container" and is caught
-    /// by the retry once it actually starts. Each attempt is bounded by
-    /// <see cref="KillTimeout"/>, and an attempt that hits that bound is not
-    /// retried -- an engine that did not answer once will not answer a second
-    /// time, and the caller is already past its deadline. Never throws -- a
-    /// failure here only means <see cref="RunAsync"/> also calls
-    /// <see cref="Process.Kill(bool)"/> on its own local process, which is the
-    /// other half of teardown.
+    /// The whole teardown budget for <see cref="KillContainerAsync"/> -- see
+    /// <see cref="DefaultTeardownBudget"/> for what it covers and why 3 s. Internal and
+    /// settable only so tests can shrink it: a real caller always gets the 3 s default,
+    /// but a test that wants to discriminate this budget's behaviour from the old
+    /// unbounded-per-attempt one on a loaded CI runner needs a much smaller number to
+    /// get a comfortable timing margin either side of the assertion.
+    /// </summary>
+    internal TimeSpan TeardownBudget { get; init; } = DefaultTeardownBudget;
+
+    /// <summary>
+    /// How much of <see cref="TeardownBudget"/> must remain before the retry in
+    /// <see cref="KillContainerAsync"/> is attempted at all -- including the delay
+    /// that precedes it. Below this, the caller is already close enough to its
+    /// deadline that starting a second attempt (which cannot itself be bounded by
+    /// less time than it would need to even report failure cleanly) is not worth it.
+    /// </summary>
+    private static readonly TimeSpan RetryThreshold = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Delay between the two <c>kill</c> attempts; counts against <see cref="TeardownBudget"/>.</summary>
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// Retries <c>binaryName kill</c> once after a short delay, best-effort: a
+    /// container whose creation was still in flight when the first attempt ran
+    /// reports "no such container" and is caught by the retry once it actually
+    /// starts. Unlike the first version, no single attempt gets its own fixed bound --
+    /// one <see cref="TeardownBudget"/> deadline, computed once here, covers both
+    /// attempts and the delay between them, so an unresponsive engine cannot make
+    /// teardown outlive the timeout <see cref="RunAsync"/> promised no matter how the
+    /// budget is split between them. An attempt that hits the remaining budget is not
+    /// retried, and the retry itself only runs when at least <see cref="RetryThreshold"/>
+    /// of the budget is still left (delay included) -- an engine that did not answer
+    /// once will not answer a second time, and starting one is not worth eating what
+    /// little budget remains. Never throws -- a failure here only means
+    /// <see cref="RunAsync"/> also calls <see cref="Process.Kill(bool)"/> on its own
+    /// local process, which is the other half of teardown.
     /// </summary>
     private async Task KillContainerAsync(string containerName)
     {
+        var elapsed = Stopwatch.StartNew();
+        TimeSpan Remaining()
+        {
+            var left = TeardownBudget - elapsed.Elapsed;
+            return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+        }
+
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            using var kill = new Process
+            var bound = Remaining();
+            if (bound == TimeSpan.Zero)
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = binaryName,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                    StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                },
-            };
-            kill.StartInfo.ArgumentList.Add("kill");
-            kill.StartInfo.ArgumentList.Add(containerName);
-
-            try
-            {
-                kill.Start();
-
-                // Drain both redirected streams before waiting. A child whose pipe
-                // buffer fills blocks on the write and never exits, so a `kill` that
-                // printed enough (an engine that is verbose about an unknown
-                // container, say) would deadlock the teardown it is part of. Reading
-                // to end also means the `catch` below sees a real failure rather than
-                // a hang.
-                var drainOut = kill.StandardOutput.ReadToEndAsync();
-                var drainErr = kill.StandardError.ReadToEndAsync();
-                using var bound = new CancellationTokenSource(KillTimeout);
-                try
-                {
-                    await kill.WaitForExitAsync(bound.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // The engine itself is not answering. Kill this child (and
-                    // whatever it spawned) so it cannot outlive the run, then give up:
-                    // the retry below exists for a container that was not there YET,
-                    // not for an engine that will not talk.
-                    try
-                    {
-                        kill.Kill(entireProcessTree: true);
-                    }
-                    catch (Exception)
-                    {
-                    }
-
-                    return;
-                }
-
-                await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
-
-                if (kill.ExitCode == 0)
-                {
-                    return;
-                }
-            }
-            catch (Exception)
-            {
-                // Best-effort teardown; Process.Kill on the local process
-                // handles the case where the engine binary itself is gone.
+                return;
             }
 
-            // Back off only when another attempt follows. Sleeping after the last one
-            // delayed the caller's OperationCanceledException by 250 ms for nothing.
+            if (await TryKillOnceAsync(containerName, bound).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            // Back off only when another attempt follows, and only when enough
+            // budget remains to make it worthwhile.
             if (attempt < 1)
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+                var remaining = Remaining();
+                if (remaining < RetryThreshold)
+                {
+                    return;
+                }
+
+                var delay = RetryDelay < remaining ? RetryDelay : remaining;
+                if (delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(delay).ConfigureAwait(false);
+                }
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs one <c>binaryName kill &lt;containerName&gt;</c>, bounded by <paramref name="bound"/>
+    /// (a slice of <see cref="KillContainerAsync"/>'s overall <see cref="TeardownBudget"/>,
+    /// never negative -- the caller clamps). Returns <c>true</c> only on a clean exit 0;
+    /// a non-zero exit, an exception starting or running the process, or hitting
+    /// <paramref name="bound"/> all come back <c>false</c> so the caller can decide
+    /// whether to retry.
+    /// </summary>
+    private async Task<bool> TryKillOnceAsync(string containerName, TimeSpan bound)
+    {
+        using var kill = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = binaryName,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            },
+        };
+        kill.StartInfo.ArgumentList.Add("kill");
+        kill.StartInfo.ArgumentList.Add(containerName);
+
+        try
+        {
+            kill.Start();
+
+            // Drain both redirected streams before waiting. A child whose pipe
+            // buffer fills blocks on the write and never exits, so a `kill` that
+            // printed enough (an engine that is verbose about an unknown
+            // container, say) would deadlock the teardown it is part of. Reading
+            // to end also means the `catch` below sees a real failure rather than
+            // a hang.
+            var drainOut = kill.StandardOutput.ReadToEndAsync();
+            var drainErr = kill.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(bound);
+            try
+            {
+                await kill.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The engine itself is not answering within its slice of the
+                // budget. Kill this child (and whatever it spawned) so it cannot
+                // outlive the run.
+                try
+                {
+                    kill.Kill(entireProcessTree: true);
+                }
+                catch (Exception)
+                {
+                }
+
+                return false;
+            }
+
+            await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
+            return kill.ExitCode == 0;
+        }
+        catch (Exception)
+        {
+            // Best-effort teardown; Process.Kill on the local process
+            // handles the case where the engine binary itself is gone.
+            return false;
         }
     }
 
