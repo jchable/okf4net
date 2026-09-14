@@ -239,6 +239,19 @@ are the concrete entry points.
   `'-'` in the meantime), but revisit once upstream responds — a decision to
   broaden `ValidateSegment` needs its own design pass (cross-platform Unicode
   normalization, golden-fixture impact).
+- **Open question upstream: what a relative path-valued field resolves
+  against (§6.2).** §6.2 accepts "a relative path" for fields such as
+  `attester.resource` but never says relative to what. We read a bare path
+  (`references/attesters/revenue.py`) as bundle-root-relative and `./`/`../` as
+  relative to the concept's directory — the only reading under which the spec's
+  own §6.3, §10.2 and Appendix A examples resolve — and recorded it as
+  **S6.2-1** in `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
+  Raised upstream as
+  [GoogleCloudPlatform/knowledge-catalog#408](https://github.com/GoogleCloudPlatform/knowledge-catalog/issues/408)
+  on 2026-09-11 (open, no reply as of 2026-09-14). If the answer contradicts that
+  reading, `FrontmatterResourceClassifier.KindOf` (`src/OKF4net/FrontmatterResource.cs`)
+  and the S6.2-1 entry change with it — and bundles written with bare paths would
+  resolve differently.
 
 - **`producers/OkfProducer` shipped** (repo scanner → OKF v0.2 bundle generator, `generate`/
   `validate` commands, npm/NuGet/README detection, and a C# code-graph stage: one concept per
