@@ -198,6 +198,73 @@ public class ContainerIntegrationTests
         Assert.Contains("\"distinct_riders\":2", json, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <c>ridership_shape.py</c> used to read both counts through <c>int()</c> before
+    /// checking anything, so a receipt carrying <c>"5"</c>, <c>2.9</c> or <c>true</c>
+    /// passed — the string coerced, the float silently truncated, the boolean an
+    /// <c>int</c> to Python. Each malformed receipt below is one the old attester
+    /// accepted (every value also satisfies the non-negative and riders-within-trips
+    /// invariants once coerced), so each fails only if the type check itself holds.
+    ///
+    /// Runs the bundle's shipped attester source through the real
+    /// <see cref="ContainerAttester"/> bootstrap, receipt shaped as
+    /// <c>ReceiptParsing</c> produces it (a list of column-keyed dictionaries). The
+    /// genuine control is what keeps a red result from meaning "the script failed to
+    /// load": it must pass, and with integer counts it is exactly what a real
+    /// <c>count(*)</c> receipt looks like. Needs Docker only, no Postgres.
+    ///
+    /// <para>No integral-float case (<c>5.0</c>) here, and that is deliberate rather
+    /// than an oversight: <c>JsonSerializer</c> writes a CLR <see langword="double"/>
+    /// 5.0 as <c>5</c>, so through this host it reaches the script as a Python
+    /// <c>int</c> and passes — verified by adding the case and watching it fail. The
+    /// attester does reject a float <c>5.0</c>; this host simply cannot hand it one.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Meridian_ridership_attester_rejects_counts_that_are_not_genuine_integers()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var source = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "bundles", "meridian_transit", "attesters", "ridership_shape.py"));
+        var attester = new ContainerAttester(new CliContainerEngine(), new ContainerAttesterOptions());
+
+        Task<AttestationVerdict> Attest(object? trips, object? riders) => attester.AttestAsync(new AttestationContext(
+            Contract: new AttestedComputationContract(
+                "postgres",
+                [new ComputationParameter("service_date", "string", true)],
+                null,
+                new Executor(null, ["executed_sql", "result"]),
+                new Attester("attesters/ridership_shape.py")),
+            Computation: new SanctionedComputation(ComputationSource.Inline, "SELECT 1", null),
+            Bound: new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?> { ["service_date"] = "2026-09-10" }),
+            Values: new Dictionary<string, object?> { ["service_date"] = "2026-09-10" },
+            Receipt: new Receipt(new Dictionary<string, object?>
+            {
+                ["executed_sql"] = "SELECT 1",
+                ["result"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["completed_trips"] = trips, ["distinct_riders"] = riders },
+                },
+            }),
+            AttesterSourceText: source)).AsTask();
+
+        var genuine = await Attest(5L, 2L);
+        Assert.True(genuine.Passed, genuine.Detail);
+
+        var malformed = new (string Label, object? Trips, object? Riders, string Column)[]
+        {
+            ("string count", "5", 2L, "completed_trips"),
+            ("fractional float", 5L, 2.9, "distinct_riders"),
+            ("boolean", 5L, true, "distinct_riders"),
+        };
+
+        foreach (var (label, trips, riders, column) in malformed)
+        {
+            var verdict = await Attest(trips, riders);
+            Assert.False(verdict.Passed, $"{label}: the attester accepted {column} = {trips ?? "null"} / {riders ?? "null"}");
+            Assert.Contains($"{column} is not an integer", verdict.Detail ?? "", StringComparison.Ordinal);
+        }
+    }
+
     [SkippableFact]
     public async Task SqlClient_runtime_runs_a_real_postgres_query()
     {

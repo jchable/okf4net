@@ -102,7 +102,8 @@ of coverage:
 **Read the two attesters together; the contrast is the lesson.** `fare_cap.py`
 *recomputes* the policy from the run's own inputs, so a pass is evidence about the
 number being displayed. `ridership_shape.py` can only check invariants of the
-query's shape, and its docstring says why: `executed_sql` is echoed back by the
+query's shape (one row, both counts genuine non-negative integers, riders within
+trips), and its docstring says why: `executed_sql` is echoed back by the
 host's own wrapper, and Postgres mints no equivalent of BigQuery's `job_id` for a
 consumer to resolve independently. Same bundle, same host, two genuinely different
 strengths of guarantee.
