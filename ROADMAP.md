@@ -91,11 +91,12 @@ are the concrete entry points.
   [#86](https://github.com/jchable/okf4net/issues/86), which carries the
   reproduction.
   **The design question comes before the fix, and it is bigger than the title
-  suggests.** `CanonicalizeRoot` has nine call sites across five projects —
+  suggests.** `CanonicalizeRoot` has eleven call sites across five projects —
   `Bundle`, `IndexGenerator`, `BundleConceptWriter`, `OKF4net.Catalog`
-  (`CatalogPathResolver`, `FileMemoryStore`), `OKF4net.Viewer` — and two of
-  them are the path-safety guards themselves, `IsWithinBundleRoot` and
-  `HasReparsePointAncestor`. Making it resolve reparse points would therefore
+  (`CatalogPathResolver`, `FileMemoryStore`), `OKF4net.Viewer` — and three of
+  them are the path-safety guards themselves, `IsWithinBundleRoot` and the
+  2-arg `HasReparsePointAncestor` and its strict twin
+  `HasReparsePointOrUninspectableAncestor`. Making it resolve reparse points would therefore
   change what "inside the bundle" means everywhere, which is a security change
   with a repo-wide blast radius, not a lock fix. The narrower alternative is to
   leave `CanonicalizeRoot` lexical and give the lock registry its own resolved

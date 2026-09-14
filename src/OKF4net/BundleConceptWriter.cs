@@ -1041,8 +1041,9 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Validates <paramref name="conceptId"/> (parseable, not the reserved
     /// <c>index</c>/<c>log</c> name) and the filesystem path it resolves to
-    /// (within the bundle root; no reparse point among its parent
-    /// directories or at the target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
+    /// (within the bundle root; no reparse point, nor any entry whose link
+    /// status cannot be inspected, among its parent directories or at the
+    /// target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
     /// and <see cref="AppendToConceptAtomic"/> so the two can never diverge
     /// on what counts as a valid write target. Pure: performs no I/O beyond
     /// the reparse-point/existence checks themselves, and does not touch
@@ -1114,19 +1115,24 @@ public sealed class BundleConceptWriter
         // above would happily accept "tables/refunds" even if "tables" is a
         // junction pointing outside the bundle -- the OS follows it when
         // Directory.CreateDirectory/File.WriteAllText actually touch disk.
+        // The STRICT walk: a directory whose link status cannot be read is
+        // refused like a link (this is a guard, and a guard fails closed --
+        // see ReparsePoints.IsReparsePointOrUninspectable); a directory that
+        // does not exist yet is not, so new subdirectories are still allowed.
         var targetParentDir = Path.GetDirectoryName(targetPath);
-        if (!string.IsNullOrEmpty(targetParentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, targetParentDir))
+        if (!string.IsNullOrEmpty(targetParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, targetParentDir))
         {
             return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
         }
 
         // Also reject the target FILE node itself being a reparse point (a
         // planted file symlink at e.g. tables/x.md pointing at an external
-        // file): HasReparsePointAncestor above only walks directory
+        // file): the ancestor walk above only covers directory
         // ANCESTORS of targetPath, it never inspects targetPath itself, so
         // an existing symlinked concept file would otherwise sail through
-        // both checks and a later read/write would follow the link.
-        if (ReparsePoints.IsReparsePoint(targetPath))
+        // both checks and a later read/write would follow the link. Strict
+        // for the same reason as the walk above.
+        if (ReparsePoints.IsReparsePointOrUninspectable(targetPath))
         {
             return $"Error: '{id}' is a reparse point (symlink/junction), not a regular file -- refusing to overwrite it.";
         }
@@ -1455,8 +1461,8 @@ public sealed class BundleConceptWriter
     /// </returns>
     private string? LateReparseGuard(string subject, string? parentDir, string targetPath)
     {
-        if ((!string.IsNullOrEmpty(parentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, parentDir))
-            || ReparsePoints.IsReparsePoint(targetPath))
+        if ((!string.IsNullOrEmpty(parentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, parentDir))
+            || ReparsePoints.IsReparsePointOrUninspectable(targetPath))
         {
             return $"Error: {subject} resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
         }

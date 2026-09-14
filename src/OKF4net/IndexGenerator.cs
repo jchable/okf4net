@@ -140,22 +140,29 @@ public static class IndexGenerator
     /// before each <c>index.md</c> write, that the target directory itself
     /// and every ancestor directory strictly UP TO (but not including)
     /// <paramref name="bundleRoot"/> is still free of reparse points (see
-    /// the private <c>HasReparsePointAncestor</c> helper, which reuses
-    /// <see cref="ReparsePoints.IsReparsePoint"/> -- the same primitive the
-    /// early skip uses -- rather than duplicating platform-specific reparse
-    /// detection). <paramref name="bundleRoot"/> itself is deliberately
-    /// exempt from this check -- see <c>HasReparsePointAncestor</c>'s own
+    /// the private <c>HasReparsePointOrUninspectableAncestor</c> helper, which reuses
+    /// <see cref="ReparsePoints"/>' shared detection rather than duplicating
+    /// platform-specific reparse detection). The late checks are GUARDS and
+    /// use the strict predicate
+    /// (<see cref="ReparsePoints.IsReparsePointOrUninspectable"/>): an entry
+    /// whose link status cannot be read is skipped like a link. The early
+    /// skip is a WALK and keeps the lenient
+    /// <see cref="ReparsePoints.IsReparsePoint"/>, so which entries each index
+    /// lists does not change -- see those two predicates' remarks for the polarity
+    /// rule. <paramref name="bundleRoot"/> itself is deliberately
+    /// exempt from this check -- see <c>HasReparsePointOrUninspectableAncestor</c>'s own
     /// doc comment for why: a symlinked/mounted bundle root is a legitimate
     /// setup that the early traversal already indexes unconditionally, and
     /// treating it as suspect here would silently suppress every index
     /// write for such a bundle. The <c>index.md</c> FILE NODE itself is
-    /// ALSO re-checked via <see cref="ReparsePoints.IsReparsePoint"/> right
+    /// ALSO re-checked via <see cref="ReparsePoints.IsReparsePointOrUninspectable"/> right
     /// before the write -- the ancestor walk only covers directories
     /// strictly between the target directory and <paramref name="bundleRoot"/>,
     /// so it would never notice a pre-planted <c>index.md</c> symlink sitting
     /// directly in an otherwise-genuine directory (a gap <c>OkfBundleTools</c>'s
     /// <c>WriteConcept</c>/<c>AppendLog</c> (in the separate <c>OKF4net.Agents</c>
     /// project) already close for their own target files). A reparse point
+    /// (or, at the two late checks, an entry that cannot be inspected)
     /// detected at any of these three points
     /// (early skip, late ancestor re-check, late target-node re-check) is
     /// handled the same way: that <c>index.md</c> write is SKIPPED (not
@@ -256,7 +263,7 @@ public static class IndexGenerator
             // time; it could have been replaced by a symlink/junction any
             // time between then and now. Re-checking immediately before the
             // write narrows (without closing) that window.
-            if (HasReparsePointAncestor(bundleRoot, directory))
+            if (HasReparsePointOrUninspectableAncestor(bundleRoot, directory))
             {
                 continue;
             }
@@ -271,13 +278,16 @@ public static class IndexGenerator
             // (its only ancestor, `directory`, is a genuine directory) and
             // get silently overwritten, since File.WriteAllText follows a
             // file symlink. This mirrors WriteConcept/AppendLog, which both
-            // check ReparsePoints.IsReparsePoint on their own target FILE
+            // check their own target FILE
             // node in addition to its ancestor chain -- IndexGenerator was
             // asymmetric with those until this check was added. Same
             // skip-not-abort handling as the ancestor check above: this
             // directory's index.md write is skipped and regeneration
-            // continues with the rest of the bundle.
-            if (ReparsePoints.IsReparsePoint(indexPath))
+            // continues with the rest of the bundle. Strict, like the
+            // ancestor check: an index.md whose link status cannot be read is
+            // skipped too (a guard fails closed -- see
+            // ReparsePoints.IsReparsePointOrUninspectable).
+            if (ReparsePoints.IsReparsePointOrUninspectable(indexPath))
             {
                 continue;
             }
@@ -449,11 +459,15 @@ public static class IndexGenerator
     /// <c>true</c> if <paramref name="directory"/> itself, or any directory
     /// strictly BETWEEN it and <paramref name="bundleRoot"/> (exclusive of
     /// <paramref name="bundleRoot"/> itself), is a filesystem reparse point
-    /// (symlink, junction, mount point) -- checked via
-    /// <see cref="ReparsePoints.IsReparsePoint"/>, the same lstat-like
-    /// primitive <see cref="CollectMarkdown"/>'s early skip uses, so the
-    /// early and late checks can never diverge on what counts as a reparse
-    /// point.
+    /// (symlink, junction, mount point) OR cannot be inspected -- checked via
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>. This is a
+    /// GUARD (it decides whether an <c>index.md</c> is written), so it fails
+    /// closed on an entry whose link status cannot be read, while
+    /// <see cref="CollectMarkdown"/>'s early skip -- a WALK -- keeps the
+    /// lenient <see cref="ReparsePoints.IsReparsePoint"/>. Both share one
+    /// classification underneath, so the early and late checks can never
+    /// diverge on what counts as a reparse point; they differ only on an
+    /// entry that cannot be inspected, deliberately.
     ///
     /// <paramref name="bundleRoot"/> is deliberately never inspected, even
     /// when <paramref name="directory"/> equals it: pointing <c>okf index</c>
@@ -464,11 +478,11 @@ public static class IndexGenerator
     /// unconditionally -- it never checks the walk's own starting root for
     /// being a reparse point either. Treating the root as inclusive would
     /// silently suppress every single index write for such a bundle. This
-    /// mirrors the shared <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
+    /// mirrors the shared <see cref="ReparsePoints.HasReparsePointOrUninspectableAncestor(string, string)"/>
     /// convenience overload's own walk, which stops via
     /// <c>while (!Equals(current, fullRoot))</c> -- the equality-to-root
     /// check gates entry to the loop body, so the root itself is never
-    /// passed to <see cref="ReparsePoints.IsReparsePoint"/>. Kept as its own
+    /// inspected. Kept as its own
     /// wrapper rather than folded into that overload: this walk already
     /// hardcoded <see cref="StringComparison.Ordinal"/> -- path components
     /// must compare case-sensitively to match filesystem semantics on
@@ -483,11 +497,11 @@ public static class IndexGenerator
     /// passed <see cref="DirectoriesToIndex"/>'s early skip still needs this
     /// second look.
     /// </summary>
-    private static bool HasReparsePointAncestor(string bundleRoot, string directory)
+    private static bool HasReparsePointOrUninspectableAncestor(string bundleRoot, string directory)
     {
         var fullRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
         var current = Path.GetFullPath(directory);
-        return ReparsePoints.HasReparsePointAncestor(fullRoot, current, StringComparison.Ordinal);
+        return ReparsePoints.HasReparsePointOrUninspectableAncestor(fullRoot, current, StringComparison.Ordinal);
     }
 
 }

@@ -1289,6 +1289,27 @@ and this project adheres to
   whole run, and teardown after it fires is part of what the caller is
   still waiting on.
 
+### Security
+
+- **Link guards now refuse an entry whose link status cannot be inspected**,
+  instead of treating it as a plain directory. A junction carrying a
+  deny-ReadAttributes ACE, under a parent that denies listing, makes reading
+  its attributes fail while the OS still traverses it on the write that
+  follows; the shared predicate answered "not a link", and `okf-render` wrote
+  `x/y/z/two.html` outside `--out` (executed, not hypothesised). The fix is a
+  strict variant for guards only: render output (`--out` resolution and every
+  file written), concept writes (`BundleConceptWriter`, hence `okf verify`,
+  `okf_write_concept` and the catalog's memory writes), `log.md`
+  (`okf_append_log`), index writes, `okf_browse`, and the catalog memory
+  store's read, enumerate and recursive delete of a scope directory. Walks
+  keep the lenient predicate, so what a bundle loads, what an `index.md`
+  lists, what `okf validate` reports (§6.2 resource status) and what a catalog
+  reports do not change. An entry that does not exist yet is still allowed,
+  so new files and subdirectories are unaffected; error messages are
+  unchanged. Not a spec behaviour: the OKF spec says nothing about filesystem
+  links — this is the host's guarantee that a bundle-relative write stays in
+  the bundle (§3) or in the output directory it was given.
+
 ## [0.5.0] - 2026-07-31
 
 ### Added

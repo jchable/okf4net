@@ -399,9 +399,12 @@ public sealed class OkfBundleTools
             var bundle = GetBundle();
             var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
 
+            // Strict ancestor walk: Browse reads through fullDir, so a directory
+            // whose link status cannot be read is refused like a link (a guard
+            // fails closed -- see ReparsePoints.IsReparsePointOrUninspectable).
             if (!ReparsePoints.IsWithinBundleRoot(bundle.Root, fullDir)
                 || !Directory.Exists(fullDir)
-                || ReparsePoints.HasReparsePointAncestor(bundle.Root, fullDir))
+                || ReparsePoints.HasReparsePointOrUninspectableAncestor(bundle.Root, fullDir))
             {
                 return $"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.";
             }
@@ -867,12 +870,14 @@ public sealed class OkfBundleTools
             // follow it, so without this check AppendLog would silently
             // overwrite whatever external file it points at. log.md always
             // lives directly at BundleRoot, so its only directory ancestor is
-            // BundleRoot itself -- HasReparsePointAncestor's walk stops there
+            // BundleRoot itself -- the ancestor walk stops there
             // immediately without checking anything, which is why the file
             // node itself (not its ancestor chain) is the check that matters
             // here; both are included for the same defense-in-depth shape as
-            // WriteConcept's guard.
-            if (ReparsePoints.IsReparsePoint(logPath) || ReparsePoints.HasReparsePointAncestor(BundleRoot, BundleRoot))
+            // WriteConcept's guard. Both strict: a log.md whose link status
+            // cannot be read is refused like a link (a guard fails closed --
+            // see ReparsePoints.IsReparsePointOrUninspectable).
+            if (ReparsePoints.IsReparsePointOrUninspectable(logPath) || ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, BundleRoot))
             {
                 return "Error: log.md is a reparse point (symlink/junction), not a regular file -- refusing to write through it.";
             }
@@ -927,8 +932,8 @@ public sealed class OkfBundleTools
                 // itself having been replaced with a reparse point in this
                 // narrow window.
                 var logParentDir = Path.GetDirectoryName(logPath);
-                if ((!string.IsNullOrEmpty(logParentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, logParentDir))
-                    || ReparsePoints.IsReparsePoint(logPath))
+                if ((!string.IsNullOrEmpty(logParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, logParentDir))
+                    || ReparsePoints.IsReparsePointOrUninspectable(logPath))
                 {
                     return "Error: log.md resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
                 }

@@ -415,6 +415,56 @@ public class IndexTests
         Assert.False(File.Exists(Path.Combine(external.Path, "index.md")));
     }
 
+    [SkippableFact]
+    public void Index_write_is_skipped_for_a_directory_swapped_for_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1: same substitution window as the test above, but the junction
+        // that replaces "x/y" cannot be inspected by the current user (deny
+        // ReadAttributes on it, deny listing on "x"), while the write still
+        // traverses it. The lenient IsReparsePoint answered "not a link" and
+        // x/y's index.md landed in `external`. The late guard must fail closed.
+        //
+        // The deny-listing ACE on "x" is lifted again in the hook for "x/zz",
+        // which sorts after "x/y" at the same depth: "x" itself is indexed
+        // last, and a directory it cannot list would abort the run for a
+        // reason that has nothing to do with the guard under test.
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "x/y/a.md", "BigQuery Dataset", "A", "desc");
+        WriteDoc(tmp, "x/zz/b.md", "BigQuery Dataset", "B", "desc");
+        using var external = new TempDir();
+
+        var swapped = Path.Combine(tmp.Path, "x", "y");
+        var later = Path.Combine(tmp.Path, "x", "zz");
+        UninspectableJunction? junction = null;
+        IndexGenerator.BeforeLateReparseCheckForTest = directory =>
+        {
+            if (string.Equals(directory, swapped, StringComparison.Ordinal))
+            {
+                Directory.Delete(swapped, recursive: true);
+                junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+            }
+            else if (string.Equals(directory, later, StringComparison.Ordinal))
+            {
+                junction?.Lift();
+            }
+        };
+
+        try
+        {
+            var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+
+            Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+            Assert.DoesNotContain(Path.Combine(swapped, "index.md"), written);
+            Assert.Contains(Path.Combine(later, "index.md"), written);
+            Assert.False(File.Exists(Path.Combine(external.Path, "index.md")));
+        }
+        finally
+        {
+            IndexGenerator.BeforeLateReparseCheckForTest = null;
+            junction?.Dispose();
+        }
+    }
+
     // ----------------------------------------------------------------
     // F2 [Security]: the late guard re-checked HasReparsePointAncestor
     // (ancestors of the directory about to be indexed) but never the
@@ -462,7 +512,7 @@ public class IndexTests
     }
 
     // ----------------------------------------------------------------
-    // A4: symlinked-root regression guard. HasReparsePointAncestor's late
+    // A4: symlinked-root regression guard. HasReparsePointOrUninspectableAncestor's late
     // re-check must NEVER inspect bundleRoot itself -- only directories
     // strictly between the write target and bundleRoot. A bundle root that
     // is itself a symlink/junction/mount is a legitimate, common setup

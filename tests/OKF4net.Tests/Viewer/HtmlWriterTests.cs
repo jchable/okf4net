@@ -371,6 +371,73 @@ public class HtmlWriterTests
         Assert.False(File.Exists(Path.Combine(external.Path, "second.html")));
     }
 
+    [SkippableFact]
+    public void Write_refuses_a_page_whose_path_crosses_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1, the escape a D3 reviewer executed: "dest/x/y" is a junction
+        // to `external` carrying a deny-ReadAttributes ACE, and "dest/x" denies
+        // listing, so File.GetAttributes on the junction throws
+        // UnauthorizedAccessException while the OS still lets a write traverse
+        // it. The lenient IsReparsePoint answered "not a link" and the page
+        // landed in external/z/two.html. The guard must fail closed instead:
+        // an entry it cannot inspect is refused like a link.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        using var external = new TempDir();
+        using var junction = dest.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var page = new ViewerPage(ConceptId.Parse("x/y/z/two"), "Two", "x/y/z/two.html", [], "body", [], []);
+        var site = new ViewerSite(src.Path, [page], string.Empty, []);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, dest.Path));
+        Assert.StartsWith("refusing to write 'x/y/z/two.html': it resolves outside the output directory", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+    }
+
+    [SkippableFact]
+    public void Write_refuses_an_out_dir_reached_through_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1, GuardOutputDirectory's side: `--out` is "vlink/site", where
+        // "vlink" is a junction into the bundle whose attributes cannot be
+        // read. The lenient walk could not see the junction, resolved `--out`
+        // to its lexical path, and the site was written into the bundle it
+        // renders. Unable to resolve where `--out` lands, the guard must
+        // refuse rather than assume. (`--out` being the junction ITSELF was not
+        // an escape even on the lenient predicate: Directory.CreateDirectory
+        // threw UnauthorizedAccessException on it before anything was written;
+        // one level below the junction, it succeeded.)
+        using var src = new TempDir();
+        using var linkHost = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+        var insideBundle = Path.Combine(src.Path, "generated-site");
+        Directory.CreateDirectory(insideBundle);
+        using var junction = linkHost.TryCreateUninspectableJunction(Path.Combine("host", "vlink"), insideBundle);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var outDir = Path.Combine(junction!.LinkPath, "site");
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, outDir));
+        Assert.StartsWith($"refusing to render into '{outDir}': it is inside the bundle being rendered", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(insideBundle));
+    }
+
+    [Fact]
+    public void Write_still_creates_a_page_in_new_nested_subdirectories()
+    {
+        // Task H1 regression: the fail-closed guard treats an entry it cannot
+        // inspect as a link, but an entry that does not exist yet -- every
+        // directory of a page about to be created -- must still be allowed.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var page = new ViewerPage(ConceptId.Parse("brand/new/deep/page"), "Page", "brand/new/deep/page.html", [], "body", [], []);
+        var site = new ViewerSite(src.Path, [page], string.Empty, []);
+
+        var written = HtmlWriter.Write(site, Path.Combine(dest.Path, "not-yet", "out"));
+
+        Assert.Contains("brand/new/deep/page.html", written);
+        Assert.True(File.Exists(Path.Combine(dest.Path, "not-yet", "out", "brand", "new", "deep", "page.html")));
+    }
+
     [Fact]
     public void Write_surfaces_parse_errors_on_the_index_page()
     {

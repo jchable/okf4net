@@ -25,15 +25,102 @@ namespace OKF4net.Internal;
 internal static class ReparsePoints
 {
     /// <summary>
+    /// What a single, non-following look at one directory entry found. Kept
+    /// as four states rather than a bool because the two predicates below
+    /// agree on three of them and deliberately disagree on the fourth.
+    /// </summary>
+    private enum EntryState
+    {
+        /// <summary>No entry exists at the path (or at one of its parents).</summary>
+        Absent,
+
+        /// <summary>A plain file or directory, not itself a link.</summary>
+        Plain,
+
+        /// <summary>A symlink, junction, mount point or other reparse point.</summary>
+        ReparsePoint,
+
+        /// <summary>
+        /// The entry could not be looked at: an <see cref="UnauthorizedAccessException"/>
+        /// or an <see cref="IOException"/> other than not-found. Whether it is
+        /// a link is unknown.
+        /// </summary>
+        Uninspectable,
+    }
+
+    /// <summary>
     /// <c>true</c> if <paramref name="path"/> is itself a reparse point
     /// (symlink, junction, ...), without following it. Returns <c>false</c>
-    /// (rather than throwing) if the attributes cannot be read -- e.g. a
-    /// dangling symlink whose attributes are nonetheless still queryable via
-    /// <c>GetFileAttributes</c>/<c>lstat</c> on the link itself, or a path
-    /// that vanished between enumeration and this check -- since such races
-    /// mean there's no entry left to skip.
+    /// (rather than throwing) if the attributes cannot be read -- e.g. a path
+    /// that vanished between enumeration and this check, since such a race
+    /// means there's no entry left to skip, or an entry the current user may
+    /// not inspect.
     /// </summary>
-    internal static bool IsReparsePoint(string path)
+    /// <remarks>
+    /// The LENIENT predicate: for a WALK, which enumerates entries and skips
+    /// the links among them (<c>Bundle</c>'s and <c>IndexGenerator</c>'s
+    /// <c>CollectMarkdown</c>, <c>IndexGenerator</c>'s per-child skip) or
+    /// reports on what it sees (<c>Bundle.TryResolveResource</c>'s status,
+    /// which <c>okf validate</c> reports; <c>CatalogPathResolver</c>'s
+    /// diagnostics). Those two also gate reads -- <c>TryResolveResource</c>
+    /// guards <c>ReadResourceText</c> for the agent tools and attestation, and
+    /// a catalog source path is then loaded -- and keep this predicate
+    /// anyway, by decision, so what validation and catalog loading report
+    /// does not change. A walk fails OPEN on an
+    /// entry it cannot inspect because refusing there changes what a bundle
+    /// loads or what <c>okf validate</c> reports, for a failure that is the
+    /// filesystem's, not the bundle's. A GUARD -- code that refuses or allows
+    /// a write, a delete or an outward read -- must not use this: an entry
+    /// whose link status it cannot read is exactly the entry it cannot vouch
+    /// for, and a junction carrying a deny-ReadAttributes ACE (with its
+    /// parent denying listing) is still traversed by the OS on the write that
+    /// follows. Guards use <see cref="IsReparsePointOrUninspectable"/>.
+    /// </remarks>
+    internal static bool IsReparsePoint(string path) => Inspect(path) == EntryState.ReparsePoint;
+
+    /// <summary>
+    /// <c>true</c> if <paramref name="path"/> is itself a reparse point, OR
+    /// if whether it is one cannot be determined (an
+    /// <see cref="UnauthorizedAccessException"/>, or an <see cref="IOException"/>
+    /// other than not-found, while reading it). <c>false</c> for a plain file
+    /// or directory, and for an entry that does not exist -- a file about to
+    /// be created, or a directory about to be created above it.
+    /// </summary>
+    /// <remarks>
+    /// The STRICT predicate, for GUARDS: code that refuses or allows a write,
+    /// a delete or an outward read through <paramref name="path"/>. A guard
+    /// fails CLOSED, because the cost is asymmetric: refusing an entry it
+    /// could not inspect costs a clear error, while allowing it lets the OS
+    /// follow whatever that entry turns out to be. The escape this closes was
+    /// executed, not hypothesised: a junction carrying a deny-ReadAttributes
+    /// ACE, under a parent denying listing, makes
+    /// <see cref="File.GetAttributes(string)"/> throw
+    /// <see cref="UnauthorizedAccessException"/> (its <c>FindFirstFile</c>
+    /// fallback needs the parent's listing) while a write still traverses the
+    /// junction -- and <see cref="IsReparsePoint"/>, answering "not a link",
+    /// let <c>okf-render</c> write outside <c>--out</c>.
+    ///
+    /// Not-found is NOT uninspectable, on purpose: every write guard checks
+    /// entries that do not exist yet, and refusing those would refuse every
+    /// new file. Both <see cref="FileNotFoundException"/> (a missing leaf) and
+    /// <see cref="DirectoryNotFoundException"/> (a missing parent, or a parent
+    /// that is a regular file) map to <c>false</c>; measured on Windows and on
+    /// Linux (.NET 10), where both throw exactly those two for those cases.
+    /// In the Linux case measured, an uninspectable entry (<c>EACCES</c>) is
+    /// one whose parent denies search, so the write that follows fails too;
+    /// the two predicates differ there only in which error the caller reports.
+    ///
+    /// Walks keep <see cref="IsReparsePoint"/> -- see its remarks for why.
+    /// </remarks>
+    internal static bool IsReparsePointOrUninspectable(string path) => Inspect(path) is EntryState.ReparsePoint or EntryState.Uninspectable;
+
+    /// <summary>
+    /// Looks at <paramref name="path"/> once, without following it, and
+    /// classifies what it found. Never throws for an I/O or access failure --
+    /// it classifies it -- so the lenient and strict predicates cannot
+    /// disagree about anything except <see cref="EntryState.Uninspectable"/>.
+    /// </summary>
+    private static EntryState Inspect(string path)
     {
         try
         {
@@ -42,7 +129,7 @@ internal static class ReparsePoints
             // itself (Win32 GetFileAttributes semantics).
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
             {
-                return true;
+                return EntryState.ReparsePoint;
             }
 
             // lstat-correct cross-platform fallback. On Unix, File.GetAttributes
@@ -52,12 +139,17 @@ internal static class ReparsePoints
             // it were a real directory. FileSystemInfo.LinkTarget reads the
             // entry itself and is non-null exactly when the entry is a link,
             // on every platform.
-            return new DirectoryInfo(path).LinkTarget is not null
-                || new FileInfo(path).LinkTarget is not null;
+            return new DirectoryInfo(path).LinkTarget is not null || new FileInfo(path).LinkTarget is not null
+                ? EntryState.ReparsePoint
+                : EntryState.Plain;
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return EntryState.Absent;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return false;
+            return EntryState.Uninspectable;
         }
     }
 
@@ -88,6 +180,13 @@ internal static class ReparsePoints
     /// via <see cref="Path.GetFullPath(string)"/>) by the caller; this method
     /// performs no canonicalization of its own.
     /// </summary>
+    /// <remarks>
+    /// The LENIENT walk: an entry whose link status cannot be read counts as
+    /// "not a link", so this is for callers that fail open (see
+    /// <see cref="IsReparsePoint"/>'s remarks). A guard uses
+    /// <see cref="HasReparsePointOrUninspectableAncestor(string, string, StringComparison)"/>,
+    /// the same walk over the strict predicate.
+    /// </remarks>
     /// <param name="root">
     /// The walk's upper bound. Deliberately never inspected by this walk --
     /// the loop's exit test (<paramref name="rootComparison"/>) stops before
@@ -99,12 +198,12 @@ internal static class ReparsePoints
     /// <param name="path">The starting point of the upward walk.</param>
     /// <param name="rootComparison">
     /// The comparison used to detect that the walk has reached
-    /// <paramref name="root"/>. Every current caller passes
-    /// <see cref="StringComparison.Ordinal"/> uniformly -- the 2-arg
-    /// <see cref="HasReparsePointAncestor(string, string)"/> overload,
-    /// <c>IndexGenerator</c>'s private wrapper, <c>FileMemoryStore.PathComparison</c>,
-    /// and <c>CatalogPathResolver</c>'s <c>ContainmentComparison</c> path all
-    /// do. The parameter stays explicit rather than hardcoding
+    /// <paramref name="root"/>. Every current caller of this walk and of its
+    /// strict twin passes <see cref="StringComparison.Ordinal"/> uniformly --
+    /// the 2-arg overloads, <c>IndexGenerator</c>'s private wrapper,
+    /// <c>FileMemoryStore.PathComparison</c>, <c>CatalogPathResolver</c>'s
+    /// <c>ContainmentComparison</c> and <c>HtmlWriter.GuardWithinOutputDirectory</c>
+    /// all do. The parameter stays explicit rather than hardcoding
     /// <c>Ordinal</c> internally, keeping this comparison a visible,
     /// independently testable seam instead of an implicit assumption.
     /// </param>
@@ -114,13 +213,32 @@ internal static class ReparsePoints
     /// filesystem root without ever reaching <paramref name="root"/>, which
     /// stops the walk rather than looping forever).
     /// </returns>
-    internal static bool HasReparsePointAncestor(string root, string path, StringComparison rootComparison)
+    internal static bool HasReparsePointAncestor(string root, string path, StringComparison rootComparison) =>
+        AnyEntryUpTo(root, path, rootComparison, IsReparsePoint);
+
+    /// <summary>
+    /// The STRICT twin of <see cref="HasReparsePointAncestor(string, string, StringComparison)"/>:
+    /// the same walk, with the same bounds, over
+    /// <see cref="IsReparsePointOrUninspectable"/> -- <c>true</c> as soon as
+    /// <paramref name="path"/> itself, or any directory strictly between it
+    /// and <paramref name="root"/>, is a reparse point OR cannot be inspected.
+    /// A directory that does not exist yet does not count. For guards, which
+    /// fail closed -- see <see cref="IsReparsePointOrUninspectable"/>'s remarks.
+    /// </summary>
+    internal static bool HasReparsePointOrUninspectableAncestor(string root, string path, StringComparison rootComparison) =>
+        AnyEntryUpTo(root, path, rootComparison, IsReparsePointOrUninspectable);
+
+    /// <summary>
+    /// The walk shared by the lenient and strict ancestor checks, so the two
+    /// can differ only in <paramref name="matches"/>, never in their bounds.
+    /// </summary>
+    private static bool AnyEntryUpTo(string root, string path, StringComparison rootComparison, Func<string, bool> matches)
     {
         var current = path;
 
         while (!string.Equals(current, root, rootComparison))
         {
-            if (IsReparsePoint(current))
+            if (matches(current))
             {
                 return true;
             }
@@ -179,6 +297,21 @@ internal static class ReparsePoints
         var fullRoot = CanonicalizeRoot(bundleRoot);
         var current = Path.GetFullPath(path);
         return HasReparsePointAncestor(fullRoot, current, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The STRICT twin of <see cref="HasReparsePointAncestor(string, string)"/>:
+    /// the same root canonicalization and <see cref="StringComparison.Ordinal"/>
+    /// walk, delegating to
+    /// <see cref="HasReparsePointOrUninspectableAncestor(string, string, StringComparison)"/>.
+    /// For guards, which fail closed -- see
+    /// <see cref="IsReparsePointOrUninspectable"/>'s remarks.
+    /// </summary>
+    internal static bool HasReparsePointOrUninspectableAncestor(string bundleRoot, string path)
+    {
+        var fullRoot = CanonicalizeRoot(bundleRoot);
+        var current = Path.GetFullPath(path);
+        return HasReparsePointOrUninspectableAncestor(fullRoot, current, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -280,10 +413,23 @@ internal static class ReparsePoints
     /// resolving that ancestor to its final target via
     /// <see cref="Directory.ResolveLinkTarget(string, bool)"/>, and
     /// re-attaching whatever trailing path segments do not exist yet.
-    /// Returns <paramref name="path"/> unchanged if no ancestor up to the
-    /// filesystem root is a reparse point -- the common case, and the only
-    /// one <see cref="Path.GetFullPath(string)"/> alone can see.
+    /// <paramref name="resolved"/> is <paramref name="path"/> unchanged if no
+    /// ancestor up to the filesystem root is a reparse point -- the common
+    /// case, and the only one <see cref="Path.GetFullPath(string)"/> alone
+    /// can see.
     /// </summary>
+    /// <returns>
+    /// <see langword="false"/> -- with <paramref name="resolved"/> set to
+    /// <paramref name="path"/>, which the caller must not trust -- if an entry
+    /// on the walk could not be inspected (see
+    /// <see cref="IsReparsePointOrUninspectable"/>): whether it redirects the
+    /// path, and where to, is unknown. This resolution backs a GUARD
+    /// (<c>HtmlWriter.GuardOutputDirectory</c>), so it fails closed and lets
+    /// the caller refuse, rather than reporting the lexical path as if the
+    /// walk had proven no redirect. An entry that does not exist yet is not
+    /// uninspectable; the walk continues past it. Otherwise
+    /// <see langword="true"/>.
+    /// </returns>
     /// <remarks>
     /// Bounded by <paramref name="path"/>'s own ancestor depth, not by any
     /// caller-supplied root: unlike <see cref="HasReparsePointAncestor(string, string)"/>
@@ -300,6 +446,13 @@ internal static class ReparsePoints
     /// intermediate directory between an output root and each file actually
     /// written), not this one-shot resolution's.
     ///
+    /// Only an UNINSPECTABLE entry fails the resolution. A reparse point that
+    /// is inspectable but resolves to no link target (a reparse tag that is
+    /// neither a symlink nor a junction, which sets the attribute without
+    /// being a link .NET can follow) still falls back to the
+    /// lexical path, as before: that is a known entry, not an unknown one, and
+    /// refusing it would refuse any output directory beneath such an entry.
+    ///
     /// Moved here from <c>OKF4net.Viewer</c>'s <c>HtmlWriter</c> (originally
     /// private there) so it has one home shared across callers instead of a
     /// leaf-local copy; <c>OKF4net.Viewer</c> reaches it via
@@ -309,39 +462,45 @@ internal static class ReparsePoints
     /// fix is designed -- noted here as a pointer only, not acted on by this
     /// change.
     /// </remarks>
-    internal static string ResolveThroughReparsePoints(string path)
+    internal static bool TryResolveThroughReparsePoints(string path, out string resolved)
     {
         var current = path;
         var tail = new List<string>();
+        resolved = path;
 
         while (true)
         {
-            if (IsReparsePoint(current))
+            var state = Inspect(current);
+            if (state == EntryState.Uninspectable)
+            {
+                return false;
+            }
+
+            if (state == EntryState.ReparsePoint)
             {
                 var resolvedTarget = Directory.ResolveLinkTarget(current, returnFinalTarget: true);
                 if (resolvedTarget is null)
                 {
-                    // IsReparsePoint(current) just returned true, so this
-                    // should not happen -- but resolution is not this
-                    // method's only line of defense (see remarks above), so
-                    // fail safe by falling back to the lexical path rather
-                    // than throwing.
-                    return path;
+                    // A reparse point with no link target (see remarks):
+                    // resolution is not this method's only line of defense,
+                    // so fall back to the lexical path rather than throwing.
+                    return true;
                 }
 
-                var resolved = resolvedTarget.FullName;
+                var target = resolvedTarget.FullName;
                 for (var i = tail.Count - 1; i >= 0; i--)
                 {
-                    resolved = Path.Combine(resolved, tail[i]);
+                    target = Path.Combine(target, tail[i]);
                 }
 
-                return resolved;
+                resolved = target;
+                return true;
             }
 
             var parent = Path.GetDirectoryName(current);
             if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
             {
-                return path; // Reached the filesystem root without finding a reparse point.
+                return true; // Reached the filesystem root without finding a reparse point.
             }
 
             tail.Add(Path.GetFileName(current));

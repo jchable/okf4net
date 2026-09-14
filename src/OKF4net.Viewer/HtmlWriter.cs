@@ -147,10 +147,16 @@ public static class HtmlWriter
     /// can lexically look nowhere near <paramref name="bundleRoot"/> while the
     /// OS silently redirects every write into it -- e.g. <c>mklink /J
     /// out-dir bundle\generated-site</c> followed by <c>okf-render bundle
-    /// --out out-dir</c>. <see cref="ReparsePoints.ResolveThroughReparsePoints"/>
+    /// --out out-dir</c>. <see cref="ReparsePoints.TryResolveThroughReparsePoints"/>
     /// follows that redirect and this method also checks the resolved location, so
     /// this only ever ADDS a refusal on top of the lexical check above --
     /// never removes one -- keeping the guard at least as strict as before.
+    /// When that resolution cannot inspect an entry on <c>outDir</c>'s path
+    /// (a junction whose attributes the current user may not read is still
+    /// traversed by the writes that follow), where <c>outDir</c> lands is
+    /// unknown, and this guard refuses with the same error rather than assume
+    /// the lexical path: a guard fails closed (see
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>).
     /// </remarks>
     private static void GuardOutputDirectory(string bundleRoot, string outDir)
     {
@@ -160,7 +166,8 @@ public static class HtmlWriter
         const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
 
         if (ReparsePoints.IsWithin(root, target, comparison)
-            || ReparsePoints.IsWithin(root, ReparsePoints.ResolveThroughReparsePoints(target), comparison))
+            || !ReparsePoints.TryResolveThroughReparsePoints(target, out var resolvedTarget)
+            || ReparsePoints.IsWithin(root, resolvedTarget, comparison))
         {
             throw new ArgumentException(
                 $"refusing to render into '{outDir}': it is inside the bundle being rendered ('{bundleRoot}')",
@@ -226,12 +233,12 @@ public static class HtmlWriter
     /// work over an <c>outDir</c> that does not change mid-<see cref="Write"/>,
     /// so re-deriving it per file bought nothing but cost. The per-file
     /// checks above (<see cref="ReparsePoints.IsWithin"/>,
-    /// <see cref="ReparsePoints.IsReparsePoint(string)"/> on
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable(string)"/> on
     /// <paramref name="fullPath"/> itself) stay exactly that -- per file,
     /// same methods, same semantics -- because a symlink planted in place of
     /// the file being written this instant must always be caught.
     ///
-    /// <see cref="ReparsePoints.HasReparsePointAncestor(string, string, StringComparison)"/>
+    /// <see cref="ReparsePoints.HasReparsePointOrUninspectableAncestor(string, string, StringComparison)"/>
     /// is the expensive part -- it stats every directory between
     /// <paramref name="root"/> and the file -- and is genuinely redundant
     /// across every file that lands in the same directory, so
@@ -242,11 +249,15 @@ public static class HtmlWriter
     /// in the same directory within this <see cref="Write"/> call. This is
     /// safe against a reparse point ALREADY sitting in <paramref name="outDir"/>
     /// before rendering starts: such a directory exists at the moment its
-    /// first file is checked, so <see cref="ReparsePoints.IsReparsePoint(string)"/>
-    /// (which reports an existing entry's own attributes, not a cached
+    /// first file is checked, so the ancestor walk
+    /// (which reads each existing entry's own attributes, not a cached
     /// belief) sees it and this method throws before
     /// <paramref name="verifiedDirs"/> is ever updated -- a directory is
-    /// added to the cache only after its walk returns cleanly. What the
+    /// added to the cache only after its walk returns cleanly. Both checks
+    /// use the STRICT predicates, so the same holds for a directory whose
+    /// link status cannot be read: the walk refuses it like a link, and it is
+    /// never cached as safe (a guard fails closed -- see
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>). What the
     /// cache widens is a narrower, in-flight race: a directory verified
     /// reparse-free for its first file is not re-verified for later files in
     /// the same run, so an attacker able to replace a directory inside
@@ -266,8 +277,8 @@ public static class HtmlWriter
         const StringComparison comparison = StringComparison.Ordinal;
 
         var escapes = !ReparsePoints.IsWithin(root, resolved, comparison)
-            || ReparsePoints.IsReparsePoint(resolved)
-            || (!verifiedDirs.Contains(directory) && ReparsePoints.HasReparsePointAncestor(root, directory, comparison));
+            || ReparsePoints.IsReparsePointOrUninspectable(resolved)
+            || (!verifiedDirs.Contains(directory) && ReparsePoints.HasReparsePointOrUninspectableAncestor(root, directory, comparison));
 
         if (escapes)
         {

@@ -192,7 +192,7 @@ public static class CatalogPathResolver
     /// <paramref name="root"/> itself is deliberately exempt from this walk: a
     /// symlinked/mounted catalog root is a legitimate, explicit operator choice (symlinked
     /// project directories, container/WSL bind mounts, macOS's <c>/var</c>) -- exactly the
-    /// same reasoning that keeps <c>IndexGenerator</c>'s own <c>HasReparsePointAncestor</c>
+    /// same reasoning that keeps <c>IndexGenerator</c>'s own <c>HasReparsePointOrUninspectableAncestor</c>
     /// wrapper, and the shared <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
     /// convenience overload other callers use, from ever inspecting the root they walk up to.
     /// <paramref name="root"/> is expected to already be the result of
@@ -202,6 +202,11 @@ public static class CatalogPathResolver
     /// <see cref="ContainmentComparison"/> so a case-variant of
     /// <paramref name="root"/> cannot stop the walk early and skip inspection
     /// of a planted reparse point.
+    ///
+    /// Deliberately the LENIENT walk (an entry whose link status cannot be read counts as
+    /// "not a link"): what it answers is a catalog-load diagnostic, and loading keeps the
+    /// lenient predicate so what a catalog reports does not change -- see
+    /// <see cref="ReparsePoints.IsReparsePoint"/>'s remarks for the polarity rule.
     /// </summary>
     private static bool HasReparsePointInPath(string root, string path) =>
         ReparsePoints.HasReparsePointAncestor(root, path, ContainmentComparison);

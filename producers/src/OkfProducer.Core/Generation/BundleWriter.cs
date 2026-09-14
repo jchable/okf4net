@@ -292,14 +292,15 @@ public sealed class BundleWriter : IBundleWriter
         // inside the bundle and writes outside it" -- and that claim was false in every clause. Read
         // src/OKF4net/IndexGenerator.cs before restoring any version of it:
         //
-        //   * the traversal is CollectMarkdown over Directory.GetFileSystemEntries (:427), not
+        //   * the traversal is CollectMarkdown over Directory.GetFileSystemEntries (:437), not
         //     Directory.EnumerateDirectories, and it tests ReparsePoints.IsReparsePoint BEFORE it
-        //     recurses (:437), so nothing under a linked directory is ever collected;
-        //   * the per-directory child listing applies the same skip (:219), so a linked subdirectory
+        //     recurses (:447), so nothing under a linked directory is ever collected;
+        //   * the per-directory child listing applies the same skip (:226), so a linked subdirectory
         //     contributes no index entry either;
-        //   * immediately before each write there is an ancestor re-check (:259) AND an
-        //     IsReparsePoint check on the index.md file node itself (:280), the latter added -- per
-        //     its own comment -- to close exactly this class;
+        //   * immediately before each write there is an ancestor re-check (:266) AND a check on the
+        //     index.md file node itself (:290), the latter added -- per its own comment -- to close
+        //     exactly this class; both late checks use the strict IsReparsePointOrUninspectable, so
+        //     an entry whose link status cannot be read is skipped too;
         //   * ReparsePoints.IsReparsePoint answers for Windows junctions and Unix symlinks alike.
         //
         // So this is the most heavily gated of the writes reachable from here, not the ungated one.

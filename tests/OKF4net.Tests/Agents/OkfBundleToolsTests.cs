@@ -333,4 +333,29 @@ public class OkfBundleToolsTests
         Assert.Contains("error", result, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("secret", result, StringComparison.OrdinalIgnoreCase);
     }
+
+    [SkippableFact]
+    public void Browse_rejects_a_path_crossing_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1: "x/y" is a junction to `external` whose attributes the
+        // current user cannot read (deny ReadAttributes on it, deny listing on
+        // "x"), while the OS still lets a read traverse it. The bundle is
+        // loaded (and cached) before the junction exists, because a bundle
+        // walk cannot list "x" once it denies listing. The lenient
+        // IsReparsePoint answered "not a link" and Browse returned
+        // external/z/index.md.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "# Root\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        var tools = new OkfBundleTools(tmp.Path);
+        tools.Browse();
+        using var external = new TempDir();
+        external.Write(Path.Combine("z", "index.md"), "OUTSIDE-THE-BUNDLE\n");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var result = tools.Browse("x/y/z");
+
+        Assert.Equal("Error: path 'x/y/z' not found in the bundle. Use okf_browse to list available directories.", result);
+    }
 }

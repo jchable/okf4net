@@ -217,4 +217,72 @@ public class BundleConceptWriterTests
         Assert.Equal("README.md", written.Frontmatter.Sources[0].Resource);
         Assert.Equal("schema.json", written.Frontmatter.Sources[1].Resource);
     }
+
+    [SkippableFact]
+    public void WriteConcept_refuses_a_path_crossing_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1: "x/y" is a junction to `external` whose attributes the
+        // current user cannot read (deny ReadAttributes on it, deny listing on
+        // "x"), yet a write still traverses it. The lenient IsReparsePoint
+        // answered "not a link" for it, so the early guard let
+        // "x/y/z/refunds" be written into external/z/refunds.md.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var writer = new BundleConceptWriter(tmp.Path);
+
+        var result = writer.WriteConcept("x/y/z/refunds", ValidFrontmatter, "# Refunds\n");
+
+        Assert.Equal("Error: 'x/y/z/refunds' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.", result);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+    }
+
+    [SkippableFact]
+    public void WriteConcept_late_guard_refuses_a_directory_swapped_for_an_uninspectable_junction()
+    {
+        // Task H1, the late re-check's side: "x/y" does not exist when the
+        // early guard runs, so it passes; the writer creates it, and the
+        // BeforeLateReparseCheckForTest seam swaps it for a junction whose
+        // link status cannot be inspected. The late guard must refuse too --
+        // on the lenient predicate it wrote external/refunds.md.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var writer = new BundleConceptWriter(tmp.Path);
+        UninspectableJunction? junction = null;
+        writer.BeforeLateReparseCheckForTest = () =>
+        {
+            Directory.Delete(Path.Combine(tmp.Path, "x", "y"));
+            junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        };
+
+        try
+        {
+            var result = writer.WriteConcept("x/y/refunds", ValidFrontmatter, "# Refunds\n");
+
+            Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+            Assert.Equal("Error: 'x/y/refunds' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.", result);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+        }
+        finally
+        {
+            junction?.Dispose();
+        }
+    }
+
+    [Fact]
+    public void WriteConcept_still_creates_a_concept_in_new_nested_subdirectories()
+    {
+        // Task H1 regression: the fail-closed guards treat an entry they
+        // cannot inspect as a link, but an entry that does not exist yet --
+        // the target file and every directory above it here -- must still be
+        // allowed.
+        using var tmp = new TempDir();
+        var writer = new BundleConceptWriter(tmp.Path);
+
+        var result = writer.WriteConcept("brand/new/deep/refunds", ValidFrontmatter, "# Refunds\n");
+
+        Assert.StartsWith("Written brand/new/deep/refunds (new,", result, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "brand", "new", "deep", "refunds.md")));
+    }
 }
