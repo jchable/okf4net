@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Generic;
+using System.Threading.Tasks;
+using OKF4net;
+using OKF4net.Attestation;
 using OKF4net.Attestation.Containers;
 using Xunit;
 
@@ -111,5 +114,40 @@ public class CliContainerEngineArgumentsTests
         var args = CliContainerEngine.BuildRunArguments(Spec(), "okf-1");
         Assert.DoesNotContain("--read-only", args);
         Assert.DoesNotContain("--tmpfs", args);
+    }
+
+    /// <summary>
+    /// What reaches the engine for a custom scratch mount, from a real stage through to
+    /// the argument list: the mount as its own <c>--tmpfs</c> value, and <c>TMPDIR</c> as
+    /// one <c>-e</c> element — never spliced into the in-container command, which stays
+    /// the fixed <c>python3 -c &lt;bootstrap&gt;</c>. And nothing anywhere names
+    /// <c>/tmp</c>, which under <c>--read-only</c> is exactly the path that is not
+    /// writable.
+    /// </summary>
+    [Fact]
+    public async Task A_custom_scratch_mount_reaches_the_engine_as_a_tmpfs_flag_and_one_TMPDIR_element()
+    {
+        var engine = new FakeContainerEngine { Respond = _ => new ContainerRunResult(0, """{"ok": true}""", "") };
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions { TmpfsMounts = ["/scratch:size=64m"] });
+        await attester.AttestAsync(new AttestationContext(
+            Contract: new AttestedComputationContract("python", [], null, null, new Attester("att.py")),
+            Computation: new SanctionedComputation(ComputationSource.Inline, "print()", null),
+            Bound: new BoundComputation("python", "print()", null, new Dictionary<string, object?>()),
+            Values: new Dictionary<string, object?>(),
+            Receipt: new Receipt(new Dictionary<string, object?>()),
+            AttesterSourceText: "def attest(**_):\n    return {}\n"));
+
+        var args = CliContainerEngine.BuildRunArguments(engine.LastSpec!, "okf-1").ToList();
+
+        var tmpfs = args.IndexOf("--tmpfs");
+        Assert.Equal("/scratch:size=64m", args[tmpfs + 1]);
+        var tmpdir = args.IndexOf("TMPDIR=/scratch");
+        Assert.True(tmpdir > 0);
+        Assert.Equal("-e", args[tmpdir - 1]);
+        Assert.Contains("--read-only", args);
+        Assert.DoesNotContain(args, a => a.Contains("/tmp", StringComparison.Ordinal));
+
+        var image = args.IndexOf("python:3.12-slim");
+        Assert.Equal(["python3", "-c", ContainerAttester.Bootstrap], args.Skip(image + 1));
     }
 }

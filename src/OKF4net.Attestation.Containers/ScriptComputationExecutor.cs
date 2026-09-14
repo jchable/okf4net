@@ -21,7 +21,10 @@ public sealed class ScriptComputationExecutor(IContainerEngine engine, Container
         AttestedComputationContract contract,
         CancellationToken cancellationToken = default)
     {
-        var env = new Dictionary<string, string>(profile.Environment)
+        // TMPDIR -> the first tmpfs mount, so a script's own temp files land in the
+        // scratch the host named rather than in a /tmp that may be read-only. Applied
+        // before OKF_PARAMS_JSON, which this executor owns and the host cannot override.
+        var env = new Dictionary<string, string>(ScratchDirectory.Apply(profile.Environment, profile.TmpfsMounts))
         {
             ["OKF_PARAMS_JSON"] = JsonSerializer.Serialize(bound.Values),
         };

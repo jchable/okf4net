@@ -125,6 +125,117 @@ public class ContainerIntegrationTests
     }
 
     /// <summary>
+    /// <c>TmpfsMounts</c> is documented as configurable, and for a long time was only
+    /// half so: the engine mounted whatever the host named, while the Python inside the
+    /// containers kept writing to <c>/tmp</c>. With <c>["/scratch"]</c> under the default
+    /// read-only root, <c>/tmp</c> is read-only and the attester bootstrap's
+    /// <c>NamedTemporaryFile</c> failed every run with "No usable temporary directory".
+    ///
+    /// This runs both stages of a Script concept with <c>/scratch</c> and no <c>/tmp</c>
+    /// mount. The computation probes the boundary it runs under — a write to <c>/tmp</c>
+    /// must fail, a <c>tempfile</c> write must land in <c>/scratch</c> — so the test
+    /// cannot pass by accident on a configuration where <c>/tmp</c> is writable after
+    /// all. The attester checks the same from its own container, and merely reaching it
+    /// proves the bootstrap found somewhere to write its module.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_custom_tmpfs_mount_with_no_tmp_is_honoured_by_the_script_executor_and_the_attester()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        using var tmp = new TempDir();
+        tmp.Write("probe.py",
+            "import tempfile\n" +
+            "def attest(*, sanctioned_computation, receipt, values):\n" +
+            "    try:\n" +
+            "        open('/tmp/okf-attester-probe', 'w').write('x')\n" +
+            "        own_tmp = 'written'\n" +
+            "    except OSError as e:\n" +
+            "        own_tmp = type(e).__name__\n" +
+            "    ok = (receipt.get('tmp') == 'OSError' and str(receipt.get('scratch', '')).startswith('/scratch/')\n" +
+            "          and own_tmp == 'OSError' and tempfile.gettempdir() == '/scratch')\n" +
+            "    return {'ok': ok, 'reason': None if ok else f'receipt={receipt!r} own_tmp={own_tmp} gettempdir={tempfile.gettempdir()}'}\n");
+        tmp.Write("c/probe.md",
+            "---\ntype: Attested Computation\nruntime: python\n" +
+            "executor: { receipt: [tmp, scratch] }\n" +
+            "attester: { resource: probe.py }\n---\n" +
+            "# Computation\n\n```python\n" +
+            "import json, tempfile\n" +
+            "try:\n" +
+            "    open('/tmp/okf-probe', 'w').write('x')\n" +
+            "    tmp = 'written'\n" +
+            "except OSError as e:\n" +
+            "    tmp = type(e).__name__\n" +
+            "with tempfile.NamedTemporaryFile() as f:\n" +
+            "    f.write(b'x')\n" +
+            "    scratch = f.name\n" +
+            "print(json.dumps({'tmp': tmp, 'scratch': scratch}))\n" +
+            "```\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        var engine = new CliContainerEngine();
+        var profile = new ContainerRuntimeProfile { Image = "python:3.12-slim", Kind = ContainerRuntimeKind.Script, TmpfsMounts = ["/scratch"] };
+        var attesterOptions = new ContainerAttesterOptions { TmpfsMounts = ["/scratch"] };
+        Assert.True(profile.ReadOnlyRootFilesystem);
+        Assert.True(attesterOptions.ReadOnlyRootFilesystem);
+
+        var registry = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["python"] = new ContainerAttestationRuntime(engine, profile, attesterOptions),
+        });
+        var outcome = await new AttestationOrchestrator(registry).RunAsync(bundle, ConceptId.Parse("c/probe"), new Dictionary<string, object?>());
+
+        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.Equal("OSError", outcome.Receipt!.Fields["tmp"]);
+        Assert.StartsWith("/scratch/", (string)outcome.Receipt.Fields["scratch"]!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The same defect on the SqlClient path, where it was worse than the attester
+    /// review first said: the wrapper's fallback install hardcoded
+    /// <c>--target /tmp/okf-pkgs</c>, and pip also unpacks and builds in the temp
+    /// directory, so under <c>TmpfsMounts = ["/scratch"]</c> the driver install failed
+    /// before any SQL ran. A bare <c>python:3.12-slim</c> image, so the install path is
+    /// the one exercised, against the real Postgres fixture.
+    /// </summary>
+    [SkippableFact]
+    public async Task SqlClient_runtime_installs_its_driver_into_a_custom_tmpfs_mount_with_no_tmp()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+        var conn = Environment.GetEnvironmentVariable("OKF_DEMO_PG_CONN");
+        Skip.If(string.IsNullOrEmpty(conn), "OKF_DEMO_PG_CONN is not set -- see this class's doc comment for setup");
+
+        using var tmp = new TempDir();
+        tmp.Write("count.py",
+            "def attest(*, sanctioned_computation, receipt, values):\n" +
+            "    return {'ok': receipt.get('result') == [{'active_users': 2}]}\n");
+        tmp.Write("c/count.md",
+            "---\ntype: Attested Computation\nruntime: postgres\n" +
+            "executor: { receipt: [executed_sql, result] }\n" +
+            "attester: { resource: count.py }\n---\n" +
+            "# Computation\n\n```sql\nSELECT count(*) AS active_users FROM users WHERE active = true\n```\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        var engine = new CliContainerEngine();
+        var profile = new ContainerRuntimeProfile
+        {
+            Image = "python:3.12-slim",
+            Kind = ContainerRuntimeKind.SqlClient,
+            Environment = new Dictionary<string, string> { ["OKF_CONN"] = conn! },
+            TmpfsMounts = ["/scratch"],
+        };
+        Assert.True(profile.ReadOnlyRootFilesystem);
+
+        var registry = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["postgres"] = new ContainerAttestationRuntime(engine, profile, new ContainerAttesterOptions { TmpfsMounts = ["/scratch"] }),
+        });
+        var outcome = await new AttestationOrchestrator(registry).RunAsync(bundle, ConceptId.Parse("c/count"), new Dictionary<string, object?>());
+
+        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+    }
+
+    /// <summary>
     /// Runs <c>bundles/meridian_transit</c> — a checked-in bundle, not a fixture this
     /// test authors — end to end through both runtimes at once, which is the thing no
     /// other test here does. Everything else builds a one-concept bundle in a TempDir
@@ -136,7 +247,10 @@ public class ContainerIntegrationTests
     /// <list type="bullet">
     /// <item><c>capped-fare</c> runs on the <c>Script</c> runtime with the network off,
     /// and its attester <b>recomputes</b> the fare-capping policy from the run's own
-    /// inputs. A pass there is evidence about the number.</item>
+    /// inputs, per-trip split included. A pass there is evidence about the numbers —
+    /// but this test only ever feeds it the correct split, so it cannot show the
+    /// attester rejects a wrong one; that is
+    /// <see cref="Meridian_fare_cap_attester_rejects_a_per_trip_split_in_the_wrong_order"/>.</item>
     /// <item><c>daily-ridership</c> runs on <c>SqlClient</c> against a real Postgres,
     /// and its attester can only check invariants of the query's shape — because
     /// <c>executed_sql</c> is echoed by this host's own wrapper.</item>
@@ -196,6 +310,138 @@ public class ContainerIntegrationTests
         var json = System.Text.Json.JsonSerializer.Serialize(row);
         Assert.Contains("\"completed_trips\":5", json, StringComparison.Ordinal);
         Assert.Contains("\"distinct_riders\":2", json, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The guard behind the claim that <c>meridian_transit</c>'s <c>fare_cap.py</c>
+    /// "recomputes the policy". The end-to-end test above cannot make that claim: it
+    /// runs the sanctioned script, which always reports the correct split, so it
+    /// stayed green while the attester checked only totals and would have passed a
+    /// wrong statement.
+    ///
+    /// Here the executor is replaced by one reporting a <b>wrong</b> per-trip split —
+    /// <c>[0, 250, 250, 200]</c> for four 250 fares against a 700 cap — that agrees
+    /// with the policy on every order-blind property: it charges 700, waives 300,
+    /// sums to the total, has one charge per trip, and keeps each charge within its
+    /// own fare. Only the sequential order is wrong (the policy says
+    /// <c>[250, 250, 200, 0]</c>). Everything else is real: the bundle as it ships,
+    /// its attester resolved by the orchestrator under §6.2, the real
+    /// <see cref="AllowlistParameterBinder"/>, and the real
+    /// <see cref="ContainerAttester"/> running the script in Docker.
+    ///
+    /// The correct split is run first through the same wiring as a control, so a
+    /// failing verdict on the wrong one cannot come from an attester that fails
+    /// everything.
+    /// </summary>
+    [SkippableFact]
+    public async Task Meridian_fare_cap_attester_rejects_a_per_trip_split_in_the_wrong_order()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var bundle = Bundle.Load(Path.Combine(TestPaths.RepoRoot(), "bundles", "meridian_transit"));
+        var engine = new CliContainerEngine();
+        var binder = new AllowlistParameterBinder();
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions());
+
+        async Task<AttestationOutcome> AttestSplit(params long[] perTrip)
+        {
+            var runtime = new Tests.Attestation.FakeRuntime
+            {
+                BindFunc = (contract, computation, values, ct) => binder.BindAsync(contract, computation, values, ct),
+                ExecuteFunc = (_, _, _) => ValueTask.FromResult(new Receipt(new Dictionary<string, object?>
+                {
+                    ["charged_cents"] = 700L,
+                    ["waived_cents"] = 300L,
+                    ["per_trip_cents"] = perTrip.Cast<object?>().ToList(),
+                })),
+                AttestFunc = (context, ct) => attester.AttestAsync(context, ct),
+            };
+            var orchestrator = new AttestationOrchestrator(
+                new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["python"] = runtime }));
+
+            return await orchestrator.RunAsync(
+                bundle,
+                ConceptId.Parse("computations/capped-fare"),
+                new Dictionary<string, object?> { ["fares_cents"] = "[250,250,250,250]", ["cap_cents"] = 700 });
+        }
+
+        var correct = await AttestSplit(250, 250, 200, 0);
+        Assert.True(correct.Displayable, string.Join("; ", correct.Reasons));
+        Assert.True(correct.Verdict?.Passed);
+
+        var wrong = await AttestSplit(0, 250, 250, 200);
+        Assert.Null(wrong.Error);
+        Assert.True(wrong.ReceiptShapeOk);
+        Assert.False(wrong.Displayable);
+        Assert.False(wrong.Verdict?.Passed ?? true, "the attester passed a per-trip split in the wrong order");
+        Assert.Contains("sequential split", wrong.Verdict!.Value.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>ridership_shape.py</c> used to read both counts through <c>int()</c> before
+    /// checking anything, so a receipt carrying <c>"5"</c>, <c>2.9</c> or <c>true</c>
+    /// passed — the string coerced, the float silently truncated, the boolean an
+    /// <c>int</c> to Python. Each malformed receipt below is one the old attester
+    /// accepted (every value also satisfies the non-negative and riders-within-trips
+    /// invariants once coerced), so each fails only if the type check itself holds.
+    ///
+    /// Runs the bundle's shipped attester source through the real
+    /// <see cref="ContainerAttester"/> bootstrap, receipt shaped as
+    /// <c>ReceiptParsing</c> produces it (a list of column-keyed dictionaries). The
+    /// genuine control is what keeps a red result from meaning "the script failed to
+    /// load": it must pass, and with integer counts it is exactly what a real
+    /// <c>count(*)</c> receipt looks like. Needs Docker only, no Postgres.
+    ///
+    /// <para>No integral-float case (<c>5.0</c>) here, and that is deliberate rather
+    /// than an oversight: <c>JsonSerializer</c> writes a CLR <see langword="double"/>
+    /// 5.0 as <c>5</c>, so through this host it reaches the script as a Python
+    /// <c>int</c> and passes — verified by adding the case and watching it fail. The
+    /// attester does reject a float <c>5.0</c>; this host simply cannot hand it one.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Meridian_ridership_attester_rejects_counts_that_are_not_genuine_integers()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var source = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "bundles", "meridian_transit", "attesters", "ridership_shape.py"));
+        var attester = new ContainerAttester(new CliContainerEngine(), new ContainerAttesterOptions());
+
+        Task<AttestationVerdict> Attest(object? trips, object? riders) => attester.AttestAsync(new AttestationContext(
+            Contract: new AttestedComputationContract(
+                "postgres",
+                [new ComputationParameter("service_date", "string", true)],
+                null,
+                new Executor(null, ["executed_sql", "result"]),
+                new Attester("attesters/ridership_shape.py")),
+            Computation: new SanctionedComputation(ComputationSource.Inline, "SELECT 1", null),
+            Bound: new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?> { ["service_date"] = "2026-09-10" }),
+            Values: new Dictionary<string, object?> { ["service_date"] = "2026-09-10" },
+            Receipt: new Receipt(new Dictionary<string, object?>
+            {
+                ["executed_sql"] = "SELECT 1",
+                ["result"] = new List<object?>
+                {
+                    new Dictionary<string, object?> { ["completed_trips"] = trips, ["distinct_riders"] = riders },
+                },
+            }),
+            AttesterSourceText: source)).AsTask();
+
+        var genuine = await Attest(5L, 2L);
+        Assert.True(genuine.Passed, genuine.Detail);
+
+        var malformed = new (string Label, object? Trips, object? Riders, string Column)[]
+        {
+            ("string count", "5", 2L, "completed_trips"),
+            ("fractional float", 5L, 2.9, "distinct_riders"),
+            ("boolean", 5L, true, "distinct_riders"),
+        };
+
+        foreach (var (label, trips, riders, column) in malformed)
+        {
+            var verdict = await Attest(trips, riders);
+            Assert.False(verdict.Passed, $"{label}: the attester accepted {column} = {trips ?? "null"} / {riders ?? "null"}");
+            Assert.Contains($"{column} is not an integer", verdict.Detail ?? "", StringComparison.Ordinal);
+        }
     }
 
     [SkippableFact]

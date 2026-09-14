@@ -129,4 +129,39 @@ public class SqlClientComputationExecutorTests
         Assert.True(firstImport < pipInstall, "the wrapper installs before it ever tries to import");
         Assert.Contains("'pg8000==", wrapper, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// The wrapper's fallback install goes where <c>TMPDIR</c> points, and pip's own
+    /// working files do too, so it has to name the host's first mount. Under
+    /// <c>TmpfsMounts = ["/scratch"]</c> the install otherwise failed on a read-only
+    /// <c>/tmp</c> before any SQL ran. The connection string must survive alongside it.
+    /// </summary>
+    [Fact]
+    public async Task Points_TMPDIR_at_the_first_configured_mount_alongside_the_connection_string()
+    {
+        var engine = new FakeContainerEngine();
+        var executor = new SqlClientComputationExecutor(engine, Profile with { TmpfsMounts = ["/scratch"] });
+        await executor.ExecuteAsync(new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?>()), Contract);
+
+        Assert.Equal(["/scratch"], engine.LastSpec!.TmpfsMounts);
+        Assert.Equal("/scratch", engine.LastSpec.Environment["TMPDIR"]);
+        Assert.Equal("postgresql://u:p@host/db", engine.LastSpec.Environment["OKF_CONN"]);
+    }
+
+    /// <summary>
+    /// A SOURCE-TEXT SMOKE CHECK, not proof: xunit cannot execute the Python in
+    /// <see cref="SqlClientComputationExecutor.Wrapper"/>. It only pins that the install
+    /// path is derived from <c>tempfile.gettempdir()</c> instead of a hardcoded
+    /// <c>/tmp</c>. The executable guard is
+    /// <c>ContainerIntegrationTests.SqlClient_runtime_installs_its_driver_into_a_custom_tmpfs_mount_with_no_tmp</c>,
+    /// run against real Docker.
+    /// </summary>
+    [Fact]
+    public void The_wrapper_never_names_a_temp_directory_itself()
+    {
+        // A quoted literal, not the bare substring: the wrapper's own comments explain
+        // why /tmp is the wrong place and are allowed to say so.
+        Assert.DoesNotContain("'/tmp", SqlClientComputationExecutor.Wrapper, StringComparison.Ordinal);
+        Assert.Contains("tempfile.gettempdir()", SqlClientComputationExecutor.Wrapper, StringComparison.Ordinal);
+    }
 }

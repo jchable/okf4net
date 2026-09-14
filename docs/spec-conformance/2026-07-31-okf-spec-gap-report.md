@@ -257,13 +257,26 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   `Diverges`. No field-specific documented rationale exists for the
   current weighting either way (contrast §13.1 below, which has one).
 - **S5.1-2** (§5.1, `id` SHOULD be present when body cites source) —
-  **N/A**. Producer-authoring guidance about what to include when writing
-  a `sources` entry (parallel to S4.1-2's "producers SHOULD pick
-  descriptive `type` values") rather than a checkable consumer-side
-  behavior. `src/OKF4net/Provenance.cs:33`: `Id:
-  m.Get("id")?.AsDisplayString(),` — parsed as a bare optional field, with
-  no code anywhere correlating it against body footnote citations to
-  enforce or warn on this specific SHOULD.
+  **Implemented** (Minor, reclassified 2026-09-14; previously recorded as
+  **N/A**). The earlier N/A called this producer-authoring guidance rather
+  than something checkable, but that distinction does not hold: the validator
+  already checks producer-authored content (`generated.by`, `status`, §7
+  actors), and this one is just as mechanical. §4.2 makes footnotes keyed to
+  `sources` the citation mechanism, so a footnote reference whose key matches
+  no `sources[].id` is a claim attributed to nothing.
+  `BundleValidator.Validate` emits `CitationMissingSourceId` (Warning — a
+  SHOULD, never a §11 rejection) per unmatched key, using
+  `LinkScanner.ExtractFootnoteReferences`, which shares `CodeFreeLinePairs`
+  with link extraction so that `[^a-z]` — a negated character class, ordinary
+  in a regex or SQL pattern inside code — is never read as a citation, and a
+  definition's own `[^key]:` label is not counted. Tests:
+  `Footnote_citing_a_source_with_no_matching_id_is_a_warning`,
+  `Footnote_matching_a_source_id_is_not_warned`,
+  `Footnote_syntax_inside_code_is_not_a_citation`,
+  `A_footnote_definition_alone_is_not_a_citation`
+  (`tests/OKF4net.Tests/ValidateTests.cs`). Emits nothing on
+  `bundles/acme_retail`, `bundles/ga4`, or any validated golden fixture — every
+  footnote in them already has its `id`.
 - **S5.1-3** (§5.1, per-entry `usage_window` override) — **Missing**
   (Minor). `src/OKF4net/Provenance.cs:7` — the `Source` record has no
   `UsageWindow` field (`Id, Resource, Title, Author, UsageCount,
@@ -451,11 +464,39 @@ README mapping: `OKF4net.IndexGenerator`.
   `tests/OKF4net.Tests/IndexTests.cs:50-78`; stray frontmatter elsewhere is
   actively stripped (`tests/OKF4net.Tests/IndexTests.cs:131-153`).
 - **S8-3** (SHOULD, entries include linked concept's description) —
-  **Implemented** (Major). `src/OKF4net/IndexGenerator.cs:234-236`: `var
-  description = doc.Frontmatter.Description ?? string.Empty; ...
-  entries.Add(...)`, rendered at line 66-67: `var suffix =
-  description.Length == 0 ? string.Empty : $" - {description}";`. Test:
-  `tests/OKF4net.Tests/IndexTests.cs:39-41`.
+  **Implemented** (Major), **for both generation and validation since
+  2026-09-14**. The earlier record cited only the generator, and was true only
+  for it: `src/OKF4net/IndexGenerator.cs:234-236` (`var description =
+  doc.Frontmatter.Description ?? string.Empty;`, rendered at line 66-67), test
+  `tests/OKF4net.Tests/IndexTests.cs:39-41`. A **hand-written** index was never
+  checked at all — `ValidateReserved` returned early for any `index.md` without
+  frontmatter, which is every well-formed one, so no index body was ever read.
+
+  Validation now runs `CheckIndexEntryDescriptions` for every index, before
+  that early return, emitting `IndexEntryMissingDescription` (Warning) for an
+  entry that links to a concept which has a `description` while carrying no
+  description text itself. It is a **presence** check, not a verbatim one:
+  §8's own illustration is "`- short description of item 1`", and upstream
+  samples shorten (acme_retail's metrics index reads "Recognized revenue per
+  Acme's FY2026 policy." against a longer frontmatter description), so an exact
+  match would warn on the spec's own sample practice. Entries resolve through
+  `ConceptLink.Resolve` with the index's `ConceptId.FromPath` as source — the
+  same §6.1 resolution as concept links. An entry linking to a non-concept
+  (a subdirectory's index, a script, `log.md`) is not checked, since §8 speaks
+  of "the linked **concept's** frontmatter". An inline code span in the
+  description counts as visible text: running the check over
+  `bundles/attestation_containers_demo` showed a first cut, which measured
+  presence on the code-blanked line, flagging `— \`runtime: python\``, and
+  `CodeFreeLinePairs` exists so structure is read from the blanked line and
+  text from the raw one. Tests: the seven `Index_entry_*` and
+  `A_link_inside_inline_code_is_not_an_index_entry` cases in
+  `tests/OKF4net.Tests/ValidateTests.cs`. Emits nothing on `bundles/acme_retail`,
+  `bundles/ga4`, or any validated golden fixture.
+
+  Known limit of a presence check: an entry whose text is present but is not
+  the concept's description at all — the demo bundle's `— \`runtime: python\``
+  is one — is not flagged. Distinguishing "a shortened description" from "some
+  other text" is a judgement no syntactic test makes.
 - **S8-4** (MAY, producers auto-generate `index.md`) — **Implemented**
   (Minor). `src/OKF4net/IndexGenerator.cs:95-96`: `public static
   IReadOnlyList<string> RegenerateIndexes(string bundleRoot) =>

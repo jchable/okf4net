@@ -71,16 +71,35 @@ public sealed record ContainerRuntimeProfile
     /// the image, and the writable scratch the stages genuinely need is named
     /// explicitly by <see cref="TmpfsMounts"/> instead of being the whole filesystem.
     /// Verified against real Docker for all three paths, including the SQL wrapper's
-    /// driver install — which is why this is a default rather than an opt-in.
+    /// driver install, both with the default <c>/tmp</c> mount and with a custom one —
+    /// which is why this is a default rather than an opt-in.
     /// </summary>
     public bool ReadOnlyRootFilesystem { get; init; } = true;
 
     /// <summary>
     /// The writable paths under <see cref="ReadOnlyRootFilesystem"/>, memory-backed and
-    /// destroyed with the container. <c>/tmp</c> by default, which is what the attester
-    /// bootstrap's temp module and the SQL wrapper's <c>--target</c> install both use.
+    /// destroyed with the container, one <c>--tmpfs</c> each. <c>/tmp</c> by default.
+    ///
+    /// <para>The <b>first</b> entry is the run's scratch directory: it is passed into the
+    /// container as <c>TMPDIR</c> (unless <see cref="Environment"/> already sets one), and
+    /// that is where the SQL wrapper's fallback driver install goes and what a sanctioned
+    /// script's own temp files use. So <c>["/scratch"]</c> under a read-only root works —
+    /// <c>/tmp</c> is then read-only and nothing here writes to it. Each entry must be an
+    /// absolute container path, optionally followed by engine options
+    /// (<c>/scratch:size=64m</c>); anything else is rejected here rather than silently
+    /// sending <c>TMPDIR</c> back to a read-only <c>/tmp</c>.</para>
+    ///
+    /// <para>An empty list is allowed, even with a read-only root: a script that writes
+    /// nothing, or a <see cref="ContainerRuntimeKind.SqlClient"/> image with the driver
+    /// vendored in, needs no scratch at all, and that is the most locked-down
+    /// configuration this profile can express. Its cost is that the wrapper's fallback
+    /// install then has nowhere to go, so a bare Python image fails the run.</para>
     /// </summary>
-    public IReadOnlyList<string> TmpfsMounts { get; init; } = ["/tmp"];
+    public IReadOnlyList<string> TmpfsMounts
+    {
+        get => _tmpfsMounts;
+        init => _tmpfsMounts = ScratchDirectory.ValidateMounts(value, nameof(TmpfsMounts));
+    }
 
     /// <summary>Default <c>--memory</c> ceiling. 512 MiB. Must be positive: zero or negative means <i>unlimited</i> to docker and podman, so it is rejected rather than silently removing the ceiling.</summary>
     public long MemoryBytes
@@ -112,6 +131,7 @@ public sealed record ContainerRuntimeProfile
 
     private readonly string? _networkMode;
     private readonly bool _networkModeSet;
+    private readonly IReadOnlyList<string> _tmpfsMounts = ["/tmp"];
     private readonly long _memoryBytes = 512L * 1024 * 1024;
     private readonly double _cpus = 1.0;
     private readonly int _pidsLimit = 64;
@@ -138,8 +158,25 @@ public sealed record ContainerAttesterOptions
     /// <summary>Mount the attester container's root filesystem read-only. On by default — an attester is a pure function over its inputs.</summary>
     public bool ReadOnlyRootFilesystem { get; init; } = true;
 
-    /// <summary>The writable paths under <see cref="ReadOnlyRootFilesystem"/>. <c>/tmp</c> by default: the bootstrap writes the bundle's attester module there before importing it.</summary>
-    public IReadOnlyList<string> TmpfsMounts { get; init; } = ["/tmp"];
+    /// <summary>
+    /// The writable paths under <see cref="ReadOnlyRootFilesystem"/>, one <c>--tmpfs</c>
+    /// each. <c>/tmp</c> by default. The bootstrap writes the bundle's attester module to
+    /// a temp file before importing it, into the <b>first</b> entry — passed in as
+    /// <c>TMPDIR</c> unless <see cref="Environment"/> already sets one — so
+    /// <c>["/scratch"]</c> works with <c>/tmp</c> read-only. Entries follow the same rules
+    /// as <see cref="ContainerRuntimeProfile.TmpfsMounts"/>.
+    ///
+    /// <para>Unlike the profile, an attester needs this scratch on <i>every</i> run, so a
+    /// read-only root with no mount at all is rejected when the
+    /// <see cref="ContainerAttester"/> is constructed: it could never attest anything,
+    /// and would say so only as a Python traceback, after the executor had already run
+    /// the computation.</para>
+    /// </summary>
+    public IReadOnlyList<string> TmpfsMounts
+    {
+        get => _tmpfsMounts;
+        init => _tmpfsMounts = ScratchDirectory.ValidateMounts(value, nameof(TmpfsMounts));
+    }
 
     /// <summary>Default <c>--memory</c> ceiling. 256 MiB — an attester is a pure function over its inputs, never a network call. Must be positive: zero or negative means <i>unlimited</i> to docker and podman.</summary>
     public long MemoryBytes
@@ -169,6 +206,7 @@ public sealed record ContainerAttesterOptions
         init => _timeout = ResourceCeiling.Timeout(value, nameof(Timeout));
     }
 
+    private readonly IReadOnlyList<string> _tmpfsMounts = ["/tmp"];
     private readonly long _memoryBytes = 256L * 1024 * 1024;
     private readonly double _cpus = 0.5;
     private readonly int _pidsLimit = 32;
