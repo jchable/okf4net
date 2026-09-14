@@ -970,15 +970,20 @@ and this project adheres to
   case** (e.g. `users` and `Users`, both valid per §2 — `ConceptId` segments
   are case-sensitive) instead of silently letting the second overwrite the
   first on a case-insensitive output volume (NTFS, default APFS, exFAT, SMB)
-  with the generated index linking both entries to the survivor.
-  `HtmlWriter.Write` now checks every page's `RelativeHtmlPath` for a
-  case-insensitive collision before doing anything else — before even
-  creating the output directory — and throws `ArgumentException` naming both
-  colliding concept ids, which `okf-render` already surfaced as `error: …`
-  through its existing exception mapping. The refusal applies unconditionally,
-  even on a case-sensitive volume where both files would render fine: a site
-  that renders differently depending on the filesystem it lands on is not a
-  site.
+  with the generated index linking both entries to the survivor. This also
+  covers a concept colliding with `HtmlWriter`'s own generated `index.html`:
+  `Bundle`'s reserved-filename check is an ordinal switch, so a root-level
+  `Index.md`/`INDEX.md` loads as an ordinary concept named `Index` on a
+  case-sensitive bundle volume, whose page would otherwise collide with the
+  site's own index one level up from the page-vs-page case. `HtmlWriter.Write`
+  now checks every page's `RelativeHtmlPath` — plus the generated
+  `index.html` name itself — for a case-insensitive collision before doing
+  anything else — before even creating the output directory — and throws
+  `ArgumentException` naming the colliding concept(s), which `okf-render`
+  already surfaced as `error: …` through its existing exception mapping. The
+  refusal applies unconditionally, even on a case-sensitive volume where both
+  files would render fine: a site that renders differently depending on the
+  filesystem it lands on is not a site.
 
 ## [0.5.0] - 2026-07-31
 

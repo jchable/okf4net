@@ -199,7 +199,6 @@ public class HtmlWriterTests
         // outDir).
         using var src = new TempDir();
         using var dest = new TempDir();
-        var goodSite = SiteModel.Build(SampleBundle(src));
         var outDir = Path.Combine(dest.Path, "never-created");
 
         var lower = new ViewerPage(
@@ -212,6 +211,32 @@ public class HtmlWriterTests
 
         Assert.Contains("users", ex.Message);
         Assert.Contains("Users", ex.Message);
+        Assert.Contains("case-insensitive", ex.Message);
+        Assert.False(Directory.Exists(outDir));
+    }
+
+    [Fact]
+    public void Write_refuses_a_concept_page_that_collides_with_the_generated_index()
+    {
+        // Bundle's own reserved-filename check (`case IndexFilename:`) is an
+        // ordinal switch, so on a case-sensitive bundle volume a root-level
+        // `Index.md`/`INDEX.md` loads as an ordinary concept named "Index"
+        // rather than being treated as the bundle's own index -- and its
+        // generated page, "Index.html", collides with this method's own
+        // "index.html" on a case-insensitive output volume exactly like two
+        // concept pages would.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var outDir = Path.Combine(dest.Path, "never-created");
+
+        var indexLookalike = new ViewerPage(
+            ConceptId.Parse("Index"), "Index", "Index.html", [], "body", [], []);
+        var site = new ViewerSite(src.Path, [indexLookalike], string.Empty, []);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, outDir));
+
+        Assert.Contains("Index", ex.Message);
+        Assert.Contains("index page", ex.Message);
         Assert.Contains("case-insensitive", ex.Message);
         Assert.False(Directory.Exists(outDir));
     }

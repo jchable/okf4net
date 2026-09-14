@@ -25,12 +25,13 @@ public static class HtmlWriter
     /// that resolves outside <paramref name="outDir"/> (e.g. a
     /// <c>../</c>-escaping path on a hand-constructed <see cref="ViewerPage"/>);
     /// or two pages carry ids whose <see cref="ViewerPage.RelativeHtmlPath"/>
-    /// differ only by case (§2's <see cref="ConceptId"/> segments are
-    /// case-sensitive, but two such ids would write the same file on a
-    /// case-insensitive output volume -- refused unconditionally, even on a
-    /// case-sensitive volume where both writes would otherwise succeed,
-    /// because a site that renders differently per filesystem is not a
-    /// site).
+    /// differ only by case, or a page's path differs only by case from this
+    /// method's own generated <c>index.html</c> (§2's <see cref="ConceptId"/>
+    /// segments are case-sensitive, but two such colliding names would write
+    /// the same file on a case-insensitive output volume -- refused
+    /// unconditionally, even on a case-sensitive volume where both writes
+    /// would otherwise succeed, because a site that renders differently per
+    /// filesystem is not a site).
     /// </exception>
     public static IReadOnlyList<string> Write(ViewerSite site, string outDir)
     {
@@ -56,7 +57,8 @@ public static class HtmlWriter
 
     /// <summary>
     /// Rejects a site holding two pages whose <see cref="ViewerPage.RelativeHtmlPath"/>
-    /// differ only by case, before <see cref="Write"/> takes any other
+    /// differ only by case, or a page that collides with one of <see cref="Write"/>'s
+    /// own generated file names, before <see cref="Write"/> takes any other
     /// action -- run first, ahead of <see cref="GuardOutputDirectory"/> and
     /// <see cref="Directory.CreateDirectory(string)"/>, so a refused site
     /// creates nothing on disk.
@@ -67,16 +69,35 @@ public static class HtmlWriter
     /// the second write silently replaces the first and the index links both
     /// entries to the survivor. Refused up front, whatever the volume: a site
     /// that renders differently per filesystem is not a site.
+    ///
+    /// Seeded with <c>index.html</c> before any page is examined, because it
+    /// is exactly this same collision one level up: <c>Bundle</c>'s reserved-
+    /// filename check (<c>case IndexFilename:</c>) is an ordinal switch, so a
+    /// root-level <c>Index.md</c> or <c>INDEX.md</c> loads as an ordinary
+    /// concept named <c>Index</c> on a case-sensitive bundle volume, and its
+    /// page (<c>Index.html</c>) would overwrite -- or be overwritten by --
+    /// this method's own generated <c>index.html</c> on a case-insensitive
+    /// output volume. The three asset files under <c>assets/</c> are left out
+    /// of the set: every generated page path ends in <c>.html</c> and every
+    /// asset path ends in <c>.js</c> or <c>.css</c>, so no page can ever
+    /// collide with an asset under any string comparer -- adding entries that
+    /// can never fire would only pad the set without making it any more
+    /// honest.
     /// </remarks>
     private static void GuardNoCaseCollisions(ViewerSite site)
     {
-        var seen = new Dictionary<string, ViewerPage>(StringComparer.OrdinalIgnoreCase);
+        var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["index.html"] = "the generated index page",
+        };
+
         foreach (var page in site.Pages)
         {
-            if (!seen.TryAdd(page.RelativeHtmlPath, page))
+            var description = $"concept '{page.Id}'";
+            if (!seen.TryAdd(page.RelativeHtmlPath, description))
             {
                 throw new ArgumentException(
-                    $"concepts '{seen[page.RelativeHtmlPath].Id}' and '{page.Id}' would render to the same file on a case-insensitive volume ('{page.RelativeHtmlPath}')",
+                    $"{seen[page.RelativeHtmlPath]} and {description} would render to the same file on a case-insensitive volume ('{page.RelativeHtmlPath}')",
                     paramName: nameof(site));
             }
         }
