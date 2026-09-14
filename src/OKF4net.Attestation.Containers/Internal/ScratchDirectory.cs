@@ -77,6 +77,7 @@ internal static class ScratchDirectory
     internal static bool ReachesWritableDirectory(IReadOnlyDictionary<string, string> environment, IReadOnlyList<string> tmpfsMounts)
     {
         var writable = tmpfsMounts
+            .Where(mount => !IsReadOnly(mount))
             .Select(mount => Resolve(MountPath(mount)))
             .Concat(EngineWritableDirectories)
             .ToHashSet(StringComparer.Ordinal);
@@ -86,6 +87,27 @@ internal static class ScratchDirectory
             .Where(value => value.Length > 0)
             .Concat(FallbackDirectories)
             .Any(candidate => writable.Contains(Resolve(candidate)));
+    }
+
+    /// <summary>
+    /// Whether one <c>--tmpfs</c> entry mounts read-only: its options carry <c>ro</c> after
+    /// any <c>rw</c>, since the last of the two wins (<c>/scratch:size=64m,ro</c> is
+    /// read-only, <c>/scratch:ro,rw</c> is not — verified against real Docker). Such a
+    /// mount is legitimate, e.g. to mask a directory of the image, but nothing can write
+    /// to it.
+    /// </summary>
+    private static bool IsReadOnly(string entry)
+    {
+        var colon = entry.IndexOf(':', StringComparison.Ordinal);
+        if (colon < 0)
+        {
+            return false;
+        }
+
+        var access = entry[(colon + 1)..]
+            .Split(',')
+            .LastOrDefault(option => option is "ro" or "rw");
+        return access == "ro";
     }
 
     /// <summary>

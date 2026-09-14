@@ -208,6 +208,8 @@ public class ContainerAttesterTests
     [InlineData("", new[] { "/scratch" })]
     [InlineData("/scratch/sub", new[] { "/scratch" })]
     [InlineData("/run", new[] { "/scratch" })]
+    [InlineData("/scratch", new[] { "/scratch:ro" })]
+    [InlineData("/scratch", new[] { "/scratch:size=64m,ro" })]
     public void A_read_only_root_whose_TMPDIR_reaches_no_tmpfs_mount_is_rejected_when_the_attester_is_built(
         string tmpdir, string[] mounts)
     {
@@ -237,6 +239,7 @@ public class ContainerAttesterTests
     [Theory]
     [InlineData("/work", new[] { "/scratch", "/work" })]
     [InlineData("/scratch/", new[] { "/scratch:size=64m" })]
+    [InlineData("/scratch", new[] { "/scratch:ro,rw" })]
     [InlineData("scratch", new[] { "/scratch" })]
     [InlineData("./scratch", new[] { "/scratch" })]
     [InlineData("/work/../scratch", new[] { "/scratch" })]
@@ -255,6 +258,37 @@ public class ContainerAttesterTests
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
 
         Assert.Equal(tmpdir, engine.LastSpec!.Environment["TMPDIR"]);
+    }
+
+    /// <summary>
+    /// With no <c>TMPDIR</c> from the host, the derived one points at the first mount — and
+    /// a <c>ro</c> mount is not writable (verified against real Docker), so this is rejected
+    /// too, with a message that names the derived value rather than failing to find one.
+    /// </summary>
+    [Fact]
+    public void A_derived_TMPDIR_on_a_read_only_tmpfs_mount_is_rejected_when_the_attester_is_built()
+    {
+        var ex = Assert.Throws<ArgumentException>(
+            () => new ContainerAttester(new FakeContainerEngine(), new ContainerAttesterOptions { TmpfsMounts = ["/scratch:ro"] }));
+
+        Assert.Contains("TMPDIR '/scratch'", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The environment is copied when the attester is built, as the mounts are, so the
+    /// check cannot be bypassed by changing the host's dictionary afterwards.
+    /// </summary>
+    [Fact]
+    public async Task Changing_the_environment_dictionary_after_construction_does_not_reach_the_run()
+    {
+        var engine = new FakeContainerEngine();
+        var environment = new Dictionary<string, string> { ["TMPDIR"] = "/scratch" };
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions { TmpfsMounts = ["/scratch"], Environment = environment });
+
+        environment["TMPDIR"] = "/work";
+        await attester.AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.Equal("/scratch", engine.LastSpec!.Environment["TMPDIR"]);
     }
 
     /// <summary><c>TEMP</c> is the next variable <c>tempfile</c> reads, so it can rescue an unusable <c>TMPDIR</c> (verified against real Docker).</summary>

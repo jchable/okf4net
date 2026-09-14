@@ -118,8 +118,8 @@ with the driver vendored in, needs no scratch, and that is the tightest
 configuration available (a bare Python `SqlClient` image then has nowhere to
 install its driver, and fails). It is **rejected** on `ContainerAttesterOptions`,
 when the `ContainerAttester` is constructed, and so is a `TMPDIR` in its
-`Environment` from which none of those candidates is one of its mounts or
-docker's own `/dev/shm`: the bootstrap writes a temp file on every run, so that
+`Environment` from which none of those candidates is one of its mounts (not
+mounted `:ro`) or docker's own `/dev/shm`: the bootstrap writes a temp file on every run, so that
 attester could never attest anything. The check is built to reject only what is
 sure to fail — candidates are resolved as `tempfile` resolves them against the
 `/` working directory of an image with no `WORKDIR` — and it cannot see three

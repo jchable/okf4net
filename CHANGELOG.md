@@ -647,12 +647,14 @@ and this project adheres to
   absolute container path (optionally `:options`), and an **empty**
   `TmpfsMounts` under a read-only root is rejected when a `ContainerAttester` is
   built — its bootstrap writes on every run, so it could never attest, and would
-  only discover that after the computation had already run. So is a read-only
-  `ContainerAttesterOptions` whose `Environment` sets a `TMPDIR` from which
-  Python's `tempfile` reaches no mount — none of `TMPDIR`, `TEMP`, `TMP`, `/tmp`,
-  `/var/tmp`, `/usr/tmp` is one, nor docker's own `/dev/shm`: that `TMPDIR`
-  wins, `tempfile` never creates it, and the run failed the same way
-  (`TMPDIR=/work` with only `/scratch` mounted). The check rejects only what is
+  only discover that after the computation had already run. A read-only
+  `ContainerAttesterOptions` is rejected the same way when Python's `tempfile`
+  reaches no writable mount from its `TMPDIR` — none of `TMPDIR`, `TEMP`, `TMP`,
+  `/tmp`, `/var/tmp`, `/usr/tmp` is a mount without the `ro` option, nor docker's
+  own `/dev/shm`: a `TMPDIR` set in `Environment` wins, `tempfile` never creates
+  it, and the run failed the same way (`TMPDIR=/work` with only `/scratch`
+  mounted, or `/scratch:ro`). `Environment` is copied when the attester is
+  built, so the check cannot be bypassed afterwards. The check rejects only what is
   sure to fail: a `TMPDIR` rescued by a later candidate, such as a mounted
   `/tmp`, is accepted, and paths are resolved as `tempfile` resolves them
   (`scratch` and `/work/../scratch` both reach `/scratch`). What it cannot see —
