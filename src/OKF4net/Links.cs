@@ -300,6 +300,32 @@ public static class LinkScanner
     }
 
     /// <summary>
+    /// The body's ATX headings (<c>#</c> through <c>######</c>), in order, as their level
+    /// and their text with any closing <c>#</c> sequence removed. Fenced code is skipped,
+    /// so a <c># comment</c> in a Python or shell fence is not a heading. Setext headings
+    /// (text underlined with <c>===</c>/<c>---</c>) are not recognized.
+    /// </summary>
+    internal static IReadOnlyList<(int Level, string Text)> ExtractAtxHeadings(string body)
+    {
+        var headings = new List<(int, string)>();
+        foreach (var (raw, _) in CodeFreeLinePairs(body))
+        {
+            var m = AtxHeading.Match(raw);
+            if (m.Success)
+            {
+                headings.Add((m.Groups[1].Length, m.Groups[2].Value));
+            }
+        }
+
+        return headings;
+    }
+
+    // An ATX heading: up to three spaces, one to six `#`, then either the end of the line
+    // or whitespace and the text; an optional closing run of `#` is not part of the text.
+    private static readonly System.Text.RegularExpressions.Regex AtxHeading =
+        new(@"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
     /// Extracts the entries of an <c>index.md</c> body (§8): each list item whose
     /// content begins with an inline link, paired with the description text that
     /// follows the link (a leading <c>-</c>, <c>–</c>, <c>—</c> or <c>:</c> separator
@@ -314,10 +340,33 @@ public static class LinkScanner
     internal static IReadOnlyList<(ConceptLink Link, string Description)> ExtractIndexEntries(string body)
     {
         var entries = new List<(ConceptLink, string)>();
+        foreach (var (link, text) in ExtractIndexListItems(body))
+        {
+            if (link is not null)
+            {
+                entries.Add((link, text));
+            }
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// Every non-empty list item of an <c>index.md</c> body, in order. An item that
+    /// begins with an inline link carries that link and the description after it, as
+    /// <see cref="ExtractIndexEntries"/> returns them; any other item carries a
+    /// <c>null</c> link and its whole text as written. Thematic breaks (<c>* * *</c>,
+    /// <c>- - -</c>) are not items, and fenced code is skipped.
+    /// </summary>
+    internal static IReadOnlyList<(ConceptLink? Link, string Text)> ExtractIndexListItems(string body)
+    {
+        var items = new List<(ConceptLink?, string)>();
         foreach (var (raw, blanked) in CodeFreeLinePairs(body))
         {
+            // Whitespace is skipped on the raw line throughout: blanking turns an inline
+            // code span into spaces, so `code` - text would otherwise read as a bullet.
             var i = 0;
-            while (i < blanked.Length && (blanked[i] == ' ' || blanked[i] == '\t'))
+            while (i < raw.Length && (raw[i] == ' ' || raw[i] == '\t'))
             {
                 i++;
             }
@@ -327,32 +376,44 @@ public static class LinkScanner
                 continue;
             }
 
-            i += 2;
-            while (i < blanked.Length && blanked[i] == ' ')
-            {
-                i++;
-            }
-
-            if (i >= blanked.Length || blanked[i] != '[')
+            if (ThematicBreak.IsMatch(blanked))
             {
                 continue;
             }
 
-            if (ParseInlineLink(blanked.ToCharArray(), i) is not { } p)
+            // So an item opening with a code span (`* `x` [a](b)`) neither starts with a
+            // link nor loses its code text.
+            i += 2;
+            while (i < raw.Length && raw[i] == ' ')
             {
+                i++;
+            }
+
+            if (i >= raw.Length)
+            {
+                continue;
+            }
+
+            if (blanked[i] != '[' || ParseInlineLink(blanked.ToCharArray(), i) is not { } p)
+            {
+                // Same offset in both strings (blanking preserves length).
+                items.Add((null, raw[i..].Trim()));
                 continue;
             }
 
             var target = StripTitle(p.Dest);
             var link = new ConceptLink(p.Text, target, ConceptLink.Classify(target));
-
-            // Same offset in both strings (blanking preserves length).
             var description = raw[p.Next..].Trim().TrimStart('-', '–', '—', ':').Trim();
-            entries.Add((link, description));
+            items.Add((link, description));
         }
 
-        return entries;
+        return items;
     }
+
+    // A CommonMark thematic break: three or more of the same `*`, `-` or `_`, optionally
+    // separated by spaces or tabs, after at most three spaces of indentation.
+    private static readonly System.Text.RegularExpressions.Regex ThematicBreak =
+        new(@"^ {0,3}([*\-_])(?:[ \t]*\1){2,}[ \t]*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     // A footnote reference: `[^key]`. GFM footnote labels may not contain whitespace
     // or brackets; this is deliberately that permissive rather than [A-Za-z0-9_-]+,

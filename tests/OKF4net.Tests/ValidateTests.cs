@@ -1333,4 +1333,189 @@ public class ValidateTests
 
         Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
     }
+
+    /// <summary>
+    /// §8 shows an entry as <c>* [Title](relative-url) - description</c>: something to
+    /// follow. An entry naming a file in inline code gives a reader nothing to open —
+    /// the drift a hand-written <c>attesters/index.md</c> actually had. §8 states the
+    /// format by example rather than by rule, so this is a heuristic warning.
+    /// </summary>
+    [Fact]
+    public void Index_list_item_that_is_not_a_link_is_a_warning()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("attesters/index.md", "# Attesters\n\n* `fare_cap.py` - checks the per-trip split\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+        Assert.Equal(Severity.Warning, diag.Severity);
+        Assert.Contains("fare_cap.py", diag.Message, StringComparison.Ordinal);
+        Assert.True(report.IsConformant);
+    }
+
+    /// <summary>
+    /// An item that opens with inline code does not start with a link, even when a link
+    /// follows — the code span is visible text, not whitespace.
+    /// </summary>
+    [Fact]
+    public void Index_list_item_opening_with_inline_code_before_a_link_is_not_an_entry()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* `rev` [Revenue](revenue.md)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>
+    /// A prose line that opens with inline code and a dash is not a list item: the code
+    /// span is text, not the indentation it becomes once blanked.
+    /// </summary>
+    [Fact]
+    public void A_line_opening_with_inline_code_and_a_dash_is_not_a_list_item()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "# Bundle\n\n`okf validate` - run it before publishing.\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    [Fact]
+    public void Index_list_items_that_start_with_a_link_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("attesters/fare_cap.py", "def attest(**_):\n    return {}\n");
+        tmp.Write("attesters/index.md", "# Attesters\n\n* [fare_cap.py](fare_cap.py) - checks the per-trip split\n- [Sub](sub/)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// <c>* * *</c> and <c>- - -</c> open like a list item but are thematic breaks, and
+    /// prose paragraphs and list items inside a fence are not entries at all.
+    /// </summary>
+    [Fact]
+    public void Thematic_breaks_prose_and_fenced_lists_in_an_index_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "# Bundle\n\nSome prose about this bundle.\n\n* * *\n\n- - -\n\n```\n* not an entry\n```\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// The rule reads index files only. A concept body is free to use plain bullet
+    /// lists (§4.2).
+    /// </summary>
+    [Fact]
+    public void Plain_bullets_in_a_concept_body_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n* plain\n* bullets\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// §4.2 gives <c># Examples</c> and <c># Schema</c> a conventional meaning, because
+    /// structure aids agent retrieval. A heading that plainly holds examples under
+    /// another name — <c># Worked example</c>, the drift a fare-cap policy actually
+    /// had — reads fine and retrieves worse.
+    /// </summary>
+    [Theory]
+    [InlineData("# Worked example", "Examples")]
+    [InlineData("# Example", "Examples")]
+    [InlineData("# examples", "Examples")]
+    [InlineData("## Examples", "Examples")]
+    [InlineData("# Table schema", "Schema")]
+    [InlineData("# Schemas", "Schema")]
+    public void A_variant_of_a_conventional_heading_is_a_warning(string heading, string conventional)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" + heading + "\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+        Assert.Equal(Severity.Warning, diag.Severity);
+        Assert.Contains(heading.TrimStart('#', ' '), diag.Message, StringComparison.Ordinal);
+        Assert.Contains("# " + conventional, diag.Message, StringComparison.Ordinal);
+        Assert.True(report.IsConformant);
+    }
+
+    [Theory]
+    [InlineData("# Examples")]
+    [InlineData("# Schema")]
+    [InlineData("# Usage")]
+    [InlineData("# Counterexamples")]
+    public void Conventional_and_unrelated_headings_are_not_warned(string heading)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" + heading + "\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// Once the document carries the conventional heading, a further heading mentioning
+    /// examples is a subsection (<c>## Example with a cap</c>), not a missing one.
+    /// </summary>
+    [Fact]
+    public void A_related_heading_beside_the_conventional_one_is_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "# Examples\n\n## Example with a cap\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    [Fact]
+    public void A_heading_inside_a_fence_is_not_a_heading()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "```python\n# Example: call attest()\n```\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// <c># Computation</c> is deliberately not part of this rule. A heading that merely
+    /// mentions a computation is ordinary prose structure (acme_retail's
+    /// <c># Why no attested computation</c>), and an Attested Computation whose heading
+    /// is misspelled already gets <see cref="DiagnosticCode.ComputationMissingBody"/>.
+    /// </summary>
+    [Fact]
+    public void Headings_mentioning_a_computation_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "# Why no attested computation\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
 }

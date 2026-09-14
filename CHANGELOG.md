@@ -616,6 +616,38 @@ and this project adheres to
   `attestation_containers_demo`'s active-user attester rejected those but, like
   any plain `isinstance(_, int)` check in Python, accepted `true` and `false`,
   since `bool` subclasses `int`. Both now reject strings, floats and booleans.
+- **`okf validate` warns on an `index.md` list item that is not a link.** §8
+  shows every entry as `* [Title](relative-url) - description`; an entry naming
+  a file in inline code gives a reader nothing to follow. It raises
+  `IndexEntryNotALink` (warning). §8 gives that format by example rather than
+  by rule, so this is a heuristic: thematic breaks (`* * *`), prose and fenced
+  code are not items. Reading items off the code-blanked line had also let an
+  item opening with inline code (`` * `x` [a](b) ``) pass as a link entry, and
+  a prose line such as `` `code` - [a](b) `` pass as a bulleted one; whitespace
+  is now read on the line as written.
+- **`okf validate` warns on a heading that names examples or a schema without
+  §4.2's conventional heading.** A heading containing the word *example(s)* or
+  *schema(s)* — `# Worked example`, `# Table schema`, `## Examples` — raises
+  `NonConventionalHeading` (warning) when the concept carries no exact
+  `# Examples` / `# Schema`; beside the conventional heading, a related one is a
+  subsection and is not warned. A heuristic: it matches words, not meaning.
+  `# Computation` is left out — a heading that merely mentions a computation is
+  ordinary structure (acme_retail's `# Why no attested computation`), and a
+  misspelled one on an Attested Computation already raises
+  `ComputationMissingBody`. Both rules emit nothing on any bundle in `bundles/`
+  or any fixture, and both flag the drift `bundles/meridian_transit` had before
+  it was corrected by hand (`# Worked example`, three index entries in inline
+  code). Both new `DiagnosticCode` members are appended.
+- **A failed container run now says why in the host's logs.**
+  `ContainerExecutionException.ToString()` — what every logger writes — carried
+  only "attester exited with code 1"; the container's stderr, where the cause
+  was ("No usable temporary directory", a missing table), sat unread on the
+  `Stderr` property. It now appends the last 4096 characters of each non-empty
+  captured stream. `Message` is unchanged, and so is what reaches the model:
+  `AttestationOutcome.Reasons` and `okf_run_computation` still name only the
+  exception type, now guarded by a test that puts a secret in a container's
+  stdout and stderr. The container integration tests print the exception on
+  failure too, rather than only the type-only `Reasons`.
 
 - **§4.1's `resource` carve-out for an Attested Computation now applies only to
   an ABSENT key.** The suppression added for S4.1-8 skipped the field before

@@ -53,6 +53,14 @@ public class ContainerIntegrationTests
         }
     }
 
+    /// <summary>
+    /// The failure message for an outcome that should have been displayable. Its
+    /// <c>Reasons</c> name only the exception type, by design (they reach the model); the
+    /// exception on <c>Error</c> carries the container's stderr, which is what says why.
+    /// </summary>
+    private static string Why(AttestationOutcome outcome) =>
+        string.Join("; ", outcome.Reasons) + (outcome.Error is null ? "" : "\n" + outcome.Error);
+
     [SkippableFact]
     public async Task Script_runtime_runs_a_real_python_container()
     {
@@ -75,7 +83,7 @@ public class ContainerIntegrationTests
 
         var outcome = await orchestrator.RunAsync(bundle, ConceptId.Parse("c/greet"), new Dictionary<string, object?> { ["name"] = "Ada" });
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
         Assert.Equal("Hello, Ada!", outcome.Receipt!.Fields["message"]);
     }
 
@@ -185,7 +193,7 @@ public class ContainerIntegrationTests
         });
         var outcome = await new AttestationOrchestrator(registry).RunAsync(bundle, ConceptId.Parse("c/probe"), new Dictionary<string, object?>());
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
         Assert.Equal("OSError", outcome.Receipt!.Fields["tmp"]);
         Assert.StartsWith("/scratch/", (string)outcome.Receipt.Fields["scratch"]!, StringComparison.Ordinal);
     }
@@ -232,7 +240,7 @@ public class ContainerIntegrationTests
         });
         var outcome = await new AttestationOrchestrator(registry).RunAsync(bundle, ConceptId.Parse("c/count"), new Dictionary<string, object?>());
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
     }
 
     /// <summary>
@@ -289,7 +297,7 @@ public class ContainerIntegrationTests
             ConceptId.Parse("computations/capped-fare"),
             new Dictionary<string, object?> { ["fares_cents"] = "[250,250,250,250]", ["cap_cents"] = 700 });
 
-        Assert.True(capped.Displayable, string.Join("; ", capped.Reasons));
+        Assert.True(capped.Displayable, Why(capped));
         Assert.Equal(700, Convert.ToInt32(capped.Receipt!.Fields["charged_cents"], CultureInfo.InvariantCulture));
         Assert.Equal(300, Convert.ToInt32(capped.Receipt.Fields["waived_cents"], CultureInfo.InvariantCulture));
 
@@ -303,7 +311,7 @@ public class ContainerIntegrationTests
             ConceptId.Parse("computations/daily-ridership"),
             new Dictionary<string, object?> { ["service_date"] = "2026-09-10" });
 
-        Assert.True(ridership.Displayable, string.Join("; ", ridership.Reasons));
+        Assert.True(ridership.Displayable, Why(ridership));
         var row = Assert.IsAssignableFrom<System.Collections.IEnumerable>(ridership.Receipt!.Fields["result"])
             .Cast<object>()
             .Single();
@@ -366,7 +374,7 @@ public class ContainerIntegrationTests
         }
 
         var correct = await AttestSplit(250, 250, 200, 0);
-        Assert.True(correct.Displayable, string.Join("; ", correct.Reasons));
+        Assert.True(correct.Displayable, Why(correct));
         Assert.True(correct.Verdict?.Passed);
 
         var wrong = await AttestSplit(0, 250, 250, 200);
@@ -477,7 +485,7 @@ public class ContainerIntegrationTests
 
         var outcome = await orchestrator.RunAsync(bundle, ConceptId.Parse("c/count"), new Dictionary<string, object?> { ["min_id"] = 1 });
 
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
     }
 
     /// <summary>
@@ -540,7 +548,7 @@ public class ContainerIntegrationTests
 
         // A TypeError inside the wrapper, or pip output on the receipt channel, both land
         // here as a non-displayable outcome -- so the reasons are worth printing.
-        Assert.True(outcome.Displayable, string.Join("; ", outcome.Reasons));
+        Assert.True(outcome.Displayable, Why(outcome));
         Assert.NotNull(outcome.Receipt);
 
         // The receipt parsed, which is the #3 guarantee: nothing but JSON reached stdout.

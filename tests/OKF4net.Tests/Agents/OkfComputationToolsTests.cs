@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using OKF4net.Agents;
 using OKF4net.Attestation;
+using OKF4net.Attestation.Containers;
 using OKF4net.Tests.Attestation;
 using Xunit;
 
@@ -242,6 +243,33 @@ public class OkfComputationToolsTests
         // Still useful: the model must learn the run failed, and where.
         Assert.Contains("displayable: no", rendered.ToLowerInvariant(), StringComparison.Ordinal);
         Assert.Contains("executor", rendered.ToLowerInvariant(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A <see cref="ContainerExecutionException"/>'s <c>ToString()</c> carries the
+    /// container's stdout and stderr so a host log shows why a run failed — and a
+    /// container's output can carry a connection string or the bundle's own text. That
+    /// text is for the host log only: none of it may reach the model.
+    /// </summary>
+    [Fact]
+    public async Task A_container_failure_does_not_render_the_containers_output_to_the_model()
+    {
+        const string secret = "Server=db-prod;Password=hunter2";
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
+        {
+            ["bigquery"] = FakeRuntime.ThrowingExecutor(
+                new ContainerExecutionException("executor exited with code 1", "stdout " + secret, "stderr " + secret)),
+        });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.DoesNotContain(secret, rendered, StringComparison.Ordinal);
+        Assert.Contains("displayable: no", rendered.ToLowerInvariant(), StringComparison.Ordinal);
     }
 
     /// <summary>
