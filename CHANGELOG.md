@@ -966,6 +966,19 @@ and this project adheres to
   scanners had drifted; there is now one).
 - `samples/acme-retail-agent` restores again (NU1605 after the
   `Microsoft.Agents.AI` 1.20.0 bump).
+- **`okf-render` refuses a bundle holding two concept ids that differ only by
+  case** (e.g. `users` and `Users`, both valid per §2 — `ConceptId` segments
+  are case-sensitive) instead of silently letting the second overwrite the
+  first on a case-insensitive output volume (NTFS, default APFS, exFAT, SMB)
+  with the generated index linking both entries to the survivor.
+  `HtmlWriter.Write` now checks every page's `RelativeHtmlPath` for a
+  case-insensitive collision before doing anything else — before even
+  creating the output directory — and throws `ArgumentException` naming both
+  colliding concept ids, which `okf-render` already surfaced as `error: …`
+  through its existing exception mapping. The refusal applies unconditionally,
+  even on a case-sensitive volume where both files would render fine: a site
+  that renders differently depending on the filesystem it lands on is not a
+  site.
 
 ## [0.5.0] - 2026-07-31
 

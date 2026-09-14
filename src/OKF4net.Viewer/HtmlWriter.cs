@@ -23,10 +23,18 @@ public static class HtmlWriter
     /// would pollute the bundle being viewed; or a page in
     /// <paramref name="site"/> carries a <see cref="ViewerPage.RelativeHtmlPath"/>
     /// that resolves outside <paramref name="outDir"/> (e.g. a
-    /// <c>../</c>-escaping path on a hand-constructed <see cref="ViewerPage"/>).
+    /// <c>../</c>-escaping path on a hand-constructed <see cref="ViewerPage"/>);
+    /// or two pages carry ids whose <see cref="ViewerPage.RelativeHtmlPath"/>
+    /// differ only by case (§2's <see cref="ConceptId"/> segments are
+    /// case-sensitive, but two such ids would write the same file on a
+    /// case-insensitive output volume -- refused unconditionally, even on a
+    /// case-sensitive volume where both writes would otherwise succeed,
+    /// because a site that renders differently per filesystem is not a
+    /// site).
     /// </exception>
     public static IReadOnlyList<string> Write(ViewerSite site, string outDir)
     {
+        GuardNoCaseCollisions(site);
         GuardOutputDirectory(site.BundleRoot, outDir);
 
         var written = new List<string>();
@@ -44,6 +52,34 @@ public static class HtmlWriter
         }
 
         return written;
+    }
+
+    /// <summary>
+    /// Rejects a site holding two pages whose <see cref="ViewerPage.RelativeHtmlPath"/>
+    /// differ only by case, before <see cref="Write"/> takes any other
+    /// action -- run first, ahead of <see cref="GuardOutputDirectory"/> and
+    /// <see cref="Directory.CreateDirectory(string)"/>, so a refused site
+    /// creates nothing on disk.
+    /// </summary>
+    /// <remarks>
+    /// Two ids that differ only by case are two concepts on a case-sensitive
+    /// bundle volume and ONE file on a case-insensitive output volume, where
+    /// the second write silently replaces the first and the index links both
+    /// entries to the survivor. Refused up front, whatever the volume: a site
+    /// that renders differently per filesystem is not a site.
+    /// </remarks>
+    private static void GuardNoCaseCollisions(ViewerSite site)
+    {
+        var seen = new Dictionary<string, ViewerPage>(StringComparer.OrdinalIgnoreCase);
+        foreach (var page in site.Pages)
+        {
+            if (!seen.TryAdd(page.RelativeHtmlPath, page))
+            {
+                throw new ArgumentException(
+                    $"concepts '{seen[page.RelativeHtmlPath].Id}' and '{page.Id}' would render to the same file on a case-insensitive volume ('{page.RelativeHtmlPath}')",
+                    paramName: nameof(site));
+            }
+        }
     }
 
     /// <summary>

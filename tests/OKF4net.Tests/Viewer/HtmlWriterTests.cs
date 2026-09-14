@@ -186,6 +186,37 @@ public class HtmlWriterTests
     }
 
     [Fact]
+    public void Write_refuses_two_concept_ids_that_collide_on_a_case_insensitive_volume()
+    {
+        // "users" and "Users" are two distinct concepts on a case-sensitive
+        // bundle volume, but they would render to ONE file on a
+        // case-insensitive output volume (NTFS, default APFS, exFAT, SMB):
+        // the second write would silently replace the first and the index
+        // would link both entries to the survivor. Refused up front, on
+        // every volume -- a site that renders differently per filesystem is
+        // not a site -- and before any side effect, so a refused site
+        // creates nothing on disk (asserted below via a fresh, never-created
+        // outDir).
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        var goodSite = SiteModel.Build(SampleBundle(src));
+        var outDir = Path.Combine(dest.Path, "never-created");
+
+        var lower = new ViewerPage(
+            ConceptId.Parse("users"), "Users", "users.html", [], "body", [], []);
+        var upper = new ViewerPage(
+            ConceptId.Parse("Users"), "Users", "Users.html", [], "body", [], []);
+        var site = new ViewerSite(src.Path, [lower, upper], string.Empty, []);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, outDir));
+
+        Assert.Contains("users", ex.Message);
+        Assert.Contains("Users", ex.Message);
+        Assert.Contains("case-insensitive", ex.Message);
+        Assert.False(Directory.Exists(outDir));
+    }
+
+    [Fact]
     public void Write_refuses_the_bundle_root_itself_as_the_output_directory()
     {
         using var src = new TempDir();
