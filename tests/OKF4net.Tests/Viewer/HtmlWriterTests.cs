@@ -338,6 +338,39 @@ public class HtmlWriterTests
         Assert.False(File.Exists(Path.Combine(external.Path, "users.html")));
     }
 
+    [SkippableFact]
+    public void Write_still_refuses_a_second_page_whose_own_directory_is_a_junction_after_a_sibling_directory_was_already_cached_clean()
+    {
+        // Regression for GuardWithinOutputDirectory's per-directory guard
+        // cache (Task D3): "container" is a real directory that hosts the
+        // FIRST page written and is verified clean, caching it. "container
+        // /inner" -- a DIFFERENT, deeper directory that hosts the SECOND
+        // page -- is planted as a junction to `external` before Write ever
+        // runs. A caching bug that skipped the walk for any directory once
+        // *some* directory had been verified (rather than keying the cache
+        // on the exact directory) would let the second write cross the
+        // junction the first write's check never even saw. It must not:
+        // each directory gets its own walk the first time a file lands in
+        // it, cached directory or not.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        using var external = new TempDir();
+
+        Skip.IfNot(
+            dest.TryCreateJunctionToExternalDir(Path.Combine("container", "inner"), external.Path),
+            "no junction/symlink privilege on this machine");
+
+        var firstPage = new ViewerPage(
+            ConceptId.Parse("first"), "First", "container/first.html", [], "body", [], []);
+        var secondPage = new ViewerPage(
+            ConceptId.Parse("second"), "Second", "container/inner/second.html", [], "body", [], []);
+        var site = new ViewerSite(src.Path, [firstPage, secondPage], string.Empty, []);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, dest.Path));
+        Assert.Contains("outside", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(Path.Combine(external.Path, "second.html")));
+    }
+
     [Fact]
     public void Write_surfaces_parse_errors_on_the_index_page()
     {

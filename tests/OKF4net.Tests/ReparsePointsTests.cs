@@ -164,4 +164,43 @@ public class ReparsePointsTests
 
         Assert.True(ReparsePoints.HasReparsePointAncestor(caseVariantRoot, nested));
     }
+
+    /// <summary>
+    /// Moved here from <c>OKF4net.Viewer</c>'s <c>HtmlWriter</c> (Task D3),
+    /// which owned <see cref="ReparsePoints.ResolveThroughReparsePoints"/> as
+    /// a private copy previously exercised only indirectly, through
+    /// <c>HtmlWriterTests.Write_refuses_an_out_dir_that_is_a_junction_resolving_inside_the_bundle</c>.
+    /// The common case -- no reparse point anywhere in the ancestry -- needs
+    /// no filesystem privilege to exercise, so it runs unconditionally.
+    /// </summary>
+    [Fact]
+    public void ResolveThroughReparsePoints_returns_the_path_unchanged_when_no_ancestor_is_a_reparse_point()
+    {
+        using var tmp = new TempDir();
+        var path = Path.Combine(tmp.Path, "a", "b.txt");
+
+        var resolved = ReparsePoints.ResolveThroughReparsePoints(path);
+
+        Assert.Equal(path, resolved);
+    }
+
+    /// <summary>
+    /// The reparse-point case: a path reached only through a junction
+    /// resolves to the junction's real target, with the trailing segments
+    /// past the junction re-attached.
+    /// </summary>
+    [SkippableFact]
+    public void ResolveThroughReparsePoints_follows_a_junction_and_reattaches_the_trailing_segments()
+    {
+        using var linkHost = new TempDir();
+        using var target = new TempDir();
+
+        Skip.IfNot(linkHost.TryCreateJunctionToExternalDir("link", target.Path), "no junction/symlink privilege on this machine");
+
+        var path = Path.Combine(linkHost.Path, "link", "nested", "file.txt");
+
+        var resolved = ReparsePoints.ResolveThroughReparsePoints(path);
+
+        Assert.Equal(Path.Combine(target.Path, "nested", "file.txt"), resolved);
+    }
 }

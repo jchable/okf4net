@@ -271,4 +271,81 @@ internal static class ReparsePoints
         var fullCandidate = Path.GetFullPath(candidate);
         return IsWithin(fullRoot, fullCandidate, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Resolves <paramref name="path"/> to the real location the OS would
+    /// land on once it actually touches disk, by walking upward from
+    /// <paramref name="path"/> (inclusive) for the nearest ancestor that is
+    /// itself a filesystem reparse point (symlink, junction, mount point),
+    /// resolving that ancestor to its final target via
+    /// <see cref="Directory.ResolveLinkTarget(string, bool)"/>, and
+    /// re-attaching whatever trailing path segments do not exist yet.
+    /// Returns <paramref name="path"/> unchanged if no ancestor up to the
+    /// filesystem root is a reparse point -- the common case, and the only
+    /// one <see cref="Path.GetFullPath(string)"/> alone can see.
+    /// </summary>
+    /// <remarks>
+    /// Bounded by <paramref name="path"/>'s own ancestor depth, not by any
+    /// caller-supplied root: unlike <see cref="HasReparsePointAncestor(string, string)"/>
+    /// (which walks a candidate KNOWN to be lexically nested under a root,
+    /// and can safely stop there), a path under attack here is not
+    /// necessarily lexically nested under anything at all -- that is the
+    /// whole point of the bypass this exists to catch -- so there is no
+    /// shorter bound to walk to than "however deep <paramref name="path"/>'s
+    /// own path is". Deliberately does not chase a SECOND reparse point that
+    /// might appear further up past the first one resolved: any escape
+    /// reachable only through a reparse point nested INSIDE the resolved
+    /// location is a caller-side containment check's concern (e.g.
+    /// <c>HtmlWriter.GuardWithinOutputDirectory</c>, which walks every
+    /// intermediate directory between an output root and each file actually
+    /// written), not this one-shot resolution's.
+    ///
+    /// Moved here from <c>OKF4net.Viewer</c>'s <c>HtmlWriter</c> (originally
+    /// private there) so it has one home shared across callers instead of a
+    /// leaf-local copy; <c>OKF4net.Viewer</c> reaches it via
+    /// <c>InternalsVisibleTo</c>. <c>BundleConceptWriter</c>'s lock-keying
+    /// gap (<see href="https://github.com/jchable/okf4net/issues/86">#86</see>)
+    /// can call this same method rather than growing its own copy, once that
+    /// fix is designed -- noted here as a pointer only, not acted on by this
+    /// change.
+    /// </remarks>
+    internal static string ResolveThroughReparsePoints(string path)
+    {
+        var current = path;
+        var tail = new List<string>();
+
+        while (true)
+        {
+            if (IsReparsePoint(current))
+            {
+                var resolvedTarget = Directory.ResolveLinkTarget(current, returnFinalTarget: true);
+                if (resolvedTarget is null)
+                {
+                    // IsReparsePoint(current) just returned true, so this
+                    // should not happen -- but resolution is not this
+                    // method's only line of defense (see remarks above), so
+                    // fail safe by falling back to the lexical path rather
+                    // than throwing.
+                    return path;
+                }
+
+                var resolved = resolvedTarget.FullName;
+                for (var i = tail.Count - 1; i >= 0; i--)
+                {
+                    resolved = Path.Combine(resolved, tail[i]);
+                }
+
+                return resolved;
+            }
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                return path; // Reached the filesystem root without finding a reparse point.
+            }
+
+            tail.Add(Path.GetFileName(current));
+            current = parent;
+        }
+    }
 }
