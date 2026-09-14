@@ -23,10 +23,20 @@ public sealed class ContainerAttester : IAttester
     /// <summary>
     /// Creates an attester that runs on <paramref name="options"/>' image. Throws
     /// <see cref="ArgumentException"/> when <paramref name="options"/> mounts the root
-    /// filesystem read-only with no <see cref="ContainerAttesterOptions.TmpfsMounts"/>:
-    /// the bootstrap writes the attester module to a temp file on every run, so that
-    /// configuration could never attest anything — and would only say so at run time,
-    /// as a Python traceback, after the computation had already been executed.
+    /// filesystem read-only and leaves the bootstrap nowhere to write: either with no
+    /// <see cref="ContainerAttesterOptions.TmpfsMounts"/> at all, or with a <c>TMPDIR</c>
+    /// in <see cref="ContainerAttesterOptions.Environment"/> from which none of the
+    /// directories Python's <c>tempfile</c> goes on to try (<c>TEMP</c>, <c>TMP</c>,
+    /// <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c>) is one of those mounts or
+    /// <c>/dev/shm</c> — a host-set <c>TMPDIR</c> wins over the derived one, and
+    /// <c>tempfile</c> never creates it. A mount with the <c>ro</c> option does not count,
+    /// derived <c>TMPDIR</c> included. <see cref="ContainerAttesterOptions.Environment"/> is
+    /// copied here, so changing the dictionary afterwards changes nothing. The bootstrap writes the attester module to a
+    /// temp file on every run, so either configuration could never attest anything — and
+    /// would only say so at run time, as a Python traceback, after the computation had
+    /// already been executed. The check is built to reject only what is sure to fail on
+    /// docker with an image that sets no <c>WORKDIR</c>; what it cannot see is listed in
+    /// the project README.
     /// </summary>
     public ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options)
     {
@@ -36,6 +46,20 @@ public sealed class ContainerAttester : IAttester
         {
             throw new ArgumentException(
                 "ContainerAttesterOptions mounts the root filesystem read-only with no TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; add a tmpfs mount (e.g. \"/tmp\") or set ReadOnlyRootFilesystem = false.",
+                nameof(options));
+        }
+
+        // Snapshot the environment, as ValidateMounts copies the mounts: AttestAsync reads
+        // it again, so a dictionary the host mutates after this check would bypass it.
+        options = options with { Environment = new Dictionary<string, string>(options.Environment) };
+
+        // Checked on the environment the container will get (TMPDIR derived from the
+        // first mount unless the host set one), which is also what the message names.
+        var environment = ScratchDirectory.Apply(options.Environment, options.TmpfsMounts);
+        if (options.ReadOnlyRootFilesystem && !ScratchDirectory.ReachesWritableDirectory(environment, options.TmpfsMounts))
+        {
+            throw new ArgumentException(
+                $"ContainerAttesterOptions mounts the root filesystem read-only with TMPDIR '{environment[ScratchDirectory.VariableName]}', and none of the directories Python's tempfile would try (TMPDIR, TEMP, TMP, /tmp, /var/tmp, /usr/tmp) is one of its writable TmpfsMounts or /dev/shm, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the path of a TmpfsMounts entry that is not mounted ':ro'.",
                 nameof(options));
         }
 

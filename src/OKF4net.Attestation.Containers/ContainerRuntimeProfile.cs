@@ -94,6 +94,15 @@ public sealed record ContainerRuntimeProfile
     /// vendored in, needs no scratch at all, and that is the most locked-down
     /// configuration this profile can express. Its cost is that the wrapper's fallback
     /// install then has nowhere to go, so a bare Python image fails the run.</para>
+    ///
+    /// <para>For the same reason a <c>TMPDIR</c> set in <see cref="Environment"/> is not
+    /// checked against these mounts here, unlike on <see cref="ContainerAttesterOptions"/>.
+    /// Under a read-only root it still has to lead to one of them to be usable: Python's
+    /// <c>tempfile</c>, which pip and the wrapper's <c>--target</c> both go through,
+    /// never creates it, and skips on through <c>TEMP</c>, <c>TMP</c>, <c>/tmp</c>,
+    /// <c>/var/tmp</c> and <c>/usr/tmp</c> — read-only unless mounted — so a
+    /// <c>TMPDIR</c> that reaches no mount fails the fallback install and a script's own
+    /// temp files.</para>
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts
     {
@@ -167,10 +176,12 @@ public sealed record ContainerAttesterOptions
     /// as <see cref="ContainerRuntimeProfile.TmpfsMounts"/>.
     ///
     /// <para>Unlike the profile, an attester needs this scratch on <i>every</i> run, so a
-    /// read-only root with no mount at all is rejected when the
-    /// <see cref="ContainerAttester"/> is constructed: it could never attest anything,
-    /// and would say so only as a Python traceback, after the executor had already run
-    /// the computation.</para>
+    /// read-only root that leaves it nowhere to write is rejected when the
+    /// <see cref="ContainerAttester"/> is constructed: no mount at all, or a
+    /// <c>TMPDIR</c> in <see cref="Environment"/> from which <c>tempfile</c> reaches none
+    /// of these mounts (see the constructor for the exact rule). Either could never
+    /// attest anything, and would say so only as a Python traceback, after the executor
+    /// had already run the computation.</para>
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts
     {
