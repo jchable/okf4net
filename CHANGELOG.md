@@ -733,6 +733,20 @@ and this project adheres to
   runtime, missing required parameters), which still report `StaleState.Unknown`
   without reading the clock, and not an early refusal of an already-stale
   concept — a run still executes and reports it as stale at the gate.
+- **Invalid UTF-8 on a container's stdout fails the stage instead of being
+  replaced with U+FFFD in the receipt (§10.5).** `CliContainerEngine` decoded
+  stdout with a replacement fallback, so a container writing the bytes
+  `{"x":"\xff"}` produced the receipt `{"x":"\uFFFD"}` — the engine silently
+  rewrote the data the attester authenticates. stdout is now decoded strictly,
+  and an invalid sequence (a multi-byte sequence cut off by the end of the
+  stream included) is a `ContainerExecutionException` "container stdout was
+  not valid UTF-8", reported after the process exits. The pipe keeps being
+  drained past the bad bytes, as after the output ceiling, so the child never
+  blocks on a full pipe and the failure cannot turn into a timeout. stderr
+  keeps the lenient decoder: it is host-side diagnostics, never authenticated.
+  A leading UTF-8 byte-order mark is still skipped as before; a UTF-16 or
+  UTF-32 one, on which the previous reader silently switched encodings, is now
+  invalid UTF-8 like any other stray byte.
 - **`okfgen` resolves `git` on `PATH` itself, never from the scanned tree or
   a drive-relative entry.** A bare `Process.Start("git")` let the OS search
   the current directory before `PATH` — closed on every platform .NET

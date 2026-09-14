@@ -149,6 +149,12 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             // JSON-escaping, a non-ASCII character silently mistranscoded on
             // the way in would mean the container runs a DIFFERENT program
             // than the one actually sanctioned. A BOM would corrupt it too.
+            //
+            // The output encodings below only configure the StreamReaders Process
+            // builds, and those readers are never read from: RunAsync reads raw bytes
+            // off their BaseStream and ReadBoundedAsync decodes them itself (strictly
+            // for stdout). They stay explicit so Process never consults the console
+            // codepage to build readers nothing uses.
             StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
@@ -183,8 +189,14 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         var stdinTask = WriteStdinAsync(process.StandardInput, spec.Stdin);
-        var stdoutTask = ReadBoundedAsync(process.StandardOutput, MaxOutputChars);
-        var stderrTask = ReadBoundedAsync(process.StandardError, MaxOutputChars);
+        // stdout is the receipt an attester authenticates (§10.5), so it is decoded
+        // strictly: a byte that is not valid UTF-8 fails the stage below rather than
+        // being replaced with U+FFFD, which would hand the attester text no container
+        // wrote. stderr keeps the lenient decoder on purpose: it is host-side
+        // diagnostics, never authenticated, and a strict decoder there would hide the
+        // very traceback a host needs to see why a run failed.
+        var stdoutTask = ReadBoundedAsync(process.StandardOutput.BaseStream, StrictUtf8, MaxOutputChars);
+        var stderrTask = ReadBoundedAsync(process.StandardError.BaseStream, LenientUtf8, MaxOutputChars);
 
         try
         {
@@ -256,6 +268,15 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 $"container run exceeded the output ceiling of {MaxOutputChars} characters on {flooded} (exit code {process.ExitCode})",
                 stdout.Text,
                 stderr.Text);
+        }
+
+        if (stdout.InvalidBytes)
+        {
+            // Reported after exit, like the ceiling: the reader kept draining past the
+            // bad bytes so the child could finish. stdout.Text is only the valid prefix
+            // decoded before them, and goes to the host-side Stdout property -- never
+            // into the message.
+            throw new ContainerExecutionException("container stdout was not valid UTF-8", stdout.Text, stderr.Text);
         }
 
         return new ContainerRunResult(process.ExitCode, stdout.Text, stderr.Text);
@@ -391,39 +412,110 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
     }
 
+    /// <summary>UTF-8 that throws on an invalid sequence; stdout's decoder.</summary>
+    internal static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>UTF-8 that replaces an invalid sequence with U+FFFD; stderr's decoder.</summary>
+    internal static readonly UTF8Encoding LenientUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+
+    /// <summary>How many bytes <see cref="ReadBoundedAsync"/> reads from its stream at a time.</summary>
+    internal const int ReadBufferBytes = 8192;
+
     /// <summary>
-    /// Drains <paramref name="reader"/> to its end regardless of
-    /// <paramref name="maxChars"/>, so the child's pipe never backs up and
-    /// blocks it — but only the first <paramref name="maxChars"/> characters
-    /// are kept, and <see cref="BoundedRead.Truncated"/> says whether anything was
-    /// dropped, so <see cref="RunAsync"/> can fail the stage instead of passing a
-    /// prefix off as the whole. Runs concurrently with the other stream and with the stdin
-    /// write in <see cref="RunAsync"/>, which is what actually avoids the
-    /// classic redirected-pipe deadlock.
+    /// Drains <paramref name="stream"/> to its end regardless of
+    /// <paramref name="maxChars"/> or of what it contains, so the child's pipe never
+    /// backs up and blocks it — but only the first <paramref name="maxChars"/>
+    /// characters are kept, and <see cref="BoundedRead.Truncated"/> says whether
+    /// anything was dropped, so <see cref="RunAsync"/> can fail the stage instead of
+    /// passing a prefix off as the whole. Runs concurrently with the other stream and
+    /// with the stdin write in <see cref="RunAsync"/>, which is what actually avoids
+    /// the classic redirected-pipe deadlock.
+    /// <para>
+    /// Bytes are decoded with one <see cref="Decoder"/> for the whole stream, which
+    /// carries a multi-byte sequence split across two reads over to the next call.
+    /// When <paramref name="encoding"/> throws on invalid bytes, the first
+    /// <see cref="DecoderFallbackException"/> sets <see cref="BoundedRead.InvalidBytes"/>
+    /// and stops decoding — a decoder is not reused after it throws — but not reading:
+    /// the rest of the stream is read and discarded, exactly as after truncation.
+    /// The decoder is flushed at end of stream, so a sequence cut off by the end is
+    /// invalid too. <see cref="BoundedRead.Text"/> then holds only what was decoded
+    /// before the invalid bytes.
+    /// </para>
+    /// <para>
+    /// One leading UTF-8 byte-order mark is skipped, as the <see cref="StreamReader"/>
+    /// <see cref="Process"/> hands out did before this method read raw bytes (a
+    /// receipt starting with one parsed then and must still parse). Only UTF-8's:
+    /// that reader also switched to UTF-16 or UTF-32 on their marks, which here are
+    /// simply bytes — invalid UTF-8 for the strict decoder.
+    /// </para>
     /// </summary>
-    internal static async Task<BoundedRead> ReadBoundedAsync(StreamReader reader, int maxChars)
+    internal static async Task<BoundedRead> ReadBoundedAsync(Stream stream, UTF8Encoding encoding, int maxChars)
     {
-        var buffer = new char[8192];
+        var decoder = encoding.GetDecoder();
+        var bytes = new byte[ReadBufferBytes];
+        var chars = new char[encoding.GetMaxCharCount(ReadBufferBytes)];
         var sb = new StringBuilder();
         var total = 0;
         var truncated = false;
-        int read;
-        while ((read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+        var invalid = false;
+        var atStart = true;
+
+        void Keep(int decoded)
         {
-            var toKeep = Math.Max(0, Math.Min(read, maxChars - total));
+            // The encoding is UTF-8, so a U+FEFF as the very first character can
+            // only have come from the bytes EF BB BF at the start of the stream.
+            var start = 0;
+            if (atStart && decoded > 0)
+            {
+                atStart = false;
+                start = chars[0] == '\uFEFF' ? 1 : 0;
+            }
+
+            var available = decoded - start;
+            var toKeep = Math.Max(0, Math.Min(available, maxChars - total));
             if (toKeep > 0)
             {
-                sb.Append(buffer, 0, toKeep);
+                sb.Append(chars, start, toKeep);
                 total += toKeep;
             }
 
-            if (toKeep < read)
+            if (toKeep < available)
             {
                 truncated = true;
             }
         }
 
-        return new BoundedRead(sb.ToString(), truncated);
+        int read;
+        while ((read = await stream.ReadAsync(bytes.AsMemory()).ConfigureAwait(false)) > 0)
+        {
+            if (invalid)
+            {
+                continue;
+            }
+
+            try
+            {
+                Keep(decoder.GetChars(bytes, 0, read, chars, 0, flush: false));
+            }
+            catch (DecoderFallbackException)
+            {
+                invalid = true;
+            }
+        }
+
+        if (!invalid)
+        {
+            try
+            {
+                Keep(decoder.GetChars(bytes, 0, 0, chars, 0, flush: true));
+            }
+            catch (DecoderFallbackException)
+            {
+                invalid = true;
+            }
+        }
+
+        return new BoundedRead(sb.ToString(), truncated, invalid);
     }
 
     private static async Task<string> SafeAwaitAsync(Task<BoundedRead> task)
@@ -439,5 +531,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     }
 }
 
-/// <summary>What <see cref="CliContainerEngine"/>'s bounded stream reader kept, and whether it had to drop anything to stay within its cap.</summary>
-internal readonly record struct BoundedRead(string Text, bool Truncated);
+/// <summary>
+/// What <see cref="CliContainerEngine"/>'s bounded stream reader kept, whether it had to
+/// drop anything to stay within its cap, and whether its (strict) decoder met bytes that
+/// were not valid in its encoding.
+/// </summary>
+internal readonly record struct BoundedRead(string Text, bool Truncated, bool InvalidBytes);

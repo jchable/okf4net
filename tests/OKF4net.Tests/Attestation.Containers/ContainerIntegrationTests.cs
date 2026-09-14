@@ -816,6 +816,36 @@ public class ContainerIntegrationTests
     }
 
     /// <summary>
+    /// A container's stdout is the receipt an attester authenticates, so the engine
+    /// must not rewrite it. The first version decoded it with a replacement fallback:
+    /// a container writing the bytes <c>{"x":"\xff"}</c> came back as the text
+    /// <c>{"x":"\uFFFD"}</c> and a zero exit code, a receipt nobody's script produced.
+    /// Invalid UTF-8 is a stage failure instead. The unit-level half, including the
+    /// pipe being drained past the bad byte, is
+    /// <c>CliContainerEngineRunTests.Invalid_utf8_is_reported_and_the_rest_of_the_stream_is_still_drained</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_container_whose_stdout_is_not_valid_utf8_fails_the_stage()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var engine = new CliContainerEngine();
+        var spec = new ContainerRunSpec(
+            Image: "python:3.12-slim",
+            Command: ["python3", "-c", "import sys; sys.stdout.buffer.write(b'{\"x\":\"\\xff\"}')"],
+            Stdin: null,
+            Environment: new Dictionary<string, string>(),
+            NetworkMode: "none",
+            MemoryBytes: 128 * 1024 * 1024,
+            Cpus: 0.5,
+            PidsLimit: 16,
+            Timeout: TimeSpan.FromSeconds(60));
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await engine.RunAsync(spec));
+        Assert.Equal("container stdout was not valid UTF-8", ex.Message);
+    }
+
+    /// <summary>
     /// The executable guard behind SqlClientComputationExecutorTests' source-text smoke
     /// check. Builds a throwaway image with pg8000 vendored in, then runs the SqlClient
     /// wrapper on it with <c>--network none</c> and a connection string nothing can
