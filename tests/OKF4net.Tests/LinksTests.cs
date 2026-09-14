@@ -450,4 +450,166 @@ public class LinksTests
             ["/a.md", "/b.md", "/c.md"],
             Targets("* [a](/a.md)\n    * [b](/b.md)\n\n    More about it, see [c](/c.md).\n"));
     }
+
+    /// <summary>
+    /// A block quote is a container (CommonMark §5.1): what follows its <c>&gt;</c> is
+    /// read as a document of its own, so a fence or indented code inside it is code, and
+    /// that code ends with the quote. Nested with list items either way round.
+    /// </summary>
+    [Theory]
+    [InlineData("> ```\n> [in](/in.md)\n> ```\n\n[after](/after.md)\n")]
+    [InlineData("> Quote.\n>\n>     [in](/in.md)\n\n[after](/after.md)\n")]
+    [InlineData("> ```\n> [in](/in.md)\n\n[after](/after.md)\n")]
+    [InlineData("> ```\n[after](/after.md)\n")]
+    [InlineData("> - item\n>   ```\n>   [in](/in.md)\n>   ```\n\n[after](/after.md)\n")]
+    [InlineData("- item\n  > ```\n  > [in](/in.md)\n  > ```\n\n[after](/after.md)\n")]
+    [InlineData(">> ```\n>> [in](/in.md)\n>> ```\n\n[after](/after.md)\n")]
+    [InlineData("> Use `a\n> [in](/in.md)` here, [after](/after.md)\n")]
+    public void Code_inside_a_block_quote_is_code(string body)
+    {
+        Assert.Equal(["/after.md"], Targets(body));
+    }
+
+    /// <summary>
+    /// What a quote renders is still read: links in quoted prose, including a lazy
+    /// continuation line that omits the <c>&gt;</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("> See [a](/a.md).\n> And [b](/b.md).\n")]
+    [InlineData("> See [a](/a.md)\ncontinued lazily, [b](/b.md).\n")]
+    [InlineData("> - [a](/a.md)\n> - [b](/b.md)\n")]
+    public void Links_inside_a_block_quote_are_links(string body)
+    {
+        Assert.Equal(["/a.md", "/b.md"], Targets(body));
+    }
+
+    /// <summary>
+    /// An HTML block (CommonMark §4.6) is raw HTML, not markdown, so nothing inside it is
+    /// a link: comments, <c>&lt;script&gt;</c>/<c>&lt;pre&gt;</c> and the like up to their
+    /// closing tag (a blank line does not end them), processing instructions,
+    /// declarations, CDATA, and — up to the next blank line — a block-level tag or any
+    /// complete tag alone on its line. An HTML block inside a list item ends with the item.
+    /// </summary>
+    [Theory]
+    [InlineData("<!--\n[in](/in.md)\n-->\n[after](/after.md)\n")]
+    [InlineData("<!-- [in](/in.md) -->\n[after](/after.md)\n")]
+    [InlineData("<script>\nx = '[in](/in.md)'\n\n[in](/in.md)\n</script>\n[after](/after.md)\n")]
+    [InlineData("<PRE>\n[in](/in.md)\n</pre>\n[after](/after.md)\n")]
+    [InlineData("<?php\n[in](/in.md)\n?>\n[after](/after.md)\n")]
+    [InlineData("<!DOCTYPE html [in](/in.md)>\n[after](/after.md)\n")]
+    [InlineData("<![CDATA[\n[in](/in.md)\n]]>\n[after](/after.md)\n")]
+    [InlineData("<div>\n[in](/in.md)\n</div>\n\n[after](/after.md)\n")]
+    [InlineData("<span class=\"x\">\n[in](/in.md)\n\n[after](/after.md)\n")]
+    [InlineData("- <pre>\n  [in](/in.md)\n\n[after](/after.md)\n")]
+    [InlineData("> <!--\n> [in](/in.md)\n\n[after](/after.md)\n")]
+    public void Nothing_inside_an_html_block_is_a_link(string body)
+    {
+        Assert.Equal(["/after.md"], Targets(body));
+    }
+
+    /// <summary>
+    /// The limits of an HTML block: markdown after the blank line that ends a block-level
+    /// tag is markdown again (the usual <c>&lt;details&gt;</c> pattern); a tag alone on
+    /// its line cannot interrupt a paragraph, so the paragraph goes on; and a block-level
+    /// tag can, so the paragraph ends before it.
+    /// </summary>
+    [Theory]
+    [InlineData("<details>\n<summary>S</summary>\n\n[a](/a.md) and [b](/b.md)\n\n</details>\n", "/a.md,/b.md")]
+    [InlineData("Para [a](/a.md)\n<span>\n[b](/b.md)\n", "/a.md,/b.md")]
+    [InlineData("Para [a](/a.md)\n<div>\n[in](/in.md)\n", "/a.md")]
+    public void An_html_block_ends_where_commonmark_ends_it(string body, string expected)
+    {
+        Assert.Equal(expected.Split(','), Targets(body));
+    }
+
+    /// <summary>
+    /// Raw HTML inline in a paragraph (CommonMark §6.6) is not markdown either: a comment
+    /// (also across a line ending), a tag's attribute values. Whichever of a code span or
+    /// raw HTML starts first wins.
+    /// </summary>
+    [Theory]
+    [InlineData("Text <!-- [in](/in.md) --> then [after](/after.md).\n")]
+    [InlineData("Text <!-- start\n[in](/in.md) -->\nthen [after](/after.md).\n")]
+    [InlineData("An <a title=\"[in](/in.md)\">x</a> and [after](/after.md).\n")]
+    [InlineData("Use `<!--` then [after](/after.md) -->.\n")]
+    [InlineData("Text <!-- `x --> [after](/after.md) `\n")]
+    public void Raw_inline_html_is_not_markdown(string body)
+    {
+        Assert.Equal(["/after.md"], Targets(body));
+    }
+
+    /// <summary>
+    /// What only looks like HTML stays text: an unclosed comment, a bare <c>&lt;</c>, an
+    /// email autolink, and an escaped <c>\&lt;</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("Text <!-- never closed [a](/a.md)\n")]
+    [InlineData("A < b and <not a tag [a](/a.md)\n")]
+    [InlineData("Mail <someone@example.com> and [a](/a.md)\n")]
+    [InlineData("\\<!-- [a](/a.md) -->\n")]
+    public void Html_lookalikes_are_text(string body)
+    {
+        Assert.Equal(["/a.md"], Targets(body));
+    }
+
+    /// <summary>
+    /// The block and inline scanners work on offsets into untrusted text, where one
+    /// off-by-one throws instead of warning. Random bodies built from every character that
+    /// steers them — container markers, fences, list markers, HTML delimiters, escapes,
+    /// tabs, line endings — must never make an extractor throw. Nothing is asserted about
+    /// what they return: the behaviour tests above pin that.
+    /// </summary>
+    [Fact]
+    public void No_extractor_throws_on_random_markdown()
+    {
+        var alphabet = "> -*+1.)`~<>!-?[]()\\ \t\n\na\"'/=#_".ToCharArray();
+        var tokens = new[] { "<!--", "-->", "<?", "?>", "<![CDATA[", "]]>", "<div>", "</pre>", "<a b=\"", "```", "~~~", "    ", "> ", "- ", "10. ", "[^k]" };
+        var random = new Random(20260915);
+        for (var n = 0; n < 5_000; n++)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (var k = random.Next(0, 60); k > 0; k--)
+            {
+                sb.Append(random.Next(4) == 0 ? tokens[random.Next(tokens.Length)] : alphabet[random.Next(alphabet.Length)].ToString());
+            }
+
+            var body = sb.ToString();
+            var ex = Record.Exception(() =>
+            {
+                LinkScanner.ExtractLinks(body);
+                LinkScanner.ExtractFootnoteReferences(body);
+                LinkScanner.ExtractAtxHeadings(body);
+                LinkScanner.ExtractIndexListItems(body);
+            });
+            Assert.True(ex is null, $"body {System.Text.Json.JsonSerializer.Serialize(body)} threw {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Untrusted input again: every HTML and container construct above, repeated until
+    /// it never closes, must scan in linear time. Same loose bound as the other tests.
+    /// </summary>
+    [Theory]
+    [InlineData("x <!--")]
+    [InlineData("x <?")]
+    [InlineData("x <![CDATA[")]
+    [InlineData("x <!D")]
+    [InlineData("x <a b=\"")]
+    [InlineData("x <a b ")]
+    [InlineData("> ")]
+    [InlineData("- ")]
+    [InlineData("> - ")]
+    [InlineData("<a b=\"\n")]
+    [InlineData("<!--\n")]
+    [InlineData("> > > > ```\n")]
+    public void Html_and_container_constructs_are_scanned_in_linear_time(string unit)
+    {
+        var body = string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "\n\n[a](/a.md)\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Targets(body);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
 }

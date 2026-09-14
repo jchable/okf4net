@@ -1523,6 +1523,23 @@ public class ValidateTests
     }
 
     /// <summary>
+    /// A heading inside an HTML comment or a quoted fence is not part of the concept's
+    /// structure, so it is not held to §4.2.
+    /// </summary>
+    [Theory]
+    [InlineData("<!--\n# Worked example\n-->\n")]
+    [InlineData("> ```\n> # Worked example\n> ```\n")]
+    public void A_heading_inside_raw_html_or_quoted_code_is_not_a_heading(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
     /// <c># Computation</c> is deliberately not part of this rule. A heading that merely
     /// mentions a computation is ordinary prose structure (acme_retail's
     /// <c># Why no attested computation</c>), and an Attested Computation whose heading
@@ -1557,6 +1574,9 @@ public class ValidateTests
     [InlineData("An escaped \\` is literal, so `[^x]` is a span.\n")]
     [InlineData("A span `crossing a line\n[^x]` is still code.\n")]
     [InlineData("* ```\n  [^x]\n  ```\n")]
+    [InlineData("<!--\n[^x]\n-->\n")]
+    [InlineData("A note <!-- see [^x] --> in passing.\n")]
+    [InlineData("> ```\n> [^x]\n> ```\n")]
     public void Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation(string body)
     {
         using var tmp = new TempDir();
@@ -1575,6 +1595,8 @@ public class ValidateTests
     [Theory]
     [InlineData("A path C:\\\\[^k] cites.\n")]
     [InlineData("The span `C:\\` ends at its backslash, so this cites.[^k] Then `more`.\n")]
+    [InlineData("> A quoted claim.[^k]\n")]
+    [InlineData("A <b>bold</b> claim.[^k] <!-- a note -->\n")]
     [InlineData("* An item.\n\n    Its continuation cites this.[^k]\n")]
     public void Real_citations_next_to_those_forms_are_still_citations(string body)
     {
