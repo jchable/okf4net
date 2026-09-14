@@ -1284,8 +1284,10 @@ and this project adheres to
   once, now covers both attempts and the delay between them; the retry is
   skipped once fewer than 500 ms of the budget remain, so an unresponsive
   engine cannot turn the timeout `RunAsync` promised into a multi-attempt
-  hang (§10, `docs/spec/SPEC.md`: the requested timeout bounds the whole run,
-  and teardown after it fires is part of what the caller is still waiting on).
+  hang — this host's own contract (the OKF spec's §10 says nothing about
+  timeouts or teardown): the requested `ContainerRunSpec.Timeout` bounds the
+  whole run, and teardown after it fires is part of what the caller is
+  still waiting on.
 
 ## [0.5.0] - 2026-07-31
 

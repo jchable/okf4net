@@ -287,11 +287,15 @@ public class CliContainerEngineRunTests
     /// The other half of the same budget: a <c>kill</c> that answers -- slowly, and
     /// with failure -- must still get its retry, because the retry exists for a
     /// container whose creation was still in flight, not only for a dead engine. The
-    /// "engine" here sleeps 750 ms then exits non-zero on every <c>kill</c> call and
+    /// "engine" here targets roughly 750 ms then exits non-zero on every <c>kill</c>
+    /// call (a real <c>sleep 0.75</c> on POSIX; an approximate <c>ping</c>-based wait
+    /// on Windows that in practice can run notably shorter, measured 275-485 ms) and
     /// records one marker line per call, so this test can assert the retry actually
-    /// happened (two lines) while still finishing comfortably inside
-    /// <see cref="CliContainerEngine.TeardownBudget"/>'s 3 s production default
-    /// (750 ms + a 250 ms delay + 750 ms ≈ 1.75 s).
+    /// happened (two lines). It does not depend on either call taking any particular
+    /// duration: whether each is a few hundred ms or the full ~750 ms, two calls plus
+    /// the 250 ms delay between them stay comfortably under
+    /// <see cref="CliContainerEngine.TeardownBudget"/>'s 3 s production default, which
+    /// is all the assertion below requires.
     /// </summary>
     [Fact]
     public async Task A_slow_failing_kill_still_gets_retried_within_the_budget()
@@ -319,7 +323,7 @@ public class CliContainerEngineRunTests
         /// <summary>Hangs for 20 s and never exits on its own -- the unresponsive-daemon case.</summary>
         Hang,
 
-        /// <summary>Sleeps 750 ms then exits non-zero -- the slow-but-responsive, still-failing case.</summary>
+        /// <summary>Targets roughly 750 ms then exits non-zero -- the slow-but-responsive, still-failing case.</summary>
         SlowFail,
     }
 

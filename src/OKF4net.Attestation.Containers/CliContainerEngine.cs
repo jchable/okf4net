@@ -297,8 +297,10 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// multi-attempt hang (a Medium external-audit finding: a 750 ms-per-call `kill`
     /// previously stretched a 30 ms <see cref="ContainerRunSpec.Timeout"/> to ~1.74 s,
     /// and the old worst case -- two 5 s per-attempt bounds plus the delay -- was
-    /// closer to 10 s). §10 requires the requested timeout to bound the whole run;
-    /// teardown after that timeout fires is part of what the caller is waiting on.
+    /// closer to 10 s). This is this host's own contract, not something the OKF spec
+    /// requires: <see cref="RunAsync"/> promises <see cref="ContainerRunSpec.Timeout"/>
+    /// bounds the whole run, and teardown after that timeout fires is part of what the
+    /// caller is still waiting on.
     /// </summary>
     private const int TeardownBudgetSeconds = 3;
 
