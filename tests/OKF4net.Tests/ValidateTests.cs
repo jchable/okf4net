@@ -1240,4 +1240,564 @@ public class ValidateTests
         Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.LogDateInvalid);
         Assert.DoesNotContain(r.Diagnostics, d => d.Code == DiagnosticCode.LegacyDateOnlyTimestamp);
     }
+
+    // ---------------------------------------------------------------------
+    // §8: "Entries SHOULD include the description from the linked concept's
+    // frontmatter." Until these, the validator never read an index body at all:
+    // ValidateReserved returned early for any index.md without frontmatter, which
+    // is every well-formed one. A hand-written index could omit every description
+    // and nothing would say so. (IndexGenerator does include them, which is why
+    // the conformance report marked S8-3 Implemented — for generation, not for
+    // validation.)
+    // ---------------------------------------------------------------------
+
+    private const string DescribedConcept =
+        "---\ntype: Metric\ntitle: Revenue\ndescription: Recognized revenue for a period.\nresource: https://x\ntags: [x]\n---\nbody\n";
+
+    [Fact]
+    public void Index_entry_omitting_the_linked_concepts_description_is_a_warning()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* [Revenue](revenue.md)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+        Assert.Equal(Severity.Warning, diag.Severity);
+        Assert.Contains("revenue.md", diag.Message, StringComparison.Ordinal);
+        // A SHOULD: warned, never a conformance failure (§11).
+        Assert.True(report.IsConformant);
+    }
+
+    /// <summary>
+    /// Presence is what is checked, not a verbatim copy. §8's own illustration is
+    /// "<c>- short description of item 1</c>", and upstream samples routinely
+    /// shorten: acme_retail's metrics index reads "Recognized revenue per Acme's
+    /// FY2026 policy." against a longer frontmatter description. Demanding an exact
+    /// match would warn on the spec's own sample practice.
+    /// </summary>
+    [Fact]
+    public void Index_entry_carrying_a_shortened_description_is_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* [Revenue](revenue.md) - Revenue, recognized.\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>
+    /// An inline code span is text the reader sees, so under a presence check it
+    /// counts as a description. This pins a real subtlety running the validator over
+    /// <c>bundles/attestation_containers_demo</c> surfaced: its entries read
+    /// <c>- [greeting.md](greeting.md) — `runtime: python`</c>, and the first cut of
+    /// this check measured presence on the code-blanked line, where that span is
+    /// spaces — so it flagged an entry that plainly carries text. Link structure is
+    /// still read from the code-blanked line, so a link written inside a code span is
+    /// never mistaken for an entry.
+    /// </summary>
+    [Fact]
+    public void Index_entry_whose_description_is_inline_code_is_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* [Revenue](revenue.md) — `runtime: postgres`\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>A link written inside an inline code span is source text, not an index entry.</summary>
+    [Fact]
+    public void A_link_inside_inline_code_is_not_an_index_entry()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* `[Revenue](revenue.md)`\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>A concept with no <c>description</c> has nothing to include, so its entry cannot omit one.</summary>
+    [Fact]
+    public void Index_entry_for_a_concept_without_a_description_is_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("tables/users.md", "---\ntype: Table\ntitle: Users\n---\nbody\n");
+        tmp.Write("tables/index.md", "# Tables\n\n* [Users](users.md)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>
+    /// §8 speaks of "the linked <b>concept's</b> frontmatter". A link to a
+    /// subdirectory index, a script, or the reserved <c>log.md</c> points at
+    /// something with no frontmatter description, so the rule does not reach it.
+    /// </summary>
+    [Fact]
+    public void Index_entries_linking_to_non_concepts_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("attesters/check.py", "def attest(**_):\n    return {}\n");
+        tmp.Write("log.md", "# Log\n\n## 2026-09-14\n* **Update**: x.\n");
+        tmp.Write("index.md", "# Contents\n\n* [metrics](metrics/index.md)\n* [check.py](attesters/check.py)\n* [log](log.md)\n");
+        tmp.Write("metrics/index.md", "# Metrics\n\n* [Revenue](revenue.md) - Revenue.\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>The root index resolves relative to the bundle root, and an absolute (<c>/</c>) link does too (§6.1).</summary>
+    [Fact]
+    public void Root_index_and_absolute_links_are_resolved_like_concept_links()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("index.md", "# Contents\n\n* [Revenue](metrics/revenue.md)\n* [Revenue again](/metrics/revenue.md)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Equal(2, report.Diagnostics.Count(d => d.Code == DiagnosticCode.IndexEntryMissingDescription));
+    }
+
+    // ---------------------------------------------------------------------
+    // §5.1: `id` "SHOULD be present when the body cites the source", and §4.2
+    // makes footnotes the citation mechanism ("Per-claim attribution to external
+    // sources uses markdown footnotes keyed to `sources` entries"). A footnote
+    // reference with no matching `sources[].id` is a citation that attributes to
+    // nothing. The conformance report classed this N/A as producer guidance, but
+    // the validator already checks producer-authored content (generated.by,
+    // status, actors) — this is checkable the same way.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void Footnote_citing_a_source_with_no_matching_id_is_a_warning()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n" +
+            "sources:\n  - { id: policy, resource: https://example.com/policy }\n---\n" +
+            "Revenue is recognized on delivery.[^policy] Returns net out.[^returns]\n\n" +
+            "[^policy]: Revenue policy\n[^returns]: Returns policy\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+        Assert.Equal(Severity.Warning, diag.Severity);
+        Assert.Contains("returns", diag.Message, StringComparison.Ordinal);
+        Assert.True(report.IsConformant);
+    }
+
+    [Fact]
+    public void Footnote_matching_a_source_id_is_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n" +
+            "sources:\n  - { id: policy, resource: https://example.com/policy }\n---\n" +
+            "Revenue is recognized on delivery.[^policy]\n\n[^policy]: Revenue policy\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
+
+    /// <summary>
+    /// The false positive this rule must not produce: <c>[^a-z]</c> is a negated
+    /// character class, and it is ordinary inside a regex or a SQL pattern. A
+    /// fenced block or an inline code span is source text, never a citation. The
+    /// scan reuses LinkScanner's code-free view of the body rather than a second
+    /// implementation of "skip code".
+    /// </summary>
+    [Fact]
+    public void Footnote_syntax_inside_code_is_not_a_citation()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "Match with `[^a-z]` inline.\n\n```sql\nSELECT * FROM t WHERE code SIMILAR TO '[^0-9]+'\n```\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
+
+    /// <summary>
+    /// A definition line (<c>[^key]: …</c>) is not a citation, only the reference in
+    /// running text is. A definition nothing refers to is dead markdown, not an
+    /// unattributed claim.
+    /// </summary>
+    [Fact]
+    public void A_footnote_definition_alone_is_not_a_citation()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "No claim cites anything here.\n\n[^orphan]: An unused definition\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
+
+    /// <summary>
+    /// §8 shows an entry as <c>* [Title](relative-url) - description</c>: something to
+    /// follow. An entry naming a file in inline code gives a reader nothing to open —
+    /// the drift a hand-written <c>attesters/index.md</c> actually had. §8 states the
+    /// format by example rather than by rule, so this is a heuristic warning.
+    /// </summary>
+    [Fact]
+    public void Index_list_item_that_is_not_a_link_is_a_warning()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("attesters/index.md", "# Attesters\n\n* `fare_cap.py` - checks the per-trip split\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+        Assert.Equal(Severity.Warning, diag.Severity);
+        Assert.Contains("fare_cap.py", diag.Message, StringComparison.Ordinal);
+        Assert.True(report.IsConformant);
+    }
+
+    /// <summary>
+    /// An item that opens with inline code does not start with a link, even when a link
+    /// follows — the code span is visible text, not whitespace — so it is not an entry
+    /// whose description is checked. It does contain a link a reader can follow, so it
+    /// is not warned as having none either.
+    /// </summary>
+    [Fact]
+    public void Index_list_item_opening_with_inline_code_before_a_link_is_not_an_entry()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* `rev` [Revenue](revenue.md)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// Raised in review of #99: an item that renders a link without opening on one — a
+    /// bold link, an icon before the link — gives a reader something to follow, so it is
+    /// not warned as having no link. Only an item with no link at all is.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* **[Revenue](revenue.md)** - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* ![icon](icon.png) [Revenue](revenue.md) - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* Revenue, recognized:\n  [Revenue](revenue.md)\n")]
+    public void Index_list_item_containing_a_link_anywhere_is_not_warned_as_having_none(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// A prose line that opens with inline code and a dash is not a list item: the code
+    /// span is text, not the indentation it becomes once blanked.
+    /// </summary>
+    [Fact]
+    public void A_line_opening_with_inline_code_and_a_dash_is_not_a_list_item()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "# Bundle\n\n`okf validate` - run it before publishing.\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    [Fact]
+    public void Index_list_items_that_start_with_a_link_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("attesters/fare_cap.py", "def attest(**_):\n    return {}\n");
+        tmp.Write("attesters/index.md", "# Attesters\n\n* [fare_cap.py](fare_cap.py) - checks the per-trip split\n- [Sub](sub/)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// <c>* * *</c> and <c>- - -</c> open like a list item but are thematic breaks, and
+    /// prose paragraphs and list items inside a fence are not entries at all.
+    /// </summary>
+    [Fact]
+    public void Thematic_breaks_prose_and_fenced_lists_in_an_index_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "# Bundle\n\nSome prose about this bundle.\n\n* * *\n\n- - -\n\n```\n* not an entry\n```\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// The rule reads index files only. A concept body is free to use plain bullet
+    /// lists (§4.2).
+    /// </summary>
+    [Fact]
+    public void Plain_bullets_in_a_concept_body_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n* plain\n* bullets\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// §4.2 gives <c># Examples</c> and <c># Schema</c> a conventional meaning, because
+    /// structure aids agent retrieval. A heading that plainly holds examples under
+    /// another name — <c># Worked example</c>, the drift a fare-cap policy actually
+    /// had — reads fine and retrieves worse.
+    /// </summary>
+    [Theory]
+    [InlineData("# Worked example", "Examples")]
+    [InlineData("# Example", "Examples")]
+    [InlineData("# examples", "Examples")]
+    [InlineData("## Examples", "Examples")]
+    [InlineData("# Table schema", "Schema")]
+    [InlineData("# Schemas", "Schema")]
+    public void A_variant_of_a_conventional_heading_is_a_warning(string heading, string conventional)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" + heading + "\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+        Assert.Equal(Severity.Warning, diag.Severity);
+        Assert.Contains(heading.TrimStart('#', ' '), diag.Message, StringComparison.Ordinal);
+        Assert.Contains("# " + conventional, diag.Message, StringComparison.Ordinal);
+        Assert.True(report.IsConformant);
+    }
+
+    [Theory]
+    [InlineData("# Examples")]
+    [InlineData("# Schema")]
+    [InlineData("# Usage")]
+    [InlineData("# Counterexamples")]
+    public void Conventional_and_unrelated_headings_are_not_warned(string heading)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" + heading + "\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// Once the document carries the conventional heading, a further heading mentioning
+    /// examples is a subsection (<c>## Example with a cap</c>), not a missing one.
+    /// </summary>
+    [Fact]
+    public void A_related_heading_beside_the_conventional_one_is_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "# Examples\n\n## Example with a cap\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    [Fact]
+    public void A_heading_inside_a_fence_is_not_a_heading()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "```python\n# Example: call attest()\n```\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// A heading inside an HTML comment or a quoted fence is not part of the concept's
+    /// structure, so it is not held to §4.2.
+    /// </summary>
+    [Theory]
+    [InlineData("<!--\n# Worked example\n-->\n")]
+    [InlineData("> ```\n> # Worked example\n> ```\n")]
+    public void A_heading_inside_raw_html_or_quoted_code_is_not_a_heading(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// <c># Computation</c> is deliberately not part of this rule. A heading that merely
+    /// mentions a computation is ordinary prose structure (acme_retail's
+    /// <c># Why no attested computation</c>), and an Attested Computation whose heading
+    /// is misspelled already gets <see cref="DiagnosticCode.ComputationMissingBody"/>.
+    /// </summary>
+    [Fact]
+    public void Headings_mentioning_a_computation_are_not_warned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md",
+            "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "# Why no attested computation\n\ntext\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    private const string MetricFrontmatter = "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n";
+
+    /// <summary>
+    /// Footnote syntax that markdown does not render as a footnote must not be read as a
+    /// citation: a backslash-escaped bracket, an indented code block, and a
+    /// double-backtick span (which the one-character code toggle used to leave visible).
+    /// Raised by Copilot on #98.
+    /// </summary>
+    [Theory]
+    [InlineData("Match \\[^a-z] literally.\n")]
+    [InlineData("A pattern:\n\n    SIMILAR TO '[^0-9]+'\n")]
+    [InlineData("Use `` [^x] `` as the class.\n")]
+    [InlineData("Use `` a`[^x] `` as the class.\n")]
+    [InlineData("An escaped \\` is literal, so `[^x]` is a span.\n")]
+    [InlineData("A span `crossing a line\n[^x]` is still code.\n")]
+    [InlineData("* ```\n  [^x]\n  ```\n")]
+    [InlineData("<!--\n[^x]\n-->\n")]
+    [InlineData("A note <!-- see [^x] --> in passing.\n")]
+    [InlineData("> ```\n> [^x]\n> ```\n")]
+    [InlineData("[ref]: /url[^x]\n")]
+    [InlineData("[a]: /one\n[b]: /two '[^x]'\n")]
+    [InlineData("[ref]:\n  /url\n  \"a title\n  citing [^x]\"\n")]
+    public void Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
+
+    /// <summary>
+    /// The escape and code rules must not swallow real citations: a reference after an
+    /// escaped backslash (<c>\\[^k]</c> is a literal backslash, then a footnote), and one
+    /// in a list item's indented continuation paragraph.
+    /// </summary>
+    [Theory]
+    [InlineData("A path C:\\\\[^k] cites.\n")]
+    [InlineData("The span `C:\\` ends at its backslash, so this cites.[^k] Then `more`.\n")]
+    [InlineData("> A quoted claim.[^k]\n")]
+    [InlineData("> \tA claim after a quote marker and a tab.[^k]\n")]
+    [InlineData("[ref]: /url not a title, so this is prose.[^k]\n")]
+    [InlineData("A paragraph first.\n[ref]: /url[^k]\n")]
+    [InlineData("[^note]: A footnote definition that itself cites.[^k]\n")]
+    [InlineData("A <b>bold</b> claim.[^k] <!-- a note -->\n")]
+    [InlineData("* An item.\n\n    Its continuation cites this.[^k]\n")]
+    public void Real_citations_next_to_those_forms_are_still_citations(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
+
+    /// <summary>
+    /// A list item continues onto the following indented line, so a description wrapped
+    /// there is still the entry's description. Raised by Copilot on #98.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n  Recognized revenue.\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md) -\n  Recognized revenue.\n")]
+    public void Index_entry_whose_description_wraps_onto_the_next_line_is_not_warned(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>
+    /// The wrapped-description allowance ends where the item does: the next item, a blank
+    /// line, or a heading is not a continuation.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n* [Other](other.md) - other\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n\nSome prose after the list.\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n# Next section\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n```text\nfoo\n```\nSome prose after a fence.\n")]
+    public void What_follows_an_entry_without_a_description_is_not_its_description(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>
+    /// A tab after the list marker is as much a list item as a space (CommonMark §5.2), so
+    /// the entry is read and its missing description reported. Raised by Copilot on #98.
+    /// </summary>
+    [Fact]
+    public void Index_entry_with_a_tab_after_its_marker_is_an_entry()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n*\t[Revenue](revenue.md)\n-\t`notes.txt`\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #98: a fence opened with four backticks is not closed by an
+    /// inner three-backtick line, so footnote syntax after it is still code.
+    /// </summary>
+    [Fact]
+    public void Footnote_syntax_inside_a_longer_fence_is_not_a_citation()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + "````markdown\n```\nA claim.[^k]\n```\n[^k]: a source\n````\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
 }

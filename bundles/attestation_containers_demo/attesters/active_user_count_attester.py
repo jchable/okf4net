@@ -23,7 +23,10 @@ def attest(*, sanctioned_computation, receipt, values):
         return {"ok": False, "reason": "receipt is missing the active_users column"}
 
     count = result[0]["active_users"]
-    if not isinstance(count, int) or count < 0:
+    # bool first: JSON true/false arrive as Python bools, and bool is a subclass of
+    # int, so `isinstance(True, int)` holds and a boolean would pass as a count of 1.
+    # A count(*) never produces one.
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         return {"ok": False, "reason": f"active_users is not a non-negative integer: {count!r}"}
 
     return {"ok": True, "reason": None}

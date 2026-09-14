@@ -190,6 +190,39 @@ public enum DiagnosticCode
 
     /// <summary>A cross-link target does not resolve to a concept in the bundle (§6; permitted, reported as <see cref="Severity.Info"/>).</summary>
     BrokenLink,
+
+    // Appended rather than inserted: existing members keep their numeric values,
+    // so a consumer compiled against an earlier build still reads the same code.
+
+    /// <summary>
+    /// An <c>index.md</c> entry links to a concept that has a <c>description</c>, but
+    /// the entry carries no description text (§8: "Entries SHOULD include the
+    /// description from the linked concept's frontmatter"). Presence is checked, not
+    /// a verbatim copy.
+    /// </summary>
+    IndexEntryMissingDescription,
+
+    /// <summary>
+    /// The body cites a footnote whose key matches no <c>sources[].id</c> (§5.1: an
+    /// <c>id</c> "SHOULD be present when the body cites the source"; §4.2 makes
+    /// footnotes keyed to <c>sources</c> the citation mechanism).
+    /// </summary>
+    CitationMissingSourceId,
+
+    /// <summary>
+    /// A list item in an <c>index.md</c> contains no link (§8 shows each entry as
+    /// <c>* [Title](relative-url) - description</c>). §8 states the format by example
+    /// rather than by rule, so this is a heuristic.
+    /// </summary>
+    IndexEntryNotALink,
+
+    /// <summary>
+    /// A concept heading names examples or a schema without using the conventional
+    /// <c># Examples</c> or <c># Schema</c> heading §4.2 says SHOULD be used when
+    /// applicable, and the document carries no conventional one. A heuristic: it
+    /// matches the words, not the meaning.
+    /// </summary>
+    NonConventionalHeading,
 }
 
 /// <summary>
@@ -421,6 +454,31 @@ public static class BundleValidator
                 }
             }
 
+            // §5.1: a source's `id` "SHOULD be present when the body cites the source",
+            // and §4.2 makes footnotes keyed to `sources` entries the citation mechanism.
+            // A footnote reference whose key matches no `sources[].id` is a claim that
+            // attributes to nothing. LinkScanner skips fenced and inline code, so a regex
+            // character class like `[^a-z]` is never mistaken for a citation.
+            var sourceIds = fm.Sources
+                .Select(s => s.Id)
+                .Where(id => !string.IsNullOrEmpty(id))
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var key in LinkScanner.ExtractFootnoteReferences(concept.Document.Body))
+            {
+                if (!sourceIds.Contains(key))
+                {
+                    diagnostics.Add(new Diagnostic(
+                        Severity.Warning,
+                        concept.Path,
+                        concept.Id,
+                        $"body cites footnote [^{key}] but no `sources` entry has id \"{key}\" (§5.1)",
+                        DiagnosticCode.CitationMissingSourceId,
+                        "sources.id"));
+                }
+            }
+
+            CheckConventionalHeadings(concept, diagnostics);
+
             if (fm.UsageWindow is { } uw)
             {
                 if (uw.From is { } uf)
@@ -623,6 +681,125 @@ public static class BundleValidator
         return value is not null && !value.IsEmptyValue;
     }
 
+    // §4.2's conventional headings this heuristic watches for, each with the words that
+    // mark a heading as holding that kind of section. `# Computation` is left out: a
+    // heading that merely mentions a computation is ordinary structure (acme_retail's
+    // `# Why no attested computation`), and an Attested Computation whose heading is
+    // misspelled already gets ComputationMissingBody.
+    private static readonly (string Conventional, System.Text.RegularExpressions.Regex Words)[] ConventionalHeadings =
+    [
+        ("Examples", new(@"\bexamples?\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)),
+        ("Schema", new(@"\bschemas?\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)),
+    ];
+
+    /// <summary>
+    /// Warns on a heading that names examples or a schema without the conventional
+    /// <c># Examples</c>/<c># Schema</c> heading (§4.2) — unless the document already
+    /// carries that heading, in which case a related one is a subsection of it.
+    /// </summary>
+    private static void CheckConventionalHeadings(Concept concept, List<Diagnostic> diagnostics)
+    {
+        var headings = LinkScanner.ExtractAtxHeadings(concept.Document.Body);
+        foreach (var (conventional, words) in ConventionalHeadings)
+        {
+            if (headings.Any(h => h.Level == 1 && string.Equals(h.Text, conventional, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            foreach (var (level, text) in headings)
+            {
+                if (!words.IsMatch(text))
+                {
+                    continue;
+                }
+
+                diagnostics.Add(new Diagnostic(
+                    Severity.Warning,
+                    concept.Path,
+                    concept.Id,
+                    $"heading \"{new string('#', level)} {text}\" is not the conventional \"# {conventional}\" heading (§4.2)",
+                    DiagnosticCode.NonConventionalHeading));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Warns on each <c>index.md</c> list item that contains no link at all (§8 shows
+    /// every entry as <c>* [Title](relative-url) - description</c>). An item that renders
+    /// a link without opening on one — <c>**[A](a.md)**</c>, an icon before the link —
+    /// still gives a reader something to follow, and is not warned.
+    /// </summary>
+    private static void CheckIndexEntriesAreLinks(string indexPath, string body, List<Diagnostic> diagnostics)
+    {
+        foreach (var (link, text, containsLink) in LinkScanner.ExtractIndexListItems(body))
+        {
+            if (link is not null || containsLink)
+            {
+                continue;
+            }
+
+            diagnostics.Add(new Diagnostic(
+                Severity.Warning,
+                indexPath,
+                null,
+                $"index entry \"{text}\" contains no link (§8 lists entries as `* [Title](relative-url) - description`)",
+                DiagnosticCode.IndexEntryNotALink));
+        }
+    }
+
+    /// <summary>
+    /// §8: "Entries SHOULD include the description from the linked concept's
+    /// frontmatter." Warns for an entry that links to a concept which has a
+    /// <c>description</c>, when the entry carries no description text at all.
+    ///
+    /// Deliberately a presence check, not a verbatim comparison: §8's own
+    /// illustration is "<c>- short description of item 1</c>", and upstream samples
+    /// routinely shorten, so demanding an exact copy would warn on the spec's own
+    /// sample practice. An entry linking to something that is not a concept — a
+    /// subdirectory's index, a script, the reserved <c>log.md</c> — has no linked
+    /// concept frontmatter to include, so it is not checked.
+    ///
+    /// Entries resolve exactly as concept links do (§6.1), through
+    /// <see cref="ConceptLink.Resolve"/> with the index's own location as the source,
+    /// so a relative entry resolves from the index's directory and a <c>/</c> entry
+    /// from the bundle root — no second implementation of link resolution.
+    /// </summary>
+    private static void CheckIndexEntryDescriptions(Bundle bundle, string indexPath, string body, List<Diagnostic> diagnostics)
+    {
+        ConceptId source;
+        try
+        {
+            // `metrics/index.md` becomes `metrics/index`, whose parent is `metrics` --
+            // the directory a relative entry resolves against.
+            source = ConceptId.FromPath(bundle.Root, indexPath);
+        }
+        catch (ConceptIdException)
+        {
+            return;
+        }
+
+        foreach (var (link, description) in LinkScanner.ExtractIndexEntries(body))
+        {
+            if (description.Length != 0 || link.Resolve(source) is not { } target || bundle.Get(target) is not { } concept)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(concept.Document.Frontmatter.Description))
+            {
+                continue;
+            }
+
+            diagnostics.Add(new Diagnostic(
+                Severity.Warning,
+                indexPath,
+                null,
+                $"index entry for \"{link.Target}\" omits the linked concept's description (§8)",
+                DiagnosticCode.IndexEntryMissingDescription));
+        }
+    }
+
     /// <summary>Checks that reserved files (index.md and log.md) follow their structural rules when present (§8/§9).</summary>
     private static void ValidateReserved(Bundle bundle, List<Diagnostic> diagnostics)
     {
@@ -651,6 +828,14 @@ public static class BundleValidator
                 diagnostics.Add(new Diagnostic(Severity.Error, path, null, $"unparseable index.md: {e.Message}", DiagnosticCode.UnparseableIndex));
                 continue;
             }
+
+            // Entries are checked for EVERY index, before the frontmatter early-return
+            // below. That early-return used to be the first thing after parsing, and a
+            // well-formed index has no frontmatter at all -- so the body of every
+            // conformant index was skipped, and an entry could omit its description
+            // with nothing to say so.
+            CheckIndexEntryDescriptions(bundle, path, doc.Body, diagnostics);
+            CheckIndexEntriesAreLinks(path, doc.Body, diagnostics);
 
             if (doc.Frontmatter.IsEmpty)
             {

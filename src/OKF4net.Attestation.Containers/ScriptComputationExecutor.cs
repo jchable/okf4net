@@ -26,6 +26,10 @@ public sealed class ScriptComputationExecutor(IContainerEngine engine, Container
             ["OKF_PARAMS_JSON"] = JsonSerializer.Serialize(bound.Values),
         };
 
+        // ToRunSpec points TMPDIR at the first tmpfs mount (unless the host set one), so
+        // a script's own temp files land in the scratch the host named rather than in a
+        // /tmp that may be read-only. OKF_PARAMS_JSON is this executor's own and wins
+        // over any host value either way.
         var spec = profile.Isolation.ToRunSpec(profile.Image, [profile.Interpreter, "-"], bound.BoundText ?? "", env, profile.NetworkMode);
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);

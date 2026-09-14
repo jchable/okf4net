@@ -238,6 +238,24 @@ headings → `OkfDocument.Computation()`.
   in `src/` — 1 of 3 conventional headings has code behavior, so this is
   Partial, not Implemented.
 
+  **Update 2026-09-14 — validation heuristic added, status left Partial.**
+  `BundleValidator` now raises `NonConventionalHeading` (Warning) for an ATX
+  heading of any level containing the word *example(s)* or *schema(s)* when the
+  concept carries no exact level-1 `# Examples` / `# Schema`
+  (`CheckConventionalHeadings` in `src/OKF4net/Validate.cs`, headings from
+  `LinkScanner.ExtractAtxHeadings`, fenced code skipped). It is a word match,
+  not a judgement of "when applicable": it catches a variant name
+  (`# Worked example`, which `bundles/meridian_transit` carried before a manual
+  fix) and cannot see an example section titled without the word. `#
+  Computation` is deliberately excluded — a heading that mentions a computation
+  is ordinary structure (acme_retail's `# Why no attested computation`), and a
+  misspelled one on an Attested Computation already raises
+  `ComputationMissingBody`. `# Schema` and `# Examples` still have no consumer
+  behaviour (no extraction), which is why the status stays Partial. Emits
+  nothing on any bundle in `bundles/` or any fixture. Tests:
+  `A_variant_of_a_conventional_heading_is_a_warning` and its negative cases in
+  `tests/OKF4net.Tests/ValidateTests.cs`.
+
 ### §5 Provenance, trust, and lifecycle
 
 README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
@@ -257,13 +275,82 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   `Diverges`. No field-specific documented rationale exists for the
   current weighting either way (contrast §13.1 below, which has one).
 - **S5.1-2** (§5.1, `id` SHOULD be present when body cites source) —
-  **N/A**. Producer-authoring guidance about what to include when writing
-  a `sources` entry (parallel to S4.1-2's "producers SHOULD pick
-  descriptive `type` values") rather than a checkable consumer-side
-  behavior. `src/OKF4net/Provenance.cs:33`: `Id:
-  m.Get("id")?.AsDisplayString(),` — parsed as a bare optional field, with
-  no code anywhere correlating it against body footnote citations to
-  enforce or warn on this specific SHOULD.
+  **Implemented** (Minor, reclassified 2026-09-14; previously recorded as
+  **N/A**). The earlier N/A called this producer-authoring guidance rather
+  than something checkable, but that distinction does not hold: the validator
+  already checks producer-authored content (`generated.by`, `status`, §7
+  actors), and this one is just as mechanical. §4.2 makes footnotes keyed to
+  `sources` the citation mechanism, so a footnote reference whose key matches
+  no `sources[].id` is a claim attributed to nothing.
+  `BundleValidator.Validate` emits `CitationMissingSourceId` (Warning — a
+  SHOULD, never a §11 rejection) per unmatched key, using
+  `LinkScanner.ExtractFootnoteReferences`, which shares `CodeFreeLinePairs`
+  with link extraction so that `[^a-z]` — a negated character class, ordinary
+  in a regex or SQL pattern inside code — is never read as a citation, and a
+  definition's own `[^key]:` label is not counted. Tests:
+  `Footnote_citing_a_source_with_no_matching_id_is_a_warning`,
+  `Footnote_matching_a_source_id_is_not_warned`,
+  `Footnote_syntax_inside_code_is_not_a_citation`,
+  `A_footnote_definition_alone_is_not_a_citation`
+  (`tests/OKF4net.Tests/ValidateTests.cs`). Emits nothing on
+  `bundles/acme_retail`, `bundles/ga4`, or any validated golden fixture — every
+  footnote in them already has its `id`.
+
+  **Update 2026-09-14 — false positives from the shared code pass (Copilot on
+  #98).** "Skip code" was narrower than markdown's code: an escaped `\[^a-z]`,
+  an indented code block, a double-backtick span, and anything after a
+  three-backtick line inside a longer fence were all read as prose, so each
+  could raise `CitationMissingSourceId` on a bundle with nothing wrong.
+  `CodeFreeLinePairs` and `BlankInlineCode` now follow CommonMark's fence,
+  indented-code and code-span rules (see their doc comments), and a reference
+  after an odd number of backslashes is skipped. Tests:
+  `Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation`,
+  `Footnote_syntax_inside_a_longer_fence_is_not_a_citation`, and — so the
+  new rules cannot swallow real citations —
+  `Real_citations_next_to_those_forms_are_still_citations`.
+
+  Review of #99 then found the first version of those rules still line-local:
+  indentation was measured from the margin rather than from the enclosing list
+  item, so indented code after a heading or a closing fence read as prose, an
+  over-indented closing fence closed, and an unclosed fence in a list item hid
+  the rest of the document. The pass now tracks open list items and whether a
+  paragraph is open (`CodeFreeLinePairs`' doc comment gives the rules; tests in
+  `tests/OKF4net.Tests/LinksTests.cs`). Copilot's review of #99 added two more,
+  now handled: a code span crossing a line ending (spans are matched over the
+  whole paragraph, never across a block boundary) and a fence opened on a list
+  marker's own line.
+
+  **Closed 2026-09-14 — block quotes, raw HTML, and what else hides text.** The
+  last forms of markdown that hide text were still read as prose: code inside a
+  block quote, and HTML — so a `[^x]` inside `<!-- -->` raised
+  `CitationMissingSourceId`. `CodeFreeLinePairs` now follows CommonMark's
+  block-parsing strategy (§5): a stack of containers (block quotes and list
+  items) matched line by line with lazy continuation, columns counted with tab
+  stops from the line start and partly consumed tabs (§2.2), the seven HTML block
+  kinds of §4.6, setext underlines, the list interruption rules and the
+  blank-line end of an empty item (§5.2), and link reference definitions (§4.7),
+  whose destination and title are not text. `BlankInline` blanks inline raw HTML
+  (§6.6) and code spans left to right, whichever starts first.
+
+  Two readings were settled against the normative text and the reference
+  implementation rather than assumed: a closing tag alone on its line — `</pre>`
+  included — opens an HTML block of kind 7 (§4.6 excludes the raw-text names only
+  from *open* tags), and a link reference definition line may end in spaces but
+  not tabs (§4.7 says "No further character may occur"; commonmark.js tolerates
+  trailing spaces only). Nesting is capped at 100 containers, as markdown-it caps
+  it, since matching every line against unbounded nesting is quadratic.
+
+  Verified against commonmark.js 0.31.2 on 300 000 random bodies built from these
+  constructs: no difference in which footnote references are visible, except
+  reference links (`[^k][label]` with `label` defined renders as a link), which no
+  scanner here reads — a separate feature, not a question of code or HTML. Tests:
+  `Code_inside_a_block_quote_is_code`, `Links_inside_a_block_quote_are_links`,
+  `Nothing_inside_an_html_block_is_a_link`, `An_html_block_ends_where_commonmark_ends_it`,
+  `Raw_inline_html_is_not_markdown`, `Html_lookalikes_are_text`,
+  `Tabs_count_from_the_start_of_the_line_and_may_be_partly_consumed`,
+  `Paragraph_boundaries_follow_commonmark`, `An_empty_list_item_ends_at_a_blank_line`,
+  `Link_reference_definitions_are_not_text`, the linear-time and fuzz tests in
+  `LinksTests.cs`, and citation and heading cases in `ValidateTests.cs`.
 - **S5.1-3** (§5.1, per-entry `usage_window` override) — **Missing**
   (Minor). `src/OKF4net/Provenance.cs:7` — the `Source` record has no
   `UsageWindow` field (`Id, Resource, Title, Author, UsageCount,
@@ -451,11 +538,71 @@ README mapping: `OKF4net.IndexGenerator`.
   `tests/OKF4net.Tests/IndexTests.cs:50-78`; stray frontmatter elsewhere is
   actively stripped (`tests/OKF4net.Tests/IndexTests.cs:131-153`).
 - **S8-3** (SHOULD, entries include linked concept's description) —
-  **Implemented** (Major). `src/OKF4net/IndexGenerator.cs:234-236`: `var
-  description = doc.Frontmatter.Description ?? string.Empty; ...
-  entries.Add(...)`, rendered at line 66-67: `var suffix =
-  description.Length == 0 ? string.Empty : $" - {description}";`. Test:
-  `tests/OKF4net.Tests/IndexTests.cs:39-41`.
+  **Implemented** (Major), **for both generation and validation since
+  2026-09-14**. The earlier record cited only the generator, and was true only
+  for it: `src/OKF4net/IndexGenerator.cs:234-236` (`var description =
+  doc.Frontmatter.Description ?? string.Empty;`, rendered at line 66-67), test
+  `tests/OKF4net.Tests/IndexTests.cs:39-41`. A **hand-written** index was never
+  checked at all — `ValidateReserved` returned early for any `index.md` without
+  frontmatter, which is every well-formed one, so no index body was ever read.
+
+  Validation now runs `CheckIndexEntryDescriptions` for every index, before
+  that early return, emitting `IndexEntryMissingDescription` (Warning) for an
+  entry that links to a concept which has a `description` while carrying no
+  description text itself. It is a **presence** check, not a verbatim one:
+  §8's own illustration is "`- short description of item 1`", and upstream
+  samples shorten (acme_retail's metrics index reads "Recognized revenue per
+  Acme's FY2026 policy." against a longer frontmatter description), so an exact
+  match would warn on the spec's own sample practice. Entries resolve through
+  `ConceptLink.Resolve` with the index's `ConceptId.FromPath` as source — the
+  same §6.1 resolution as concept links. An entry linking to a non-concept
+  (a subdirectory's index, a script, `log.md`) is not checked, since §8 speaks
+  of "the linked **concept's** frontmatter". An inline code span in the
+  description counts as visible text: running the check over
+  `bundles/attestation_containers_demo` showed a first cut, which measured
+  presence on the code-blanked line, flagging `— \`runtime: python\``, and
+  `CodeFreeLinePairs` exists so structure is read from the blanked line and
+  text from the raw one. Tests: the seven `Index_entry_*` and
+  `A_link_inside_inline_code_is_not_an_index_entry` cases in
+  `tests/OKF4net.Tests/ValidateTests.cs`. Emits nothing on `bundles/acme_retail`,
+  `bundles/ga4`, or any validated golden fixture.
+
+  Known limit of a presence check: an entry whose text is present but is not
+  the concept's description at all — the demo bundle's `— \`runtime: python\``
+  is one — is not flagged. Distinguishing "a shortened description" from "some
+  other text" is a judgement no syntactic test makes.
+
+  **Update 2026-09-14 — entry format.** §8 shows each entry as
+  `* [Title](relative-url) - description`, by example rather than by rule.
+  `CheckIndexEntriesAreLinks` now raises `IndexEntryNotALink` (Warning) for an
+  `index.md` list item that contains no link at all — the drift
+  `bundles/meridian_transit` had in `attesters/` and `references/`, listing
+  files in inline code. An item that renders a link without opening on one
+  (`**[A](a.md)**`, an icon before the link, a link on a continuation line) is
+  not warned: review of #99 showed a "does not begin with a link" rule flagging
+  those, and they give a reader something to follow. Items come from
+  `LinkScanner.ExtractIndexListItems`, the one parser behind
+  `ExtractIndexEntries` too; thematic breaks, prose and code are not items.
+  Writing it exposed a defect in the shared parser:
+  whitespace was skipped on the code-blanked line, where an inline code span is
+  spaces, so `` * `x` [a](b) `` read as a link entry, and so did a prose line
+  such as `` `code` - [a](b) ``. Whitespace is now read on the raw line. Emits
+  nothing on any bundle in `bundles/` or any fixture. Known limit: a nested
+  bullet under an entry is an item too, and is warned if it holds no link.
+
+  **Update 2026-09-14 — entry recognition (Copilot on #98).** A tab after the
+  list marker did not make an item, so such an entry went unchecked; and a
+  description wrapped onto the following line read as absent, so
+  `IndexEntryMissingDescription` fired on an entry that has one. Both follow
+  CommonMark now: a space or tab after the marker, and a paragraph continuation
+  — any following line up to a blank line, list item, heading, thematic break
+  or fence — supplies the description. Tests:
+  `Index_entry_with_a_tab_after_its_marker_is_an_entry`,
+  `Index_entry_whose_description_wraps_onto_the_next_line_is_not_warned`, and
+  `What_follows_an_entry_without_a_description_is_not_its_description`. Review
+  of #99 found that continuation lookup stepping over removed code lines, so
+  prose after a fence became the entry's description; a code line now leaves an
+  empty line behind, which ends the paragraph as a blank line does.
 - **S8-4** (MAY, producers auto-generate `index.md`) — **Implemented**
   (Minor). `src/OKF4net/IndexGenerator.cs:95-96`: `public static
   IReadOnlyList<string> RegenerateIndexes(string bundleRoot) =>

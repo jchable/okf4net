@@ -290,6 +290,30 @@ and this project adheres to
   stops there — a per-field merge would be inventing a rule the spec does not
   state, so this is a deliberate interpretation on our part, not something
   the spec itself settles.
+- **`okf validate` warns on an `index.md` list item with no link.** §8 shows
+  every entry as `* [Title](relative-url) - description`; an entry naming a file
+  in inline code gives a reader nothing to follow. It raises `IndexEntryNotALink`
+  (warning). §8 gives that format by example rather than by rule, so this is a
+  heuristic, kept to items with no link anywhere: one that renders a link without
+  opening on one — `**[A](a.md)**`, an icon before the link, a link on a
+  continuation line — is not warned. Thematic breaks (`* * *`), prose and code are
+  not items. Reading items off the code-blanked line had also let an item opening
+  with inline code (`` * `x` [a](b) ``) pass as an entry whose description is
+  checked, and a prose line such as `` `code` - [a](b) `` pass as a bulleted one;
+  whitespace is now read on the line as written.
+- **`okf validate` warns on a heading that names examples or a schema without
+  §4.2's conventional heading.** A heading containing the word *example(s)* or
+  *schema(s)* — `# Worked example`, `# Table schema`, `## Examples` — raises
+  `NonConventionalHeading` (warning) when the concept carries no exact
+  `# Examples` / `# Schema`; beside the conventional heading, a related one is a
+  subsection and is not warned. A heuristic: it matches words, not meaning.
+  `# Computation` is left out — a heading that merely mentions a computation is
+  ordinary structure (acme_retail's `# Why no attested computation`), and a
+  misspelled one on an Attested Computation already raises
+  `ComputationMissingBody`. Both rules emit nothing on any bundle in `bundles/`
+  or any fixture, and both flag the drift `bundles/meridian_transit` had before
+  it was corrected by hand (`# Worked example`, three index entries in inline
+  code). Both new `DiagnosticCode` members are appended.
 
 ### Changed
 
@@ -352,12 +376,19 @@ and this project adheres to
 
 - **Breaking (`OKF4net.Attestation.Containers`, unpublished): containers run
   as uid 65534 with every capability dropped and `no-new-privileges`, by
-  default.** The isolation settings — user, capabilities, privilege
-  escalation, read-only root, tmpfs mounts and the four ceilings — moved off
-  `ContainerRuntimeProfile`/`ContainerAttesterOptions` onto one shared
-  `ContainerIsolation` record (`Isolation = new() { … }`), so a hardening
-  decision reaches the script executor, the SQL executor and the attester at
-  once. A hand-built `ContainerRunSpec` stays opt-in, as `ReadOnlyRootFilesystem`
+  default.** The isolation settings live on one shared `ContainerIsolation`
+  record, reached through `ContainerRuntimeProfile.Isolation` and
+  `ContainerAttesterOptions.Isolation`, so a hardening decision reaches the
+  script executor, the SQL executor and the attester at once. New on it:
+  `User`, `DropAllCapabilities`, `NoNewPrivileges`. Moved onto it, off both
+  `ContainerRuntimeProfile` and `ContainerAttesterOptions`:
+  `ReadOnlyRootFilesystem`, `TmpfsMounts` (including its absolute-path
+  validation and the `TMPDIR` derived from its first entry — see Fixed),
+  `MemoryBytes`, `Cpus`, `PidsLimit` and `Timeout`. On a profile,
+  `Isolation = new() { … }` starts from the defaults; on attester options,
+  write `new ContainerAttesterOptions().Isolation with { … }`, since a fresh
+  record carries the profile-sized ceilings rather than the attester's smaller
+  ones. A hand-built `ContainerRunSpec` stays opt-in, as `ReadOnlyRootFilesystem`
   already was. Found by an external review: untrusted bundle code ran as the
   image's default user (root on `python:3.12-slim`) with Docker's default
   capability set.
@@ -646,6 +677,17 @@ and this project adheres to
   `okf` does, and a repeated `--out` is refused (`option --out given more
   than once`) instead of silently keeping the first value, matching `okf`'s
   own repeated-flag refusal for every other valued flag.
+- **`ContainerExecutionException.ToString()` now includes the container's
+  output, so a failed run says why in the host's logs.** It carried only
+  "attester exited with code 1"; the container's stderr, where the cause was
+  ("No usable temporary directory", a missing table), sat unread on the `Stderr`
+  property. It now appends the last 4096 characters of each non-empty captured
+  stream. `Message` is unchanged, and so is what reaches the model: the captured
+  streams never do — `AttestationOutcome.Reasons` and `okf_run_computation`
+  carry at most the library-authored `Message` (see the
+  `AttestationDiagnosticException` entry), now guarded by a test that puts a
+  secret in a container's stdout and stderr. The container integration tests
+  print the exception on failure too, rather than only the `Reasons`.
 
 ### Fixed
 
@@ -744,6 +786,140 @@ and this project adheres to
   `number`) — the container runtime was unusable through the tool and MCP for
   any typed parameter, while the same call from C# succeeded. Values are now
   normalized once in the tool (`ParameterValues`), for every binder.
+- **Link scanning is linear on unclosed brackets.** Every `[` restarted a
+  balanced scan to the end of its line, so a line of brackets that never close
+  was quadratic: a 200 KB `[a[a[a…` concept took ~11 s to `okf validate`, and
+  bundle content is untrusted input — a CI job validating a contributed bundle
+  could be stalled by one line. The behaviour dates from the initial port, so
+  every release has it. The closer each opener would reach is now precomputed in
+  one pass; the same bundle validates in 0.3 s. The links found are unchanged:
+  the original algorithm is kept in the tests as an oracle and compared on 20 000
+  random lines of brackets, parentheses, escapes, spaces and quotes, and
+  `okf graph` / `okf validate` output is byte-identical before and after on every
+  bundle in `bundles/` and every fixture.
+- **`okf validate` now reads the body of an `index.md`, and checks §8's entry
+  rule.** It never had: the reserved-file check returned early for any index
+  without frontmatter, which is every well-formed index, so no index body was
+  ever inspected. An entry linking to a concept that has a `description`, while
+  carrying no description text itself, now raises `IndexEntryMissingDescription`
+  (warning — §8 is a SHOULD, never a §11 rejection). It checks that a
+  description is **present**, not that it is a verbatim copy: §8's own
+  illustration is "`- short description of item 1`", and upstream samples
+  shorten. Entries resolve exactly as concept links do (§6.1), and an entry
+  pointing at a non-concept — a subdirectory's index, a script, `log.md` — is
+  not checked, since §8 speaks of the linked *concept's* frontmatter. The
+  conformance report had marked this Implemented on the strength of
+  `IndexGenerator`, which was true for generated indexes and false for
+  hand-written ones.
+- **`okf validate` warns when a footnote cites a source that has no `id`.** §5.1
+  says a source's `id` "SHOULD be present when the body cites the source", and
+  §4.2 makes footnotes keyed to `sources` the citation mechanism, so a
+  `[^key]` with no matching `sources[].id` is a claim attributed to nothing. It
+  raises `CitationMissingSourceId` (warning). Code is skipped, so `[^a-z]` — a
+  negated character class, ordinary in a regex or SQL pattern — is never read
+  as a citation. Both new checks emit nothing on `bundles/acme_retail`,
+  `bundles/ga4`, or any validated golden fixture, and both new `DiagnosticCode`
+  members are appended so existing members keep their numeric values.
+- **A configured `ContainerIsolation.TmpfsMounts` (reached through `Isolation`)
+  is now honoured inside the containers, not just
+  mounted.** The engine mounted whatever the host named, but the Python inside
+  kept writing to `/tmp`: with `Isolation.TmpfsMounts = ["/scratch"]` under the default
+  read-only root, the attester bootstrap's `NamedTemporaryFile` failed every run
+  ("No usable temporary directory"), and so did the `SqlClient` wrapper — pip
+  unpacks in the temp directory, so even a correct `--target` failed. The first
+  mount is now passed into every container as `TMPDIR` (by
+  `ContainerIsolation`, for all three stages), which every writer
+  inside follows; a `TMPDIR` set in `Environment` wins. Each entry must be an
+  absolute container path (optionally `:options`), and an **empty**
+  `Isolation.TmpfsMounts` under a read-only root is rejected when a `ContainerAttester` is
+  built — its bootstrap writes on every run, so it could never attest, and would
+  only discover that after the computation had already run. A
+  `ContainerAttesterOptions` whose `Isolation.ReadOnlyRootFilesystem` is set is
+  rejected the same way when Python's `tempfile`
+  reaches no writable mount from its `TMPDIR` — none of `TMPDIR`, `TEMP`, `TMP`,
+  `/tmp`, `/var/tmp`, `/usr/tmp` is a mount without the `ro` option, nor docker's
+  own `/dev/shm`: a `TMPDIR` set in `Environment` wins, `tempfile` never creates
+  it, and the run failed the same way (`TMPDIR=/work` with only `/scratch`
+  mounted, or `/scratch:ro`). `Environment` is copied when the attester is
+  built, so the check cannot be bypassed afterwards. The check rejects only what is
+  sure to fail: a `TMPDIR` rescued by a later candidate, such as a mounted
+  `/tmp`, is accepted, and paths are resolved as `tempfile` resolves them
+  (`scratch` and `/work/../scratch` both reach `/scratch`). What it cannot see —
+  an image `WORKDIR` or `ENV`, and podman's extra default tmpfs mounts — is
+  listed in the project README.
+- **`bundles/meridian_transit`'s fare-cap attester now verifies the per-trip
+  split in order.** It checked the total, the reconciliation and each charge's
+  bounds, but never the order, so a statement charging `[0, 250, 250, 200]` for
+  four 250 fares against a 700 cap passed alongside the correct
+  `[250, 250, 200, 0]` — the very breakdown the policy says a rider disputes. It
+  now recomputes the sequential split and compares element for element, and a
+  malformed receipt is a failing verdict rather than an exception.
+- **Bundle attesters no longer accept a value that is not a genuine integer as a
+  count.** `meridian_transit`'s ridership attester read counts through `int()`,
+  so `"5"` passed and `2.9` was silently truncated to `2`;
+  `attestation_containers_demo`'s active-user attester rejected those but, like
+  any plain `isinstance(_, int)` check in Python, accepted `true` and `false`,
+  since `bool` subclasses `int`. Both now reject strings, floats and booleans.
+- **The link, citation and index scanners now recognize code and escapes as
+  CommonMark defines them.** Raised by Copilot on #98 and by review of #99,
+  each confirmed by a failing test first. `CitationMissingSourceId` warned on footnote syntax
+  markdown does not render as a footnote: an escaped `\[^a-z]`, an indented code
+  block, or a double-backtick span (the one-character code toggle left
+  `` `` [^x] `` `` visible). A fence closed on any line opening with three
+  backticks, so a ```` ``` ```` inside a four-backtick fence — or a
+  ```` ```python ```` line inside a plain one — ended it early and the rest of the
+  code was scanned as prose. An unmatched backtick hid the rest of its line, links
+  included. And in an `index.md`, a tab after the list marker was not a list item,
+  and a description wrapped onto the next line read as missing, so
+  `IndexEntryMissingDescription` fired on an entry that has one — or, when the
+  line after it was code, took the prose after the code as its description. The
+  pass now tracks open list items by the column their content starts at, and
+  whether a paragraph is open, and measures indentation from the innermost item:
+  a fence opens and closes only within three columns of it, closes only on a run
+  of the same character at least as long with no info string, and ends with its
+  list item, including one opened on the marker's own line (`` * ``` ``); four
+  columns is indented code wherever no paragraph is open (after a heading or a
+  closing fence as much as after a blank line) and continuation text inside one;
+  a code line leaves an empty line behind, so it still separates what surrounds
+  it. Code spans are matched over a whole paragraph, so one may cross a line
+  ending but never a block boundary; they match runs of equal length, an
+  unmatched run is literal, and a backslash escapes an opener but never a closer
+  (`` `C:\` `` is a complete span). Block quotes are containers like list items,
+  so a fence or indented code inside `>` is code and ends with the quote, while
+  quoted prose — lazy continuation lines included — is still read. Raw HTML is not
+  markdown either: an HTML block (a comment, `<script>`/`<pre>`/`<style>`/
+  `<textarea>`, `<?…?>`, `<!…>`, CDATA to its end marker; a block-level tag, or a
+  complete tag alone on its line, to the next blank line) hides what it holds,
+  and so does inline raw HTML in a paragraph — a comment, a tag's attribute values
+  — matched left to right against code spans, whichever starts first. So a
+  `[^x]` inside `<!-- -->` is no longer a citation, and the `<details>` pattern
+  still reads the markdown after its blank line. Tabs count to the next multiple
+  of four from the start of the line and may be partly consumed by a container;
+  a setext underline ends its paragraph; an ordered list interrupts a paragraph
+  only from 1; an empty list item ends at a blank line; and a link reference
+  definition's destination and title are not text. Checked against commonmark.js
+  0.31.2 on 300 000 random bodies: no difference in which footnote references are
+  visible, reference links (`[text][label]`, which no scanner here reads) aside.
+  Nesting deeper than 100 containers is read as text, as markdown-it limits it.
+  All of this lives in the one shared "skip code" pass, so
+  `okf graph`'s links change too; its output and `okf validate`'s were compared
+  before and after on every bundle in `bundles/` and every fixture, and are
+  byte-identical. The pass is linear on hostile input: a first version of code-span
+  matching searched for each opener's closer from scratch (14 s on a 1.4 MB line
+  of unclosable backtick runs), and the ATX heading regex's lazy `(.*?)` retried
+  its closing sequence at every character (25 s to scan `# a`, 150 000 spaces, `x`);
+  both are hand-written scans now, with tests. Container matching reads a bounded
+  stretch of the line per container (a first cut took 5.8 s on one line of 75 000
+  nested `> - ` markers) and nesting is capped (80 000 nested items followed by
+  160 000 blank lines took over a minute), HTML end markers and closing quotes are
+  table lookups, and a fuzz test checks no extractor throws on random markdown.
+- **`bundles/meridian_transit`'s fare-cap attester rejects negative amounts.**
+  Raised by Copilot on #98: it checked `cap_cents` was an integer, never that it
+  was a cap, so a cap of `-1` recomputed to an all-zero split that a matching
+  receipt passed on every check. A negative cap or fare is now unusable input; a
+  cap of `0` still passes. `attestation_containers_demo`'s active-user attester,
+  whose boolean guard nothing executed, now runs as it ships in a Docker-gated
+  test with a genuine count as control.
 - **§4.1's `resource` carve-out for an Attested Computation now applies only to
   an ABSENT key.** The suppression added for S4.1-8 skipped the field before
   reading its value, so a §10 concept declaring `resource` with an unusable

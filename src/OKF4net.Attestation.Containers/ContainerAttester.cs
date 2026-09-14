@@ -11,20 +11,78 @@ namespace OKF4net.Attestation.Containers;
 /// known function with fixed kwarg names — this project's own convention
 /// (§10 leaves invocation entirely host-defined). Always runs on
 /// <see cref="ContainerAttesterOptions.Image"/>, never the executor's
-/// profile image (a <see cref="ContainerRuntimeKind.SqlClient"/> image has
-/// no Python at all).
+/// profile image: that image is whatever the sanctioned code needs (a
+/// <see cref="ContainerRuntimeKind.Script"/> image may have no Python at all),
+/// so the bootstrap cannot assume one.
 /// </summary>
-public sealed class ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options) : IAttester
+public sealed class ContainerAttester : IAttester
 {
+    private readonly IContainerEngine _engine;
+    private readonly ContainerAttesterOptions _options;
+
+    /// <summary>
+    /// Creates an attester that runs on <paramref name="options"/>' image. Throws
+    /// <see cref="ArgumentException"/> when <paramref name="options"/> mounts the root
+    /// filesystem read-only (<see cref="ContainerIsolation.ReadOnlyRootFilesystem"/> on
+    /// <see cref="ContainerAttesterOptions.Isolation"/>) and leaves the bootstrap nowhere
+    /// to write: either with no <see cref="ContainerIsolation.TmpfsMounts"/> at all, or
+    /// with a <c>TMPDIR</c> in <see cref="ContainerAttesterOptions.Environment"/> from
+    /// which none of the directories Python's <c>tempfile</c> goes on to try
+    /// (<c>TEMP</c>, <c>TMP</c>, <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c>) is one of
+    /// those mounts or <c>/dev/shm</c> — a host-set <c>TMPDIR</c> wins over the derived
+    /// one, and <c>tempfile</c> never creates it. A mount with the <c>ro</c> option does
+    /// not count, derived <c>TMPDIR</c> included.
+    /// <see cref="ContainerAttesterOptions.Environment"/> is copied here, so changing the
+    /// dictionary afterwards changes nothing. The bootstrap writes the attester module to
+    /// a temp file on every run, so either configuration could never attest anything —
+    /// and would only say so at run time, as a Python traceback, after the computation
+    /// had already been executed. The check is built to reject only what is sure to fail
+    /// on docker with an image that sets no <c>WORKDIR</c>; what it cannot see is listed
+    /// in the project README.
+    /// </summary>
+    public ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentNullException.ThrowIfNull(options);
+        var isolation = options.Isolation;
+        if (isolation.ReadOnlyRootFilesystem && isolation.TmpfsMounts.Count == 0)
+        {
+            throw new ArgumentException(
+                "ContainerAttesterOptions mounts the root filesystem read-only with no Isolation.TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; add a tmpfs mount (e.g. \"/tmp\") or set Isolation.ReadOnlyRootFilesystem = false.",
+                nameof(options));
+        }
+
+        // Snapshot the environment, as ValidateMounts copies the mounts: AttestAsync reads
+        // it again, so a dictionary the host mutates after this check would bypass it.
+        options = options with { Environment = new Dictionary<string, string>(options.Environment) };
+
+        // Checked on the environment the container will get (TMPDIR derived from the
+        // first mount unless the host set one — what Isolation.ToRunSpec applies), which
+        // is also what the message names.
+        var environment = ScratchDirectory.Apply(options.Environment, isolation.TmpfsMounts);
+        if (isolation.ReadOnlyRootFilesystem && !ScratchDirectory.ReachesWritableDirectory(environment, isolation.TmpfsMounts))
+        {
+            throw new ArgumentException(
+                $"ContainerAttesterOptions mounts the root filesystem read-only with TMPDIR '{environment[ScratchDirectory.VariableName]}', and none of the directories Python's tempfile would try (TMPDIR, TEMP, TMP, /tmp, /var/tmp, /usr/tmp) is one of its writable Isolation.TmpfsMounts or /dev/shm, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the path of an Isolation.TmpfsMounts entry that is not mounted ':ro'.",
+                nameof(options));
+        }
+
+        _engine = engine;
+        _options = options;
+    }
+
     /// <summary>
     /// Reads the JSON envelope from stdin, writes <c>attester_source</c> to a
-    /// temp file inside the container, imports it, and calls
+    /// temp file inside the container — in <c>TMPDIR</c>, which
+    /// <see cref="ContainerIsolation.ToRunSpec"/> points at the first configured tmpfs
+    /// mount, so a read-only root with <c>/scratch</c> mounted instead of <c>/tmp</c>
+    /// works; this text never names a directory itself — imports it, and calls
     /// <c>attest(**kwargs)</c>. Redirects stdout to a buffer for the whole
     /// import+call so a stray <c>print()</c> inside the bundle's own module
     /// can never corrupt the one JSON line this prints at the very end (the
     /// design's finding #9).
     /// </summary>
-    private const string Bootstrap = """
+    internal const string Bootstrap = """
         import sys, json, importlib.util, tempfile, io, contextlib
         envelope = json.load(sys.stdin)
         f = tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w', encoding='utf-8')
@@ -65,9 +123,12 @@ public sealed class ContainerAttester(IContainerEngine engine, ContainerAttester
             },
         });
 
-        var spec = options.Isolation.ToRunSpec(options.Image, ["python3", "-c", Bootstrap], envelope, options.Environment, "none");
+        // TMPDIR -> the first tmpfs mount, applied by ToRunSpec. NamedTemporaryFile writes
+        // wherever it points; left unset that is /tmp, which is read-only whenever the
+        // host mounted its scratch somewhere else.
+        var spec = _options.Isolation.ToRunSpec(_options.Image, ["python3", "-c", Bootstrap], envelope, _options.Environment, "none");
 
-        var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
+        var result = await _engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         using var document = ReceiptParsing.ParseJson(result, "attester");
         var verdict = document.RootElement;
 

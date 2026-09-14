@@ -54,7 +54,11 @@ public sealed record ContainerRunSpec(
     /// touches the host filesystem, and dies with the container. It is the writable
     /// scratch some stages genuinely need — the attester bootstrap writes its module
     /// to a temp file before importing it, and the SQL wrapper installs its driver —
-    /// bounded to paths the host names rather than the whole image.
+    /// bounded to paths the host names rather than the whole image. The engine only
+    /// mounts them; it is <see cref="ContainerIsolation"/>, which every stage builds its
+    /// spec from, that points <c>TMPDIR</c> at the first one, so a spec built by hand
+    /// that wants the same must set it in
+    /// <see cref="Environment"/> itself.
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts { get; init; } = [];
 

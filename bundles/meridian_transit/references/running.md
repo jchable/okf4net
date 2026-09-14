@@ -89,8 +89,11 @@ the second returns `charged_cents = 700`, `waived_cents = 300`,
 
 # What a passing attestation here does and does not mean
 
-`capped-fare`'s attester recomputes the policy from the inputs, so a pass is
-evidence the displayed number is the number the policy defines.
+`capped-fare`'s attester recomputes the policy from the inputs — the sequential
+per-trip split, not only the total — and requires `charged_cents`, `waived_cents`
+and every element of `per_trip_cents` to match it. A pass is evidence the displayed
+numbers, including what each trip was charged, are the ones the policy defines. It
+is not evidence of which code ran: any script producing the same numbers would pass.
 
 `daily-ridership`'s attester checks invariants of the query's shape, and that is
 all it can do: `executed_sql` is echoed back by the host's own wrapper, so

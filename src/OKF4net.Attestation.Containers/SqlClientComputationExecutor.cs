@@ -40,7 +40,7 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             # Python image, and only then.
             import pg8000.native
         except ImportError:
-            import subprocess
+            import subprocess, tempfile
             # stdout is the receipt channel and nothing else: pip's own output must never
             # land on it. --quiet alone is not enough -- it only makes this usually
             # invisible, which is what made it a latent, environment-dependent failure
@@ -56,10 +56,17 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             # on /root/.local. The tmpfs is memory-backed and dies with the container,
             # which is where a per-run driver install belongs anyway. sys.path has to
             # be told about it before the retry.
+            #
+            # Which tmpfs is the host's choice, so the path is never written here: the
+            # executor sets TMPDIR to the first configured mount, and gettempdir()
+            # follows it. That is load-bearing twice -- pip unpacks and builds in
+            # TMPDIR too, so even a correct --target fails when TMPDIR is left
+            # pointing at a read-only /tmp.
+            pkgs = os.path.join(tempfile.gettempdir(), 'okf-pkgs')
             subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet',
-                            '--target', '/tmp/okf-pkgs', 'pg8000==1.31.5'],
+                            '--target', pkgs, 'pg8000==1.31.5'],
                            check=True, stdout=subprocess.DEVNULL)
-            sys.path.insert(0, '/tmp/okf-pkgs')
+            sys.path.insert(0, pkgs)
             import pg8000.native
         from urllib.parse import urlparse, unquote
         envelope = json.load(sys.stdin)
@@ -137,6 +144,8 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
 
         var envelope = JsonSerializer.Serialize(new { sql = bound.BoundText ?? "", values = bound.Values });
 
+        // ToRunSpec points TMPDIR at the first tmpfs mount, which is where the wrapper's
+        // fallback install goes (see the comment above its pip call).
         var spec = profile.Isolation.ToRunSpec(profile.Image, ["python3", "-c", Wrapper], envelope, profile.Environment, profile.NetworkMode);
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);

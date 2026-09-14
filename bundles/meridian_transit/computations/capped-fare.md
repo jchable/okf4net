@@ -60,17 +60,33 @@ computation code.
 
 # What the attester checks
 
-`attesters/fare_cap.py` **independently recomputes the invariant** from the same
-inputs, rather than comparing an echo:
+`attesters/fare_cap.py` **independently recomputes the policy** from the same
+inputs, rather than comparing an echo. It walks the fares in the order presented,
+charging each trip `max(0, min(fare, cap - charged_so_far))` — the rule above — and
+then requires the receipt to match that recomputation:
 
-1. `charged_cents == min(sum(fares), cap)` — the policy's defining property.
-2. `sum(per_trip_cents) == charged_cents` — the per-trip split is consistent with
-   the total.
+0. The inputs are amounts of money: `fares_cents` a list of integers and
+   `cap_cents` an integer, none of them negative. Without this, a cap of `-1`
+   recomputes to an all-zero split that a matching receipt passes on every check
+   below. A cap of `0` — every trip free — is a real policy and passes.
+1. Every receipt field is an integer, and `per_trip_cents` a list of integers.
+2. `charged_cents` equals the recomputed total — `min(sum(fares), cap)`, the
+   policy's defining property.
 3. `charged_cents + waived_cents == sum(fares)` — nothing is created or lost.
-4. No per-trip charge exceeds its own fare.
+4. `per_trip_cents` has one charge per trip, sums to `charged_cents`, and no charge
+   is negative or exceeds its own fare.
+5. **`per_trip_cents` equals the recomputed sequential split, element for element.**
 
-None of those can pass by accident if the executed script differs from the
-sanctioned one in any way that matters. This is the check the SQL sibling *cannot*
-make, and the reason this bundle carries both kinds.
+Checks 1–4 are all order-blind, and a wrong statement can pass every one of them:
+four 250 fares against a 700 cap split as `[0, 250, 250, 200]` charges 700, waives
+300, and keeps each charge within its fare, yet the policy charges
+`[250, 250, 200, 0]`. Check 5 is the one that rejects it, and it matters because the
+per-trip split is what a rider sees and disputes. Each failure names what differed.
+
+So a pass means the receipt is exactly what the sanctioned computation produces for
+these inputs. It does not prove *which* code ran — a different script giving the same
+numbers would pass — but it does prove the numbers displayed are the policy's. This
+is the check the SQL sibling *cannot* make, and the reason this bundle carries both
+kinds.
 
 [^fare-capping]: Daily Fare Capping Policy (2026)
