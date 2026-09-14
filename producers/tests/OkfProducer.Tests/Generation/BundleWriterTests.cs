@@ -33,6 +33,18 @@ public class BundleWriterTests
     /// a doubled separator no real path could start with -- so every staged concept was refused as
     /// "leaves the bundle root through a symbolic link or junction" and the run wrote nothing at all,
     /// even though nothing was linked. A trailing slash must write exactly what its absence writes.
+    ///
+    /// <para><b>Round 1 of this test compared only <see cref="WriteResult.Written"/> and three concept
+    /// files it happened to name, and that missed a real, separate defect a review caught</b>: with a
+    /// trailing slash, <c>IndexGenerator.RegenerateIndexes</c> (called from inside <c>Write</c> with the
+    /// same <c>outPath</c>) silently wrote no root <c>index.md</c> at all -- <c>WriteResult.Written</c>
+    /// counts concepts, never indexes, so a count-only comparison stays green over a bundle missing one.
+    /// This version compares the <b>whole output file tree</b> instead -- every relative path
+    /// <see cref="ProducerFixture.SnapshotFiles"/> finds under each root, byte for byte -- specifically
+    /// so a missing or differing <c>index.md</c> (or anything else neither side happened to be asserted
+    /// on by name) fails it. No exception list is needed here: unlike an end-to-end run through
+    /// <c>ProducerFixture.Run</c>, nothing this test writes is git- or clock-derived, so the two trees
+    /// are expected to be byte-identical, not merely equivalent.</para>
     /// </summary>
     [Fact]
     public void Write_into_an_out_path_with_a_trailing_separator_writes_the_same_concepts_as_without_it()
@@ -49,9 +61,20 @@ public class BundleWriterTests
             Assert.Empty(plain.Failures);
             Assert.Empty(slashed.Failures);
             Assert.Equal(plain.Written, slashed.Written);
-            Assert.True(File.Exists(Path.Combine(withSlash, "overview.md")));
-            Assert.True(File.Exists(Path.Combine(withSlash, "reports", "one.md")));
-            Assert.True(File.Exists(Path.Combine(withSlash, "reports", "two.md")));
+
+            var plainFiles = ProducerFixture.SnapshotFiles(withoutSlash);
+            var slashedFiles = ProducerFixture.SnapshotFiles(withSlash);
+
+            Assert.True(plainFiles.ContainsKey("index.md"), "the no-slash run itself did not write a root index.md -- this test's premise is broken, not the fix.");
+            Assert.Equal(
+                plainFiles.Keys.OrderBy(k => k, StringComparer.Ordinal),
+                slashedFiles.Keys.OrderBy(k => k, StringComparer.Ordinal));
+
+            foreach (var (path, bytes) in plainFiles)
+            {
+                Assert.True(slashedFiles.TryGetValue(path, out var slashedBytes), $"'{path}' was written without a trailing separator on --out but not with one.");
+                Assert.Equal(bytes, slashedBytes);
+            }
         }
         finally
         {

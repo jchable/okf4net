@@ -39,6 +39,20 @@ public sealed class BundleWriter : IBundleWriter
         ArgumentNullException.ThrowIfNull(concepts);
         ArgumentException.ThrowIfNullOrEmpty(repoPath);
 
+        // Normalised ONCE, here, at this method's own entry -- before a trailing directory separator
+        // (`--out dir/`, as shell completion writes one) can reach any downstream path comparison or
+        // composition. This is the fix for the finding the three per-site trims elsewhere in this file
+        // did not close: `IndexGenerator.RegenerateIndexes` below receives this same `outPath` local,
+        // and with an untrimmed trailing-slash value its own `Path.GetDirectoryName(Path.GetFullPath(...))`
+        // walk (src/OKF4net/IndexGenerator.cs, not touched here -- see its own tracked item) stops one
+        // level short of the bundle root, so the root `index.md` was silently never (re)written. Every
+        // other use of `outPath`/`repoPath` below -- messages included -- now also reads this
+        // normalised form, which changes what a message displays (an absolute, separator-free path)
+        // but not what it means. `Path.TrimEndingDirectorySeparator` leaves a bare drive or filesystem
+        // root (`C:\`, `/`) alone by design, so this is safe unconditionally.
+        outPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outPath));
+        repoPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repoPath));
+
         // The refusal is checked here, before a byte of work is done, so an operator who pointed --out
         // at the repository is told immediately. The DELETE it guards is not here -- see the Reset
         // block inside the staging try below, and IBundleWriter's transactional guarantee.

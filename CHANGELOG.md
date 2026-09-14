@@ -656,9 +656,15 @@ and this project adheres to
 - `okfgen generate --out dir/` (a trailing directory separator, as shell
   completion writes it) wrote nothing and blamed a symbolic link; `--repo
   dir/` never pruned a deleted file's concept; the staging directory landed
-  inside the bundle. All three were `Path.GetFullPath` preserving the
-  trailing separator, which then broke `BundlePaths`' and `BundleWriter`'s
-  own path comparisons against it (`producers/`).
+  inside the bundle; and the bundle it did write was missing its root
+  `index.md` (`IndexGenerator.RegenerateIndexes` received the same
+  untrimmed path and stopped its directory walk one level short of the
+  root). All were `Path.GetFullPath` preserving the trailing separator,
+  which then broke a path comparison somewhere downstream — `BundlePaths`'
+  and `BundleWriter`'s own, and (for the index) the one `IndexGenerator`
+  makes internally, closed here by normalising `outPath`/`repoPath` once at
+  `BundleWriter.Write`'s and `GenerateRun.Execute`'s own entry points
+  rather than by touching `IndexGenerator` itself (`producers/`).
 - The viewer sanitizer unwraps a disallowed element instead of flattening its
   subtree to text (a link or table inside `<details>`/`<div>` survives). It
   marks disallowed elements, then detaches every node bottom-up and

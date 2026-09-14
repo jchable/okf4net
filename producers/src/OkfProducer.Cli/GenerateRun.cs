@@ -150,6 +150,21 @@ internal static class GenerateRun
     /// </param>
     public static WriteResult Execute(GenerateRequest request, ProducerServices services, Action<string> note, Action<string> report)
     {
+        // Normalised ONCE, here, at this method's own entry -- a `request with { ... }` reassigns only
+        // this local parameter, so a caller's own copy of `request` (OkfgenCli.Check reads
+        // `request.OutPath`/`request.RepoPath` directly for `BundleDrift.Check`, and OkfgenCli.Write's
+        // "Wrote N concept(s) to ..." message reads `request.OutPath` too) is unaffected -- only what
+        // this method and everything it calls (the scan, the HEAD-commit stamp, existing-frontmatter
+        // lookup, and BundleWriter.Write's own `outPath`/`repoPath`) sees. `BundleWriter.Write`
+        // normalises its own parameters again regardless, since it is a public entry point other
+        // callers (ProducerFixture, this suite's own tests) reach directly, bypassing this method
+        // entirely -- see the finding this closes at that call's own comment.
+        request = request with
+        {
+            RepoPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(request.RepoPath)),
+            OutPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(request.OutPath)),
+        };
+
         var snapshot = services.Scanner.Scan(request.RepoPath);
 
         var rev = request.Rev ?? GitRevision.CurrentBranch(request.RepoPath);
