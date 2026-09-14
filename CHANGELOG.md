@@ -393,6 +393,31 @@ and this project adheres to
   image's default user (root on `python:3.12-slim`) with Docker's default
   capability set.
 
+- **Breaking (`OKF4net.Attestation.Containers`, unpublished): receipts and
+  attester verdicts with duplicate JSON properties, or with numbers that cannot
+  be represented exactly, now fail the stage instead of being silently resolved
+  (§10.5).** A top-level duplicate receipt key used to be last-wins, a nested one
+  escaped as a raw `ArgumentException`, `1e400` became infinity, `1e-400` became
+  zero, and `9223372036854775808` was rounded to a `double` — so the receipt the
+  attester judged could carry a value the container never wrote, or read
+  differently to another JSON reader of the same stdout. stdout is now parsed
+  with `AllowDuplicateProperties = false`, and every number at any depth of the
+  receipt *and* of the whole verdict document must be exact: a literal with no
+  `.`/`e`/`E` must fit a `long`, any other literal must be a finite `double`
+  whose round-trip form denotes the same decimal value. The failures are
+  `ContainerExecutionException`s with fixed wording that never quotes the
+  offending name or literal: `<stage> stdout had a duplicate JSON property`,
+  `<stage> stdout had a number that cannot be represented exactly`, and — for a
+  string or name escaping a lone surrogate such as `\uD800`, which used to throw a
+  raw `InvalidOperationException` — `<stage> stdout had a string that is
+  not valid Unicode`. `okf_run_computation` (`OKF4net.Agents`) holds its parameter
+  values to the same rule through one internal normaliser in
+  `OKF4net.Attestation`, and reports a rejection as its `Error: …` text instead
+  of passing infinity to the binder or throwing at the model; a duplicate
+  *top-level* parameter name is out of its reach, since Microsoft.Extensions.AI
+  deserializes `parameterValues` into a dictionary first. Found by an external
+  review.
+
 - **`OKF4net.Attestation`: a declared but unresolvable `attester.resource` now
   fails the run, and `AttestationContext` gained a field.** Both are breaking for
   existing consumers of a published package, so state them plainly:

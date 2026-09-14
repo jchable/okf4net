@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using OKF4net.Attestation.Internal;
 
 namespace OKF4net.Agents.Internal;
 
@@ -13,28 +15,58 @@ namespace OKF4net.Agents.Internal;
 /// tool ever receives, while the same call from C# with a boxed <c>int</c>
 /// succeeds — which is exactly how the gap stayed invisible.
 /// </summary>
+/// <remarks>
+/// Each value is held to the strict JSON value contract container receipts are held
+/// to (<see cref="StrictJsonValues"/>, in <c>OKF4net.Attestation</c>): a number that
+/// has no exact <see langword="long"/> or <see langword="double"/> counterpart, a
+/// duplicate property inside a value, or a string escaping a lone surrogate is
+/// rejected rather than rounded, overflowed or resolved last-wins. What it cannot
+/// see is a duplicate <em>top-level</em> parameter name: the <c>parameterValues</c>
+/// object itself is deserialized into a dictionary by Microsoft.Extensions.AI
+/// before this code runs, and a dictionary holds one entry per name, so whether a
+/// repeated name was rejected, or which occurrence survived, was decided there.
+/// </remarks>
 internal static class ParameterValues
 {
-    internal static IReadOnlyDictionary<string, object?> Normalize(IReadOnlyDictionary<string, object?> values)
+    /// <summary>
+    /// Normalizes every <see cref="JsonElement"/> in <paramref name="values"/>;
+    /// any other value passes through unchanged.
+    /// </summary>
+    /// <param name="values">The bound parameter values.</param>
+    /// <param name="normalized">The normalized values, when this returns <see langword="true"/>.</param>
+    /// <param name="error">
+    /// When this returns <see langword="false"/>, a fixed sentence saying which rule a
+    /// value broke. It never quotes the value, its property names or its number
+    /// literal.
+    /// </param>
+    /// <returns><see langword="true"/> when every value was normalized.</returns>
+    internal static bool TryNormalize(
+        IReadOnlyDictionary<string, object?> values,
+        [NotNullWhen(true)] out IReadOnlyDictionary<string, object?>? normalized,
+        [NotNullWhen(false)] out string? error)
     {
         var result = new Dictionary<string, object?>(values.Count, StringComparer.Ordinal);
-        foreach (var (key, value) in values)
+        try
         {
-            result[key] = value is JsonElement element ? FromElement(element) : value;
+            foreach (var (key, value) in values)
+            {
+                result[key] = value is JsonElement element ? StrictJsonValues.Normalize(element) : value;
+            }
+        }
+        catch (StrictJsonException e)
+        {
+            normalized = null;
+            error = e.Violation switch
+            {
+                StrictJsonViolation.DuplicateProperty => "parameterValues had a duplicate JSON property.",
+                StrictJsonViolation.InexactNumber => "parameterValues had a number that cannot be represented exactly.",
+                _ => "parameterValues had a string that is not valid Unicode.",
+            };
+            return false;
         }
 
-        return result;
+        normalized = result;
+        error = null;
+        return true;
     }
-
-    private static object? FromElement(JsonElement element) => element.ValueKind switch
-    {
-        JsonValueKind.Null or JsonValueKind.Undefined => null,
-        JsonValueKind.String => element.GetString(),
-        JsonValueKind.True => true,
-        JsonValueKind.False => false,
-        JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
-        JsonValueKind.Array => element.EnumerateArray().Select(FromElement).ToList(),
-        JsonValueKind.Object => element.EnumerateObject().ToDictionary(p => p.Name, p => FromElement(p.Value), StringComparer.Ordinal),
-        _ => null,
-    };
 }

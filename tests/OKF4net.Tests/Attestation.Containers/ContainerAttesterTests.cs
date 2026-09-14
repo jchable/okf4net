@@ -56,6 +56,29 @@ public class ContainerAttesterTests
         Assert.False(verdict.Passed);
     }
 
+    /// <summary>
+    /// The verdict is container JSON too, under the receipt's strict contract: a
+    /// duplicated <c>ok</c> was resolved by whichever occurrence
+    /// <c>TryGetProperty</c> found, so <c>{"ok": false, "ok": true}</c> could read as
+    /// a pass while another reader of the same output saw a failure; and the number
+    /// rule covers every number anywhere in the document, not only the fields read.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"ok": false, "ok": true}""", "attester stdout had a duplicate JSON property")]
+    [InlineData("""{"ok": true, "detail": {"k": 1, "k": 2}}""", "attester stdout had a duplicate JSON property")]
+    [InlineData("""{"ok": true, "score": 1e400}""", "attester stdout had a number that cannot be represented exactly")]
+    [InlineData("""{"ok": true, "rows": [9223372036854775808]}""", "attester stdout had a number that cannot be represented exactly")]
+    public async Task A_verdict_that_breaks_the_strict_JSON_contract_fails_the_stage(string stdout, string message)
+    {
+        var engine = new FakeContainerEngine { Respond = _ => new ContainerRunResult(0, stdout, "") };
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions());
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
+            async () => await attester.AttestAsync(Context("def attest(**_):\n    return {}\n", new Receipt(new Dictionary<string, object?>()))));
+
+        Assert.Equal(message, ex.Message);
+    }
+
     [Fact]
     public async Task Throws_when_the_concept_has_no_resolvable_attester_source()
     {

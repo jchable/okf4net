@@ -130,16 +130,17 @@ public sealed class ContainerAttester : IAttester
 
         var result = await _engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         using var document = ReceiptParsing.ParseJson(result, "attester");
-        var verdict = document.RootElement;
 
-        var passed = verdict.ValueKind == JsonValueKind.Object
-            && verdict.TryGetProperty("ok", out var okProp)
-            && okProp.ValueKind == JsonValueKind.True;
-        var detail = verdict.ValueKind == JsonValueKind.Object
-            && verdict.TryGetProperty("reason", out var reasonProp)
-            && reasonProp.ValueKind == JsonValueKind.String
-                ? reasonProp.GetString()
-                : null;
+        // The whole verdict document, not only the two fields read, is held to the
+        // receipt's strict contract (no duplicate property, every number exact): one
+        // parsing contract for all container JSON. A non-object still reads as a
+        // failing verdict, as before.
+        var verdict = JsonValues.Normalize(document.RootElement, result, "attester") as Dictionary<string, object?>;
+
+        var passed = verdict is not null && verdict.TryGetValue("ok", out var ok) && ok is true;
+        var detail = verdict is not null && verdict.TryGetValue("reason", out var reason) && reason is string text
+            ? text
+            : null;
         return new AttestationVerdict(passed, detail);
     }
 }

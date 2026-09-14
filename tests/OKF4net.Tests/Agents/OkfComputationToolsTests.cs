@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.AI;
 using OKF4net.Agents;
 using OKF4net.Attestation;
 using OKF4net.Attestation.Containers;
@@ -570,5 +572,65 @@ public class OkfComputationToolsTests
         {
             CultureInfo.CurrentCulture = originalCulture;
         }
+    }
+
+    /// <summary>
+    /// Invokes <c>okf_run_computation</c> the way a host does — through the
+    /// <see cref="AIFunction"/>, with <c>parameterValues</c> as a JSON object — and
+    /// returns the tool text plus the values the binder received.
+    /// </summary>
+    private static async Task<(string Text, IReadOnlyDictionary<string, object?>? Bound)> InvokeRunComputationWith(string parameterValuesJson)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: n\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        IReadOnlyDictionary<string, object?>? bound = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (contract, computation, values, _) =>
+        {
+            bound = values;
+            return ValueTask.FromResult(new BoundComputation(contract.Runtime ?? "bigquery", computation.InlineCode, null, values));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+        var function = tools.GetTools().Cast<AIFunction>().Single(f => f.Name == "okf_run_computation");
+
+        // Parsed with the default options, which keep a duplicate: that is what a
+        // host's own deserializer hands over, so the tool has to catch it itself.
+        using var doc = JsonDocument.Parse(parameterValuesJson);
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["conceptId"] = "c/rev",
+            ["parameterValues"] = doc.RootElement.Clone(),
+        });
+
+        var result = await function.InvokeAsync(arguments);
+        return (result?.ToString() ?? string.Empty, bound);
+    }
+
+    /// <summary>
+    /// A parameter value is held to the same number rule as container JSON, and a
+    /// duplicate nested inside one is rejected — both as the tool's <c>Error:</c>
+    /// text, never a throw toward the model. Before, <c>1e400</c> reached the binder
+    /// as infinity and a nested duplicate threw a raw
+    /// <see cref="System.ArgumentException"/> from outside the tool's catch.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"n": 1e400}""", "Error: parameterValues had a number that cannot be represented exactly.")]
+    [InlineData("""{"n": 9223372036854775808}""", "Error: parameterValues had a number that cannot be represented exactly.")]
+    [InlineData("""{"n": {"a": 1, "a": 2}}""", "Error: parameterValues had a duplicate JSON property.")]
+    [InlineData("""{"n": [{"a": 1, "a": 1}]}""", "Error: parameterValues had a duplicate JSON property.")]
+    public async Task A_parameter_value_that_breaks_the_strict_JSON_contract_is_an_error_not_a_throw(string json, string expected)
+    {
+        var (text, bound) = await InvokeRunComputationWith(json);
+        Assert.Equal(expected, text);
+        Assert.Null(bound);
+    }
+
+    [Fact]
+    public async Task An_exact_integer_parameter_value_still_reaches_the_binder_as_a_long()
+    {
+        var (text, bound) = await InvokeRunComputationWith("""{"n": 42}""");
+        Assert.Contains("displayable: yes", text, StringComparison.Ordinal);
+        Assert.Equal(42L, bound!["n"]);
     }
 }
