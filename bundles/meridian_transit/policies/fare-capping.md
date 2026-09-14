@@ -49,4 +49,6 @@ Charged 700, waived 300.
 # Implemented by
 
 [`computations/capped-fare.md`](../computations/capped-fare.md), whose attester
-recomputes this rule from the same inputs rather than trusting the run's own report.
+recomputes this rule from the same inputs rather than trusting the run's own report —
+trip by trip, in order — and fails the run unless the reported per-trip split matches
+that recomputation exactly, not only the day's total.
