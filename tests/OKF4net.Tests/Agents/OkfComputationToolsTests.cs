@@ -10,6 +10,7 @@ using OKF4net.Agents;
 using OKF4net.Attestation;
 using OKF4net.Attestation.Containers;
 using OKF4net.Tests.Attestation;
+using OKF4net.Tests.Attestation.Containers;
 using Xunit;
 
 namespace OKF4net.Tests.Agents;
@@ -632,5 +633,94 @@ public class OkfComputationToolsTests
         var (text, bound) = await InvokeRunComputationWith("""{"n": 42}""");
         Assert.Contains("displayable: yes", text, StringComparison.Ordinal);
         Assert.Equal(42L, bound!["n"]);
+    }
+
+    /// <summary>
+    /// Regression test for the external audit's exact reproduction: <c>okf_run_computation</c>
+    /// invoked, through its <see cref="AIFunction"/>, with the JSON body
+    /// <c>{"parameterValues":{"n":42}}</c>, against a <see cref="ContainerAttestationRuntime"/>
+    /// whose concept declares <c>n</c> as <c>integer</c>. Before B1's
+    /// <see cref="ParameterValues"/> normalization in
+    /// <see cref="OkfBundleTools.RunComputationAsync"/>, the value bound from
+    /// <c>AIFunctionArguments</c> reached <see cref="AllowlistParameterBinder"/> as a raw
+    /// <see cref="JsonElement"/> — which its type check (<c>value is int or long</c>) always
+    /// rejects — so the binder threw an <see cref="AttestationDiagnosticException"/> and the
+    /// executor was never invoked.
+    ///
+    /// Unlike every other test above, which stubs the binder with <c>FakeRuntime.BindFunc</c>
+    /// and so never exercises the actual type check that broke, this one wires the real
+    /// <see cref="ContainerAttestationRuntime"/> (<see cref="AllowlistParameterBinder"/> +
+    /// <see cref="ScriptComputationExecutor"/> + <see cref="ContainerAttester"/>) over a
+    /// <see cref="FakeContainerEngine"/> — the same combination
+    /// <c>ContainerAttestationRuntimeTests.Runs_end_to_end_through_AttestationOrchestrator_with_a_fake_engine</c>
+    /// uses — so the fix is proven against the code the audit actually ran, not a stand-in for
+    /// it. It also checks the container envelope the executor would send: <c>n</c> must reach
+    /// <c>OKF_PARAMS_JSON</c> as the JSON integer <c>42</c>, not the string <c>"42"</c> a
+    /// naive <c>ToString()</c> normalization could have produced.
+    /// </summary>
+    [Fact]
+    public async Task Okf_run_computation_binds_a_JSON_integer_through_the_real_AllowlistParameterBinder_and_executes()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.py", "def attest(**_):\n    return {'ok': True}\n");
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: python\n" +
+            "parameters:\n  - { name: n, type: integer, required: true }\n" +
+            "executor: { receipt: [result] }\n" +
+            "attester: { resource: a.py }\n---\n# Computation\n\n```python\nprint()\n```\n");
+
+        // FakeContainerEngine records only the LAST spec it saw, and both the executor
+        // and the attester run through it in this test (per the design's remarks on
+        // ContainerAttestationRuntime), so every spec is captured here as it arrives
+        // rather than read back off the engine afterwards.
+        var specs = new List<ContainerRunSpec>();
+        var engine = new FakeContainerEngine
+        {
+            Respond = spec =>
+            {
+                specs.Add(spec);
+
+                // The attester's fixed bootstrap always runs `python3 -c <Bootstrap>`
+                // (3 command elements); ScriptComputationExecutor always runs
+                // `[profile.Interpreter, "-"]` (2). That shape, not image or stdin
+                // content, is what tells the two runs apart here.
+                return spec.Command.Count == 3
+                    ? new ContainerRunResult(0, """{"ok": true}""", "")
+                    : new ContainerRunResult(0, """{"result": 84}""", "");
+            },
+        };
+        var profile = new ContainerRuntimeProfile { Image = "python:3.12-slim", Kind = ContainerRuntimeKind.Script };
+        var runtime = new ContainerAttestationRuntime(engine, profile);
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["python"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+
+        // Through GetTools(), not a hand-built AIFunctionFactory.Create: G4 wraps the
+        // model-facing okf_run_computation in a top-level duplicate-parameter check, and
+        // this test must cover that wrapper too, exactly as a real host calls it.
+        var function = tools.GetTools().Cast<AIFunction>().Single(f => f.Name == "okf_run_computation");
+
+        using var doc = JsonDocument.Parse("""{"conceptId": "c/rev", "parameterValues": {"n": 42}}""");
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["conceptId"] = doc.RootElement.GetProperty("conceptId").GetString(),
+            ["parameterValues"] = doc.RootElement.GetProperty("parameterValues").Clone(),
+        });
+
+        var result = await function.InvokeAsync(arguments);
+        var text = result?.ToString() ?? string.Empty;
+
+        // If the binder had thrown (the audit's reproduction), this would read
+        // "# Attestation outcome\n\n- displayable: no" with a "binder threw:
+        // AttestationDiagnosticException" reason, and no executor spec would exist below.
+        Assert.Contains("- displayable: yes", text, StringComparison.Ordinal);
+
+        var executorSpecs = specs.Where(s => s.Command.Count != 3).ToList();
+        Assert.Single(executorSpecs);
+
+        using var paramsDoc = JsonDocument.Parse(executorSpecs[0].Environment["OKF_PARAMS_JSON"]);
+        var n = paramsDoc.RootElement.GetProperty("n");
+        Assert.Equal(JsonValueKind.Number, n.ValueKind);
+        Assert.Equal(42L, n.GetInt64());
     }
 }
