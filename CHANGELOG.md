@@ -568,6 +568,17 @@ and this project adheres to
 
 ### Fixed
 
+- **Link scanning is linear on unclosed brackets.** Every `[` restarted a
+  balanced scan to the end of its line, so a line of brackets that never close
+  was quadratic: a 200 KB `[a[a[a…` concept took ~11 s to `okf validate`, and
+  bundle content is untrusted input — a CI job validating a contributed bundle
+  could be stalled by one line. The behaviour dates from the initial port, so
+  every release has it. The closer each opener would reach is now precomputed in
+  one pass; the same bundle validates in 0.3 s. The links found are unchanged:
+  the original algorithm is kept in the tests as an oracle and compared on 20 000
+  random lines of brackets, parentheses, escapes, spaces and quotes, and
+  `okf graph` / `okf validate` output is byte-identical before and after on every
+  bundle in `bundles/` and every fixture.
 - **`okf validate` now reads the body of an `index.md`, and checks §8's entry
   rule.** It never had: the reserved-file check returned early for any index
   without frontmatter, which is every well-formed index, so no index body was

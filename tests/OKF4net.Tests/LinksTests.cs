@@ -130,4 +130,137 @@ public class LinksTests
         Assert.Single(internalLinks);
         Assert.Single(doc.Citations());
     }
+
+    /// <summary>
+    /// Bundle content is untrusted input, and link scanning used to restart a balanced
+    /// scan to the end of the line at every <c>[</c>: a line of unclosed brackets was
+    /// quadratic (~11 s for a 200 KB <c>[a[a[a…</c> in <c>okf validate</c>). Both halves
+    /// of a link are covered — brackets that never close, and link text followed by a
+    /// <c>(</c> that never closes. The bound is deliberately loose: the quadratic scan
+    /// takes many seconds on these inputs, a linear one milliseconds.
+    /// </summary>
+    [Theory]
+    [InlineData("[a")]
+    [InlineData("[a](")]
+    public void Unclosed_link_syntax_is_scanned_in_linear_time(string unit)
+    {
+        var body = string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + " [b](/b.md)\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        LinkScanner.ExtractLinks(body);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
+
+    /// <summary>
+    /// The linear scan must find exactly the links the original restart-at-every-bracket
+    /// scan found — `okf graph` output is golden-locked, and every link feeds validation.
+    /// <see cref="ReferenceScan"/> is that original algorithm, kept here as the oracle,
+    /// and the two are compared on random lines over the characters that steer it:
+    /// brackets, parentheses, backslash escapes, spaces and quotes (titles).
+    /// </summary>
+    [Fact]
+    public void Linear_link_scan_matches_the_original_scan_on_random_lines()
+    {
+        var alphabet = "[]()\\ a\"".ToCharArray();
+        var random = new Random(20260914);
+        for (var n = 0; n < 20_000; n++)
+        {
+            var chars = new char[random.Next(0, 24)];
+            for (var k = 0; k < chars.Length; k++)
+            {
+                chars[k] = alphabet[random.Next(alphabet.Length)];
+            }
+
+            var line = new string(chars);
+            var expected = ReferenceScan(line);
+            var actual = LinkScanner.ExtractLinks(line).Select(l => (l.Text, l.Target)).ToList();
+            Assert.True(expected.SequenceEqual(actual), $"line {line}: expected [{string.Join(" | ", expected)}], got [{string.Join(" | ", actual)}]");
+        }
+    }
+
+    /// <summary>The link scan as it was before it was made linear, verbatim in behaviour.</summary>
+    private static List<(string Text, string Target)> ReferenceScan(string line)
+    {
+        var output = new List<(string, string)>();
+        var chars = line.ToCharArray();
+        var i = 0;
+        while (i < chars.Length)
+        {
+            if (chars[i] == '[' && Parse(chars, i) is { } p)
+            {
+                output.Add(p.Link);
+                i = p.Next;
+                continue;
+            }
+
+            i++;
+        }
+
+        return output;
+
+        static ((string, string) Link, int Next)? Parse(char[] chars, int start)
+        {
+            var i = start + 1;
+            var depth = 1;
+            while (i < chars.Length)
+            {
+                if (chars[i] == '\\')
+                {
+                    i++;
+                }
+                else if (chars[i] == '[')
+                {
+                    depth++;
+                }
+                else if (chars[i] == ']' && --depth == 0)
+                {
+                    break;
+                }
+
+                i++;
+            }
+
+            if (depth != 0 || i >= chars.Length || i + 1 >= chars.Length || chars[i + 1] != '(')
+            {
+                return null;
+            }
+
+            var text = new string(chars, start + 1, i - start - 1);
+            var j = i + 2;
+            var paren = 1;
+            while (j < chars.Length)
+            {
+                if (chars[j] == '\\')
+                {
+                    j++;
+                }
+                else if (chars[j] == '(')
+                {
+                    paren++;
+                }
+                else if (chars[j] == ')' && --paren == 0)
+                {
+                    break;
+                }
+
+                j++;
+            }
+
+            if (paren != 0 || j >= chars.Length)
+            {
+                return null;
+            }
+
+            var dest = new string(chars, i + 2, j - i - 2).Trim();
+            var space = dest.IndexOfAny([' ', '\t']);
+            if (space >= 0 && dest[space..].TrimStart() is var rest && (rest.StartsWith('"') || rest.StartsWith('\'')))
+            {
+                dest = dest[..space];
+            }
+
+            return ((text, dest), j + 1);
+        }
+    }
 }

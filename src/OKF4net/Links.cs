@@ -445,28 +445,104 @@ public static class LinkScanner
     }
 
     /// <summary>
-    /// Scans a single (code-free) line for <c>[text](dest)</c> links.
+    /// Scans a single (code-free) line for <c>[text](dest)</c> links: at each <c>[</c>,
+    /// exactly what <see cref="ParseInlineLink"/> would match there, in linear time.
+    /// Calling <see cref="ParseInlineLink"/> at every <c>[</c> rescans to the end of the
+    /// line each time an opener never closes, which made a line of unclosed brackets
+    /// quadratic — on untrusted bundle content. The closer each opener would reach is
+    /// precomputed instead (<see cref="BalancedCloses"/>).
     /// </summary>
     private static void ScanLineLinks(string line, List<ConceptLink> output)
     {
+        if (line.IndexOf('[') < 0)
+        {
+            return;
+        }
+
         var chars = line.ToCharArray();
+        var closeBracket = BalancedCloses(chars, '[', ']');
+        var closeParen = BalancedCloses(chars, '(', ')');
         var i = 0;
         while (i < chars.Length)
         {
-            if (chars[i] == '[')
+            if (chars[i] == '['
+                && closeBracket[i] is var textEnd and >= 0
+                && textEnd + 1 < chars.Length
+                && chars[textEnd + 1] == '('
+                && closeParen[textEnd + 1] is var destEnd and >= 0)
             {
-                var parsed = ParseInlineLink(chars, i);
-                if (parsed is { } p)
-                {
-                    var target = StripTitle(p.Dest);
-                    output.Add(new ConceptLink(p.Text, target, ConceptLink.Classify(target)));
-                    i = p.Next;
-                    continue;
-                }
+                var target = StripTitle(new string(chars, textEnd + 2, destEnd - textEnd - 2));
+                output.Add(new ConceptLink(new string(chars, i + 1, textEnd - i - 1), target, ConceptLink.Classify(target)));
+                i = destEnd + 1;
+                continue;
             }
 
             i++;
         }
+    }
+
+    /// <summary>
+    /// For each <paramref name="open"/> character, the index of the <paramref name="close"/>
+    /// that <see cref="ParseInlineLink"/>'s balanced, escape-aware scan starting there
+    /// stops at, or <c>-1</c> when it never closes; other entries are meaningless.
+    ///
+    /// One left-to-right pass suffices because a scan started just past any opener
+    /// visits exactly the positions a scan from the start of the line visits from there
+    /// on (a backslash skips the next character either way, and an opener is never a
+    /// backslash). So relative depth is global balance: an opener leaving the balance at
+    /// <c>L</c> — counted or, when backslash-escaped, not — closes at the first
+    /// unescaped closer that brings it to <c>L - 1</c>. Openers wait by level and are
+    /// resolved together, each once.
+    /// </summary>
+    private static int[] BalancedCloses(char[] chars, char open, char close)
+    {
+        var closes = new int[chars.Length];
+        var waiting = new Dictionary<int, List<int>>();
+        var balance = 0;
+
+        void Wait(int opener, int level)
+        {
+            closes[opener] = -1;
+            if (!waiting.TryGetValue(level, out var openers))
+            {
+                waiting[level] = openers = [];
+            }
+
+            openers.Add(opener);
+        }
+
+        for (var k = 0; k < chars.Length; k++)
+        {
+            if (chars[k] == '\\')
+            {
+                // The escaped character is skipped by every scan, but a scan may still
+                // START at it, so an escaped opener waits at the unchanged balance.
+                if (k + 1 < chars.Length && chars[k + 1] == open)
+                {
+                    Wait(k + 1, balance);
+                }
+
+                k++;
+            }
+            else if (chars[k] == open)
+            {
+                balance++;
+                Wait(k, balance);
+            }
+            else if (chars[k] == close)
+            {
+                balance--;
+                if (waiting.Remove(balance + 1, out var resolved))
+                {
+                    foreach (var opener in resolved)
+                    {
+                        closes[opener] = k;
+                    }
+                }
+            }
+        }
+
+        return closes;
     }
 
     /// <summary>
