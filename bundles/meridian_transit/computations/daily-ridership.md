@@ -50,14 +50,18 @@ supplies.
 
 # What the attester checks
 
-`attesters/ridership_shape.py` receives the receipt and verifies three things that
+`attesters/ridership_shape.py` receives the receipt and verifies four things that
 do not depend on trusting the executor:
 
 1. **Both declared fields are present**, and `result` holds exactly one row.
-2. **`distinct_riders <= completed_trips`** — an invariant of the query's own shape.
+2. **Both counts are genuine integers.** `count(*)` is a Postgres `bigint`, which
+   reaches the receipt as a bare JSON integer. A string (`"5"`), a float (`2.9`) or
+   a boolean is not what this query produces, so it is rejected — never coerced,
+   which would accept `"5"` and silently truncate `2.9` to `2`.
+3. **Neither count is negative.**
+4. **`distinct_riders <= completed_trips`** — an invariant of the query's own shape.
    A result violating it means the rows were not produced by this query, whatever
    `executed_sql` says.
-3. **Neither count is negative.**
 
 It deliberately does **not** treat `executed_sql == sanctioned` as proof of
 provenance. Under a container host, `executed_sql` is echoed back by the wrapper

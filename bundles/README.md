@@ -104,7 +104,8 @@ of coverage:
 split, not only the day's total — and fails unless the receipt matches it element
 for element, so a pass is evidence about the numbers being displayed, including what
 each trip was charged. `ridership_shape.py` can only check invariants of the
-query's shape, and its docstring says why: `executed_sql` is echoed back by the
+query's shape (one row, both counts genuine non-negative integers, riders within
+trips), and its docstring says why: `executed_sql` is echoed back by the
 host's own wrapper, and Postgres mints no equivalent of BigQuery's `job_id` for a
 consumer to resolve independently. Same bundle, same host, two genuinely different
 strengths of guarantee.
