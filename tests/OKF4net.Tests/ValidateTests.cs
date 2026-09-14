@@ -1394,6 +1394,23 @@ public class ValidateTests
     }
 
     /// <summary>
+    /// Raised by Copilot on #101: a block quote starts a new block, so it does not continue
+    /// the item above it, and a link inside it is not the item's.
+    /// </summary>
+    [Fact]
+    public void A_block_quote_after_an_index_item_is_not_part_of_it()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* plain file\n> [Revenue](revenue.md)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+        Assert.Contains("plain file", diag.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A prose line that opens with inline code and a dash is not a list item: the code
     /// span is text, not the indentation it becomes once blanked.
     /// </summary>
@@ -1406,6 +1423,68 @@ public class ValidateTests
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
 
         Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// A reference link is a link everywhere a link counts: to a missing concept it is a
+    /// broken link, and to an existing one it records a backlink.
+    /// </summary>
+    [Fact]
+    public void A_reference_link_counts_for_broken_links_and_backlinks()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/margin.md",
+            "---\ntype: Metric\ntitle: Margin\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "Built on [revenue][rev] and [cost].\n\n[rev]: revenue.md\n[cost]: /metrics/cost.md\n");
+
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var broken = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.BrokenLink);
+        Assert.Contains("/metrics/cost.md", broken.Message, StringComparison.Ordinal);
+        Assert.Contains(ConceptId.Parse("metrics/margin"), bundle.Backlinks(ConceptId.Parse("metrics/revenue")));
+    }
+
+    /// <summary>
+    /// An index entry may open on a reference link (§8 is about what the entry links to,
+    /// not how): its description is checked like an inline entry's, and it is not warned
+    /// as having no link.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue][rev] - Revenue, recognized.\n\n[rev]: revenue.md\n", false)]
+    [InlineData("# Metrics\n\n* [Revenue][rev]\n\n[rev]: revenue.md\n", true)]
+    [InlineData("# Metrics\n\n* [rev]\n\n[rev]: revenue.md\n", true)]
+    public void Index_entry_opening_on_a_reference_link_is_an_entry(string index, bool missingDescription)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+        Assert.Equal(missingDescription, report.Diagnostics.Any(d => d.Code == DiagnosticCode.IndexEntryMissingDescription));
+    }
+
+    /// <summary>
+    /// Found by review of #105: a link may cross a line ending, in an index item as
+    /// anywhere else, so an entry whose link text or destination wraps is still an entry
+    /// with its description, and an item holding such a link is not warned as having none.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue,\n  recognized](revenue.md) - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* [Revenue](\n  revenue.md) - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* See [Revenue,\n  recognized](revenue.md).\n")]
+    public void Index_item_whose_link_crosses_a_line_ending_has_that_link(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code is DiagnosticCode.IndexEntryNotALink or DiagnosticCode.IndexEntryMissingDescription);
     }
 
     [Fact]
@@ -1463,6 +1542,8 @@ public class ValidateTests
     [InlineData("## Examples", "Examples")]
     [InlineData("# Table schema", "Schema")]
     [InlineData("# Schemas", "Schema")]
+    [InlineData("# `Worked example`", "Examples")]
+    [InlineData("# The `schema` table", "Schema")]
     public void A_variant_of_a_conventional_heading_is_a_warning(string heading, string conventional)
     {
         using var tmp = new TempDir();
@@ -1482,6 +1563,7 @@ public class ValidateTests
     [InlineData("# Schema")]
     [InlineData("# Usage")]
     [InlineData("# Counterexamples")]
+    [InlineData("# `Examples`\n\n## Example with a cap")]
     public void Conventional_and_unrelated_headings_are_not_warned(string heading)
     {
         using var tmp = new TempDir();
@@ -1507,6 +1589,43 @@ public class ValidateTests
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
 
         Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #101: a heading is read as it renders, so the raw HTML in
+    /// <c># &lt;span&gt;Examples&lt;/span&gt;</c> neither hides the conventional heading nor
+    /// lends a heading the words of a tag or comment.
+    /// </summary>
+    [Theory]
+    [InlineData("# <span>Examples</span>\n\n## Example with a cap\n")]
+    [InlineData("# Glossary <!-- schema -->\n")]
+    public void Raw_html_in_a_heading_is_not_its_text(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #101: a heading inside a block quote or a list item is a heading
+    /// all the same (an indented one under a list item always was), so it is held to §4.2.
+    /// </summary>
+    [Theory]
+    [InlineData("> # Worked example\n")]
+    [InlineData("* # Worked example\n")]
+    [InlineData("- item\n\n  > ## Worked example\n")]
+    public void A_heading_inside_a_container_is_a_heading(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+        Assert.Contains("# Worked example\"", diag.Message, StringComparison.Ordinal);
     }
 
     [Fact]

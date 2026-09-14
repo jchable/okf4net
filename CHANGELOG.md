@@ -292,7 +292,10 @@ and this project adheres to
   heuristic, kept to items with no link anywhere: one that renders a link without
   opening on one — `**[A](a.md)**`, an icon before the link, a link on a
   continuation line — is not warned. Thematic breaks (`* * *`), prose and code are
-  not items. Reading items off the code-blanked line had also let an item opening
+  not items, and a block quote right after an item starts a block of its own, so a
+  link inside it is not the item's. Items take their links from the same
+  paragraph-at-a-time pass as `ExtractLinks`, so an entry whose link text or
+  destination wraps onto the next line is still an entry with its description. Reading items off the code-blanked line had also let an item opening
   with inline code (`` * `x` [a](b) ``) pass as an entry whose description is
   checked, and a prose line such as `` `code` - [a](b) `` pass as a bulleted one;
   whitespace is now read on the line as written.
@@ -301,7 +304,12 @@ and this project adheres to
   *schema(s)* — `# Worked example`, `# Table schema`, `## Examples` — raises
   `NonConventionalHeading` (warning) when the concept carries no exact
   `# Examples` / `# Schema`; beside the conventional heading, a related one is a
-  subsection and is not warned. A heuristic: it matches words, not meaning.
+  subsection and is not warned. A heading is read as it renders — raw HTML, code
+  span backticks and link destinations left out, a code span's content kept, so
+  `# <span>Examples</span>` is the conventional heading, ``# `Worked example` ``
+  is a variant of it, and `# Glossary <!-- schema -->` names no schema — and
+  wherever it stands, a block quote or list item included. A heuristic: it matches
+  words, not meaning.
   `# Computation` is left out — a heading that merely mentions a computation is
   ordinary structure (acme_retail's `# Why no attested computation`), and a
   misspelled one on an Attested Computation already raises
@@ -309,6 +317,36 @@ and this project adheres to
   or any fixture, and both flag the drift `bundles/meridian_transit` had before
   it was corrected by hand (`# Worked example`, three index entries in inline
   code). Both new `DiagnosticCode` members are appended.
+- **Reference links count as links.** `LinkScanner.ExtractLinks` read only inline
+  `[text](dest)` links, so a body using the other standard markdown forms (§6.1:
+  "standard markdown links") — full `[text][label]`, collapsed `[label][]`,
+  shortcut `[label]`, and `![alt][label]` images — recorded no edge in the graph,
+  no backlink, no broken link, nothing in `okf parse` or an index entry, and the
+  viewer left a dead link to a `.md` file. They now resolve against the body's
+  link reference definitions (CommonMark §4.7) and are ordinary `ConceptLink`s
+  whose `Target` is the definition's destination; `ConceptLink` itself is
+  unchanged. Labels match as CommonMark normalizes them (case-folded, whitespace
+  collapsed, first definition wins), a definition's destination has its backslash
+  escapes resolved as an inline link's has (`[r]: a\_b.md` is `a_b.md`, which is
+  also the href marked renders), and a full reference with an undefined label is
+  no link. One deliberate divergence from commonmark.js, which has no
+  footnotes: a bracket starting with `^` is always a footnote, so `[^k][r]` stays a
+  citation (and `[r][^k]` is the link `[r]` beside a footnote), as GitHub renders
+  them. Inline links are now found by the same algorithm — see Fixed. Compared
+  with commonmark.js on 120 000 random bodies built around references, inline
+  destinations, titles and angle brackets, and with `dev`'s scanner on the same
+  cases: outside footnote brackets, no case regresses from `dev`, about 6 550 of
+  every 40 000 are fixed, and 5 in 120 000 still differ, all one case:
+  commonmark.js letting a later duplicate definition above a setext underline
+  win, where §4.7 says "the first one takes precedence". An external audit then
+  found a definition missed after `>` and a tab (`>\t[x]: /`): a paragraph's lines
+  lose their leading whitespace (§4.8), so a definition may now follow any spaces
+  and tabs. On 150 000 more bodies built around tabs and containers, the only
+  other difference is commonmark.js itself: it skips spaces but not tabs between
+  a link's parts, which §6.3 allows ("spaces, tabs, and up to one line ending"),
+  so `[t](x\t)` is a link here as the spec has it. No bundle or
+  fixture uses a reference link, so `okf graph` and `okf validate` output is
+  byte-identical on all of them.
 
 ### Changed
 
@@ -602,17 +640,56 @@ and this project adheres to
 
 ### Fixed
 
+- **An inline link destination in angle brackets loses its brackets.**
+  `[x](<../glossary/term.md>)` was extracted with target `<../glossary/term.md>`,
+  which never resolves: a false broken link, no backlink, and a dead link in the
+  viewer (documented there as a known gap, now removed). The destination may hold
+  spaces and parentheses (`[x](<a (b).md>)`), a `<` inside it makes it invalid,
+  and a `<` that opens a valid one is no longer mistaken for inline HTML
+  (`[b](<my file.md>)` read `<my file.md>` as a tag and hid the link). And a setext
+  underline under a paragraph holding only link reference definitions no longer
+  ends that paragraph — with nothing left to head, commonmark.js reads it as
+  continuation text, so a definition after it defines nothing.
+- **Inline links follow CommonMark's link algorithm (§6.3).** The scan matched
+  each `[` to its balanced `]` and took whatever balanced parentheses followed,
+  which differed from every markdown renderer in four ways, all now fixed:
+  - a destination with spaces was accepted — `[a](not a link)` linked to
+    `not a link`; a destination now has no spaces, parentheses only when balanced
+    or escaped, backslash escapes resolved, and a title only after whitespace;
+  - a link inside a link's text kept the outer link — `[a [b](x) c](y)` linked to
+    `y`; a link now deactivates the brackets opened before it, so only `x` is a
+    link (an image may still hold one, as in `![[a](x)](y)`);
+  - a link could not cross a line ending — `[orders\ntable](x)` was missed;
+    inline content is now read a paragraph at a time, past quote and list
+    markers, and a link's text is reported on one line;
+  - an escaped `\[` opened a link — `\[a](x)` linked to `x`; an escaped bracket now
+    opens and closes nothing.
+  Code spans and raw HTML are now resolved in the same left-to-right pass as the
+  links, where they used to be blanked first: whichever starts first wins, and
+  what a link consumes after its `]` is neither text, span nor tag. So a
+  destination with a backtick no longer pairs with a later one
+  (`` [a](x`y) [b](/b.md)` `` lost `/b.md`); a `<` after a `]` that closes no
+  link is a tag again (`foo](<a title="[in](/in.md)">)` linked to `/in.md` —
+  raised by Copilot on #105); and a `[^k]` inside a link's destination
+  (`[t](a[^k]b)`) is no longer counted as a citation. Footnote visibility still
+  matches commonmark.js on 200 000 random bodies of code, HTML and containers.
+  The scan follows commonmark.js's bracket algorithm (a stack of openers,
+  resolved at each `]`) with every search for an end a table lookup, so it stays
+  linear however the brackets nest; a link's text is capped at 2 000 characters
+  for display, so a pathological nest of images cannot make its copies
+  quadratic. The pre-CommonMark oracle test was replaced by one that checks the
+  tables against the same algorithm with every search written out.
 - **Link scanning is linear on unclosed brackets.** Every `[` restarted a
   balanced scan to the end of its line, so a line of brackets that never close
   was quadratic: a 200 KB `[a[a[a…` concept took ~11 s to `okf validate`, and
   bundle content is untrusted input — a CI job validating a contributed bundle
   could be stalled by one line. The behaviour dates from the initial port, so
   every release has it. The closer each opener would reach is now precomputed in
-  one pass; the same bundle validates in 0.3 s. The links found are unchanged:
-  the original algorithm is kept in the tests as an oracle and compared on 20 000
-  random lines of brackets, parentheses, escapes, spaces and quotes, and
-  `okf graph` / `okf validate` output is byte-identical before and after on every
-  bundle in `bundles/` and every fixture.
+  one pass; the same bundle validates in 0.3 s. The links found were unchanged
+  by that fix alone — checked against the original algorithm on 20 000 random
+  lines, and `okf graph` / `okf validate` output byte-identical on every bundle and
+  fixture — before the move to CommonMark's link algorithm above changed them on
+  purpose.
 - **`okf validate` now reads the body of an `index.md`, and checks §8's entry
   rule.** It never had: the reserved-file check returned early for any index
   without frontmatter, which is every well-formed index, so no index body was
@@ -712,7 +789,7 @@ and this project adheres to
   only from 1; an empty list item ends at a blank line; and a link reference
   definition's destination and title are not text. Checked against commonmark.js
   0.31.2 on 300 000 random bodies: no difference in which footnote references are
-  visible, reference links (`[text][label]`, which no scanner here reads) aside.
+  visible, reference links (`[text][label]`, since read — see Added) aside.
   Nesting deeper than 100 containers is read as text, as markdown-it limits it.
   All of this lives in the one shared "skip code" pass, so
   `okf graph`'s links change too; its output and `okf validate`'s were compared

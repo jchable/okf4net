@@ -105,16 +105,18 @@ public class LinksTests
     }
 
     /// <summary>
-    /// The linear scan must find exactly the links the original restart-at-every-bracket
-    /// scan found — `okf graph` output is golden-locked, and every link feeds validation.
-    /// <see cref="ReferenceScan"/> is that original algorithm, kept here as the oracle,
-    /// and the two are compared on random lines over the characters that steer it:
-    /// brackets, parentheses, backslash escapes, spaces and quotes (titles).
+    /// The table-driven scan must find exactly what the same bracket algorithm finds when
+    /// every end is searched for by hand — the tables are an optimization, not a second
+    /// definition. <see cref="ReferenceScan"/> is that straightforward version, kept here as
+    /// the oracle, and the two are compared on random lines over the characters that steer
+    /// inline links: brackets, image bangs, parentheses, backslash escapes, spaces, quotes.
+    /// (It replaced an oracle of the pre-CommonMark scan, whose semantics were changed on
+    /// purpose: escaped brackets, links inside link text, destinations with spaces.)
     /// </summary>
     [Fact]
-    public void Linear_link_scan_matches_the_original_scan_on_random_lines()
+    public void Linear_link_scan_matches_a_straightforward_scan_on_random_lines()
     {
-        var alphabet = "[]()\\ a\"".ToCharArray();
+        var alphabet = "[]()\\ a\"'!".ToCharArray();
         var random = new Random(20260914);
         for (var n = 0; n < 20_000; n++)
         {
@@ -124,94 +126,161 @@ public class LinksTests
                 chars[k] = alphabet[random.Next(alphabet.Length)];
             }
 
-            var line = new string(chars);
+            // A leading letter keeps the line an ordinary paragraph (four leading spaces
+            // would make it indented code).
+            var line = "z" + new string(chars);
             var expected = ReferenceScan(line);
             var actual = LinkScanner.ExtractLinks(line).Select(l => (l.Text, l.Target)).ToList();
             Assert.True(expected.SequenceEqual(actual), $"line {line}: expected [{string.Join(" | ", expected)}], got [{string.Join(" | ", actual)}]");
         }
     }
 
-    /// <summary>The link scan as it was before it was made linear, verbatim in behaviour.</summary>
-    private static List<(string Text, string Target)> ReferenceScan(string line)
+    /// <summary>
+    /// CommonMark's bracket algorithm for inline links and images on one line, with every
+    /// search written out: no tables, no reference links (the random lines define none).
+    /// </summary>
+    private static List<(string Text, string Target)> ReferenceScan(string s)
     {
-        var output = new List<(string, string)>();
-        var chars = line.ToCharArray();
-        var i = 0;
-        while (i < chars.Length)
+        static bool Punct(char c) => c is (>= '!' and <= '/') or (>= ':' and <= '@') or (>= '[' and <= '`') or (>= '{' and <= '~');
+
+        var found = new List<(int Start, string Text, string Target)>();
+        var openers = new List<(int Index, bool Image, int Order)>();
+        var order = 0;
+        var inactiveBelow = 0;
+        for (var i = 0; i < s.Length;)
         {
-            if (chars[i] == '[' && Parse(chars, i) is { } p)
+            if (s[i] == '\\' && i + 1 < s.Length && Punct(s[i + 1]))
             {
-                output.Add(p.Link);
-                i = p.Next;
+                i += 2;
+                continue;
+            }
+
+            var image = s[i] == '!' && i + 1 < s.Length && s[i + 1] == '[';
+            if (s[i] == '[' || image)
+            {
+                openers.Add((image ? i + 1 : i, image, order++));
+                i += image ? 2 : 1;
+                continue;
+            }
+
+            if (s[i] != ']' || openers.Count == 0)
+            {
+                i++;
+                continue;
+            }
+
+            var opener = openers[^1];
+            openers.RemoveAt(openers.Count - 1);
+            if ((opener.Image || opener.Order >= inactiveBelow) && Inline(s, i + 1) is { } m)
+            {
+                found.Add((opener.Image ? opener.Index - 1 : opener.Index, s[(opener.Index + 1)..i], m.Target));
+                if (!opener.Image)
+                {
+                    inactiveBelow = order;
+                }
+
+                i = m.End;
                 continue;
             }
 
             i++;
         }
 
-        return output;
+        return found.OrderBy(f => f.Start).Select(f => (f.Text, f.Target)).ToList();
 
-        static ((string, string) Link, int Next)? Parse(char[] chars, int start)
+        static (string Target, int End)? Inline(string s, int open)
         {
-            var i = start + 1;
-            var depth = 1;
-            while (i < chars.Length)
-            {
-                if (chars[i] == '\\')
-                {
-                    i++;
-                }
-                else if (chars[i] == '[')
-                {
-                    depth++;
-                }
-                else if (chars[i] == ']' && --depth == 0)
-                {
-                    break;
-                }
-
-                i++;
-            }
-
-            if (depth != 0 || i >= chars.Length || i + 1 >= chars.Length || chars[i + 1] != '(')
+            if (open >= s.Length || s[open] != '(')
             {
                 return null;
             }
 
-            var text = new string(chars, start + 1, i - start - 1);
-            var j = i + 2;
-            var paren = 1;
-            while (j < chars.Length)
+            var p = open + 1;
+            while (p < s.Length && s[p] == ' ')
             {
-                if (chars[j] == '\\')
-                {
-                    j++;
-                }
-                else if (chars[j] == '(')
-                {
-                    paren++;
-                }
-                else if (chars[j] == ')' && --paren == 0)
-                {
-                    break;
-                }
-
-                j++;
+                p++;
             }
 
-            if (paren != 0 || j >= chars.Length)
+            var dest = p;
+            var target = new System.Text.StringBuilder();
+            if (p < s.Length && s[p] == '<')
             {
-                return null;
+                p++;
+                while (p < s.Length && s[p] is not ('>' or '<'))
+                {
+                    if (s[p] == '\\' && p + 1 < s.Length)
+                    {
+                        p++;
+                    }
+
+                    target.Append(s[p]);
+                    p++;
+                }
+
+                if (p >= s.Length || s[p] != '>')
+                {
+                    return null;
+                }
+
+                p++;
+            }
+            else
+            {
+                var depth = 0;
+                while (p < s.Length && s[p] != ' ')
+                {
+                    if (s[p] == '\\' && p + 1 < s.Length && Punct(s[p + 1]))
+                    {
+                        target.Append(s[p + 1]);
+                        p += 2;
+                        continue;
+                    }
+
+                    if (s[p] == '(')
+                    {
+                        depth++;
+                    }
+                    else if (s[p] == ')' && --depth < 0)
+                    {
+                        break;
+                    }
+
+                    target.Append(s[p]);
+                    p++;
+                }
+
+                if (depth > 0 || (p == dest && (p >= s.Length || s[p] != ')')))
+                {
+                    return null;
+                }
             }
 
-            var dest = new string(chars, i + 2, j - i - 2).Trim();
-            var space = dest.IndexOfAny([' ', '\t']);
-            if (space >= 0 && dest[space..].TrimStart() is var rest && (rest.StartsWith('"') || rest.StartsWith('\'')))
+            var afterDest = p;
+            while (p < s.Length && s[p] == ' ')
             {
-                dest = dest[..space];
+                p++;
             }
 
-            return ((text, dest), j + 1);
+            if (p > afterDest && p < s.Length && s[p] is '"' or '\'' or '(')
+            {
+                var close = s[p] == '(' ? ')' : s[p];
+                var q = p + 1;
+                while (q < s.Length && s[q] != close && !(close == ')' && s[q] == '('))
+                {
+                    q += s[q] == '\\' && q + 1 < s.Length ? 2 : 1;
+                }
+
+                if (q < s.Length && s[q] == close)
+                {
+                    p = q + 1;
+                    while (p < s.Length && s[p] == ' ')
+                    {
+                        p++;
+                    }
+                }
+            }
+
+            return p < s.Length && s[p] == ')' ? (target.ToString(), p + 1) : null;
         }
     }
 
@@ -689,6 +758,332 @@ public class LinksTests
     public void Html_and_container_constructs_are_scanned_in_linear_time(string unit)
     {
         var body = string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "\n\n[a](/a.md)\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Targets(body);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
+
+    /// <summary>
+    /// The four reference forms (CommonMark §6.3), each resolved against a link reference
+    /// definition (§4.7) anywhere in the body: full <c>[text][label]</c>, collapsed
+    /// <c>[label][]</c>, shortcut <c>[label]</c>, and an image <c>![alt][label]</c> —
+    /// extracted like an inline image. The link's target is the definition's destination,
+    /// its title dropped as an inline link's is. Expected results are commonmark.js's.
+    /// </summary>
+    [Theory]
+    [InlineData("See [the table][tbl].\n\n[tbl]: /tables/orders.md\n", "/tables/orders.md")]
+    [InlineData("See [tbl][].\n\n[tbl]: /tables/orders.md \"Orders\"\n", "/tables/orders.md")]
+    [InlineData("See [tbl].\n\n[tbl]: /tables/orders.md\n", "/tables/orders.md")]
+    [InlineData("A chart: ![chart][c]\n\n[c]: /img/chart.png\n", "/img/chart.png")]
+    [InlineData("[tbl]: /tables/orders.md\n\nDefined before use: [tbl].\n", "/tables/orders.md")]
+    [InlineData("> [q]: /quoted.md\n\nA definition in a quote counts: [q]\n", "/quoted.md")]
+    [InlineData("A claim.[^k][r]\n\n[r]: /x.md\n", "/x.md")]
+    public void Reference_links_resolve_to_their_definition(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// How labels match (§4.7): case-insensitively, with runs of whitespace collapsed; the
+    /// first definition of a label wins; and a label is read raw, escapes included.
+    /// </summary>
+    [Theory]
+    [InlineData("[Foo  Bar][]\n\n[foo bar]: /x.md\n", "/x.md")]
+    [InlineData("[r]\n\n[r]: /first.md\n[R]: /second.md\n", "/first.md")]
+    [InlineData("[x\\]y][r]\n\n[r]: /esc.md\n", "/esc.md")]
+    public void Reference_labels_match_as_commonmark_normalizes_them(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// The sequencing rules, as commonmark.js applies them: a full reference whose label is
+    /// undefined is no link, and its text cannot fall back to a shortcut; a link label that
+    /// failed can still be the text of the next reference; and text and label must touch.
+    /// </summary>
+    [Theory]
+    [InlineData("[foo][bar]\n\n[foo]: /f.md\n", "")]
+    [InlineData("[foo][bar][baz]\n\n[baz]: /url1\n[bar]: /url2\n", "/url2,/url1")]
+    [InlineData("[foo][bar][baz]\n\n[baz]: /url\n", "/url")]
+    [InlineData("[foo] [bar]\n\n[bar]: /b.md\n", "/b.md")]
+    [InlineData("[r][]x[r]\n\n[r]: /r.md\n", "/r.md,/r.md")]
+    [InlineData("[undefined] and [also][missing]\n", "")]
+    public void Reference_links_follow_commonmark_sequencing(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : expected.Split(','), Targets(body));
+    }
+
+    /// <summary>
+    /// A decision, not CommonMark: OKF cites sources with footnotes keyed to
+    /// <c>sources[].id</c> (§4.2, §5.1), so a bracket starting with <c>^</c> is a footnote,
+    /// never a reference link — commonmark.js, which has no footnotes, would read
+    /// <c>[^k][r]</c> as one link with text <c>^k</c>; here <c>[^k]</c> is the footnote and
+    /// <c>[r]</c> a shortcut of its own, as GitHub renders it. And a definition inside code
+    /// defines nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("See [text][^k].\n\n[^k]: /not-a-definition.md\n")]
+    [InlineData("A claim.[^r]\n\n[r]: /x.md\n")]
+    [InlineData("```\n[r]: /x.md\n```\n\n[r]\n")]
+    public void Footnotes_and_code_never_form_reference_links(string body)
+    {
+        Assert.Empty(Targets(body));
+    }
+
+    /// <summary>
+    /// Found by comparing against commonmark.js on random bodies: an escaped <c>\[</c>
+    /// opens no reference; a following <c>[^k]</c> is a footnote, so the text before it is
+    /// still a shortcut; and an angle-bracket destination holding a <c>&lt;</c> is invalid
+    /// even when that <c>&lt;</c> starts a tag the code pass blanked.
+    /// </summary>
+    [Theory]
+    [InlineData("\\[r] and [r]\n\n[r]: /r.md\n", "/r.md")]
+    [InlineData("See [r][^k].\n\n[r]: /r.md\n", "/r.md")]
+    [InlineData("[t](<a<b>) then [after](/after.md)\n", "/after.md")]
+    [InlineData("[t](<!--<[in](/in.md)-->) [after](/after.md)\n", "/after.md")]
+    public void Reference_and_angle_bracket_edge_cases_follow_commonmark(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Found by review of #105: a definition's destination has its backslash escapes
+    /// resolved, as an inline link's has, so the same file is reached either way.
+    /// </summary>
+    [Theory]
+    [InlineData("[a][r]\n\n[r]: a\\_b.md\n", "a_b.md")]
+    [InlineData("[a][r]\n\n[r]: <my\\_file.md>\n", "my_file.md")]
+    [InlineData("[a][r]\n\n[r]: a\\(b.md \"t\"\n", "a(b.md")]
+    [InlineData("[a][r]\n\n[r]: a\\b.md\n", "a\\b.md")]
+    public void Reference_definition_destinations_resolve_escapes(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Found by external audit of #105: a paragraph's lines lose their leading whitespace
+    /// (§4.8), so a definition may follow any spaces or tabs — the rest of a tab after
+    /// <c>&gt;</c> or a list marker, or the indentation of a continuation line — and it is
+    /// global wherever it stands (§4.7). Expected targets are commonmark.js 0.31.2's.
+    /// </summary>
+    [Theory]
+    [InlineData(">\t[x]: /\n\n[x]\n", "/")]
+    [InlineData("[x]\n\n>\t[x]: /\n", "/")]
+    [InlineData(">  \t[x]: /\n\n[x]\n", "/")]
+    [InlineData("- a\n\n \t[x]: /\n\n[x]\n", "/")]
+    [InlineData("[a]: /a\n    [b]: /b\n\n[b]\n", "/b")]
+    [InlineData("> [a]: /a\n>\t[b]: /b\n\n[b]\n", "/b")]
+    [InlineData(">\t\t[x]: /\n\n[x]\n", "")]
+    public void Reference_definitions_may_follow_spaces_and_tabs(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], Targets(body));
+    }
+
+    /// <summary>
+    /// A heading's visible text keeps what its code spans show and drops raw HTML, and its
+    /// bounds come from the line as written: a <c>#</c> inside a trailing code span is text,
+    /// not a closing sequence. The rest of a tab after <c>&gt;</c> is indentation.
+    /// </summary>
+    [Theory]
+    [InlineData("# `Worked example`\n", "`Worked example`", "Worked example")]
+    [InlineData("# Examples `#`\n", "Examples `#`", "Examples #")]
+    [InlineData("# <span>Examples</span> #\n", "<span>Examples</span>", "Examples")]
+    [InlineData(">\t# Worked example\n", "Worked example", "Worked example")]
+    public void Headings_read_as_they_render(string body, string text, string visible)
+    {
+        var heading = Assert.Single(LinkScanner.ExtractAtxHeadings(body));
+        Assert.Equal((text, visible), (heading.Text, heading.Visible));
+    }
+
+    /// <summary>
+    /// A setext underline does not make a heading of a paragraph that holds only link
+    /// reference definitions — there is no text left to head (commonmark.js) — so the
+    /// underline continues that paragraph, and a definition after it is no longer at the
+    /// paragraph's start: it defines nothing.
+    /// </summary>
+    [Fact]
+    public void A_setext_underline_under_definitions_only_continues_the_paragraph()
+    {
+        Assert.Equal(["/s.md"], Targets("[s]: /s.md\n-\n[r]: /r.md\n[t][r] and [s]\n"));
+    }
+
+    /// <summary>
+    /// A destination in angle brackets (CommonMark §6.3) may hold spaces and parentheses;
+    /// the brackets are not part of it. It used to be extracted with them, so the link
+    /// never resolved — a false broken link, and a dead <c>.md</c> link in the viewer.
+    /// </summary>
+    [Theory]
+    [InlineData("[a](</angle.md>)\n", "/angle.md")]
+    [InlineData("[b](<my file.md> \"title\")\n", "my file.md")]
+    [InlineData("[c](<x)y.md>)\n", "x)y.md")]
+    [InlineData("[r]\n\n[r]: </x y.md>\n", "/x y.md")]
+    public void Angle_bracket_destinations_lose_their_brackets(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Linear on hostile input: openers followed by unclosed or undefined labels, many
+    /// shortcuts against many definitions, and unclosed angle-bracket destinations.
+    /// </summary>
+    [Theory]
+    [InlineData("[a][", "[a]: /a.md\n\n")]
+    [InlineData("[a][b", "[a]: /a.md\n\n")]
+    [InlineData("[a] ", "[a]: /a.md\n\n")]
+    [InlineData("[a][]", "[a]: /a.md\n\n")]
+    [InlineData("[a](<", "")]
+    [InlineData("[x](<y", "")]
+    [InlineData("[", "[a]: /a.md\n\n")]
+    [InlineData("[[]", "[a]: /a.md\n\n")]
+    [InlineData("\\[a]", "[a]: /a.md\n\n")]
+    [InlineData("](<", "")]
+    public void Reference_and_angle_bracket_links_are_scanned_in_linear_time(string unit, string prefix)
+    {
+        var body = prefix + string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Targets(body);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
+
+    /// <summary>
+    /// An inline link destination as CommonMark defines it (§6.3): no spaces, parentheses
+    /// only when balanced or escaped, backslash escapes resolved, and a title only after
+    /// whitespace. Anything else after <c>](</c> is no link — the scan used to accept any
+    /// balanced parentheses and strip a trailing title. Expected results are commonmark.js's.
+    /// </summary>
+    [Theory]
+    [InlineData("[a](not a link)\n", null)]
+    [InlineData("[a](x y)\n", null)]
+    [InlineData("[a](x \"t\")\n", "x")]
+    [InlineData("[a](x 't' )\n", "x")]
+    [InlineData("[a](x (t))\n", "x")]
+    [InlineData("[a](x \"t\" y)\n", null)]
+    [InlineData("[a](x (t(u)))\n", null)]
+    [InlineData("[a](x(y))\n", "x(y)")]
+    [InlineData("[a](x(y)\n", null)]
+    [InlineData("[a](x\\)y)\n", "x)y")]
+    [InlineData("[a](\\(x)\n", "(x")]
+    [InlineData("[a]()\n", "")]
+    [InlineData("[a](  x  )\n", "x")]
+    public void Inline_link_destinations_follow_commonmark(string body, string? expected)
+    {
+        Assert.Equal(expected is null ? [] : [expected], Targets(body));
+    }
+
+    /// <summary>
+    /// A link never contains a link (§6.3): once an inner link forms, the brackets opened
+    /// before it can no longer form one — the scan used to keep the outer link and skip the
+    /// inner. An image is the exception, and may hold a link.
+    /// </summary>
+    [Theory]
+    [InlineData("[a [b](/x.md) c](/y.md)\n", "/x.md")]
+    [InlineData("[[a](/x.md)](/y.md)\n", "/x.md")]
+    [InlineData("![a [b](/x.md) c](/y.png)\n", "/y.png,/x.md")]
+    [InlineData("![[a](/x.md)](/y.png)\n", "/y.png,/x.md")]
+    public void A_link_inside_link_text_suppresses_the_outer_link(string body, string expected)
+    {
+        Assert.Equal(expected.Split(','), Targets(body));
+    }
+
+    /// <summary>
+    /// A link's text, destination and title may cross a line ending inside their paragraph
+    /// (§6.3), and never a paragraph boundary; the text is reported on one line.
+    /// </summary>
+    [Theory]
+    [InlineData("[a\nb](/x.md)\n", "/x.md")]
+    [InlineData("[a]( /x.md\n\"a title\")\n", "/x.md")]
+    [InlineData("[a](\n /x.md\n )\n", "/x.md")]
+    [InlineData("> [a\n> b](/x.md)\n", "/x.md")]
+    [InlineData("[a](/x\ny.md)\n", "")]
+    [InlineData("[a]\n(/x.md)\n", "")]
+    [InlineData("[a\n\nb](/x.md)\n", "")]
+    public void A_link_may_span_a_line_ending_within_its_paragraph(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], Targets(body));
+    }
+
+    [Fact]
+    public void A_link_text_spanning_a_line_ending_is_reported_on_one_line()
+    {
+        var link = Assert.Single(LinkScanner.ExtractLinks("See [the orders\ntable](/tables/orders.md).\n"));
+        Assert.Equal("the orders table", link.Text);
+    }
+
+    /// <summary>
+    /// A backslash-escaped bracket opens or closes nothing (§2.4) — the scan used to let
+    /// <c>\[</c> open an inline link — while an escaped backslash leaves the bracket live.
+    /// </summary>
+    [Theory]
+    [InlineData("\\[a](/x.md)\n", "")]
+    [InlineData("\\\\[a](/x.md)\n", "/x.md")]
+    [InlineData("[a\\](/x.md)\n", "")]
+    [InlineData("![a\\](/x.png) [b](/y.md)\n", "/y.md")]
+    public void Escaped_brackets_open_and_close_nothing(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Raw HTML and code spans are resolved in the same left-to-right pass as links, as
+    /// commonmark.js does: what follows a <c>]</c> that closes a link is its destination,
+    /// never a tag or a span, while after a <c>]</c> that closes nothing a tag hides what
+    /// it holds. Raised by Copilot on #105: a <c>&lt;</c> after any <c>](</c> used to be
+    /// read as a destination, so a link inside that tag's attribute was extracted.
+    /// Expected targets are commonmark.js 0.31.2's, separated by commas.
+    /// </summary>
+    [Theory]
+    [InlineData("foo](<a title=\"[in](/in.md)\">)\n", "")]
+    [InlineData("[a [b](c) ](<i title=\"[in](/in.md)\">)\n", "c")]
+    [InlineData("[x](<a title=\"[in](/in.md)\">)\n", "a title=\"[in](/in.md)\"")]
+    [InlineData("[x](<a b='x> \"t\") [y](/y.md)'>\n", "a b='x,/y.md")]
+    [InlineData("[a](x`y) [b](/b.md)`\n", "x`y,/b.md")]
+    [InlineData("[t][`a]`]\n\n[`a]: /b.md\n", "/b.md")]
+    [InlineData("[t][<b>]\n\n[<b>]: /b.md\n", "/b.md")]
+    public void Links_raw_html_and_code_spans_resolve_in_one_pass(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : expected.Split(','), Targets(body));
+    }
+
+    /// <summary>
+    /// What a link consumes after its text is not text, so a <c>[^k]</c> in its destination
+    /// is no citation; nor is one inside a tag that follows a <c>]</c> closing no link. A
+    /// footnote beside a link, or one followed by parentheses, still is.
+    /// </summary>
+    [Theory]
+    [InlineData("[t](a[^k]b)\n", "")]
+    [InlineData("[t](#<!X[^k])\n", "")]
+    [InlineData("foo](<a title=\"[^k]\">)\n", "")]
+    [InlineData("[t](/x.md) [^k]\n", "k")]
+    [InlineData("A claim.[^k](/i.md)\n", "k")]
+    public void Footnotes_in_link_destinations_are_not_citations(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], LinkScanner.ExtractFootnoteReferences(body));
+    }
+
+    /// <summary>
+    /// Linear on hostile input shaped for the bracket algorithm: destinations that never
+    /// balance or never end, and long runs of openers each followed by a link.
+    /// </summary>
+    [Theory]
+    [InlineData("[a](")]
+    [InlineData("[a](x(")]
+    [InlineData("[a]([a](")]
+    [InlineData("[[a](b)")]
+    [InlineData("![")]
+    [InlineData("[a](x \"")]
+    [InlineData("[a]( x\n")]
+    [InlineData("[a](<")]
+    [InlineData("`[a](<b>`")]
+    [InlineData("[a](<b c='")]
+    public void Bracket_algorithm_inputs_are_scanned_in_linear_time(string unit)
+    {
+        var body = "z" + string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "](y)\n";
 
         var watch = System.Diagnostics.Stopwatch.StartNew();
         Targets(body);

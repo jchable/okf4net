@@ -294,6 +294,19 @@ are the concrete entry points.
     deliberately outside git (so the suite stays at ~16 s and spawns no MSBuild), and the detached
     -HEAD case is covered by the one test that does build a git repository. The auto-detected
     branch name is verified by manual run only.
+  - **`LiftedMarkdown` mirrors a `LinkScanner` that no longer exists.** Its safety argument is
+    agreement with the consumer, not with CommonMark: `NeutralizeMarkdownLinks` toggles a code span
+    on every single backtick, per line, with no backslash awareness; `UnclosedFenceLine` replays a
+    fence loop without indentation or container rules; `LinkText` swaps backticks for `&#96;`
+    because the old scanner blanked to the end of a line. Since #101 and #105 the scanner matches
+    backtick runs, blanks raw HTML, reads containers and resolves links a paragraph at a time. So
+    the mirror can now manufacture a live link: on ``` `` a ` b `` [x](y) ``` it believes
+    `[x](y)` is still inside a span and leaves its `]` unescaped, while the scanner closes the span
+    and extracts the link. Its tests stay green because they pin the old rules
+    (`CodeConceptGeneratorTests`, `ConceptGeneratorTests` quote `BlankInlineCode` by name). The fix
+    re-derives each rule from the current scanner — or has the producer ask the scanner itself,
+    through `LinkScanner.ExtractLinks` on the text it emits — then checks the generated bundle. Not
+    started; found 2026-09-14 while reviewing #105.
 - **Known limitation: without `--repo-url`, `packages/` and `docs/` `resource` paths don't resolve
   against the bundle.** `producers/OkfProducer` records those families' `resource` relative to the
   *scanned repository* (e.g. `src/OKF4net/OKF4net.csproj`), which is the semantically correct
