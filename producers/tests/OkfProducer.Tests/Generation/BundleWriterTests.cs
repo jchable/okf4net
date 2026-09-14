@@ -23,6 +23,75 @@ public class BundleWriterTests
         new(ConceptId.Parse(id),
             OkfDocumentBuilder.ForType("Repository").Title("t").Description("d").Body("# t\n").Build());
 
+    private static GeneratedConcept NoteConcept(string id) =>
+        new(ConceptId.Parse(id),
+            OkfDocumentBuilder.ForType("Note").Title(id).Description("d").Body($"# {id}\n").Build());
+
+    /// <summary>
+    /// The finding this pins: <c>Path.GetFullPath</c> preserves a trailing separator on <c>--out</c>
+    /// (shell completion writes one routinely), and <c>BundlePaths.IsInside</c> used to compare against
+    /// a doubled separator no real path could start with -- so every staged concept was refused as
+    /// "leaves the bundle root through a symbolic link or junction" and the run wrote nothing at all,
+    /// even though nothing was linked. A trailing slash must write exactly what its absence writes.
+    /// </summary>
+    [Fact]
+    public void Write_into_an_out_path_with_a_trailing_separator_writes_the_same_concepts_as_without_it()
+    {
+        var concepts = new[] { SampleConcept(), NoteConcept("reports/one"), NoteConcept("reports/two") };
+
+        var withoutSlash = CreateTempDir();
+        var withSlash = CreateTempDir();
+        try
+        {
+            var plain = new BundleWriter().Write(withoutSlash, concepts, WritePolicy.RequireEmpty, UnrelatedRepoPath());
+            var slashed = new BundleWriter().Write(withSlash + Path.DirectorySeparatorChar, concepts, WritePolicy.RequireEmpty, UnrelatedRepoPath());
+
+            Assert.Empty(plain.Failures);
+            Assert.Empty(slashed.Failures);
+            Assert.Equal(plain.Written, slashed.Written);
+            Assert.True(File.Exists(Path.Combine(withSlash, "overview.md")));
+            Assert.True(File.Exists(Path.Combine(withSlash, "reports", "one.md")));
+            Assert.True(File.Exists(Path.Combine(withSlash, "reports", "two.md")));
+        }
+        finally
+        {
+            if (Directory.Exists(withoutSlash)) Directory.Delete(withoutSlash, recursive: true);
+            if (Directory.Exists(withSlash)) Directory.Delete(withSlash, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The second, quieter half of the same finding: <c>CreateStagingDirectory</c> used
+    /// <c>Path.GetDirectoryName(Path.GetFullPath(outPath))</c>, and for a trailing-slash <c>outPath</c>
+    /// that returns the bundle directory itself (the trailing separator reads as an empty final path
+    /// component), not its parent -- so the staging directory landed INSIDE the bundle it is documented
+    /// to sit beside. Exercised through the <c>internal</c> seam directly: <c>Write</c>'s own
+    /// <c>finally</c> always deletes the staging directory before returning, so nothing that only calls
+    /// <c>Write</c> can observe where it was created.
+    /// </summary>
+    [Fact]
+    public void CreateStagingDirectory_with_a_trailing_separator_on_out_lands_beside_the_bundle_not_inside_it()
+    {
+        var outPath = CreateTempDir();
+        Directory.CreateDirectory(outPath);
+        string? staging = null;
+        try
+        {
+            staging = BundleWriter.CreateStagingDirectory(outPath + Path.DirectorySeparatorChar);
+
+            var expectedParent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(outPath)));
+            Assert.Equal(expectedParent, Path.GetDirectoryName(staging));
+            Assert.False(
+                BundlePaths.IsInside(Path.TrimEndingDirectorySeparator(Path.GetFullPath(outPath)), staging),
+                $"staging directory '{staging}' was created inside the bundle at '{outPath}'.");
+        }
+        finally
+        {
+            if (staging is not null && Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+            Directory.Delete(outPath, recursive: true);
+        }
+    }
+
     [Fact]
     public void Write_to_a_missing_directory_creates_it_and_writes_all_concepts()
     {

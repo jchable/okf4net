@@ -674,7 +674,12 @@ public sealed class BundleWriter : IBundleWriter
     {
         try
         {
-            var root = Path.GetFullPath(repoPath);
+            // Trimmed for the same reason `BundlePaths.ResolveRoot` is: `Path.GetFullPath` preserves a
+            // trailing separator on `--repo dir/`, so `root + DirectorySeparatorChar` below would compare
+            // against a doubled separator no real candidate path can start with -- every file would read
+            // as escaping the repository, the conservative "still exists" branch would fire unconditionally,
+            // and a deleted file's concept would never be eligible for pruning.
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repoPath));
             var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
             return !candidate.StartsWith(root + Path.DirectorySeparatorChar, PathComparison) || File.Exists(candidate);
         }
@@ -1279,10 +1284,20 @@ public sealed class BundleWriter : IBundleWriter
     /// Creates the staging directory beside <paramref name="outPath"/>. The name carries a GUID rather
     /// than being derived from the bundle: it is transient and never reaches the output, so it needs
     /// uniqueness (two runs against one bundle must not share it), not determinism.
+    ///
+    /// <para><c>internal</c> rather than <c>private</c> so <c>BundleWriterTests</c> can assert directly
+    /// on where a trailing separator on <paramref name="outPath"/> lands the staging directory --
+    /// <c>Write</c>'s own <c>finally</c> always deletes it before returning, so nothing that only calls
+    /// <c>Write</c> can observe its transient location.</para>
     /// </summary>
-    private static string CreateStagingDirectory(string outPath)
+    internal static string CreateStagingDirectory(string outPath)
     {
-        var parent = Path.GetDirectoryName(Path.GetFullPath(outPath));
+        // Trimmed before GetDirectoryName, not after: `Path.GetDirectoryName("bundle/")` returns
+        // `"bundle"` itself (the trailing separator makes it look like there is an empty final
+        // component), not `"bundle"`'s parent -- so with `--out bundle/` the untrimmed call put the
+        // staging directory INSIDE the bundle it is meant to sit beside, defeating the "never inside
+        // it" guarantee documented on `StagingPrefix` above.
+        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(outPath)));
         var staging = Path.Combine(
             string.IsNullOrEmpty(parent) ? Path.GetTempPath() : parent,
             StagingPrefix + Guid.NewGuid().ToString("N"));

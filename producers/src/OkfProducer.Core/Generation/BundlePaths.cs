@@ -42,7 +42,15 @@ internal static class BundlePaths
     {
         try
         {
-            var full = Path.GetFullPath(bundleRoot);
+            // Trimmed, not just full-pathed: `Path.GetFullPath` PRESERVES a trailing separator
+            // (`"dir/"` -> `"dir/"`, `"dir"` -> `"dir"`), and `IsInside` below compares against
+            // `root + DirectorySeparatorChar` -- so an untrimmed root with `--out dir/` compares as
+            // `"dir/" + "/"`, which no real path under it can ever start with. Every candidate then
+            // reads as outside the root and is refused with the reparse-point message below, even
+            // though nothing was linked at all. `TrimEndingDirectorySeparator` leaves a bare drive or
+            // filesystem root (`C:\`, `/`) alone by design -- trimming those would change what they
+            // mean -- so this is safe to apply unconditionally.
+            var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleRoot));
             var info = new DirectoryInfo(full);
             if (info.LinkTarget is null)
             {
@@ -50,7 +58,7 @@ internal static class BundlePaths
             }
 
             return info.ResolveLinkTarget(returnFinalTarget: true) is { } target
-                ? Path.GetFullPath(target.FullName)
+                ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(target.FullName))
                 : null;
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)

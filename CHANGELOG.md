@@ -649,6 +649,12 @@ and this project adheres to
 
 ### Fixed
 
+- `okfgen generate --out dir/` (a trailing directory separator, as shell
+  completion writes it) wrote nothing and blamed a symbolic link; `--repo
+  dir/` never pruned a deleted file's concept; the staging directory landed
+  inside the bundle. All three were `Path.GetFullPath` preserving the
+  trailing separator, which then broke `BundlePaths`' and `BundleWriter`'s
+  own path comparisons against it (`producers/`).
 - The viewer sanitizer unwraps a disallowed element instead of flattening its
   subtree to text (a link or table inside `<details>`/`<div>` survives). It
   marks disallowed elements, then detaches every node bottom-up and
