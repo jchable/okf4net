@@ -1614,6 +1614,167 @@ Expected: the first prints `TRACE;DEBUG` (or similar) without `NET10_0`; the sec
 
 ---
 
+## Addendum 2026-09-14 — resumption after the stop at E2
+
+Execution was stopped after E2 because other worktrees had changed the same code. On resumption the user added, to this same wave: the three out-of-plan findings raised during execution (Phase H) and the external audit #2 of `bc3bf47` (Phase G). **Execution order: R1 → G1…G6 → H1…H3 → E3…E12 → F1.**
+
+User arbitrations (2026-09-14), binding on the tasks below:
+- PR #104 is merged into `dev` before R1 (done: `05fee2e`).
+- G4, duplicate keys: **reject everywhere** — receipt, attester verdict, the tool's parameter values, at every nesting level.
+- G4, numbers: **reject non-exact** — an integer literal must fit `long`; a non-integer must be a finite `double` that reads back as the same value.
+- G1: **return promptly** — a stage that ignores its token is abandoned (`WaitAsync`), and its background work stays bounded by the engine's own timeout; an outcome is never displayable after a cancellation or a timeout.
+- Phase H: decided **task by task with the user** — the controller stops before dispatching each H task.
+
+Already fixed before this branch (verified by code reading, no task): audit #2's output-ceiling truncation (#95, `exceeded the output ceiling`), timeout validated before `Process.Start` (#95), top-level `null` receipt (#95).
+
+## Phase R — Reconcile with dev
+
+### Task R1: Merge `origin/dev` (`05fee2e`) into the branch
+
+**Why a merge, not a rebase:** the ledger cites the SHAs of the 46 reviewed commits; a rebase would invalidate every one of them.
+
+**Files (the 9 textual conflicts `git merge-tree` reports):**
+- `src/OKF4net.Attestation.Containers/ContainerRuntimeProfile.cs`
+- `src/OKF4net.Attestation.Containers/ContainerAttester.cs`
+- `src/OKF4net.Attestation.Containers/SqlClientComputationExecutor.cs`
+- `src/OKF4net.Attestation.Containers/ContainerExecutionException.cs`
+- `src/OKF4net.Attestation.Containers/README.md`
+- `CHANGELOG.md`
+- `tests/OKF4net.Tests/Agents/OkfComputationToolsTests.cs`
+- `tests/OKF4net.Tests/Attestation.Containers/CliContainerEngineArgumentsTests.cs`
+- `tests/OKF4net.Tests/Attestation.Containers/SqlClientComputationExecutorTests.cs`
+
+Also (auto-merged, but will not compile): every `dev` test that sets `TmpfsMounts`, `ReadOnlyRootFilesystem`, `MemoryBytes`, `Cpus`, `PidsLimit` or `Timeout` directly on `ContainerRuntimeProfile` / `ContainerAttesterOptions` — `ContainerRuntimeProfileTests.cs` (~23), `ContainerAttesterTests.cs` (~4), `ContainerIntegrationTests.cs` (~3), `ScriptComputationExecutorTests.cs` (~2), `SqlClientComputationExecutorTests.cs` (1), `CliContainerEngineArgumentsTests.cs` (1).
+
+**Resolution rules (binding):**
+
+1. **`ContainerIsolation` stays the one home** of user / capabilities / no-new-privileges / read-only root / tmpfs mounts / the four ceilings (B2's reviewed design: one record so a hardening decision cannot reach two of the three container consumers and miss the third). `dev`'s per-property versions on the profile and the attester options are **not** reintroduced. What `dev` added moves into that record:
+   - `ContainerIsolation.TmpfsMounts` gets a validating init: `init => _tmpfsMounts = ScratchDirectory.ValidateMounts(value, nameof(TmpfsMounts))`, backing field defaulting to `["/tmp"]`. Keep `dev`'s doc text (first entry = the run's scratch = `TMPDIR`; absolute path with optional `:options`; empty list allowed on a profile) adapted to the record.
+   - `ContainerIsolation.ToRunSpec` applies `ScratchDirectory.Apply(environment, TmpfsMounts)` to the environment it puts in the spec. Every consumer therefore gets `TMPDIR` without repeating it — do not also call `Apply` at the call sites.
+   - `ContainerAttester` keeps `dev`'s constructor guards (both of them: read-only root with no mount; `ScratchDirectory.ReachesWritableDirectory` false on the applied environment) and `dev`'s environment snapshot, reading `options.Isolation.ReadOnlyRootFilesystem` / `options.Isolation.TmpfsMounts`. The class becomes a regular constructor + `_engine`/`_options` fields, as on `dev`. Keep `dev`'s doc comments, `Isolation`-qualified.
+   - `ContainerAttester.AttestAsync` builds its spec with `_options.Isolation.ToRunSpec(_options.Image, ["python3", "-c", Bootstrap], envelope, _options.Environment, "none")` and parses with `ReceiptParsing.ParseJson(result, "attester")` (B6) — not `dev`'s inline exit-code / `JsonSerializer` block. Keep `dev`'s Bootstrap text (it follows `TMPDIR`) and its visibility (`internal`, a `dev` test reads it).
+   - `SqlClientComputationExecutor` keeps HEAD's `profile.Isolation.ToRunSpec(...)` line, and `dev`'s Wrapper text **merged with** B3's `unquote(...)` / `(rows or [])` changes — both sides changed the Python; keep every change of both.
+2. **`ContainerExecutionException`**: HEAD's base class (`AttestationDiagnosticException`) **plus** `dev`'s `ToString()` override with the stream tails. Merge the class doc into one statement that is true of both: the `Message` is library-authored and may be rendered into `Reasons`; `Stdout`/`Stderr` — and therefore `ToString()` — are host-side only and never reach the model. Before writing that sentence, grep every `new ContainerExecutionException(` on the merged tree and confirm no message interpolates container output (the only interpolated text allowed is `JsonException.Message`, already covered by B4's newline neutralisation).
+3. **Tests**: keep **both** sides of every conflicting test file (HEAD's B2/B3/B4 tests and `dev`'s TMPDIR / stderr-not-rendered tests). Rewrite `dev`'s property usages onto `Isolation`, preserving what each test proves. **Attester idiom:** `new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = [...] } }` — a bare `Isolation = new() { ... }` silently resets the attester's smaller ceilings to the profile's defaults, which changes what the test exercises. `dev`'s `A_container_failure_does_not_render_the_containers_output_to_the_model` must keep passing alongside HEAD's `A_diagnostic_exceptions_message_is_rendered_in_the_error_line`.
+4. **README**: keep `dev`'s read-only / `TMPDIR` / attester-guard paragraphs and HEAD's `NetworkMode`-stays-on-the-profile paragraph; every property name is written as `Isolation.<Name>`.
+5. **CHANGELOG**: union of both `[Unreleased]` blocks, no entry dropped. `dev`'s entries naming `ContainerRuntimeProfile.TmpfsMounts` / `ContainerAttesterOptions.TmpfsMounts` (and any other moved property) are reworded to `ContainerIsolation.<Name>` (reached through `Isolation`), and B2's Breaking entry lists every property that moved, including the ones `dev` documented after `cee0c30`.
+6. **Auto-merged `src/OKF4net/Validate.cs`**: not a textual conflict, but `dev` (§8 index entries, §5.1 citation ids, heuristics) and C9 (`RecommendedFieldsFor`, concept-relative hint) both edited it — read the merged file once end to end and confirm neither side's diagnostics were lost.
+
+- [ ] **Step 1:** `git fetch origin && git merge --no-ff origin/dev` (expect the 9 conflicts above). Resolve per the rules. `dotnet build OKF4net.sln` → 0 warnings.
+- [ ] **Step 2:** `dotnet format OKF4net.sln --verify-no-changes`.
+- [ ] **Step 3:** `dotnet test OKF4net.sln --filter "Category!=ContainerIntegration"` → 0 failed; record the count.
+- [ ] **Step 4 (the risk the merge cannot show):** `dev`'s Meridian / TMPDIR integration tests have never run under B2's hardened defaults (uid `65534`, `--cap-drop ALL`, `no-new-privileges`). Start and seed the fixture with **all three** seeds (the class doc: `users`, `bundles/meridian_transit/references/schema.sql`, `typed`), set `OKF_DEMO_PG_CONN`, run `dotnet test tests/OKF4net.Tests --filter "Category=ContainerIntegration"` → **0 failed, 0 skipped**. A failure caused by the hardened defaults is reported, not papered over by relaxing a default — that is a user decision.
+- [ ] **Step 5:** `dotnet test producers/OkfProducer.sln` (the link scanner was rewritten on `dev`; the producer is outside CI) and `cd tools/viewer-security-check && npm test`.
+- [ ] **Step 6:** Commit the merge: `merge: bring dev (05fee2e) into the post-audit branch` with a body listing each conflict and its resolution rule.
+
+## Phase G — External audit #2 (target `bc3bf47`)
+
+### Task G1: Cancellation and `ComputationTimeout` never yield a displayable outcome, and return promptly
+
+**Finding (High):** `AttestationOrchestrator.RunStageAsync` checks the token only before a stage. A stage that ignores its token runs to completion and its result is used: with a 30 ms `ComputationTimeout` and an attester that sleeps 350 ms ignoring the token, `okf_run_computation` returned after 352 ms with `displayable: yes`; an attester that cancels the caller's token and returns `Passed` gave `IsCancellationRequested = true` and `Displayable = true`. Contradicts the CHANGELOG's `ComputationTimeout` entry ("wall-clock ceiling").
+
+**Files:** `src/OKF4net.Attestation/AttestationOrchestrator.cs` (`RunStageAsync`); `src/OKF4net.Agents/OkfBundleTools.cs` (`RunComputationAsync` only if the tests show it needs a change); tests `tests/OKF4net.Tests/Attestation/AttestationOrchestratorTests.cs`, `tests/OKF4net.Tests/Agents/OkfComputationToolsTests.cs`; `CHANGELOG.md`.
+
+**Required behaviour:**
+- `RunStageAsync` awaits the stage through `.AsTask().WaitAsync(cancellationToken)`, so a token-ignoring stage is abandoned the moment the token fires, and calls `cancellationToken.ThrowIfCancellationRequested()` again **after** the await, so a stage that completes (or cancels the token itself) after cancellation never contributes a result.
+- An abandoned stage task is observed (a continuation that reads `task.Exception` on `OnlyOnFaulted`) so its later fault cannot surface as an unobserved task exception. Its work is not otherwise stopped — the container engine's own `Timeout` bounds it; say so in the doc comment.
+- The resulting `OperationCanceledException` keeps today's routing: the caller's own cancellation propagates to the caller; the tool's `ComputationTimeout` becomes the existing `displayable: no … timed out after` text.
+
+**Tests (each proven RED on the current code first):**
+1. Orchestrator: attester `await Task.Delay(350, CancellationToken.None)` then `Passed`; token cancelled after 30 ms → `RunAsync` throws `OperationCanceledException` in < 200 ms (generous bound; the RED case takes ≥ 350 ms).
+2. Orchestrator: attester that calls `cts.Cancel()` on the caller's source and returns `Passed` → throws `OperationCanceledException`, never returns an outcome.
+3. Same as 2 for the binder and the executor (a theory over the three stages).
+4. Tool: `ComputationTimeout = 30 ms`, token-ignoring attester sleeping 350 ms → rendered text starts with `displayable: no` and contains `timed out`, returned in < 200 ms.
+5. An abandoned stage that later throws does not raise `TaskScheduler.UnobservedTaskException` (force `GC.Collect(); GC.WaitForPendingFinalizers()` after the stage's delay).
+
+**CHANGELOG:** Fixed — a stage that ignores cancellation no longer keeps a run alive past `ComputationTimeout` or the caller's token, and can no longer turn a cancelled run into a displayable outcome (§10.5).
+
+### Task G2: Staleness is gated at the instant the outcome is released
+
+**Finding (Medium):** `RunAsync` reads `_clock.Now` once, before bind (`AttestationOrchestrator.cs` ~138), and reuses it after every stage. A run started one second before `stale_after` whose stages take two seconds is released as `Fresh` and displayable, although §5.5 says content is stale when `now >= stale_after`.
+
+**Files:** `src/OKF4net.Attestation/AttestationOrchestrator.cs`; tests `AttestationOrchestratorTests.cs`; `CHANGELOG.md`.
+
+**Required behaviour:** `stale` and `staleAdmitted` are computed from `_clock.Now` read **when the outcome is built** — immediately before step 9 for the success path, and at each `Fail(..., stale, ...)` after a stage for the failure paths (a helper taking the lifecycle and returning both values keeps it to one line per site). No early refusal is added (out of scope: a run still executes a concept that is already stale).
+
+**Tests:** `FixedClock` is immutable, so add a small test-only mutable `IOkfClock` in the test file; the attester advances it from `stale_after - 1 s` to `stale_after + 1 s` → `Stale == StaleState.Stale`, `Displayable == false` under `StalePolicy.Strict` (`Use` admits everything); the same with the clock left before `stale_after` → `Fresh`, displayable. A failure after the clock advanced reports `Stale`. RED first on the current code.
+
+**CHANGELOG:** Fixed — staleness (§5.5) is evaluated when the result is released, not when the run started.
+
+### Task G3: Container stdout that is not valid UTF-8 fails the stage
+
+**Finding (Medium):** `CliContainerEngine` decodes stdout with a replacement-fallback `UTF8Encoding`: a container writing `b'{"x":"\xff"}'` produces a receipt `{"x":"\uFFFD"}` — the engine silently rewrote the data the attester authenticates.
+
+**Files:** `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (stdout decoding, `ReadBoundedAsync`); tests `CliContainerEngineRunTests.cs` and a real-Docker case in `ContainerIntegrationTests.cs`; `CHANGELOG.md`.
+
+**Required behaviour:**
+- stdout is decoded strictly (`new UTF8Encoding(false, throwOnInvalidBytes: true)`). An invalid sequence makes the run a `ContainerExecutionException("container stdout was not valid UTF-8", …)`.
+- **The pipe keeps being drained after an invalid sequence** (discarding), exactly as the output ceiling does after truncation — a reader that stops reading blocks the child on a full pipe and turns the error into a timeout. The invalid-UTF-8 check is reported after the process exits, like the ceiling check; if both happen, either message is acceptable but the stage fails.
+- stderr keeps the lenient decoder: it is host-side diagnostics, never authenticated, and a strict decoder there would hide the very traceback a host needs. Say so in a comment.
+- `ReadBoundedAsync`'s contract (the `maxChars` ceiling, `Truncated`) is unchanged for valid input.
+
+**Tests:** unit test on `ReadBoundedAsync` (or its replacement) over a `MemoryStream` containing a valid prefix, `0xFF`, then more than 64 KiB of valid bytes → reports invalid **and** consumed the whole stream; valid multi-byte UTF-8 split across the 8192-char buffer boundary still decodes exactly (guards against a decoder that throws on a split sequence). Integration: `python3 -c "import sys; sys.stdout.buffer.write(b'{\"x\":\"\\xff\"}')"` → stage fails with the UTF-8 message.
+
+**CHANGELOG:** Fixed — invalid UTF-8 on a container's stdout fails the stage instead of being replaced with U+FFFD in the receipt.
+
+### Task G4: Container JSON is parsed strictly — one object, no duplicate keys, only exact numbers
+
+**Finding (Medium):** duplicate top-level receipt keys are last-wins (a documented choice this task reverses by user arbitration); a nested duplicate escapes as a raw `ArgumentException` from `ToDictionary`; `1e400` becomes `+∞`; `9223372036854775809` is silently rounded to a `double`.
+
+**Files:**
+- `src/OKF4net.Attestation.Containers/Internal/ReceiptParsing.cs`, `Internal/JsonValues.cs` (receipt and attester verdict — `ContainerAttester` parses through `ReceiptParsing.ParseJson` after R1);
+- `src/OKF4net.Agents/Internal/ParameterValues.cs` and its call site in `OkfBundleTools.RunComputationAsync`;
+- tests `tests/OKF4net.Tests/Attestation.Containers/ReceiptParsingTests.cs`, `JsonValuesTests.cs`, `ContainerAttesterTests.cs`, `tests/OKF4net.Tests/Agents/OkfComputationToolsTests.cs`;
+- `CHANGELOG.md`.
+
+**Required behaviour:**
+- **Duplicates:** parse with `new JsonDocumentOptions { AllowDuplicateProperties = false }` (.NET 10). A duplicate at any depth → `ContainerExecutionException("<stage> stdout had a duplicate JSON property", …)` — the `JsonException` is caught in `ParseJson` like any other parse error; do not interpolate its message if it quotes the property name (bundle-authored text): use the fixed wording. Remove the "last-wins" comment and replace it with the reason for rejecting (two readers of the same receipt can retain different values).
+- **Numbers**, one shared rule in `JsonValues` for receipt and verdict: a literal with no `.`/`e`/`E` is an integer and must satisfy `TryGetInt64` → `long`, else reject; any other literal must parse to a finite `double` whose shortest round-trip form (`d.ToString("R", CultureInfo.InvariantCulture)`) denotes the same decimal value as the literal (compare as `decimal` when both fit; otherwise compare normalised mantissa digits + exponent) → `double`, else reject. Rejection → `ContainerExecutionException("<stage> stdout had a number that cannot be represented exactly", …)`. `JsonValues` never throws anything but that exception; its nested objects are built with indexer assignment (duplicates are already rejected by the parser).
+- **Tool parameters:** `ParameterValues` applies the same number rule and rejects nested duplicates. The JSON of `parameterValues` itself is deserialized by Microsoft.Extensions.AI before this code sees it, so a duplicate **top-level** parameter name is outside its reach — say so in its doc comment rather than claiming it. A rejection returns the tool's `Error: …` text; it must not throw out of `RunComputationAsync` (today `Normalize` runs outside the try/catch — move it inside or catch its exception).
+- The number rule lives once. `OKF4net.Agents` does not reference `OKF4net.Attestation.Containers`, so put the shared normaliser in `OKF4net.Attestation` as an `internal` type with `InternalsVisibleTo` for `OKF4net.Attestation.Containers` and `OKF4net.Agents`, and make both callers use it. The exception type each caller raises stays its own.
+
+**Tests (table-driven, RED first where the current code accepts):** `{"a":1,"a":2}` rejected; `{"a":{"b":1,"b":2}}` rejected (not `ArgumentException`); `[{"a":1,"a":1}]` nested in an array rejected; `1e400`, `-1e400`, `1e-400` rejected; `9223372036854775808` rejected, `9223372036854775807` and `-9223372036854775808` → `long`; `0.1`, `1234.56`, `1.5e3`, `1e308`, `5e-324` → `double`; `0.10000000000000000001` rejected; the verdict path rejects a duplicate `passed`; the tool path returns `Error:` for `{"n": 1e400}` and for a nested duplicate, and still accepts `{"n": 42}` as `long`.
+
+**CHANGELOG:** Breaking (unreleased container runtime) — receipts and verdicts with duplicate JSON properties, or numbers that cannot be represented exactly, now fail the stage instead of being silently resolved (last-wins, rounding, infinity).
+
+### Task G5: One short deadline bounds teardown after a timeout
+
+**Finding (Medium, partly fixed by #95):** teardown after a timeout runs `engine kill` bounded by `KillTimeout = 5 s` per attempt, with one retry; a slow but responsive `kill` (750 ms per call) stretched a 30 ms timeout to ~1.74 s, and the worst case today is ~5 s + delay + a second attempt.
+
+**Files:** `src/OKF4net.Attestation.Containers/CliContainerEngine.cs` (`KillContainerAsync`); tests `CliContainerEngineRunTests.cs`; `CHANGELOG.md`.
+
+**Required behaviour:** replace the per-attempt bound with **one teardown budget of 3 s** for the whole of `KillContainerAsync` (both attempts and the delay between them); the retry runs only if at least 500 ms of the budget remain; the local `Process.Kill(entireProcessTree: true)` still follows. Document the number and why (a healthy engine answers `kill` well inside it; a daemon that has gone away must not turn the promised timeout into a hang).
+
+**Tests:** extend the existing fake-engine test at `CliContainerEngineRunTests.cs:73`: a fake `kill` that takes 750 ms and fails → total elapsed after a 30 ms timeout < 3.5 s and the retry happened; a fake `kill` that hangs → total < 3.5 s and no retry. RED first against the current 5 s per-attempt bound (the hanging case exceeds 5 s).
+
+**CHANGELOG:** Fixed — teardown after a container timeout is bounded by a single 3-second budget instead of 5 seconds per kill attempt.
+
+### Task G6: Regression test for audit #2's JSON-parameter reproduction
+
+**Finding (High, fixed by B1):** `okf_run_computation` invoked with `{"parameterValues":{"n":42}}` against `ContainerAttestationRuntime` with an `integer` parameter threw `ArgumentException` in the binder, executor never called.
+
+**Files:** `tests/OKF4net.Tests/Agents/OkfComputationToolsTests.cs` only.
+
+**Required behaviour:** one test that reproduces the audit's exact path — the tool invoked **through its `AIFunction`** with JSON arguments (as `AIFunctionExposureTests` does), a `ContainerAttestationRuntime` built on a `FakeContainerEngine`, a concept declaring `n` as `integer` — and asserts the fake engine received exactly one executor run whose parameter envelope carries `42` as an integer. Prove it RED by temporarily removing the `ParameterValues.Normalize` call (revert the removal; do not commit it).
+
+**CHANGELOG:** none (test only).
+
+## Phase H — Out-of-plan findings (each task decided with the user before dispatch)
+
+### Task H1: Link guards fail closed when a reparse point cannot be inspected (security)
+
+**Finding (pre-existing, executed by a D3 reviewer):** `ReparsePoints.IsReparsePoint` (`src/OKF4net/Internal/ReparsePoints.cs` ~58) returns `false` on `IOException` / `UnauthorizedAccessException`. A junction carrying a deny ACE was treated as "not a link", and `okf-render` wrote outside `--out`. The same predicate backs `BundleConceptWriter`'s write guard and `OKF4net.Catalog`.
+
+**Scope to settle with the user before dispatch:** a strict fail-closed variant for guard callers only (render, writer, catalog write paths) vs. changing the predicate for every caller (loading would then refuse unreadable entries). Tests must reproduce the executed escape (deny-ACE junction, Windows-only, skipped elsewhere) and prove it RED. Adversarial executed review required.
+
+### Task H2: `okf index dir\` writes the root `index.md`
+
+**Finding:** with a trailing separator, `IndexGenerator` (`src/OKF4net/IndexGenerator.cs` ~184 / ~400) computes the root's parent as the bundle itself and omits the root `index.md` — the library half of E1. **Scope to settle with the user:** normalise in `IndexGenerator` (every caller) vs. in the CLI only.
+
+### Task H3: Frontmatter closing fence and YAML anchors match what the docs say
+
+**Findings:** `OkfDocument.Parse` accepts an indented `---` as the closing fence (an undocumented divergence from §3); YAML anchors/aliases parse as plain strings although CLAUDE.md says the subset rejects them. **Scope to settle with the user, per finding:** fix the parser (may refuse bundles that load today) vs. document the divergence (`docs/spec-conformance/`) and correct CLAUDE.md. Adversarial executed review required for any parser change.
+
 ## Phase F — Close
 
 ### Task F1: Full verification, CHANGELOG read-through, PR
