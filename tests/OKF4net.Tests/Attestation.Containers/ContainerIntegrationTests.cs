@@ -136,7 +136,10 @@ public class ContainerIntegrationTests
     /// <list type="bullet">
     /// <item><c>capped-fare</c> runs on the <c>Script</c> runtime with the network off,
     /// and its attester <b>recomputes</b> the fare-capping policy from the run's own
-    /// inputs. A pass there is evidence about the number.</item>
+    /// inputs, per-trip split included. A pass there is evidence about the numbers —
+    /// but this test only ever feeds it the correct split, so it cannot show the
+    /// attester rejects a wrong one; that is
+    /// <see cref="Meridian_fare_cap_attester_rejects_a_per_trip_split_in_the_wrong_order"/>.</item>
     /// <item><c>daily-ridership</c> runs on <c>SqlClient</c> against a real Postgres,
     /// and its attester can only check invariants of the query's shape — because
     /// <c>executed_sql</c> is echoed by this host's own wrapper.</item>
@@ -196,6 +199,71 @@ public class ContainerIntegrationTests
         var json = System.Text.Json.JsonSerializer.Serialize(row);
         Assert.Contains("\"completed_trips\":5", json, StringComparison.Ordinal);
         Assert.Contains("\"distinct_riders\":2", json, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The guard behind the claim that <c>meridian_transit</c>'s <c>fare_cap.py</c>
+    /// "recomputes the policy". The end-to-end test above cannot make that claim: it
+    /// runs the sanctioned script, which always reports the correct split, so it
+    /// stayed green while the attester checked only totals and would have passed a
+    /// wrong statement.
+    ///
+    /// Here the executor is replaced by one reporting a <b>wrong</b> per-trip split —
+    /// <c>[0, 250, 250, 200]</c> for four 250 fares against a 700 cap — that agrees
+    /// with the policy on every order-blind property: it charges 700, waives 300,
+    /// sums to the total, has one charge per trip, and keeps each charge within its
+    /// own fare. Only the sequential order is wrong (the policy says
+    /// <c>[250, 250, 200, 0]</c>). Everything else is real: the bundle as it ships,
+    /// its attester resolved by the orchestrator under §6.2, the real
+    /// <see cref="AllowlistParameterBinder"/>, and the real
+    /// <see cref="ContainerAttester"/> running the script in Docker.
+    ///
+    /// The correct split is run first through the same wiring as a control, so a
+    /// failing verdict on the wrong one cannot come from an attester that fails
+    /// everything.
+    /// </summary>
+    [SkippableFact]
+    public async Task Meridian_fare_cap_attester_rejects_a_per_trip_split_in_the_wrong_order()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var bundle = Bundle.Load(Path.Combine(TestPaths.RepoRoot(), "bundles", "meridian_transit"));
+        var engine = new CliContainerEngine();
+        var binder = new AllowlistParameterBinder();
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions());
+
+        async Task<AttestationOutcome> AttestSplit(params long[] perTrip)
+        {
+            var runtime = new Tests.Attestation.FakeRuntime
+            {
+                BindFunc = (contract, computation, values, ct) => binder.BindAsync(contract, computation, values, ct),
+                ExecuteFunc = (_, _, _) => ValueTask.FromResult(new Receipt(new Dictionary<string, object?>
+                {
+                    ["charged_cents"] = 700L,
+                    ["waived_cents"] = 300L,
+                    ["per_trip_cents"] = perTrip.Cast<object?>().ToList(),
+                })),
+                AttestFunc = (context, ct) => attester.AttestAsync(context, ct),
+            };
+            var orchestrator = new AttestationOrchestrator(
+                new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["python"] = runtime }));
+
+            return await orchestrator.RunAsync(
+                bundle,
+                ConceptId.Parse("computations/capped-fare"),
+                new Dictionary<string, object?> { ["fares_cents"] = "[250,250,250,250]", ["cap_cents"] = 700 });
+        }
+
+        var correct = await AttestSplit(250, 250, 200, 0);
+        Assert.True(correct.Displayable, string.Join("; ", correct.Reasons));
+        Assert.True(correct.Verdict?.Passed);
+
+        var wrong = await AttestSplit(0, 250, 250, 200);
+        Assert.Null(wrong.Error);
+        Assert.True(wrong.ReceiptShapeOk);
+        Assert.False(wrong.Displayable);
+        Assert.False(wrong.Verdict?.Passed ?? true, "the attester passed a per-trip split in the wrong order");
+        Assert.Contains("sequential split", wrong.Verdict!.Value.Detail, StringComparison.Ordinal);
     }
 
     [SkippableFact]

@@ -100,8 +100,10 @@ of coverage:
   database, so it runs with the network off.
 
 **Read the two attesters together; the contrast is the lesson.** `fare_cap.py`
-*recomputes* the policy from the run's own inputs, so a pass is evidence about the
-number being displayed. `ridership_shape.py` can only check invariants of the
+*recomputes* the policy from the run's own inputs — the full sequential per-trip
+split, not only the day's total — and fails unless the receipt matches it element
+for element, so a pass is evidence about the numbers being displayed, including what
+each trip was charged. `ridership_shape.py` can only check invariants of the
 query's shape, and its docstring says why: `executed_sql` is echoed back by the
 host's own wrapper, and Postgres mints no equivalent of BigQuery's `job_id` for a
 consumer to resolve independently. Same bundle, same host, two genuinely different
@@ -114,7 +116,10 @@ instead of 5, and ignoring `service_date` gives 7 instead of 5.
 
 `ContainerIntegrationTests.Meridian_transit_bundle_runs_both_runtimes_end_to_end`
 runs this bundle as it ships — not a fixture shaped to suit an assertion — through
-both runtimes against real Docker.
+both runtimes against real Docker. It only ever hands `fare_cap.py` the correct
+split, so it cannot show the attester rejects a wrong one;
+`ContainerIntegrationTests.Meridian_fare_cap_attester_rejects_a_per_trip_split_in_the_wrong_order`
+does, feeding it `[0, 250, 250, 200]` through the real `ContainerAttester`.
 
 ## Attestation Containers demo
 
