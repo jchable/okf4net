@@ -103,4 +103,122 @@ public class ContainerAttesterTests
         Assert.Equal("Ada", values.GetProperty("name").GetString());
         Assert.False(values.TryGetProperty("undeclared", out _));
     }
+
+    private static readonly Receipt EmptyReceipt = new(new Dictionary<string, object?>());
+
+    private const string PassingAttester = "def attest(**_):\n    return {}\n";
+
+    /// <summary>
+    /// The default must keep behaving exactly as before the fix: <c>/tmp</c> mounted,
+    /// and the bootstrap's temp module written there — now because <c>TMPDIR</c> says
+    /// so rather than because the Python assumed it.
+    /// </summary>
+    [Fact]
+    public async Task Points_TMPDIR_at_the_default_tmp_mount()
+    {
+        var engine = new FakeContainerEngine();
+        await new ContainerAttester(engine, new ContainerAttesterOptions()).AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.Equal(["/tmp"], engine.LastSpec!.TmpfsMounts);
+        Assert.Equal("/tmp", engine.LastSpec.Environment["TMPDIR"]);
+    }
+
+    /// <summary>
+    /// The defect this pins: <c>TmpfsMounts</c> was documented as configurable, but the
+    /// bootstrap's <c>NamedTemporaryFile</c> wrote to <c>/tmp</c> whatever was mounted, so
+    /// <c>["/scratch"]</c> under a read-only root failed every attestation. The first
+    /// mount is the scratch directory; the rest are mounted and left alone. The
+    /// executable half of this guard is
+    /// <c>ContainerIntegrationTests.A_custom_tmpfs_mount_with_no_tmp_is_honoured_by_the_script_executor_and_the_attester</c>.
+    /// </summary>
+    [Fact]
+    public async Task Points_TMPDIR_at_the_first_configured_mount_not_at_tmp()
+    {
+        var engine = new FakeContainerEngine();
+        var options = new ContainerAttesterOptions { TmpfsMounts = ["/scratch", "/var/tmp"] };
+        await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.True(engine.LastSpec!.ReadOnlyRootFilesystem);
+        Assert.Equal(["/scratch", "/var/tmp"], engine.LastSpec.TmpfsMounts);
+        Assert.Equal("/scratch", engine.LastSpec.Environment["TMPDIR"]);
+    }
+
+    /// <summary>
+    /// <c>--tmpfs</c> takes <c>path[:options]</c>. The options belong on the mount; a
+    /// <c>TMPDIR</c> of <c>/scratch:size=64m</c> names a directory that does not exist,
+    /// and Python's <c>tempfile</c> would quietly skip it and fall back to <c>/tmp</c>.
+    /// </summary>
+    [Fact]
+    public async Task TMPDIR_is_the_mount_path_without_its_engine_options()
+    {
+        var engine = new FakeContainerEngine();
+        var options = new ContainerAttesterOptions { TmpfsMounts = ["/scratch:size=64m,mode=1777"] };
+        await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.Equal(["/scratch:size=64m,mode=1777"], engine.LastSpec!.TmpfsMounts);
+        Assert.Equal("/scratch", engine.LastSpec.Environment["TMPDIR"]);
+    }
+
+    /// <summary>A <c>TMPDIR</c> the host set explicitly is a decision, not a gap to fill.</summary>
+    [Fact]
+    public async Task A_TMPDIR_the_host_set_wins_over_the_derived_one()
+    {
+        var engine = new FakeContainerEngine();
+        var options = new ContainerAttesterOptions
+        {
+            TmpfsMounts = ["/scratch", "/work"],
+            Environment = new Dictionary<string, string> { ["TMPDIR"] = "/work" },
+        };
+        await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.Equal("/work", engine.LastSpec!.Environment["TMPDIR"]);
+    }
+
+    /// <summary>
+    /// The bootstrap writes a temp file on every run, so a read-only root with nothing
+    /// mounted can never attest anything. That is caught when the attester is built,
+    /// not discovered as a Python traceback after the executor already ran the
+    /// computation — against a live database, for a SqlClient profile.
+    /// </summary>
+    [Fact]
+    public void A_read_only_root_with_no_tmpfs_mount_is_rejected_when_the_attester_is_built()
+    {
+        var engine = new FakeContainerEngine();
+        var ex = Assert.Throws<ArgumentException>(
+            () => new ContainerAttester(engine, new ContainerAttesterOptions { TmpfsMounts = [] }));
+
+        Assert.Equal("options", ex.ParamName);
+        Assert.Contains("TmpfsMounts", ex.Message, StringComparison.Ordinal);
+        Assert.Null(engine.LastSpec);
+    }
+
+    /// <summary>
+    /// With a writable root there is always somewhere to write, so no mount is fine —
+    /// and with no mount there is no scratch to point <c>TMPDIR</c> at, so the image's
+    /// own default stands.
+    /// </summary>
+    [Fact]
+    public async Task No_tmpfs_mount_is_allowed_when_the_root_is_writable_and_sets_no_TMPDIR()
+    {
+        var engine = new FakeContainerEngine();
+        var options = new ContainerAttesterOptions { ReadOnlyRootFilesystem = false, TmpfsMounts = [] };
+        await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.False(engine.LastSpec!.Environment.ContainsKey("TMPDIR"));
+    }
+
+    /// <summary>
+    /// A SOURCE-TEXT SMOKE CHECK, not proof: xunit cannot execute the Python in
+    /// <see cref="ContainerAttester.Bootstrap"/>. It only pins that the text never names
+    /// a directory, so the temp module goes wherever <c>TMPDIR</c> points. The executable
+    /// guard is
+    /// <c>ContainerIntegrationTests.A_custom_tmpfs_mount_with_no_tmp_is_honoured_by_the_script_executor_and_the_attester</c>,
+    /// run against real Docker.
+    /// </summary>
+    [Fact]
+    public void The_bootstrap_never_names_a_temp_directory_itself()
+    {
+        Assert.DoesNotContain("/tmp", ContainerAttester.Bootstrap, StringComparison.Ordinal);
+        Assert.DoesNotContain("dir=", ContainerAttester.Bootstrap, StringComparison.Ordinal);
+    }
 }

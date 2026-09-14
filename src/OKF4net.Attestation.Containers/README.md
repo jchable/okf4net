@@ -98,7 +98,24 @@ hardening: it is the one writable path the stages genuinely need — the atteste
 bootstrap writes the bundle's module there before importing it, and the SQL
 wrapper installs its driver there — named explicitly instead of leaving the
 whole image writable. Both `ReadOnlyRootFilesystem` and `TmpfsMounts` are on the
-profile if a host needs different paths.
+profile (and on `ContainerAttesterOptions`) if a host needs different paths.
+
+A different path is honoured, not just mounted: the **first** `TmpfsMounts`
+entry is passed into every container as **`TMPDIR`**, and nothing inside the
+containers names `/tmp` itself — the attester bootstrap's temp module, pip's
+own working files and the SQL wrapper's `--target` all follow `TMPDIR`. So
+`TmpfsMounts = ["/scratch"]` works with `/tmp` left read-only. A `TMPDIR` the
+host sets in `Environment` wins over the derived one. Each entry must be an
+absolute container path, optionally with engine options (`/scratch:size=64m`);
+anything else is rejected when the profile is built.
+
+An empty `TmpfsMounts` under a read-only root is allowed on a
+`ContainerRuntimeProfile` — a script that writes nothing, or a `SqlClient` image
+with the driver vendored in, needs no scratch, and that is the tightest
+configuration available (a bare Python `SqlClient` image then has nowhere to
+install its driver, and fails). It is **rejected** on `ContainerAttesterOptions`,
+when the `ContainerAttester` is constructed: the bootstrap writes a temp file on
+every run, so that attester could never attest anything.
 
 ## Limitations in this version
 
