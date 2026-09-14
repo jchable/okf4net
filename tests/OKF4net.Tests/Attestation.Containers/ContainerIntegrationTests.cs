@@ -300,6 +300,10 @@ public class ContainerIntegrationTests
         Assert.True(capped.Displayable, Why(capped));
         Assert.Equal(700, Convert.ToInt32(capped.Receipt!.Fields["charged_cents"], CultureInfo.InvariantCulture));
         Assert.Equal(300, Convert.ToInt32(capped.Receipt.Fields["waived_cents"], CultureInfo.InvariantCulture));
+        // The split is the order-dependent part of the result and what a rider's statement
+        // shows, so it is asserted here too rather than left to the attester alone: this
+        // test must still fail if the script and fare_cap.py ever drift wrong together.
+        Assert.Equal("[250,250,200,0]", System.Text.Json.JsonSerializer.Serialize(capped.Receipt.Fields["per_trip_cents"]));
 
         // The SqlClient half, against the seed data in references/schema.sql: on
         // 2026-09-10 five trips completed across two distinct riders — the two
