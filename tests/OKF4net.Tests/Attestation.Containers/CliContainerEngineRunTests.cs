@@ -9,9 +9,10 @@ namespace OKF4net.Tests.Attestation.Containers;
 /// <summary>
 /// The half of <see cref="CliContainerEngine"/> that spawns a process, exercised
 /// with no container engine at all: the "binary" is either absent or a throwaway
-/// script that hangs whatever it is asked. That is enough to pin the two teardown
-/// properties a real engine cannot be made to demonstrate on demand, and the
-/// output-cap accounting the real-Docker integration test then confirms end to end.
+/// script that hangs, or writes fixed bytes, whatever it is asked. That is enough to
+/// pin the two teardown properties a real engine cannot be made to demonstrate on
+/// demand, which decoder each output stream is wired to, and the output-cap and
+/// UTF-8 accounting the real-Docker integration tests then confirm end to end.
 /// </summary>
 public class CliContainerEngineRunTests
 {
@@ -84,7 +85,11 @@ public class CliContainerEngineRunTests
     [Fact]
     public async Task Invalid_utf8_is_reported_and_the_rest_of_the_stream_is_still_drained()
     {
-        var bytes = new List<byte>(Encoding.UTF8.GetBytes("{\"x\":\""));
+        // One whole read of valid text first, so the invalid byte lands in the second
+        // read: what the first read decoded is kept, and must come back exactly — no
+        // replacement character in it — while the second read, bad byte and all, is lost.
+        var completedRead = new string('b', CliContainerEngine.ReadBufferBytes);
+        var bytes = new List<byte>(Encoding.UTF8.GetBytes(completedRead + "{\"x\":\""));
         bytes.Add(0xFF);
         bytes.AddRange(Encoding.UTF8.GetBytes(new string('a', 100 * 1024)));
         using var stream = new MemoryStream(bytes.ToArray());
@@ -94,7 +99,7 @@ public class CliContainerEngineRunTests
         Assert.True(read.InvalidBytes);
         Assert.False(read.Truncated);
         Assert.Equal(stream.Length, stream.Position);
-        Assert.DoesNotContain('\uFFFD', read.Text);
+        Assert.Equal(completedRead, read.Text);
     }
 
     /// <summary>
@@ -153,6 +158,76 @@ public class CliContainerEngineRunTests
         Assert.True(read.Truncated);
     }
 
+    private static readonly string Bom = ((char)0xFEFF).ToString();
+
+    public static TheoryData<string, byte[], bool, string> ByteOrderMarkPlacements => new()
+    {
+        // Kills "skip every leading BOM": only the first is a byte-order mark.
+        { "two leading BOMs in one read", [0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, (byte)'{'], false, Bom + "{" },
+        // Kills "skip a U+FEFF at the start of every read": here the mid-stream one is
+        // the first character its own read decodes.
+        { "a mid-stream BOM, one byte per read", [(byte)'a', 0xEF, 0xBB, 0xBF, (byte)'b'], true, "a" + Bom + "b" },
+        // Kills "the first read ends the start of the stream even when it decoded
+        // nothing": the reads holding EF and BB decode no character at all.
+        { "a leading BOM split across one-byte reads", [0xEF, 0xBB, 0xBF, (byte)'a'], true, "a" },
+    };
+
+    /// <summary>
+    /// "One leading UTF-8 BOM, only at stream start" pinned against how the pipe
+    /// chunks its reads: a read boundary must neither make a later U+FEFF look leading
+    /// nor make a split leading BOM look like content.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ByteOrderMarkPlacements))]
+    public async Task Exactly_one_byte_order_mark_is_skipped_and_only_at_the_start_of_the_stream(
+        string placement, byte[] bytes, bool oneBytePerRead, string expected)
+    {
+        _ = placement;
+        using Stream stream = oneBytePerRead ? new OneBytePerReadStream(bytes) : new MemoryStream(bytes);
+
+        var read = await CliContainerEngine.ReadBoundedAsync(stream, CliContainerEngine.StrictUtf8, maxChars: 1024);
+
+        Assert.False(read.InvalidBytes);
+        Assert.Equal(expected, read.Text);
+    }
+
+    /// <summary>
+    /// The engine, not only the reader: stderr must reach the host leniently decoded.
+    /// Wiring stderr to the strict decoder would not fail any run — nothing consults
+    /// stderr's invalid-bytes flag — it would silently empty the traceback instead,
+    /// which is exactly what a host must never lose. The "engine" is a script that
+    /// copies a file holding a lone <c>0xFF</c> to stderr and exits 0.
+    /// </summary>
+    [Fact]
+    public async Task Invalid_bytes_on_stderr_do_not_fail_a_run_and_reach_the_host_replaced()
+    {
+        using var tmp = new TempDir();
+        var engine = new CliContainerEngine(ByteWritingEngine(tmp, [(byte)'a', 0xFF, (byte)'b'], toStderr: true, exitCode: 0));
+
+        var result = await engine.RunAsync(Spec(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("a" + (char)0xFFFD + "b", result.Stderr);
+    }
+
+    /// <summary>
+    /// The CI-visible half of the real-Docker
+    /// <c>ContainerIntegrationTests.A_container_whose_stdout_is_not_valid_utf8_fails_the_stage</c>:
+    /// stdout wired to the strict decoder, and the failure carrying the exit code like
+    /// the output-ceiling message does.
+    /// </summary>
+    [Fact]
+    public async Task Invalid_bytes_on_stdout_fail_the_run_with_the_exit_code()
+    {
+        using var tmp = new TempDir();
+        var engine = new CliContainerEngine(ByteWritingEngine(tmp, [(byte)'{', 0xFF, (byte)'}'], toStderr: false, exitCode: 3));
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
+            async () => await engine.RunAsync(Spec(TimeSpan.FromSeconds(30))));
+
+        Assert.Equal("container stdout was not valid UTF-8 (exit code 3)", ex.Message);
+    }
+
     /// <summary>
     /// stderr is read with the lenient decoder on purpose: it is host-side diagnostics,
     /// never authenticated, and failing on it would hide the traceback a host needs.
@@ -194,6 +269,60 @@ public class CliContainerEngineRunTests
 
     private static MemoryStream StreamOver(string text) =>
         new(Encoding.UTF8.GetBytes(text));
+
+    /// <summary>
+    /// An "engine" that ignores its arguments, copies <paramref name="bytes"/> verbatim
+    /// to stdout or stderr, and exits with <paramref name="exitCode"/>. The bytes live
+    /// in a file the script copies (<c>type</c>/<c>cat</c>) rather than in the script
+    /// text, so no shell quoting stands between them and the pipe.
+    /// </summary>
+    private static string ByteWritingEngine(TempDir tmp, byte[] bytes, bool toStderr, int exitCode)
+    {
+        var payload = Path.Combine(tmp.Path, "payload.bin");
+        File.WriteAllBytes(payload, bytes);
+        var redirect = toStderr ? " 1>&2" : "";
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return tmp.Write("engine.cmd", $"@echo off\r\ntype \"{payload}\"{redirect}\r\nexit /b {exitCode}\r\n");
+        }
+
+        var path = tmp.Write("engine.sh", $"#!/bin/sh\ncat '{payload}'{redirect}\nexit {exitCode}\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return path;
+    }
+
+    /// <summary>A stream that hands out at most one byte per read, so every sequence is split.</summary>
+    private sealed class OneBytePerReadStream(byte[] bytes) : Stream
+    {
+        private readonly MemoryStream _inner = new(bytes);
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, Math.Min(count, 1));
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(_inner.Read(buffer.Span[..Math.Min(buffer.Length, 1)]));
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 
     private static string HangingEngine(TempDir tmp, int seconds)
     {

@@ -273,10 +273,16 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         if (stdout.InvalidBytes)
         {
             // Reported after exit, like the ceiling: the reader kept draining past the
-            // bad bytes so the child could finish. stdout.Text is only the valid prefix
-            // decoded before them, and goes to the host-side Stdout property -- never
-            // into the message.
-            throw new ContainerExecutionException("container stdout was not valid UTF-8", stdout.Text, stderr.Text);
+            // bad bytes so the child could finish. stdout.Text holds only what was
+            // decoded from reads completed before the one that contained them --
+            // possibly nothing, since how the pipe chunks its reads is not ours to
+            // choose -- and goes to the host-side Stdout property, never into the
+            // message. The message carries only the exit code, an int, like the
+            // ceiling's.
+            throw new ContainerExecutionException(
+                $"container stdout was not valid UTF-8 (exit code {process.ExitCode})",
+                stdout.Text,
+                stderr.Text);
         }
 
         return new ContainerRunResult(process.ExitCode, stdout.Text, stderr.Text);
@@ -439,7 +445,12 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     /// the rest of the stream is read and discarded, exactly as after truncation.
     /// The decoder is flushed at end of stream, so a sequence cut off by the end is
     /// invalid too. <see cref="BoundedRead.Text"/> then holds only what was decoded
-    /// before the invalid bytes.
+    /// from reads completed <i>before</i> the read that contained the invalid bytes: a
+    /// throwing <c>GetChars</c> yields nothing for its buffer, so valid bytes ahead of
+    /// the bad ones in that same read are lost with them. How much survives — and so
+    /// whether <see cref="BoundedRead.Truncated"/> was reached first — depends on how
+    /// the pipe chunked its reads, and may be nothing: diagnostics only, never a
+    /// receipt.
     /// </para>
     /// <para>
     /// One leading UTF-8 byte-order mark is skipped, as the <see cref="StreamReader"/>

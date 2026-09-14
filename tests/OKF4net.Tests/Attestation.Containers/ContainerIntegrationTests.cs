@@ -842,7 +842,7 @@ public class ContainerIntegrationTests
             Timeout: TimeSpan.FromSeconds(60));
 
         var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await engine.RunAsync(spec));
-        Assert.Equal("container stdout was not valid UTF-8", ex.Message);
+        Assert.Equal("container stdout was not valid UTF-8 (exit code 0)", ex.Message);
     }
 
     /// <summary>
