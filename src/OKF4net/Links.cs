@@ -218,9 +218,19 @@ public static class LinkScanner
     {
         var links = new List<ConceptLink>();
         var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (raw, blanked) in CodeFreeLinePairs(body, definitions))
+        var blocks = new List<List<(int Index, int Offset)>>();
+        var lines = CodeFreeLinePairs(body, definitions, blocks);
+
+        // Inline content is read a paragraph at a time — past the container markers —
+        // since a link's text, destination or title may cross a line ending.
+        foreach (var block in blocks)
         {
-            ScanLineLinks(blanked, raw, links, definitions);
+            var blanked = string.Join('\n', block.Select(b => lines[b.Index].Blanked[b.Offset..]));
+            var raw = string.Join('\n', block.Select(b => lines[b.Index].Raw[b.Offset..]));
+            foreach (var (_, _, link) in new InlineLinks(blanked, raw, definitions).Scan())
+            {
+                links.Add(link);
+            }
         }
 
         return links;
@@ -429,7 +439,8 @@ public static class LinkScanner
                 continue;
             }
 
-            if (blanked[i] != '[' || new LineLinks(blanked.ToCharArray(), raw, definitions).At(i) is not { } p)
+            var first = blanked[i] == '[' ? new InlineLinks(blanked[i..], raw[i..], definitions).Scan().FirstOrDefault() : default;
+            if (first.Link is null || first.Start != 0)
             {
                 var containsLink = HasLink(blanked[i..], raw[i..], definitions);
                 var start = n;
@@ -444,8 +455,8 @@ public static class LinkScanner
                 continue;
             }
 
-            var link = p.Link;
-            var description = raw[p.Next..].Trim().TrimStart('-', '–', '—', ':').Trim();
+            var link = first.Link;
+            var description = raw[(i + first.End)..].Trim().TrimStart('-', '–', '—', ':').Trim();
 
             // A list item's paragraph continues onto the following lines, indented or
             // not, until a blank line or the start of another block — so a description
@@ -462,12 +473,8 @@ public static class LinkScanner
         return items;
     }
 
-    private static bool HasLink(string blankedLine, string rawLine, IReadOnlyDictionary<string, string> definitions)
-    {
-        var links = new List<ConceptLink>();
-        ScanLineLinks(blankedLine, rawLine, links, definitions);
-        return links.Count != 0;
-    }
+    private static bool HasLink(string blankedLine, string rawLine, IReadOnlyDictionary<string, string> definitions) =>
+        new InlineLinks(blankedLine, rawLine, definitions).Scan().Count != 0;
 
     /// <summary>
     /// The offset of a bullet list item's content when the line opens one (<c>*</c>,
@@ -589,7 +596,10 @@ public static class LinkScanner
     /// pass blanks is recorded in it — normalized label to destination, the first
     /// definition of a label winning — for reference links to resolve against.
     /// </summary>
-    private static List<(string Raw, string Blanked)> CodeFreeLinePairs(string body, Dictionary<string, string>? definitions = null)
+    private static List<(string Raw, string Blanked)> CodeFreeLinePairs(
+        string body,
+        Dictionary<string, string>? definitions = null,
+        List<List<(int Index, int Offset)>>? inlineBlocks = null)
     {
         var result = new List<(string, string)>();
         var containers = new List<BlockContainer>();
@@ -626,6 +636,7 @@ public static class LinkScanner
                 result[index] = (raw, string.Concat(raw.AsSpan(0, offset), blanked[k]));
             }
 
+            inlineBlocks?.Add([.. paragraph]);
             paragraph.Clear();
         }
 
@@ -843,6 +854,7 @@ public static class LinkScanner
             else if (TryParseAtxHeading(leaf, out _, out _) || ThematicBreak.IsMatch(leaf))
             {
                 EndParagraph();
+                inlineBlocks?.Add([(result.Count, inner.Offset)]);
                 result.Add((line, string.Concat(line.AsSpan(0, inner.Offset), BlankInline(line[inner.Offset..]))));
                 continue;
             }
@@ -1844,193 +1856,310 @@ public static class LinkScanner
         c is (>= '!' and <= '/') or (>= ':' and <= '@') or (>= '[' and <= '`') or (>= '{' and <= '~');
 
     /// <summary>
-    /// Scans a single (code-free) line for <c>[text](dest)</c> links: at each <c>[</c>,
-    /// exactly what <see cref="ParseInlineLink"/> would match there, in linear time.
-    /// Calling <see cref="ParseInlineLink"/> at every <c>[</c> rescans to the end of the
-    /// line each time an opener never closes, which made a line of unclosed brackets
-    /// quadratic — on untrusted bundle content. The closer each opener would reach is
-    /// precomputed instead (<see cref="BalancedCloses"/>).
+    /// The links and images of one run of inline content — a paragraph, joined across its
+    /// line endings, or a heading — as CommonMark finds them (§6.3, §6.4), following
+    /// commonmark.js's bracket algorithm: every <c>[</c> and <c>![</c> is pushed as an opener,
+    /// and at each <c>]</c> the innermost opener becomes an inline link if a destination
+    /// follows, else a reference link if a label or its own text is defined. A link
+    /// deactivates every opener before it except images, so a link never contains a link.
+    /// A backslash-escaped bracket opens or closes nothing.
+    ///
+    /// Brackets are read on <paramref name="blanked"/>, where code spans and raw HTML are
+    /// already spaces; what follows a <c>]</c> — destination, title, label — is read on
+    /// <paramref name="raw"/>, since CommonMark looks ahead from the <c>]</c> before anything
+    /// after it is parsed. Every search for an end is a lookup in a table built once on
+    /// first use, so the scan is linear in the content however it nests.
     /// </summary>
-    private static void ScanLineLinks(string line, string raw, List<ConceptLink> output, IReadOnlyDictionary<string, string> definitions)
+    private sealed class InlineLinks(string blanked, string raw, IReadOnlyDictionary<string, string> definitions)
     {
-        if (line.IndexOf('[') < 0)
-        {
-            return;
-        }
+        /// <summary>Link text is kept for display only, so a pathological nest of images cannot make its copies quadratic.</summary>
+        private const int MaxTextLength = 2000;
 
-        var links = new LineLinks(line.ToCharArray(), raw, definitions);
-        var i = 0;
-        while (i < line.Length)
-        {
-            if (line[i] == '[' && links.At(i) is { } match)
-            {
-                output.Add(match.Link);
-                i = match.Next;
-                continue;
-            }
-
-            i++;
-        }
-    }
-
-    /// <summary>
-    /// The links of one code-free line, found at any <c>[</c> in constant amortized time:
-    /// every search for a closer — the balanced <c>]</c> or <c>)</c>, a label's <c>]</c>,
-    /// an angle-bracket destination's <c>&gt;</c>, a title's quote — is a lookup in a table
-    /// built once per line on first use, so no attempt rescans the line.
-    /// </summary>
-    private sealed class LineLinks(char[] chars, string raw, IReadOnlyDictionary<string, string> definitions)
-    {
-        private readonly int[] closeBracket = BalancedCloses(chars, '[', ']');
-        private int[]? closeParen;
-        private readonly NextOccurrence blanked = new(chars);
+        private NextOccurrence? blankedNext;
         private NextOccurrence? rawNext;
+        private int[]? balance;
+        private int[]? parenDrop;
+        private int[]? nextSpace;
+        private int[]? nextLineEnd;
 
-        // An angle-bracket destination is read before inline HTML could be (CommonMark
-        // resolves a link at its `]`), so its `<` and `>` are looked up on the line as
-        // written: blanking may have erased a `<b>` that makes the destination invalid.
-        private NextOccurrence Raw => rawNext ??= new NextOccurrence(raw.ToCharArray());
+        private NextOccurrence BlankedNext => blankedNext ??= new NextOccurrence(blanked.ToCharArray());
 
-        private int NextVisited(char c, int from) => blanked.Next(c, from);
+        private NextOccurrence RawNext => rawNext ??= new NextOccurrence(raw.ToCharArray());
+
+        /// <summary>Every link and image found, as its start offset (the <c>[</c>, or the <c>!</c> of an image), the offset past it, and the link, in document order.</summary>
+        public List<(int Start, int End, ConceptLink Link)> Scan()
+        {
+            var found = new List<(int Start, int End, ConceptLink Link)>();
+            if (blanked.IndexOf(']') < 0)
+            {
+                return found;
+            }
+
+            var openers = new List<(int Index, bool Image, int Order, bool BracketAfter)>();
+            var order = 0;
+            var inactiveBelow = 0;
+            for (var i = 0; i < blanked.Length;)
+            {
+                var c = blanked[i];
+                if (c == '\\' && i + 1 < blanked.Length && IsAsciiPunctuation(blanked[i + 1]))
+                {
+                    i += 2;
+                    continue;
+                }
+
+                var image = c == '!' && i + 1 < blanked.Length && blanked[i + 1] == '[';
+                if (c == '[' || image)
+                {
+                    if (openers.Count > 0)
+                    {
+                        openers[^1] = openers[^1] with { BracketAfter = true };
+                    }
+
+                    openers.Add((image ? i + 1 : i, image, order++, false));
+                    i += image ? 2 : 1;
+                    continue;
+                }
+
+                if (c != ']' || openers.Count == 0)
+                {
+                    i++;
+                    continue;
+                }
+
+                var opener = openers[^1];
+                openers.RemoveAt(openers.Count - 1);
+                if ((opener.Image || opener.Order >= inactiveBelow)
+                    && (Inline(i + 1) ?? Reference(opener.Index, opener.BracketAfter, i)) is { } match)
+                {
+                    var text = raw.Substring(opener.Index + 1, Math.Min(i - opener.Index - 1, MaxTextLength)).Replace('\n', ' ');
+                    found.Add((opener.Image ? opener.Index - 1 : opener.Index, match.End, new ConceptLink(text, match.Target, ConceptLink.Classify(match.Target))));
+                    if (!opener.Image)
+                    {
+                        inactiveBelow = order;
+                    }
+
+                    i = match.End;
+                    continue;
+                }
+
+                i++;
+            }
+
+            found.Sort((a, b) => a.Start.CompareTo(b.Start));
+            return found;
+        }
 
         /// <summary>
-        /// The link starting at the <c>[</c> at <paramref name="i"/> and the offset past it,
-        /// or <c>null</c>. As commonmark.js tries it: an inline link first; otherwise a
-        /// reference — the label after the text when one follows (and only it, defined or
-        /// not), else the text itself when it holds no bracket — resolved against the
-        /// definitions. A text or label starting with <c>^</c> is a footnote, not a link.
+        /// An inline link's destination when <c>(</c> is at <paramref name="open"/>, and the
+        /// offset past its <c>)</c>: spaces and up to one line ending, a destination — in
+        /// angle brackets, or without spaces and with balanced parentheses — then optionally
+        /// whitespace and a title, and the <c>)</c>. The destination is returned with its
+        /// backslash escapes resolved.
         /// </summary>
-        public (ConceptLink Link, int Next)? At(int i)
+        private (string Target, int End)? Inline(int open)
         {
-            var textEnd = closeBracket[i];
-            if (textEnd < 0)
+            if (open >= raw.Length || raw[open] != '(')
             {
                 return null;
             }
 
-            // The text is only materialized for a match: nested brackets give every opener a
-            // text spanning most of the line, and copying each would be quadratic.
-            var textLength = textEnd - i - 1;
-            if (textEnd + 1 < chars.Length && chars[textEnd + 1] == '(' && InlineDestination(textEnd + 1) is { } inline)
+            var dest = SkipSpaceAndOneLineEnding(raw, open + 1);
+            string target;
+            int after;
+            if (dest < raw.Length && raw[dest] == '<')
             {
-                return (new ConceptLink(new string(chars, i + 1, textLength), inline.Target, ConceptLink.Classify(inline.Target)), inline.Next);
-            }
-
-            // A backslash-escaped `[` opens nothing (for references; inline links keep the
-            // behaviour they always had, pinned by an oracle test).
-            if (definitions.Count == 0 || (textLength > 0 && chars[i + 1] == '^') || IsEscaped(i))
-            {
-                return null;
-            }
-
-            string? label = null;
-            var after = textEnd + 1;
-            var labelLength = LabelLength(textEnd + 1);
-
-            // A following `[^…]` is a footnote, not a link label: this text may still be a
-            // shortcut, as `[r][^k]` is a link and a footnote.
-            if (labelLength > 2 && chars[textEnd + 2] == '^')
-            {
-                labelLength = 0;
-            }
-
-            if (labelLength > 2)
-            {
-                label = new string(chars, textEnd + 2, labelLength - 2);
-                after = textEnd + 1 + labelLength;
-            }
-            else if (textLength <= 999 && NextVisited('[', i + 1) is var inner && (inner < 0 || inner > textEnd))
-            {
-                label = new string(chars, i + 1, textLength);
-                after = labelLength == 2 ? textEnd + 3 : textEnd + 1;
-            }
-
-            return label is not null && definitions.TryGetValue(NormalizeLinkLabel(label), out var destination)
-                ? (new ConceptLink(new string(chars, i + 1, textLength), destination, ConceptLink.Classify(destination)), after)
-                : null;
-        }
-
-        /// <summary>
-        /// The length, brackets included, of a link label starting at <paramref name="start"/>
-        /// — at most 999 characters, none an unescaped bracket — or 0 when none does.
-        /// </summary>
-        private int LabelLength(int start)
-        {
-            if (start >= chars.Length || chars[start] != '[')
-            {
-                return 0;
-            }
-
-            var close = NextVisited(']', start + 1);
-            var open = NextVisited('[', start + 1);
-            return close < 0 || (open >= 0 && open < close) || close - start - 1 > 999 ? 0 : close - start + 1;
-        }
-
-        /// <summary>
-        /// An inline link's destination for the <c>(</c> at <paramref name="open"/> and the
-        /// offset past its <c>)</c>. A destination in angle brackets may hold spaces and
-        /// parentheses and is returned without them, and must be followed only by an
-        /// optional title; any other destination runs to the balanced <c>)</c>, its title
-        /// stripped.
-        /// </summary>
-        private (string Target, int Next)? InlineDestination(int open)
-        {
-            // Read on the raw line: a blanked `<!--…-->` looks like leading whitespace, and
-            // would hide the `<` that decides the destination's form.
-            var d = open + 1;
-            while (d < raw.Length && raw[d] is ' ' or '\t')
-            {
-                d++;
-            }
-
-            if (d < raw.Length && raw[d] == '<')
-            {
-                var gt = Raw.Next('>', d + 1);
-                var lt = Raw.Next('<', d + 1);
-                if (gt < 0 || (lt >= 0 && lt < gt))
+                var gt = RawNext.Next('>', dest + 1);
+                var lt = RawNext.Next('<', dest + 1);
+                var lineEnd = NextLineEnd(dest + 1);
+                if (gt < 0 || (lt >= 0 && lt < gt) || (lineEnd >= 0 && lineEnd < gt))
                 {
                     return null;
                 }
 
-                var p = gt + 1;
-                while (p < raw.Length && raw[p] is ' ' or '\t')
+                target = Unescape(dest + 1, gt);
+                after = gt + 1;
+            }
+            else
+            {
+                var end = DestinationEnd(dest);
+                if (end < 0 || (end == dest && (dest >= raw.Length || raw[dest] != ')')))
                 {
-                    p++;
+                    return null;
                 }
 
-                if (p > gt + 1 && p < raw.Length && raw[p] is '"' or '\'' or '(')
-                {
-                    var close = Raw.Next(raw[p] == '(' ? ')' : raw[p], p + 1);
-                    if (close < 0 || (raw[p] == '(' && Raw.Next('(', p + 1) is var nested and >= 0 && nested < close))
-                    {
-                        return null;
-                    }
-
-                    p = close + 1;
-                    while (p < raw.Length && raw[p] is ' ' or '\t')
-                    {
-                        p++;
-                    }
-                }
-
-                return p < raw.Length && raw[p] == ')' ? (raw[(d + 1)..gt], p + 1) : null;
+                target = Unescape(dest, end);
+                after = end;
             }
 
-            closeParen ??= BalancedCloses(chars, '(', ')');
-            var destEnd = closeParen[open];
-            return destEnd < 0 ? null : (StripTitle(new string(chars, open + 1, destEnd - open - 1)), destEnd + 1);
+            var p = SkipSpaceAndOneLineEnding(raw, after);
+            if (p > after && p < raw.Length && raw[p] is '"' or '\'' or '(')
+            {
+                var close = raw[p] == '(' ? ')' : raw[p];
+                var titleEnd = RawNext.Next(close, p + 1);
+                if (titleEnd >= 0 && !(close == ')' && RawNext.Next('(', p + 1) is var nested and >= 0 && nested < titleEnd))
+                {
+                    p = SkipSpaceAndOneLineEnding(raw, titleEnd + 1);
+                }
+            }
+
+            return p < raw.Length && raw[p] == ')' ? (target, p + 1) : null;
         }
 
-        /// <summary>Whether the character at <paramref name="i"/> follows an odd run of backslashes on the line as written.</summary>
-        private bool IsEscaped(int i)
+        /// <summary>
+        /// A reference link for the opener whose text starts after <paramref name="openIndex"/>
+        /// and ends at the <c>]</c> at <paramref name="close"/>: the label that follows when one
+        /// does (and only it), else the text itself when no bracket was opened inside it. A
+        /// text or label starting with <c>^</c> is a footnote, never a link label.
+        /// </summary>
+        private (string Target, int End)? Reference(int openIndex, bool bracketAfter, int close)
         {
-            var backslashes = 0;
-            while (i - backslashes > 0 && raw[i - backslashes - 1] == '\\')
+            if (definitions.Count == 0 || (close > openIndex + 1 && blanked[openIndex + 1] == '^'))
             {
-                backslashes++;
+                return null;
             }
 
-            return backslashes % 2 == 1;
+            var labelLength = LabelLength(close + 1);
+            if (labelLength > 2 && blanked[close + 2] == '^')
+            {
+                labelLength = 0;
+            }
+
+            string label;
+            int end;
+            if (labelLength > 2)
+            {
+                label = raw[(close + 2)..(close + labelLength)];
+                end = close + 1 + labelLength;
+            }
+            else if (!bracketAfter && close - openIndex - 1 <= 999)
+            {
+                label = raw[(openIndex + 1)..close];
+                end = labelLength == 2 ? close + 3 : close + 1;
+            }
+            else
+            {
+                return null;
+            }
+
+            return definitions.TryGetValue(NormalizeLinkLabel(label), out var destination) ? (destination, end) : null;
+        }
+
+        /// <summary>The length, brackets included, of a link label at <paramref name="start"/> — at most 999 characters, no unescaped bracket — or 0.</summary>
+        private int LabelLength(int start)
+        {
+            if (start >= blanked.Length || blanked[start] != '[')
+            {
+                return 0;
+            }
+
+            var close = BlankedNext.Next(']', start + 1);
+            var open = BlankedNext.Next('[', start + 1);
+            return close < 0 || (open >= 0 && open < close) || close - start - 1 > 999 ? 0 : close - start + 1;
+        }
+
+        /// <summary>
+        /// Where a destination without angle brackets that starts at <paramref name="start"/>
+        /// ends — at the first whitespace, or at a <c>)</c> that would close more parentheses
+        /// than it opened — or <c>-1</c> when its parentheses do not balance there.
+        /// Parentheses escaped by a backslash do not count.
+        /// </summary>
+        private int DestinationEnd(int start)
+        {
+            if (balance is null)
+            {
+                // The parenthesis balance before each offset; a backslash-escaped parenthesis
+                // does not count. Pairing escapes from the start is right for any start a
+                // destination can have: it follows `(` or whitespace, never a backslash.
+                var n = raw.Length;
+                balance = new int[n + 1];
+                for (var k = 0; k < n;)
+                {
+                    if (raw[k] == '\\' && k + 1 < n && IsAsciiPunctuation(raw[k + 1]))
+                    {
+                        balance[k + 1] = balance[k];
+                        balance[k + 2] = balance[k];
+                        k += 2;
+                        continue;
+                    }
+
+                    balance[k + 1] = balance[k] + (raw[k] == '(' ? 1 : raw[k] == ')' ? -1 : 0);
+                    k++;
+                }
+
+                // For each offset, the first `)` after it that brings the balance below its value there.
+                parenDrop = new int[n + 1];
+                var firstAtLevel = new Dictionary<int, int>();
+                parenDrop[n] = -1;
+                for (var k = n - 1; k >= 0; k--)
+                {
+                    if (raw[k] == ')' && balance[k + 1] < balance[k])
+                    {
+                        firstAtLevel[balance[k + 1]] = k;
+                    }
+
+                    parenDrop[k] = firstAtLevel.TryGetValue(balance[k] - 1, out var q) ? q : -1;
+                }
+
+                nextSpace = new int[n + 1];
+                nextSpace[n] = -1;
+                for (var k = n - 1; k >= 0; k--)
+                {
+                    nextSpace[k] = raw[k] is ' ' or '\t' or '\n' or '\r' or '\f' or '\v' ? k : nextSpace[k + 1];
+                }
+            }
+
+            if (start >= raw.Length)
+            {
+                return start;
+            }
+
+            var space = nextSpace![start];
+            var drop = parenDrop![start];
+            if (drop >= 0 && (space < 0 || drop < space))
+            {
+                return drop;
+            }
+
+            var stop = space < 0 ? raw.Length : space;
+            return balance[stop] == balance[start] ? stop : -1;
+        }
+
+        private int NextLineEnd(int from)
+        {
+            if (nextLineEnd is null)
+            {
+                nextLineEnd = new int[raw.Length + 1];
+                nextLineEnd[raw.Length] = -1;
+                for (var k = raw.Length - 1; k >= 0; k--)
+                {
+                    nextLineEnd[k] = raw[k] == '\n' ? k : nextLineEnd[k + 1];
+                }
+            }
+
+            return from >= raw.Length ? -1 : nextLineEnd[from];
+        }
+
+        /// <summary>The raw text from <paramref name="from"/> to <paramref name="to"/>, each backslash escape of ASCII punctuation resolved to the character.</summary>
+        private string Unescape(int from, int to)
+        {
+            var slice = raw.AsSpan(from, to - from);
+            if (slice.IndexOf('\\') < 0)
+            {
+                return slice.ToString();
+            }
+
+            var sb = new StringBuilder(slice.Length);
+            for (var k = 0; k < slice.Length; k++)
+            {
+                if (slice[k] == '\\' && k + 1 < slice.Length && IsAsciiPunctuation(slice[k + 1]))
+                {
+                    k++;
+                }
+
+                sb.Append(slice[k]);
+            }
+
+            return sb.ToString();
         }
     }
 
@@ -2079,70 +2208,6 @@ public static class LinkScanner
 
             return table[from];
         }
-    }
-
-    /// <summary>
-    /// For each <paramref name="open"/> character, the index of the <paramref name="close"/>
-    /// that <see cref="ParseInlineLink"/>'s balanced, escape-aware scan starting there
-    /// stops at, or <c>-1</c> when it never closes; other entries are meaningless.
-    ///
-    /// One left-to-right pass suffices because a scan started just past any opener
-    /// visits exactly the positions a scan from the start of the line visits from there
-    /// on (a backslash skips the next character either way, and an opener is never a
-    /// backslash). So relative depth is global balance: an opener leaving the balance at
-    /// <c>L</c> — counted or, when backslash-escaped, not — closes at the first
-    /// unescaped closer that brings it to <c>L - 1</c>. Openers wait by level and are
-    /// resolved together, each once.
-    /// </summary>
-    private static int[] BalancedCloses(char[] chars, char open, char close)
-    {
-        var closes = new int[chars.Length];
-        var waiting = new Dictionary<int, List<int>>();
-        var balance = 0;
-
-        void Wait(int opener, int level)
-        {
-            closes[opener] = -1;
-            if (!waiting.TryGetValue(level, out var openers))
-            {
-                waiting[level] = openers = [];
-            }
-
-            openers.Add(opener);
-        }
-
-        for (var k = 0; k < chars.Length; k++)
-        {
-            if (chars[k] == '\\')
-            {
-                // The escaped character is skipped by every scan, but a scan may still
-                // START at it, so an escaped opener waits at the unchanged balance.
-                if (k + 1 < chars.Length && chars[k + 1] == open)
-                {
-                    Wait(k + 1, balance);
-                }
-
-                k++;
-            }
-            else if (chars[k] == open)
-            {
-                balance++;
-                Wait(k, balance);
-            }
-            else if (chars[k] == close)
-            {
-                balance--;
-                if (waiting.Remove(balance + 1, out var resolved))
-                {
-                    foreach (var opener in resolved)
-                    {
-                        closes[opener] = k;
-                    }
-                }
-            }
-        }
-
-        return closes;
     }
 
     /// <summary>

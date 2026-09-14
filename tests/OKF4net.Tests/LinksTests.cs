@@ -105,16 +105,18 @@ public class LinksTests
     }
 
     /// <summary>
-    /// The linear scan must find exactly the links the original restart-at-every-bracket
-    /// scan found — `okf graph` output is golden-locked, and every link feeds validation.
-    /// <see cref="ReferenceScan"/> is that original algorithm, kept here as the oracle,
-    /// and the two are compared on random lines over the characters that steer it:
-    /// brackets, parentheses, backslash escapes, spaces and quotes (titles).
+    /// The table-driven scan must find exactly what the same bracket algorithm finds when
+    /// every end is searched for by hand — the tables are an optimization, not a second
+    /// definition. <see cref="ReferenceScan"/> is that straightforward version, kept here as
+    /// the oracle, and the two are compared on random lines over the characters that steer
+    /// inline links: brackets, image bangs, parentheses, backslash escapes, spaces, quotes.
+    /// (It replaced an oracle of the pre-CommonMark scan, whose semantics were changed on
+    /// purpose: escaped brackets, links inside link text, destinations with spaces.)
     /// </summary>
     [Fact]
-    public void Linear_link_scan_matches_the_original_scan_on_random_lines()
+    public void Linear_link_scan_matches_a_straightforward_scan_on_random_lines()
     {
-        var alphabet = "[]()\\ a\"".ToCharArray();
+        var alphabet = "[]()\\ a\"'!".ToCharArray();
         var random = new Random(20260914);
         for (var n = 0; n < 20_000; n++)
         {
@@ -124,94 +126,161 @@ public class LinksTests
                 chars[k] = alphabet[random.Next(alphabet.Length)];
             }
 
-            var line = new string(chars);
+            // A leading letter keeps the line an ordinary paragraph (four leading spaces
+            // would make it indented code).
+            var line = "z" + new string(chars);
             var expected = ReferenceScan(line);
             var actual = LinkScanner.ExtractLinks(line).Select(l => (l.Text, l.Target)).ToList();
             Assert.True(expected.SequenceEqual(actual), $"line {line}: expected [{string.Join(" | ", expected)}], got [{string.Join(" | ", actual)}]");
         }
     }
 
-    /// <summary>The link scan as it was before it was made linear, verbatim in behaviour.</summary>
-    private static List<(string Text, string Target)> ReferenceScan(string line)
+    /// <summary>
+    /// CommonMark's bracket algorithm for inline links and images on one line, with every
+    /// search written out: no tables, no reference links (the random lines define none).
+    /// </summary>
+    private static List<(string Text, string Target)> ReferenceScan(string s)
     {
-        var output = new List<(string, string)>();
-        var chars = line.ToCharArray();
-        var i = 0;
-        while (i < chars.Length)
+        static bool Punct(char c) => c is (>= '!' and <= '/') or (>= ':' and <= '@') or (>= '[' and <= '`') or (>= '{' and <= '~');
+
+        var found = new List<(int Start, string Text, string Target)>();
+        var openers = new List<(int Index, bool Image, int Order)>();
+        var order = 0;
+        var inactiveBelow = 0;
+        for (var i = 0; i < s.Length;)
         {
-            if (chars[i] == '[' && Parse(chars, i) is { } p)
+            if (s[i] == '\\' && i + 1 < s.Length && Punct(s[i + 1]))
             {
-                output.Add(p.Link);
-                i = p.Next;
+                i += 2;
+                continue;
+            }
+
+            var image = s[i] == '!' && i + 1 < s.Length && s[i + 1] == '[';
+            if (s[i] == '[' || image)
+            {
+                openers.Add((image ? i + 1 : i, image, order++));
+                i += image ? 2 : 1;
+                continue;
+            }
+
+            if (s[i] != ']' || openers.Count == 0)
+            {
+                i++;
+                continue;
+            }
+
+            var opener = openers[^1];
+            openers.RemoveAt(openers.Count - 1);
+            if ((opener.Image || opener.Order >= inactiveBelow) && Inline(s, i + 1) is { } m)
+            {
+                found.Add((opener.Image ? opener.Index - 1 : opener.Index, s[(opener.Index + 1)..i], m.Target));
+                if (!opener.Image)
+                {
+                    inactiveBelow = order;
+                }
+
+                i = m.End;
                 continue;
             }
 
             i++;
         }
 
-        return output;
+        return found.OrderBy(f => f.Start).Select(f => (f.Text, f.Target)).ToList();
 
-        static ((string, string) Link, int Next)? Parse(char[] chars, int start)
+        static (string Target, int End)? Inline(string s, int open)
         {
-            var i = start + 1;
-            var depth = 1;
-            while (i < chars.Length)
-            {
-                if (chars[i] == '\\')
-                {
-                    i++;
-                }
-                else if (chars[i] == '[')
-                {
-                    depth++;
-                }
-                else if (chars[i] == ']' && --depth == 0)
-                {
-                    break;
-                }
-
-                i++;
-            }
-
-            if (depth != 0 || i >= chars.Length || i + 1 >= chars.Length || chars[i + 1] != '(')
+            if (open >= s.Length || s[open] != '(')
             {
                 return null;
             }
 
-            var text = new string(chars, start + 1, i - start - 1);
-            var j = i + 2;
-            var paren = 1;
-            while (j < chars.Length)
+            var p = open + 1;
+            while (p < s.Length && s[p] == ' ')
             {
-                if (chars[j] == '\\')
-                {
-                    j++;
-                }
-                else if (chars[j] == '(')
-                {
-                    paren++;
-                }
-                else if (chars[j] == ')' && --paren == 0)
-                {
-                    break;
-                }
-
-                j++;
+                p++;
             }
 
-            if (paren != 0 || j >= chars.Length)
+            var dest = p;
+            var target = new System.Text.StringBuilder();
+            if (p < s.Length && s[p] == '<')
             {
-                return null;
+                p++;
+                while (p < s.Length && s[p] is not ('>' or '<'))
+                {
+                    if (s[p] == '\\' && p + 1 < s.Length)
+                    {
+                        p++;
+                    }
+
+                    target.Append(s[p]);
+                    p++;
+                }
+
+                if (p >= s.Length || s[p] != '>')
+                {
+                    return null;
+                }
+
+                p++;
+            }
+            else
+            {
+                var depth = 0;
+                while (p < s.Length && s[p] != ' ')
+                {
+                    if (s[p] == '\\' && p + 1 < s.Length && Punct(s[p + 1]))
+                    {
+                        target.Append(s[p + 1]);
+                        p += 2;
+                        continue;
+                    }
+
+                    if (s[p] == '(')
+                    {
+                        depth++;
+                    }
+                    else if (s[p] == ')' && --depth < 0)
+                    {
+                        break;
+                    }
+
+                    target.Append(s[p]);
+                    p++;
+                }
+
+                if (depth > 0 || (p == dest && (p >= s.Length || s[p] != ')')))
+                {
+                    return null;
+                }
             }
 
-            var dest = new string(chars, i + 2, j - i - 2).Trim();
-            var space = dest.IndexOfAny([' ', '\t']);
-            if (space >= 0 && dest[space..].TrimStart() is var rest && (rest.StartsWith('"') || rest.StartsWith('\'')))
+            var afterDest = p;
+            while (p < s.Length && s[p] == ' ')
             {
-                dest = dest[..space];
+                p++;
             }
 
-            return ((text, dest), j + 1);
+            if (p > afterDest && p < s.Length && s[p] is '"' or '\'' or '(')
+            {
+                var close = s[p] == '(' ? ')' : s[p];
+                var q = p + 1;
+                while (q < s.Length && s[q] != close && !(close == ')' && s[q] == '('))
+                {
+                    q += s[q] == '\\' && q + 1 < s.Length ? 2 : 1;
+                }
+
+                if (q < s.Length && s[q] == close)
+                {
+                    p = q + 1;
+                    while (p < s.Length && s[p] == ' ')
+                    {
+                        p++;
+                    }
+                }
+            }
+
+            return p < s.Length && s[p] == ')' ? (target.ToString(), p + 1) : null;
         }
     }
 
@@ -825,6 +894,107 @@ public class LinksTests
     public void Reference_and_angle_bracket_links_are_scanned_in_linear_time(string unit, string prefix)
     {
         var body = prefix + string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Targets(body);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
+
+    /// <summary>
+    /// An inline link destination as CommonMark defines it (§6.3): no spaces, parentheses
+    /// only when balanced or escaped, backslash escapes resolved, and a title only after
+    /// whitespace. Anything else after <c>](</c> is no link — the scan used to accept any
+    /// balanced parentheses and strip a trailing title. Expected results are commonmark.js's.
+    /// </summary>
+    [Theory]
+    [InlineData("[a](not a link)\n", null)]
+    [InlineData("[a](x y)\n", null)]
+    [InlineData("[a](x \"t\")\n", "x")]
+    [InlineData("[a](x 't' )\n", "x")]
+    [InlineData("[a](x (t))\n", "x")]
+    [InlineData("[a](x \"t\" y)\n", null)]
+    [InlineData("[a](x (t(u)))\n", null)]
+    [InlineData("[a](x(y))\n", "x(y)")]
+    [InlineData("[a](x(y)\n", null)]
+    [InlineData("[a](x\\)y)\n", "x)y")]
+    [InlineData("[a](\\(x)\n", "(x")]
+    [InlineData("[a]()\n", "")]
+    [InlineData("[a](  x  )\n", "x")]
+    public void Inline_link_destinations_follow_commonmark(string body, string? expected)
+    {
+        Assert.Equal(expected is null ? [] : [expected], Targets(body));
+    }
+
+    /// <summary>
+    /// A link never contains a link (§6.3): once an inner link forms, the brackets opened
+    /// before it can no longer form one — the scan used to keep the outer link and skip the
+    /// inner. An image is the exception, and may hold a link.
+    /// </summary>
+    [Theory]
+    [InlineData("[a [b](/x.md) c](/y.md)\n", "/x.md")]
+    [InlineData("[[a](/x.md)](/y.md)\n", "/x.md")]
+    [InlineData("![a [b](/x.md) c](/y.png)\n", "/y.png,/x.md")]
+    [InlineData("![[a](/x.md)](/y.png)\n", "/y.png,/x.md")]
+    public void A_link_inside_link_text_suppresses_the_outer_link(string body, string expected)
+    {
+        Assert.Equal(expected.Split(','), Targets(body));
+    }
+
+    /// <summary>
+    /// A link's text, destination and title may cross a line ending inside their paragraph
+    /// (§6.3), and never a paragraph boundary; the text is reported on one line.
+    /// </summary>
+    [Theory]
+    [InlineData("[a\nb](/x.md)\n", "/x.md")]
+    [InlineData("[a]( /x.md\n\"a title\")\n", "/x.md")]
+    [InlineData("[a](\n /x.md\n )\n", "/x.md")]
+    [InlineData("> [a\n> b](/x.md)\n", "/x.md")]
+    [InlineData("[a](/x\ny.md)\n", "")]
+    [InlineData("[a]\n(/x.md)\n", "")]
+    [InlineData("[a\n\nb](/x.md)\n", "")]
+    public void A_link_may_span_a_line_ending_within_its_paragraph(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], Targets(body));
+    }
+
+    [Fact]
+    public void A_link_text_spanning_a_line_ending_is_reported_on_one_line()
+    {
+        var link = Assert.Single(LinkScanner.ExtractLinks("See [the orders\ntable](/tables/orders.md).\n"));
+        Assert.Equal("the orders table", link.Text);
+    }
+
+    /// <summary>
+    /// A backslash-escaped bracket opens or closes nothing (§2.4) — the scan used to let
+    /// <c>\[</c> open an inline link — while an escaped backslash leaves the bracket live.
+    /// </summary>
+    [Theory]
+    [InlineData("\\[a](/x.md)\n", "")]
+    [InlineData("\\\\[a](/x.md)\n", "/x.md")]
+    [InlineData("[a\\](/x.md)\n", "")]
+    [InlineData("![a\\](/x.png) [b](/y.md)\n", "/y.md")]
+    public void Escaped_brackets_open_and_close_nothing(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Linear on hostile input shaped for the bracket algorithm: destinations that never
+    /// balance or never end, and long runs of openers each followed by a link.
+    /// </summary>
+    [Theory]
+    [InlineData("[a](")]
+    [InlineData("[a](x(")]
+    [InlineData("[a]([a](")]
+    [InlineData("[[a](b)")]
+    [InlineData("![")]
+    [InlineData("[a](x \"")]
+    [InlineData("[a]( x\n")]
+    public void Bracket_algorithm_inputs_are_scanned_in_linear_time(string unit)
+    {
+        var body = "z" + string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "](y)\n";
 
         var watch = System.Diagnostics.Stopwatch.StartNew();
         Targets(body);

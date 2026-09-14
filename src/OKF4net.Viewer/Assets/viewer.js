@@ -265,8 +265,9 @@
   // leaving a dead link to a `.md` file that does not exist in the site.
   //
   // What the table can still miss is a link `LinkScanner` does not extract --
-  // one whose text or destination spans a line ending, for instance. It fails
-  // open, as those did: a dead link, not a broken page. A cheap general safety
+  // a raw HTML `<a href="../glossary/term.md">`, for instance, or a case where
+  // marked's reading departs from CommonMark's. It fails open, as those did: a
+  // dead link, not a broken page. A cheap general safety
   // net, not implemented here: after this loop runs, any anchor whose href
   // still ends in `.md` is by construction a link the table missed (every href
   // this loop rewires becomes `.html`), so a follow-up pass could flag or

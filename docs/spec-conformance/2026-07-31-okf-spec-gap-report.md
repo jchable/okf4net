@@ -440,17 +440,27 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   commonmark.js, having no footnotes, would read `[^k][r]` as one link; this keeps
   `CitationMissingSourceId` meaningful and matches GitHub's rendering. Checked
   against commonmark.js on 120 000 random bodies and against `dev`'s output on the
-  same cases: nothing regresses beyond that interpretation. Remaining differences
-  predate this and concern inline links only — a destination containing spaces is
-  accepted, a link inside a link's text does not suppress the outer link, a link
-  cannot span a line ending, and an escaped `\[` still opens an inline link (the
-  last pinned by an oracle test of the pre-linear scan). Tests:
+  same cases: nothing regresses beyond that interpretation. The same change
+  brought inline links to CommonMark's link algorithm, fixing four older
+  divergences — a destination containing spaces was accepted, a link inside a
+  link's text did not suppress the outer link, a link could not span a line
+  ending, and an escaped `\[` opened an inline link. Two rare differences remain
+  and are kept knowingly: a backtick inside a destination, closed by a later
+  backtick past the `)`, is paired as a code span by the pass that blanks code
+  before links are read, so the link is lost where commonmark.js, reading the
+  destination when it reaches the `]`, keeps it; and when a duplicate definition sits above
+  a setext underline, commonmark.js resolves to the later one, where §4.7 says
+  "the first one takes precedence" — we follow the spec text. Tests:
   `Reference_links_resolve_to_their_definition`,
   `Reference_labels_match_as_commonmark_normalizes_them`,
   `Reference_links_follow_commonmark_sequencing`,
   `Footnotes_and_code_never_form_reference_links`,
   `Angle_bracket_destinations_lose_their_brackets`,
-  `Reference_and_angle_bracket_edge_cases_follow_commonmark` in `LinksTests.cs`;
+  `Reference_and_angle_bracket_edge_cases_follow_commonmark`,
+  `Inline_link_destinations_follow_commonmark`,
+  `A_link_inside_link_text_suppresses_the_outer_link`,
+  `A_link_may_span_a_line_ending_within_its_paragraph`,
+  `Escaped_brackets_open_and_close_nothing` in `LinksTests.cs`;
   `A_reference_link_counts_for_broken_links_and_backlinks` and
   `Index_entry_opening_on_a_reference_link_is_an_entry` in `ValidateTests.cs`;
   `Build_rewires_reference_and_angle_bracket_links` in `SiteModelTests.cs`.

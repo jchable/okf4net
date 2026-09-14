@@ -322,13 +322,15 @@ and this project adheres to
   is no link. One deliberate divergence from commonmark.js, which has no
   footnotes: a bracket starting with `^` is always a footnote, so `[^k][r]` stays a
   citation (and `[r][^k]` is the link `[r]` beside a footnote), as GitHub renders
-  them. Compared with commonmark.js on 120 000 random bodies built around
-  references, angle brackets and titles: no case regresses from what `dev`
-  extracted, beyond that decision; the differences left are pre-existing inline
-  ones (a destination with spaces, a link inside a link's text, a link spanning a
-  line ending, an escaped `\[` opening an inline link), tracked separately. No
-  bundle or fixture uses a reference link, so `okf graph` and `okf validate`
-  output is byte-identical on all of them.
+  them. Inline links are now found by the same algorithm — see Fixed. Compared
+  with commonmark.js on 120 000 random bodies built around references, inline
+  destinations, titles and angle brackets, and with `dev`'s scanner on the same
+  cases: outside footnote brackets, no case regresses from `dev`, about 6 550 of
+  every 40 000 are fixed, and 6 to 9 in 120 000 still differ — a backtick inside a destination the code pass pairs before the link
+  forms, and commonmark.js letting a later duplicate definition above a setext
+  underline win, where §4.7 says "the first one takes precedence". No bundle or
+  fixture uses a reference link, so `okf graph` and `okf validate` output is
+  byte-identical on all of them.
 
 ### Changed
 
@@ -632,17 +634,37 @@ and this project adheres to
   underline under a paragraph holding only link reference definitions no longer
   ends that paragraph — with nothing left to head, commonmark.js reads it as
   continuation text, so a definition after it defines nothing.
+- **Inline links follow CommonMark's link algorithm (§6.3).** The scan matched
+  each `[` to its balanced `]` and took whatever balanced parentheses followed,
+  which differed from every markdown renderer in four ways, all now fixed:
+  - a destination with spaces was accepted — `[a](not a link)` linked to
+    `not a link`; a destination now has no spaces, parentheses only when balanced
+    or escaped, backslash escapes resolved, and a title only after whitespace;
+  - a link inside a link's text kept the outer link — `[a [b](x) c](y)` linked to
+    `y`; a link now deactivates the brackets opened before it, so only `x` is a
+    link (an image may still hold one, as in `![[a](x)](y)`);
+  - a link could not cross a line ending — `[orders\ntable](x)` was missed;
+    inline content is now read a paragraph at a time, past quote and list
+    markers, and a link's text is reported on one line;
+  - an escaped `\[` opened a link — `\[a](x)` linked to `x`; an escaped bracket now
+    opens and closes nothing.
+  The scan follows commonmark.js's bracket algorithm (a stack of openers,
+  resolved at each `]`) with every search for an end a table lookup, so it stays
+  linear however the brackets nest; a link's text is capped at 2 000 characters
+  for display, so a pathological nest of images cannot make its copies
+  quadratic. The pre-CommonMark oracle test was replaced by one that checks the
+  tables against the same algorithm with every search written out.
 - **Link scanning is linear on unclosed brackets.** Every `[` restarted a
   balanced scan to the end of its line, so a line of brackets that never close
   was quadratic: a 200 KB `[a[a[a…` concept took ~11 s to `okf validate`, and
   bundle content is untrusted input — a CI job validating a contributed bundle
   could be stalled by one line. The behaviour dates from the initial port, so
   every release has it. The closer each opener would reach is now precomputed in
-  one pass; the same bundle validates in 0.3 s. The links found are unchanged:
-  the original algorithm is kept in the tests as an oracle and compared on 20 000
-  random lines of brackets, parentheses, escapes, spaces and quotes, and
-  `okf graph` / `okf validate` output is byte-identical before and after on every
-  bundle in `bundles/` and every fixture.
+  one pass; the same bundle validates in 0.3 s. The links found were unchanged
+  by that fix alone — checked against the original algorithm on 20 000 random
+  lines, and `okf graph` / `okf validate` output byte-identical on every bundle and
+  fixture — before the move to CommonMark's link algorithm above changed them on
+  purpose.
 - **`okf validate` now reads the body of an `index.md`, and checks §8's entry
   rule.** It never had: the reserved-file check returned early for any index
   without frontmatter, which is every well-formed index, so no index body was
