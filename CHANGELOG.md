@@ -309,6 +309,26 @@ and this project adheres to
   or any fixture, and both flag the drift `bundles/meridian_transit` had before
   it was corrected by hand (`# Worked example`, three index entries in inline
   code). Both new `DiagnosticCode` members are appended.
+- **Reference links count as links.** `LinkScanner.ExtractLinks` read only inline
+  `[text](dest)` links, so a body using the other standard markdown forms (§6.1:
+  "standard markdown links") — full `[text][label]`, collapsed `[label][]`,
+  shortcut `[label]`, and `![alt][label]` images — recorded no edge in the graph,
+  no backlink, no broken link, nothing in `okf parse` or an index entry, and the
+  viewer left a dead link to a `.md` file. They now resolve against the body's
+  link reference definitions (CommonMark §4.7) and are ordinary `ConceptLink`s
+  whose `Target` is the definition's destination; `ConceptLink` itself is
+  unchanged. Labels match as CommonMark normalizes them (case-folded, whitespace
+  collapsed, first definition wins), and a full reference with an undefined label
+  is no link. One deliberate divergence from commonmark.js, which has no
+  footnotes: a bracket starting with `^` is always a footnote, so `[^k][r]` stays a
+  citation (and `[r][^k]` is the link `[r]` beside a footnote), as GitHub renders
+  them. Compared with commonmark.js on 120 000 random bodies built around
+  references, angle brackets and titles: no case regresses from what `dev`
+  extracted, beyond that decision; the differences left are pre-existing inline
+  ones (a destination with spaces, a link inside a link's text, a link spanning a
+  line ending, an escaped `\[` opening an inline link), tracked separately. No
+  bundle or fixture uses a reference link, so `okf graph` and `okf validate`
+  output is byte-identical on all of them.
 
 ### Changed
 
@@ -602,6 +622,16 @@ and this project adheres to
 
 ### Fixed
 
+- **An inline link destination in angle brackets loses its brackets.**
+  `[x](<../glossary/term.md>)` was extracted with target `<../glossary/term.md>`,
+  which never resolves: a false broken link, no backlink, and a dead link in the
+  viewer (documented there as a known gap, now removed). The destination may hold
+  spaces and parentheses (`[x](<a (b).md>)`), a `<` inside it makes it invalid,
+  and a `<` that opens a valid one is no longer mistaken for inline HTML
+  (`[b](<my file.md>)` read `<my file.md>` as a tag and hid the link). And a setext
+  underline under a paragraph holding only link reference definitions no longer
+  ends that paragraph — with nothing left to head, commonmark.js reads it as
+  continuation text, so a definition after it defines nothing.
 - **Link scanning is linear on unclosed brackets.** Every `[` restarted a
   balanced scan to the end of its line, so a line of brackets that never close
   was quadratic: a 200 KB `[a[a[a…` concept took ~11 s to `okf validate`, and
@@ -712,7 +742,7 @@ and this project adheres to
   only from 1; an empty list item ends at a blank line; and a link reference
   definition's destination and title are not text. Checked against commonmark.js
   0.31.2 on 300 000 random bodies: no difference in which footnote references are
-  visible, reference links (`[text][label]`, which no scanner here reads) aside.
+  visible, reference links (`[text][label]`, since read — see Added) aside.
   Nesting deeper than 100 containers is read as text, as markdown-it limits it.
   All of this lives in the one shared "skip code" pass, so
   `okf graph`'s links change too; its output and `okf validate`'s were compared

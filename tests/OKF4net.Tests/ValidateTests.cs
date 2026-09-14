@@ -1408,6 +1408,48 @@ public class ValidateTests
         Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
     }
 
+    /// <summary>
+    /// A reference link is a link everywhere a link counts: to a missing concept it is a
+    /// broken link, and to an existing one it records a backlink.
+    /// </summary>
+    [Fact]
+    public void A_reference_link_counts_for_broken_links_and_backlinks()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/margin.md",
+            "---\ntype: Metric\ntitle: Margin\ndescription: D\nresource: https://x\ntags: [x]\n---\n" +
+            "Built on [revenue][rev] and [cost].\n\n[rev]: revenue.md\n[cost]: /metrics/cost.md\n");
+
+        var bundle = Bundle.Load(tmp.Path);
+        var report = BundleValidator.Validate(bundle);
+
+        var broken = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.BrokenLink);
+        Assert.Contains("/metrics/cost.md", broken.Message, StringComparison.Ordinal);
+        Assert.Contains(ConceptId.Parse("metrics/margin"), bundle.Backlinks(ConceptId.Parse("metrics/revenue")));
+    }
+
+    /// <summary>
+    /// An index entry may open on a reference link (§8 is about what the entry links to,
+    /// not how): its description is checked like an inline entry's, and it is not warned
+    /// as having no link.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue][rev] - Revenue, recognized.\n\n[rev]: revenue.md\n", false)]
+    [InlineData("# Metrics\n\n* [Revenue][rev]\n\n[rev]: revenue.md\n", true)]
+    [InlineData("# Metrics\n\n* [rev]\n\n[rev]: revenue.md\n", true)]
+    public void Index_entry_opening_on_a_reference_link_is_an_entry(string index, bool missingDescription)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+        Assert.Equal(missingDescription, report.Diagnostics.Any(d => d.Code == DiagnosticCode.IndexEntryMissingDescription));
+    }
+
     [Fact]
     public void Index_list_items_that_start_with_a_link_are_not_warned()
     {

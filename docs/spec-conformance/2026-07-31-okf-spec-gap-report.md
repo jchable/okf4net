@@ -342,8 +342,8 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
 
   Verified against commonmark.js 0.31.2 on 300 000 random bodies built from these
   constructs: no difference in which footnote references are visible, except
-  reference links (`[^k][label]` with `label` defined renders as a link), which no
-  scanner here reads — a separate feature, not a question of code or HTML. Tests:
+  reference links (`[^k][label]` with `label` defined renders as a link) — a
+  separate feature, since added (see S6.1-1). Tests:
   `Code_inside_a_block_quote_is_code`, `Links_inside_a_block_quote_are_links`,
   `Nothing_inside_an_html_block_is_a_link`, `An_html_block_ends_where_commonmark_ends_it`,
   `Raw_inline_html_is_not_markdown`, `Html_lookalikes_are_text`,
@@ -425,6 +425,35 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   `Relative` enum members) plus `ConceptLink.Classify` (Links.cs:36-60) and
   `ConceptLink.Resolve` (Links.cs:71-76). Tests:
   `tests/OKF4net.Tests/LinksTests.cs:44-75`.
+
+  **Update 2026-09-14 — all standard link forms.** §6.1 says concepts link "using
+  standard markdown links", yet `LinkScanner.ExtractLinks` read only the inline
+  form, so a reference link (`[text][label]`, `[label][]`, `[label]`, and
+  `![alt][label]`) was invisible to the graph, backlinks, broken-link detection,
+  `okf parse`, index entries and the viewer; and an angle-bracket destination
+  (`[x](<a.md>)`) kept its brackets and never resolved. Both now follow CommonMark
+  (§4.7, §6.3): references resolve against the body's link reference definitions
+  (collected by the block pass that blanks them), labels normalized as
+  commonmark.js does, and the target is the definition's destination.
+  **Interpretation, recorded here:** a bracket starting with `^` is a footnote —
+  OKF's citation mechanism (§4.2, §5.1) — and never a reference link, where
+  commonmark.js, having no footnotes, would read `[^k][r]` as one link; this keeps
+  `CitationMissingSourceId` meaningful and matches GitHub's rendering. Checked
+  against commonmark.js on 120 000 random bodies and against `dev`'s output on the
+  same cases: nothing regresses beyond that interpretation. Remaining differences
+  predate this and concern inline links only — a destination containing spaces is
+  accepted, a link inside a link's text does not suppress the outer link, a link
+  cannot span a line ending, and an escaped `\[` still opens an inline link (the
+  last pinned by an oracle test of the pre-linear scan). Tests:
+  `Reference_links_resolve_to_their_definition`,
+  `Reference_labels_match_as_commonmark_normalizes_them`,
+  `Reference_links_follow_commonmark_sequencing`,
+  `Footnotes_and_code_never_form_reference_links`,
+  `Angle_bracket_destinations_lose_their_brackets`,
+  `Reference_and_angle_bracket_edge_cases_follow_commonmark` in `LinksTests.cs`;
+  `A_reference_link_counts_for_broken_links_and_backlinks` and
+  `Index_entry_opening_on_a_reference_link_is_an_entry` in `ValidateTests.cs`;
+  `Build_rewires_reference_and_angle_bracket_links` in `SiteModelTests.cs`.
 - **S6.1-2** (MUST, tolerate broken links) — **Implemented** (Major).
   `src/OKF4net/Bundle.cs:246` (doc comment): `"All broken internal links...
   Broken links are permitted by the spec (§6.1) — this is informational."`

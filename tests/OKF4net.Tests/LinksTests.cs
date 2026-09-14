@@ -696,4 +696,140 @@ public class LinksTests
 
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
     }
+
+    /// <summary>
+    /// The four reference forms (CommonMark §6.3), each resolved against a link reference
+    /// definition (§4.7) anywhere in the body: full <c>[text][label]</c>, collapsed
+    /// <c>[label][]</c>, shortcut <c>[label]</c>, and an image <c>![alt][label]</c> —
+    /// extracted like an inline image. The link's target is the definition's destination,
+    /// its title dropped as an inline link's is. Expected results are commonmark.js's.
+    /// </summary>
+    [Theory]
+    [InlineData("See [the table][tbl].\n\n[tbl]: /tables/orders.md\n", "/tables/orders.md")]
+    [InlineData("See [tbl][].\n\n[tbl]: /tables/orders.md \"Orders\"\n", "/tables/orders.md")]
+    [InlineData("See [tbl].\n\n[tbl]: /tables/orders.md\n", "/tables/orders.md")]
+    [InlineData("A chart: ![chart][c]\n\n[c]: /img/chart.png\n", "/img/chart.png")]
+    [InlineData("[tbl]: /tables/orders.md\n\nDefined before use: [tbl].\n", "/tables/orders.md")]
+    [InlineData("> [q]: /quoted.md\n\nA definition in a quote counts: [q]\n", "/quoted.md")]
+    [InlineData("A claim.[^k][r]\n\n[r]: /x.md\n", "/x.md")]
+    public void Reference_links_resolve_to_their_definition(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// How labels match (§4.7): case-insensitively, with runs of whitespace collapsed; the
+    /// first definition of a label wins; and a label is read raw, escapes included.
+    /// </summary>
+    [Theory]
+    [InlineData("[Foo  Bar][]\n\n[foo bar]: /x.md\n", "/x.md")]
+    [InlineData("[r]\n\n[r]: /first.md\n[R]: /second.md\n", "/first.md")]
+    [InlineData("[x\\]y][r]\n\n[r]: /esc.md\n", "/esc.md")]
+    public void Reference_labels_match_as_commonmark_normalizes_them(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// The sequencing rules, as commonmark.js applies them: a full reference whose label is
+    /// undefined is no link, and its text cannot fall back to a shortcut; a link label that
+    /// failed can still be the text of the next reference; and text and label must touch.
+    /// </summary>
+    [Theory]
+    [InlineData("[foo][bar]\n\n[foo]: /f.md\n", "")]
+    [InlineData("[foo][bar][baz]\n\n[baz]: /url1\n[bar]: /url2\n", "/url2,/url1")]
+    [InlineData("[foo][bar][baz]\n\n[baz]: /url\n", "/url")]
+    [InlineData("[foo] [bar]\n\n[bar]: /b.md\n", "/b.md")]
+    [InlineData("[r][]x[r]\n\n[r]: /r.md\n", "/r.md,/r.md")]
+    [InlineData("[undefined] and [also][missing]\n", "")]
+    public void Reference_links_follow_commonmark_sequencing(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : expected.Split(','), Targets(body));
+    }
+
+    /// <summary>
+    /// A decision, not CommonMark: OKF cites sources with footnotes keyed to
+    /// <c>sources[].id</c> (§4.2, §5.1), so a bracket starting with <c>^</c> is a footnote,
+    /// never a reference link — commonmark.js, which has no footnotes, would read
+    /// <c>[^k][r]</c> as one link with text <c>^k</c>; here <c>[^k]</c> is the footnote and
+    /// <c>[r]</c> a shortcut of its own, as GitHub renders it. And a definition inside code
+    /// defines nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("See [text][^k].\n\n[^k]: /not-a-definition.md\n")]
+    [InlineData("A claim.[^r]\n\n[r]: /x.md\n")]
+    [InlineData("```\n[r]: /x.md\n```\n\n[r]\n")]
+    public void Footnotes_and_code_never_form_reference_links(string body)
+    {
+        Assert.Empty(Targets(body));
+    }
+
+    /// <summary>
+    /// Found by comparing against commonmark.js on random bodies: an escaped <c>\[</c>
+    /// opens no reference; a following <c>[^k]</c> is a footnote, so the text before it is
+    /// still a shortcut; and an angle-bracket destination holding a <c>&lt;</c> is invalid
+    /// even when that <c>&lt;</c> starts a tag the code pass blanked.
+    /// </summary>
+    [Theory]
+    [InlineData("\\[r] and [r]\n\n[r]: /r.md\n", "/r.md")]
+    [InlineData("See [r][^k].\n\n[r]: /r.md\n", "/r.md")]
+    [InlineData("[t](<a<b>) then [after](/after.md)\n", "/after.md")]
+    [InlineData("[t](<!--<[in](/in.md)-->) [after](/after.md)\n", "/after.md")]
+    public void Reference_and_angle_bracket_edge_cases_follow_commonmark(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// A setext underline does not make a heading of a paragraph that holds only link
+    /// reference definitions — there is no text left to head (commonmark.js) — so the
+    /// underline continues that paragraph, and a definition after it is no longer at the
+    /// paragraph's start: it defines nothing.
+    /// </summary>
+    [Fact]
+    public void A_setext_underline_under_definitions_only_continues_the_paragraph()
+    {
+        Assert.Equal(["/s.md"], Targets("[s]: /s.md\n-\n[r]: /r.md\n[t][r] and [s]\n"));
+    }
+
+    /// <summary>
+    /// A destination in angle brackets (CommonMark §6.3) may hold spaces and parentheses;
+    /// the brackets are not part of it. It used to be extracted with them, so the link
+    /// never resolved — a false broken link, and a dead <c>.md</c> link in the viewer.
+    /// </summary>
+    [Theory]
+    [InlineData("[a](</angle.md>)\n", "/angle.md")]
+    [InlineData("[b](<my file.md> \"title\")\n", "my file.md")]
+    [InlineData("[c](<x)y.md>)\n", "x)y.md")]
+    [InlineData("[r]\n\n[r]: </x y.md>\n", "/x y.md")]
+    public void Angle_bracket_destinations_lose_their_brackets(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
+    /// Linear on hostile input: openers followed by unclosed or undefined labels, many
+    /// shortcuts against many definitions, and unclosed angle-bracket destinations.
+    /// </summary>
+    [Theory]
+    [InlineData("[a][", "[a]: /a.md\n\n")]
+    [InlineData("[a][b", "[a]: /a.md\n\n")]
+    [InlineData("[a] ", "[a]: /a.md\n\n")]
+    [InlineData("[a][]", "[a]: /a.md\n\n")]
+    [InlineData("[a](<", "")]
+    [InlineData("[x](<y", "")]
+    [InlineData("[", "[a]: /a.md\n\n")]
+    [InlineData("[[]", "[a]: /a.md\n\n")]
+    [InlineData("\\[a]", "[a]: /a.md\n\n")]
+    [InlineData("](<", "")]
+    public void Reference_and_angle_bracket_links_are_scanned_in_linear_time(string unit, string prefix)
+    {
+        var body = prefix + string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "\n";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Targets(body);
+        watch.Stop();
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
 }
