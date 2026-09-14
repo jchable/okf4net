@@ -36,6 +36,62 @@ public static class GitRevision
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// The absolute path of <c>git</c> found on <c>PATH</c>, or <see langword="null"/> when it is not
+    /// there.
+    ///
+    /// <para><b>Why this exists at all, rather than handing <c>"git"</c> straight to
+    /// <see cref="ProcessStartInfo"/>.</b> A bare executable name lets Windows' <c>CreateProcess</c>
+    /// search the application directory and the <b>current directory</b> before it ever looks at
+    /// <c>PATH</c>. This producer's whole premise is that it only reads a scanned repository, never
+    /// executes anything from it -- <c>--no-msbuild</c> exists to say so explicitly -- so a
+    /// <c>git.exe</c> committed inside the repository being scanned would run with the operator's own
+    /// privileges the moment <c>okfgen</c> was launched from inside that checkout, silently, under
+    /// every flag combination including <c>--no-msbuild</c>. Resolving here, against <c>PATH</c> only,
+    /// closes that: the current directory is never consulted, whatever it happens to be.</para>
+    ///
+    /// <para><b>The candidate names, on Windows, come from <c>PATHEXT</c>.</b> Hard-coding
+    /// <c>git.exe</c>/<c>git.cmd</c> would silently miss a <c>git.bat</c> or a <c>git.com</c> shim, and
+    /// would order a <c>.cmd</c> ahead of an <c>.exe</c> even when the operator's own <c>PATHEXT</c>
+    /// says the reverse -- both wrong in the same direction <c>CreateProcess</c> itself is not. Falls
+    /// back to <c>.COM;.EXE;.BAT;.CMD</c>, <c>PATHEXT</c>'s own documented default, when the
+    /// environment variable is unset.</para>
+    ///
+    /// <para><b>A relative <c>PATH</c> entry is skipped, not resolved.</b> An empty entry (<c>"a;;b"</c>,
+    /// which Windows and most shells read as "the current directory") and a literal <c>.</c> or other
+    /// relative segment are both left out rather than combined against
+    /// <see cref="Environment.CurrentDirectory"/> -- resolving either would still end up asking the
+    /// current directory, which is exactly the hole this method exists to close, just one indirection
+    /// later.</para>
+    /// </summary>
+    internal static string? ResolveGitExecutable()
+    {
+        var extensions = Environment.GetEnvironmentVariable("PATHEXT") is { Length: > 0 } pathext
+            ? pathext.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            : [".COM", ".EXE", ".BAT", ".CMD"];
+        IEnumerable<string> names = OperatingSystem.IsWindows() ? extensions.Select(ext => "git" + ext) : ["git"];
+
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!Path.IsPathRooted(directory))
+            {
+                continue;
+            }
+
+            foreach (var name in names)
+            {
+                var candidate = Path.Combine(directory, name);
+                if (File.Exists(candidate))
+                {
+                    return Path.GetFullPath(candidate);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// The HEAD commit's <i>committer</i> date, normalized to UTC and formatted as the §5-conformant
     /// <c>yyyy-MM-ddTHH:mm:ssZ</c> -- an explicit UTC offset, never a bare date. Falls back to the
     /// current wall-clock instant, in the same format, when <paramref name="repoRoot"/> is not inside a
@@ -135,7 +191,17 @@ public static class GitRevision
             return null;
         }
 
-        var startInfo = new ProcessStartInfo("git")
+        // Resolved against PATH explicitly rather than handed the bare name "git" -- see
+        // ResolveGitExecutable's own doc for why: a bare name lets Windows search the current
+        // directory before PATH, and this run's current directory is the operator's, not this
+        // method's business to trust. `git` simply not being on PATH folds into the same
+        // "outside a git repository" fallback as every other failure below.
+        if (ResolveGitExecutable() is not { } gitExecutable)
+        {
+            return null;
+        }
+
+        var startInfo = new ProcessStartInfo(gitExecutable)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -155,8 +221,10 @@ public static class GitRevision
         }
         catch (Win32Exception)
         {
-            // `git` is not on PATH at all -- folded into the same fallback as "not a repository" rather
-            // than a distinct failure mode, since both leave this run with nothing to stamp.
+            // `git` not being found is already handled above, by ResolveGitExecutable returning null --
+            // this remains for a resolved executable that still cannot be launched (permissions, an
+            // antivirus block, a corrupt binary), folded into the same fallback as "not a repository"
+            // since both leave this run with nothing to stamp.
             return null;
         }
 

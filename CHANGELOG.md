@@ -649,6 +649,10 @@ and this project adheres to
 
 ### Fixed
 
+- **`okfgen` resolves `git` on `PATH` itself.** On Windows a bare
+  `Process.Start("git")` searched the current directory first, so a
+  `git.exe` committed in the scanned repository ran when `okfgen` was
+  launched from inside it — `--no-msbuild` included (`producers/`).
 - `okfgen generate --out dir/` (a trailing directory separator, as shell
   completion writes it) wrote nothing and blamed a symbolic link; `--repo
   dir/` never pruned a deleted file's concept; the staging directory landed
