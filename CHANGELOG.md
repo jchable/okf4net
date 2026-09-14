@@ -685,15 +685,35 @@ and this project adheres to
   it. Code spans are matched over a whole paragraph, so one may cross a line
   ending but never a block boundary; they match runs of equal length, an
   unmatched run is literal, and a backslash escapes an opener but never a closer
-  (`` `C:\` `` is a complete span). Block quotes and HTML blocks are still not
-  modelled. All of this lives in the one shared "skip code" pass, so
+  (`` `C:\` `` is a complete span). Block quotes are containers like list items,
+  so a fence or indented code inside `>` is code and ends with the quote, while
+  quoted prose — lazy continuation lines included — is still read. Raw HTML is not
+  markdown either: an HTML block (a comment, `<script>`/`<pre>`/`<style>`/
+  `<textarea>`, `<?…?>`, `<!…>`, CDATA to its end marker; a block-level tag, or a
+  complete tag alone on its line, to the next blank line) hides what it holds,
+  and so does inline raw HTML in a paragraph — a comment, a tag's attribute values
+  — matched left to right against code spans, whichever starts first. So a
+  `[^x]` inside `<!-- -->` is no longer a citation, and the `<details>` pattern
+  still reads the markdown after its blank line. Tabs count to the next multiple
+  of four from the start of the line and may be partly consumed by a container;
+  a setext underline ends its paragraph; an ordered list interrupts a paragraph
+  only from 1; an empty list item ends at a blank line; and a link reference
+  definition's destination and title are not text. Checked against commonmark.js
+  0.31.2 on 300 000 random bodies: no difference in which footnote references are
+  visible, reference links (`[text][label]`, which no scanner here reads) aside.
+  Nesting deeper than 100 containers is read as text, as markdown-it limits it.
+  All of this lives in the one shared "skip code" pass, so
   `okf graph`'s links change too; its output and `okf validate`'s were compared
   before and after on every bundle in `bundles/` and every fixture, and are
   byte-identical. The pass is linear on hostile input: a first version of code-span
   matching searched for each opener's closer from scratch (14 s on a 1.4 MB line
   of unclosable backtick runs), and the ATX heading regex's lazy `(.*?)` retried
   its closing sequence at every character (25 s to scan `# a`, 150 000 spaces, `x`);
-  both are hand-written scans now, with tests.
+  both are hand-written scans now, with tests. Container matching reads a bounded
+  stretch of the line per container (a first cut took 5.8 s on one line of 75 000
+  nested `> - ` markers) and nesting is capped (80 000 nested items followed by
+  160 000 blank lines took over a minute), HTML end markers and closing quotes are
+  table lookups, and a fuzz test checks no extractor throws on random markdown.
 - **`bundles/meridian_transit`'s fare-cap attester rejects negative amounts.**
   Raised by Copilot on #98: it checked `cap_cents` was an integer, never that it
   was a cap, so a cap of `-1` recomputed to an all-zero split that a matching

@@ -547,51 +547,75 @@ public static class LinkScanner
     /// caller find structure on <c>Blanked</c> (so nothing inside code is mistaken for a
     /// link) and still read visible text from <c>Raw</c>.
     ///
-    /// Code is recognized as CommonMark defines it, within a single line-by-line pass
-    /// that tracks the open list items (by the column their content starts at) and
-    /// whether a paragraph is open. Indentation is measured from the innermost open list
-    /// item's content, not from the margin:
+    /// Blocks are recognized as CommonMark defines them, in one line-by-line pass that
+    /// follows its block-parsing strategy (§5): each line first matches the open
+    /// containers — a block quote by its <c>&gt;</c>, a list item by indentation reaching
+    /// its content column — then may open new ones, and what is left is read as a leaf
+    /// block, with indentation measured from the innermost container's content:
     /// <list type="bullet">
-    /// <item>A fence opens on three or more backticks or tildes indented at most three
-    /// columns, and closes only on a run of the same character at least as long, indented
-    /// at most three columns, with nothing after it but whitespace — so a <c>```</c>
-    /// inside a <c>````</c> fence, a <c>```python</c> line, or an over-indented run is
-    /// content. A fence opened inside a list item ends when the item does.</item>
+    /// <item>Columns count tabs to the next multiple of four from the start of the line, and
+    /// a container that needs only part of a tab leaves the rest as indentation (§2.2).</item>
+    /// <item>A container that a line does not match closes, and every block inside it
+    /// with it — unless the line is lazy continuation text of an open paragraph. A list
+    /// item that began with a blank line ends at the next one (§5.2). An item may
+    /// interrupt a paragraph only with content and, when ordered, from 1.</item>
+    /// <item>A fence opens on three or more backticks or tildes, and closes only on a run
+    /// of the same character at least as long, indented at most three columns, with
+    /// nothing after it but whitespace.</item>
     /// <item>A line indented four or more columns while no paragraph is open is indented
     /// code; inside an open paragraph it is continuation text.</item>
-    /// <item>A list item ends at a line indented less than its content, unless that line
-    /// is lazy continuation text of the item's open paragraph.</item>
-    /// <item>A fence may also open on a list marker's own line (<c>* ```</c>), inside
-    /// that item.</item>
-    /// <item>Inline code spans are blanked by <see cref="BlankInlineCode"/> over a whole
-    /// paragraph at once, so a span may cross a line ending but never a block
-    /// boundary.</item>
+    /// <item>An HTML block (§4.6) is raw HTML: a comment, <c>&lt;script&gt;</c>,
+    /// <c>&lt;pre&gt;</c>, <c>&lt;style&gt;</c> or <c>&lt;textarea&gt;</c>, a processing
+    /// instruction, a declaration or CDATA runs to the line holding its end marker; a
+    /// block-level tag, or a complete tag alone on its line — any closing tag included —
+    /// runs to the next blank line (and the latter cannot interrupt a paragraph).</item>
+    /// <item>A setext underline ends the paragraph it underlines; link reference
+    /// definitions at a paragraph's start (§4.7) are not text.</item>
+    /// <item>Inline code spans and raw inline HTML are blanked by <see cref="BlankInline"/>
+    /// over a whole paragraph at once, so either may cross a line ending but never a
+    /// block boundary.</item>
     /// </list>
-    /// Not modelled: block quotes and HTML blocks.
+    /// Code, HTML block and definition text is blanked; code and HTML block lines become
+    /// empty pairs. Checked against commonmark.js 0.31.2 on 300 000 random bodies built
+    /// from these constructs, with no difference in which footnote references are visible
+    /// other than reference links (<c>[text][label]</c>), which no scanner here reads.
+    /// Nesting is capped at <see cref="MaxNesting"/>.
     /// </summary>
     private static List<(string Raw, string Blanked)> CodeFreeLinePairs(string body)
     {
         var result = new List<(string, string)>();
-        var listContent = new Stack<int>();
-        (char Char, int Length, int Container)? fence = null;
-        var previousBlank = true;
-        var inParagraph = false;
+        var containers = new List<BlockContainer>();
+        var opened = new List<BlockContainer>();
 
-        // The result indices of the open paragraph's lines, blanked together when it ends.
-        var paragraph = new List<int>();
+        // Open leaf blocks, each with the number of containers open when it began: it
+        // ends as soon as one of them closes.
+        (char Char, int Length, int Depth)? fence = null;
+        (int Kind, int Depth)? html = null;
+
+        // The open paragraph's lines, as result indices and the offset its text starts at
+        // past the container markers, blanked together when it ends.
+        var paragraph = new List<(int Index, int Offset)>();
+        var paragraphDepth = 0;
+
         void EndParagraph()
         {
-            inParagraph = false;
             if (paragraph.Count == 0)
             {
                 return;
             }
 
-            var joined = string.Join('\n', paragraph.Select(k => result[k].Item1));
-            var blanked = BlankInlineCode(joined).Split('\n');
+            // Link reference definitions at the start of a paragraph are not rendered
+            // (§4.7), so they are blanked whole; inline parsing sees only what follows.
+            var joined = string.Join('\n', paragraph.Select(p => result[p.Index].Item1[p.Offset..]));
+            var definitions = LinkReferenceDefinitionsEnd(joined);
+            var hidden = joined.ToCharArray(0, definitions);
+            Blank(hidden, 0, definitions);
+            var blanked = string.Concat(new string(hidden), BlankInline(joined[definitions..])).Split('\n');
             for (var k = 0; k < paragraph.Count; k++)
             {
-                result[paragraph[k]] = (result[paragraph[k]].Item1, blanked[k]);
+                var (index, offset) = paragraph[k];
+                var raw = result[index].Item1;
+                result[index] = (raw, string.Concat(raw.AsSpan(0, offset), blanked[k]));
             }
 
             paragraph.Clear();
@@ -599,89 +623,206 @@ public static class LinkScanner
 
         foreach (var line in LfLines.Split(body))
         {
-            var (indent, contentStart) = Indentation(line);
-            var content = line[contentStart..];
-            var blank = content.Length == 0;
-
-            if (fence is { } open)
+            var lastText = line.Length - 1;
+            while (lastText >= 0 && line[lastText] is ' ' or '\t')
             {
-                if (blank || indent >= open.Container)
+                lastText--;
+            }
+
+            (int Star, int Dash, int Underscore)? thematicFacts = null;
+
+            // 1. Match the open containers. At most MaxNesting of them, each reading a
+            // bounded stretch of the line, so every line costs time linear in its length.
+            var cursor = new LineCursor(0, 0, 0);
+            var matched = 0;
+            for (; matched < containers.Count; matched++)
+            {
+                var container = containers[matched];
+                var (indent, content, contentColumn) = cursor.Indentation(line, 4);
+                if (container.Quote)
                 {
-                    var run = RunLength(content, 0, open.Char);
-                    if (!blank && indent - open.Container <= 3 && run >= open.Length && content.AsSpan(run).IsWhiteSpace())
+                    if (indent > 3 || content > lastText || line[content] != '>')
                     {
-                        fence = null;
+                        break;
                     }
 
-                    result.Add((string.Empty, string.Empty));
-                    previousBlank = blank;
+                    cursor = LineCursor.AfterQuoteMarker(line, content, contentColumn);
+                }
+                else if (cursor.Offset > lastText)
+                {
+                    // A blank line keeps a list item open — unless the item has had no
+                    // content yet, which a blank line ends (§5.2).
+                    if (container.Empty)
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    if (cursor.Indentation(line, container.Column).Columns < container.Column)
+                    {
+                        break;
+                    }
+
+                    cursor = cursor.Consume(line, container.Column);
+                    containers[matched] = container with { Empty = false };
+                }
+            }
+
+            var allMatched = matched == containers.Count;
+
+            // 2. Inside a fence or an HTML block whose containers all continue.
+            if (allMatched && fence is { } open)
+            {
+                var (indent, start, _) = cursor.Indentation(line, 4);
+                var run = RunLength(line, start, open.Char);
+                if (start <= lastText && indent <= 3 && run >= open.Length && line.AsSpan(start + run).IsWhiteSpace())
+                {
+                    fence = null;
+                }
+
+                result.Add((string.Empty, string.Empty));
+                continue;
+            }
+
+            if (allMatched && html is { } block)
+            {
+                if (block.Kind >= 6 && cursor.Offset > lastText)
+                {
+                    html = null;
+                    result.Add((line, line));
                     continue;
                 }
 
-                // Less indented than the list item that holds the fence: the item has
-                // ended, and the fence with it. The line is read as ordinary markdown.
-                fence = null;
+                if (block.Kind <= 5 && EndsHtmlBlock(block.Kind, line.AsSpan(cursor.Offset)))
+                {
+                    html = null;
+                }
+
+                result.Add((string.Empty, string.Empty));
+                continue;
             }
 
-            if (blank)
+            // 3. Open new containers.
+            opened.Clear();
+            var inner = cursor;
+            while (matched + opened.Count < MaxNesting)
+            {
+                var (indent, start, startColumn) = inner.Indentation(line, 4);
+                if (indent > 3 || start > lastText)
+                {
+                    break;
+                }
+
+                if (line[start] == '>')
+                {
+                    opened.Add(new BlockContainer(true, 0, false));
+                    inner = LineCursor.AfterQuoteMarker(line, start, startColumn);
+                    continue;
+                }
+
+                if (IsThematicBreakAt(line, start, lastText, ref thematicFacts)
+                    || ListItemAt(line, start, startColumn, lastText) is not { } item)
+                {
+                    break;
+                }
+
+                // A list item may interrupt a paragraph only if it has content and, when
+                // ordered, starts at 1 (§5.2); otherwise this line continues the paragraph.
+                // The paragraph is what this line would continue only when every container
+                // around it matched — as commonmark.js decides it — so a line that left a
+                // quote is free to start any list.
+                if (allMatched && paragraph.Count > 0 && opened.Count == 0 && (item.Empty || item.OrderedNotOne))
+                {
+                    break;
+                }
+
+                opened.Add(new BlockContainer(false, item.ContentColumn - inner.Column, item.Empty));
+                inner = item.Content;
+            }
+
+            var (leafIndent, leafStart, _) = inner.Indentation(line, 4);
+            var leaf = line[leafStart..];
+            var leafBlank = leafStart > lastText;
+
+            // 4. Close what this line did not continue — unless it is lazy continuation.
+            if (!allMatched)
+            {
+                if (opened.Count == 0 && paragraph.Count > 0 && !leafBlank
+                    && (leafIndent > 3 || !StartsLeafBlock(leaf)))
+                {
+                    paragraph.Add((result.Count, inner.Offset));
+                    result.Add((line, line));
+                    continue;
+                }
+
+                containers.RemoveRange(matched, containers.Count - matched);
+                fence = null;
+                html = null;
+                if (paragraphDepth > matched)
+                {
+                    EndParagraph();
+                }
+            }
+
+            if (opened.Count > 0)
+            {
+                EndParagraph();
+                containers.AddRange(opened);
+            }
+
+            var paragraphOpen = paragraph.Count > 0;
+
+            // 5. The leaf block.
+            if (leafBlank)
             {
                 EndParagraph();
                 result.Add((line, line));
-                previousBlank = true;
                 continue;
             }
 
-            var thematicBreak = ThematicBreak.IsMatch(content);
-            var markerContent = thematicBreak ? null : ListItem(indent, content);
-            var opensFence = OpensFence(content);
-            var startsBlock = thematicBreak || markerContent is not null || opensFence is not null
-                || TryParseAtxHeading(content, out _, out _);
-
-            var lazy = inParagraph && !previousBlank && !startsBlock;
-            while (!lazy && listContent.Count > 0 && indent < listContent.Peek())
+            if (leafIndent >= 4)
             {
-                listContent.Pop();
-            }
-
-            previousBlank = false;
-            var relative = indent - (listContent.Count > 0 ? listContent.Peek() : 0);
-
-            if (relative >= 4 && !inParagraph)
-            {
-                result.Add((string.Empty, string.Empty));
-                continue;
-            }
-
-            if (relative <= 3 && opensFence is { } fenceOpen)
-            {
-                EndParagraph();
-                fence = (fenceOpen.Char, fenceOpen.Length, listContent.Count > 0 ? listContent.Peek() : 0);
-                result.Add((string.Empty, string.Empty));
-                continue;
-            }
-
-            if (relative <= 3 && startsBlock && markerContent is null)
-            {
-                // A heading or thematic break: never part of a paragraph.
-                EndParagraph();
-                result.Add((line, BlankInlineCode(line)));
-                continue;
-            }
-
-            if (relative <= 3 && markerContent is { } item)
-            {
-                EndParagraph();
-                listContent.Push(item.Column);
-                if (OpensFence(item.Content) is { } itemFence)
+                if (!paragraphOpen)
                 {
-                    fence = (itemFence.Char, itemFence.Length, item.Column);
                     result.Add((string.Empty, string.Empty));
                     continue;
                 }
             }
+            else if (OpensFence(leaf) is { } fenceOpen)
+            {
+                EndParagraph();
+                fence = (fenceOpen.Char, fenceOpen.Length, containers.Count);
+                result.Add((string.Empty, string.Empty));
+                continue;
+            }
+            else if (HtmlBlockStart(leaf, paragraphOpen) is var kind and > 0)
+            {
+                EndParagraph();
+                html = kind <= 5 && EndsHtmlBlock(kind, leaf) ? null : (kind, containers.Count);
+                result.Add((string.Empty, string.Empty));
+                continue;
+            }
+            else if (paragraphOpen && IsSetextUnderline(leaf))
+            {
+                // The paragraph above becomes a heading, and ends here.
+                EndParagraph();
+                result.Add((line, line));
+                continue;
+            }
+            else if (TryParseAtxHeading(leaf, out _, out _) || ThematicBreak.IsMatch(leaf))
+            {
+                EndParagraph();
+                result.Add((line, string.Concat(line.AsSpan(0, inner.Offset), BlankInline(line[inner.Offset..]))));
+                continue;
+            }
 
-            inParagraph = true;
-            paragraph.Add(result.Count);
+            if (paragraph.Count == 0)
+            {
+                paragraphDepth = containers.Count;
+            }
+
+            paragraph.Add((result.Count, inner.Offset));
             result.Add((line, line));
         }
 
@@ -690,28 +831,455 @@ public static class LinkScanner
     }
 
     /// <summary>
-    /// When <paramref name="content"/> (the line past its <paramref name="indent"/>
-    /// columns) opens a list item — a bullet (<c>*</c>, <c>-</c>, <c>+</c>) or an ordered
-    /// marker (<c>1.</c>, <c>1)</c>, up to nine digits) followed by whitespace or the end
-    /// of the line — the column its content starts at and that content on this line;
-    /// otherwise <c>null</c>. As CommonMark counts the column: one to four columns after
-    /// the marker, or one when there are five or more (the item then opens with indented
-    /// code, so no content is returned) or nothing follows.
+    /// The offset just past the link reference definitions a paragraph's text starts with
+    /// (CommonMark §4.7), or 0. Each is <c>[label]:</c>, a destination — <c>&lt;…&gt;</c>, or
+    /// non-space characters with balanced parentheses — and an optional title in
+    /// <c>"…"</c>, <c>'…'</c> or <c>(…)</c> separated from it by whitespace, each part
+    /// allowed to start on the next line, and nothing after but whitespace. A
+    /// <c>[^label]:</c> line is a footnote definition (GFM), whose text is rendered, so it
+    /// is not one. Linear: a successful definition consumes what it scans, and the first
+    /// failure ends the search.
     /// </summary>
-    private static (int Column, string Content)? ListItem(int indent, string content)
+    private static int LinkReferenceDefinitionsEnd(string text)
     {
-        if (ListItemContentColumn(indent, content) is not { } column)
+        var pos = 0;
+        while (LinkReferenceDefinitionEnd(text, pos) is var end and > 0)
+        {
+            pos = end;
+        }
+
+        return pos;
+    }
+
+    private static int LinkReferenceDefinitionEnd(string s, int pos)
+    {
+        var i = pos;
+        while (i < s.Length && s[i] == ' ' && i - pos < 4)
+        {
+            i++;
+        }
+
+        if (i - pos > 3 || i + 1 >= s.Length || s[i] != '[' || s[i + 1] == '^')
+        {
+            return -1;
+        }
+
+        // The label: no unescaped brackets, at most 999 characters, not all whitespace.
+        var j = i + 1;
+        var hasText = false;
+        while (j < s.Length && s[j] != ']')
+        {
+            if (s[j] == '[' || j - i > 999)
+            {
+                return -1;
+            }
+
+            hasText |= !char.IsWhiteSpace(s[j]);
+            j += s[j] == '\\' && j + 1 < s.Length ? 2 : 1;
+        }
+
+        if (j + 1 >= s.Length || !hasText || s[j + 1] != ':')
+        {
+            return -1;
+        }
+
+        var dest = SkipSpaceAndOneLineEnding(s, j + 2);
+        if (dest >= s.Length)
+        {
+            return -1;
+        }
+
+        int destEnd;
+        if (s[dest] == '<')
+        {
+            var k = dest + 1;
+            while (k < s.Length && s[k] is not ('>' or '<' or '\n'))
+            {
+                k += s[k] == '\\' && k + 1 < s.Length && s[k + 1] != '\n' ? 2 : 1;
+            }
+
+            if (k >= s.Length || s[k] != '>')
+            {
+                return -1;
+            }
+
+            destEnd = k + 1;
+        }
+        else
+        {
+            var k = dest;
+            var depth = 0;
+            while (k < s.Length && s[k] > ' ')
+            {
+                if (s[k] == '\\' && k + 1 < s.Length && IsAsciiPunctuation(s[k + 1]))
+                {
+                    k += 2;
+                    continue;
+                }
+
+                if (s[k] == '(')
+                {
+                    depth++;
+                }
+                else if (s[k] == ')' && --depth < 0)
+                {
+                    return -1;
+                }
+
+                k++;
+            }
+
+            if (k == dest || depth != 0)
+            {
+                return -1;
+            }
+
+            destEnd = k;
+        }
+
+        // A title, when one parses and ends its line; otherwise the destination must.
+        var title = SkipSpaceAndOneLineEnding(s, destEnd);
+        if (title > destEnd && title < s.Length && s[title] is '"' or '\'' or '(')
+        {
+            var close = s[title] == '(' ? ')' : s[title];
+            var k = title + 1;
+            while (k < s.Length && s[k] != close && !(close == ')' && s[k] == '('))
+            {
+                k += s[k] == '\\' && k + 1 < s.Length ? 2 : 1;
+            }
+
+            if (k < s.Length && s[k] == close && EndOfSpacedRest(s, k + 1) is var titleEnd and >= 0)
+            {
+                return titleEnd;
+            }
+        }
+
+        return EndOfSpacedRest(s, destEnd);
+    }
+
+    private static int SkipSpaceAndOneLineEnding(string s, int i)
+    {
+        while (i < s.Length && s[i] is ' ' or '\t')
+        {
+            i++;
+        }
+
+        if (i < s.Length && s[i] == '\n')
+        {
+            i++;
+            while (i < s.Length && s[i] is ' ' or '\t')
+            {
+                i++;
+            }
+        }
+
+        return i;
+    }
+
+    /// <summary>
+    /// The offset past the end of the line (its <c>\n</c> included) when only spaces remain
+    /// on it from <paramref name="i"/>, or <c>-1</c>. §4.7 says "No further character may
+    /// occur"; commonmark.js, the reference implementation, tolerates trailing spaces and
+    /// not tabs, and this follows it.
+    /// </summary>
+    private static int EndOfSpacedRest(string s, int i)
+    {
+        while (i < s.Length && s[i] == ' ')
+        {
+            i++;
+        }
+
+        return i >= s.Length ? s.Length : s[i] == '\n' ? i + 1 : -1;
+    }
+
+    /// <summary>
+    /// How deeply block quotes and list items may nest before further markers are read as
+    /// text. Each line is matched against every open container, so without a bound a
+    /// hostile body — thousands of nested markers, then thousands of lines — is quadratic.
+    /// CommonMark sets no limit; 100 is markdown-it's default nesting limit, far beyond
+    /// any bundle a person writes.
+    /// </summary>
+    private const int MaxNesting = 100;
+
+    /// <summary>
+    /// An open block quote (<see cref="Quote"/>) or list item, whose content starts
+    /// <see cref="Column"/> columns past its parent's; <see cref="Empty"/> while a list
+    /// item has had no content, since a blank line then ends it.
+    /// </summary>
+    private readonly record struct BlockContainer(bool Quote, int Column, bool Empty);
+
+    /// <summary>
+    /// A position in a line, in columns as CommonMark counts them — a tab advancing to the
+    /// next multiple of four from the start of the line (§2.2). <see cref="Offset"/> is the
+    /// next character to read, which starts at <see cref="OffsetColumn"/>; when a container
+    /// consumed only part of a tab, <see cref="Column"/> lies inside that tab and the rest
+    /// of it still counts as indentation.
+    /// </summary>
+    private readonly record struct LineCursor(int Offset, int OffsetColumn, int Column)
+    {
+        private static int ColumnAfter(char c, int column) => c == '\t' ? column + 4 - (column % 4) : column + 1;
+
+        /// <summary>
+        /// The indentation from here in columns, the offset of the first character past it
+        /// and that character's column — stopping once <paramref name="cap"/> columns are
+        /// counted, since callers only compare against a small bound.
+        /// </summary>
+        public (int Columns, int ContentOffset, int ContentColumn) Indentation(string line, int cap)
+        {
+            var column = OffsetColumn;
+            var i = Offset;
+            while (i < line.Length && line[i] is ' ' or '\t' && column - Column < cap)
+            {
+                column = ColumnAfter(line[i], column);
+                i++;
+            }
+
+            return (Math.Max(0, column - Column), i, column);
+        }
+
+        /// <summary>This cursor moved on by <paramref name="columns"/> columns of whitespace, splitting a tab if it must.</summary>
+        public LineCursor Consume(string line, int columns)
+        {
+            var target = Column + columns;
+            var column = OffsetColumn;
+            var i = Offset;
+            while (i < line.Length && line[i] is ' ' or '\t' && column < target)
+            {
+                var next = ColumnAfter(line[i], column);
+                if (next > target)
+                {
+                    return new LineCursor(i, column, target);
+                }
+
+                column = next;
+                i++;
+            }
+
+            return new LineCursor(i, column, Math.Max(column, target));
+        }
+
+        /// <summary>The cursor past a block quote marker at <paramref name="marker"/> and the one optional space after it — one column of a tab.</summary>
+        public static LineCursor AfterQuoteMarker(string line, int marker, int markerColumn)
+        {
+            var after = new LineCursor(marker + 1, markerColumn + 1, markerColumn + 1);
+            return marker + 1 < line.Length && line[marker + 1] is ' ' or '\t' ? after.Consume(line, 1) : after;
+        }
+    }
+
+    /// <summary>
+    /// When a list item marker starts at <paramref name="start"/> (column
+    /// <paramref name="startColumn"/>): the absolute column its content starts at, a cursor
+    /// there, whether it has no content on this line, and whether it is an ordered item
+    /// not numbered 1. As CommonMark counts the content column (§5.2): one to four columns
+    /// after the marker, or one when there are five or more (the content is then indented
+    /// code) or nothing follows. Reads a bounded stretch of the line.
+    /// </summary>
+    private static (int ContentColumn, LineCursor Content, bool Empty, bool OrderedNotOne)? ListItemAt(string line, int start, int startColumn, int lastText)
+    {
+        int width;
+        var orderedNotOne = false;
+        if (line[start] is '*' or '+' or '-')
+        {
+            width = 1;
+        }
+        else
+        {
+            var digits = 0;
+            while (start + digits < line.Length && digits < 10 && char.IsAsciiDigit(line[start + digits]))
+            {
+                digits++;
+            }
+
+            if (digits is 0 or > 9 || start + digits >= line.Length || line[start + digits] is not ('.' or ')'))
+            {
+                return null;
+            }
+
+            orderedNotOne = !int.TryParse(line.AsSpan(start, digits), System.Globalization.CultureInfo.InvariantCulture, out var number) || number != 1;
+            width = digits + 1;
+        }
+
+        var after = new LineCursor(start + width, startColumn + width, startColumn + width);
+        if (after.Offset > lastText)
+        {
+            return (after.Column + 1, new LineCursor(line.Length, after.Column + 1, after.Column + 1), true, orderedNotOne);
+        }
+
+        if (line[after.Offset] is not (' ' or '\t'))
         {
             return null;
         }
 
-        // A marker holds no whitespace, so the first whitespace ends it.
-        var markerEnd = content.IndexOfAny([' ', '\t']);
-        var afterMarker = markerEnd < 0 ? string.Empty : content[markerEnd..];
-        var (spaces, start) = Indentation(afterMarker);
-        return (column, spaces >= 5 ? string.Empty : afterMarker[start..]);
+        var (spaces, content, contentColumn) = after.Indentation(line, 5);
+        return spaces >= 5
+            ? (after.Column + 1, after.Consume(line, 1), false, orderedNotOne)
+            : (contentColumn, new LineCursor(content, contentColumn, contentColumn), false, orderedNotOne);
     }
 
+    /// <summary>
+    /// Whether the rest of <paramref name="line"/> from <paramref name="start"/> is a
+    /// thematic break: three or more of one of <c>*</c>, <c>-</c>, <c>_</c>, with only
+    /// spaces or tabs besides. <paramref name="facts"/> caches, per line, the last offset
+    /// holding anything else for each of the three, so a line of many markers is not
+    /// rescanned at each one.
+    /// </summary>
+    private static bool IsThematicBreakAt(string line, int start, int lastText, ref (int Star, int Dash, int Underscore)? facts)
+    {
+        var c = line[start];
+        if (c is not ('*' or '-' or '_'))
+        {
+            return false;
+        }
+
+        if (facts is null)
+        {
+            int star = -1, dash = -1, underscore = -1;
+            for (var p = 0; p <= lastText; p++)
+            {
+                var ch = line[p];
+                if (ch is ' ' or '\t')
+                {
+                    continue;
+                }
+
+                star = ch == '*' ? star : p;
+                dash = ch == '-' ? dash : p;
+                underscore = ch == '_' ? underscore : p;
+            }
+
+            facts = (star, dash, underscore);
+        }
+
+        var lastOther = c switch { '*' => facts.Value.Star, '-' => facts.Value.Dash, _ => facts.Value.Underscore };
+        if (lastOther > start)
+        {
+            return false;
+        }
+
+        // Only `c` and whitespace remain, so this count runs at most a few times per line:
+        // with three or more the loop that called it stops here.
+        var count = 0;
+        for (var p = start; p <= lastText && count < 3; p++)
+        {
+            count += line[p] == c ? 1 : 0;
+        }
+
+        return count >= 3;
+    }
+
+    /// <summary>A setext heading underline: one or more <c>=</c>, or one or more <c>-</c>, and nothing after but whitespace.</summary>
+    private static bool IsSetextUnderline(string leaf) =>
+        leaf.Length > 0 && leaf[0] is '=' or '-' && leaf.AsSpan(RunLength(leaf, 0, leaf[0])).IsWhiteSpace();
+
+    /// <summary>
+    /// Whether <paramref name="leaf"/> (indented at most three columns) starts a block, so
+    /// it ends an open paragraph instead of continuing it lazily. A setext underline is not
+    /// one: it cannot make a heading of a paragraph it does not share containers with, so
+    /// it is continuation text (CommonMark example 93).
+    /// </summary>
+    private static bool StartsLeafBlock(string leaf) =>
+        OpensFence(leaf) is not null
+        || TryParseAtxHeading(leaf, out _, out _)
+        || ThematicBreak.IsMatch(leaf)
+        || HtmlBlockStart(leaf, paragraphOpen: true) > 0;
+
+    // The tag names that open an HTML block of kind 1 (raw text, up to its closing tag)
+    // and of kind 6 (block-level, up to a blank line), from CommonMark §4.6.
+    private static readonly string[] RawTextTags = ["script", "pre", "style", "textarea"];
+
+    private static readonly HashSet<string> BlockLevelTags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
+        "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
+        "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
+        "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
+        "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search", "section",
+        "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
+    };
+
+    /// <summary>
+    /// The CommonMark HTML block kind (1–7) that <paramref name="leaf"/> opens, or 0. Kind
+    /// 7 — a complete tag alone on its line — cannot interrupt a paragraph.
+    /// </summary>
+    private static int HtmlBlockStart(string leaf, bool paragraphOpen)
+    {
+        if (leaf.Length < 2 || leaf[0] != '<')
+        {
+            return 0;
+        }
+
+        var closing = leaf[1] == '/';
+        var nameStart = closing ? 2 : 1;
+        var nameEnd = nameStart;
+        while (nameEnd < leaf.Length && (char.IsAsciiLetterOrDigit(leaf[nameEnd]) || leaf[nameEnd] == '-'))
+        {
+            nameEnd++;
+        }
+
+        var name = leaf[nameStart..nameEnd];
+        var afterName = nameEnd < leaf.Length ? leaf[nameEnd] : ' ';
+
+        if (!closing && afterName is ' ' or '\t' or '>' && RawTextTags.Contains(name, StringComparer.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (leaf.StartsWith("<!--", StringComparison.Ordinal))
+        {
+            return 2;
+        }
+
+        if (leaf.StartsWith("<?", StringComparison.Ordinal))
+        {
+            return 3;
+        }
+
+        if (leaf.StartsWith("<![CDATA[", StringComparison.Ordinal))
+        {
+            return 5;
+        }
+
+        if (leaf[1] == '!' && leaf.Length > 2 && char.IsAsciiLetter(leaf[2]))
+        {
+            return 4;
+        }
+
+        if (name.Length > 0 && BlockLevelTags.Contains(name)
+            && (afterName is ' ' or '\t' or '>' || leaf.AsSpan(nameEnd).StartsWith("/>")))
+        {
+            return 6;
+        }
+
+        // Kind 7: a complete open tag other than the raw-text ones, or ANY complete closing
+        // tag — `</pre>` alone on its line included — as §4.6 words it.
+        if (!paragraphOpen && name.Length > 0 && (closing || !RawTextTags.Contains(name, StringComparer.OrdinalIgnoreCase))
+            && new InlineHtml(leaf).TokenEnd(0) is var end and > 0 && leaf.AsSpan(end).IsWhiteSpace())
+        {
+            return 7;
+        }
+
+        return 0;
+    }
+
+    /// <summary>Whether <paramref name="line"/> holds the end marker of an HTML block of kind 1–5.</summary>
+    private static bool EndsHtmlBlock(int kind, ReadOnlySpan<char> line) => kind switch
+    {
+        1 => line.Contains("</script>", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("</pre>", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("</style>", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("</textarea>", StringComparison.OrdinalIgnoreCase),
+        2 => line.Contains("-->", StringComparison.Ordinal),
+        3 => line.Contains("?>", StringComparison.Ordinal),
+        4 => line.Contains('>'),
+        _ => line.Contains("]]>", StringComparison.Ordinal),
+    };
+
+    /// <summary>
+    /// The column a list item's content starts at when <paramref name="content"/> (the
+    /// line past its <paramref name="indent"/> columns) opens one, or <c>null</c>. Used
+    /// only to recognize a list item on a line read out of context; the block pass counts
+    /// columns with <see cref="ListItemAt"/>.
+    /// </summary>
     private static int? ListItemContentColumn(int indent, string content)
     {
         int width;
@@ -755,11 +1323,19 @@ public static class LinkScanner
     /// A line's indentation in columns (a tab advancing to the next multiple of four, as
     /// CommonMark counts it) and the offset of its first non-whitespace character.
     /// </summary>
-    private static (int Columns, int ContentStart) Indentation(string line)
+    private static (int Columns, int ContentStart) Indentation(string line) => Indentation(line, 0);
+
+    /// <summary>
+    /// As <see cref="Indentation(string)"/>, counting from offset <paramref name="from"/>
+    /// and stopping once <paramref name="cap"/> columns are reached — callers only compare
+    /// against a small bound, and a line of huge indentation must not be rescanned for each
+    /// container it holds.
+    /// </summary>
+    private static (int Columns, int ContentStart) Indentation(string line, int from, int cap = int.MaxValue)
     {
         var columns = 0;
-        var i = 0;
-        for (; i < line.Length; i++)
+        var i = from;
+        for (; i < line.Length && columns < cap; i++)
         {
             if (line[i] == ' ')
             {
@@ -809,20 +1385,279 @@ public static class LinkScanner
     }
 
     /// <summary>
-    /// Replaces inline code spans, delimiters included, with spaces so nothing inside
-    /// them is extracted. As CommonMark defines a span: a run of backticks opens one and
-    /// the next run of exactly the same length closes it (so <c>`` a ` b ``</c> is one
-    /// span); a run with no such closer is literal text; and a backslash-escaped backtick
-    /// opens nothing. Spans are matched across all of <paramref name="line"/>, which may
-    /// be a whole paragraph joined with <c>\n</c>; a line ending inside a span is kept.
+    /// Replaces inline code spans and raw inline HTML, delimiters included, with spaces so
+    /// nothing inside them is extracted; line endings are kept, since
+    /// <paramref name="line"/> may be a whole paragraph joined with <c>\n</c>. The two are
+    /// read left to right and whichever starts first wins, so <c>`&lt;!--`</c> is code and
+    /// the backtick inside <c>&lt;!-- ` --&gt;</c> is HTML.
+    ///
+    /// A code span, as CommonMark defines it (§6.1): a run of backticks opens one and the
+    /// next run of exactly the same length closes it (so <c>`` a ` b ``</c> is one span);
+    /// a run with no such closer is literal text; and a backslash-escaped backtick opens
+    /// nothing. Raw HTML (§6.6): a comment, processing instruction, declaration, CDATA
+    /// section, or open or closing tag — see <see cref="InlineHtml"/>.
     /// </summary>
-    private static string BlankInlineCode(string line)
+    private static string BlankInline(string line)
     {
-        if (line.IndexOf('`') < 0)
+        var hasCode = line.IndexOf('`') >= 0;
+        var hasHtml = line.IndexOf('<') >= 0;
+        if (!hasCode && !hasHtml)
         {
             return line;
         }
 
+        var chars = line.ToCharArray();
+        var (runs, escaped, closer) = hasCode ? CodeSpanRuns(line) : ([], [], []);
+        var html = hasHtml ? new InlineHtml(line) : null;
+        var k = 0;
+        for (var i = 0; i < line.Length;)
+        {
+            var c = line[i];
+            if (c == '\\' && i + 1 < line.Length && line[i + 1] != '`' && IsAsciiPunctuation(line[i + 1]))
+            {
+                i += 2;
+            }
+            else if (c == '`')
+            {
+                // Runs consumed inside an earlier span or HTML token are skipped here.
+                while (runs[k].Start + runs[k].Length <= i)
+                {
+                    k++;
+                }
+
+                if (closer[k] < 0)
+                {
+                    i = runs[k].Start + runs[k].Length; // no closer: literal
+                    k++;
+                    continue;
+                }
+
+                var close = runs[closer[k]];
+                Blank(chars, runs[k].Start + (escaped[k] ? 1 : 0), close.Start + close.Length);
+                i = close.Start + close.Length;
+                k = closer[k] + 1;
+            }
+            else if (c == '<' && html!.TokenEnd(i) is var end and > 0)
+            {
+                Blank(chars, i, end);
+                i = end;
+            }
+            else
+            {
+                i++;
+            }
+        }
+
+        return new string(chars);
+    }
+
+    private static void Blank(char[] chars, int from, int to)
+    {
+        for (var c = from; c < to; c++)
+        {
+            if (chars[c] != '\n')
+            {
+                chars[c] = ' '; // line endings survive, so a caller can split lines back out
+            }
+        }
+    }
+
+    /// <summary>
+    /// Raw HTML tokens in a text (CommonMark §6.6), found in time linear in the text:
+    /// every search for an end marker or closing quote is a lookup in a table of next
+    /// occurrences, built once on first use, so no attempt rescans what another did.
+    /// </summary>
+    private sealed class InlineHtml(string text)
+    {
+        private readonly Dictionary<string, int[]> next = [];
+
+        /// <summary>
+        /// The offset just past the raw HTML token starting at the <c>&lt;</c> at
+        /// <paramref name="i"/>, or <c>-1</c> when none does: <c>&lt;!--&gt;</c>,
+        /// <c>&lt;!---&gt;</c> or a comment to <c>--&gt;</c>; <c>&lt;?</c> to <c>?&gt;</c>;
+        /// CDATA to <c>]]&gt;</c>; <c>&lt;!</c> and a letter to <c>&gt;</c>; a closing tag;
+        /// or an open tag with well-formed attributes. Whitespace inside a tag may include
+        /// line endings.
+        /// </summary>
+        public int TokenEnd(int i)
+        {
+            var s = text.AsSpan(i);
+            if (s.StartsWith("<!-->"))
+            {
+                return i + 5;
+            }
+
+            if (s.StartsWith("<!--->"))
+            {
+                return i + 6;
+            }
+
+            if (s.StartsWith("<!--"))
+            {
+                return After(Next("-->", i + 4), 3);
+            }
+
+            if (s.StartsWith("<?"))
+            {
+                return After(Next("?>", i + 2), 2);
+            }
+
+            if (s.StartsWith("<![CDATA["))
+            {
+                return After(Next("]]>", i + 9), 3);
+            }
+
+            if (s.Length > 2 && s[1] == '!' && char.IsAsciiLetter(s[2]))
+            {
+                return After(Next(">", i + 2), 1);
+            }
+
+            return s.Length > 1 && s[1] == '/' ? ClosingTagEnd(i + 2) : OpenTagEnd(i + 1);
+        }
+
+        private static int After(int match, int length) => match < 0 ? -1 : match + length;
+
+        private int TagNameEnd(int j)
+        {
+            if (j >= text.Length || !char.IsAsciiLetter(text[j]))
+            {
+                return -1;
+            }
+
+            j++;
+            while (j < text.Length && (char.IsAsciiLetterOrDigit(text[j]) || text[j] == '-'))
+            {
+                j++;
+            }
+
+            return j;
+        }
+
+        private int SkipWhitespace(int j)
+        {
+            while (j < text.Length && text[j] is ' ' or '\t' or '\n')
+            {
+                j++;
+            }
+
+            return j;
+        }
+
+        private int ClosingTagEnd(int j)
+        {
+            j = TagNameEnd(j);
+            if (j < 0)
+            {
+                return -1;
+            }
+
+            j = SkipWhitespace(j);
+            return j < text.Length && text[j] == '>' ? j + 1 : -1;
+        }
+
+        private int OpenTagEnd(int j)
+        {
+            j = TagNameEnd(j);
+            if (j < 0)
+            {
+                return -1;
+            }
+
+            while (true)
+            {
+                var afterSpace = SkipWhitespace(j);
+                if (afterSpace < text.Length && text[afterSpace] == '>')
+                {
+                    return afterSpace + 1;
+                }
+
+                if (afterSpace + 1 < text.Length && text[afterSpace] == '/' && text[afterSpace + 1] == '>')
+                {
+                    return afterSpace + 2;
+                }
+
+                // An attribute must follow whitespace, and starts with a letter, `_` or `:`.
+                if (afterSpace == j || afterSpace >= text.Length
+                    || !(char.IsAsciiLetter(text[afterSpace]) || text[afterSpace] is '_' or ':'))
+                {
+                    return -1;
+                }
+
+                j = afterSpace + 1;
+                while (j < text.Length && (char.IsAsciiLetterOrDigit(text[j]) || text[j] is '_' or '.' or ':' or '-'))
+                {
+                    j++;
+                }
+
+                var equals = SkipWhitespace(j);
+                if (equals >= text.Length || text[equals] != '=')
+                {
+                    continue; // no value
+                }
+
+                var value = SkipWhitespace(equals + 1);
+                if (value >= text.Length)
+                {
+                    return -1;
+                }
+
+                if (text[value] is '"' or '\'')
+                {
+                    var quote = Next(text[value] == '"' ? "\"" : "'", value + 1);
+                    if (quote < 0)
+                    {
+                        return -1;
+                    }
+
+                    j = quote + 1;
+                }
+                else
+                {
+                    j = value;
+                    while (j < text.Length && text[j] is not (' ' or '\t' or '\n' or '"' or '\'' or '=' or '<' or '>' or '`'))
+                    {
+                        j++;
+                    }
+
+                    if (j == value)
+                    {
+                        return -1;
+                    }
+                }
+            }
+        }
+
+        /// <summary>The first offset at or after <paramref name="from"/> where <paramref name="marker"/> occurs, or <c>-1</c>.</summary>
+        private int Next(string marker, int from)
+        {
+            if (from > text.Length - marker.Length)
+            {
+                return -1;
+            }
+
+            if (!next.TryGetValue(marker, out var table))
+            {
+                table = new int[text.Length + 1];
+                table[text.Length] = -1;
+                for (var p = text.Length - 1; p >= 0; p--)
+                {
+                    table[p] = text.AsSpan(p).StartsWith(marker) ? p : table[p + 1];
+                }
+
+                next[marker] = table;
+            }
+
+            return table[from];
+        }
+    }
+
+    /// <summary>
+    /// Every backtick run of <paramref name="line"/> in order, whether a backslash
+    /// escapes its first backtick, and for each run as an opener the index of its closing
+    /// run, or <c>-1</c>.
+    /// </summary>
+    private static (List<(int Start, int Length)> Runs, bool[] Escaped, int[] Closer) CodeSpanRuns(string line)
+    {
         // Every backtick run, in order. A backslash escapes only outside a span, where it
         // matters for an OPENER alone: an odd number of backslashes right before a run
         // makes its first backtick literal, so it opens with one fewer. Inside a span a
@@ -867,29 +1702,7 @@ public static class LinkScanner
             lastSeen[runs[k].Length] = k;
         }
 
-        var chars = line.ToCharArray();
-        for (var k = 0; k < runs.Count;)
-        {
-            if (closer[k] < 0)
-            {
-                k++; // no closer: the run is literal text
-                continue;
-            }
-
-            var open = runs[k].Start + (escaped[k] ? 1 : 0);
-            var close = runs[closer[k]];
-            for (var c = open; c < close.Start + close.Length; c++)
-            {
-                if (chars[c] != '\n')
-                {
-                    chars[c] = ' '; // line endings survive, so a caller can split lines back out
-                }
-            }
-
-            k = closer[k] + 1;
-        }
-
-        return new string(chars);
+        return (runs, escaped, closer);
     }
 
     // The characters a backslash escapes in CommonMark (§2.4).
