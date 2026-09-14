@@ -92,6 +92,30 @@ public class ReceiptParsingTests
     }
 
     /// <summary>
+    /// The parser, not only the normaliser's walk, rejects a duplicate: the walk would
+    /// catch the same name, so this test and the next are built to tell the two apart.
+    /// Straight into <c>ParseJson</c> no walk runs at all; through <c>Parse</c>, an
+    /// inexact number placed before the duplicate would be the walk's first failure, so
+    /// only a parser that already refused the document reports the duplicate. Each test
+    /// goes red on its own if <c>AllowDuplicateProperties = false</c> is dropped.
+    /// </summary>
+    [Fact]
+    public void ParseJson_itself_rejects_a_duplicate_in_an_object_root()
+    {
+        var direct = Assert.Throws<ContainerExecutionException>(
+            () => ReceiptParsing.ParseJson(new ContainerRunResult(0, """{"a": 1, "a": 2}""", ""), "script"));
+        Assert.Equal("script stdout had a duplicate JSON property", direct.Message);
+    }
+
+    [Fact]
+    public void Parse_reports_a_duplicate_ahead_of_an_earlier_inexact_number()
+    {
+        var throughParse = Assert.Throws<ContainerExecutionException>(
+            () => ReceiptParsing.Parse(new ContainerRunResult(0, """{"v": 1e400, "a": 1, "a": 2}""", ""), "script"));
+        Assert.Equal("script stdout had a duplicate JSON property", throughParse.Message);
+    }
+
+    /// <summary>
     /// One number rule for every receipt field, at any depth: an integer literal must
     /// fit a <see langword="long"/>, and any other literal must be a finite
     /// <see langword="double"/> that denotes the same decimal value. Before,
@@ -107,6 +131,12 @@ public class ReceiptParsingTests
     [InlineData("-9223372036854775809")]
     [InlineData("0.10000000000000000001")]
     [InlineData("0.1000000000000000000000000000001")]
+    // The exact binary expansion of the double nearest 0.3 is rejected: "the same
+    // decimal value" means the same value as the double's shortest round-trip form
+    // ("0.30000000000000004"), not the double's exact binary value. Pinned so a move
+    // to exact-binary identity is a decision, not a drive-by.
+    [InlineData("0.3000000000000000444089209850062616169452667236328125")]
+    [InlineData("1e-1000000000000000000")]
     public void A_number_that_cannot_be_represented_exactly_fails_the_stage(string literal)
     {
         foreach (var stdout in new[] { $$"""{"v": {{literal}}}""", $$"""{"v": [{"w": {{literal}}}]}""" })
@@ -133,6 +163,88 @@ public class ReceiptParsingTests
     {
         var receipt = ReceiptParsing.Parse(new ContainerRunResult(0, $$"""{"v": {{literal}}}""", ""), "script");
         Assert.Equal(expected, receipt.Fields["v"]);
+    }
+
+    /// <summary>
+    /// Builds a literal too long for <c>InlineData</c> (whose value would also become the
+    /// test's display name): <c>D</c> stands for <paramref name="size"/> nines.
+    /// </summary>
+    private static string HugeLiteral(string shape, int size)
+    {
+        var nines = new string('9', size);
+        return shape switch
+        {
+            "0e+D" => "0e" + nines,
+            "-0e-D" => "-0e-" + nines,
+            "0.000e+D" => "0.000e+" + nines,
+            "1e-D" => "1e-" + nines,
+            "-1e-D" => "-1e-" + nines,
+            "1e+D" => "1e" + nines,
+            "0.5e+D" => "0.5e" + nines,
+            // A mantissa as long as the exponent, pulling it back into range: both denote 1.
+            "1 then zeros, e-(size-1)" => "1" + new string('0', size - 1) + "e-" + (size - 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "0. then zeros then 1, e+size" => "0." + new string('0', size - 1) + "1e" + size.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => throw new ArgumentOutOfRangeException(nameof(shape)),
+        };
+    }
+
+    /// <summary>
+    /// Literals whose exponent, or mantissa, runs to a million digits are decided by
+    /// value, like any other: a zero mantissa is zero whatever its exponent, a non-zero
+    /// one with an exponent no double reaches is rejected, and a long mantissa that pulls
+    /// a long exponent back into range is an ordinary 1.
+    /// </summary>
+    [Theory]
+    [InlineData("0e+D", true, 0.0)]
+    [InlineData("-0e-D", true, -0.0)]
+    [InlineData("0.000e+D", true, 0.0)]
+    [InlineData("1e-D", false, 0.0)]
+    [InlineData("-1e-D", false, 0.0)]
+    [InlineData("1e+D", false, 0.0)]
+    [InlineData("0.5e+D", false, 0.0)]
+    [InlineData("1 then zeros, e-(size-1)", true, 1.0)]
+    [InlineData("0. then zeros then 1, e+size", true, 1.0)]
+    public void A_million_digit_exponent_or_mantissa_is_decided_by_its_value(string shape, bool accepted, double value)
+    {
+        var result = new ContainerRunResult(0, $$"""{"v": {{HugeLiteral(shape, 1_000_000)}}}""", "");
+        if (accepted)
+        {
+            Assert.Equal(value, Assert.IsType<double>(ReceiptParsing.Parse(result, "script").Fields["v"]));
+        }
+        else
+        {
+            var ex = Assert.Throws<ContainerExecutionException>(() => ReceiptParsing.Parse(result, "script"));
+            Assert.Equal("script stdout had a number that cannot be represented exactly", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// The number rule runs on the host after the container has exited, where no
+    /// container ceiling and no cancellation token bounds it, so its cost must stay
+    /// linear in the literal. Parsing the exponent's digits as a <c>BigInteger</c> was
+    /// super-linear: an 8-million-digit exponent (under the engine's output ceiling) took
+    /// about 7 s. The bound is wide — the linear walk measures in tens of milliseconds —
+    /// so it trips on the complexity class, not on a slow runner.
+    /// </summary>
+    [Theory]
+    [InlineData("0e+D")]
+    [InlineData("1e-D")]
+    public void An_eight_million_digit_exponent_is_decided_in_linear_time(string shape)
+    {
+        var result = new ContainerRunResult(0, $$"""{"v": {{HugeLiteral(shape, 8_000_000)}}}""", "");
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            ReceiptParsing.Parse(result, "script");
+        }
+        catch (ContainerExecutionException)
+        {
+            // Accepted or rejected is the other test's business; only the cost is pinned here.
+        }
+
+        stopwatch.Stop();
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"took {stopwatch.ElapsedMilliseconds} ms");
     }
 
     /// <summary>

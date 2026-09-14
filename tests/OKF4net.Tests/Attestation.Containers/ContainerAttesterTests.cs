@@ -68,6 +68,10 @@ public class ContainerAttesterTests
     [InlineData("""{"ok": true, "detail": {"k": 1, "k": 2}}""", "attester stdout had a duplicate JSON property")]
     [InlineData("""{"ok": true, "score": 1e400}""", "attester stdout had a number that cannot be represented exactly")]
     [InlineData("""{"ok": true, "rows": [9223372036854775808]}""", "attester stdout had a number that cannot be represented exactly")]
+    // The parser rejects the duplicate before any value is read: were only the
+    // normaliser's walk to catch it, the inexact number ahead of it would be the
+    // first failure reported. Red if AllowDuplicateProperties = false is dropped.
+    [InlineData("""{"score": 1e400, "ok": true, "ok": false}""", "attester stdout had a duplicate JSON property")]
     public async Task A_verdict_that_breaks_the_strict_JSON_contract_fails_the_stage(string stdout, string message)
     {
         var engine = new FakeContainerEngine { Respond = _ => new ContainerRunResult(0, stdout, "") };

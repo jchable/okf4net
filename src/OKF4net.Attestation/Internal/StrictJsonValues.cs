@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Globalization;
-using System.Numerics;
 using System.Text.Json;
 
 namespace OKF4net.Attestation.Internal;
@@ -134,7 +133,13 @@ internal static class StrictJsonValues
 
     /// <summary>
     /// Whether two decimal literals denote the same value, compared as normalised
-    /// sign + significant digits + exponent. Not through <see langword="decimal"/>:
+    /// sign + significant digits + exponent. Called with the JSON literal and the
+    /// double's shortest round-trip (<c>"R"</c>) form, so "the same decimal value" means
+    /// the same value as that shortest form, not the double's exact binary value:
+    /// <c>0.1</c> is accepted although no double equals one tenth, and the exact
+    /// expansion <c>0.3000000000000000444089209850062616169452667236328125</c> is
+    /// rejected although it is the double's exact value, because its shortest form is
+    /// <c>0.30000000000000004</c>. Not through <see langword="decimal"/>:
     /// <c>decimal.TryParse</c> succeeds on <c>1e-400</c> and <c>5e-324</c> by rounding
     /// both to zero, and on a 31-digit fraction by rounding it to 28 digits, so whether
     /// a literal "fits" a decimal cannot be asked of the parser without the very exact
@@ -149,17 +154,36 @@ internal static class StrictJsonValues
         && leftExponent == rightExponent;
 
     /// <summary>
+    /// The most exponent digits, after its leading zeros, that are parsed into a
+    /// <see langword="long"/>: 18 digits stay below 10^18, so adding or subtracting a
+    /// digit count (below 2^31, more than a .NET string can hold) cannot overflow.
+    /// </summary>
+    private const int MaxExponentDigits = 18;
+
+    /// <summary>
     /// Splits a decimal literal (<c>-?digits(.digits)?([eE][+-]?digits)?</c>) into its
     /// value as <c>(-1)^negative × digits × 10^exponent</c>, with no leading or trailing
-    /// zero in <paramref name="digits"/>. Zero is <c>(false, "", 0)</c> whatever its
-    /// spelling (<c>-0.0</c>, <c>0e999</c>). The exponent is a <see cref="BigInteger"/>
-    /// because JSON puts no bound on it.
+    /// zero in <paramref name="digits"/>, in time linear in the literal's length with
+    /// small constants — it runs on the host after the container exited, where no
+    /// ceiling bounds it, so an unbounded exponent is never parsed into a big integer.
     /// </summary>
-    private static bool TryNormalizeDecimal(string text, out bool negative, out ReadOnlySpan<char> digits, out BigInteger exponent)
+    /// <remarks>
+    /// The exact rule: zero is <c>(false, "", 0)</c> whatever its sign or exponent
+    /// (<c>-0.0</c>, <c>0e999…</c> of any length). A non-zero mantissa whose exponent has
+    /// more than <see cref="MaxExponentDigits"/> significant digits returns
+    /// <see langword="false"/>: its magnitude's decimal exponent is at least
+    /// 10^18 minus the literal's length (below 2^31), so it cannot equal any finite
+    /// double's round-trip form, whose decimal exponent lies within ±400. Otherwise the
+    /// exponent is a <see langword="long"/>, adjusted by the fraction length and the
+    /// trailing zeros removed — every step within <see langword="long"/> range, and a
+    /// long mantissa pulling a long exponent back into range (<c>1000…0e-999999</c>)
+    /// normalises to the ordinary value it denotes.
+    /// </remarks>
+    private static bool TryNormalizeDecimal(string text, out bool negative, out ReadOnlySpan<char> digits, out long exponent)
     {
         negative = false;
         digits = default;
-        exponent = BigInteger.Zero;
+        exponent = 0;
         var span = text.AsSpan();
 
         if (span.Length > 0 && (span[0] == '-' || span[0] == '+'))
@@ -170,13 +194,23 @@ internal static class StrictJsonValues
 
         var exponentAt = span.IndexOfAny('e', 'E');
         var mantissa = exponentAt < 0 ? span : span[..exponentAt];
+        var exponentNegative = false;
+        ReadOnlySpan<char> exponentDigits = [];
         if (exponentAt >= 0)
         {
-            var exponentText = span[(exponentAt + 1)..];
-            if (!BigInteger.TryParse(exponentText, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent))
+            exponentDigits = span[(exponentAt + 1)..];
+            if (exponentDigits.Length > 0 && (exponentDigits[0] == '-' || exponentDigits[0] == '+'))
+            {
+                exponentNegative = exponentDigits[0] == '-';
+                exponentDigits = exponentDigits[1..];
+            }
+
+            if (exponentDigits.IsEmpty || exponentDigits.ContainsAnyExceptInRange('0', '9'))
             {
                 return false;
             }
+
+            exponentDigits = exponentDigits.TrimStart('0');
         }
 
         var pointAt = mantissa.IndexOf('.');
@@ -187,17 +221,31 @@ internal static class StrictJsonValues
             return false;
         }
 
+        if (!integerPart.ContainsAnyExcept('0') && !fractionPart.ContainsAnyExcept('0'))
+        {
+            negative = false;
+            return true;
+        }
+
+        if (exponentDigits.Length > MaxExponentDigits)
+        {
+            return false;
+        }
+
+        foreach (var digit in exponentDigits)
+        {
+            exponent = (exponent * 10) + (digit - '0');
+        }
+
+        if (exponentNegative)
+        {
+            exponent = -exponent;
+        }
+
         var all = string.Concat(integerPart, fractionPart).AsSpan();
         exponent -= fractionPart.Length;
 
         var significant = all.TrimStart('0');
-        if (significant.IsEmpty)
-        {
-            negative = false;
-            exponent = BigInteger.Zero;
-            return true;
-        }
-
         var trimmed = significant.TrimEnd('0');
         exponent += significant.Length - trimmed.Length;
         digits = trimmed;
