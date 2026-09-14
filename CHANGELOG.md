@@ -591,6 +591,31 @@ and this project adheres to
   as a citation. Both new checks emit nothing on `bundles/acme_retail`,
   `bundles/ga4`, or any validated golden fixture, and both new `DiagnosticCode`
   members are appended so existing members keep their numeric values.
+- **A configured `TmpfsMounts` is now honoured inside the containers, not just
+  mounted.** The engine mounted whatever the host named, but the Python inside
+  kept writing to `/tmp`: with `TmpfsMounts = ["/scratch"]` under the default
+  read-only root, the attester bootstrap's `NamedTemporaryFile` failed every run
+  ("No usable temporary directory"), and so did the `SqlClient` wrapper — pip
+  unpacks in the temp directory, so even a correct `--target` failed. The first
+  mount is now passed into every container as `TMPDIR`, which every writer
+  inside follows; a `TMPDIR` set in `Environment` wins. Each entry must be an
+  absolute container path (optionally `:options`), and an **empty**
+  `TmpfsMounts` under a read-only root is rejected when a `ContainerAttester` is
+  built — its bootstrap writes on every run, so it could never attest, and would
+  only discover that after the computation had already run.
+- **`bundles/meridian_transit`'s fare-cap attester now verifies the per-trip
+  split in order.** It checked the total, the reconciliation and each charge's
+  bounds, but never the order, so a statement charging `[0, 250, 250, 200]` for
+  four 250 fares against a 700 cap passed alongside the correct
+  `[250, 250, 200, 0]` — the very breakdown the policy says a rider disputes. It
+  now recomputes the sequential split and compares element for element, and a
+  malformed receipt is a failing verdict rather than an exception.
+- **Bundle attesters no longer accept a value that is not a genuine integer as a
+  count.** `meridian_transit`'s ridership attester read counts through `int()`,
+  so `"5"` passed and `2.9` was silently truncated to `2`;
+  `attestation_containers_demo`'s active-user attester rejected those but, like
+  any plain `isinstance(_, int)` check in Python, accepted `true` and `false`,
+  since `bool` subclasses `int`. Both now reject strings, floats and booleans.
 
 - **§4.1's `resource` carve-out for an Attested Computation now applies only to
   an ABSENT key.** The suppression added for S4.1-8 skipped the field before
