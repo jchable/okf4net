@@ -691,6 +691,24 @@ and this project adheres to
 
 ### Fixed
 
+- **A stage that ignores cancellation no longer keeps a run alive past
+  `ComputationTimeout` or the caller's token, and can no longer turn a
+  cancelled run into a displayable outcome (§10.5).** The orchestrator checked
+  the token only *before* each stage, so a binder/executor/attester already
+  running when the token fired ran to completion and its result was used: under
+  a 30 ms `ComputationTimeout`, an attester sleeping 350 ms made
+  `okf_run_computation` return after ~350 ms with `displayable: yes`, and an
+  attester that cancelled the caller's token and returned a passing verdict
+  yielded an outcome that was both cancelled and displayable. A running stage is
+  now awaited through `Task.WaitAsync`, so the run stops waiting the moment the
+  token fires, and the token is re-checked after every stage. The caller's own
+  cancellation still propagates as an `OperationCanceledException`; the tool's
+  `ComputationTimeout` is still reported as `displayable: no … timed out`.
+  Abandoning a stage does not stop its work — nothing can force host code to
+  return — so whatever it started runs until it ends on its own (for
+  `OKF4net.Attestation.Containers`, the engine's per-run `Timeout` bounds it);
+  its task is observed, so a later fault cannot surface as an unobserved task
+  exception.
 - **`okfgen` resolves `git` on `PATH` itself, never from the scanned tree or
   a drive-relative entry.** A bare `Process.Start("git")` let the OS search
   the current directory before `PATH` — closed on every platform .NET

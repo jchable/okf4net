@@ -214,6 +214,42 @@ public class OkfComputationToolsTests
     }
 
     /// <summary>
+    /// The timeout above only worked because that executor honours its token.
+    /// An attester that ignores it — sleeping 350 ms under a 30 ms
+    /// <see cref="OkfBundleTools.ComputationTimeout"/> — ran to completion, and
+    /// the tool returned after ~350 ms with <c>displayable: yes</c>: a
+    /// "wall-clock ceiling" that neither bounded the wall clock nor stopped the
+    /// result being shown (§10.5).
+    /// </summary>
+    [Fact]
+    public async Task A_token_ignoring_attester_cannot_outlast_the_timeout_or_display_its_result()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.AttestFunc = async (_, _) =>
+        {
+            await Task.Delay(350, CancellationToken.None);
+            return new AttestationVerdict(true, null);
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
+        {
+            ComputationTimeout = TimeSpan.FromMilliseconds(30),
+        };
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+        stopwatch.Stop();
+
+        Assert.StartsWith("displayable: no", rendered, StringComparison.Ordinal);
+        Assert.Contains("timed out", rendered, StringComparison.Ordinal);
+        Assert.True(stopwatch.ElapsedMilliseconds < 200, $"the tool returned after {stopwatch.ElapsedMilliseconds} ms under a 30 ms ComputationTimeout; the attester would have finished at 350 ms");
+    }
+
+    /// <summary>
     /// A host-plugged runtime's exception was rendered straight to the model —
     /// twice: as `Error: {outcome.Error.Message}` and again inside the
     /// orchestrator's own reason string. Those messages come from code this

@@ -147,7 +147,8 @@ public sealed class AttestationOrchestrator
         // ignores its token, and an already-cancelled run then executed every
         // stage and could return a DISPLAYABLE success: for §10 that means a
         // computation actually ran, possibly against a live warehouse, after
-        // the caller had withdrawn.
+        // the caller had withdrawn. RunStageAsync also stops awaiting a stage
+        // the moment the token fires, and re-checks after it (§10.5).
         var (bindOk, bound, bindReason, bindError) = await RunStageAsync(
             "binder",
             ct => runtime.Binder.BindAsync(contract, resolved, parameterValues, ct),
@@ -262,6 +263,26 @@ public sealed class AttestationOrchestrator
     /// to reach the caller in the shape they catch. A direct
     /// OperationCanceledException falls through both clauses uncaught, which
     /// keeps its original stack trace.
+    ///
+    /// <para><b>The token is enforced around the stage, not only before it
+    /// (§10.5).</b> Checking at entry alone let a stage that ignores its token
+    /// run to completion and have its result used: a 30 ms
+    /// <c>ComputationTimeout</c> waited out a 350 ms attester and came back
+    /// <c>displayable: yes</c>, and a stage that cancelled the token and then
+    /// returned success yielded an outcome that was both cancelled and
+    /// displayable. So a still-running stage is awaited through
+    /// <see cref="Task.WaitAsync(CancellationToken)"/>, which stops waiting the
+    /// moment the token fires, and the token is checked again after the await,
+    /// so a stage that completes after cancellation never contributes a result.
+    /// A cancelled run is an <see cref="OperationCanceledException"/>, never a
+    /// displayable outcome.</para>
+    ///
+    /// <para><b>Abandoning a stage does not stop its work.</b> Nothing can
+    /// force a host's code to return; the orchestrator only stops waiting for
+    /// it. Whatever that stage started keeps running until it ends on its own —
+    /// for <c>OKF4net.Attestation.Containers</c>, the engine's own per-run
+    /// <c>Timeout</c> is what bounds it. Its task is observed, so a fault it
+    /// raises later cannot surface as an unobserved task exception.</para>
     /// </summary>
     /// <param name="stage">The stage's name, as it appears in a reason string ("binder threw: ...").</param>
     /// <param name="run">The host-plugged stage to invoke.</param>
@@ -274,7 +295,13 @@ public sealed class AttestationOrchestrator
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            return (true, await run(cancellationToken).ConfigureAwait(false), null, null);
+            var result = await AwaitUnlessCancelledAsync(run(cancellationToken), cancellationToken).ConfigureAwait(false);
+
+            // A stage that finished — or cancelled the token itself — after
+            // cancellation arrived must not contribute its result. The OCE this
+            // throws is the caller's, so it falls through both clauses below.
+            cancellationToken.ThrowIfCancellationRequested();
+            return (true, result, null, null);
         }
         catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
         {
@@ -288,6 +315,46 @@ public sealed class AttestationOrchestrator
             // default! is never read: Ok is false here, and every caller checks
             // it before touching Result.
             return (false, default!, reason, e);
+        }
+    }
+
+    /// <summary>
+    /// Awaits <paramref name="pending"/>, but stops waiting — with an
+    /// <see cref="OperationCanceledException"/> — the moment
+    /// <paramref name="cancellationToken"/> fires, whether or not the stage
+    /// observes the token itself. See <see cref="RunStageAsync{T}"/>'s remarks.
+    ///
+    /// A stage that has already completed, or a token that can never be
+    /// cancelled, takes the plain await: there is nothing to abandon, so no
+    /// <see cref="Task"/> is allocated for it.
+    /// </summary>
+    /// <param name="pending">The stage's result, as the host returned it.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    private static async ValueTask<T> AwaitUnlessCancelledAsync<T>(ValueTask<T> pending, CancellationToken cancellationToken)
+    {
+        if (pending.IsCompleted || !cancellationToken.CanBeCanceled)
+        {
+            return await pending.ConfigureAwait(false);
+        }
+
+        var task = pending.AsTask();
+        try
+        {
+            return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The stage may still be running, and may fault after nobody is
+            // awaiting it. Observe that fault here, or it surfaces later as an
+            // unobserved task exception on a finalizer thread. Harmless when
+            // the stage itself already completed (e.g. by honouring the token):
+            // OnlyOnFaulted simply never runs.
+            _ = task.ContinueWith(
+                static abandoned => _ = abandoned.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw;
         }
     }
 

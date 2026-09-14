@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using OKF4net;
@@ -162,6 +164,155 @@ public class AttestationOrchestratorTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+    }
+
+    /// <summary>
+    /// The token was checked only BEFORE each stage, so a stage that ignores
+    /// its token and is already running when cancellation arrives ran to
+    /// completion, and its result was used: a run cancelled at 30 ms waited
+    /// out a 350 ms attester and came back with an outcome instead of a
+    /// cancellation. The orchestrator stops awaiting such a stage the moment
+    /// the token fires (§10.5).
+    ///
+    /// The bound is deliberately generous: the discriminator is "returned long
+    /// before the stage would have finished", not a precise latency.
+    /// </summary>
+    [Fact]
+    public async Task A_token_ignoring_stage_is_abandoned_when_the_token_fires()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = async (_, _) =>
+        {
+            // Ignores its token, like a client with no cancellation support.
+            await Task.Delay(350, CancellationToken.None);
+            return new AttestationVerdict(true, null);
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));
+
+        var stopwatch = Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.ElapsedMilliseconds < 200, $"RunAsync returned after {stopwatch.ElapsedMilliseconds} ms; the token fired at 30 ms and the stage would have finished at 350 ms");
+    }
+
+    /// <summary>
+    /// A stage that cancels the caller's token and then returns SUCCESS — the
+    /// token is cancelled, yet the stage's result was used. For the attester,
+    /// the last stage, nothing checked the token afterwards, so the run came
+    /// back cancelled AND displayable. A stage completing after cancellation
+    /// never contributes a result (§10.5).
+    ///
+    /// Only the attester row fails on a before-each-stage check alone: for the
+    /// binder and executor, the NEXT stage's entry check already throws. Those
+    /// rows pin the rule for every stage, so it does not come to depend on
+    /// which stage happens to follow.
+    /// </summary>
+    [Theory]
+    [InlineData("binder")]
+    [InlineData("executor")]
+    [InlineData("attester")]
+    public async Task A_stage_that_cancels_the_token_and_succeeds_never_yields_an_outcome(string stage)
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        switch (stage)
+        {
+            case "binder":
+                runtime.BindFunc = (contract, computation, values, _) =>
+                {
+                    cts.Cancel();
+                    return ValueTask.FromResult(new BoundComputation(contract.Runtime ?? "fake", computation.InlineCode, null, values));
+                };
+                break;
+            case "executor":
+                runtime.ExecuteFunc = (_, _, _) =>
+                {
+                    cts.Cancel();
+                    return ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+                };
+                break;
+            default:
+                runtime.AttestFunc = (_, _) =>
+                {
+                    cts.Cancel();
+                    return ValueTask.FromResult(new AttestationVerdict(true, null));
+                };
+                break;
+        }
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+    }
+
+    /// <summary>
+    /// Abandoning a stage must not leave its eventual fault unobserved: a
+    /// stage that throws after the orchestrator stopped waiting for it would
+    /// otherwise surface later as a <see cref="TaskScheduler.UnobservedTaskException"/>,
+    /// on a finalizer thread, far from the run that caused it.
+    ///
+    /// Filtered on a marker unique to this test, so another test's unobserved
+    /// exception under xunit's parallel execution cannot make this one fail.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_stage_that_later_throws_is_observed()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        var marker = $"abandoned-stage-{Guid.NewGuid():N}";
+
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = async (_, _, _) =>
+        {
+            await Task.Delay(100, CancellationToken.None);
+            throw new InvalidOperationException(marker);
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        var unobserved = false;
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            if (e.Exception.Flatten().InnerExceptions.Any(inner => inner.Message == marker))
+            {
+                unobserved = true;
+            }
+        }
+
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            using (var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(20)))
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+            }
+
+            // Let the abandoned stage fault, then force its task's finalizer.
+            for (var i = 0; i < 5 && !unobserved; i++)
+            {
+                await Task.Delay(100);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
+        }
+
+        Assert.False(unobserved, "the abandoned stage's exception surfaced as an unobserved task exception");
     }
 
     [Fact]
