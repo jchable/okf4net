@@ -180,8 +180,8 @@ public sealed record ContainerAttesterOptions
     /// <see cref="ContainerAttester"/> is constructed: no mount at all, or a
     /// <c>TMPDIR</c> in <see cref="Environment"/> from which <c>tempfile</c> reaches none
     /// of these mounts (see the constructor for the exact rule). Either could never
-    /// attest anything, and would say so only as a Python
-    /// traceback, after the executor had already run the computation.</para>
+    /// attest anything, and would say so only as a Python traceback, after the executor
+    /// had already run the computation.</para>
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts
     {

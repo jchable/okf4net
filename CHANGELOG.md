@@ -650,10 +650,14 @@ and this project adheres to
   only discover that after the computation had already run. So is a read-only
   `ContainerAttesterOptions` whose `Environment` sets a `TMPDIR` from which
   Python's `tempfile` reaches no mount — none of `TMPDIR`, `TEMP`, `TMP`, `/tmp`,
-  `/var/tmp`, `/usr/tmp` is one: that `TMPDIR` wins, `tempfile` never creates
-  it, and the run failed the same way (`TMPDIR=/work` with only `/scratch`
-  mounted). A `TMPDIR` rescued by a later candidate, such as a mounted `/tmp`,
-  is accepted.
+  `/var/tmp`, `/usr/tmp` is one, nor docker's own `/dev/shm`: that `TMPDIR`
+  wins, `tempfile` never creates it, and the run failed the same way
+  (`TMPDIR=/work` with only `/scratch` mounted). The check rejects only what is
+  sure to fail: a `TMPDIR` rescued by a later candidate, such as a mounted
+  `/tmp`, is accepted, and paths are resolved as `tempfile` resolves them
+  (`scratch` and `/work/../scratch` both reach `/scratch`). What it cannot see —
+  an image `WORKDIR` or `ENV`, and podman's extra default tmpfs mounts — is
+  listed in the project README.
 - **`bundles/meridian_transit`'s fare-cap attester now verifies the per-trip
   split in order.** It checked the total, the reconciliation and each charge's
   bounds, but never the order, so a statement charging `[0, 250, 250, 200]` for

@@ -27,13 +27,14 @@ public sealed class ContainerAttester : IAttester
     /// <see cref="ContainerAttesterOptions.TmpfsMounts"/> at all, or with a <c>TMPDIR</c>
     /// in <see cref="ContainerAttesterOptions.Environment"/> from which none of the
     /// directories Python's <c>tempfile</c> goes on to try (<c>TEMP</c>, <c>TMP</c>,
-    /// <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c>) is one of them — a host-set
-    /// <c>TMPDIR</c> wins over the derived one, and <c>tempfile</c> never creates it. What
-    /// the image decides (its <c>WORKDIR</c>, its own <c>ENV</c>) is not seen, so an image
-    /// that reaches a mount only through one of those is rejected too. The bootstrap writes the attester
-    /// module to a temp file on every run, so either configuration could never attest
-    /// anything — and would only say so at run time, as a Python traceback, after the
-    /// computation had already been executed.
+    /// <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c>) is one of those mounts or
+    /// <c>/dev/shm</c> — a host-set <c>TMPDIR</c> wins over the derived one, and
+    /// <c>tempfile</c> never creates it. The bootstrap writes the attester module to a
+    /// temp file on every run, so either configuration could never attest anything — and
+    /// would only say so at run time, as a Python traceback, after the computation had
+    /// already been executed. The check is built to reject only what is sure to fail on
+    /// docker with an image that sets no <c>WORKDIR</c>; what it cannot see is listed in
+    /// the project README.
     /// </summary>
     public ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options)
     {
@@ -49,11 +50,11 @@ public sealed class ContainerAttester : IAttester
         // Checked on the environment the container will get: with no TMPDIR from the
         // host, Apply points it at the first mount and this always holds.
         if (options.ReadOnlyRootFilesystem
-            && !ScratchDirectory.ReachesMount(ScratchDirectory.Apply(options.Environment, options.TmpfsMounts), options.TmpfsMounts))
+            && !ScratchDirectory.ReachesWritableDirectory(ScratchDirectory.Apply(options.Environment, options.TmpfsMounts), options.TmpfsMounts))
         {
             var tmpdir = options.Environment[ScratchDirectory.VariableName];
             throw new ArgumentException(
-                $"ContainerAttesterOptions mounts the root filesystem read-only and sets TMPDIR to '{tmpdir}', and none of the directories Python's tempfile would try (TMPDIR, TEMP, TMP, /tmp, /var/tmp, /usr/tmp) is one of its TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the absolute path of one of the TmpfsMounts, or remove it so the first mount is used.",
+                $"ContainerAttesterOptions mounts the root filesystem read-only and sets TMPDIR to '{tmpdir}', and none of the directories Python's tempfile would try (TMPDIR, TEMP, TMP, /tmp, /var/tmp, /usr/tmp) is one of its TmpfsMounts or /dev/shm, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the path of one of the TmpfsMounts, or remove it so the first mount is used.",
                 nameof(options));
         }
 

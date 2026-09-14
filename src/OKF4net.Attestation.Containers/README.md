@@ -118,12 +118,17 @@ with the driver vendored in, needs no scratch, and that is the tightest
 configuration available (a bare Python `SqlClient` image then has nowhere to
 install its driver, and fails). It is **rejected** on `ContainerAttesterOptions`,
 when the `ContainerAttester` is constructed, and so is a `TMPDIR` in its
-`Environment` from which none of those candidates is one of its mounts: the
-bootstrap writes a temp file on every run, so that attester could never attest
-anything. The check cannot see what the image decides (its `WORKDIR`, its own
-`ENV`), so an image that reaches a mount only that way is rejected as well —
-point `TMPDIR` at the mount instead. The profile does not check its own `TMPDIR`
-the same way, for the same reason it allows no mount.
+`Environment` from which none of those candidates is one of its mounts or
+docker's own `/dev/shm`: the bootstrap writes a temp file on every run, so that
+attester could never attest anything. The check is built to reject only what is
+sure to fail — candidates are resolved as `tempfile` resolves them against the
+`/` working directory of an image with no `WORKDIR` — and it cannot see three
+things, each of which can make it reject a configuration that would have
+worked: an image `WORKDIR` that is itself a mount, `TEMP`/`TMP` set by the
+image's own `ENV`, and podman, whose default `--read-only-tmpfs` also makes
+`/run`, `/tmp` and `/var/tmp` writable (podman is not exercised by this
+project's tests). In each case, point `TMPDIR` at a mount. The profile does not
+check its own `TMPDIR` the same way, for the same reason it allows no mount.
 
 ## Limitations in this version
 

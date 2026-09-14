@@ -46,40 +46,83 @@ internal static class ScratchDirectory
     private static readonly string[] FallbackDirectories = ["/tmp", "/var/tmp", "/usr/tmp"];
 
     /// <summary>
-    /// Whether, under a read-only root, Python's <c>tempfile</c> will find one of
-    /// <paramref name="tmpfsMounts"/> among the directories it tries with
-    /// <paramref name="environment"/> — the environment the container actually gets, so
-    /// after <see cref="Apply"/>. <c>tempfile</c> never creates a directory: it walks
-    /// <c>TMPDIR</c>, <c>TEMP</c>, <c>TMP</c>, then <c>/tmp</c>, <c>/var/tmp</c>,
-    /// <c>/usr/tmp</c> and finally the working directory, and takes the first it can
-    /// write to. Only a candidate that is exactly a mount's path counts (trailing slashes
-    /// ignored): a subdirectory of a mount does not exist in a fresh tmpfs.
-    ///
-    /// <para>Conservative about what the image decides and this cannot see: a relative
-    /// candidate and the final working-directory fallback both resolve against the
-    /// image's <c>WORKDIR</c>, and the image's own <c>ENV</c> can set <c>TEMP</c> or
-    /// <c>TMP</c>. None of those counts here, so an image relying on one of them to reach
-    /// a mount is reported as having none.</para>
+    /// Writable under <c>--read-only</c> whatever the host mounts: docker and podman both
+    /// put a tmpfs on <c>/dev</c> and <c>/dev/shm</c> (verified for docker).
     /// </summary>
-    internal static bool ReachesMount(IReadOnlyDictionary<string, string> environment, IReadOnlyList<string> tmpfsMounts)
-    {
-        var candidates = TempVariables
-            .Select(name => environment.TryGetValue(name, out var value) ? value : string.Empty)
-            .Where(value => value.StartsWith('/'))
-            .Concat(FallbackDirectories);
+    private static readonly string[] EngineWritableDirectories = ["/dev", "/dev/shm"];
 
-        return candidates.Any(candidate => tmpfsMounts.Any(
-            mount => string.Equals(MountPath(mount).TrimEnd('/'), candidate.TrimEnd('/'), StringComparison.Ordinal)));
+    /// <summary>
+    /// Whether, under a read-only root, Python's <c>tempfile</c> can find a writable
+    /// directory with <paramref name="environment"/> — the environment the container
+    /// actually gets, so after <see cref="Apply"/>. <c>tempfile</c> never creates a
+    /// directory: it walks <c>TMPDIR</c>, <c>TEMP</c>, <c>TMP</c> (skipping empty ones),
+    /// then <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c> and finally the working
+    /// directory, and takes the first it can write to. A candidate counts when it is
+    /// exactly one of <paramref name="tmpfsMounts"/> or an engine-provided tmpfs
+    /// (<see cref="EngineWritableDirectories"/>); a subdirectory of a mount does not exist
+    /// in a fresh tmpfs.
+    ///
+    /// <para>Built to reject only what is sure to fail, because a wrong rejection blocks a
+    /// working configuration while a wrong acceptance only restores the run-time failure
+    /// this guard exists to bring forward. So candidates are resolved the way
+    /// <c>tempfile</c>'s <c>abspath</c> resolves them — lexically, against <c>/</c>, the
+    /// working directory of an image with no <c>WORKDIR</c> such as the default
+    /// <c>python:3.12-slim</c>. Two things the image decides are still not seen: a
+    /// <c>WORKDIR</c> that is itself a mount, and <c>TEMP</c>/<c>TMP</c> set by its own
+    /// <c>ENV</c>. Neither counts, so an image reaching a mount only that way is reported
+    /// as having none. Nor can this see which engine runs the container: podman's default
+    /// <c>--read-only-tmpfs</c> also makes <c>/run</c>, <c>/tmp</c> and <c>/var/tmp</c>
+    /// writable, which docker does not.</para>
+    /// </summary>
+    internal static bool ReachesWritableDirectory(IReadOnlyDictionary<string, string> environment, IReadOnlyList<string> tmpfsMounts)
+    {
+        var writable = tmpfsMounts
+            .Select(mount => Resolve(MountPath(mount)))
+            .Concat(EngineWritableDirectories)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return TempVariables
+            .Select(name => environment.TryGetValue(name, out var value) ? value : string.Empty)
+            .Where(value => value.Length > 0)
+            .Concat(FallbackDirectories)
+            .Any(candidate => writable.Contains(Resolve(candidate)));
+    }
+
+    /// <summary>
+    /// <paramref name="path"/> made absolute against <c>/</c> and normalized lexically
+    /// (empty and <c>.</c> segments dropped, <c>..</c> popped) — what Python's
+    /// <c>os.path.abspath</c> does with a working directory of <c>/</c>.
+    /// </summary>
+    private static string Resolve(string path)
+    {
+        var segments = new List<string>();
+        foreach (var segment in path.Split('/'))
+        {
+            if (segment == "..")
+            {
+                if (segments.Count > 0)
+                {
+                    segments.RemoveAt(segments.Count - 1);
+                }
+            }
+            else if (segment.Length > 0 && segment != ".")
+            {
+                segments.Add(segment);
+            }
+        }
+
+        return "/" + string.Join('/', segments);
     }
 
     /// <summary>
     /// Returns a copy of <paramref name="mounts"/> if every entry names an absolute
     /// container path; otherwise throws naming <paramref name="property"/>. Checked at
     /// configuration time because a malformed entry does not fail loudly where it is
-    /// used: an empty or relative <c>TMPDIR</c> is silently skipped by Python's
-    /// <c>tempfile</c>, which falls back to <c>/tmp</c> — the read-only path the mount
-    /// was meant to replace — and the run then fails with a traceback about temporary
-    /// directories instead of a message about the profile. Copied so a list the host
+    /// used: an empty <c>TMPDIR</c> is silently skipped by Python's <c>tempfile</c>, and
+    /// a relative one is resolved against the image's working directory rather than
+    /// naming the mount, so <c>tempfile</c> can fall back to <c>/tmp</c> — the read-only
+    /// path the mount was meant to replace — and the run then fails with a traceback
+    /// about temporary directories instead of a message about the profile. Copied so a list the host
     /// mutates after validation cannot bypass the check.
     /// </summary>
     internal static IReadOnlyList<string> ValidateMounts(IReadOnlyList<string> mounts, string property)

@@ -198,16 +198,16 @@ public class ContainerAttesterTests
     /// <c>TEMP</c>, <c>TMP</c>, <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c> and the
     /// working directory. Under a read-only root with only <c>/scratch</c> mounted, every
     /// one of those is read-only — "No usable temporary directory", verified against real
-    /// Docker for each case below. Rejected when the attester is built, for the same
-    /// reason an empty <c>TmpfsMounts</c> is. An empty value is skipped by
-    /// <c>tempfile</c>, a subdirectory of a mount does not exist in a fresh tmpfs, and a
-    /// relative one resolves against the image's working directory, which is not checked.
+    /// Docker on <c>python:3.12-slim</c> for each case below. Rejected when the attester
+    /// is built, for the same reason an empty <c>TmpfsMounts</c> is. An empty value is
+    /// skipped by <c>tempfile</c>, a subdirectory of a mount does not exist in a fresh
+    /// tmpfs, and <c>/run</c> is not writable under docker's <c>--read-only</c>.
     /// </summary>
     [Theory]
     [InlineData("/work", new[] { "/scratch" })]
     [InlineData("", new[] { "/scratch" })]
     [InlineData("/scratch/sub", new[] { "/scratch" })]
-    [InlineData("scratch", new[] { "/scratch" })]
+    [InlineData("/run", new[] { "/scratch" })]
     public void A_read_only_root_whose_TMPDIR_reaches_no_tmpfs_mount_is_rejected_when_the_attester_is_built(
         string tmpdir, string[] mounts)
     {
@@ -228,13 +228,19 @@ public class ContainerAttesterTests
     /// <summary>
     /// The guard follows <c>tempfile</c>'s fallbacks rather than demanding that
     /// <c>TMPDIR</c> itself be a mount, so it does not reject a configuration that works.
-    /// Each case was verified against real Docker: a mount matched on its container path
-    /// (engine options and a trailing slash do not matter), and an unusable or empty
-    /// <c>TMPDIR</c> rescued by a mounted <c>/tmp</c> or <c>/var/tmp</c>.
+    /// Each case was verified to work against real Docker on <c>python:3.12-slim</c>: a
+    /// mount matched on its container path (engine options, a trailing slash, and the
+    /// lexical resolution <c>abspath</c> applies against the image's <c>/</c> working
+    /// directory do not matter), docker's own <c>/dev/shm</c> tmpfs, and an unusable or
+    /// empty <c>TMPDIR</c> rescued by a mounted <c>/tmp</c> or <c>/var/tmp</c>.
     /// </summary>
     [Theory]
     [InlineData("/work", new[] { "/scratch", "/work" })]
     [InlineData("/scratch/", new[] { "/scratch:size=64m" })]
+    [InlineData("scratch", new[] { "/scratch" })]
+    [InlineData("./scratch", new[] { "/scratch" })]
+    [InlineData("/work/../scratch", new[] { "/scratch" })]
+    [InlineData("/dev/shm", new[] { "/scratch" })]
     [InlineData("/work", new[] { "/tmp" })]
     [InlineData("", new[] { "/tmp" })]
     [InlineData("/work", new[] { "/var/tmp" })]
