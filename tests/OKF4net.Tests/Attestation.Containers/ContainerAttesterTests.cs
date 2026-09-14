@@ -193,6 +193,75 @@ public class ContainerAttesterTests
     }
 
     /// <summary>
+    /// A <c>TMPDIR</c> the host set wins over the derived one, so under a read-only root
+    /// it has to name a mount: Python's <c>tempfile</c> does not create the directory, it
+    /// skips an unusable one and falls back through <c>/tmp</c>, <c>/var/tmp</c> and
+    /// <c>/</c>, all read-only — "No usable temporary directory", verified against real
+    /// Docker with <c>TMPDIR=/work</c> and <c>/scratch</c> mounted. Rejected when the
+    /// attester is built for the same reason an empty <c>TmpfsMounts</c> is. An empty
+    /// value names nothing either (<c>tempfile</c> ignores it), and a subdirectory of a
+    /// mount does not exist in a fresh tmpfs.
+    /// </summary>
+    [Theory]
+    [InlineData("/work", new[] { "/scratch" })]
+    [InlineData("", new[] { "/tmp" })]
+    [InlineData("/scratch/sub", new[] { "/scratch" })]
+    [InlineData("scratch", new[] { "/scratch" })]
+    public void A_read_only_root_whose_TMPDIR_is_not_a_tmpfs_mount_is_rejected_when_the_attester_is_built(
+        string tmpdir, string[] mounts)
+    {
+        var engine = new FakeContainerEngine();
+        var options = new ContainerAttesterOptions
+        {
+            TmpfsMounts = mounts,
+            Environment = new Dictionary<string, string> { ["TMPDIR"] = tmpdir },
+        };
+        var ex = Assert.Throws<ArgumentException>(() => new ContainerAttester(engine, options));
+
+        Assert.Equal("options", ex.ParamName);
+        Assert.Contains("TMPDIR", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("TmpfsMounts", ex.Message, StringComparison.Ordinal);
+        Assert.Null(engine.LastSpec);
+    }
+
+    /// <summary>
+    /// The mount a <c>TMPDIR</c> names is matched on its container path, so engine
+    /// options on the mount and a trailing slash on the variable do not matter.
+    /// </summary>
+    [Theory]
+    [InlineData("/work", new[] { "/scratch", "/work" })]
+    [InlineData("/scratch/", new[] { "/scratch:size=64m" })]
+    [InlineData("/tmp", new[] { "/tmp" })]
+    public async Task A_read_only_root_whose_TMPDIR_names_a_tmpfs_mount_is_accepted(string tmpdir, string[] mounts)
+    {
+        var engine = new FakeContainerEngine();
+        var options = new ContainerAttesterOptions
+        {
+            TmpfsMounts = mounts,
+            Environment = new Dictionary<string, string> { ["TMPDIR"] = tmpdir },
+        };
+        await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.Equal(tmpdir, engine.LastSpec!.Environment["TMPDIR"]);
+    }
+
+    /// <summary>With a writable root, a <c>TMPDIR</c> outside the mounts still has a writable fallback.</summary>
+    [Fact]
+    public async Task A_TMPDIR_outside_the_tmpfs_mounts_is_allowed_when_the_root_is_writable()
+    {
+        var engine = new FakeContainerEngine();
+        var options = new ContainerAttesterOptions
+        {
+            ReadOnlyRootFilesystem = false,
+            TmpfsMounts = ["/scratch"],
+            Environment = new Dictionary<string, string> { ["TMPDIR"] = "/work" },
+        };
+        await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
+
+        Assert.Equal("/work", engine.LastSpec!.Environment["TMPDIR"]);
+    }
+
+    /// <summary>
     /// With a writable root there is always somewhere to write, so no mount is fine —
     /// and with no mount there is no scratch to point <c>TMPDIR</c> at, so the image's
     /// own default stands.

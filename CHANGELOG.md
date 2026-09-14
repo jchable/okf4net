@@ -647,7 +647,10 @@ and this project adheres to
   absolute container path (optionally `:options`), and an **empty**
   `TmpfsMounts` under a read-only root is rejected when a `ContainerAttester` is
   built — its bootstrap writes on every run, so it could never attest, and would
-  only discover that after the computation had already run.
+  only discover that after the computation had already run. So is a read-only
+  `ContainerAttesterOptions` whose `Environment` sets a `TMPDIR` that is not the
+  path of one of its mounts: that `TMPDIR` wins, `tempfile` falls back from it to
+  the read-only `/tmp`, and the run failed the same way.
 - **`bundles/meridian_transit`'s fare-cap attester now verifies the per-trip
   split in order.** It checked the total, the reconciliation and each charge's
   bounds, but never the order, so a statement charging `[0, 250, 250, 200]` for

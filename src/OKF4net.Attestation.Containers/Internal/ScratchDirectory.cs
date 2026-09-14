@@ -37,6 +37,25 @@ internal static class ScratchDirectory
     }
 
     /// <summary>
+    /// Whether <paramref name="directory"/> is the container path of one of
+    /// <paramref name="tmpfsMounts"/> (trailing slashes ignored on both sides). The
+    /// question a host-set <c>TMPDIR</c> has to answer under a read-only root: Python's
+    /// <c>tempfile</c> does not create the directory, it skips an unusable one and falls
+    /// back to paths that are then read-only. So a relative or empty value names nothing,
+    /// and neither does a subdirectory of a mount, which a fresh tmpfs does not contain.
+    /// </summary>
+    internal static bool NamesMount(string directory, IReadOnlyList<string> tmpfsMounts)
+    {
+        if (!directory.StartsWith('/'))
+        {
+            return false;
+        }
+
+        var wanted = directory.TrimEnd('/');
+        return tmpfsMounts.Any(mount => string.Equals(MountPath(mount).TrimEnd('/'), wanted, StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// Returns a copy of <paramref name="mounts"/> if every entry names an absolute
     /// container path; otherwise throws naming <paramref name="property"/>. Checked at
     /// configuration time because a malformed entry does not fail loudly where it is

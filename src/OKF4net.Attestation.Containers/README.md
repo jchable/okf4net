@@ -105,7 +105,9 @@ entry is passed into every container as **`TMPDIR`**, and nothing inside the
 containers names `/tmp` itself — the attester bootstrap's temp module, pip's
 own working files and the SQL wrapper's `--target` all follow `TMPDIR`. So
 `TmpfsMounts = ["/scratch"]` works with `/tmp` left read-only. A `TMPDIR` the
-host sets in `Environment` wins over the derived one. Each entry must be an
+host sets in `Environment` wins over the derived one — so under a read-only root
+it must be the path of one of the mounts: `tempfile` and pip skip a directory
+they cannot write to and fall back to the read-only `/tmp`. Each entry must be an
 absolute container path, optionally with engine options (`/scratch:size=64m`);
 anything else is rejected when the profile is built.
 
@@ -114,8 +116,10 @@ An empty `TmpfsMounts` under a read-only root is allowed on a
 with the driver vendored in, needs no scratch, and that is the tightest
 configuration available (a bare Python `SqlClient` image then has nowhere to
 install its driver, and fails). It is **rejected** on `ContainerAttesterOptions`,
-when the `ContainerAttester` is constructed: the bootstrap writes a temp file on
-every run, so that attester could never attest anything.
+when the `ContainerAttester` is constructed, and so is a `TMPDIR` in its
+`Environment` that is not one of its mounts: the bootstrap writes a temp file on
+every run, so that attester could never attest anything. The profile does not
+check its own `TMPDIR` the same way, for the same reason it allows no mount.
 
 ## Limitations in this version
 

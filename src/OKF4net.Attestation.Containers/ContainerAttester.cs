@@ -23,10 +23,14 @@ public sealed class ContainerAttester : IAttester
     /// <summary>
     /// Creates an attester that runs on <paramref name="options"/>' image. Throws
     /// <see cref="ArgumentException"/> when <paramref name="options"/> mounts the root
-    /// filesystem read-only with no <see cref="ContainerAttesterOptions.TmpfsMounts"/>:
-    /// the bootstrap writes the attester module to a temp file on every run, so that
-    /// configuration could never attest anything — and would only say so at run time,
-    /// as a Python traceback, after the computation had already been executed.
+    /// filesystem read-only and leaves the bootstrap nowhere to write: either with no
+    /// <see cref="ContainerAttesterOptions.TmpfsMounts"/> at all, or with a <c>TMPDIR</c>
+    /// in <see cref="ContainerAttesterOptions.Environment"/> that is not one of them
+    /// (a host-set <c>TMPDIR</c> wins over the derived one, and <c>tempfile</c> falls
+    /// back from an unusable one to read-only paths). The bootstrap writes the attester
+    /// module to a temp file on every run, so either configuration could never attest
+    /// anything — and would only say so at run time, as a Python traceback, after the
+    /// computation had already been executed.
     /// </summary>
     public ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options)
     {
@@ -36,6 +40,15 @@ public sealed class ContainerAttester : IAttester
         {
             throw new ArgumentException(
                 "ContainerAttesterOptions mounts the root filesystem read-only with no TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; add a tmpfs mount (e.g. \"/tmp\") or set ReadOnlyRootFilesystem = false.",
+                nameof(options));
+        }
+
+        if (options.ReadOnlyRootFilesystem
+            && options.Environment.TryGetValue(ScratchDirectory.VariableName, out var tmpdir)
+            && !ScratchDirectory.NamesMount(tmpdir, options.TmpfsMounts))
+        {
+            throw new ArgumentException(
+                $"ContainerAttesterOptions mounts the root filesystem read-only and sets TMPDIR to '{tmpdir}', which is not one of its TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the path of one of the TmpfsMounts, or remove it so the first mount is used.",
                 nameof(options));
         }
 
