@@ -262,12 +262,127 @@ public static class LinkScanner
     }
 
     /// <summary>
+    /// Extracts the keys of footnote <b>references</b> in a body — the <c>key</c> in
+    /// running text such as <c>claim.[^key]</c> — skipping fenced code blocks and
+    /// inline code spans, and not counting a footnote <b>definition</b>'s own label
+    /// (<c>[^key]: …</c> at the start of a line). Keys are returned once each, in
+    /// first-seen order.
+    ///
+    /// Reuses <see cref="CodeFreeLines"/> so "skip code" has one implementation for
+    /// both links and citations. That matters here more than for links: <c>[^a-z]</c>
+    /// is a negated character class, ordinary inside a regex or a SQL pattern, and
+    /// must never be read as a citation.
+    /// </summary>
+    internal static IReadOnlyList<string> ExtractFootnoteReferences(string body)
+    {
+        var keys = new List<string>();
+        foreach (var line in CodeFreeLines(body))
+        {
+            var scanFrom = 0;
+            var definition = FootnoteDefinition.Match(line);
+            if (definition.Success)
+            {
+                // The label of a definition is not a citation; its text may still cite.
+                scanFrom = definition.Length;
+            }
+
+            foreach (System.Text.RegularExpressions.Match m in FootnoteReference.Matches(line, scanFrom))
+            {
+                var key = m.Groups[1].Value;
+                if (!keys.Contains(key, StringComparer.Ordinal))
+                {
+                    keys.Add(key);
+                }
+            }
+        }
+
+        return keys;
+    }
+
+    /// <summary>
+    /// Extracts the entries of an <c>index.md</c> body (§8): each list item whose
+    /// content begins with an inline link, paired with the description text that
+    /// follows the link (a leading <c>-</c>, <c>–</c>, <c>—</c> or <c>:</c> separator
+    /// and surrounding whitespace removed; empty when there is none). Fenced code is
+    /// skipped, and a list item that does not start with a link is not an entry.
+    ///
+    /// Structure — the bullet and the link — is read from the code-blanked line, so a
+    /// link written inside an inline code span is never mistaken for an entry. The
+    /// description is read from the line as written, so an inline code span in it
+    /// (<c>— `runtime: python`</c>) counts as the visible text it is.
+    /// </summary>
+    internal static IReadOnlyList<(ConceptLink Link, string Description)> ExtractIndexEntries(string body)
+    {
+        var entries = new List<(ConceptLink, string)>();
+        foreach (var (raw, blanked) in CodeFreeLinePairs(body))
+        {
+            var i = 0;
+            while (i < blanked.Length && (blanked[i] == ' ' || blanked[i] == '\t'))
+            {
+                i++;
+            }
+
+            if (i + 1 >= blanked.Length || blanked[i] is not ('*' or '-' or '+') || blanked[i + 1] != ' ')
+            {
+                continue;
+            }
+
+            i += 2;
+            while (i < blanked.Length && blanked[i] == ' ')
+            {
+                i++;
+            }
+
+            if (i >= blanked.Length || blanked[i] != '[')
+            {
+                continue;
+            }
+
+            if (ParseInlineLink(blanked.ToCharArray(), i) is not { } p)
+            {
+                continue;
+            }
+
+            var target = StripTitle(p.Dest);
+            var link = new ConceptLink(p.Text, target, ConceptLink.Classify(target));
+
+            // Same offset in both strings (blanking preserves length).
+            var description = raw[p.Next..].Trim().TrimStart('-', '–', '—', ':').Trim();
+            entries.Add((link, description));
+        }
+
+        return entries;
+    }
+
+    // A footnote reference: `[^key]`. GFM footnote labels may not contain whitespace
+    // or brackets; this is deliberately that permissive rather than [A-Za-z0-9_-]+,
+    // so a key the renderer accepts is never silently skipped here.
+    private static readonly System.Text.RegularExpressions.Regex FootnoteReference =
+        new(@"\[\^([^\]\s\[]+)\]", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // A footnote definition label at line start, allowing CommonMark's up-to-three
+    // spaces of indentation: `[^key]:`.
+    private static readonly System.Text.RegularExpressions.Regex FootnoteDefinition =
+        new(@"^ {0,3}\[\^[^\]\s\[]+\]:", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
     /// Returns the body's lines with fenced code blocks removed and inline
     /// code spans blanked out.
     /// </summary>
-    private static List<string> CodeFreeLines(string body)
+    private static List<string> CodeFreeLines(string body) =>
+        CodeFreeLinePairs(body).ConvertAll(pair => pair.Blanked);
+
+    /// <summary>
+    /// The one implementation of "skip code": each non-fence line of the body,
+    /// paired as it was written (<c>Raw</c>) and with its inline code spans blanked
+    /// to spaces (<c>Blanked</c>). Blanking replaces one character with one space, so
+    /// both strings have the same length and every offset means the same position in
+    /// each — which lets a caller find structure on <c>Blanked</c> (so nothing inside
+    /// code is mistaken for a link) and still read visible text from <c>Raw</c>.
+    /// </summary>
+    private static List<(string Raw, string Blanked)> CodeFreeLinePairs(string body)
     {
-        var result = new List<string>();
+        var result = new List<(string, string)>();
         char? fence = null;
         foreach (var line in LfLines.Split(body))
         {
@@ -295,7 +410,7 @@ public static class LinkScanner
                 continue;
             }
 
-            result.Add(BlankInlineCode(line));
+            result.Add((line, BlankInlineCode(line)));
         }
 
         return result;

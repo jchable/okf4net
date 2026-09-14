@@ -568,6 +568,30 @@ and this project adheres to
 
 ### Fixed
 
+- **`okf validate` now reads the body of an `index.md`, and checks §8's entry
+  rule.** It never had: the reserved-file check returned early for any index
+  without frontmatter, which is every well-formed index, so no index body was
+  ever inspected. An entry linking to a concept that has a `description`, while
+  carrying no description text itself, now raises `IndexEntryMissingDescription`
+  (warning — §8 is a SHOULD, never a §11 rejection). It checks that a
+  description is **present**, not that it is a verbatim copy: §8's own
+  illustration is "`- short description of item 1`", and upstream samples
+  shorten. Entries resolve exactly as concept links do (§6.1), and an entry
+  pointing at a non-concept — a subdirectory's index, a script, `log.md` — is
+  not checked, since §8 speaks of the linked *concept's* frontmatter. The
+  conformance report had marked this Implemented on the strength of
+  `IndexGenerator`, which was true for generated indexes and false for
+  hand-written ones.
+- **`okf validate` warns when a footnote cites a source that has no `id`.** §5.1
+  says a source's `id` "SHOULD be present when the body cites the source", and
+  §4.2 makes footnotes keyed to `sources` the citation mechanism, so a
+  `[^key]` with no matching `sources[].id` is a claim attributed to nothing. It
+  raises `CitationMissingSourceId` (warning). Code is skipped, so `[^a-z]` — a
+  negated character class, ordinary in a regex or SQL pattern — is never read
+  as a citation. Both new checks emit nothing on `bundles/acme_retail`,
+  `bundles/ga4`, or any validated golden fixture, and both new `DiagnosticCode`
+  members are appended so existing members keep their numeric values.
+
 - **§4.1's `resource` carve-out for an Attested Computation now applies only to
   an ABSENT key.** The suppression added for S4.1-8 skipped the field before
   reading its value, so a §10 concept declaring `resource` with an unusable
