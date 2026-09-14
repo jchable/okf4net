@@ -1765,7 +1765,36 @@ Also (auto-merged, but will not compile): every `dev` test that sets `TmpfsMount
 
 **Finding (pre-existing, executed by a D3 reviewer):** `ReparsePoints.IsReparsePoint` (`src/OKF4net/Internal/ReparsePoints.cs` ~58) returns `false` on `IOException` / `UnauthorizedAccessException`. A junction carrying a deny ACE was treated as "not a link", and `okf-render` wrote outside `--out`. The same predicate backs `BundleConceptWriter`'s write guard and `OKF4net.Catalog`.
 
-**Scope to settle with the user before dispatch:** a strict fail-closed variant for guard callers only (render, writer, catalog write paths) vs. changing the predicate for every caller (loading would then refuse unreadable entries). Tests must reproduce the executed escape (deny-ACE junction, Windows-only, skipped elsewhere) and prove it RED. Adversarial executed review required.
+**Executed escape (D3 reviewer, at base `85e8dde`):** a junction `out/x/y → ext` carrying a deny-read ACE on the junction itself (plus deny list-directory on `out/x`) made `okf-render` write `x/y/z/two.html` into `ext/z/two.html`.
+
+**USER DECISION (2026-09-14): a strict variant for guard callers only.** Loading and walks keep today's predicate, so nothing `okf validate` reports on a bundle changes.
+
+**Files:** `src/OKF4net/Internal/ReparsePoints.cs`; every guard call site listed below; tests `tests/OKF4net.Tests/` (the existing test files for each guard, plus a `ReparsePoints` unit test file); `CHANGELOG.md`.
+
+**Required behaviour:**
+- Add `internal static bool IsReparsePointOrUninspectable(string path)`, or a better name stating the same thing:
+  - `FileNotFoundException` or `DirectoryNotFoundException` (the entry does not exist, e.g. a file about to be created) → `false`, exactly as today;
+  - `UnauthorizedAccessException` or any other `IOException` → `true` (treat it as a link: the guard refuses);
+  - otherwise the same answer as `IsReparsePoint`.
+  - Check what `File.GetAttributes` and `LinkTarget` actually throw for a missing leaf and for a missing parent, on Windows and Unix. A missing entry must never be refused.
+- Add a strict ancestor walk with the same shape (`HasReparsePointAncestor` over the strict predicate), or a strict flag on the existing one.
+- **Classify every call site explicitly**, in a table in the report:
+  - **Guards, switch to strict:** each site that refuses or allows a write or an outward path. At least `BundleConceptWriter.cs` ~1129 and ~1459; `IndexGenerator.cs` ~280 (the index file it writes); `OkfBundleTools.cs` ~875 and ~931 (`log.md`); `FileMemoryStore.cs` ~241; `HtmlWriter.cs` ~269; `HtmlWriter.GuardOutputDirectory` / `ResolveThroughReparsePoints` ~163. Also every `HasReparsePointAncestor` call made on behalf of one of these guards, including `IndexGenerator`'s private wrapper if it guards a write.
+  - **Walks, keep lenient:** `Bundle.cs` ~407 and ~457, `IndexGenerator.cs` ~219 and ~437 (directory enumeration), `CatalogPathResolver`. Say for each why skipping it is not a guard.
+  - `producers/` references the predicate only in comments; confirm.
+- The two predicates' doc comments state the polarity rule: a guard fails closed and a walk fails open, and why.
+
+**Tests:**
+1. Unit tests on the strict predicate: missing leaf → `false`; missing parent → `false`; a plain file or directory → `false`; a symlink or junction → `true`; an entry whose attributes cannot be read → `true`.
+   - On Windows, build the last case with a junction plus a deny ACE for the current user. Use `icacls <junction> /deny "%USERNAME%:(RA)"` (or `System.Security.AccessControl`, which is BCL on Windows), and restore the ACE in `finally` so the temp directory can be deleted.
+   - Skip on non-Windows with the repo's existing skip idiom for Windows-only tests.
+2. **The executed escape, end to end, RED first:** reproduce the D3 scenario through `HtmlWriter` (or `okf-render` in-process). Assert that nothing is written under `ext` and that the render fails with the guard's existing refusal error. Prove it RED on the current code (it writes into `ext`).
+3. One end-to-end refusal test per other guard family, using the same deny-ACE junction under the bundle or the store root: `BundleConceptWriter` write, `okf_append_log`, `FileMemoryStore` write, the index write. Each is RED on the current code where the escape is reachable. If one is unreachable (the OS refuses the write anyway), say so with the evidence instead of writing a vacuous test.
+4. A regression test that a guard still allows creating a new file in a new subdirectory (the missing-entry case), for at least `BundleConceptWriter` and `HtmlWriter`.
+
+**Review:** adversarial and executed (mutants: a strict variant that returns `false` on `UnauthorizedAccessException`; one guard site left on the lenient predicate; missing-entry → `true`).
+
+**CHANGELOG:** Security — link guards (render output, concept writes, `log.md`, index writes, the catalog's memory store) now refuse an entry whose link status cannot be inspected, instead of treating it as a plain directory; a junction protected by a deny ACE could previously redirect `okf-render` output outside `--out`.
 
 ### Task H2: `okf index dir\` writes the root `index.md`
 
