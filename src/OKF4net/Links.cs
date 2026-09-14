@@ -263,8 +263,8 @@ public static class LinkScanner
 
     /// <summary>
     /// Extracts the keys of footnote <b>references</b> in a body — the <c>key</c> in
-    /// running text such as <c>claim.[^key]</c> — skipping fenced code blocks and
-    /// inline code spans, and not counting a footnote <b>definition</b>'s own label
+    /// running text such as <c>claim.[^key]</c> — skipping code blocks, inline code
+    /// spans and backslash-escaped brackets, and not counting a footnote <b>definition</b>'s own label
     /// (<c>[^key]: …</c> at the start of a line). Keys are returned once each, in
     /// first-seen order.
     ///
@@ -288,6 +288,18 @@ public static class LinkScanner
 
             foreach (System.Text.RegularExpressions.Match m in FootnoteReference.Matches(line, scanFrom))
             {
+                // `\[^x]` is a literal bracket; `\\[^x]` is a literal backslash, then a reference.
+                var backslashes = 0;
+                while (m.Index - backslashes > 0 && line[m.Index - backslashes - 1] == '\\')
+                {
+                    backslashes++;
+                }
+
+                if (backslashes % 2 == 1)
+                {
+                    continue;
+                }
+
                 var key = m.Groups[1].Value;
                 if (!keys.Contains(key, StringComparer.Ordinal))
                 {
@@ -361,35 +373,11 @@ public static class LinkScanner
     internal static IReadOnlyList<(ConceptLink? Link, string Text)> ExtractIndexListItems(string body)
     {
         var items = new List<(ConceptLink?, string)>();
-        foreach (var (raw, blanked) in CodeFreeLinePairs(body))
+        var lines = CodeFreeLinePairs(body);
+        for (var n = 0; n < lines.Count; n++)
         {
-            // Whitespace is skipped on the raw line throughout: blanking turns an inline
-            // code span into spaces, so `code` - text would otherwise read as a bullet.
-            var i = 0;
-            while (i < raw.Length && (raw[i] == ' ' || raw[i] == '\t'))
-            {
-                i++;
-            }
-
-            if (i + 1 >= blanked.Length || blanked[i] is not ('*' or '-' or '+') || blanked[i + 1] != ' ')
-            {
-                continue;
-            }
-
-            if (ThematicBreak.IsMatch(blanked))
-            {
-                continue;
-            }
-
-            // So an item opening with a code span (`* `x` [a](b)`) neither starts with a
-            // link nor loses its code text.
-            i += 2;
-            while (i < raw.Length && raw[i] == ' ')
-            {
-                i++;
-            }
-
-            if (i >= raw.Length)
+            var (raw, blanked) = lines[n];
+            if (BulletContentStart(raw, blanked) is not { } i)
             {
                 continue;
             }
@@ -404,10 +392,64 @@ public static class LinkScanner
             var target = StripTitle(p.Dest);
             var link = new ConceptLink(p.Text, target, ConceptLink.Classify(target));
             var description = raw[p.Next..].Trim().TrimStart('-', '–', '—', ':').Trim();
+
+            // A list item's paragraph continues onto the following lines, indented or
+            // not, until a blank line or the start of another block — so a description
+            // wrapped there is still the entry's.
+            while (description.Length == 0 && n + 1 < lines.Count && IsParagraphContinuation(lines[n + 1]))
+            {
+                n++;
+                description = lines[n].Raw.Trim().TrimStart('-', '–', '—', ':').Trim();
+            }
+
             items.Add((link, description));
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// The offset of a bullet list item's content when the line opens one (<c>*</c>,
+    /// <c>-</c> or <c>+</c>, then a space or tab), or <c>null</c> for any other line,
+    /// a thematic break, or an item with no content. Whitespace is read on the raw line:
+    /// blanking turns an inline code span into spaces, so <c>`code` - text</c> would
+    /// otherwise read as a bullet, and <c>* `x` [a](b)</c> as an item opening with a link.
+    /// </summary>
+    private static int? BulletContentStart(string raw, string blanked)
+    {
+        var i = 0;
+        while (i < raw.Length && raw[i] is ' ' or '\t')
+        {
+            i++;
+        }
+
+        if (i + 1 >= raw.Length || blanked[i] is not ('*' or '-' or '+') || raw[i + 1] is not (' ' or '\t'))
+        {
+            return null;
+        }
+
+        if (ThematicBreak.IsMatch(blanked))
+        {
+            return null;
+        }
+
+        i += 2;
+        while (i < raw.Length && raw[i] is ' ' or '\t')
+        {
+            i++;
+        }
+
+        return i < raw.Length ? i : null;
+    }
+
+    private static bool IsParagraphContinuation((string Raw, string Blanked) line)
+    {
+        var content = line.Raw.TrimStart(' ', '\t');
+        return content.Length != 0
+            && !ListMarker.IsMatch(content)
+            && !AtxHeading.IsMatch(content)
+            && !ThematicBreak.IsMatch(content)
+            && OpensFence(content) is null;
     }
 
     // A CommonMark thematic break: three or more of the same `*`, `-` or `_`, optionally
@@ -434,41 +476,84 @@ public static class LinkScanner
         CodeFreeLinePairs(body).ConvertAll(pair => pair.Blanked);
 
     /// <summary>
-    /// The one implementation of "skip code": each non-fence line of the body,
+    /// The one implementation of "skip code": each line of the body outside code blocks,
     /// paired as it was written (<c>Raw</c>) and with its inline code spans blanked
     /// to spaces (<c>Blanked</c>). Blanking replaces one character with one space, so
     /// both strings have the same length and every offset means the same position in
     /// each — which lets a caller find structure on <c>Blanked</c> (so nothing inside
     /// code is mistaken for a link) and still read visible text from <c>Raw</c>.
+    ///
+    /// Code is recognized as CommonMark defines it, within a line-by-line scan:
+    /// <list type="bullet">
+    /// <item>A fence opens on three or more backticks or tildes, and closes only on a run
+    /// of the same character at least as long, with nothing after it but whitespace — so
+    /// a <c>```</c> inside a <c>````</c> fence, or <c>```python</c> inside a <c>```</c>
+    /// one, is content.</item>
+    /// <item>A line indented four or more columns, after a blank line or another such
+    /// line, is an indented code block — except inside a list, where that indentation is
+    /// the item's own content (a nested item, a continuation paragraph). A list lasts
+    /// until a heading, a thematic break, or an unindented line after a blank line.</item>
+    /// <item>Inline code spans are blanked by <see cref="BlankInlineCode"/>.</item>
+    /// </list>
     /// </summary>
     private static List<(string Raw, string Blanked)> CodeFreeLinePairs(string body)
     {
         var result = new List<(string, string)>();
-        char? fence = null;
+        char fenceChar = '\0';
+        var fenceLength = 0;
+        var previousBlank = true;
+        var inIndentedCode = false;
+        var inList = false;
         foreach (var line in LfLines.Split(body))
         {
-            var trimmed = line.TrimStart();
-            if (fence is { } f)
+            var (indent, contentStart) = Indentation(line);
+            var content = line[contentStart..];
+
+            if (fenceLength > 0)
             {
-                // Inside a fence; look for the closing marker.
-                if (trimmed.StartsWith(new string(f, 3), StringComparison.Ordinal))
+                if (RunLength(content, 0, fenceChar) >= fenceLength && content.AsSpan(RunLength(content, 0, fenceChar)).IsWhiteSpace())
                 {
-                    fence = null;
+                    fenceLength = 0;
                 }
 
                 continue;
             }
 
-            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            if (content.Length == 0)
             {
-                fence = '`';
+                result.Add((line, line));
+                previousBlank = true;
                 continue;
             }
 
-            if (trimmed.StartsWith("~~~", StringComparison.Ordinal))
+            if (indent >= 4 && !inList && (previousBlank || inIndentedCode))
             {
-                fence = '~';
+                inIndentedCode = true;
                 continue;
+            }
+
+            inIndentedCode = false;
+            var wasBlank = previousBlank;
+            previousBlank = false;
+
+            if (OpensFence(content) is { } fence)
+            {
+                (fenceChar, fenceLength) = fence;
+                continue;
+            }
+
+            // Thematic break first: `* * *` also opens like a list item.
+            if (indent < 4 && (AtxHeading.IsMatch(content) || ThematicBreak.IsMatch(content)))
+            {
+                inList = false;
+            }
+            else if (ListMarker.IsMatch(content))
+            {
+                inList = true;
+            }
+            else if (wasBlank && indent < 2)
+            {
+                inList = false;
             }
 
             result.Add((line, BlankInlineCode(line)));
@@ -477,33 +562,147 @@ public static class LinkScanner
         return result;
     }
 
+    // A bullet (`*`, `-`, `+`) or ordered (`1.`, `1)`) list marker followed by a space, a
+    // tab or the end of the line, at the start of a line's content.
+    private static readonly System.Text.RegularExpressions.Regex ListMarker =
+        new(@"^(?:[*+\-]|[0-9]{1,9}[.)])(?:[ \t]|$)", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     /// <summary>
-    /// Replaces inline code spans (backtick-delimited) with spaces so links
-    /// inside them are not extracted.
+    /// A line's indentation in columns (a tab advancing to the next multiple of four, as
+    /// CommonMark counts it) and the offset of its first non-whitespace character.
     /// </summary>
-    private static string BlankInlineCode(string line)
+    private static (int Columns, int ContentStart) Indentation(string line)
     {
-        var sb = new StringBuilder(line.Length);
-        var inCode = false;
-        foreach (var c in line)
+        var columns = 0;
+        var i = 0;
+        for (; i < line.Length; i++)
         {
-            if (c == '`')
+            if (line[i] == ' ')
             {
-                inCode = !inCode;
-                sb.Append(' ');
+                columns++;
             }
-            else if (inCode)
+            else if (line[i] == '\t')
             {
-                sb.Append(' ');
+                columns += 4 - (columns % 4);
             }
             else
             {
-                sb.Append(c);
+                break;
             }
         }
 
-        return sb.ToString();
+        return (columns, i);
     }
+
+    private static int RunLength(string text, int start, char c)
+    {
+        var end = start;
+        while (end < text.Length && text[end] == c)
+        {
+            end++;
+        }
+
+        return end - start;
+    }
+
+    /// <summary>
+    /// The fence character and run length when <paramref name="content"/> opens a fence:
+    /// three or more backticks or tildes, where a backtick fence's info string may not
+    /// itself contain a backtick (that line is inline code, not a fence).
+    /// </summary>
+    private static (char, int)? OpensFence(string content)
+    {
+        foreach (var c in (ReadOnlySpan<char>)['`', '~'])
+        {
+            var run = RunLength(content, 0, c);
+            if (run >= 3 && (c == '~' || content.IndexOf('`', run) < 0))
+            {
+                return (c, run);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Replaces inline code spans, delimiters included, with spaces so nothing inside
+    /// them is extracted. As CommonMark defines a span: a run of backticks opens one and
+    /// the next run of exactly the same length closes it (so <c>`` a ` b ``</c> is one
+    /// span); a run with no such closer is literal text; and a backslash-escaped backtick
+    /// opens nothing. Spans are matched within the line only.
+    /// </summary>
+    private static string BlankInlineCode(string line)
+    {
+        if (line.IndexOf('`') < 0)
+        {
+            return line;
+        }
+
+        // Every backtick run, in order. A backslash escapes only outside a span, where it
+        // matters for an OPENER alone: an odd number of backslashes right before a run
+        // makes its first backtick literal, so it opens with one fewer. Inside a span a
+        // backslash is literal, so a CLOSER is matched on its full length (`C:\` closes).
+        // The backslashes right before a would-be opener are never inside a span: if a
+        // span enclosed them, it would enclose the run too, which is then no opener.
+        var runs = new List<(int Start, int Length)>();
+        for (var i = 0; i < line.Length;)
+        {
+            if (line[i] != '`')
+            {
+                i++;
+                continue;
+            }
+
+            var run = RunLength(line, i, '`');
+            runs.Add((i, run));
+            i += run;
+        }
+
+        var escaped = new bool[runs.Count];
+        for (var k = 0; k < runs.Count; k++)
+        {
+            var backslashes = 0;
+            while (runs[k].Start - backslashes > 0 && line[runs[k].Start - backslashes - 1] == '\\')
+            {
+                backslashes++;
+            }
+
+            escaped[k] = backslashes % 2 == 1;
+        }
+
+        // For each run as an opener, the index of the next run whose full length equals
+        // the opener's: one backward pass, so matching stays linear however many
+        // unclosable runs a hostile line holds.
+        var closer = new int[runs.Count];
+        var lastSeen = new Dictionary<int, int>();
+        for (var k = runs.Count - 1; k >= 0; k--)
+        {
+            var openLength = runs[k].Length - (escaped[k] ? 1 : 0);
+            closer[k] = openLength > 0 && lastSeen.TryGetValue(openLength, out var j) ? j : -1;
+            lastSeen[runs[k].Length] = k;
+        }
+
+        var chars = line.ToCharArray();
+        for (var k = 0; k < runs.Count;)
+        {
+            if (closer[k] < 0)
+            {
+                k++; // no closer: the run is literal text
+                continue;
+            }
+
+            var open = runs[k].Start + (escaped[k] ? 1 : 0);
+            var close = runs[closer[k]];
+            Array.Fill(chars, ' ', open, close.Start + close.Length - open);
+            k = closer[k] + 1;
+        }
+
+        return new string(chars);
+    }
+
+    // The characters a backslash escapes in CommonMark (§2.4).
+    private static bool IsAsciiPunctuation(char c) =>
+        c is (>= '!' and <= '/') or (>= ':' and <= '@') or (>= '[' and <= '`') or (>= '{' and <= '~');
 
     /// <summary>
     /// Scans a single (code-free) line for <c>[text](dest)</c> links.

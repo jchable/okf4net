@@ -65,9 +65,13 @@ inputs, rather than comparing an echo. It walks the fares in the order presented
 charging each trip `max(0, min(fare, cap - charged_so_far))` — the rule above — and
 then requires the receipt to match that recomputation:
 
+0. The inputs are amounts of money: `fares_cents` a list of integers and
+   `cap_cents` an integer, none of them negative. Without this, a cap of `-1`
+   recomputes to an all-zero split that a matching receipt passes on every check
+   below. A cap of `0` — every trip free — is a real policy and passes.
 1. Every receipt field is an integer, and `per_trip_cents` a list of integers.
-2. `charged_cents` equals the recomputed total — for non-negative fares,
-   `min(sum(fares), cap)`, the policy's defining property.
+2. `charged_cents` equals the recomputed total — `min(sum(fares), cap)`, the
+   policy's defining property.
 3. `charged_cents + waived_cents == sum(fares)` — nothing is created or lost.
 4. `per_trip_cents` has one charge per trip, sums to `charged_cents`, and no charge
    is negative or exceeds its own fare.

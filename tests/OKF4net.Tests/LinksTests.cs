@@ -130,4 +130,89 @@ public class LinksTests
         Assert.Single(internalLinks);
         Assert.Single(doc.Citations());
     }
+
+    private static List<string> Targets(string body) =>
+        LinkScanner.ExtractLinks(body).Select(l => l.Target).ToList();
+
+    /// <summary>
+    /// A fence closes only on a run of the same character at least as long as the one
+    /// that opened it (CommonMark §4.5). A four-backtick fence is how markdown about
+    /// markdown shows a three-backtick one, so the inner run is content.
+    /// </summary>
+    [Fact]
+    public void A_shorter_fence_inside_a_longer_one_does_not_close_it()
+    {
+        Assert.Equal(["/after.md"], Targets("````markdown\n```\n[in](/in.md)\n```\n````\n\n[after](/after.md)\n"));
+    }
+
+    /// <summary>A closing fence carries no info string, so <c>```python</c> inside a fence is content.</summary>
+    [Fact]
+    public void A_fence_line_with_an_info_string_does_not_close_a_fence()
+    {
+        Assert.Equal(["/after.md"], Targets("```\n```python\n[in](/in.md)\n```\n\n[after](/after.md)\n"));
+    }
+
+    /// <summary>
+    /// A code span opens on a backtick run and closes on the next run of the SAME length
+    /// (CommonMark §6.1), so a double-backtick span can hold a single backtick.
+    /// </summary>
+    [Fact]
+    public void A_double_backtick_code_span_is_code_throughout()
+    {
+        Assert.Equal(["/after.md"], Targets("Use `` a ` [in](/in.md) `` then [after](/after.md).\n"));
+    }
+
+    /// <summary>
+    /// Bundle content is untrusted input. Searching for each opener's closer from scratch
+    /// is quadratic: a line of backtick runs of distinct lengths (none closable) took 14 s
+    /// to validate at 1.4 MB. Matching must stay linear. The bound is deliberately loose —
+    /// the quadratic scan takes tens of seconds on this input, a linear one milliseconds.
+    /// </summary>
+    [Fact]
+    public void Unclosable_backtick_runs_are_scanned_in_linear_time()
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 1; i <= 1400; i++)
+        {
+            sb.Append('`', i).Append(' ');
+        }
+
+        sb.Insert(sb.Length, " x", 200_000).Append(" [a](/a.md)");
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var targets = Targets(sb.ToString());
+        watch.Stop();
+
+        Assert.Equal(["/a.md"], targets);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"took {watch.Elapsed}");
+    }
+
+    /// <summary>A backtick run with no closing run of the same length is literal text, not code to the end of the line.</summary>
+    [Fact]
+    public void An_unmatched_backtick_is_literal_text()
+    {
+        Assert.Equal(["/a.md"], Targets("A stray ` backtick, then [a](/a.md).\n"));
+    }
+
+    /// <summary>
+    /// A line indented four spaces after a blank line, outside any list, is an indented
+    /// code block (CommonMark §4.4).
+    /// </summary>
+    [Fact]
+    public void Links_in_an_indented_code_block_are_ignored()
+    {
+        Assert.Equal(["/after.md"], Targets("Para.\n\n    [in](/in.md)\n\n[after](/after.md)\n"));
+    }
+
+    /// <summary>
+    /// Inside a list, four spaces of indentation is the item's own content — a nested
+    /// item or a continuation paragraph — not code. Index files nest exactly like this.
+    /// </summary>
+    [Fact]
+    public void Indented_content_inside_a_list_is_not_code()
+    {
+        Assert.Equal(
+            ["/a.md", "/b.md", "/c.md"],
+            Targets("* [a](/a.md)\n    * [b](/b.md)\n\n    More about it, see [c](/c.md).\n"));
+    }
 }

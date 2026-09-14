@@ -638,6 +638,35 @@ and this project adheres to
   or any fixture, and both flag the drift `bundles/meridian_transit` had before
   it was corrected by hand (`# Worked example`, three index entries in inline
   code). Both new `DiagnosticCode` members are appended.
+- **The link, citation and index scanners now recognize code and escapes as
+  CommonMark defines them.** Raised by Copilot on #98, each confirmed by a
+  failing test first. `CitationMissingSourceId` warned on footnote syntax
+  markdown does not render as a footnote: an escaped `\[^a-z]`, an indented code
+  block, or a double-backtick span (the one-character code toggle left
+  `` `` [^x] `` `` visible). A fence closed on any line opening with three
+  backticks, so a ```` ``` ```` inside a four-backtick fence — or a
+  ```` ```python ```` line inside a plain one — ended it early and the rest of the
+  code was scanned as prose. An unmatched backtick hid the rest of its line, links
+  included. And in an `index.md`, a tab after the list marker was not a list item,
+  and a description wrapped onto the next line read as missing, so
+  `IndexEntryMissingDescription` fired on an entry that has one. Fences now close
+  only on a run of the same character at least as long with no info string; a
+  four-column indent after a blank line is code outside a list and content inside
+  one; code spans match runs of equal length, an unmatched run is literal, and a
+  backslash escapes an opener but never a closer (`` `C:\` `` is a complete span).
+  All of this lives in the one shared "skip code" pass, so `okf graph`'s links
+  change too; its output and `okf validate`'s were compared before and after on
+  every bundle in `bundles/` and every fixture, and are byte-identical.
+  Matching code spans is linear: a first version searched for each opener's closer
+  from scratch, which a hostile 1.4 MB line of unclosable backtick runs took 14 s
+  to validate.
+- **`bundles/meridian_transit`'s fare-cap attester rejects negative amounts.**
+  Raised by Copilot on #98: it checked `cap_cents` was an integer, never that it
+  was a cap, so a cap of `-1` recomputed to an all-zero split that a matching
+  receipt passed on every check. A negative cap or fare is now unusable input; a
+  cap of `0` still passes. `attestation_containers_demo`'s active-user attester,
+  whose boolean guard nothing executed, now runs as it ships in a Docker-gated
+  test with a genuine count as control.
 - **A failed container run now says why in the host's logs.**
   `ContainerExecutionException.ToString()` — what every logger writes — carried
   only "attester exited with code 1"; the container's stderr, where the cause

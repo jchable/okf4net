@@ -1518,4 +1518,116 @@ public class ValidateTests
 
         Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
     }
+
+    private const string MetricFrontmatter = "---\ntype: Metric\ntitle: T\ndescription: D\nresource: https://x\ntags: [x]\n---\n";
+
+    /// <summary>
+    /// Footnote syntax that markdown does not render as a footnote must not be read as a
+    /// citation: a backslash-escaped bracket, an indented code block, and a
+    /// double-backtick span (which the one-character code toggle used to leave visible).
+    /// Raised by Copilot on #98.
+    /// </summary>
+    [Theory]
+    [InlineData("Match \\[^a-z] literally.\n")]
+    [InlineData("A pattern:\n\n    SIMILAR TO '[^0-9]+'\n")]
+    [InlineData("Use `` [^x] `` as the class.\n")]
+    [InlineData("Use `` a`[^x] `` as the class.\n")]
+    [InlineData("An escaped \\` is literal, so `[^x]` is a span.\n")]
+    public void Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
+
+    /// <summary>
+    /// The escape and code rules must not swallow real citations: a reference after an
+    /// escaped backslash (<c>\\[^k]</c> is a literal backslash, then a footnote), and one
+    /// in a list item's indented continuation paragraph.
+    /// </summary>
+    [Theory]
+    [InlineData("A path C:\\\\[^k] cites.\n")]
+    [InlineData("The span `C:\\` ends at its backslash, so this cites.[^k] Then `more`.\n")]
+    [InlineData("* An item.\n\n    Its continuation cites this.[^k]\n")]
+    public void Real_citations_next_to_those_forms_are_still_citations(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
+
+    /// <summary>
+    /// A list item continues onto the following indented line, so a description wrapped
+    /// there is still the entry's description. Raised by Copilot on #98.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n  Recognized revenue.\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md) -\n  Recognized revenue.\n")]
+    public void Index_entry_whose_description_wraps_onto_the_next_line_is_not_warned(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>
+    /// The wrapped-description allowance ends where the item does: the next item, a blank
+    /// line, or a heading is not a continuation.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n* [Other](other.md) - other\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n\nSome prose after the list.\n")]
+    [InlineData("# Metrics\n\n* [Revenue](revenue.md)\n# Next section\n")]
+    public void What_follows_an_entry_without_a_description_is_not_its_description(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+    }
+
+    /// <summary>
+    /// A tab after the list marker is as much a list item as a space (CommonMark §5.2), so
+    /// the entry is read and its missing description reported. Raised by Copilot on #98.
+    /// </summary>
+    [Fact]
+    public void Index_entry_with_a_tab_after_its_marker_is_an_entry()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n*\t[Revenue](revenue.md)\n-\t`notes.txt`\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryMissingDescription);
+        Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #98: a fence opened with four backticks is not closed by an
+    /// inner three-backtick line, so footnote syntax after it is still code.
+    /// </summary>
+    [Fact]
+    public void Footnote_syntax_inside_a_longer_fence_is_not_a_citation()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + "````markdown\n```\nA claim.[^k]\n```\n[^k]: a source\n````\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.CitationMissingSourceId);
+    }
 }

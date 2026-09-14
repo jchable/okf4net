@@ -295,6 +295,20 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   (`tests/OKF4net.Tests/ValidateTests.cs`). Emits nothing on
   `bundles/acme_retail`, `bundles/ga4`, or any validated golden fixture — every
   footnote in them already has its `id`.
+
+  **Update 2026-09-14 — false positives from the shared code pass (Copilot on
+  #98).** "Skip code" was narrower than markdown's code: an escaped `\[^a-z]`,
+  an indented code block, a double-backtick span, and anything after a
+  three-backtick line inside a longer fence were all read as prose, so each
+  could raise `CitationMissingSourceId` on a bundle with nothing wrong.
+  `CodeFreeLinePairs` and `BlankInlineCode` now follow CommonMark's fence,
+  indented-code and code-span rules (see their doc comments), and a reference
+  after an odd number of backslashes is skipped. Tests:
+  `Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation`,
+  `Footnote_syntax_inside_a_longer_fence_is_not_a_citation`, and — so the
+  new rules cannot swallow real citations —
+  `Real_citations_next_to_those_forms_are_still_citations`. The scan remains
+  line-by-line: a code span spanning lines is not recognized.
 - **S5.1-3** (§5.1, per-entry `usage_window` override) — **Missing**
   (Minor). `src/OKF4net/Provenance.cs:7` — the `Source` record has no
   `UsageWindow` field (`Id, Resource, Title, Author, UsageCount,
@@ -529,6 +543,17 @@ README mapping: `OKF4net.IndexGenerator`.
   such as `` `code` - [a](b) ``. Whitespace is now read on the raw line. Emits
   nothing on any bundle in `bundles/` or any fixture. Known limit: a nested
   bullet under an entry is an item too, and is warned if it holds no link.
+
+  **Update 2026-09-14 — entry recognition (Copilot on #98).** A tab after the
+  list marker did not make an item, so such an entry went unchecked; and a
+  description wrapped onto the following line read as absent, so
+  `IndexEntryMissingDescription` fired on an entry that has one. Both follow
+  CommonMark now: a space or tab after the marker, and a paragraph continuation
+  — any following line up to a blank line, list item, heading, thematic break
+  or fence — supplies the description. Tests:
+  `Index_entry_with_a_tab_after_its_marker_is_an_entry`,
+  `Index_entry_whose_description_wraps_onto_the_next_line_is_not_warned`, and
+  `What_follows_an_entry_without_a_description_is_not_its_description`.
 - **S8-4** (MAY, producers auto-generate `index.md`) — **Implemented**
   (Minor). `src/OKF4net/IndexGenerator.cs:95-96`: `public static
   IReadOnlyList<string> RegenerateIndexes(string bundleRoot) =>
