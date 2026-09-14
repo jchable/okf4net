@@ -40,11 +40,6 @@ public enum Mutation
 /// without committing leaves HEAD alone, which is what isolates the code churn from the stamp --
 /// and it is also why the last row, which does commit, moves <c>overview</c> and nothing else.</para>
 /// </summary>
-/// <remarks>
-/// Builds a real git repository (<c>ProducerFixture.CopyRepoIntoGit</c>) and so resolves a real
-/// <c>git</c> on <c>PATH</c> after the Finding #12 fix -- see <see cref="ProcessEnvironmentCollection"/>.
-/// </remarks>
-[Collection(ProcessEnvironmentCollection.Name)]
 public class BlastRadiusTests
 {
     [Theory]

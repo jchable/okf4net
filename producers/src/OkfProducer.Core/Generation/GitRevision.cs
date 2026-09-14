@@ -61,19 +61,58 @@ public static class GitRevision
     /// relative segment are both left out rather than combined against
     /// <see cref="Environment.CurrentDirectory"/> -- resolving either would still end up asking the
     /// current directory, which is exactly the hole this method exists to close, just one indirection
-    /// later.</para>
+    /// later. This test is <see cref="Path.IsPathFullyQualified(string)"/>, not
+    /// <see cref="Path.IsPathRooted(string)"/>: <c>IsPathRooted</c> is <see langword="true"/> for a
+    /// Windows <b>drive-relative</b> path too (<c>E:tools</c>, or a bare <c>E:.</c>/<c>E:</c>), and
+    /// <see cref="Path.Combine(string, string)"/> then resolving that against
+    /// <see cref="Environment.CurrentDirectory"/> reopens the exact hole this method exists to close,
+    /// one drive letter removed -- measured: with <c>PATH=E:tools</c>, the current directory holding a
+    /// stand-in <c>git.exe</c> under <c>tools\</c>, the old check resolved it. <c>IsPathFullyQualified</c>
+    /// rejects all three drive-relative shapes while still accepting an ordinary rooted path and a UNC
+    /// one (<c>\\server\share</c>, <c>\\?\...</c>).</para>
+    ///
+    /// <para><b>On Unix, a hit still has to be executable.</b> <see cref="File.Exists(string)"/> says
+    /// nothing about the execute bit, so a non-executable file named <c>git</c> earlier on <c>PATH</c>
+    /// (a stray text file, a checked-out doc) would otherwise shadow the real binary here exactly as it
+    /// would for an interactive shell's own PATH search -- which is why <c>PATH</c> resolution the
+    /// world over requires it. Checked with <see cref="File.GetUnixFileMode(string)"/> rather than left
+    /// to <see cref="Process.Start(ProcessStartInfo)"/> to enforce implicitly: a mismatch there fails
+    /// the whole launch instead of continuing to the next <c>PATH</c> entry the way a real PATH search
+    /// would.</para>
+    ///
+    /// <para><b>Adjacent, not closed here.</b> <c>MsBuildProjectQuery</c>
+    /// (<c>OkfProducer.CodeGraph.Roslyn</c>) starts a bare <c>dotnet</c> the same unguarded way this
+    /// method exists to stop <c>git</c> from being started -- left alone because it only runs without
+    /// <c>--no-msbuild</c>, where MSBuild project evaluation already executes arbitrary code from the
+    /// scanned repository (see <c>GenerateRun</c>'s remarks), so resolving <c>dotnet</c> off <c>PATH</c>
+    /// there would not remove an execution surface, only rename it.</para>
     /// </summary>
     internal static string? ResolveGitExecutable()
     {
-        var extensions = Environment.GetEnvironmentVariable("PATHEXT") is { Length: > 0 } pathext
-            ? pathext.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-            : [".COM", ".EXE", ".BAT", ".CMD"];
-        IEnumerable<string> names = OperatingSystem.IsWindows() ? extensions.Select(ext => "git" + ext) : ["git"];
+        IEnumerable<string> names;
+        if (OperatingSystem.IsWindows())
+        {
+            // Trimmed and filtered: an untrimmed entry (" .EXE " -- a stray space is easy to leave in a
+            // hand-edited PATHEXT) would never equal any real extension and silently drop git.exe from
+            // the candidate set, and an entry that is not a dot followed by at least one character (a
+            // bare ".", or one with nothing after the dot) would build a candidate name with no real
+            // extension at all -- itself a launchable file if one existed with that literal name.
+            var extensions = Environment.GetEnvironmentVariable("PATHEXT") is { Length: > 0 } pathext
+                ? pathext.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(ext => ext.Trim())
+                    .Where(ext => ext.Length > 1 && ext[0] == '.')
+                : [".COM", ".EXE", ".BAT", ".CMD"];
+            names = extensions.Select(ext => "git" + ext);
+        }
+        else
+        {
+            names = ["git"];
+        }
 
         foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
                      .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
-            if (!Path.IsPathRooted(directory))
+            if (!Path.IsPathFullyQualified(directory))
             {
                 continue;
             }
@@ -81,10 +120,17 @@ public static class GitRevision
             foreach (var name in names)
             {
                 var candidate = Path.Combine(directory, name);
-                if (File.Exists(candidate))
+                if (!File.Exists(candidate))
                 {
-                    return Path.GetFullPath(candidate);
+                    continue;
                 }
+
+                if (!OperatingSystem.IsWindows() && (File.GetUnixFileMode(candidate) & UnixFileMode.UserExecute) == 0)
+                {
+                    continue;
+                }
+
+                return Path.GetFullPath(candidate);
             }
         }
 

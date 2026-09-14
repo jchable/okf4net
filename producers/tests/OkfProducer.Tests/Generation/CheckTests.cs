@@ -25,12 +25,6 @@ namespace OkfProducer.Tests.Generation;
 /// <see cref="Inside_a_git_repository_the_stamp_fields_are_compared_like_any_other"/> covers the
 /// other half of the exclusion rule.</para>
 /// </summary>
-/// <remarks>
-/// Runs <c>GitRevision.HeadSha</c> against a real (if unrelated) directory on every
-/// <c>CopyRepoOutsideGit</c>/<c>CopyRepoIntoGit</c> call, so it resolves a real <c>git</c> on <c>PATH</c>
-/// after the Finding #12 fix -- see <see cref="ProcessEnvironmentCollection"/>.
-/// </remarks>
-[Collection(ProcessEnvironmentCollection.Name)]
 public class CheckTests(ITestOutputHelper output)
 {
     /// <summary>Set this to <c>1</c> to rewrite the golden bundle from the fixture repository instead of asserting against it.</summary>

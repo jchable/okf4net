@@ -29,11 +29,6 @@ namespace OkfProducer.Tests.Generation;
 /// A fixture directory outside git is covered separately, by
 /// <see cref="Outside_a_git_repository_the_wall_clock_stands_in_and_no_revision_is_written"/>.</para>
 /// </summary>
-/// <remarks>
-/// Runs against this repository's own real git history and so resolves a real <c>git</c> on <c>PATH</c>
-/// after the Finding #12 fix -- see <see cref="ProcessEnvironmentCollection"/>.
-/// </remarks>
-[Collection(ProcessEnvironmentCollection.Name)]
 public class DeterminismTests
 {
     [Fact]

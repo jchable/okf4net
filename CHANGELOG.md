@@ -649,10 +649,21 @@ and this project adheres to
 
 ### Fixed
 
-- **`okfgen` resolves `git` on `PATH` itself.** On Windows a bare
-  `Process.Start("git")` searched the current directory first, so a
-  `git.exe` committed in the scanned repository ran when `okfgen` was
-  launched from inside it — `--no-msbuild` included (`producers/`).
+- **`okfgen` resolves `git` on `PATH` itself, never from the scanned tree or
+  a drive-relative entry.** A bare `Process.Start("git")` let the OS search
+  the current directory before `PATH` — closed on every platform .NET
+  supports, not only Windows: the same current-directory search is part of
+  .NET's own bare-name process lookup on Unix too, so a `git` script
+  committed in the scanned repository could run there as well as on
+  Windows, whenever `okfgen` was launched from inside that checkout —
+  `--no-msbuild` included. The Windows-specific resolver also rejected a
+  bare `.`/empty `PATH` entry but missed a **drive-relative** one
+  (`E:tools`, `E:.`), which `Path.IsPathRooted` calls rooted and which
+  still resolves against the current directory's own drive; now checked
+  with `Path.IsPathFullyQualified` instead. On Unix, a `PATH` hit is also
+  now required to carry the execute bit, matching the OS's own lookup, so a
+  non-executable `git` earlier on `PATH` can no longer shadow the real one
+  (`producers/`).
 - `okfgen generate --out dir/` (a trailing directory separator, as shell
   completion writes it) wrote nothing and blamed a symbolic link; `--repo
   dir/` never pruned a deleted file's concept; the staging directory landed

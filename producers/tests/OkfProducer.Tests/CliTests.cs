@@ -23,14 +23,6 @@ namespace OkfProducer.Tests;
 /// <c>ProducerFixture</c> re-assembles the pipeline from the same types and therefore cannot see any
 /// of those -- they are properties of the wiring. These tests exercise the wiring.</para>
 /// </summary>
-/// <remarks>
-/// Two tests here build a real git repository and therefore resolve a real <c>git</c> on <c>PATH</c>
-/// after the Finding #12 fix (<c>GitRevision.ResolveGitExecutable</c>) -- see
-/// <see cref="ProcessEnvironmentCollection"/> for why the whole class shares its collection with
-/// <c>GitRevisionTests</c> rather than only the two methods that need it (xunit collections are
-/// class-level, not method-level).
-/// </remarks>
-[Collection(ProcessEnvironmentCollection.Name)]
 public class CliTests
 {
     /// <summary>The concept every "is the code stage running, and with what scope" assertion keys off.</summary>
