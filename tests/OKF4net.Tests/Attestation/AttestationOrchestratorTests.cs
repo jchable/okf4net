@@ -276,18 +276,23 @@ public class AttestationOrchestratorTests
     /// back cancelled AND displayable. A stage completing after cancellation
     /// never contributes a result (§10.5).
     ///
-    /// What each row actually guards against the check AFTER a stage:
+    /// These rows pin the observable rule end to end; they do NOT pin the
+    /// token check that follows a successful stage in
+    /// <c>AttestationOrchestrator.AwaitStageAsync</c>. Stages now run on the
+    /// thread pool, so when a stage cancels the token, <c>WaitAsync</c> almost
+    /// always throws first, and the post-stage check is reached only in the
+    /// rare interleaving where the stage finishes before <c>WaitAsync</c> is
+    /// called — deleting that check leaves these rows green.
+    /// <see cref="The_post_stage_check_rejects_a_stage_that_completed_before_the_token_was_seen"/>
+    /// is what pins it, deterministically.
     /// <list type="bullet">
-    /// <item><c>attester</c> — discriminating: nothing runs after the attester.</item>
-    /// <item><c>executor</c> — discriminating, because its receipt omits the
-    /// declared <c>result</c> field: attestation is skipped on a malformed
-    /// receipt, so no later stage-entry check runs, and without the post-stage
-    /// check the run returned a "receipt is missing declared field(s)" outcome
-    /// instead of propagating the cancellation.</item>
-    /// <item><c>binder</c> — NOT discriminating, and cannot be made so: a
-    /// successful bind is always followed by the executor's entry check, which
-    /// throws first. Kept only to pin the observable rule (a cancelled run
-    /// throws) for that stage; it does not guard the post-stage check.</item>
+    /// <item><c>attester</c> and <c>executor</c> fail if the orchestrator stops
+    /// enforcing the token after a stage has started (both <c>WaitAsync</c> and
+    /// the post-stage check removed). The executor's receipt omits the declared
+    /// <c>result</c> field, so attestation is skipped and no later stage-entry
+    /// check can stand in for that enforcement.</item>
+    /// <item><c>binder</c> guards nothing beyond that rule: a successful bind is
+    /// always followed by the executor's entry check, which throws first.</item>
     /// </list>
     /// </summary>
     [Theory]
@@ -332,6 +337,44 @@ public class AttestationOrchestratorTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+    }
+
+    /// <summary>
+    /// The token check AFTER a stage succeeds, pinned deterministically. A
+    /// stage that cancels the token and returns success can finish on the
+    /// thread pool before the orchestrator reaches <c>WaitAsync</c>, and
+    /// <c>WaitAsync</c> hands back an already-completed task's result even when
+    /// the token is already cancelled (it tests completion first). Without the
+    /// post-stage check, that interleaving returned the result — for the
+    /// attester, a displayable outcome after the attester itself had cancelled
+    /// the run (§10.5). From <see cref="AttestationOrchestrator.RunAsync"/> only
+    /// a race reaches it, so this drives <c>AwaitStageAsync</c> directly with
+    /// exactly that state: a completed stage and a cancelled token.
+    /// </summary>
+    [Fact]
+    public async Task The_post_stage_check_rejects_a_stage_that_completed_before_the_token_was_seen()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await AttestationOrchestrator.AwaitStageAsync(Task.FromResult(42), cts.Token));
+
+        Assert.Equal(cts.Token, ex.CancellationToken);
+    }
+
+    /// <summary>
+    /// The counterpart: a completed stage under a token that has not fired
+    /// returns its result, so the check above rejects only cancellation.
+    /// </summary>
+    [Fact]
+    public async Task A_completed_stage_under_an_unfired_token_returns_its_result()
+    {
+        using var cts = new CancellationTokenSource();
+
+        var result = await AttestationOrchestrator.AwaitStageAsync(Task.FromResult(42), cts.Token);
+
+        Assert.Equal(42, result);
     }
 
     /// <summary>

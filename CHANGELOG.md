@@ -706,10 +706,13 @@ and this project adheres to
   `ValueTask.FromResult` — and the token is re-checked after each stage that
   succeeds. The cost is one thread-pool hop per stage when the token can be
   cancelled; an abandoned blocking stage keeps its pool thread until it returns.
-  A stage that is abandoned or completes after cancellation surfaces as the
-  caller's `OperationCanceledException`, or as `displayable: no … timed out`
-  under the tool's `ComputationTimeout`; a stage that *fails* after the token
-  fired is still reported as that failure, non-displayable. Abandoning a stage
+  Once the orchestrator has seen the token fire — while a stage runs, or after
+  it succeeded — the run ends as a cancellation whatever the stage does
+  afterwards, a later failure included: the caller's
+  `OperationCanceledException`, or `displayable: no … timed out` when the tool's
+  own `ComputationTimeout` fired. Only a stage failure that had already
+  completed before the token was seen is reported as that failure;
+  non-displayable either way. Abandoning a stage
   does not stop its work — nothing can force host code to return. A stage that
   honours its token ends on its own: `OKF4net.Attestation.Containers`' engine
   kills its container, bounded by its kill timeout, and the run simply no
