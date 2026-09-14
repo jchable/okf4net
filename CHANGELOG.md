@@ -293,7 +293,9 @@ and this project adheres to
   opening on one — `**[A](a.md)**`, an icon before the link, a link on a
   continuation line — is not warned. Thematic breaks (`* * *`), prose and code are
   not items, and a block quote right after an item starts a block of its own, so a
-  link inside it is not the item's. Reading items off the code-blanked line had also let an item opening
+  link inside it is not the item's. Items take their links from the same
+  paragraph-at-a-time pass as `ExtractLinks`, so an entry whose link text or
+  destination wraps onto the next line is still an entry with its description. Reading items off the code-blanked line had also let an item opening
   with inline code (`` * `x` [a](b) ``) pass as an entry whose description is
   checked, and a prose line such as `` `code` - [a](b) `` pass as a bulleted one;
   whitespace is now read on the line as written.
@@ -323,8 +325,10 @@ and this project adheres to
   link reference definitions (CommonMark §4.7) and are ordinary `ConceptLink`s
   whose `Target` is the definition's destination; `ConceptLink` itself is
   unchanged. Labels match as CommonMark normalizes them (case-folded, whitespace
-  collapsed, first definition wins), and a full reference with an undefined label
-  is no link. One deliberate divergence from commonmark.js, which has no
+  collapsed, first definition wins), a definition's destination has its backslash
+  escapes resolved as an inline link's has (`[r]: a\_b.md` is `a_b.md`, which is
+  also the href marked renders), and a full reference with an undefined label is
+  no link. One deliberate divergence from commonmark.js, which has no
   footnotes: a bracket starting with `^` is always a footnote, so `[^k][r]` stays a
   citation (and `[r][^k]` is the link `[r]` beside a footnote), as GitHub renders
   them. Inline links are now found by the same algorithm — see Fixed. Compared

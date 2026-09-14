@@ -216,9 +216,9 @@ public static class LinkScanner
     /// </summary>
     public static IReadOnlyList<ConceptLink> ExtractLinks(string body)
     {
-        var links = new List<ConceptLink>();
+        var links = new List<LocatedLink>();
         CodeFreeLinePairs(body, links: links);
-        return links;
+        return links.ConvertAll(l => l.Link);
     }
 
     /// <summary>
@@ -421,8 +421,12 @@ public static class LinkScanner
     internal static IReadOnlyList<(ConceptLink? Link, string Text, bool ContainsLink)> ExtractIndexListItems(string body)
     {
         var items = new List<(ConceptLink?, string, bool)>();
-        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
-        var lines = CodeFreeLinePairs(body, definitions);
+        var located = new List<LocatedLink>();
+        var lines = CodeFreeLinePairs(body, links: located);
+
+        // Links come from the paragraph pass, so one whose text or destination wraps is
+        // found on the line it starts on. Each line's links, by where they start.
+        var startingOn = located.ToLookup(l => l.Line);
         for (var n = 0; n < lines.Count; n++)
         {
             var (raw, blanked) = lines[n];
@@ -431,24 +435,24 @@ public static class LinkScanner
                 continue;
             }
 
-            var first = blanked[i] == '[' ? new InlineLinks(raw[i..], definitions, blanked[i..]).Scan().FirstOrDefault() : default;
-            if (first.Link is null || first.Start != 0)
+            var first = raw[i] == '[' ? startingOn[n].FirstOrDefault(l => l.Column == i) : null;
+            if (first is null)
             {
-                var containsLink = HasLink(blanked[i..], raw[i..], definitions);
+                var containsLink = startingOn[n].Any(l => l.Column >= i);
                 var start = n;
                 while (n + 1 < lines.Count && IsParagraphContinuation(lines[n + 1]))
                 {
                     n++;
-                    containsLink |= HasLink(lines[n].Blanked, lines[n].Raw, definitions);
+                    containsLink |= startingOn[n].Any();
                 }
 
-                // Same offset in both strings (blanking preserves length).
                 items.Add((null, lines[start].Raw[i..].Trim(), containsLink));
                 continue;
             }
 
             var link = first.Link;
-            var description = raw[(i + first.End)..].Trim().TrimStart('-', '–', '—', ':').Trim();
+            n = first.EndLine;
+            var description = lines[n].Raw[first.EndColumn..].Trim().TrimStart('-', '–', '—', ':').Trim();
 
             // A list item's paragraph continues onto the following lines, indented or
             // not, until a blank line or the start of another block — so a description
@@ -465,8 +469,8 @@ public static class LinkScanner
         return items;
     }
 
-    private static bool HasLink(string blankedLine, string rawLine, IReadOnlyDictionary<string, string> definitions) =>
-        new InlineLinks(rawLine, definitions, blankedLine).Scan().Count != 0;
+    /// <summary>A link or image and where it stands: the line and column of its <c>[</c> (or <c>!</c>), and of the offset just past it.</summary>
+    private sealed record LocatedLink(int Line, int Column, int EndLine, int EndColumn, ConceptLink Link);
 
     /// <summary>
     /// The offset of a bullet list item's content when the line opens one (<c>*</c>,
@@ -595,7 +599,7 @@ public static class LinkScanner
     private static List<(string Raw, string Blanked)> CodeFreeLinePairs(
         string body,
         Dictionary<string, string>? definitions = null,
-        List<ConceptLink>? links = null,
+        List<LocatedLink>? links = null,
         List<(int Index, int Offset)>? headings = null)
     {
         var result = new List<(string, string)>();
@@ -876,9 +880,28 @@ public static class LinkScanner
             var hidden = joined.ToCharArray(0, definitionsEnd);
             Blank(hidden, 0, definitionsEnd);
             var scan = new InlineLinks(joined[definitionsEnd..], definitions);
-            foreach (var (_, _, link) in scan.Scan())
+            var found = scan.Scan();
+            if (links is not null && found.Count > 0)
             {
-                links?.Add(link);
+                var lineStarts = new int[lines.Length];
+                for (var k = 1; k < lines.Length; k++)
+                {
+                    lineStarts[k] = lineStarts[k - 1] + result[lines[k - 1].Index].Item1.Length - lines[k - 1].Offset + 1;
+                }
+
+                (int Line, int Column) Locate(int offset)
+                {
+                    var k = Array.BinarySearch(lineStarts, offset + definitionsEnd);
+                    k = k < 0 ? ~k - 1 : k;
+                    return (lines[k].Index, lines[k].Offset + offset + definitionsEnd - lineStarts[k]);
+                }
+
+                foreach (var (start, end, link) in found)
+                {
+                    var (line, column) = Locate(start);
+                    var (endLine, endColumn) = Locate(end);
+                    links.Add(new LocatedLink(line, column, endLine, endColumn, link));
+                }
             }
 
             var blanked = string.Concat(new string(hidden), scan.Blanked).Split('\n');
@@ -1004,7 +1027,7 @@ public static class LinkScanner
             }
 
             destEnd = k + 1;
-            destination = s[(dest + 1)..k];
+            destination = UnescapePunctuation(s.AsSpan((dest + 1)..k));
         }
         else
         {
@@ -1036,7 +1059,7 @@ public static class LinkScanner
             }
 
             destEnd = k;
-            destination = s[dest..k];
+            destination = UnescapePunctuation(s.AsSpan(dest..k));
         }
 
         // A title, when one parses and ends its line; otherwise the destination must.
@@ -1741,6 +1764,28 @@ public static class LinkScanner
         return (runs, escaped, closer);
     }
 
+    /// <summary>The text with each backslash escape of ASCII punctuation resolved to the character (§2.4), as a link destination is.</summary>
+    private static string UnescapePunctuation(ReadOnlySpan<char> text)
+    {
+        if (text.IndexOf('\\') < 0)
+        {
+            return text.ToString();
+        }
+
+        var sb = new StringBuilder(text.Length);
+        for (var k = 0; k < text.Length; k++)
+        {
+            if (text[k] == '\\' && k + 1 < text.Length && IsAsciiPunctuation(text[k + 1]))
+            {
+                k++;
+            }
+
+            sb.Append(text[k]);
+        }
+
+        return sb.ToString();
+    }
+
     // The characters a backslash escapes in CommonMark (§2.4).
     private static bool IsAsciiPunctuation(char c) =>
         c is (>= '!' and <= '/') or (>= ':' and <= '@') or (>= '[' and <= '`') or (>= '{' and <= '~');
@@ -1758,12 +1803,11 @@ public static class LinkScanner
     /// and blanked to spaces in <see cref="Blanked"/>: whichever of a span, a tag or a
     /// bracket starts first wins, and what follows a <c>]</c> that closes a link — its
     /// destination, title or label — is consumed by the link, so nothing in it opens a span
-    /// or a tag. That lookahead reads the text as written, as commonmark.js does. When
-    /// <paramref name="blanked"/> is given, spans were already resolved by such a pass, and
-    /// brackets are read on it instead. Every search for an end is a lookup in a table
-    /// built once on first use, so the scan is linear in the content however it nests.
+    /// or a tag. That lookahead reads the text as written, as commonmark.js does. Every
+    /// search for an end is a lookup in a table built once on first use, so the scan is
+    /// linear in the content however it nests.
     /// </summary>
-    private sealed class InlineLinks(string raw, IReadOnlyDictionary<string, string> definitions, string? blanked = null)
+    private sealed class InlineLinks(string raw, IReadOnlyDictionary<string, string> definitions)
     {
         /// <summary>Link text is kept for display only, so a pathological nest of images cannot make its copies quadratic.</summary>
         private const int MaxTextLength = 2000;
@@ -1777,16 +1821,17 @@ public static class LinkScanner
         private NextOccurrence RawNext => rawNext ??= new NextOccurrence(raw.ToCharArray());
 
         /// <summary>The content with its code spans, raw HTML and what each link consumes after its <c>]</c> blanked to spaces, line endings kept; set by <see cref="Scan"/>.</summary>
-        public string Blanked { get; private set; } = blanked ?? raw;
+        public string Blanked { get; private set; } = string.Empty;
 
         /// <summary>Every link and image found, as its start offset (the <c>[</c>, or the <c>!</c> of an image), the offset past it, and the link, in document order.</summary>
         public List<(int Start, int End, ConceptLink Link)> Scan()
         {
             var found = new List<(int Start, int End, ConceptLink Link)>();
-            var text = blanked ?? raw;
+            var text = raw;
+            Blanked = raw;
             var hasBracket = text.IndexOf(']') >= 0;
-            var hasCode = blanked is null && raw.IndexOf('`') >= 0;
-            var hasHtml = blanked is null && raw.IndexOf('<') >= 0;
+            var hasCode = raw.IndexOf('`') >= 0;
+            var hasHtml = raw.IndexOf('<') >= 0;
             if (!hasBracket && !hasCode && !hasHtml)
             {
                 return found;
@@ -1874,10 +1919,7 @@ public static class LinkScanner
 
                     // What the link consumed after its text — destination, title, label — is
                     // not text either, so a `[^k]` in a destination is no footnote.
-                    if (blanked is null)
-                    {
-                        Blank(chars ??= raw.ToCharArray(), i + 1, match.End);
-                    }
+                    Blank(chars ??= raw.ToCharArray(), i + 1, match.End);
 
                     i = match.End;
                     continue;
@@ -2085,28 +2127,7 @@ public static class LinkScanner
             return from >= raw.Length ? -1 : nextLineEnd[from];
         }
 
-        /// <summary>The raw text from <paramref name="from"/> to <paramref name="to"/>, each backslash escape of ASCII punctuation resolved to the character.</summary>
-        private string Unescape(int from, int to)
-        {
-            var slice = raw.AsSpan(from, to - from);
-            if (slice.IndexOf('\\') < 0)
-            {
-                return slice.ToString();
-            }
-
-            var sb = new StringBuilder(slice.Length);
-            for (var k = 0; k < slice.Length; k++)
-            {
-                if (slice[k] == '\\' && k + 1 < slice.Length && IsAsciiPunctuation(slice[k + 1]))
-                {
-                    k++;
-                }
-
-                sb.Append(slice[k]);
-            }
-
-            return sb.ToString();
-        }
+        private string Unescape(int from, int to) => UnescapePunctuation(raw.AsSpan(from, to - from));
     }
 
     /// <summary>

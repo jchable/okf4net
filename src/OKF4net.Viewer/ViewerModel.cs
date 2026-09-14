@@ -11,10 +11,11 @@ public sealed record ViewerFrontmatterEntry(string Key, string Value);
 /// </summary>
 /// <param name="RawTarget">
 /// The link destination as <c>Bundle.LinksFrom</c> reports it in
-/// <c>ResolvedLink.Raw</c> -- title-stripped and trimmed by
-/// <c>Links.cs</c>'s <c>StripTitle</c>, not the literal markdown source
-/// text. For <c>[x](../a/b.md "Title")</c> this is <c>../a/b.md</c>, never
-/// <c>../a/b.md "Title"</c>.
+/// <c>ResolvedLink.Raw</c> -- the destination <c>LinkScanner</c> parsed out
+/// of the markdown, not the literal source text: no title, no angle brackets,
+/// backslash escapes resolved, and for a reference link its definition's
+/// destination. For <c>[x](../a/b.md "Title")</c> this is <c>../a/b.md</c>,
+/// never <c>../a/b.md "Title"</c>.
 ///
 /// This is the right key to rewire on <em>whenever the target contains
 /// nothing marked's client-side <c>cleanUrl</c> step would rewrite</em> --

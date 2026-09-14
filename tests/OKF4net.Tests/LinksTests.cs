@@ -850,6 +850,20 @@ public class LinksTests
     }
 
     /// <summary>
+    /// Found by review of #105: a definition's destination has its backslash escapes
+    /// resolved, as an inline link's has, so the same file is reached either way.
+    /// </summary>
+    [Theory]
+    [InlineData("[a][r]\n\n[r]: a\\_b.md\n", "a_b.md")]
+    [InlineData("[a][r]\n\n[r]: <my\\_file.md>\n", "my_file.md")]
+    [InlineData("[a][r]\n\n[r]: a\\(b.md \"t\"\n", "a(b.md")]
+    [InlineData("[a][r]\n\n[r]: a\\b.md\n", "a\\b.md")]
+    public void Reference_definition_destinations_resolve_escapes(string body, string expected)
+    {
+        Assert.Equal([expected], Targets(body));
+    }
+
+    /// <summary>
     /// A setext underline does not make a heading of a paragraph that holds only link
     /// reference definitions — there is no text left to head (commonmark.js) — so the
     /// underline continues that paragraph, and a definition after it is no longer at the

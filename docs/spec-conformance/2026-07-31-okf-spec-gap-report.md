@@ -469,9 +469,11 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   `A_link_may_span_a_line_ending_within_its_paragraph`,
   `Escaped_brackets_open_and_close_nothing`,
   `Links_raw_html_and_code_spans_resolve_in_one_pass`,
-  `Footnotes_in_link_destinations_are_not_citations` in `LinksTests.cs`;
-  `A_reference_link_counts_for_broken_links_and_backlinks` and
-  `Index_entry_opening_on_a_reference_link_is_an_entry` in `ValidateTests.cs`;
+  `Footnotes_in_link_destinations_are_not_citations`,
+  `Reference_definition_destinations_resolve_escapes` in `LinksTests.cs`;
+  `A_reference_link_counts_for_broken_links_and_backlinks`,
+  `Index_entry_opening_on_a_reference_link_is_an_entry` and
+  `Index_item_whose_link_crosses_a_line_ending_has_that_link` in `ValidateTests.cs`;
   `Build_rewires_reference_and_angle_bracket_links` in `SiteModelTests.cs`.
 - **S6.1-2** (MUST, tolerate broken links) — **Implemented** (Major).
   `src/OKF4net/Bundle.cs:246` (doc comment): `"All broken internal links...

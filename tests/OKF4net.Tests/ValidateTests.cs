@@ -1467,6 +1467,26 @@ public class ValidateTests
         Assert.Equal(missingDescription, report.Diagnostics.Any(d => d.Code == DiagnosticCode.IndexEntryMissingDescription));
     }
 
+    /// <summary>
+    /// Found by review of #105: a link may cross a line ending, in an index item as
+    /// anywhere else, so an entry whose link text or destination wraps is still an entry
+    /// with its description, and an item holding such a link is not warned as having none.
+    /// </summary>
+    [Theory]
+    [InlineData("# Metrics\n\n* [Revenue,\n  recognized](revenue.md) - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* [Revenue](\n  revenue.md) - Revenue, recognized.\n")]
+    [InlineData("# Metrics\n\n* See [Revenue,\n  recognized](revenue.md).\n")]
+    public void Index_item_whose_link_crosses_a_line_ending_has_that_link(string index)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", index);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code is DiagnosticCode.IndexEntryNotALink or DiagnosticCode.IndexEntryMissingDescription);
+    }
+
     [Fact]
     public void Index_list_items_that_start_with_a_link_are_not_warned()
     {
