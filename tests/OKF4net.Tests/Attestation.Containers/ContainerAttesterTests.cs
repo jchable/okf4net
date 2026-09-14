@@ -193,21 +193,22 @@ public class ContainerAttesterTests
     }
 
     /// <summary>
-    /// A <c>TMPDIR</c> the host set wins over the derived one, so under a read-only root
-    /// it has to name a mount: Python's <c>tempfile</c> does not create the directory, it
-    /// skips an unusable one and falls back through <c>/tmp</c>, <c>/var/tmp</c> and
-    /// <c>/</c>, all read-only — "No usable temporary directory", verified against real
-    /// Docker with <c>TMPDIR=/work</c> and <c>/scratch</c> mounted. Rejected when the
-    /// attester is built for the same reason an empty <c>TmpfsMounts</c> is. An empty
-    /// value names nothing either (<c>tempfile</c> ignores it), and a subdirectory of a
-    /// mount does not exist in a fresh tmpfs.
+    /// A <c>TMPDIR</c> the host set wins over the derived one, and Python's
+    /// <c>tempfile</c> does not create it: it skips an unusable one and walks on through
+    /// <c>TEMP</c>, <c>TMP</c>, <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c> and the
+    /// working directory. Under a read-only root with only <c>/scratch</c> mounted, every
+    /// one of those is read-only — "No usable temporary directory", verified against real
+    /// Docker for each case below. Rejected when the attester is built, for the same
+    /// reason an empty <c>TmpfsMounts</c> is. An empty value is skipped by
+    /// <c>tempfile</c>, a subdirectory of a mount does not exist in a fresh tmpfs, and a
+    /// relative one resolves against the image's working directory, which is not checked.
     /// </summary>
     [Theory]
     [InlineData("/work", new[] { "/scratch" })]
-    [InlineData("", new[] { "/tmp" })]
+    [InlineData("", new[] { "/scratch" })]
     [InlineData("/scratch/sub", new[] { "/scratch" })]
     [InlineData("scratch", new[] { "/scratch" })]
-    public void A_read_only_root_whose_TMPDIR_is_not_a_tmpfs_mount_is_rejected_when_the_attester_is_built(
+    public void A_read_only_root_whose_TMPDIR_reaches_no_tmpfs_mount_is_rejected_when_the_attester_is_built(
         string tmpdir, string[] mounts)
     {
         var engine = new FakeContainerEngine();
@@ -225,14 +226,19 @@ public class ContainerAttesterTests
     }
 
     /// <summary>
-    /// The mount a <c>TMPDIR</c> names is matched on its container path, so engine
-    /// options on the mount and a trailing slash on the variable do not matter.
+    /// The guard follows <c>tempfile</c>'s fallbacks rather than demanding that
+    /// <c>TMPDIR</c> itself be a mount, so it does not reject a configuration that works.
+    /// Each case was verified against real Docker: a mount matched on its container path
+    /// (engine options and a trailing slash do not matter), and an unusable or empty
+    /// <c>TMPDIR</c> rescued by a mounted <c>/tmp</c> or <c>/var/tmp</c>.
     /// </summary>
     [Theory]
     [InlineData("/work", new[] { "/scratch", "/work" })]
     [InlineData("/scratch/", new[] { "/scratch:size=64m" })]
-    [InlineData("/tmp", new[] { "/tmp" })]
-    public async Task A_read_only_root_whose_TMPDIR_names_a_tmpfs_mount_is_accepted(string tmpdir, string[] mounts)
+    [InlineData("/work", new[] { "/tmp" })]
+    [InlineData("", new[] { "/tmp" })]
+    [InlineData("/work", new[] { "/var/tmp" })]
+    public async Task A_read_only_root_whose_TMPDIR_reaches_a_tmpfs_mount_is_accepted(string tmpdir, string[] mounts)
     {
         var engine = new FakeContainerEngine();
         var options = new ContainerAttesterOptions
@@ -243,6 +249,19 @@ public class ContainerAttesterTests
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
 
         Assert.Equal(tmpdir, engine.LastSpec!.Environment["TMPDIR"]);
+    }
+
+    /// <summary><c>TEMP</c> is the next variable <c>tempfile</c> reads, so it can rescue an unusable <c>TMPDIR</c> (verified against real Docker).</summary>
+    [Fact]
+    public void A_TEMP_that_names_a_tmpfs_mount_rescues_an_unusable_TMPDIR()
+    {
+        var options = new ContainerAttesterOptions
+        {
+            TmpfsMounts = ["/scratch"],
+            Environment = new Dictionary<string, string> { ["TMPDIR"] = "/work", ["TEMP"] = "/scratch" },
+        };
+
+        _ = new ContainerAttester(new FakeContainerEngine(), options);
     }
 
     /// <summary>With a writable root, a <c>TMPDIR</c> outside the mounts still has a writable fallback.</summary>

@@ -648,9 +648,12 @@ and this project adheres to
   `TmpfsMounts` under a read-only root is rejected when a `ContainerAttester` is
   built — its bootstrap writes on every run, so it could never attest, and would
   only discover that after the computation had already run. So is a read-only
-  `ContainerAttesterOptions` whose `Environment` sets a `TMPDIR` that is not the
-  path of one of its mounts: that `TMPDIR` wins, `tempfile` falls back from it to
-  the read-only `/tmp`, and the run failed the same way.
+  `ContainerAttesterOptions` whose `Environment` sets a `TMPDIR` from which
+  Python's `tempfile` reaches no mount — none of `TMPDIR`, `TEMP`, `TMP`, `/tmp`,
+  `/var/tmp`, `/usr/tmp` is one: that `TMPDIR` wins, `tempfile` never creates
+  it, and the run failed the same way (`TMPDIR=/work` with only `/scratch`
+  mounted). A `TMPDIR` rescued by a later candidate, such as a mounted `/tmp`,
+  is accepted.
 - **`bundles/meridian_transit`'s fare-cap attester now verifies the per-trip
   split in order.** It checked the total, the reconciliation and each charge's
   bounds, but never the order, so a statement charging `[0, 250, 250, 200]` for

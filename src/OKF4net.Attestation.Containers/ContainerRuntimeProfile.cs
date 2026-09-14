@@ -97,10 +97,12 @@ public sealed record ContainerRuntimeProfile
     ///
     /// <para>For the same reason a <c>TMPDIR</c> set in <see cref="Environment"/> is not
     /// checked against these mounts here, unlike on <see cref="ContainerAttesterOptions"/>.
-    /// Under a read-only root it still has to be the path of one of them to be usable:
-    /// <c>tempfile</c> and pip skip a directory they cannot write to and fall back to
-    /// <c>/tmp</c>, which is then read-only, so the fallback install and a script's own
-    /// temp files fail the run.</para>
+    /// Under a read-only root it still has to lead to one of them to be usable: Python's
+    /// <c>tempfile</c>, which pip and the wrapper's <c>--target</c> both go through,
+    /// never creates it, and skips on through <c>TEMP</c>, <c>TMP</c>, <c>/tmp</c>,
+    /// <c>/var/tmp</c> and <c>/usr/tmp</c> — read-only unless mounted — so a
+    /// <c>TMPDIR</c> that reaches no mount fails the fallback install and a script's own
+    /// temp files.</para>
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts
     {
@@ -176,8 +178,9 @@ public sealed record ContainerAttesterOptions
     /// <para>Unlike the profile, an attester needs this scratch on <i>every</i> run, so a
     /// read-only root that leaves it nowhere to write is rejected when the
     /// <see cref="ContainerAttester"/> is constructed: no mount at all, or a
-    /// <c>TMPDIR</c> in <see cref="Environment"/> that is not the path of one of these
-    /// mounts. Either could never attest anything, and would say so only as a Python
+    /// <c>TMPDIR</c> in <see cref="Environment"/> from which <c>tempfile</c> reaches none
+    /// of these mounts (see the constructor for the exact rule). Either could never
+    /// attest anything, and would say so only as a Python
     /// traceback, after the executor had already run the computation.</para>
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts

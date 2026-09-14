@@ -37,22 +37,39 @@ internal static class ScratchDirectory
     }
 
     /// <summary>
-    /// Whether <paramref name="directory"/> is the container path of one of
-    /// <paramref name="tmpfsMounts"/> (trailing slashes ignored on both sides). The
-    /// question a host-set <c>TMPDIR</c> has to answer under a read-only root: Python's
-    /// <c>tempfile</c> does not create the directory, it skips an unusable one and falls
-    /// back to paths that are then read-only. So a relative or empty value names nothing,
-    /// and neither does a subdirectory of a mount, which a fresh tmpfs does not contain.
+    /// The variables Python's <c>tempfile</c> reads, in order, before its fixed POSIX
+    /// fallbacks (<c>tempfile._candidate_tempdir_list</c>); an empty value is skipped.
     /// </summary>
-    internal static bool NamesMount(string directory, IReadOnlyList<string> tmpfsMounts)
-    {
-        if (!directory.StartsWith('/'))
-        {
-            return false;
-        }
+    private static readonly string[] TempVariables = [VariableName, "TEMP", "TMP"];
 
-        var wanted = directory.TrimEnd('/');
-        return tmpfsMounts.Any(mount => string.Equals(MountPath(mount).TrimEnd('/'), wanted, StringComparison.Ordinal));
+    /// <summary>The fixed POSIX directories <c>tempfile</c> tries after <see cref="TempVariables"/>.</summary>
+    private static readonly string[] FallbackDirectories = ["/tmp", "/var/tmp", "/usr/tmp"];
+
+    /// <summary>
+    /// Whether, under a read-only root, Python's <c>tempfile</c> will find one of
+    /// <paramref name="tmpfsMounts"/> among the directories it tries with
+    /// <paramref name="environment"/> — the environment the container actually gets, so
+    /// after <see cref="Apply"/>. <c>tempfile</c> never creates a directory: it walks
+    /// <c>TMPDIR</c>, <c>TEMP</c>, <c>TMP</c>, then <c>/tmp</c>, <c>/var/tmp</c>,
+    /// <c>/usr/tmp</c> and finally the working directory, and takes the first it can
+    /// write to. Only a candidate that is exactly a mount's path counts (trailing slashes
+    /// ignored): a subdirectory of a mount does not exist in a fresh tmpfs.
+    ///
+    /// <para>Conservative about what the image decides and this cannot see: a relative
+    /// candidate and the final working-directory fallback both resolve against the
+    /// image's <c>WORKDIR</c>, and the image's own <c>ENV</c> can set <c>TEMP</c> or
+    /// <c>TMP</c>. None of those counts here, so an image relying on one of them to reach
+    /// a mount is reported as having none.</para>
+    /// </summary>
+    internal static bool ReachesMount(IReadOnlyDictionary<string, string> environment, IReadOnlyList<string> tmpfsMounts)
+    {
+        var candidates = TempVariables
+            .Select(name => environment.TryGetValue(name, out var value) ? value : string.Empty)
+            .Where(value => value.StartsWith('/'))
+            .Concat(FallbackDirectories);
+
+        return candidates.Any(candidate => tmpfsMounts.Any(
+            mount => string.Equals(MountPath(mount).TrimEnd('/'), candidate.TrimEnd('/'), StringComparison.Ordinal)));
     }
 
     /// <summary>

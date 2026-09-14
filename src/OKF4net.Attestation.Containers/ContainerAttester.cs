@@ -25,9 +25,12 @@ public sealed class ContainerAttester : IAttester
     /// <see cref="ArgumentException"/> when <paramref name="options"/> mounts the root
     /// filesystem read-only and leaves the bootstrap nowhere to write: either with no
     /// <see cref="ContainerAttesterOptions.TmpfsMounts"/> at all, or with a <c>TMPDIR</c>
-    /// in <see cref="ContainerAttesterOptions.Environment"/> that is not one of them
-    /// (a host-set <c>TMPDIR</c> wins over the derived one, and <c>tempfile</c> falls
-    /// back from an unusable one to read-only paths). The bootstrap writes the attester
+    /// in <see cref="ContainerAttesterOptions.Environment"/> from which none of the
+    /// directories Python's <c>tempfile</c> goes on to try (<c>TEMP</c>, <c>TMP</c>,
+    /// <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c>) is one of them — a host-set
+    /// <c>TMPDIR</c> wins over the derived one, and <c>tempfile</c> never creates it. What
+    /// the image decides (its <c>WORKDIR</c>, its own <c>ENV</c>) is not seen, so an image
+    /// that reaches a mount only through one of those is rejected too. The bootstrap writes the attester
     /// module to a temp file on every run, so either configuration could never attest
     /// anything — and would only say so at run time, as a Python traceback, after the
     /// computation had already been executed.
@@ -43,12 +46,14 @@ public sealed class ContainerAttester : IAttester
                 nameof(options));
         }
 
+        // Checked on the environment the container will get: with no TMPDIR from the
+        // host, Apply points it at the first mount and this always holds.
         if (options.ReadOnlyRootFilesystem
-            && options.Environment.TryGetValue(ScratchDirectory.VariableName, out var tmpdir)
-            && !ScratchDirectory.NamesMount(tmpdir, options.TmpfsMounts))
+            && !ScratchDirectory.ReachesMount(ScratchDirectory.Apply(options.Environment, options.TmpfsMounts), options.TmpfsMounts))
         {
+            var tmpdir = options.Environment[ScratchDirectory.VariableName];
             throw new ArgumentException(
-                $"ContainerAttesterOptions mounts the root filesystem read-only and sets TMPDIR to '{tmpdir}', which is not one of its TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the path of one of the TmpfsMounts, or remove it so the first mount is used.",
+                $"ContainerAttesterOptions mounts the root filesystem read-only and sets TMPDIR to '{tmpdir}', and none of the directories Python's tempfile would try (TMPDIR, TEMP, TMP, /tmp, /var/tmp, /usr/tmp) is one of its TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the absolute path of one of the TmpfsMounts, or remove it so the first mount is used.",
                 nameof(options));
         }
 
