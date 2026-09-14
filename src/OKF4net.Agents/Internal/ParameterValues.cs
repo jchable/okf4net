@@ -20,14 +20,20 @@ namespace OKF4net.Agents.Internal;
 /// to (<see cref="StrictJsonValues"/>, in <c>OKF4net.Attestation</c>): a number that
 /// has no exact <see langword="long"/> or <see langword="double"/> counterpart, a
 /// duplicate property inside a value, or a string escaping a lone surrogate is
-/// rejected rather than rounded, overflowed or resolved last-wins. What it cannot
-/// see is a duplicate <em>top-level</em> parameter name: the <c>parameterValues</c>
-/// object itself is deserialized into a dictionary by Microsoft.Extensions.AI
-/// before this code runs, and a dictionary holds one entry per name, so whether a
-/// repeated name was rejected, or which occurrence survived, was decided there.
+/// rejected rather than rounded, overflowed or resolved last-wins. A duplicate
+/// <em>top-level</em> parameter name never reaches this class: by then
+/// Microsoft.Extensions.AI has deserialized the <c>parameterValues</c> object into a
+/// dictionary, one entry per name. The tool the model calls rejects it before that,
+/// in <see cref="TopLevelDuplicateParameterGuard"/>, with
+/// <see cref="DuplicatePropertyError"/>; a direct C# caller of
+/// <see cref="OkfBundleTools.RunComputationAsync"/> passes a dictionary, which cannot
+/// carry one.
 /// </remarks>
 internal static class ParameterValues
 {
+    /// <summary>The fixed sentence for a duplicate property, at the top level or nested.</summary>
+    internal const string DuplicatePropertyError = "parameterValues had a duplicate JSON property.";
+
     /// <summary>
     /// Normalizes every <see cref="JsonElement"/> in <paramref name="values"/>;
     /// any other value passes through unchanged.
@@ -58,7 +64,7 @@ internal static class ParameterValues
             normalized = null;
             error = e.Violation switch
             {
-                StrictJsonViolation.DuplicateProperty => "parameterValues had a duplicate JSON property.",
+                StrictJsonViolation.DuplicateProperty => DuplicatePropertyError,
                 StrictJsonViolation.InexactNumber => "parameterValues had a number that cannot be represented exactly.",
                 _ => "parameterValues had a string that is not valid Unicode.",
             };

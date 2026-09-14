@@ -291,7 +291,9 @@ public sealed class OkfBundleTools
             // The async form: AIFunctionFactory binds its CancellationToken from the
             // invocation and leaves it out of the JSON schema, so the model sees the
             // same two parameters while the host gains a way to stop a wedged run.
-            tools.Add(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation"));
+            // Wrapped so a duplicate top-level parameter name in the model's JSON is an
+            // error rather than last-wins; the schema the model sees is unchanged.
+            tools.Add(new TopLevelDuplicateParameterGuard(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation")));
         }
 
         return mode switch

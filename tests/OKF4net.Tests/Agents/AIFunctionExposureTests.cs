@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
 using OKF4net.Attestation;
@@ -399,6 +400,150 @@ public class AIFunctionExposureTests
         Assert.True(properties.TryGetProperty("conceptId", out _), "schema should declare 'conceptId'.");
         Assert.True(properties.TryGetProperty("parameterValues", out _), "schema should declare 'parameterValues'.");
         Assert.False(properties.TryGetProperty("cancellationToken", out _), "the cancellation token must stay invisible to the model.");
+    }
+
+    /// <summary>Records what the fake runtime's binder and executor were handed, and how often.</summary>
+    private sealed class RunCapture
+    {
+        public IReadOnlyDictionary<string, object?>? Bound { get; set; }
+
+        public int StageCalls { get; set; }
+    }
+
+    private static OkfBundleTools WiredTools(TempDir tmp, RunCapture capture)
+    {
+        tmp.Write(
+            "c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\nparameters:\n  - name: n\n    required: true\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (contract, computation, values, _) =>
+        {
+            capture.Bound = values;
+            capture.StageCalls++;
+            return ValueTask.FromResult(new BoundComputation(contract.Runtime ?? "bigquery", computation.InlineCode, null, values));
+        };
+        runtime.ExecuteFunc = (_, _, _) =>
+        {
+            capture.StageCalls++;
+            return ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        return new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg));
+    }
+
+    /// <summary>The call a chat client hands over: <c>parameterValues</c> as a <see cref="JsonElement"/> of the model's raw JSON.</summary>
+    private static AIFunctionArguments JsonArguments(string parameterValuesJson)
+    {
+        // Default options keep a duplicate, as a client's own deserializer does.
+        using var doc = JsonDocument.Parse(parameterValuesJson);
+        return new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["conceptId"] = "c/rev",
+            ["parameterValues"] = doc.RootElement.Clone(),
+        });
+    }
+
+    /// <summary>
+    /// A duplicate top-level parameter name is rejected by the tool the model calls.
+    /// <c>AIFunctionFactory</c> deserializes <c>parameterValues</c> into a dictionary on
+    /// default options before <c>RunComputationAsync</c> runs, so <c>{"n":1,"n":2}</c>
+    /// used to reach the binder as <c>n = 2</c>: one reader of the model's call saw 1,
+    /// the binder saw 2. The error is fixed text (never the name), the same shape and
+    /// result type as the tool's other parameter-value errors, and no stage runs.
+    /// </summary>
+    [Theory]
+    [InlineData("JsonElement")]
+    [InlineData("string")]
+    [InlineData("JsonNode")]
+    public async Task okf_run_computation_rejects_a_duplicate_top_level_parameter_name(string form)
+    {
+        using var tmp = new TempDir();
+        var capture = new RunCapture();
+        var function = GetFunction(WiredTools(tmp, capture), "okf_run_computation");
+
+        // The escaped spelling of "n" is the same name; built from (char)92 so no tool unescapes it.
+        var escapedN = (char)92 + "u006e";
+        var otherError = await function.InvokeAsync(JsonArguments("""{"n": 1e400}"""));
+        Assert.StartsWith("Error:", otherError?.ToString(), StringComparison.Ordinal);
+
+        foreach (var json in new[] { """{"n": 1, "n": 2}""", """{"n": 1, "m": 2, "n": 3}""", "{\"n\": 1, \"" + escapedN + "\": 2}" })
+        {
+            // Each raw form a client can hand over; the factory deserializes all three last-wins.
+            object? raw = form switch
+            {
+                "JsonElement" => JsonDocument.Parse(json).RootElement.Clone(),
+                "string" => json,
+                _ => JsonNode.Parse(json),
+            };
+            var result = await function.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+            {
+                ["conceptId"] = "c/rev",
+                ["parameterValues"] = raw,
+            }));
+
+            Assert.Equal("Error: parameterValues had a duplicate JSON property.", result?.ToString());
+            Assert.Equal(otherError?.GetType(), result?.GetType());
+            Assert.Equal(0, capture.StageCalls);
+        }
+    }
+
+    [Fact]
+    public async Task okf_run_computation_still_binds_distinct_top_level_parameter_names()
+    {
+        using var tmp = new TempDir();
+        var capture = new RunCapture();
+        var function = GetFunction(WiredTools(tmp, capture), "okf_run_computation");
+
+        var result = await function.InvokeAsync(JsonArguments("""{"n": 1, "m": 2}"""));
+
+        Assert.Contains("displayable: yes", result?.ToString(), StringComparison.Ordinal);
+        Assert.Equal(1L, capture.Bound!["n"]);
+        Assert.Equal(2L, capture.Bound!["m"]);
+    }
+
+    /// <summary>
+    /// A C# caller is untouched by the duplicate check, which only reads raw JSON: a
+    /// dictionary handed to the <see cref="AIFunction"/> or straight to
+    /// <see cref="OkfBundleTools.RunComputationAsync"/> binds as it did.
+    /// </summary>
+    [Fact]
+    public async Task okf_run_computation_passes_a_dictionary_argument_through_unchanged()
+    {
+        using var tmp = new TempDir();
+        var capture = new RunCapture();
+        var tools = WiredTools(tmp, capture);
+
+        var viaFunction = await GetFunction(tools, "okf_run_computation").InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["conceptId"] = "c/rev",
+            ["parameterValues"] = new Dictionary<string, object?> { ["n"] = 42 },
+        }));
+        Assert.Contains("displayable: yes", viaFunction?.ToString(), StringComparison.Ordinal);
+        Assert.Equal(42, capture.Bound!["n"]);
+
+        var direct = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?> { ["n"] = 7L });
+        Assert.Contains("displayable: yes", direct, StringComparison.Ordinal);
+        Assert.Equal(7L, capture.Bound!["n"]);
+    }
+
+    /// <summary>
+    /// The duplicate check must not change what the model is shown: the exposed
+    /// function's name, description and schemas are exactly what
+    /// <see cref="AIFunctionFactory"/> generates for <see cref="OkfBundleTools.RunComputationAsync"/>.
+    /// </summary>
+    [Fact]
+    public void okf_run_computation_shows_the_model_the_factory_generated_schema()
+    {
+        using var tmp = new TempDir();
+        var tools = WiredTools(tmp, new RunCapture());
+
+        var exposed = GetFunction(tools, "okf_run_computation");
+        var generated = AIFunctionFactory.Create(tools.RunComputationAsync, "okf_run_computation");
+
+        Assert.Equal(generated.Name, exposed.Name);
+        Assert.Equal(generated.Description, exposed.Description);
+        Assert.Equal(generated.JsonSchema.GetRawText(), exposed.JsonSchema.GetRawText());
+        Assert.Equal(generated.ReturnJsonSchema?.GetRawText(), exposed.ReturnJsonSchema?.GetRawText());
     }
 
 

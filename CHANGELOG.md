@@ -413,10 +413,14 @@ and this project adheres to
   not valid Unicode`. `okf_run_computation` (`OKF4net.Agents`) holds its parameter
   values to the same rule through one internal normaliser in
   `OKF4net.Attestation`, and reports a rejection as its `Error: …` text instead
-  of passing infinity to the binder or throwing at the model; a duplicate
-  *top-level* parameter name is out of its reach, since Microsoft.Extensions.AI
-  deserializes `parameterValues` into a dictionary first. Found by an external
-  review.
+  of passing infinity to the binder or throwing at the model. The tool the model
+  calls also rejects a duplicate *top-level* parameter name in its raw
+  `parameterValues` JSON (a `JsonElement`, `JsonNode` or JSON string) with
+  `Error: parameterValues had a duplicate JSON property.`, before
+  Microsoft.Extensions.AI deserializes it into a dictionary last-wins —
+  `{"n": 1, "n": 2}` used to reach the binder as `n = 2`. The schema the model
+  sees is unchanged, and the public `RunComputation`/`RunComputationAsync`
+  dictionary API is untouched. Found by an external review.
 
 - **`OKF4net.Attestation`: a declared but unresolvable `attester.resource` now
   fails the run, and `AttestationContext` gained a field.** Both are breaking for
