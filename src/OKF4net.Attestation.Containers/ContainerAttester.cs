@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text.Json;
+using OKF4net.Attestation.Containers.Internal;
 
 namespace OKF4net.Attestation.Containers;
 
@@ -14,17 +15,46 @@ namespace OKF4net.Attestation.Containers;
 /// <see cref="ContainerRuntimeKind.Script"/> image may have no Python at all),
 /// so the bootstrap cannot assume one.
 /// </summary>
-public sealed class ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options) : IAttester
+public sealed class ContainerAttester : IAttester
 {
+    private readonly IContainerEngine _engine;
+    private readonly ContainerAttesterOptions _options;
+
+    /// <summary>
+    /// Creates an attester that runs on <paramref name="options"/>' image. Throws
+    /// <see cref="ArgumentException"/> when <paramref name="options"/> mounts the root
+    /// filesystem read-only with no <see cref="ContainerAttesterOptions.TmpfsMounts"/>:
+    /// the bootstrap writes the attester module to a temp file on every run, so that
+    /// configuration could never attest anything — and would only say so at run time,
+    /// as a Python traceback, after the computation had already been executed.
+    /// </summary>
+    public ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.ReadOnlyRootFilesystem && options.TmpfsMounts.Count == 0)
+        {
+            throw new ArgumentException(
+                "ContainerAttesterOptions mounts the root filesystem read-only with no TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; add a tmpfs mount (e.g. \"/tmp\") or set ReadOnlyRootFilesystem = false.",
+                nameof(options));
+        }
+
+        _engine = engine;
+        _options = options;
+    }
+
     /// <summary>
     /// Reads the JSON envelope from stdin, writes <c>attester_source</c> to a
-    /// temp file inside the container, imports it, and calls
+    /// temp file inside the container — in <c>TMPDIR</c>, which
+    /// <see cref="AttestAsync"/> points at the first configured tmpfs mount, so a
+    /// read-only root with <c>/scratch</c> mounted instead of <c>/tmp</c> works;
+    /// this text never names a directory itself — imports it, and calls
     /// <c>attest(**kwargs)</c>. Redirects stdout to a buffer for the whole
     /// import+call so a stray <c>print()</c> inside the bundle's own module
     /// can never corrupt the one JSON line this prints at the very end (the
     /// design's finding #9).
     /// </summary>
-    private const string Bootstrap = """
+    internal const string Bootstrap = """
         import sys, json, importlib.util, tempfile, io, contextlib
         envelope = json.load(sys.stdin)
         f = tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w', encoding='utf-8')
@@ -66,21 +96,24 @@ public sealed class ContainerAttester(IContainerEngine engine, ContainerAttester
         });
 
         var spec = new ContainerRunSpec(
-            Image: options.Image,
+            Image: _options.Image,
             Command: ["python3", "-c", Bootstrap],
             Stdin: envelope,
-            Environment: options.Environment,
+            // TMPDIR -> the first tmpfs mount. NamedTemporaryFile writes wherever it
+            // points; left unset that is /tmp, which is read-only whenever the host
+            // mounted its scratch somewhere else.
+            Environment: ScratchDirectory.Apply(_options.Environment, _options.TmpfsMounts),
             NetworkMode: "none",
-            MemoryBytes: options.MemoryBytes,
-            Cpus: options.Cpus,
-            PidsLimit: options.PidsLimit,
-            Timeout: options.Timeout)
+            MemoryBytes: _options.MemoryBytes,
+            Cpus: _options.Cpus,
+            PidsLimit: _options.PidsLimit,
+            Timeout: _options.Timeout)
         {
-            ReadOnlyRootFilesystem = options.ReadOnlyRootFilesystem,
-            TmpfsMounts = options.TmpfsMounts,
+            ReadOnlyRootFilesystem = _options.ReadOnlyRootFilesystem,
+            TmpfsMounts = _options.TmpfsMounts,
         };
 
-        var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
+        var result = await _engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         if (result.ExitCode != 0)
         {
             throw new ContainerExecutionException($"attester exited with code {result.ExitCode}", result.Stdout, result.Stderr);

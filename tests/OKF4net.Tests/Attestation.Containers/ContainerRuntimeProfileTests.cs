@@ -208,4 +208,73 @@ public class ContainerRuntimeProfileTests
         Assert.DoesNotContain("remove the ceiling", ex.Message);
         Assert.Contains("Timeout", ex.Message);
     }
+
+    /// <summary>
+    /// The first <c>TmpfsMounts</c> entry becomes the container's <c>TMPDIR</c>. An empty
+    /// or relative one does not fail where it is used: Python's <c>tempfile</c> silently
+    /// skips an unusable <c>TMPDIR</c> and falls back to <c>/tmp</c>, the read-only path
+    /// the mount was meant to replace, so the run dies with a traceback about temporary
+    /// directories that names nothing in the profile. Rejected here instead, on both
+    /// configuration types, naming the property.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("scratch")]
+    [InlineData("./scratch")]
+    [InlineData(":size=64m")]
+    public void A_tmpfs_mount_that_is_not_an_absolute_container_path_is_rejected(string entry)
+    {
+        var ex = Assert.Throws<ArgumentException>(() => Default() with { TmpfsMounts = ["/tmp", entry] });
+        Assert.Equal("TmpfsMounts", ex.ParamName);
+
+        Assert.Throws<ArgumentException>(() => new ContainerAttesterOptions { TmpfsMounts = [entry] });
+    }
+
+    [Fact]
+    public void A_null_tmpfs_mount_list_is_rejected()
+    {
+        Assert.Throws<ArgumentNullException>(() => Default() with { TmpfsMounts = null! });
+        Assert.Throws<ArgumentNullException>(() => new ContainerAttesterOptions { TmpfsMounts = null! });
+    }
+
+    [Fact]
+    public void A_tmpfs_mount_with_engine_options_is_accepted()
+    {
+        Assert.Equal(["/scratch:size=64m"], (Default() with { TmpfsMounts = ["/scratch:size=64m"] }).TmpfsMounts);
+    }
+
+    /// <summary>
+    /// The checked list is copied, so a host that mutates its own list afterwards cannot
+    /// slip an entry past the validation.
+    /// </summary>
+    [Fact]
+    public void The_tmpfs_mount_list_is_copied_at_configuration_time()
+    {
+        var mounts = new List<string> { "/scratch" };
+        var profile = Default() with { TmpfsMounts = mounts };
+
+        mounts[0] = "relative";
+
+        Assert.Equal(["/scratch"], profile.TmpfsMounts);
+    }
+
+    /// <summary>
+    /// A deliberate asymmetry with <see cref="ContainerAttesterOptions"/>. A read-only
+    /// root with no scratch at all is the tightest profile there is, and a legitimate
+    /// one: a script that writes nothing, or a SqlClient image with its driver vendored
+    /// in, needs no writable path. So the profile accepts it. The attester, which writes
+    /// a temp module on every run, rejects it — see
+    /// <c>ContainerAttesterTests.A_read_only_root_with_no_tmpfs_mount_is_rejected_when_the_attester_is_built</c>.
+    /// </summary>
+    [Fact]
+    public void A_read_only_profile_with_no_tmpfs_mount_is_allowed()
+    {
+        var profile = Default() with { TmpfsMounts = [] };
+        Assert.True(profile.ReadOnlyRootFilesystem);
+        Assert.Empty(profile.TmpfsMounts);
+
+        // And it builds a runtime: the rejection is the attester's, and only when ITS
+        // options leave it nowhere to write.
+        _ = new ContainerAttestationRuntime(new FakeContainerEngine(), profile);
+    }
 }
