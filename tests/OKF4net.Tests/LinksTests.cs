@@ -82,55 +82,6 @@ public class LinksTests
         Assert.Null(link.Resolve(source));
     }
 
-    [Fact]
-    public void Citations_section_parsed()
-    {
-        var body = "Prose.\n\n# Citations\n\n[1] [BigQuery schema](https://bq.example/schema)\n[2] [Runbook](https://wiki.acme.internal/runbook)\n";
-        var citations = LinkScanner.ExtractCitations(body);
-        Assert.Equal(2, citations.Count);
-        Assert.Equal(1u, citations[0].Number);
-        Assert.Equal("BigQuery schema", citations[0].Text);
-        Assert.Equal("https://bq.example/schema", citations[0].Target);
-        Assert.Equal(2u, citations[1].Number);
-    }
-
-    [Fact]
-    public void Citations_stop_at_next_heading()
-    {
-        var body = "# Citations\n[1] [a](https://a)\n\n# Other\n[2] [b](https://b)\n";
-        var citations = LinkScanner.ExtractCitations(body);
-        Assert.Single(citations);
-    }
-
-    [Fact]
-    public void Citation_number_accepts_a_leading_plus_but_rejects_a_leading_minus()
-    {
-        // The unsigned citation-number parse strips one leading '+' before
-        // parsing digits, but never strips a leading '-' -- for an unsigned
-        // value that's simply an invalid digit, so ANY leading '-' is
-        // rejected (including "-0", unlike .NET's NumberStyles.AllowLeadingSign,
-        // which uniquely accepts "-0" for uint -- verified empirically and
-        // avoided below).
-        var plus = LinkScanner.ExtractCitations("# Citations\n[+3] Src\n");
-        Assert.Single(plus);
-        Assert.Equal(3u, plus[0].Number);
-
-        var minus = LinkScanner.ExtractCitations("# Citations\n[-3] Src\n");
-        Assert.Empty(minus);
-    }
-
-    [Fact]
-    public void Document_links_and_citations_integration()
-    {
-        var doc = OkfDocument.Parse(
-            "---\ntype: BigQuery Table\n---\n\nJoined with [customers](/tables/customers.md).\n\n# Citations\n[1] [BQ](https://bq)\n");
-        // links() returns every body link, including the one in the citation list.
-        Assert.Equal(2, doc.Links().Count);
-        var internalLinks = doc.Links().Where(l => l.Kind == LinkKind.Absolute).ToList();
-        Assert.Single(internalLinks);
-        Assert.Single(doc.Citations());
-    }
-
     /// <summary>
     /// Bundle content is untrusted input, and link scanning used to restart a balanced
     /// scan to the end of the line at every <c>[</c>: a line of unclosed brackets was
@@ -262,5 +213,54 @@ public class LinksTests
 
             return ((text, dest), j + 1);
         }
+    }
+
+    [Fact]
+    public void Citations_section_parsed()
+    {
+        var body = "Prose.\n\n# Citations\n\n[1] [BigQuery schema](https://bq.example/schema)\n[2] [Runbook](https://wiki.acme.internal/runbook)\n";
+        var citations = LinkScanner.ExtractCitations(body);
+        Assert.Equal(2, citations.Count);
+        Assert.Equal(1u, citations[0].Number);
+        Assert.Equal("BigQuery schema", citations[0].Text);
+        Assert.Equal("https://bq.example/schema", citations[0].Target);
+        Assert.Equal(2u, citations[1].Number);
+    }
+
+    [Fact]
+    public void Citations_stop_at_next_heading()
+    {
+        var body = "# Citations\n[1] [a](https://a)\n\n# Other\n[2] [b](https://b)\n";
+        var citations = LinkScanner.ExtractCitations(body);
+        Assert.Single(citations);
+    }
+
+    [Fact]
+    public void Citation_number_accepts_a_leading_plus_but_rejects_a_leading_minus()
+    {
+        // The unsigned citation-number parse strips one leading '+' before
+        // parsing digits, but never strips a leading '-' -- for an unsigned
+        // value that's simply an invalid digit, so ANY leading '-' is
+        // rejected (including "-0", unlike .NET's NumberStyles.AllowLeadingSign,
+        // which uniquely accepts "-0" for uint -- verified empirically and
+        // avoided below).
+        var plus = LinkScanner.ExtractCitations("# Citations\n[+3] Src\n");
+        Assert.Single(plus);
+        Assert.Equal(3u, plus[0].Number);
+
+        var minus = LinkScanner.ExtractCitations("# Citations\n[-3] Src\n");
+        Assert.Empty(minus);
+    }
+
+    [Fact]
+    public void Document_links_and_citations_integration()
+    {
+        var doc = OkfDocument.Parse(
+            "---\ntype: BigQuery Table\n---\n\nJoined with [customers](/tables/customers.md).\n\n# Citations\n[1] [BQ](https://bq)\n");
+        // links() returns every body link, including the one in the citation list.
+        Assert.Equal(2, doc.Links().Count);
+        var internalLinks = doc.Links().Where(l => l.Kind == LinkKind.Absolute).ToList();
+        Assert.Single(internalLinks);
+        Assert.Single(doc.Citations());
     }
 }
