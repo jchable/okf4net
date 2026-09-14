@@ -536,13 +536,25 @@ public class AttestationOrchestratorTests
     /// <summary>
     /// A test-only mutable clock. <see cref="FixedClock"/> is immutable by design (see its
     /// own doc comment), so pinning G2's release-time staleness read needs a clock a test
-    /// can advance mid-run, e.g. from inside a stage delegate.
+    /// can advance mid-run, e.g. from inside a stage delegate. <see cref="Now"/> is guarded by
+    /// a lock rather than a plain auto-property: <see cref="Staleness_crossed_on_the_pool_hopped_stage_is_still_caught_at_release"/>
+    /// below mutates it from a stage running on G1's <c>Task.Run</c> hop while <see cref="AttestationOrchestrator.RunAsync"/>
+    /// later reads it back from a different thread, and the lock rules out a torn or stale
+    /// read of this struct across that hop rather than relying on reasoning about
+    /// <see cref="Task"/> happens-before semantics.
     /// </summary>
     private sealed class SteppingClock : IOkfClock
     {
-        public SteppingClock(DateTimeOffset now) => Now = now;
+        private readonly object _gate = new();
+        private DateTimeOffset _now;
 
-        public DateTimeOffset Now { get; set; }
+        public SteppingClock(DateTimeOffset now) => _now = now;
+
+        public DateTimeOffset Now
+        {
+            get { lock (_gate) { return _now; } }
+            set { lock (_gate) { _now = value; } }
+        }
     }
 
     /// <summary>
@@ -572,6 +584,52 @@ public class AttestationOrchestratorTests
 
         var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>(), policy: StalePolicy.Strict);
 
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+        Assert.False(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="Staleness_crossed_during_a_stage_is_caught_at_release_not_at_run_start"/>
+    /// that actually exercises G1's <c>Task.Run</c> hop instead of asserting cross-thread
+    /// visibility is safe by reasoning about <see cref="Task"/> semantics alone. That test (and
+    /// the other two G2 staleness tests) call <c>RunAsync</c> with the default
+    /// <c>CancellationToken.None</c>, for which <c>RunStageAsync</c>'s
+    /// <c>cancellationToken.CanBeCanceled</c> is <see langword="false"/> and every stage --
+    /// including the one that mutates the clock -- runs synchronously in-line on the calling
+    /// thread, never via <c>Task.Run</c>. Here the token comes from a live, never-cancelled
+    /// <see cref="CancellationTokenSource"/>, so <c>CanBeCanceled</c> is <see langword="true"/>
+    /// and the attester genuinely hops onto the thread pool before mutating the clock; the
+    /// assertion on <c>hopped</c> (a different managed thread id than the caller's) makes the
+    /// test fail loudly rather than silently stay on the fast path if that hop stops happening.
+    /// </summary>
+    [Fact]
+    public async Task Staleness_crossed_on_the_pool_hopped_stage_is_still_caught_at_release()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var runtime = FakeRuntime.Passing();
+        var callerThreadId = Environment.CurrentManagedThreadId;
+        var hopped = false;
+        runtime.AttestFunc = (_, _) =>
+        {
+            hopped = Environment.CurrentManagedThreadId != callerThreadId;
+            clock.Now = staleAfter + TimeSpan.FromSeconds(1);
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+        // Live and cancelable, but never cancelled: forces RunStageAsync's
+        // cancellationToken.CanBeCanceled to true so every stage takes the Task.Run hop,
+        // without the run itself ever being cancelled.
+        using var cts = new CancellationTokenSource();
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>(),
+            policy: StalePolicy.Strict, cancellationToken: cts.Token);
+
+        Assert.True(hopped, "the attester stage ran on the caller's own thread -- this test would pass even if a regression broke cross-thread visibility of the release-time clock read");
         Assert.Equal(StaleState.Stale, outcome.Stale);
         Assert.False(outcome.Displayable);
     }
