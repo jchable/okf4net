@@ -699,16 +699,23 @@ and this project adheres to
   a 30 ms `ComputationTimeout`, an attester sleeping 350 ms made
   `okf_run_computation` return after ~350 ms with `displayable: yes`, and an
   attester that cancelled the caller's token and returned a passing verdict
-  yielded an outcome that was both cancelled and displayable. A running stage is
-  now awaited through `Task.WaitAsync`, so the run stops waiting the moment the
-  token fires, and the token is re-checked after every stage. The caller's own
-  cancellation still propagates as an `OperationCanceledException`; the tool's
-  `ComputationTimeout` is still reported as `displayable: no … timed out`.
-  Abandoning a stage does not stop its work — nothing can force host code to
-  return — so whatever it started runs until it ends on its own (for
-  `OKF4net.Attestation.Containers`, the engine's per-run `Timeout` bounds it);
-  its task is observed, so a later fault cannot surface as an unobserved task
-  exception.
+  yielded an outcome that was both cancelled and displayable. Each stage is now
+  started on the thread pool and awaited through `Task.WaitAsync`, so the run
+  stops waiting the moment the token fires — including for a stage that blocks
+  its thread before returning anything, such as a synchronous client wrapped in
+  `ValueTask.FromResult` — and the token is re-checked after each stage that
+  succeeds. The cost is one thread-pool hop per stage when the token can be
+  cancelled; an abandoned blocking stage keeps its pool thread until it returns.
+  A stage that is abandoned or completes after cancellation surfaces as the
+  caller's `OperationCanceledException`, or as `displayable: no … timed out`
+  under the tool's `ComputationTimeout`; a stage that *fails* after the token
+  fired is still reported as that failure, non-displayable. Abandoning a stage
+  does not stop its work — nothing can force host code to return. A stage that
+  honours its token ends on its own: `OKF4net.Attestation.Containers`' engine
+  kills its container, bounded by its kill timeout, and the run simply no
+  longer waits for that teardown (the engine's per-run `Timeout` is the
+  backstop). The abandoned task is observed, so a later fault cannot surface as
+  an unobserved task exception.
 - **`okfgen` resolves `git` on `PATH` itself, never from the scanned tree or
   a drive-relative entry.** A bare `Process.Start("git")` let the OS search
   the current directory before `PATH` — closed on every platform .NET

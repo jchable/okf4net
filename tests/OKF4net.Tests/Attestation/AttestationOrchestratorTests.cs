@@ -170,35 +170,103 @@ public class AttestationOrchestratorTests
     /// The token was checked only BEFORE each stage, so a stage that ignores
     /// its token and is already running when cancellation arrives ran to
     /// completion, and its result was used: a run cancelled at 30 ms waited
-    /// out a 350 ms attester and came back with an outcome instead of a
+    /// out the whole attester and came back with an outcome instead of a
     /// cancellation. The orchestrator stops awaiting such a stage the moment
     /// the token fires (§10.5).
     ///
-    /// The bound is deliberately generous: the discriminator is "returned long
-    /// before the stage would have finished", not a precise latency.
+    /// Two shapes: <c>async</c> awaits without the token; <c>blocking</c> blocks
+    /// its calling thread before it returns its <see cref="ValueTask{TResult}"/>
+    /// at all (a synchronous client wrapped in <c>ValueTask.FromResult</c>), so
+    /// awaiting the returned value alone could never abandon it.
+    ///
+    /// The stage would take 30 s; the bound is 5 s. The discriminator is
+    /// "returned long before the stage would have finished", deliberately far
+    /// above scheduling noise on a loaded machine — a 350 ms stage under a
+    /// 200 ms bound flaked with three test suites running concurrently. Nothing
+    /// awaits the abandoned stage.
     /// </summary>
-    [Fact]
-    public async Task A_token_ignoring_stage_is_abandoned_when_the_token_fires()
+    [Theory]
+    [InlineData("async")]
+    [InlineData("blocking")]
+    public async Task A_token_ignoring_stage_is_abandoned_when_the_token_fires(string shape)
     {
         using var tmp = new TempDir();
         var (bundle, id) = InlineComputation(tmp);
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
-        runtime.AttestFunc = async (_, _) =>
+
+        // Not disposed: the abandoned stage may still be waiting on it when the
+        // test ends, and Set() in finally is what releases it.
+        var gate = new ManualResetEventSlim(false);
+        if (shape == "async")
         {
-            // Ignores its token, like a client with no cancellation support.
-            await Task.Delay(350, CancellationToken.None);
-            return new AttestationVerdict(true, null);
-        };
+            runtime.AttestFunc = async (_, _) =>
+            {
+                // Ignores its token, like a client with no cancellation support.
+                await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None);
+                return new AttestationVerdict(true, null);
+            };
+        }
+        else
+        {
+            runtime.AttestFunc = (_, _) =>
+            {
+                // Blocks its calling thread before returning anything.
+                gate.Wait(TimeSpan.FromSeconds(30));
+                return ValueTask.FromResult(new AttestationVerdict(true, null));
+            };
+        }
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
         var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));
 
-        var stopwatch = Stopwatch.StartNew();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
-        stopwatch.Stop();
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+            stopwatch.Stop();
 
-        Assert.True(stopwatch.ElapsedMilliseconds < 200, $"RunAsync returned after {stopwatch.ElapsedMilliseconds} ms; the token fired at 30 ms and the stage would have finished at 350 ms");
+            Assert.True(stopwatch.ElapsedMilliseconds < 5_000, $"RunAsync returned after {stopwatch.ElapsedMilliseconds} ms; the token fired at 30 ms and the {shape} stage would have finished at 30 s");
+        }
+        finally
+        {
+            gate.Set();
+        }
+    }
+
+    /// <summary>
+    /// Moving each stage onto the thread pool (so a thread-blocking stage can
+    /// be abandoned) must not change how a stage that throws SYNCHRONOUSLY —
+    /// before returning any <see cref="ValueTask{TResult}"/> — is reported: a
+    /// non-cancellation exception is still a failure reason on a
+    /// non-displayable outcome, and an HttpClient-style
+    /// <see cref="TaskCanceledException"/> with the caller's token NOT
+    /// cancelled is still a stage failure, not a cancellation. The token here
+    /// is cancellable, so the stage really does take the pool hop (a
+    /// non-cancellable token is invoked directly and never reaches it).
+    /// </summary>
+    [Theory]
+    [InlineData("invalid-operation")]
+    [InlineData("task-canceled")]
+    public async Task A_synchronously_throwing_stage_under_a_cancellable_token_is_still_a_failure_reason(string kind)
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = (_, _, _) => throw (kind == "invalid-operation"
+            ? new InvalidOperationException("secret detail")
+            : new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing."));
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token);
+
+        Assert.False(outcome.Displayable);
+        var expectedType = kind == "invalid-operation" ? nameof(InvalidOperationException) : nameof(TaskCanceledException);
+        Assert.Equal([$"executor threw: {expectedType}"], outcome.Reasons);
+        Assert.Equal(expectedType, outcome.Error!.GetType().Name);
     }
 
     /// <summary>
@@ -208,10 +276,19 @@ public class AttestationOrchestratorTests
     /// back cancelled AND displayable. A stage completing after cancellation
     /// never contributes a result (§10.5).
     ///
-    /// Only the attester row fails on a before-each-stage check alone: for the
-    /// binder and executor, the NEXT stage's entry check already throws. Those
-    /// rows pin the rule for every stage, so it does not come to depend on
-    /// which stage happens to follow.
+    /// What each row actually guards against the check AFTER a stage:
+    /// <list type="bullet">
+    /// <item><c>attester</c> — discriminating: nothing runs after the attester.</item>
+    /// <item><c>executor</c> — discriminating, because its receipt omits the
+    /// declared <c>result</c> field: attestation is skipped on a malformed
+    /// receipt, so no later stage-entry check runs, and without the post-stage
+    /// check the run returned a "receipt is missing declared field(s)" outcome
+    /// instead of propagating the cancellation.</item>
+    /// <item><c>binder</c> — NOT discriminating, and cannot be made so: a
+    /// successful bind is always followed by the executor's entry check, which
+    /// throws first. Kept only to pin the observable rule (a cancelled run
+    /// throws) for that stage; it does not guard the post-stage check.</item>
+    /// </list>
     /// </summary>
     [Theory]
     [InlineData("binder")]
@@ -237,7 +314,8 @@ public class AttestationOrchestratorTests
                 runtime.ExecuteFunc = (_, _, _) =>
                 {
                     cts.Cancel();
-                    return ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+                    // 'result' deliberately missing: see the summary.
+                    return ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
                 };
                 break;
             default:

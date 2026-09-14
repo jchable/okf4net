@@ -215,38 +215,74 @@ public class OkfComputationToolsTests
 
     /// <summary>
     /// The timeout above only worked because that executor honours its token.
-    /// An attester that ignores it — sleeping 350 ms under a 30 ms
-    /// <see cref="OkfBundleTools.ComputationTimeout"/> — ran to completion, and
-    /// the tool returned after ~350 ms with <c>displayable: yes</c>: a
-    /// "wall-clock ceiling" that neither bounded the wall clock nor stopped the
-    /// result being shown (§10.5).
+    /// An attester that ignores it ran to completion under a 30 ms
+    /// <see cref="OkfBundleTools.ComputationTimeout"/>, and the tool returned
+    /// only when the attester did, with <c>displayable: yes</c>: a "wall-clock
+    /// ceiling" that neither bounded the wall clock nor stopped the result being
+    /// shown (§10.5).
+    ///
+    /// Two shapes of token-ignoring attester. <c>async</c> awaits without the
+    /// token. <c>blocking</c> blocks its calling thread before it even returns
+    /// its <see cref="ValueTask{TResult}"/> — a synchronous client wrapped in
+    /// <c>ValueTask.FromResult</c> — which no amount of awaiting the returned
+    /// value can abandon.
+    ///
+    /// The attester would take 30 s; the bound is 5 s. The discriminator is
+    /// "returned long before the stage would have finished", deliberately far
+    /// above scheduling noise on a loaded CI runner. Nothing awaits the
+    /// abandoned attester: the blocking one is released in <c>finally</c>, and
+    /// the async one's pending delay does not keep the test process alive.
     /// </summary>
-    [Fact]
-    public async Task A_token_ignoring_attester_cannot_outlast_the_timeout_or_display_its_result()
+    [Theory]
+    [InlineData("async")]
+    [InlineData("blocking")]
+    public async Task A_token_ignoring_attester_cannot_outlast_the_timeout_or_display_its_result(string shape)
     {
         using var tmp = new TempDir();
         tmp.Write(
             "c/rev.md",
             "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: r.md, receipt: [job_id] }\n---\n# Computation\n\n```\nX\n```\n");
         var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
-        runtime.AttestFunc = async (_, _) =>
+
+        // Not disposed: the abandoned attester may still be waiting on it when
+        // the test ends, and Set() in finally is what releases it.
+        var gate = new ManualResetEventSlim(false);
+        if (shape == "async")
         {
-            await Task.Delay(350, CancellationToken.None);
-            return new AttestationVerdict(true, null);
-        };
+            runtime.AttestFunc = async (_, _) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None);
+                return new AttestationVerdict(true, null);
+            };
+        }
+        else
+        {
+            runtime.AttestFunc = (_, _) =>
+            {
+                gate.Wait(TimeSpan.FromSeconds(30));
+                return ValueTask.FromResult(new AttestationVerdict(true, null));
+            };
+        }
         var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
         var tools = new OkfBundleTools(tmp.Path, new AttestationOrchestrator(reg))
         {
             ComputationTimeout = TimeSpan.FromMilliseconds(30),
         };
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
-        stopwatch.Stop();
+        try
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var rendered = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+            stopwatch.Stop();
 
-        Assert.StartsWith("displayable: no", rendered, StringComparison.Ordinal);
-        Assert.Contains("timed out", rendered, StringComparison.Ordinal);
-        Assert.True(stopwatch.ElapsedMilliseconds < 200, $"the tool returned after {stopwatch.ElapsedMilliseconds} ms under a 30 ms ComputationTimeout; the attester would have finished at 350 ms");
+            Assert.StartsWith("displayable: no", rendered, StringComparison.Ordinal);
+            Assert.Contains("timed out", rendered, StringComparison.Ordinal);
+            Assert.True(stopwatch.ElapsedMilliseconds < 5_000, $"the tool returned after {stopwatch.ElapsedMilliseconds} ms under a 30 ms ComputationTimeout; the {shape} attester would have finished at 30 s");
+        }
+        finally
+        {
+            gate.Set();
+        }
     }
 
     /// <summary>
