@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Diagnostics;
 using OkfProducer.Core.Generation;
 
 namespace OkfProducer.Tests.Generation;
@@ -27,8 +28,21 @@ namespace OkfProducer.Tests.Generation;
 /// overlapping the other four classes above, which stay in their own (parallel, unmarked) collections
 /// -- putting them in the SAME named collection as this one, as an earlier round did, would have
 /// serialised them against each other for nothing, since none of them mutates process state themselves;
-/// they only read <c>PATH</c> indirectly by shelling out. <see cref="Environment.CurrentDirectory"/> and
-/// <c>PATH</c> are restored in <c>finally</c> in every test here regardless of outcome.</para>
+/// they only read <c>PATH</c> indirectly by shelling out. <see cref="Environment.CurrentDirectory"/>,
+/// <c>PATH</c> and (where a test sets it) <c>NoDefaultCurrentDirectoryInExePath</c> are restored in
+/// <c>finally</c> in every test here regardless of outcome.</para>
+///
+/// <para><b><c>NoDefaultCurrentDirectoryInExePath</c> is not incidental.</b> This harness's own process
+/// sets that environment variable, which makes Windows' <c>CreateProcess</c> skip the current directory
+/// unconditionally when resolving a bare executable name -- and a child process inherits it from this
+/// one unless told otherwise. Discovered when a reviewer's mutant (<c>RunGit</c> reverted to a bare
+/// <c>new ProcessStartInfo("git")</c>) passed the process-launching tests below unchanged: the
+/// current-directory trap those tests build was never even considered by <c>CreateProcess</c>, because
+/// this inherited variable told it not to look there, for a reason that has nothing to do with whether
+/// the fix is present. A test that wants to observe the OS's ordinary bare-name search order -- current
+/// directory before <c>PATH</c>, which is exactly the vulnerability this whole file exists to close --
+/// has to clear the variable for its own duration, or it is testing a search order nothing in production
+/// ever actually exercises.</para>
 /// </summary>
 [Collection(ProcessEnvironmentCollectionDefinition.Name)]
 public class GitRevisionTests
@@ -145,12 +159,17 @@ public class GitRevisionTests
 
     /// <summary>
     /// Ties <see cref="GitRevision.RunGit"/> to <see cref="GitRevision.ResolveGitExecutable"/> itself,
-    /// rather than only to the resolver in isolation. The two tests above call
-    /// <see cref="GitRevision.ResolveGitExecutable"/> directly and would stay green even if
-    /// <c>RunGit</c> reverted to <c>new ProcessStartInfo("git")</c> (a bare name) and stopped consulting
-    /// the resolver's answer at all -- this test calls the public <see cref="GitRevision.HeadSha"/>
-    /// instead, which is what actually launches a process, so a regression there is what this one
-    /// exists to catch.
+    /// rather than only to the resolver in isolation, for the FULL-regression shape: <c>PATH</c> carries
+    /// nothing usable at all. The two tests above call <see cref="GitRevision.ResolveGitExecutable"/>
+    /// directly and would stay green even if <c>RunGit</c> reverted to
+    /// <c>new ProcessStartInfo("git")</c> (a bare name) and stopped consulting the resolver's answer
+    /// entirely -- this test calls the public <see cref="GitRevision.HeadSha"/> instead, which is what
+    /// actually launches a process, so a regression there is what this one exists to catch. See
+    /// <see cref="HeadSha_uses_the_PATH_executable_even_when_the_current_directory_also_has_one"/> for
+    /// the complementary PARTIAL-regression shape this one cannot see: it proves nothing about a
+    /// <c>RunGit</c> that still calls the resolver, still gates on <see langword="null"/>, but then
+    /// launches a bare <c>"git"</c> anyway once the resolver returns something -- here <c>PATH</c> is
+    /// empty, so that distinction never arises.
     ///
     /// <para>The current directory holds a copy of <c>cmd.exe</c> named <c>git.exe</c> -- a real,
     /// launchable Windows executable rather than an inert stand-in, since a plain text file of that name
@@ -158,12 +177,15 @@ public class GitRevisionTests
     /// <c>RunGit</c>'s own catch turns that into the very same <see langword="null"/> a correct
     /// resolution produces, masking the regression this test exists to catch either way. <c>cmd.exe</c>
     /// launched directly (no shell, argv <c>rev-parse HEAD</c> -- neither a recognised switch) starts an
-    /// interactive session, prints its banner to stdout, and exits 0 once its (uninherited, closed by
-    /// the test host) stdin hits EOF -- measured, not assumed: <c>RunGit</c> does not set
-    /// <c>RedirectStandardInput</c>. <c>PATH</c> is emptied, so with the fix in place the resolver finds
-    /// nothing and <c>RunGit</c> returns <see langword="null"/> before <c>Process.Start</c> is ever
-    /// called; with the regression, <c>CreateProcess</c> would find and run the current-directory copy
-    /// instead, and <c>HeadSha</c> would return its (non-null) banner text rather than <see langword="null"/>.</para>
+    /// interactive session, prints its banner to stdout, and exits 0 once its stdin hits EOF --
+    /// <c>RunGit</c> now redirects and immediately closes its child's stdin itself (the round-2 fix for
+    /// this same finding), so this no longer depends on what this test HOST's own stdin happens to be, as
+    /// an earlier version of this comment claimed. <c>PATH</c> is emptied, so with the fix in place the
+    /// resolver finds nothing and <c>RunGit</c> returns <see langword="null"/> before <c>Process.Start</c>
+    /// is ever called; with the regression, <c>CreateProcess</c> would find and run the current-directory
+    /// copy instead, and <c>HeadSha</c> would return its (non-null) banner text rather than
+    /// <see langword="null"/> -- provided <c>NoDefaultCurrentDirectoryInExePath</c> is cleared first; see
+    /// the class doc.</para>
     /// </summary>
     [Fact]
     public void HeadSha_goes_through_the_resolver_rather_than_a_bare_process_start()
@@ -184,10 +206,12 @@ public class GitRevisionTests
 
         var originalCwd = Environment.CurrentDirectory;
         var originalPath = Environment.GetEnvironmentVariable("PATH");
+        var originalNoDefaultCwd = Environment.GetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath");
         try
         {
             Environment.CurrentDirectory = cwdTrap.Path;
             Environment.SetEnvironmentVariable("PATH", emptyPathDir.Path);
+            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", null);
 
             Assert.Null(GitRevision.HeadSha(cwdTrap.Path));
         }
@@ -195,7 +219,111 @@ public class GitRevisionTests
         {
             Environment.CurrentDirectory = originalCwd;
             Environment.SetEnvironmentVariable("PATH", originalPath);
+            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", originalNoDefaultCwd);
         }
+    }
+
+    /// <summary>
+    /// The PARTIAL-regression shape <see cref="HeadSha_goes_through_the_resolver_rather_than_a_bare_process_start"/>
+    /// cannot see: a <c>RunGit</c> that still calls <see cref="GitRevision.ResolveGitExecutable"/>, still
+    /// refuses to run at all when it returns <see langword="null"/>, but was edited to launch a bare
+    /// <c>"git"</c> instead of the resolved path once it returns something. With nothing on <c>PATH</c>
+    /// that shape is indistinguishable from the full regression -- both end up asking <c>CreateProcess</c>
+    /// to resolve a bare name -- so this needs <c>PATH</c> to hold a second, genuinely resolvable
+    /// candidate, and a way to tell "the resolved one ran" apart from "the current-directory one ran".
+    ///
+    /// <para><b>The discriminator.</b> Two different real Windows executables stand in as <c>git.exe</c>,
+    /// one at each location, chosen because both happen to exit 0 with SOME stdout for the exact argv
+    /// <c>RunGit</c> sends (<c>rev-parse HEAD</c>) -- <c>hostname</c>, <c>whoami</c>, <c>mode</c>,
+    /// <c>chcp</c>, <c>tzutil</c>, <c>cscript</c>, <c>expand</c>, <c>klist</c> and <c>getmac</c> were all
+    /// tried and every one exits non-zero on those args, which <c>RunGit</c> maps to <see langword="null"/>
+    /// -- indistinguishable from "nothing resolved" either way, so none of them can serve. <c>attrib</c>
+    /// (current directory) and <c>cmd</c> (<c>PATH</c>) both exit 0: <c>attrib</c> treats
+    /// <c>rev-parse</c>/<c>HEAD</c> as unrecognised attribute switches and prints a short, fixed error
+    /// about it; <c>cmd</c>, launched with no recognised switch, prints its startup banner (see the test
+    /// above). Neither message depends on WHERE the copy sits -- the working directory line in <c>cmd</c>'s
+    /// banner comes from <see cref="ProcessStartInfo.WorkingDirectory"/>, which this test sets to the same
+    /// value either way, not from the exe's own location -- so the current directory's answer is captured
+    /// directly, once, by running that copy independently of <see cref="GitRevision"/> entirely
+    /// (<see cref="RunDirectly"/>), rather than hard-coded: <c>attrib</c>'s message is locale-dependent
+    /// (French on this host) and this way the test does not need to know it in advance. With the fix,
+    /// <c>HeadSha</c> answers with <c>cmd</c>'s banner, which is not equal to that captured text; under
+    /// the partial regression, it would equal it exactly, because <c>CreateProcess</c> would have found
+    /// and run the SAME current-directory copy this test already ran once to learn its answer.</para>
+    /// </summary>
+    [Fact]
+    public void HeadSha_uses_the_PATH_executable_even_when_the_current_directory_also_has_one()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // Both stand-ins are Windows-specific; see the drive-relative test above for the same
+            // no-skip-mechanism trade-off.
+            return;
+        }
+
+        var attrib = Path.Combine(Environment.SystemDirectory, "attrib.exe");
+        var cmdExe = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        Assert.True(File.Exists(attrib), $"expected '{attrib}' to exist on this host -- it stands in for a harmless real executable.");
+        Assert.True(File.Exists(cmdExe), $"expected '{cmdExe}' to exist on this host -- it stands in for a harmless real executable.");
+
+        using var cwdTrap = new TempDir();
+        using var pathDir = new TempDir();
+        var trapGit = Path.Combine(cwdTrap.Path, "git.exe");
+        File.Copy(attrib, trapGit);
+        File.Copy(cmdExe, Path.Combine(pathDir.Path, "git.exe"));
+
+        // What the current-directory copy alone would answer -- captured directly, bypassing
+        // GitRevision entirely, with the same argv and working directory RunGit itself uses, so the
+        // comparison below does not depend on knowing attrib's exact (locale-dependent) message.
+        var trapAnswer = RunDirectly(trapGit, cwdTrap.Path);
+        Assert.NotNull(trapAnswer); // the premise this test rests on: the trap alone is a valid, working stand-in.
+
+        var originalCwd = Environment.CurrentDirectory;
+        var originalPath = Environment.GetEnvironmentVariable("PATH");
+        var originalNoDefaultCwd = Environment.GetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath");
+        try
+        {
+            Environment.CurrentDirectory = cwdTrap.Path;
+            Environment.SetEnvironmentVariable("PATH", pathDir.Path);
+            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", null);
+
+            var result = GitRevision.HeadSha(cwdTrap.Path);
+
+            Assert.NotNull(result);
+            Assert.NotEqual(trapAnswer, result);
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalCwd;
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", originalNoDefaultCwd);
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="executable"/> directly with the same argv (<c>rev-parse HEAD</c>) and stdin
+    /// handling <see cref="GitRevision.RunGit"/> uses, entirely outside <see cref="GitRevision"/> --
+    /// used only to learn what one stand-in alone would answer, as an oracle for
+    /// <see cref="HeadSha_uses_the_PATH_executable_even_when_the_current_directory_also_has_one"/>, never
+    /// to exercise the code under test.
+    /// </summary>
+    private static string? RunDirectly(string executable, string workingDirectory)
+    {
+        var startInfo = new ProcessStartInfo(executable)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            WorkingDirectory = workingDirectory,
+        };
+        startInfo.ArgumentList.Add("rev-parse");
+        startInfo.ArgumentList.Add("HEAD");
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"could not start '{executable}' for the test's own probe.");
+        process.StandardInput.Close();
+        var stdout = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return process.ExitCode == 0 ? stdout.Trim() : null;
     }
 
     private sealed class TempDir : IDisposable

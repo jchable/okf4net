@@ -97,11 +97,18 @@ public static class GitRevision
             // the candidate set, and an entry that is not a dot followed by at least one character (a
             // bare ".", or one with nothing after the dot) would build a candidate name with no real
             // extension at all -- itself a launchable file if one existed with that literal name.
-            var extensions = Environment.GetEnvironmentVariable("PATHEXT") is { Length: > 0 } pathext
+            var defaultExtensions = new[] { ".COM", ".EXE", ".BAT", ".CMD" };
+            var filtered = Environment.GetEnvironmentVariable("PATHEXT") is { Length: > 0 } pathext
                 ? pathext.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
                     .Select(ext => ext.Trim())
                     .Where(ext => ext.Length > 1 && ext[0] == '.')
-                : [".COM", ".EXE", ".BAT", ".CMD"];
+                    .ToArray()
+                : defaultExtensions;
+
+            // Falls back to the same default when a set PATHEXT filters down to nothing (e.g.
+            // `PATHEXT=EXE`, missing every leading dot) rather than searching PATH with an empty
+            // candidate list and finding git unconditionally absent.
+            var extensions = filtered.Length > 0 ? filtered : defaultExtensions;
             names = extensions.Select(ext => "git" + ext);
         }
         else
@@ -251,6 +258,14 @@ public static class GitRevision
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+
+            // Redirected and then closed immediately below, never written to: none of the git
+            // subcommands this type runs read stdin, but without redirecting it the child inherits
+            // WHATEVER this process's own stdin is -- a live console under an interactive terminal --
+            // and a program that unexpectedly blocks reading it (a corrupted `git`, or the wrong
+            // executable entirely at the resolved path) would hang until Timeout rather than failing
+            // fast. Redirecting to a pipe and closing our end hands the child immediate EOF instead.
+            RedirectStandardInput = true,
             WorkingDirectory = repoRoot,
         };
 
@@ -273,6 +288,8 @@ public static class GitRevision
             // since both leave this run with nothing to stamp.
             return null;
         }
+
+        process.StandardInput.Close();
 
         using (process)
         {
