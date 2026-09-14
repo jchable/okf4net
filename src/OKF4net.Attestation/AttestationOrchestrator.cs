@@ -135,9 +135,7 @@ public sealed class AttestationOrchestrator
             return Fail(missingParameters);
         }
 
-        var now = _clock.Now;
-        var stale = ComputeStale(frontmatter.Lifecycle, now);
-        var staleAdmitted = (policy ?? _defaultPolicy).Admits(frontmatter.Lifecycle, now);
+        var effectivePolicy = policy ?? _defaultPolicy;
 
         // Step 5: bind.
         //
@@ -155,7 +153,8 @@ public sealed class AttestationOrchestrator
             cancellationToken).ConfigureAwait(false);
         if (!bindOk)
         {
-            return Fail([bindReason!], stale, bindError);
+            var (bindStale, _) = EvaluateStaleness(frontmatter.Lifecycle, effectivePolicy);
+            return Fail([bindReason!], bindStale, bindError);
         }
 
         // Step 6: execute.
@@ -165,7 +164,8 @@ public sealed class AttestationOrchestrator
             cancellationToken).ConfigureAwait(false);
         if (!execOk)
         {
-            return Fail([execReason!], stale, execError);
+            var (execStale, _) = EvaluateStaleness(frontmatter.Lifecycle, effectivePolicy);
+            return Fail([execReason!], execStale, execError);
         }
 
         // Step 7: validate the receipt shape (no declared executor.receipt fields ⇒ trivially ok).
@@ -192,7 +192,10 @@ public sealed class AttestationOrchestrator
             (verdict, error) = await AttestAsync(runtime, context, reasons, cancellationToken).ConfigureAwait(false);
         }
 
-        // Step 9/10: gate on staleness and aggregate the outcome.
+        // Step 9/10: gate on staleness and aggregate the outcome. The clock is read here,
+        // immediately before gating -- not once up front -- so a run whose stages took long
+        // enough to cross stale_after is judged at release time, not at run start (§5.5).
+        var (stale, staleAdmitted) = EvaluateStaleness(frontmatter.Lifecycle, effectivePolicy);
         if (!staleAdmitted)
         {
             reasons.Add("concept is stale and the gating policy does not admit it");
@@ -572,6 +575,22 @@ public sealed class AttestationOrchestrator
 
     private static AttestationOutcome Fail(IReadOnlyList<string> reasons, StaleState stale = StaleState.Unknown, Exception? error = null)
         => new(false, null, null, false, stale, reasons, error);
+
+    /// <summary>
+    /// Reads <see cref="_clock"/> once and reports both the concept's <see cref="StaleState"/>
+    /// and whether <paramref name="policy"/> admits it — a single instant feeding both, per
+    /// §5.5 ("content is stale when now &gt;= stale_after"). Called at the point an outcome is
+    /// actually built (immediately before the success gate, or inside a post-stage <c>Fail</c>),
+    /// never once up front: a run whose stages take long enough to cross <c>stale_after</c>
+    /// must be judged at release time, not at the instant it started.
+    /// </summary>
+    /// <param name="lifecycle">The concept's §5 lifecycle fields.</param>
+    /// <param name="policy">The gating policy this run is evaluated under.</param>
+    private (StaleState Stale, bool Admitted) EvaluateStaleness(Lifecycle lifecycle, StalePolicy policy)
+    {
+        var now = _clock.Now;
+        return (ComputeStale(lifecycle, now), policy.Admits(lifecycle, now));
+    }
 
     private static StaleState ComputeStale(Lifecycle lifecycle, DateTimeOffset now)
     {

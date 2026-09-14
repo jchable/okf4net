@@ -533,6 +533,100 @@ public class AttestationOrchestratorTests
         Assert.Contains(outcome.Reasons, r => r.Contains("stale"));
     }
 
+    /// <summary>
+    /// A test-only mutable clock. <see cref="FixedClock"/> is immutable by design (see its
+    /// own doc comment), so pinning G2's release-time staleness read needs a clock a test
+    /// can advance mid-run, e.g. from inside a stage delegate.
+    /// </summary>
+    private sealed class SteppingClock : IOkfClock
+    {
+        public SteppingClock(DateTimeOffset now) => Now = now;
+
+        public DateTimeOffset Now { get; set; }
+    }
+
+    /// <summary>
+    /// G2 regression (§5.5): <c>RunAsync</c> used to read <c>_clock.Now</c> once before
+    /// binding and reuse that instant after every stage, so a run started one second
+    /// before <c>stale_after</c> whose stages crossed it was still released <c>Fresh</c>
+    /// and displayable. The fix re-reads the clock immediately before the gate (step 9),
+    /// so staging time that crosses <c>stale_after</c> is caught at release. The attester
+    /// — the last stage before the gate — advances the clock in place of a slow stage.
+    /// </summary>
+    [Fact]
+    public async Task Staleness_crossed_during_a_stage_is_caught_at_release_not_at_run_start()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var runtime = FakeRuntime.Passing();
+        runtime.AttestFunc = (_, _) =>
+        {
+            clock.Now = staleAfter + TimeSpan.FromSeconds(1);
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>(), policy: StalePolicy.Strict);
+
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+        Assert.False(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// Counterpart to <see cref="Staleness_crossed_during_a_stage_is_caught_at_release_not_at_run_start"/>:
+    /// a clock left before <c>stale_after</c> at release time still reports <c>Fresh</c> and
+    /// displayable, so the re-read is not itself a source of false staleness.
+    /// </summary>
+    [Fact]
+    public async Task Staleness_not_crossed_by_release_time_remains_fresh_and_displayable()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>(), policy: StalePolicy.Strict);
+
+        Assert.Equal(StaleState.Fresh, outcome.Stale);
+        Assert.True(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// The fix touches every <c>Fail(..., stale, ...)</c> site after a stage, not only the
+    /// success path: a stage that crosses <c>stale_after</c> and then fails must still
+    /// report <see cref="StaleState.Stale"/> on the resulting non-displayable outcome,
+    /// evaluated at the point that failure outcome is built rather than at run start.
+    /// </summary>
+    [Fact]
+    public async Task A_stage_failure_after_the_clock_crossed_stale_after_reports_stale()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = (_, _, _) =>
+        {
+            clock.Now = staleAfter + TimeSpan.FromSeconds(1);
+            throw new InvalidOperationException("boom");
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+    }
+
     [Fact]
     public async Task A_diagnostic_exception_reports_its_message_a_foreign_one_only_its_type()
     {

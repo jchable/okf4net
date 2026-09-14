@@ -719,6 +719,20 @@ and this project adheres to
   longer waits for that teardown (the engine's per-run `Timeout` is the
   backstop). The abandoned task is observed, so a later fault cannot surface as
   an unobserved task exception.
+- **Attested-computation staleness is now evaluated when the outcome is
+  released, not when the run started (§5.5).** `RunAsync` read `_clock.Now`
+  once, before binding, and reused that instant for both `Outcome.Stale` and
+  the staleness gate after every later stage — so a run started one second
+  before a concept's `stale_after` whose stages (bind/execute/attest) took two
+  seconds was still released `Fresh` and displayable, even though the concept
+  was already stale by the time anyone saw the result. The clock is now read
+  immediately before the gate on the success path, and again at the point each
+  post-stage failure outcome is built, so a run that crosses `stale_after`
+  while it is in flight is caught at release time either way. Not a change to
+  early failures (concept not found, unresolved computation, unregistered
+  runtime, missing required parameters), which still report `StaleState.Unknown`
+  without reading the clock, and not an early refusal of an already-stale
+  concept — a run still executes and reports it as stale at the gate.
 - **`okfgen` resolves `git` on `PATH` itself, never from the scanned tree or
   a drive-relative entry.** A bare `Process.Start("git")` let the OS search
   the current directory before `PATH` — closed on every platform .NET
