@@ -1555,6 +1555,8 @@ public class ValidateTests
     [InlineData("Use `` [^x] `` as the class.\n")]
     [InlineData("Use `` a`[^x] `` as the class.\n")]
     [InlineData("An escaped \\` is literal, so `[^x]` is a span.\n")]
+    [InlineData("A span `crossing a line\n[^x]` is still code.\n")]
+    [InlineData("* ```\n  [^x]\n  ```\n")]
     public void Footnote_syntax_markdown_does_not_render_as_a_footnote_is_not_a_citation(string body)
     {
         using var tmp = new TempDir();

@@ -315,9 +315,11 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
   over-indented closing fence closed, and an unclosed fence in a list item hid
   the rest of the document. The pass now tracks open list items and whether a
   paragraph is open (`CodeFreeLinePairs`' doc comment gives the rules; tests in
-  `tests/OKF4net.Tests/LinksTests.cs`). Still not modelled: block quotes, HTML
-  blocks (a `[^x]` inside `<!-- -->` is still read as a citation), and code
-  spans that cross lines.
+  `tests/OKF4net.Tests/LinksTests.cs`). Copilot's review of #99 added two more,
+  now handled: a code span crossing a line ending (spans are matched over the
+  whole paragraph, never across a block boundary) and a fence opened on a list
+  marker's own line. Still not modelled: block quotes and HTML blocks (a `[^x]`
+  inside `<!-- -->` is still read as a citation).
 - **S5.1-3** (§5.1, per-entry `usage_window` override) — **Missing**
   (Minor). `src/OKF4net/Provenance.cs:7` — the `Source` record has no
   `UsageWindow` field (`Id, Resource, Title, Author, UsageCount,

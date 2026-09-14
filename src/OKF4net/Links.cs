@@ -561,9 +561,13 @@ public static class LinkScanner
     /// code; inside an open paragraph it is continuation text.</item>
     /// <item>A list item ends at a line indented less than its content, unless that line
     /// is lazy continuation text of the item's open paragraph.</item>
-    /// <item>Inline code spans are blanked by <see cref="BlankInlineCode"/>.</item>
+    /// <item>A fence may also open on a list marker's own line (<c>* ```</c>), inside
+    /// that item.</item>
+    /// <item>Inline code spans are blanked by <see cref="BlankInlineCode"/> over a whole
+    /// paragraph at once, so a span may cross a line ending but never a block
+    /// boundary.</item>
     /// </list>
-    /// Not modelled: block quotes, HTML blocks, and code spans that cross lines.
+    /// Not modelled: block quotes and HTML blocks.
     /// </summary>
     private static List<(string Raw, string Blanked)> CodeFreeLinePairs(string body)
     {
@@ -572,6 +576,27 @@ public static class LinkScanner
         (char Char, int Length, int Container)? fence = null;
         var previousBlank = true;
         var inParagraph = false;
+
+        // The result indices of the open paragraph's lines, blanked together when it ends.
+        var paragraph = new List<int>();
+        void EndParagraph()
+        {
+            inParagraph = false;
+            if (paragraph.Count == 0)
+            {
+                return;
+            }
+
+            var joined = string.Join('\n', paragraph.Select(k => result[k].Item1));
+            var blanked = BlankInlineCode(joined).Split('\n');
+            for (var k = 0; k < paragraph.Count; k++)
+            {
+                result[paragraph[k]] = (result[paragraph[k]].Item1, blanked[k]);
+            }
+
+            paragraph.Clear();
+        }
+
         foreach (var line in LfLines.Split(body))
         {
             var (indent, contentStart) = Indentation(line);
@@ -600,14 +625,14 @@ public static class LinkScanner
 
             if (blank)
             {
+                EndParagraph();
                 result.Add((line, line));
                 previousBlank = true;
-                inParagraph = false;
                 continue;
             }
 
             var thematicBreak = ThematicBreak.IsMatch(content);
-            var markerContent = thematicBreak ? null : ListItemContentColumn(indent, content);
+            var markerContent = thematicBreak ? null : ListItem(indent, content);
             var opensFence = OpensFence(content);
             var startsBlock = thematicBreak || markerContent is not null || opensFence is not null
                 || TryParseAtxHeading(content, out _, out _);
@@ -629,41 +654,64 @@ public static class LinkScanner
 
             if (relative <= 3 && opensFence is { } fenceOpen)
             {
+                EndParagraph();
                 fence = (fenceOpen.Char, fenceOpen.Length, listContent.Count > 0 ? listContent.Peek() : 0);
                 result.Add((string.Empty, string.Empty));
-                inParagraph = false;
                 continue;
             }
 
             if (relative <= 3 && startsBlock && markerContent is null)
             {
                 // A heading or thematic break: never part of a paragraph.
-                inParagraph = false;
-            }
-            else if (relative <= 3 && markerContent is { } column)
-            {
-                listContent.Push(column);
-                inParagraph = true;
-            }
-            else
-            {
-                inParagraph = true;
+                EndParagraph();
+                result.Add((line, BlankInlineCode(line)));
+                continue;
             }
 
-            result.Add((line, BlankInlineCode(line)));
+            if (relative <= 3 && markerContent is { } item)
+            {
+                EndParagraph();
+                listContent.Push(item.Column);
+                if (OpensFence(item.Content) is { } itemFence)
+                {
+                    fence = (itemFence.Char, itemFence.Length, item.Column);
+                    result.Add((string.Empty, string.Empty));
+                    continue;
+                }
+            }
+
+            inParagraph = true;
+            paragraph.Add(result.Count);
+            result.Add((line, line));
         }
 
+        EndParagraph();
         return result;
     }
 
     /// <summary>
-    /// The column a list item's content starts at when <paramref name="content"/> (the
-    /// line past its <paramref name="indent"/> columns) opens one — a bullet (<c>*</c>,
-    /// <c>-</c>, <c>+</c>) or an ordered marker (<c>1.</c>, <c>1)</c>, up to nine digits)
-    /// followed by whitespace or the end of the line — or <c>null</c> when it does not.
-    /// As CommonMark counts it: one to four columns after the marker, or one when there
-    /// are five or more (the item then opens with indented code) or nothing follows.
+    /// When <paramref name="content"/> (the line past its <paramref name="indent"/>
+    /// columns) opens a list item — a bullet (<c>*</c>, <c>-</c>, <c>+</c>) or an ordered
+    /// marker (<c>1.</c>, <c>1)</c>, up to nine digits) followed by whitespace or the end
+    /// of the line — the column its content starts at and that content on this line;
+    /// otherwise <c>null</c>. As CommonMark counts the column: one to four columns after
+    /// the marker, or one when there are five or more (the item then opens with indented
+    /// code, so no content is returned) or nothing follows.
     /// </summary>
+    private static (int Column, string Content)? ListItem(int indent, string content)
+    {
+        if (ListItemContentColumn(indent, content) is not { } column)
+        {
+            return null;
+        }
+
+        // A marker holds no whitespace, so the first whitespace ends it.
+        var markerEnd = content.IndexOfAny([' ', '\t']);
+        var afterMarker = markerEnd < 0 ? string.Empty : content[markerEnd..];
+        var (spaces, start) = Indentation(afterMarker);
+        return (column, spaces >= 5 ? string.Empty : afterMarker[start..]);
+    }
+
     private static int? ListItemContentColumn(int indent, string content)
     {
         int width;
@@ -765,7 +813,8 @@ public static class LinkScanner
     /// them is extracted. As CommonMark defines a span: a run of backticks opens one and
     /// the next run of exactly the same length closes it (so <c>`` a ` b ``</c> is one
     /// span); a run with no such closer is literal text; and a backslash-escaped backtick
-    /// opens nothing. Spans are matched within the line only.
+    /// opens nothing. Spans are matched across all of <paramref name="line"/>, which may
+    /// be a whole paragraph joined with <c>\n</c>; a line ending inside a span is kept.
     /// </summary>
     private static string BlankInlineCode(string line)
     {
@@ -829,7 +878,14 @@ public static class LinkScanner
 
             var open = runs[k].Start + (escaped[k] ? 1 : 0);
             var close = runs[closer[k]];
-            Array.Fill(chars, ' ', open, close.Start + close.Length - open);
+            for (var c = open; c < close.Start + close.Length; c++)
+            {
+                if (chars[c] != '\n')
+                {
+                    chars[c] = ' '; // line endings survive, so a caller can split lines back out
+                }
+            }
+
             k = closer[k] + 1;
         }
 

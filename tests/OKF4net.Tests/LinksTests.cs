@@ -256,6 +256,39 @@ public class LinksTests
         Assert.Empty(Targets(body));
     }
 
+    /// <summary>
+    /// Raised by Copilot on #99. A list item's content can open a fence on the marker's
+    /// own line; the fence's container is then that item.
+    /// </summary>
+    [Fact]
+    public void A_fence_opened_on_a_list_marker_line_is_code()
+    {
+        Assert.Equal(["/after.md"], Targets("* ```\n  [in](/in.md)\n  ```\n\n[after](/after.md)\n"));
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #99. A code span may cross a line ending inside its paragraph
+    /// (CommonMark §6.1), so a link on the span's second line is code.
+    /// </summary>
+    [Fact]
+    public void A_code_span_crossing_a_line_ending_is_code()
+    {
+        Assert.Equal(["/after.md"], Targets("Use `a\n[in](/in.md)` here, then [after](/after.md).\n"));
+    }
+
+    /// <summary>
+    /// A span never crosses a block boundary: a blank line, or a list item interrupting
+    /// the paragraph, leaves each backtick unmatched and literal.
+    /// </summary>
+    [Theory]
+    [InlineData("A stray ` here.\n\n[a](/a.md) and ` there.\n")]
+    [InlineData("A stray ` here.\n* [a](/a.md) and ` there.\n")]
+    [InlineData("# A stray ` here\n[a](/a.md) and ` there.\n")]
+    public void A_code_span_does_not_cross_a_block_boundary(string body)
+    {
+        Assert.Equal(["/a.md"], Targets(body));
+    }
+
     /// <summary>A backtick run with no closing run of the same length is literal text, not code to the end of the line.</summary>
     [Fact]
     public void An_unmatched_backtick_is_literal_text()

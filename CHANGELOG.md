@@ -667,13 +667,15 @@ and this project adheres to
   whether a paragraph is open, and measures indentation from the innermost item:
   a fence opens and closes only within three columns of it, closes only on a run
   of the same character at least as long with no info string, and ends with its
-  list item; four columns is indented code wherever no paragraph is open (after a
-  heading or a closing fence as much as after a blank line) and continuation text
-  inside one; a code line leaves an empty line behind, so it still separates what
-  surrounds it. Code spans match runs of equal length, an unmatched run is
-  literal, and a backslash escapes an opener but never a closer (`` `C:\` `` is a
-  complete span). Block quotes, HTML blocks and code spans that cross lines are
-  still not modelled. All of this lives in the one shared "skip code" pass, so
+  list item, including one opened on the marker's own line (`` * ``` ``); four
+  columns is indented code wherever no paragraph is open (after a heading or a
+  closing fence as much as after a blank line) and continuation text inside one;
+  a code line leaves an empty line behind, so it still separates what surrounds
+  it. Code spans are matched over a whole paragraph, so one may cross a line
+  ending but never a block boundary; they match runs of equal length, an
+  unmatched run is literal, and a backslash escapes an opener but never a closer
+  (`` `C:\` `` is a complete span). Block quotes and HTML blocks are still not
+  modelled. All of this lives in the one shared "skip code" pass, so
   `okf graph`'s links change too; its output and `okf validate`'s were compared
   before and after on every bundle in `bundles/` and every fixture, and are
   byte-identical. The pass is linear on hostile input: a first version of code-span
