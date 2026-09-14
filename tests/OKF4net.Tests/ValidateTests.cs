@@ -1394,6 +1394,23 @@ public class ValidateTests
     }
 
     /// <summary>
+    /// Raised by Copilot on #101: a block quote starts a new block, so it does not continue
+    /// the item above it, and a link inside it is not the item's.
+    /// </summary>
+    [Fact]
+    public void A_block_quote_after_an_index_item_is_not_part_of_it()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/revenue.md", DescribedConcept);
+        tmp.Write("metrics/index.md", "# Metrics\n\n* plain file\n> [Revenue](revenue.md)\n");
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.IndexEntryNotALink);
+        Assert.Contains("plain file", diag.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A prose line that opens with inline code and a dash is not a list item: the code
     /// span is text, not the indentation it becomes once blanked.
     /// </summary>
@@ -1549,6 +1566,43 @@ public class ValidateTests
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
 
         Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #101: a heading is read as it renders, so the raw HTML in
+    /// <c># &lt;span&gt;Examples&lt;/span&gt;</c> neither hides the conventional heading nor
+    /// lends a heading the words of a tag or comment.
+    /// </summary>
+    [Theory]
+    [InlineData("# <span>Examples</span>\n\n## Example with a cap\n")]
+    [InlineData("# Glossary <!-- schema -->\n")]
+    public void Raw_html_in_a_heading_is_not_its_text(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+    }
+
+    /// <summary>
+    /// Raised by Copilot on #101: a heading inside a block quote or a list item is a heading
+    /// all the same (an indented one under a list item always was), so it is held to §4.2.
+    /// </summary>
+    [Theory]
+    [InlineData("> # Worked example\n")]
+    [InlineData("* # Worked example\n")]
+    [InlineData("- item\n\n  > ## Worked example\n")]
+    public void A_heading_inside_a_container_is_a_heading(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("m.md", MetricFrontmatter + body);
+
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var diag = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.NonConventionalHeading);
+        Assert.Contains("# Worked example\"", diag.Message, StringComparison.Ordinal);
     }
 
     [Fact]

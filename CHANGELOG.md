@@ -292,7 +292,8 @@ and this project adheres to
   heuristic, kept to items with no link anywhere: one that renders a link without
   opening on one — `**[A](a.md)**`, an icon before the link, a link on a
   continuation line — is not warned. Thematic breaks (`* * *`), prose and code are
-  not items. Reading items off the code-blanked line had also let an item opening
+  not items, and a block quote right after an item starts a block of its own, so a
+  link inside it is not the item's. Reading items off the code-blanked line had also let an item opening
   with inline code (`` * `x` [a](b) ``) pass as an entry whose description is
   checked, and a prose line such as `` `code` - [a](b) `` pass as a bulleted one;
   whitespace is now read on the line as written.
@@ -301,7 +302,11 @@ and this project adheres to
   *schema(s)* — `# Worked example`, `# Table schema`, `## Examples` — raises
   `NonConventionalHeading` (warning) when the concept carries no exact
   `# Examples` / `# Schema`; beside the conventional heading, a related one is a
-  subsection and is not warned. A heuristic: it matches words, not meaning.
+  subsection and is not warned. A heading is read as it renders — raw HTML, code
+  spans and link destinations left out, so `# <span>Examples</span>` is the
+  conventional heading and `# Glossary <!-- schema -->` names no schema — and
+  wherever it stands, a block quote or list item included. A heuristic: it matches
+  words, not meaning.
   `# Computation` is left out — a heading that merely mentions a computation is
   ordinary structure (acme_retail's `# Why no attested computation`), and a
   misspelled one on an Attested Computation already raises
@@ -326,9 +331,9 @@ and this project adheres to
   with commonmark.js on 120 000 random bodies built around references, inline
   destinations, titles and angle brackets, and with `dev`'s scanner on the same
   cases: outside footnote brackets, no case regresses from `dev`, about 6 550 of
-  every 40 000 are fixed, and 6 to 9 in 120 000 still differ — a backtick inside a destination the code pass pairs before the link
-  forms, and commonmark.js letting a later duplicate definition above a setext
-  underline win, where §4.7 says "the first one takes precedence". No bundle or
+  every 40 000 are fixed, and 5 in 120 000 still differ, all one case:
+  commonmark.js letting a later duplicate definition above a setext underline
+  win, where §4.7 says "the first one takes precedence". No bundle or
   fixture uses a reference link, so `okf graph` and `okf validate` output is
   byte-identical on all of them.
 
@@ -648,6 +653,15 @@ and this project adheres to
     markers, and a link's text is reported on one line;
   - an escaped `\[` opened a link — `\[a](x)` linked to `x`; an escaped bracket now
     opens and closes nothing.
+  Code spans and raw HTML are now resolved in the same left-to-right pass as the
+  links, where they used to be blanked first: whichever starts first wins, and
+  what a link consumes after its `]` is neither text, span nor tag. So a
+  destination with a backtick no longer pairs with a later one
+  (`` [a](x`y) [b](/b.md)` `` lost `/b.md`); a `<` after a `]` that closes no
+  link is a tag again (`foo](<a title="[in](/in.md)">)` linked to `/in.md` —
+  raised by Copilot on #105); and a `[^k]` inside a link's destination
+  (`[t](a[^k]b)`) is no longer counted as a citation. Footnote visibility still
+  matches commonmark.js on 200 000 random bodies of code, HTML and containers.
   The scan follows commonmark.js's bracket algorithm (a stack of openers,
   resolved at each `]`) with every search for an end a table lookup, so it stays
   linear however the brackets nest; a link's text is capped at 2 000 characters

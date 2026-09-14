@@ -243,7 +243,10 @@ headings → `OkfDocument.Computation()`.
   heading of any level containing the word *example(s)* or *schema(s)* when the
   concept carries no exact level-1 `# Examples` / `# Schema`
   (`CheckConventionalHeadings` in `src/OKF4net/Validate.cs`, headings from
-  `LinkScanner.ExtractAtxHeadings`, fenced code skipped). It is a word match,
+  `LinkScanner.ExtractAtxHeadings`, fenced code skipped; after Copilot's review
+  of #101, a heading is matched on its text as it renders, without raw HTML,
+  code spans or link destinations, and is found inside block quotes and list
+  items too). It is a word match,
   not a judgement of "when applicable": it catches a variant name
   (`# Worked example`, which `bundles/meridian_transit` carried before a manual
   fix) and cannot see an example section titled without the word. `#
@@ -444,13 +447,17 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   brought inline links to CommonMark's link algorithm, fixing four older
   divergences — a destination containing spaces was accepted, a link inside a
   link's text did not suppress the outer link, a link could not span a line
-  ending, and an escaped `\[` opened an inline link. Two rare differences remain
-  and are kept knowingly: a backtick inside a destination, closed by a later
-  backtick past the `)`, is paired as a code span by the pass that blanks code
-  before links are read, so the link is lost where commonmark.js, reading the
-  destination when it reaches the `]`, keeps it; and when a duplicate definition sits above
-  a setext underline, commonmark.js resolves to the later one, where §4.7 says
-  "the first one takes precedence" — we follow the spec text. Tests:
+  ending, and an escaped `\[` opened an inline link. Code spans and raw HTML are
+  resolved in the same left-to-right pass as links, as commonmark.js resolves
+  them, so neither starts inside a link's destination and a tag after a `]` that
+  closes no link still hides what it holds (Copilot's review of #105 found
+  `foo](<a title="[in](/in.md)">)` extracting `/in.md`). One rare difference
+  remains, kept knowingly: when a duplicate definition sits above a setext
+  underline, commonmark.js resolves to the later one, where §4.7 says "the first
+  one takes precedence" — we follow the spec text. A review finding on the same
+  code was checked against commonmark.js 0.31.2 and not taken: labels are
+  matched without resolving backslash escapes (`[foo\*]` does not match
+  `[foo*]:`), as §4.7's normalization and commonmark.js both have it. Tests:
   `Reference_links_resolve_to_their_definition`,
   `Reference_labels_match_as_commonmark_normalizes_them`,
   `Reference_links_follow_commonmark_sequencing`,
@@ -460,7 +467,9 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   `Inline_link_destinations_follow_commonmark`,
   `A_link_inside_link_text_suppresses_the_outer_link`,
   `A_link_may_span_a_line_ending_within_its_paragraph`,
-  `Escaped_brackets_open_and_close_nothing` in `LinksTests.cs`;
+  `Escaped_brackets_open_and_close_nothing`,
+  `Links_raw_html_and_code_spans_resolve_in_one_pass`,
+  `Footnotes_in_link_destinations_are_not_citations` in `LinksTests.cs`;
   `A_reference_link_counts_for_broken_links_and_backlinks` and
   `Index_entry_opening_on_a_reference_link_is_an_entry` in `ValidateTests.cs`;
   `Build_rewires_reference_and_angle_bracket_links` in `SiteModelTests.cs`.
@@ -621,7 +630,8 @@ README mapping: `OKF4net.IndexGenerator`.
   not warned: review of #99 showed a "does not begin with a link" rule flagging
   those, and they give a reader something to follow. Items come from
   `LinkScanner.ExtractIndexListItems`, the one parser behind
-  `ExtractIndexEntries` too; thematic breaks, prose and code are not items.
+  `ExtractIndexEntries` too; thematic breaks, prose and code are not items, and
+  a block quote after an item does not continue it (Copilot, review of #101).
   Writing it exposed a defect in the shared parser:
   whitespace was skipped on the code-blanked line, where an inline code span is
   spaces, so `` * `x` [a](b) `` read as a link entry, and so did a prose line

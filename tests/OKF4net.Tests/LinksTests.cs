@@ -981,6 +981,43 @@ public class LinksTests
     }
 
     /// <summary>
+    /// Raw HTML and code spans are resolved in the same left-to-right pass as links, as
+    /// commonmark.js does: what follows a <c>]</c> that closes a link is its destination,
+    /// never a tag or a span, while after a <c>]</c> that closes nothing a tag hides what
+    /// it holds. Raised by Copilot on #105: a <c>&lt;</c> after any <c>](</c> used to be
+    /// read as a destination, so a link inside that tag's attribute was extracted.
+    /// Expected targets are commonmark.js 0.31.2's, separated by commas.
+    /// </summary>
+    [Theory]
+    [InlineData("foo](<a title=\"[in](/in.md)\">)\n", "")]
+    [InlineData("[a [b](c) ](<i title=\"[in](/in.md)\">)\n", "c")]
+    [InlineData("[x](<a title=\"[in](/in.md)\">)\n", "a title=\"[in](/in.md)\"")]
+    [InlineData("[x](<a b='x> \"t\") [y](/y.md)'>\n", "a b='x,/y.md")]
+    [InlineData("[a](x`y) [b](/b.md)`\n", "x`y,/b.md")]
+    [InlineData("[t][`a]`]\n\n[`a]: /b.md\n", "/b.md")]
+    [InlineData("[t][<b>]\n\n[<b>]: /b.md\n", "/b.md")]
+    public void Links_raw_html_and_code_spans_resolve_in_one_pass(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : expected.Split(','), Targets(body));
+    }
+
+    /// <summary>
+    /// What a link consumes after its text is not text, so a <c>[^k]</c> in its destination
+    /// is no citation; nor is one inside a tag that follows a <c>]</c> closing no link. A
+    /// footnote beside a link, or one followed by parentheses, still is.
+    /// </summary>
+    [Theory]
+    [InlineData("[t](a[^k]b)\n", "")]
+    [InlineData("[t](#<!X[^k])\n", "")]
+    [InlineData("foo](<a title=\"[^k]\">)\n", "")]
+    [InlineData("[t](/x.md) [^k]\n", "k")]
+    [InlineData("A claim.[^k](/i.md)\n", "k")]
+    public void Footnotes_in_link_destinations_are_not_citations(string body, string expected)
+    {
+        Assert.Equal(expected.Length == 0 ? [] : [expected], LinkScanner.ExtractFootnoteReferences(body));
+    }
+
+    /// <summary>
     /// Linear on hostile input shaped for the bracket algorithm: destinations that never
     /// balance or never end, and long runs of openers each followed by a link.
     /// </summary>
@@ -992,6 +1029,9 @@ public class LinksTests
     [InlineData("![")]
     [InlineData("[a](x \"")]
     [InlineData("[a]( x\n")]
+    [InlineData("[a](<")]
+    [InlineData("`[a](<b>`")]
+    [InlineData("[a](<b c='")]
     public void Bracket_algorithm_inputs_are_scanned_in_linear_time(string unit)
     {
         var body = "z" + string.Concat(Enumerable.Repeat(unit, 300_000 / unit.Length)) + "](y)\n";

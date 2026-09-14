@@ -217,22 +217,7 @@ public static class LinkScanner
     public static IReadOnlyList<ConceptLink> ExtractLinks(string body)
     {
         var links = new List<ConceptLink>();
-        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
-        var blocks = new List<List<(int Index, int Offset)>>();
-        var lines = CodeFreeLinePairs(body, definitions, blocks);
-
-        // Inline content is read a paragraph at a time — past the container markers —
-        // since a link's text, destination or title may cross a line ending.
-        foreach (var block in blocks)
-        {
-            var blanked = string.Join('\n', block.Select(b => lines[b.Index].Blanked[b.Offset..]));
-            var raw = string.Join('\n', block.Select(b => lines[b.Index].Raw[b.Offset..]));
-            foreach (var (_, _, link) in new InlineLinks(blanked, raw, definitions).Scan())
-            {
-                links.Add(link);
-            }
-        }
-
+        CodeFreeLinePairs(body, links: links);
         return links;
     }
 
@@ -326,19 +311,26 @@ public static class LinkScanner
     }
 
     /// <summary>
-    /// The body's ATX headings (<c>#</c> through <c>######</c>), in order, as their level
-    /// and their text with any closing <c>#</c> sequence removed. Fenced code is skipped,
-    /// so a <c># comment</c> in a Python or shell fence is not a heading. Setext headings
-    /// (text underlined with <c>===</c>/<c>---</c>) are not recognized.
+    /// The body's ATX headings (<c>#</c> through <c>######</c>), in order — inside block
+    /// quotes and list items too — as their level, their text with any closing <c>#</c>
+    /// sequence removed, and that text as it reads: raw HTML, code spans and link
+    /// destinations dropped, whitespace collapsed. Code is skipped, so a <c># comment</c>
+    /// in a Python or shell fence is not a heading. Setext headings (text underlined with
+    /// <c>===</c>/<c>---</c>) are not recognized.
     /// </summary>
-    internal static IReadOnlyList<(int Level, string Text)> ExtractAtxHeadings(string body)
+    internal static IReadOnlyList<(int Level, string Text, string Visible)> ExtractAtxHeadings(string body)
     {
-        var headings = new List<(int, string)>();
-        foreach (var (raw, _) in CodeFreeLinePairs(body))
+        var headings = new List<(int, string, string)>();
+        var offsets = new List<(int Index, int Offset)>();
+        var lines = CodeFreeLinePairs(body, headings: offsets);
+        foreach (var (index, offset) in offsets)
         {
-            if (TryParseAtxHeading(raw, out var level, out var text))
+            // Past the container markers, what indentation is left is under four columns.
+            var (raw, blanked) = lines[index];
+            if (TryParseAtxHeading(raw[offset..].TrimStart(' ', '\t'), out var level, out var text)
+                && TryParseAtxHeading(blanked[offset..].TrimStart(' ', '\t'), out _, out var visible))
             {
-                headings.Add((level, text));
+                headings.Add((level, text, string.Join(' ', visible.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))));
             }
         }
 
@@ -439,7 +431,7 @@ public static class LinkScanner
                 continue;
             }
 
-            var first = blanked[i] == '[' ? new InlineLinks(blanked[i..], raw[i..], definitions).Scan().FirstOrDefault() : default;
+            var first = blanked[i] == '[' ? new InlineLinks(raw[i..], definitions, blanked[i..]).Scan().FirstOrDefault() : default;
             if (first.Link is null || first.Start != 0)
             {
                 var containsLink = HasLink(blanked[i..], raw[i..], definitions);
@@ -474,7 +466,7 @@ public static class LinkScanner
     }
 
     private static bool HasLink(string blankedLine, string rawLine, IReadOnlyDictionary<string, string> definitions) =>
-        new InlineLinks(blankedLine, rawLine, definitions).Scan().Count != 0;
+        new InlineLinks(rawLine, definitions, blankedLine).Scan().Count != 0;
 
     /// <summary>
     /// The offset of a bullet list item's content when the line opens one (<c>*</c>,
@@ -513,12 +505,14 @@ public static class LinkScanner
     /// <summary>
     /// Whether a line continues the paragraph above it. Code lines reach here as the empty
     /// placeholders <see cref="CodeFreeLinePairs"/> leaves in their place, so a fence or
-    /// indented code block ends a paragraph just as a blank line does.
+    /// indented code block ends a paragraph just as a blank line does; a block quote, list
+    /// item, heading or thematic break starts a block of its own.
     /// </summary>
     private static bool IsParagraphContinuation((string Raw, string Blanked) line)
     {
         var content = line.Raw.TrimStart(' ', '\t');
         return content.Length != 0
+            && content[0] != '>'
             && ListItemContentColumn(0, content) is null
             && !TryParseAtxHeading(content, out _, out _)
             && !ThematicBreak.IsMatch(content)
@@ -582,28 +576,32 @@ public static class LinkScanner
     /// runs to the next blank line (and the latter cannot interrupt a paragraph).</item>
     /// <item>A setext underline ends the paragraph it underlines; link reference
     /// definitions at a paragraph's start (§4.7) are not text.</item>
-    /// <item>Inline code spans and raw inline HTML are blanked by <see cref="BlankInline"/>
-    /// over a whole paragraph at once, so either may cross a line ending but never a
-    /// block boundary.</item>
+    /// <item>Inline code spans and raw inline HTML are blanked by <see cref="InlineLinks"/>
+    /// over a whole paragraph or heading at once, in the pass that finds its links, so
+    /// either may cross a line ending but never a block boundary, and neither starts
+    /// inside a link's destination.</item>
     /// </list>
     /// Code, HTML block and definition text is blanked; code and HTML block lines become
     /// empty pairs. Checked against commonmark.js 0.31.2 on 300 000 random bodies built
-    /// from these constructs, with no difference in which footnote references are visible
-    /// then aside from reference links, which <see cref="ExtractLinks"/> has since learned
-    /// to read. Nesting is capped at <see cref="MaxNesting"/>.
+    /// from these constructs, with no difference in which footnote references are visible.
+    /// Nesting is capped at <see cref="MaxNesting"/>.
     ///
     /// When <paramref name="definitions"/> is given, every link reference definition the
     /// pass blanks is recorded in it — normalized label to destination, the first
-    /// definition of a label winning — for reference links to resolve against.
+    /// definition of a label winning. Every link and image found is added to
+    /// <paramref name="links"/>, in document order, and the offset of each ATX heading's
+    /// line past its container markers to <paramref name="headings"/>.
     /// </summary>
     private static List<(string Raw, string Blanked)> CodeFreeLinePairs(
         string body,
         Dictionary<string, string>? definitions = null,
-        List<List<(int Index, int Offset)>>? inlineBlocks = null)
+        List<ConceptLink>? links = null,
+        List<(int Index, int Offset)>? headings = null)
     {
         var result = new List<(string, string)>();
         var containers = new List<BlockContainer>();
         var opened = new List<BlockContainer>();
+        definitions ??= new Dictionary<string, string>(StringComparer.Ordinal);
 
         // Open leaf blocks, each with the number of containers open when it began: it
         // ends as soon as one of them closes.
@@ -611,9 +609,15 @@ public static class LinkScanner
         (int Kind, int Depth)? html = null;
 
         // The open paragraph's lines, as result indices and the offset its text starts at
-        // past the container markers, blanked together when it ends.
+        // past the container markers.
         var paragraph = new List<(int Index, int Offset)>();
         var paragraphDepth = 0;
+
+        // Every run of inline content — a paragraph or a heading — with the length of the
+        // link reference definitions it opens with, read once the whole body is: a reference
+        // link may use a definition that comes after it, and whether it forms decides what
+        // after its `]` is a span or a tag.
+        var inline = new List<((int Index, int Offset)[] Lines, int DefinitionsEnd)>();
 
         void EndParagraph()
         {
@@ -625,18 +629,7 @@ public static class LinkScanner
             // Link reference definitions at the start of a paragraph are not rendered
             // (§4.7), so they are blanked whole; inline parsing sees only what follows.
             var joined = string.Join('\n', paragraph.Select(p => result[p.Index].Item1[p.Offset..]));
-            var definitionsEnd = LinkReferenceDefinitionsEnd(joined, definitions);
-            var hidden = joined.ToCharArray(0, definitionsEnd);
-            Blank(hidden, 0, definitionsEnd);
-            var blanked = string.Concat(new string(hidden), BlankInline(joined[definitionsEnd..])).Split('\n');
-            for (var k = 0; k < paragraph.Count; k++)
-            {
-                var (index, offset) = paragraph[k];
-                var raw = result[index].Item1;
-                result[index] = (raw, string.Concat(raw.AsSpan(0, offset), blanked[k]));
-            }
-
-            inlineBlocks?.Add([.. paragraph]);
+            inline.Add(([.. paragraph], LinkReferenceDefinitionsEnd(joined, definitions)));
             paragraph.Clear();
         }
 
@@ -854,8 +847,15 @@ public static class LinkScanner
             else if (TryParseAtxHeading(leaf, out _, out _) || ThematicBreak.IsMatch(leaf))
             {
                 EndParagraph();
-                inlineBlocks?.Add([(result.Count, inner.Offset)]);
-                result.Add((line, string.Concat(line.AsSpan(0, inner.Offset), BlankInline(line[inner.Offset..]))));
+                if (ThematicBreak.IsMatch(leaf))
+                {
+                    result.Add((line, line));
+                    continue;
+                }
+
+                headings?.Add((result.Count, inner.Offset));
+                inline.Add(([(result.Count, inner.Offset)], 0));
+                result.Add((line, line));
                 continue;
             }
 
@@ -869,6 +869,27 @@ public static class LinkScanner
         }
 
         EndParagraph();
+
+        foreach (var (lines, definitionsEnd) in inline)
+        {
+            var joined = string.Join('\n', lines.Select(p => result[p.Index].Item1[p.Offset..]));
+            var hidden = joined.ToCharArray(0, definitionsEnd);
+            Blank(hidden, 0, definitionsEnd);
+            var scan = new InlineLinks(joined[definitionsEnd..], definitions);
+            foreach (var (_, _, link) in scan.Scan())
+            {
+                links?.Add(link);
+            }
+
+            var blanked = string.Concat(new string(hidden), scan.Blanked).Split('\n');
+            for (var k = 0; k < lines.Length; k++)
+            {
+                var (index, offset) = lines[k];
+                var raw = result[index].Item1;
+                result[index] = (raw, string.Concat(raw.AsSpan(0, offset), blanked[k]));
+            }
+        }
+
         return result;
     }
 
@@ -1466,137 +1487,6 @@ public static class LinkScanner
         return null;
     }
 
-    /// <summary>
-    /// Replaces inline code spans and raw inline HTML, delimiters included, with spaces so
-    /// nothing inside them is extracted; line endings are kept, since
-    /// <paramref name="line"/> may be a whole paragraph joined with <c>\n</c>. The two are
-    /// read left to right and whichever starts first wins, so <c>`&lt;!--`</c> is code and
-    /// the backtick inside <c>&lt;!-- ` --&gt;</c> is HTML.
-    ///
-    /// A code span, as CommonMark defines it (§6.1): a run of backticks opens one and the
-    /// next run of exactly the same length closes it (so <c>`` a ` b ``</c> is one span);
-    /// a run with no such closer is literal text; and a backslash-escaped backtick opens
-    /// nothing. Raw HTML (§6.6): a comment, processing instruction, declaration, CDATA
-    /// section, or open or closing tag — see <see cref="InlineHtml"/>.
-    /// </summary>
-    private static string BlankInline(string line)
-    {
-        var hasCode = line.IndexOf('`') >= 0;
-        var hasHtml = line.IndexOf('<') >= 0;
-        if (!hasCode && !hasHtml)
-        {
-            return line;
-        }
-
-        var chars = line.ToCharArray();
-        var (runs, escaped, closer) = hasCode ? CodeSpanRuns(line) : ([], [], []);
-        var html = hasHtml ? new InlineHtml(line) : null;
-        var k = 0;
-        for (var i = 0; i < line.Length;)
-        {
-            var c = line[i];
-            if (c == '\\' && i + 1 < line.Length && line[i + 1] != '`' && IsAsciiPunctuation(line[i + 1]))
-            {
-                i += 2;
-            }
-            else if (c == '`')
-            {
-                // Runs consumed inside an earlier span or HTML token are skipped here.
-                while (runs[k].Start + runs[k].Length <= i)
-                {
-                    k++;
-                }
-
-                if (closer[k] < 0)
-                {
-                    i = runs[k].Start + runs[k].Length; // no closer: literal
-                    k++;
-                    continue;
-                }
-
-                var close = runs[closer[k]];
-                Blank(chars, runs[k].Start + (escaped[k] ? 1 : 0), close.Start + close.Length);
-                i = close.Start + close.Length;
-                k = closer[k] + 1;
-            }
-            else if (c == '<' && !OpensLinkDestination(line, i) && html!.TokenEnd(i) is var end and > 0)
-            {
-                Blank(chars, i, end);
-                i = end;
-            }
-            else
-            {
-                i++;
-            }
-        }
-
-        return new string(chars);
-    }
-
-    /// <summary>
-    /// Whether the <c>&lt;</c> at <paramref name="i"/> opens a valid angle-bracket inline
-    /// link destination: it follows <c>](</c> (spaces or tabs aside), a <c>&gt;</c> closes it
-    /// before any <c>&lt;</c> or line ending, and only an optional title stands between
-    /// that and the <c>)</c>. CommonMark resolves a link at its <c>]</c>, looking ahead,
-    /// before that <c>&lt;</c> could be read as raw HTML, so <c>[b](&lt;my file.md&gt;)</c>
-    /// is a link to <c>my file.md</c>, not a tag — while in <c>[t](&lt;!--&lt;…--&gt;)</c>
-    /// the destination is invalid and the comment stays a comment.
-    /// </summary>
-    private static bool OpensLinkDestination(string line, int i)
-    {
-        var p = i - 1;
-        while (p >= 0 && line[p] is ' ' or '\t')
-        {
-            p--;
-        }
-
-        if (p < 1 || line[p] != '(' || line[p - 1] != ']')
-        {
-            return false;
-        }
-
-        var k = i + 1;
-        while (k < line.Length && line[k] is not ('>' or '<' or '\n'))
-        {
-            k += line[k] == '\\' && k + 1 < line.Length ? 2 : 1;
-        }
-
-        if (k >= line.Length || line[k] != '>')
-        {
-            return false;
-        }
-
-        k++;
-        var spaced = k;
-        while (k < line.Length && line[k] is ' ' or '\t')
-        {
-            k++;
-        }
-
-        if (k > spaced && k < line.Length && line[k] is '"' or '\'' or '(')
-        {
-            var close = line[k] == '(' ? ')' : line[k];
-            k++;
-            while (k < line.Length && line[k] != close && !(close == ')' && line[k] == '('))
-            {
-                k += line[k] == '\\' && k + 1 < line.Length ? 2 : 1;
-            }
-
-            if (k >= line.Length || line[k] != close)
-            {
-                return false;
-            }
-
-            k++;
-            while (k < line.Length && line[k] is ' ' or '\t')
-            {
-                k++;
-            }
-        }
-
-        return k < line.Length && line[k] == ')';
-    }
-
     private static void Blank(char[] chars, int from, int to)
     {
         for (var c = from; c < to; c++)
@@ -1864,50 +1754,94 @@ public static class LinkScanner
     /// deactivates every opener before it except images, so a link never contains a link.
     /// A backslash-escaped bracket opens or closes nothing.
     ///
-    /// Brackets are read on <paramref name="blanked"/>, where code spans and raw HTML are
-    /// already spaces; what follows a <c>]</c> — destination, title, label — is read on
-    /// <paramref name="raw"/>, since CommonMark looks ahead from the <c>]</c> before anything
-    /// after it is parsed. Every search for an end is a lookup in a table built once on
-    /// first use, so the scan is linear in the content however it nests.
+    /// Code spans (§6.1) and raw HTML (§6.6) are resolved in the same left-to-right pass,
+    /// and blanked to spaces in <see cref="Blanked"/>: whichever of a span, a tag or a
+    /// bracket starts first wins, and what follows a <c>]</c> that closes a link — its
+    /// destination, title or label — is consumed by the link, so nothing in it opens a span
+    /// or a tag. That lookahead reads the text as written, as commonmark.js does. When
+    /// <paramref name="blanked"/> is given, spans were already resolved by such a pass, and
+    /// brackets are read on it instead. Every search for an end is a lookup in a table
+    /// built once on first use, so the scan is linear in the content however it nests.
     /// </summary>
-    private sealed class InlineLinks(string blanked, string raw, IReadOnlyDictionary<string, string> definitions)
+    private sealed class InlineLinks(string raw, IReadOnlyDictionary<string, string> definitions, string? blanked = null)
     {
         /// <summary>Link text is kept for display only, so a pathological nest of images cannot make its copies quadratic.</summary>
         private const int MaxTextLength = 2000;
 
-        private NextOccurrence? blankedNext;
         private NextOccurrence? rawNext;
         private int[]? balance;
         private int[]? parenDrop;
         private int[]? nextSpace;
         private int[]? nextLineEnd;
 
-        private NextOccurrence BlankedNext => blankedNext ??= new NextOccurrence(blanked.ToCharArray());
-
         private NextOccurrence RawNext => rawNext ??= new NextOccurrence(raw.ToCharArray());
+
+        /// <summary>The content with its code spans, raw HTML and what each link consumes after its <c>]</c> blanked to spaces, line endings kept; set by <see cref="Scan"/>.</summary>
+        public string Blanked { get; private set; } = blanked ?? raw;
 
         /// <summary>Every link and image found, as its start offset (the <c>[</c>, or the <c>!</c> of an image), the offset past it, and the link, in document order.</summary>
         public List<(int Start, int End, ConceptLink Link)> Scan()
         {
             var found = new List<(int Start, int End, ConceptLink Link)>();
-            if (blanked.IndexOf(']') < 0)
+            var text = blanked ?? raw;
+            var hasBracket = text.IndexOf(']') >= 0;
+            var hasCode = blanked is null && raw.IndexOf('`') >= 0;
+            var hasHtml = blanked is null && raw.IndexOf('<') >= 0;
+            if (!hasBracket && !hasCode && !hasHtml)
             {
                 return found;
             }
 
+            var chars = hasCode || hasHtml ? raw.ToCharArray() : null;
+            var (runs, escaped, closer) = hasCode ? CodeSpanRuns(raw) : ([], [], []);
+            var html = hasHtml ? new InlineHtml(raw) : null;
+            var run = 0;
+
             var openers = new List<(int Index, bool Image, int Order, bool BracketAfter)>();
             var order = 0;
             var inactiveBelow = 0;
-            for (var i = 0; i < blanked.Length;)
+            for (var i = 0; i < text.Length;)
             {
-                var c = blanked[i];
-                if (c == '\\' && i + 1 < blanked.Length && IsAsciiPunctuation(blanked[i + 1]))
+                var c = text[i];
+
+                // An escaped backtick still reaches the span logic below, which knows it
+                // opens a run one backtick shorter.
+                if (c == '\\' && i + 1 < text.Length && IsAsciiPunctuation(text[i + 1]) && !(hasCode && text[i + 1] == '`'))
                 {
                     i += 2;
                     continue;
                 }
 
-                var image = c == '!' && i + 1 < blanked.Length && blanked[i + 1] == '[';
+                if (hasCode && c == '`')
+                {
+                    // Runs consumed inside an earlier span, tag or link are skipped here.
+                    while (runs[run].Start + runs[run].Length <= i)
+                    {
+                        run++;
+                    }
+
+                    if (closer[run] < 0)
+                    {
+                        i = runs[run].Start + runs[run].Length; // no closer: literal
+                        run++;
+                        continue;
+                    }
+
+                    var close = runs[closer[run]];
+                    Blank(chars!, runs[run].Start + (escaped[run] ? 1 : 0), close.Start + close.Length);
+                    i = close.Start + close.Length;
+                    run = closer[run] + 1;
+                    continue;
+                }
+
+                if (hasHtml && c == '<' && html!.TokenEnd(i) is var end and > 0)
+                {
+                    Blank(chars!, i, end);
+                    i = end;
+                    continue;
+                }
+
+                var image = c == '!' && i + 1 < text.Length && text[i + 1] == '[';
                 if (c == '[' || image)
                 {
                     if (openers.Count > 0)
@@ -1931,11 +1865,18 @@ public static class LinkScanner
                 if ((opener.Image || opener.Order >= inactiveBelow)
                     && (Inline(i + 1) ?? Reference(opener.Index, opener.BracketAfter, i)) is { } match)
                 {
-                    var text = raw.Substring(opener.Index + 1, Math.Min(i - opener.Index - 1, MaxTextLength)).Replace('\n', ' ');
-                    found.Add((opener.Image ? opener.Index - 1 : opener.Index, match.End, new ConceptLink(text, match.Target, ConceptLink.Classify(match.Target))));
+                    var linkText = raw.Substring(opener.Index + 1, Math.Min(i - opener.Index - 1, MaxTextLength)).Replace('\n', ' ');
+                    found.Add((opener.Image ? opener.Index - 1 : opener.Index, match.End, new ConceptLink(linkText, match.Target, ConceptLink.Classify(match.Target))));
                     if (!opener.Image)
                     {
                         inactiveBelow = order;
+                    }
+
+                    // What the link consumed after its text — destination, title, label — is
+                    // not text either, so a `[^k]` in a destination is no footnote.
+                    if (blanked is null)
+                    {
+                        Blank(chars ??= raw.ToCharArray(), i + 1, match.End);
                     }
 
                     i = match.End;
@@ -1943,6 +1884,11 @@ public static class LinkScanner
                 }
 
                 i++;
+            }
+
+            if (chars is not null)
+            {
+                Blanked = new string(chars);
             }
 
             found.Sort((a, b) => a.Start.CompareTo(b.Start));
@@ -2013,13 +1959,13 @@ public static class LinkScanner
         /// </summary>
         private (string Target, int End)? Reference(int openIndex, bool bracketAfter, int close)
         {
-            if (definitions.Count == 0 || (close > openIndex + 1 && blanked[openIndex + 1] == '^'))
+            if (definitions.Count == 0 || (close > openIndex + 1 && raw[openIndex + 1] == '^'))
             {
                 return null;
             }
 
             var labelLength = LabelLength(close + 1);
-            if (labelLength > 2 && blanked[close + 2] == '^')
+            if (labelLength > 2 && raw[close + 2] == '^')
             {
                 labelLength = 0;
             }
@@ -2047,13 +1993,13 @@ public static class LinkScanner
         /// <summary>The length, brackets included, of a link label at <paramref name="start"/> — at most 999 characters, no unescaped bracket — or 0.</summary>
         private int LabelLength(int start)
         {
-            if (start >= blanked.Length || blanked[start] != '[')
+            if (start >= raw.Length || raw[start] != '[')
             {
                 return 0;
             }
 
-            var close = BlankedNext.Next(']', start + 1);
-            var open = BlankedNext.Next('[', start + 1);
+            var close = RawNext.Next(']', start + 1);
+            var open = RawNext.Next('[', start + 1);
             return close < 0 || (open >= 0 && open < close) || close - start - 1 > 999 ? 0 : close - start + 1;
         }
 

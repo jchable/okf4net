@@ -663,14 +663,14 @@ public static class BundleValidator
         var headings = LinkScanner.ExtractAtxHeadings(concept.Document.Body);
         foreach (var (conventional, words) in ConventionalHeadings)
         {
-            if (headings.Any(h => h.Level == 1 && string.Equals(h.Text, conventional, StringComparison.Ordinal)))
+            if (headings.Any(h => h.Level == 1 && string.Equals(h.Visible, conventional, StringComparison.Ordinal)))
             {
                 continue;
             }
 
-            foreach (var (level, text) in headings)
+            foreach (var (level, text, visible) in headings)
             {
-                if (!words.IsMatch(text))
+                if (!words.IsMatch(visible))
                 {
                     continue;
                 }
