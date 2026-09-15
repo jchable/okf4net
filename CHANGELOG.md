@@ -1327,13 +1327,17 @@ and this project adheres to
   first `.`) regardless of extension, so a NuGet `PackageId` such as
   `Aux.Core` was equally affected (`packages/aux.core`). Both id families —
   code ids (`CodeConceptIds.Compose`) and package/doc ids
-  (`ConceptIdRegistry.Register`, touched for this) — now suffix a matching
-  segment with `_` (`aux_`, `packages/aux.core_`), the same convention on
-  both, applied before the registry's existing numeric-collision loop so a
-  synthesized `aux_` still collides with a real segment already registered
-  under that exact name. A name that only resembles a reserved word
-  (`Auxiliary`, `Com10`, `Console`) is unaffected — the match is on the whole
-  base name, never a prefix. **Id churn:** an existing bundle containing a
+  (`ConceptIdRegistry.Register`, touched for this) — now suffix the matching
+  segment's base name with `_`, through one shared helper
+  (`CodeConceptIds.SuffixWindowsDeviceName`) so the two sites cannot diverge:
+  `aux` → `aux_`, `packages/aux.core` → `packages/aux_.core` — the suffix
+  lands right after the base name, before the first `.`, not appended at the
+  end of the slug (`aux.core_` is still reserved: its base name is still
+  exactly `aux`). Applied before the registry's existing numeric-collision
+  loop, so a synthesized `aux_` still collides with a real segment already
+  registered under that exact name. A name that only resembles a reserved
+  word (`Auxiliary`, `Com10`, `Console`) is unaffected — the match is on the
+  whole base name, never a prefix. **Id churn:** an existing bundle containing a
   code, package or doc name whose slug's base name exactly matches one of
   these words gets a new id on the next `okfgen generate` (`producers/`).
 

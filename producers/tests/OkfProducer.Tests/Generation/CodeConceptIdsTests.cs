@@ -171,6 +171,68 @@ public class CodeConceptIdsTests
         Assert.StartsWith("code/csharp/n/aux_-", device.ToString());
     }
 
+    [Fact]
+    public void A_dotted_name_shaped_like_an_explicit_interface_implementation_is_suffixed_at_the_base_name()
+    {
+        // Fix round 1 (C1): RoslynResolver spells an explicit interface implementation
+        // "{Interface}.{Method}", so a method implementing an interface literally named Aux
+        // produces a Name like "Aux.Bar" -- a single Compose `part` carrying an embedded `.`. The
+        // suffix must land right after the base name ("aux_.bar"), not appended at the end of the
+        // whole segment ("aux.bar_", whose base name is still exactly "aux" and is still reserved).
+        Assert.Equal("code/csharp/n/aux_.bar", CodeConceptIds.For(Type("N", "Aux.Bar"), CSharp));
+    }
+
+    [Fact]
+    public void A_trailing_dot_reserved_name_is_suffixed_before_the_dot()
+    {
+        // "aux." (e.g. a name ending in a literal period) keeps its trailing "." through Slugify
+        // ("." is a valid later char) and is still reserved (base name "aux"); the fix inserts the
+        // suffix before that dot rather than after it.
+        Assert.Equal("code/csharp/n/aux_.", CodeConceptIds.For(Type("N", "Aux."), CSharp));
+    }
+
+    [Fact]
+    public void The_device_name_suffix_does_not_reapply_to_its_own_dotted_output()
+    {
+        // Idempotence for the dotted case specifically (fix round 1's regression class): re-running
+        // generation must not turn an already-fixed "aux_.core" into "aux__.core". Calling the
+        // suffix helper on its own output is the direct version of that check; ConceptGenerator
+        // never re-suffixes anyway, since every id is re-derived from the original source name each
+        // run (see ConceptIdRegistry.Register's remarks) -- this pins the helper itself.
+        var once = CodeConceptIds.SuffixWindowsDeviceName("aux.core");
+        var twice = CodeConceptIds.SuffixWindowsDeviceName(once);
+
+        Assert.Equal("aux_.core", once);
+        Assert.Equal(once, twice);
+    }
+
+    [Fact]
+    public void No_segment_of_a_reserved_name_id_is_still_a_windows_reserved_device_name()
+    {
+        // The invariant the fix exists to establish, checked directly against the predicate rather
+        // than against a hand-picked "looks fixed" string -- the round-1 placement bug (C1) shipped
+        // with a test that asserted exactly such a string ("packages/aux.core_") as correct while
+        // IsWindowsDeviceName, run on that same string, said otherwise.
+        string[] ids =
+        [
+            CodeConceptIds.For(Type("Aux", "Con"), CSharp),
+            CodeConceptIds.ForContainer("csharp", ["Lpt1", "Tools"]),
+            CodeConceptIds.For(Type("N", "Aux.Bar"), CSharp),
+            CodeConceptIds.For(Type("N", "Aux."), CSharp),
+            CodeConceptIds.For(Type("N", "Nul"), CSharp),
+            CodeConceptIds.For(Type("N", "Com5"), CSharp),
+            CodeConceptIds.For(Type("N", "Auxiliary"), CSharp),
+        ];
+
+        foreach (var id in ids)
+        {
+            foreach (var segment in id.Split('/'))
+            {
+                Assert.False(CodeConceptIds.IsWindowsDeviceName(segment), $"segment {segment} in id {id}");
+            }
+        }
+    }
+
     [Theory]
     // Rule 3, digit -> upper is NOT a boundary: a mid-word digit (this repository's own root
     // namespace) does not split. On its own this case does not distinguish rule 3 from "never split
