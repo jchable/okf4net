@@ -1148,6 +1148,29 @@ public class CliTests
     }
 
     [Fact]
+    public void An_inaccessible_directory_is_named_in_the_unanalysed_list_without_inflating_the_visited_count()
+    {
+        // E5: RunStatus.InaccessibleDirectories is a separate list from Skipped on purpose -- a
+        // directory is not a file this run attempted, so folding it into Skipped would inflate the
+        // "N source file(s) visited" count below, which this test's real point is to disprove. §2.3
+        // still asks for the cause to be named, so it rides the same unanalysed listing and the same
+        // UnanalysedFilesListed cap as a per-file skip, just after the per-file entries.
+        var status = new RunStatus(false, [("src/ok.cs", FileStatus.Extracted)]) { InaccessibleDirectories = ["locked"] };
+
+        var lines = GenerateRun.Summarize(
+            noMsBuild: false,
+            status,
+            projectsDetected: 0,
+            [],
+            owns: null,
+            []);
+
+        Assert.Contains("1 source file(s) visited, all extracted", lines[0], StringComparison.Ordinal);
+        Assert.Contains("THE TRAVERSAL DID NOT COMPLETE", lines[0], StringComparison.Ordinal);
+        Assert.Contains("  - locked/: skipped, directory not readable", lines);
+    }
+
+    [Fact]
     public void Reachability_uses_the_validators_own_resolver_and_not_a_hand_rolled_prefix_strip()
     {
         // The doc comment claims the walk "gives the validator's own answer". Half that answer is

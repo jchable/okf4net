@@ -1416,6 +1416,27 @@ and this project adheres to
   `.sln` entry that resolves through a link inside the repository, unchanged
   and consistent with `CodeGraphBuilder`, which also walks through links
   (`producers/`).
+- **One unreadable directory no longer empties the whole code walk** (E5,
+  `CodeGraphBuilder`). The code stage's file enumeration used
+  `Directory.EnumerateFiles(repo, "*", SearchOption.AllDirectories)`, which
+  throws `UnauthorizedAccessException` for the whole call the instant it
+  reaches an inaccessible subdirectory — the existing outer catch then
+  discarded every file already found, including every sibling the locked
+  directory has nothing to do with, and the run reported zero symbols on a
+  repository that was otherwise perfectly readable. `EnumerateFiles` now
+  passes `EnumerationOptions { RecurseSubdirectories = true,
+  IgnoreInaccessible = true, AttributesToSkip = 0 }` (the last field
+  deliberately overrides its non-zero default, so a hidden or system file this
+  producer used to see is still seen), and a second, directory-scoped pass
+  names exactly which directories were inaccessible in the new
+  `RunStatus.InaccessibleDirectories` — kept off `RunStatus.Skipped`
+  deliberately, since a directory is not a file this run attempted and adding
+  it there would inflate the "N source file(s) visited" count
+  `GenerateRun.Summarize` derives from that list's length. `Summarize` names
+  each inaccessible directory in the same unanalysed listing and the same cap
+  a per-file skip uses (e.g. `- locked/: skipped, directory not readable`).
+  The repository ROOT itself and a circular reparse point remain
+  all-or-nothing, unchanged (§2.3).
 
 ### Security
 

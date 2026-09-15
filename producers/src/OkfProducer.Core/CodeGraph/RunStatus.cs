@@ -36,6 +36,21 @@ public sealed record RunStatus(bool TraversalComplete, IReadOnlyList<(string Pat
     public bool IsComplete => TraversalComplete && Skipped.All(s => s.Status == FileStatus.Extracted);
 
     /// <summary>
+    /// Repo-relative, <c>/</c>-separated paths of directories the walk found but could not list
+    /// (§2.3: <see cref="UnauthorizedAccessException"/> on <see cref="Directory.EnumerateFileSystemEntries(string)"/>),
+    /// distinct from <see cref="Skipped"/> on purpose. A directory is not a file this run attempted, so
+    /// recording it there would inflate the "N source file(s) visited" count <c>GenerateRun.Summarize</c>
+    /// derives from <see cref="Skipped"/>'s length, and would falsify the file-keyed joins
+    /// <c>BundleWriter</c>'s pruning and <c>GenerationManifest</c> both do over that same list. One
+    /// unreadable directory still flips <see cref="TraversalComplete"/> to <see langword="false"/> --
+    /// its contents were never visited, the same risk an unreadable root or a cancellation carries --
+    /// but it earns its own list rather than a synthetic <see cref="FileStatus"/> entry with no file
+    /// behind it. An <c>init</c> property, not a constructor parameter, so the many existing
+    /// <c>new RunStatus(...)</c> call sites keep compiling unchanged.
+    /// </summary>
+    public IReadOnlyList<string> InaccessibleDirectories { get; init; } = [];
+
+    /// <summary>
     /// A run in which the traversal completed and every eligible file extracted cleanly.
     ///
     /// <para><b>Nothing in <c>producers/src</c> constructs one through this.</b> Grepped, not assumed:

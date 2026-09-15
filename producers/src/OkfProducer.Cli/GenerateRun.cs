@@ -576,18 +576,26 @@ internal static class GenerateRun
         // (the vendored grammar mis-parses an empty collection expression), so naming those would bury
         // the ones that matter under hundreds that do not. Capped, because the count is not bounded by
         // anything: a generated tree can put thousands of files over the cap at once.
-        var unanalysed = status.Skipped
+        //
+        // status.InaccessibleDirectories (E5) is appended here, AFTER the per-file entries and inside
+        // the SAME cap, rather than getting its own section: both are "§2.3 named the cause", and a
+        // directory earns no separate budget just because RunStatus keeps it off Skipped (that split
+        // is only about not inflating the "N source file(s) visited" count above, which is derived
+        // from Skipped.Count alone and stays correct either way).
+        var unanalysedLines = status.Skipped
             .Where(f => f.Status is not (FileStatus.Extracted or FileStatus.PartiallyExtracted))
+            .Select(f => $"{f.Path}: {Label(f.Status)}")
+            .Concat(status.InaccessibleDirectories.Select(d => $"{d}/: skipped, directory not readable"))
             .ToList();
 
-        foreach (var (path, fileStatus) in unanalysed.Take(UnanalysedFilesListed))
+        foreach (var line in unanalysedLines.Take(UnanalysedFilesListed))
         {
-            lines.Add($"  - {path}: {Label(fileStatus)}");
+            lines.Add($"  - {line}");
         }
 
-        if (unanalysed.Count > UnanalysedFilesListed)
+        if (unanalysedLines.Count > UnanalysedFilesListed)
         {
-            lines.Add($"  - ... and {Count(unanalysed.Count - UnanalysedFilesListed)} more");
+            lines.Add($"  - ... and {Count(unanalysedLines.Count - UnanalysedFilesListed)} more");
         }
 
         return lines;

@@ -161,6 +161,16 @@ from the bundle — the report names it under the line, capped at ten with a rem
 count. A partially extracted file is not named: it *was* read, and on a real repository
 there are hundreds of them.
 
+**A directory the walk could not list at all is named the same way, but it is not a
+"visited" file.** One inaccessible subdirectory (a permission-denying ACL, most
+concretely) no longer empties the whole file list the way an unreadable repository root or
+a circular junction does — every other file the walk finds is still visited and reported,
+and the directory itself is named under the line (`- locked/: skipped, directory not
+readable`), sharing the same ten-entry cap as the per-file causes above. It does not,
+however, add to the "N source file(s) visited" count: that count is a statement about files
+this run actually *attempted*, and a directory it could not even list was never one of
+those — counting it there would overstate how much of the repository this run touched.
+
 **What the line still cannot tell you.** It states what the run *visited* and how it
 *resolved* — never what it chose not to *emit*. A file read in full, extracted cleanly and
 covered by the exact resolver still contributes no concept for its indexers, its
