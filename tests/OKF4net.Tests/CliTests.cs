@@ -456,6 +456,22 @@ public class CliTests
         Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
     }
 
+    [Fact]
+    public void Index_with_trailing_separator_still_writes_the_root_index()
+    {
+        // §8: `okf index dir\` used to make IndexGenerator compute the root's
+        // parent as the bundle itself, so the ancestor walk never added the
+        // root to the set of directories to index and the root index.md was
+        // silently omitted -- see IndexTests' library-level coverage of the
+        // same bug in RegenerateIndexesWith. This pins it at the CLI surface.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Thing\ntitle: A\n---\n\nbody\n");
+        var r = Run("index", tmp.Path + Path.DirectorySeparatorChar);
+        Assert.Equal(0, r.Code);
+        Assert.Contains("index file(s) regenerated", r.Out);
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
+    }
+
 
     /// <summary>
     /// `okf graph` without `--dot` had no test at all (issue #14): the golden

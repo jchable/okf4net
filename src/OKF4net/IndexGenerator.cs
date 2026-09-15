@@ -188,7 +188,26 @@ public static class IndexGenerator
         {
             return written;
         }
-        bundleRoot = Path.GetFullPath(bundleRoot);
+        // §8: a bare Path.GetFullPath preserves a trailing directory
+        // separator if bundleRoot has one (e.g. "dir\" survives distinct
+        // from "dir"). Path.GetDirectoryName treats a trailing separator as
+        // marking an empty final component, so DirectoriesToIndex's
+        // rootParent -- Path.GetDirectoryName(bundleRoot), meant to be the
+        // bundle root's PARENT -- came out equal to the bundle root's own
+        // (trimmed) path instead: e.g. GetDirectoryName(@"C:\b\") is
+        // "C:\b", not "C:\". The ancestor walk from an md file's directory
+        // upward stops the instant `cur` equals rootParent, BEFORE adding
+        // `cur` to the set -- so with rootParent misidentified as the root
+        // itself, the walk stopped one step too early and the bundle root
+        // was never added to the set of directories to index, let alone
+        // written. ReparsePoints.CanonicalizeRoot trims the trailing
+        // separator (both the platform separator and the alternate one) the
+        // same way every other root-taking guard in this codebase already
+        // does; every use of bundleRoot below (DirectoriesToIndex's
+        // rootParent, the deepest-first sort's Depth, the late
+        // reparse-ancestor re-check, the returned index.md paths) then sees
+        // the trimmed root.
+        bundleRoot = ReparsePoints.CanonicalizeRoot(bundleRoot);
         var directories = DirectoriesToIndex(bundleRoot);
         // Deepest-first; ties broken by path for determinism.
         directories.Sort((a, b) =>

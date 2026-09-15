@@ -229,6 +229,70 @@ public class IndexTests
     }
 
     [Fact]
+    public void Regenerate_with_trailing_separator_writes_the_root_index_and_matches_the_separatorless_run()
+    {
+        // §8: bundleRoot with a trailing directory separator used to make
+        // DirectoriesToIndex's `rootParent` (Path.GetDirectoryName(bundleRoot))
+        // equal to bundleRoot itself (Path.GetFullPath alone does not trim a
+        // trailing separator -- see ReparsePoints.CanonicalizeRoot's remarks),
+        // so the ancestor walk from any md file's directory broke BEFORE ever
+        // adding the bundle root to the set of directories to index, and the
+        // root index.md was silently never written. Compare the two runs'
+        // entire written trees byte for byte, not just "the root got written",
+        // so any other divergence a bare GetFullPath swap could introduce
+        // would also fail this test.
+        using var plain = new TempDir();
+        WriteDoc(plain, "datasets/ga4.md", "BigQuery Dataset", "GA4 Dataset", "GA4 obfuscated ecommerce sample.");
+        WriteDoc(plain, "tables/users.md", "BigQuery Table", "users", "Per-user dimension.");
+        var plainWritten = IndexGenerator.RegenerateIndexes(plain.Path);
+
+        using var trailing = new TempDir();
+        WriteDoc(trailing, "datasets/ga4.md", "BigQuery Dataset", "GA4 Dataset", "GA4 obfuscated ecommerce sample.");
+        WriteDoc(trailing, "tables/users.md", "BigQuery Table", "users", "Per-user dimension.");
+        var trailingRoot = trailing.Path + Path.DirectorySeparatorChar;
+        var trailingWritten = IndexGenerator.RegenerateIndexes(trailingRoot);
+
+        // The root index.md must actually be among the files written.
+        Assert.Contains(Path.Combine(plain.Path, "index.md"), plainWritten);
+        Assert.Contains(Path.Combine(trailing.Path, "index.md"), trailingWritten);
+
+        // Same count and same relative set of written paths.
+        Assert.Equal(plainWritten.Count, trailingWritten.Count);
+        var plainRel = plainWritten.Select(p => Path.GetRelativePath(plain.Path, p)).OrderBy(p => p, StringComparer.Ordinal).ToList();
+        var trailingRel = trailingWritten.Select(p => Path.GetRelativePath(trailing.Path, p)).OrderBy(p => p, StringComparer.Ordinal).ToList();
+        Assert.Equal(plainRel, trailingRel);
+
+        // Byte-for-byte identical content for every written file.
+        foreach (var rel in plainRel)
+        {
+            var plainContent = File.ReadAllText(Path.Combine(plain.Path, rel));
+            var trailingContent = File.ReadAllText(Path.Combine(trailing.Path, rel));
+            Assert.Equal(plainContent, trailingContent);
+        }
+    }
+
+    [Fact]
+    public void Regenerate_with_trailing_alt_separator_writes_the_root_index()
+    {
+        // The alternate separator ('/' on Windows) must be trimmed the same
+        // way as the platform's primary separator -- Path.TrimEndingDirectorySeparator
+        // (via ReparsePoints.CanonicalizeRoot) trims both.
+        if (Path.DirectorySeparatorChar == Path.AltDirectorySeparatorChar)
+        {
+            return; // The spelling differs only on platforms such as Windows.
+        }
+
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "datasets/ga4.md", "BigQuery Dataset", "GA4 Dataset", "GA4 obfuscated ecommerce sample.");
+
+        var trailingAltRoot = tmp.Path + Path.AltDirectorySeparatorChar;
+        var written = IndexGenerator.RegenerateIndexes(trailingAltRoot);
+
+        Assert.Contains(Path.Combine(tmp.Path, "index.md"), written);
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
+    }
+
+    [Fact]
     public void Regenerate_skips_empty_directories()
     {
         using var tmp = new TempDir();

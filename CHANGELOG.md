@@ -1316,6 +1316,17 @@ and this project adheres to
   timeouts or teardown): the requested `ContainerRunSpec.Timeout` bounds the
   whole run, and teardown after it fires is part of what the caller is
   still waiting on.
+- `okf index dir/` and `IndexGenerator.RegenerateIndexes` with a trailing
+  directory separator now write the root `index.md` (§8). A bare
+  `Path.GetFullPath` preserves a trailing separator, so `bundleRoot` and the
+  ancestor produced by `Path.GetDirectoryName` (which never carries one)
+  never compared equal; the walk from any concept's directory up to the
+  bundle root overshot it, and the root `index.md` was silently never added
+  to the set of directories to index. `RegenerateIndexesWith` now resolves
+  `bundleRoot` through `ReparsePoints.CanonicalizeRoot` (already used
+  elsewhere in this codebase for the identical reason), which trims a
+  trailing separator -- the platform's and the alternate one -- before
+  anything downstream compares against it.
 
 ### Security
 
