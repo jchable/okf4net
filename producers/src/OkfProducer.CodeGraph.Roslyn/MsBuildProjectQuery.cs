@@ -153,7 +153,8 @@ public static class MsBuildProjectQuery
         "-getProperty:DefineConstants", "-getProperty:LangVersion",
         "-getProperty:Nullable", "-getProperty:AllowUnsafeBlocks",
         "-getProperty:TargetFramework", "-getProperty:OutputType",
-        "-getProperty:AssemblyName",
+        "-getProperty:AssemblyName", "-getProperty:SignAssembly",
+        "-getProperty:KeyOriginatorFile", "-getProperty:AssemblyOriginatorKeyFile",
     ];
 
     /// <summary>
@@ -245,6 +246,8 @@ public static class MsBuildProjectQuery
         var properties = ReadProperties(projectPath, root);
         var items = ReadItems(projectPath, root);
 
+        var signAssembly = string.Equals(Property(properties, "SignAssembly"), "true", StringComparison.OrdinalIgnoreCase);
+
         return new ProjectInputs(
             projectPath,
             Property(properties, "AssemblyName") ?? Path.GetFileNameWithoutExtension(projectPath),
@@ -255,7 +258,55 @@ public static class MsBuildProjectQuery
             string.Equals(Property(properties, "Nullable"), "enable", StringComparison.OrdinalIgnoreCase),
             string.Equals(Property(properties, "AllowUnsafeBlocks"), "true", StringComparison.OrdinalIgnoreCase),
             Property(properties, "OutputType") ?? "Library",
-            Property(properties, "TargetFramework") ?? string.Empty);
+            Property(properties, "TargetFramework") ?? string.Empty)
+        {
+            SignAssembly = signAssembly,
+            KeyFile = signAssembly ? ReadKeyFile(projectPath, properties) : null,
+        };
+    }
+
+    /// <summary>
+    /// The project's strong-name key file, resolved to an absolute path against the project's own
+    /// directory -- never against this process's current directory, which is unrelated to where the
+    /// project (and therefore a relative <c>KeyOriginatorFile</c>) lives.
+    ///
+    /// <para>
+    /// <c>KeyOriginatorFile</c> is preferred over <c>AssemblyOriginatorKeyFile</c> because it is the
+    /// value <c>Microsoft.Common.CurrentVersion.targets</c> actually passes to <c>csc</c>'s
+    /// <c>/keyfile</c> switch (<c>AssemblyOriginatorKeyFile</c> is the property most project files set;
+    /// the SDK copies it into <c>KeyOriginatorFile</c> unless something overrides that directly) -- so
+    /// preferring it is preferring what the real compiler would see. <see cref="FullPath"/> is reused
+    /// for the same reason it exists for <c>MSBuildSourceProjectFile</c>: this is a string MSBuild
+    /// printed, not a path anything validated, and a malformed one (a NUL, a 40&nbsp;KB value) must
+    /// refuse the whole project's query rather than crash past <see cref="MsBuildQueryException"/> the
+    /// way an unwrapped <see cref="ArgumentException"/> or <see cref="PathTooLongException"/> already
+    /// did once for that sibling case.
+    /// </para>
+    ///
+    /// <para>
+    /// Existence, repository containment and reparse-point safety are deliberately NOT checked here --
+    /// this method only resolves where the property points. <see cref="CompilationFactory"/> is where
+    /// those refusals belong: it is the one place that already holds a repository root (via
+    /// <c>SourceFileGate</c>) and the reparse-point walk <c>TryParse</c> applies to <c>Compile</c>
+    /// items, so a key file that is missing, outside the repository, or behind a link degrades to an
+    /// unsigned compilation there rather than this query refusing the whole project over a key the
+    /// caller might not even need yet.
+    /// </para>
+    /// </summary>
+    private static string? ReadKeyFile(string projectPath, Dictionary<string, string> properties)
+    {
+        var metadata = Property(properties, "KeyOriginatorFile") is not null
+            ? "KeyOriginatorFile"
+            : "AssemblyOriginatorKeyFile";
+        var value = Property(properties, metadata);
+        if (value is null)
+        {
+            return null;
+        }
+
+        var projectDirectory = Path.GetDirectoryName(projectPath) ?? string.Empty;
+        var candidate = Path.IsPathRooted(value) ? value : Path.Combine(projectDirectory, value);
+        return FullPath(projectPath, metadata, candidate);
     }
 
     /// <summary>

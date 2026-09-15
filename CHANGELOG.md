@@ -766,6 +766,27 @@ and this project adheres to
   no-op (no duplicate defines) on SDK 9.0.3xx+/10. No hand-maintained
   per-TFM fallback table — the target is public on every SDK that supports
   `-getProperty`, and reimplementing its rules would fork them.
+- **`okfgen`'s Roslyn stage now signs its analysis-only compilation, so a
+  project's own `InternalsVisibleTo` friend grant resolves instead of failing
+  `CS0281` (`producers/`).** `CompilationFactory.Create` built every
+  `CSharpCompilationOptions` with no key at all, so a signed consumer calling
+  an internal member of a friend assembly it names via
+  `InternalsVisibleTo("Consumer, PublicKey=…")` still compiled as if it had no
+  public key (`""`), and Roslyn reports `CS0281` — measured against Roslyn
+  5.3.0 in the pre-flight. `MsBuildProjectQuery` now also queries
+  `SignAssembly`, `KeyOriginatorFile` (preferred — it is the value
+  `Microsoft.Common.CurrentVersion.targets` actually passes `csc`'s
+  `/keyfile`) and `AssemblyOriginatorKeyFile` (fallback), and
+  `CompilationFactory.Create` always **public-signs** with the resolved key —
+  never the project's own `DelaySign`/`PublicSign` — since this compilation is
+  never emitted and public signing alone (no `StrongNameProvider`) resolves the
+  friend grant without the `CS7027` a bare `.WithCryptoKeyFile` adds. A key
+  file that is missing, outside the repository root, or reached through a
+  reparse point (a directory junction/symlink above it) is never read — the
+  compilation degrades to unsigned exactly as before E7, rather than trading
+  today's partial success (the name-matching baseline) for a whole-project
+  `CS7027` failure, and rather than following repository-controlled data
+  outside the tree `okfgen` was asked to scan.
 - **A stage that ignores cancellation no longer keeps a run alive past
   `ComputationTimeout` or the caller's token, and can no longer turn a
   cancelled run into a displayable outcome (§10.5).** The orchestrator checked

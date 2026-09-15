@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using OkfProducer.Cli;
 using OkfProducer.CodeGraph.Roslyn;
@@ -154,6 +155,81 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.Equal(string.Empty, inputs.LangVersion);
         Assert.Equal("Chosen", inputs.AssemblyName);
         Assert.Equal(["a.cs"], inputs.CompileFiles);
+    }
+
+    [Fact]
+    public void ReadInputs_resolves_KeyOriginatorFile_against_the_project_directory_when_signing_is_requested()
+    {
+        // E7: MsBuildProjectQuery.ReadInputs' half of the fix. A relative KeyOriginatorFile is resolved
+        // against the PROJECT's own directory, never this process's current directory -- the same
+        // reasoning FullPath already applies to MSBuildSourceProjectFile.
+        var inputs = MsBuildProjectQuery.ReadInputs(
+            "C:/repo/Some.csproj",
+            """{ "Properties": { "SignAssembly": "true", "KeyOriginatorFile": "keys\\k.snk" } }""");
+
+        Assert.True(inputs.SignAssembly);
+        Assert.Equal(Path.GetFullPath(Path.Combine("C:/repo", "keys", "k.snk")), inputs.KeyFile);
+    }
+
+    [Fact]
+    public void ReadInputs_leaves_KeyFile_null_when_SignAssembly_is_false()
+    {
+        // A project that is not signing at all must not carry a resolved key path forward: a stray
+        // AssemblyOriginatorKeyFile left over from a copy-pasted PropertyGroup, with SignAssembly never
+        // set to true, describes a key nothing will ever use, and resolving it anyway (only to be
+        // ignored later by CompilationFactory) is a needless FullPath refusal risk for a value nobody
+        // asked to be read.
+        var inputs = MsBuildProjectQuery.ReadInputs(
+            "C:/repo/Some.csproj",
+            """{ "Properties": { "SignAssembly": "false", "AssemblyOriginatorKeyFile": "unused.snk" } }""");
+
+        Assert.False(inputs.SignAssembly);
+        Assert.Null(inputs.KeyFile);
+    }
+
+    [Fact]
+    public void ReadInputs_prefers_KeyOriginatorFile_over_AssemblyOriginatorKeyFile()
+    {
+        // KeyOriginatorFile is what Microsoft.Common.CurrentVersion.targets actually hands csc's
+        // /keyfile switch, so it is the value the real compiler would see -- preferred per the E7
+        // ruling over the property most project files author directly.
+        var inputs = MsBuildProjectQuery.ReadInputs(
+            "C:/repo/Some.csproj",
+            """
+            { "Properties": { "SignAssembly": "true",
+              "KeyOriginatorFile": "real.snk", "AssemblyOriginatorKeyFile": "wrong.snk" } }
+            """);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine("C:/repo", "real.snk")), inputs.KeyFile);
+    }
+
+    [Fact]
+    public void ReadInputs_falls_back_to_AssemblyOriginatorKeyFile_when_KeyOriginatorFile_is_absent()
+    {
+        var inputs = MsBuildProjectQuery.ReadInputs(
+            "C:/repo/Some.csproj",
+            """{ "Properties": { "SignAssembly": "true", "AssemblyOriginatorKeyFile": "only.snk" } }""");
+
+        Assert.Equal(Path.GetFullPath(Path.Combine("C:/repo", "only.snk")), inputs.KeyFile);
+    }
+
+    [Fact]
+    public void ReadInputs_ignores_DelaySign_and_PublicSign_since_this_compilation_always_public_signs()
+    {
+        // Pre-flight ruling: this analysis-only compilation always public-signs regardless of a
+        // project's own DelaySign/PublicSign properties, so ProjectInputs carries no field for either
+        // and ReadInputs must not choke on their presence -- a project setting both (a realistic shape
+        // for an OSS repository shipping a public-key-only .snk with the private key gitignored) reads
+        // exactly the same as one setting neither.
+        var inputs = MsBuildProjectQuery.ReadInputs(
+            "C:/repo/Some.csproj",
+            """
+            { "Properties": { "SignAssembly": "true", "DelaySign": "true", "PublicSign": "true",
+              "KeyOriginatorFile": "delay.snk" } }
+            """);
+
+        Assert.True(inputs.SignAssembly);
+        Assert.Equal(Path.GetFullPath(Path.Combine("C:/repo", "delay.snk")), inputs.KeyFile);
     }
 
     [Fact]
@@ -915,6 +991,153 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
+    public void A_signed_friend_assembly_resolves_an_internal_call_that_CS0281_refused_before_E7()
+    {
+        // The defect E7 fixes, measured in the pre-flight: an unsigned App calling an internal member
+        // of a Lib that grants it friend access via InternalsVisibleTo("App, PublicKey=...") fails with
+        // CS0281 ("friend access granted... public key of the output assembly ('') does not match")
+        // because nothing told Roslyn App's own key at all. App.csproj sets SignAssembly, PublicSign AND
+        // DelaySign (a realistic OSS shape: a public-key-only .snk, private key gitignored) alongside
+        // KeyOriginatorFile -- covering the brief's "DelaySign=true and PublicSign=true projects" case
+        // in the same fixture, since E7's ruling is to always public-sign regardless of what those two
+        // properties say, and this proves that holds even when a project sets both explicitly.
+        using var repository = new SignedFriendRepository();
+        var gate = new SourceFileGate(long.MaxValue, repository.Root);
+
+        var libraryInputs = MsBuildProjectQuery.Query(repository.LibraryProject);
+        var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject);
+
+        Assert.True(applicationInputs.SignAssembly);
+        Assert.Equal(repository.KeyFile, applicationInputs.KeyFile);
+
+        var library = CompilationFactory.Create(libraryInputs, projectCompilations: null, gate, out _);
+        var application = CompilationFactory.Create(
+            applicationInputs,
+            new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>(StringComparer.Ordinal)
+            {
+                [repository.LibraryProject] = library,
+            },
+            gate,
+            out var unusable);
+
+        Assert.Empty(unusable);
+        var errors = application.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).ToList();
+        Assert.True(errors.Count == 0, Describe(errors));
+        // Named explicitly, not just folded into the empty-errors assertion above: this is the specific
+        // trap WithCryptoKeyFile without WithPublicSign falls into (pre-flight), and the point of this
+        // test is that E7's fix takes the public-sign path, never that one.
+        Assert.DoesNotContain(errors, d => d.Id == "CS7027");
+    }
+
+    [Fact]
+    public void A_missing_key_file_degrades_to_an_unsigned_compilation_rather_than_CS7027()
+    {
+        // Requirement 4: a key file that is not there is not handed to Roslyn at all. The alternative --
+        // pointing WithCryptoKeyFile at a path that does not exist -- was measured in the pre-flight to
+        // add CS7027 on top of CS0281, trading today's partial success (name-matching baseline) for a
+        // whole-project failure. A gitignored private .snk in a fresh clone is exactly this case.
+        using var repository = new SignedFriendRepository();
+        var gate = new SourceFileGate(long.MaxValue, repository.Root);
+        var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject)
+            with
+        { KeyFile = Path.Combine(repository.Root, "app", "does-not-exist.snk") };
+
+        var application = CompilationFactory.Create(applicationInputs, projectCompilations: null, gate, out _);
+
+        var errors = application.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).ToList();
+        Assert.DoesNotContain(errors, d => d.Id == "CS7027");
+        // The documented degrade: still unsigned, so the friend grant this project never got a matching
+        // key for is still refused -- proving the missing key was genuinely not used, not that the test
+        // accidentally already passed for an unrelated reason.
+        Assert.Contains(errors, d => d.Id == "CS0281");
+    }
+
+    [Fact]
+    public void A_key_file_outside_the_repository_root_is_not_used()
+    {
+        // The key path is repository-controlled data (an MSBuild property a Directory.Build.props can
+        // set to anything), so this producer must not follow it outside the tree it was asked to scan --
+        // the same containment E7's ruling requires and CompilationFactory.IsWithinRepository checks.
+        using var repository = new SignedFriendRepository();
+        var outside = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "okf-producer-keyoutside-" + Guid.NewGuid().ToString("N")[..12]));
+        try
+        {
+            var outsideKey = Path.Combine(outside.FullName, "outside.snk");
+            File.Copy(repository.KeyFile, outsideKey);
+
+            var gate = new SourceFileGate(long.MaxValue, repository.Root);
+            var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject) with { KeyFile = outsideKey };
+
+            var application = CompilationFactory.Create(applicationInputs, projectCompilations: null, gate, out _);
+
+            var errors = application.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).ToList();
+            Assert.DoesNotContain(errors, d => d.Id == "CS7027");
+            Assert.Contains(errors, d => d.Id == "CS0281");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(outside.FullName, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    [DirectoryLinkFact]
+    public void A_key_file_behind_a_reparse_point_is_not_used()
+    {
+        // The same hazard TryParse already refuses for Compile items, reused here via
+        // IsBehindReparsePoint rather than forked: an ancestor directory between the repository root and
+        // the key file is a link, so the key file is reached only by leaving the tree this producer was
+        // told to scan, even though its own path string never climbs out with a "..".
+        using var repository = new SignedFriendRepository();
+        var outside = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "okf-producer-keylink-" + Guid.NewGuid().ToString("N")[..12]));
+        try
+        {
+            var keysDir = Directory.CreateDirectory(Path.Combine(outside.FullName, "keys"));
+            var linkedKey = Path.Combine(keysDir.FullName, "linked.snk");
+            File.Copy(repository.KeyFile, linkedKey);
+
+            var link = DirectoryLinks.Create(Path.Combine(repository.Root, "app", "linked"), outside.FullName);
+
+            var gate = new SourceFileGate(long.MaxValue, repository.Root);
+            var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject)
+                with
+            { KeyFile = Path.Combine(link, "keys", "linked.snk") };
+
+            var application = CompilationFactory.Create(applicationInputs, projectCompilations: null, gate, out _);
+
+            var errors = application.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).ToList();
+            Assert.DoesNotContain(errors, d => d.Id == "CS7027");
+            Assert.Contains(errors, d => d.Id == "CS0281");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(outside.FullName, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    private static string Describe(IReadOnlyList<Microsoft.CodeAnalysis.Diagnostic> diagnostics) =>
+        string.Join(" | ", diagnostics.Select(d => d.ToString()));
+
+    [Fact]
     public void A_call_across_an_unbuilt_project_reference_still_resolves_Exact()
     {
         // The same situation, end to end through the resolver rather than through the factory: the
@@ -1366,6 +1589,127 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
                 <ImplicitUsings>enable</ImplicitUsings>
               </PropertyGroup>
             </Project>
+            """;
+    }
+
+    /// <summary>
+    /// A restored, never-built two-project repository built for E7: a Lib that grants friend access to
+    /// an App via <c>InternalsVisibleTo("App, PublicKey=...")</c>, and an App that is itself
+    /// strong-name-signed with a throwaway key GENERATED AT TEST TIME and never committed anywhere (see
+    /// <see cref="KeyFile"/>) -- whose public key is exactly the one Lib's attribute names, so the two
+    /// only agree because this constructor makes them agree, never a coincidence of a fixed key.
+    ///
+    /// <para>
+    /// App.csproj also sets <c>PublicSign</c> and <c>DelaySign</c>, a realistic OSS shape (a
+    /// public-key-only <c>.snk</c> shipped in the repo, the matching private key gitignored) that the
+    /// E7 ruling says must not change the outcome: this compilation always public-signs regardless of
+    /// what those two properties claim, and folding them into this one fixture proves that holds rather
+    /// than merely asserting it.
+    /// </para>
+    /// </summary>
+    private sealed class SignedFriendRepository : ScratchRepository
+    {
+        public SignedFriendRepository()
+            : base("signedfriend")
+        {
+            KeyFile = Path.Combine(Root, "app", "App.snk");
+            Directory.CreateDirectory(Path.GetDirectoryName(KeyFile)!);
+            WriteKeyPair(KeyFile);
+
+            var publicKeyHex = ProbePublicKeyHex(KeyFile);
+
+            LibraryProject = Write("lib/Library.csproj", LibraryProjectFile);
+            Write("lib/Widget.cs", LibrarySource(publicKeyHex));
+
+            ApplicationProject = Write("app/Application.csproj", ApplicationProjectFile);
+            Write("app/Program.cs", ApplicationSource);
+
+            Restore(ApplicationProject);
+        }
+
+        public string LibraryProject { get; }
+
+        public string ApplicationProject { get; }
+
+        /// <summary>
+        /// A throwaway RSA-1024 strong-name key pair, generated fresh for this repository instance and
+        /// never committed to source control -- this is test-only material with no bearing on any real
+        /// signing identity. It carries a full key pair rather than a public-key-only <c>.snk</c> purely
+        /// because generating one is a single call (<see cref="RSACryptoServiceProvider.ExportCspBlob"/>);
+        /// the pre-flight measured public-signing to behave the same either way.
+        /// </summary>
+        public string KeyFile { get; }
+
+        private static void WriteKeyPair(string path)
+        {
+            using var rsa = new RSACryptoServiceProvider(1024);
+            File.WriteAllBytes(path, rsa.ExportCspBlob(includePrivateParameters: true));
+        }
+
+        /// <summary>
+        /// The public key <paramref name="keyFile"/> carries, as the hex string an
+        /// <c>InternalsVisibleTo("Name, PublicKey=...")</c> attribute expects -- read off a throwaway
+        /// compilation that public-signs with it, the same mechanism E7's own fix uses
+        /// (<c>CompilationFactory.IsKeyFileUsable</c>'s caller), so this probe exercises no code path
+        /// the fix itself does not.
+        /// </summary>
+        private static string ProbePublicKeyHex(string keyFile)
+        {
+            var options = new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(
+                    Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary)
+                .WithCryptoKeyFile(keyFile)
+                .WithPublicSign(true);
+            var probe = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("Probe", options: options);
+
+            var publicKey = probe.Assembly.Identity.PublicKey;
+            Assert.False(publicKey.IsDefaultOrEmpty, "the probe compilation computed no public key from the generated .snk.");
+
+            return Convert.ToHexString(publicKey.AsSpan());
+        }
+
+        private const string LibraryProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <Nullable>enable</Nullable>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private static string LibrarySource(string publicKeyHex) => $$"""
+            using System.Runtime.CompilerServices;
+            [assembly: InternalsVisibleTo("App, PublicKey={{publicKeyHex}}")]
+
+            namespace Library;
+            internal static class Widget
+            {
+                internal static int Answer() => 42;
+            }
+            """;
+
+        private const string ApplicationProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <Nullable>enable</Nullable>
+                <AssemblyName>App</AssemblyName>
+                <SignAssembly>true</SignAssembly>
+                <PublicSign>true</PublicSign>
+                <DelaySign>true</DelaySign>
+                <KeyOriginatorFile>App.snk</KeyOriginatorFile>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="..\lib\Library.csproj" />
+              </ItemGroup>
+            </Project>
+            """;
+
+        private const string ApplicationSource = """
+            namespace App;
+            public class Program
+            {
+                public static int Run() => Library.Widget.Answer();
+            }
             """;
     }
 

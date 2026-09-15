@@ -262,13 +262,79 @@ public static class CompilationFactory
 
         unusableReferences = unusable;
 
-        return CSharpCompilation.Create(
-            inputs.AssemblyName,
-            trees,
-            references,
-            new CSharpCompilationOptions(OutputKindFor(inputs.OutputType))
-                .WithNullableContextOptions(inputs.Nullable ? NullableContextOptions.Enable : NullableContextOptions.Disable)
-                .WithAllowUnsafe(inputs.AllowUnsafe));
+        var options = new CSharpCompilationOptions(OutputKindFor(inputs.OutputType))
+            .WithNullableContextOptions(inputs.Nullable ? NullableContextOptions.Enable : NullableContextOptions.Disable)
+            .WithAllowUnsafe(inputs.AllowUnsafe);
+
+        if (inputs.SignAssembly && inputs.KeyFile is not null && IsKeyFileUsable(inputs.KeyFile, gate.RepositoryRoot))
+        {
+            options = options.WithCryptoKeyFile(inputs.KeyFile).WithPublicSign(true);
+        }
+
+        return CSharpCompilation.Create(inputs.AssemblyName, trees, references, options);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="keyFile"/> is safe for this analysis-only compilation to read as a
+    /// strong-name key (E7, finding: signed <c>InternalsVisibleTo</c> refused -- CS0281 -- because
+    /// nothing here ever told Roslyn a key at all).
+    ///
+    /// <para>
+    /// <b>Always public-sign, never delay-sign or fully sign.</b> This compilation is never emitted --
+    /// no <c>.dll</c> written to disk, no <c>bin/</c> output -- so the only thing a key affects here is
+    /// the assembly's public key, which is exactly what a friend assembly's <c>InternalsVisibleTo</c>
+    /// match is checked against. Measured against Roslyn 5.3.0 (pre-flight, 2026-09-15):
+    /// <c>WithCryptoKeyFile(snk).WithPublicSign(true)</c> resolves the friend access with no other
+    /// option needed -- no <c>StrongNameProvider</c>, and it works the same whether the key file holds
+    /// a full key pair, a public-key-only <c>.snk</c>, or a delay-sign key. <c>WithCryptoKeyFile(snk)</c>
+    /// ALONE (no public sign, no provider) instead adds CS7027 ("assembly signing not supported") on
+    /// top of the CS0281 it was meant to fix -- the exact trap this method exists to not fall into. So
+    /// the project's own <c>DelaySign</c>/<c>PublicSign</c> properties are never read: whatever they say,
+    /// this method always asks for public signing, which is why <see cref="ProjectInputs"/> carries no
+    /// field for either.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>A key file that is missing, outside the repository root, or behind a reparse point is not
+    /// used -- the compilation stays unsigned, exactly as it was before E7.</b> A repository commonly
+    /// gitignores its private <c>.snk</c>, so handing Roslyn a path that is not there would trade
+    /// today's partial success (name-matching baseline, CS0281 on the friend call) for CS7027 on the
+    /// whole project. And the key path is repository-controlled data (an MSBuild property a
+    /// <c>Directory.Build.props</c> can set to anything), so this producer must not follow it outside
+    /// the tree it was asked to scan, or through a link planted to point somewhere it should not read --
+    /// the same hazard <see cref="TryParse"/> already refuses for <c>Compile</c> items, reused here via
+    /// <see cref="IsWithinRepository"/> and <see cref="IsBehindReparsePoint"/> rather than forked.
+    /// </para>
+    /// </summary>
+    private static bool IsKeyFileUsable(string keyFile, string? repositoryRoot)
+    {
+        FileInfo file;
+        try
+        {
+            file = new FileInfo(keyFile);
+        }
+        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            // Same shape hazard FullPath already guards on the read side: a value MSBuild printed is
+            // not a path anything validated. MsBuildProjectQuery.ReadKeyFile refuses this project's
+            // whole query for a malformed KeyOriginatorFile/AssemblyOriginatorKeyFile before this method
+            // is ever reached in production, so this catch is reachable only from a hand-built
+            // ProjectInputs (a test) -- kept anyway, because "unsigned" is the correct degrade for any
+            // KeyFile this method cannot even name, not a crash.
+            return false;
+        }
+
+        if (!file.Exists)
+        {
+            return false;
+        }
+
+        if (repositoryRoot is not null && !IsWithinRepository(file.FullName, repositoryRoot))
+        {
+            return false;
+        }
+
+        return !IsBehindReparsePoint(file, repositoryRoot);
     }
 
     /// <summary>
@@ -486,7 +552,28 @@ public static class CompilationFactory
     /// <paramref name="repositoryRoot"/>, or <c>0</c> when the file is not under that root at all --
     /// a different drive, or a path that climbs out of it.
     /// </summary>
-    private static int DepthUnderRoot(string fullPath, string repositoryRoot)
+    private static int DepthUnderRoot(string fullPath, string repositoryRoot) =>
+        TryGetSegmentsUnderRoot(fullPath, repositoryRoot, out var segments) ? segments.Length - 1 : 0;
+
+    /// <summary>
+    /// Whether <paramref name="fullPath"/> sits inside <paramref name="repositoryRoot"/> at all --
+    /// unlike <see cref="DepthUnderRoot"/>, which answers "how far under" and cannot itself distinguish
+    /// "directly in the root" from "not under the root", both of which return depth <c>0</c>. E7 needs
+    /// exactly that distinction: a key file named directly in the repository root must still be usable,
+    /// while one on another drive or reached only by climbing out (<c>..\..\secrets\k.snk</c>) must not
+    /// be, and depth alone cannot tell those apart.
+    /// </summary>
+    private static bool IsWithinRepository(string fullPath, string repositoryRoot) =>
+        TryGetSegmentsUnderRoot(fullPath, repositoryRoot, out _);
+
+    /// <summary>
+    /// The shared computation behind <see cref="DepthUnderRoot"/> and <see cref="IsWithinRepository"/>:
+    /// <paramref name="fullPath"/>'s path segments relative to <paramref name="repositoryRoot"/>, or
+    /// <see langword="false"/> when it is not under that root at all -- a different drive (the relative
+    /// answer comes back rooted), or a leading <c>..</c> SEGMENT (not prefix: <c>..foo</c> is a
+    /// directory name, not a climb).
+    /// </summary>
+    private static bool TryGetSegmentsUnderRoot(string fullPath, string repositoryRoot, out string[] segments)
     {
         string relative;
         try
@@ -495,19 +582,25 @@ public static class CompilationFactory
         }
         catch (ArgumentException)
         {
-            return 0;
+            segments = [];
+            return false;
         }
 
-        // A rooted answer means the two share no root (another drive on Windows); a leading `..`
-        // SEGMENT means the file climbs out of the repository. `..foo` is a directory name, not a
-        // climb, so the segment is matched rather than the prefix.
         if (Path.IsPathRooted(relative))
         {
-            return 0;
+            segments = [];
+            return false;
         }
 
-        var segments = relative.Split(['/', '\\']);
-        return segments[0] == ".." ? 0 : segments.Length - 1;
+        var split = relative.Split(['/', '\\']);
+        if (split[0] == "..")
+        {
+            segments = [];
+            return false;
+        }
+
+        segments = split;
+        return true;
     }
 
     private static OutputKind OutputKindFor(string outputType) =>
