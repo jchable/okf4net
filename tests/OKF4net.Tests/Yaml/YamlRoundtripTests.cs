@@ -221,6 +221,11 @@ public class YamlRoundtripTests
     [InlineData("'ab", "\"'ab\"")]
     [InlineData("a[b]]c[", "\"a[b]]c[\"")]
     [InlineData("a[b\"]\"", "\"a[b\\\"]\\\"\"")]
+    // Inside an open `"` a backslash skips the next character: a trailing `\`
+    // would swallow the key's colon, and an escaped `\"` does not close the quote.
+    [InlineData("a\"b\\", "\"a\\\"b\\\\\"")]
+    [InlineData("a\"b\\\"", "\"a\\\"b\\\\\\\"\"")]
+    [InlineData("a\"b\\\"c", "\"a\\\"b\\\\\\\"c\"")]
     public void Keys_the_parser_would_misread_are_quoted_and_roundtrip(string key, string quoted)
     {
         foreach (var position in new[] { "top-level key", "nested key", "sequence-item key" })
@@ -246,6 +251,7 @@ public class YamlRoundtripTests
     [InlineData("a[b]")]
     [InlineData("a\"b\"c")]
     [InlineData("a'b''c'")]
+    [InlineData("a\"b\\\"c\"")] // the escaped `\"` is skipped, the last `"` closes the quote
     public void Keys_the_parser_reads_back_intact_stay_plain(string key)
     {
         foreach (var position in new[] { "top-level key", "nested key", "sequence-item key" })
