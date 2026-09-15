@@ -7,6 +7,7 @@ using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 using OkfProducer.Tests.Generation;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests;
 
@@ -1387,6 +1388,40 @@ public class CliTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+    }
+
+    [DenyAceFact]
+    public void The_generate_verb_reports_an_unreadable_repository_root_on_stderr_and_exits_one()
+    {
+        // I1 (E3 fix round 1): the one deliberate exception to the scanner's permissiveness -- an
+        // unreadable repository ROOT still aborts the whole run -- reaches the operator as an ordinary
+        // `error: ...` line and exit code 1, through OkfgenCli.Generate's existing
+        // `InvalidOperationException or OkfException or IOException or UnauthorizedAccessException`
+        // catch, not as an unhandled exception.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        using (DenyAce.Deny(repo, isDirectory: true))
+        {
+            var result = Run("generate", "--repo", repo, "--out", bundle);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+            Assert.Contains(repo, result.Error, StringComparison.Ordinal);
+        }
+    }
+
+    [UnixPermissionFact]
+    public void The_generate_verb_reports_an_unreadable_repository_root_on_stderr_and_exits_one_posix()
+    {
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        using (UnixPermission.DenyAll(repo))
+        {
+            var result = Run("generate", "--repo", repo, "--out", bundle);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
