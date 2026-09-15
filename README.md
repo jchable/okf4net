@@ -127,7 +127,8 @@ extensive test suite, including byte-exact golden CLI comparisons.
     followed by the end of the line, a space or a tab (`...`, `--- x`, `... # end`);
   - an indented `---` line (spaces or tabs, then `---`, then optional spaces or
     tabs) anywhere except inside `|`/`>` block-scalar content, reported as a
-    mistyped frontmatter fence;
+    mistyped frontmatter fence. Through `OkfDocument.Parse`, that message also
+    gives the file line;
   - text after a closing quote other than a `#` comment (`k: "a" b`).
 
   A quoted scalar (`"*a"`), an indicator later in a plain scalar (`a & b`,

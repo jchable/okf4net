@@ -338,10 +338,13 @@ and this project adheres to
     - **As the closing line, with a column-0 `---` later** (e.g. a thematic
       break in the body): the frontmatter runs to that later line. The indented
       line then fails parsing with `YAML error at line N: indented frontmatter
-      fence: a `---` line must start at column 0 (§4)`, whether it sits after a
-      plain value, in a mapping, after a sequence item, inside an unterminated
-      flow collection, or on its own. N counts from the first frontmatter line,
-      like every YAML error. Before this rule, one such shape loaded silently,
+      fence: a `---` line must start at column 0 (§4) (file line N+1)`, whether
+      it sits after a plain value, in a mapping, after a sequence item, inside an
+      unterminated flow collection or quoted string (on the key's line or on its
+      own line), or on its own. N counts from the first frontmatter line, like
+      every YAML error. Only this message adds the file line; every other YAML
+      error keeps its format, and `YamlValue.Parse` alone, which has no file
+      around it, omits it. Before this rule, one such shape loaded silently,
       with the preceding value rewritten (`title: "T ---"`) and a following
       `# Heading` read as a YAML comment. Another failed with an unrelated error
       on a body line.

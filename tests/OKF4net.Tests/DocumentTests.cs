@@ -113,8 +113,11 @@ public class DocumentTests
     /// second row, one of the reviewer's shapes, loaded with the <c># Heading</c> line
     /// silently read as a YAML comment. Rows cover a plain-scalar continuation, a nested
     /// mapping, a sequence, a flow-collection continuation, a nested bare node, a tab,
-    /// and trailing whitespace. The line is counted from the first frontmatter line (the
-    /// golden-locked convention for every YAML error).
+    /// and trailing whitespace. Also covered (round 2, N1): a flow collection or quoted
+    /// string that starts on its own line and meets the fence while unterminated. The
+    /// "line N" prefix counts from the first frontmatter line, the golden-locked
+    /// convention for every YAML error. This message alone also gives the file line
+    /// (N + 1), since pointing at the mistyped line is its purpose (round 2, N2).
     /// </summary>
     [Theory]
     [InlineData("---\ntype: X\n  ---\n---\nbody\n", 2)]
@@ -129,12 +132,27 @@ public class DocumentTests
     [InlineData("---\r\ntype: X\r\n ---\r\n---\r\nbody\r\n", 2)]
     [InlineData("---\ntype: Metric\ndescription: |\n  text\n ---\n\n# Heading\n\n---\n\n## Section\n", 4)]
     [InlineData("---\ntype: X\nd:\n  - |\n      deep\n    ---\n---\nbody\n", 5)]
+    [InlineData("---\ntype: X\nk:\n  [a,\n  ---\n  b]\n---\nbody\n", 4)]
+    [InlineData("---\ntype: X\nk:\n  {a: 1,\n  ---\n---\nbody\n", 4)]
+    [InlineData("---\ntype: X\nk:\n  \"abc\n  ---\n---\nbody\n", 4)]
+    [InlineData("---\ntype: X\nk:\n  'abc\n  ---\n---\nbody\n", 4)]
     public void An_indented_dash_line_inside_the_frontmatter_names_the_mistyped_fence(string src, int line)
     {
         var ex = Assert.Throws<DocumentParseException>(() => OkfDocument.Parse(src));
         Assert.Equal(
-            $"Invalid YAML in frontmatter: YAML error at line {line}: indented frontmatter fence: a `---` line must start at column 0 (§4)",
+            $"Invalid YAML in frontmatter: YAML error at line {line}: indented frontmatter fence: a `---` line must start at column 0 (§4) (file line {line + 1})",
             ex.Message);
+    }
+
+    /// <summary>
+    /// N2 guard: only the indented-fence message gains a file line. Every other YAML
+    /// error keeps its exact, golden-locked format (<c>validate-reserved.out</c>).
+    /// </summary>
+    [Fact]
+    public void Other_yaml_errors_keep_their_exact_format()
+    {
+        var ex = Assert.Throws<DocumentParseException>(() => OkfDocument.Parse("---\ntitle: [unterminated\n---\nbody\n"));
+        Assert.Equal("Invalid YAML in frontmatter: YAML error at line 1: expected ',' or ']' in flow sequence", ex.Message);
     }
 
     /// <summary>
@@ -207,7 +225,7 @@ public class DocumentTests
     }
 
     /// <summary>
-    /// The \u00A74 hint's cause (<see cref="OkfDocument.DisplacedFirstLineFenceCause"/>) is
+    /// The §4 hint's cause (<see cref="OkfDocument.DisplacedFirstLineFenceCause"/>) is
     /// only reported for a line that is really displaced. A document built by the
     /// constructor has no frontmatter block, so a column-0 fence at the start of its
     /// body must not be called "not at column 0". A parsed document with a block gets

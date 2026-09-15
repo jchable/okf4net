@@ -1803,9 +1803,9 @@ public class CliTests
     /// a column-0 <c>---</c> thematic break in the body. The frontmatter then runs to
     /// that break. One shape used to validate "conformant" with the heading silently
     /// read as a YAML comment and <c>title</c> = <c>"T ---"</c>; the other failed on a
-    /// body line. Both now name the indented fence. The line number is counted from the
-    /// first frontmatter line, like every YAML error (golden-locked): line 3 there is
-    /// file line 4.
+    /// body line. Both now name the indented fence. The "line 3" prefix counts from the
+    /// first frontmatter line, like every YAML error (golden-locked). The message also
+    /// gives the file line, 4.
     /// </summary>
     [Theory]
     [InlineData("---\ntype: Metric\ntitle: T\n ---\n\n# Heading\n\n---\n\n## Section\ntext\n")]
@@ -1821,7 +1821,7 @@ public class CliTests
         Assert.Equal(1, r.Code);
         Assert.Contains(
             "x.md: unparseable concept document: Invalid YAML in frontmatter: YAML error at line 3: "
-            + "indented frontmatter fence: a `---` line must start at column 0 (§4)",
+            + "indented frontmatter fence: a `---` line must start at column 0 (§4) (file line 4)\n",
             r.Out,
             StringComparison.Ordinal);
     }

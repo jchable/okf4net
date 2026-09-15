@@ -63,7 +63,9 @@ internal static class YamlParser
         // reported instead of the parser's own error, which it usually causes: a
         // mistyped fence typically surfaces as "unexpected indentation" or "expected
         // 'key: value'" on that line or a later one, or as "unterminated flow
-        // sequence" on the line before it, with Pos already on it.
+        // sequence" or an unterminated quoted string on the line before it. Every
+        // path that parses a single-line value (mapping value, sequence item, bare
+        // node) moves Pos past that line first, so Pos is already on the fence.
         // Every line before Pos has been consumed, with block-scalar content marked.
         // The line at Pos cannot be block content either: a failure inside a block
         // scalar is a tab in its indentation, which is never content, and every
@@ -140,7 +142,7 @@ internal static class YamlParser
                 && !blockScalarContent[i]
                 && OkfDocument.IsFenceLine(line.TrimStart(' ', '\t')))
             {
-                throw new YamlParseException(i + 1, IndentedFenceMessage);
+                throw new YamlParseException(i + 1, IndentedFenceMessage) { IsIndentedFence = true };
             }
         }
     }
@@ -382,9 +384,17 @@ internal static class YamlParser
 
             // A bare scalar / flow collection on a single line.
             RejectNodeIndicator(trimmed, Pos);
-            var v = ParseInlineValue(trimmed, Pos);
+
+            // Pos moves past the line BEFORE parsing it, as the mapping-value and
+            // sequence-item paths already do, so a failure here (an unterminated flow
+            // collection or quoted string) leaves Pos on the next line. That lets
+            // Parse's line-level checks reach it, e.g. to name a mistyped fence there.
+            // The reported line is unchanged, since it is passed explicitly, and the
+            // next line cannot be block content, because a bare scalar is never a
+            // block header.
+            var entryLine = Pos;
             Pos++;
-            return v;
+            return ParseInlineValue(trimmed, entryLine);
         }
 
         public YamlValue ParseMapping(int indent)

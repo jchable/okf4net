@@ -264,7 +264,7 @@ public class BundleTests
         var (path, error) = Assert.Single(bundle.ParseErrors);
         Assert.EndsWith("bad.md", path, StringComparison.Ordinal);
         Assert.Equal(
-            "Invalid YAML in frontmatter: YAML error at line 3: indented frontmatter fence: a `---` line must start at column 0 (§4)",
+            "Invalid YAML in frontmatter: YAML error at line 3: indented frontmatter fence: a `---` line must start at column 0 (§4) (file line 4)",
             error);
     }
 

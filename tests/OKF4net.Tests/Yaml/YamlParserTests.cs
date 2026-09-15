@@ -397,6 +397,10 @@ public class YamlParserTests
     [InlineData("k: |\n\t---\n", 2, "indented frontmatter fence")]
     [InlineData("title: T\n ---\n*a: b\n", 2, "indented frontmatter fence")]
     [InlineData("title: T\n ---\n\n%YAML 1.2\n", 2, "indented frontmatter fence")]
+    [InlineData("k:\n  [a,\n  ---\n  b]\n", 3, "indented frontmatter fence")]
+    [InlineData("k:\n  {a: 1,\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("k:\n  \"abc\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("- [a,\n  ---\n", 2, "indented frontmatter fence")]
     public void Unsupported_feature_is_rejected_with_its_line_and_name(string src, int line, string feature)
     {
         var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(src));
@@ -406,6 +410,18 @@ public class YamlParserTests
         {
             Assert.DoesNotContain(other, ex.Message, StringComparison.Ordinal);
         }
+    }
+
+    /// <summary>
+    /// N2: <see cref="YamlValue.Parse"/> knows nothing about a file around its text, so
+    /// its indented-fence message carries no file line. Only
+    /// <see cref="OkfDocument.Parse"/> adds one.
+    /// </summary>
+    [Fact]
+    public void Direct_parse_fence_message_has_no_file_line()
+    {
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse("title: T\n ---\n"));
+        Assert.Equal("YAML error at line 2: indented frontmatter fence: a `---` line must start at column 0 (§4)", ex.Message);
     }
 
     /// <summary>The message names the feature; it never echoes the bundle's own text.</summary>
@@ -495,7 +511,10 @@ public class YamlParserTests
     /// H3 review M1: a quoted scalar followed by anything other than whitespace or a
     /// comment used to have that trailing text silently dropped (<c>k: "a" *b</c> read
     /// as <c>"a"</c>). It is now rejected, like trailing content after a flow
-    /// collection.
+    /// collection. Round 2 (N3) pins two more inputs that used to drop text silently:
+    /// <c>k: "a": b</c> (read as <c>{k: "a"}</c>) and a JSON-style <c>"k":v</c> with no
+    /// space after the colon (read as the scalar <c>"k"</c>, where YAML reads
+    /// <c>{k: v}</c>).
     /// </summary>
     [Theory]
     [InlineData("k: \"a\" *b", 1)]
@@ -508,6 +527,9 @@ public class YamlParserTests
     [InlineData("\"a\" b", 1)]
     [InlineData("type: T\n\"k\" x: v\n", 2)]
     [InlineData("k:\n  \"a\" b\n", 2)]
+    [InlineData("k: \"a\": b", 1)]
+    [InlineData("\"k\":v", 1)]
+    [InlineData("- \"k\":v", 1)]
     public void Content_after_a_quoted_scalar_is_rejected(string src, int line)
     {
         var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(src));

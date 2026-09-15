@@ -165,7 +165,13 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
         }
         catch (YamlParseException e)
         {
-            throw new DocumentParseException($"Invalid YAML in frontmatter: {e.Message}");
+            // YAML error lines count from the first frontmatter line: a golden-locked
+            // format (tests/fixtures/golden/validate-reserved.out), kept byte for byte.
+            // The indented-fence error alone also names the file line. Its purpose is to
+            // point at a mistyped line, and "line N" lands one line above it in the
+            // file. The frontmatter text starts at file line 2, so the file line is N + 1.
+            var fileLine = e.IsIndentedFence ? $" (file line {e.Line + 1})" : string.Empty;
+            throw new DocumentParseException($"Invalid YAML in frontmatter: {e.Message}{fileLine}");
         }
 
         var frontmatter = value switch
