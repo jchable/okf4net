@@ -20,7 +20,9 @@ public static class HtmlWriter
     /// <param name="outDir">The output directory.</param>
     /// <exception cref="ArgumentException">
     /// <paramref name="outDir"/> resolves inside the rendered bundle, which
-    /// would pollute the bundle being viewed; or a page in
+    /// would pollute the bundle being viewed, or cannot be resolved because an
+    /// entry on its path is a link that cannot be followed or could not be
+    /// inspected; or a page in
     /// <paramref name="site"/> carries a <see cref="ViewerPage.RelativeHtmlPath"/>
     /// that resolves outside <paramref name="outDir"/> (e.g. a
     /// <c>../</c>-escaping path on a hand-constructed <see cref="ViewerPage"/>);
@@ -151,12 +153,17 @@ public static class HtmlWriter
     /// follows that redirect and this method also checks the resolved location, so
     /// this only ever ADDS a refusal on top of the lexical check above --
     /// never removes one -- keeping the guard at least as strict as before.
-    /// When that resolution cannot inspect an entry on <c>outDir</c>'s path
-    /// (a junction whose attributes the current user may not read is still
-    /// traversed by the writes that follow), where <c>outDir</c> lands is
-    /// unknown, and this guard refuses with the same error rather than assume
-    /// the lexical path: a guard fails closed (see
-    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>).
+    /// When that resolution cannot inspect an entry on <c>outDir</c>'s path,
+    /// or cannot follow a link on it (a junction whose attributes the current
+    /// user may not read is still traversed by the writes that follow), where
+    /// <c>outDir</c> lands is unknown, and this guard refuses rather than
+    /// assume the lexical path: a guard fails closed (see
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>). That refusal
+    /// has its own message, because "it is inside the bundle" would be a
+    /// diagnosis the guard never made. A path that simply does not exist --
+    /// missing directories, an empty drive, a share that is not there -- is
+    /// not uninspectable and is not refused here: the write that follows
+    /// reports its own, accurate I/O error.
     /// </remarks>
     private static void GuardOutputDirectory(string bundleRoot, string outDir)
     {
@@ -165,15 +172,26 @@ public static class HtmlWriter
 
         const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
 
-        if (ReparsePoints.IsWithin(root, target, comparison)
-            || !ReparsePoints.TryResolveThroughReparsePoints(target, out var resolvedTarget)
-            || ReparsePoints.IsWithin(root, resolvedTarget, comparison))
+        if (ReparsePoints.IsWithin(root, target, comparison))
+        {
+            throw InsideTheBundle(bundleRoot, outDir);
+        }
+
+        if (!ReparsePoints.TryResolveThroughReparsePoints(target, out var resolvedTarget))
         {
             throw new ArgumentException(
-                $"refusing to render into '{outDir}': it is inside the bundle being rendered ('{bundleRoot}')",
+                $"refusing to render into '{outDir}': cannot determine where it resolves (an entry on its path is a link that cannot be followed, or could not be inspected)",
                 nameof(outDir));
         }
+
+        if (ReparsePoints.IsWithin(root, resolvedTarget, comparison))
+        {
+            throw InsideTheBundle(bundleRoot, outDir);
+        }
     }
+
+    private static ArgumentException InsideTheBundle(string bundleRoot, string outDir) =>
+        new($"refusing to render into '{outDir}': it is inside the bundle being rendered ('{bundleRoot}')", nameof(outDir));
 
     private static void WriteAsset(string outDir, string root, HashSet<string> verifiedDirs, string name, string content, List<string> written)
         => WriteFile(outDir, root, verifiedDirs, "assets/" + name, content, written);

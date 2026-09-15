@@ -325,4 +325,47 @@ public class ReparsePointsTests
         Assert.False(ReparsePoints.TryResolveThroughReparsePoints(path, out var resolved));
         Assert.Equal(path, resolved);
     }
+
+    [SkippableFact]
+    public void TryResolveThroughReparsePoints_fails_rather_than_throws_when_a_link_target_cannot_be_read()
+    {
+        // H1 fix round (M2): the junction's attributes are readable (its parent
+        // is listable), so it is classified as a reparse point, but
+        // Directory.ResolveLinkTarget on it throws UnauthorizedAccessException.
+        // A Try method must answer false, not throw.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path, denyParentListing: false);
+        Skip.If(junction is null, "needs Windows (a junction plus a deny ACE)");
+        var path = Path.Combine(junction!.LinkPath, "site");
+
+        Assert.False(ReparsePoints.TryResolveThroughReparsePoints(path, out var resolved));
+        Assert.Equal(path, resolved);
+    }
+
+    [SkippableFact]
+    public void Strict_predicate_is_false_for_a_share_that_does_not_exist()
+    {
+        // H1 fix round (I1): Windows reports a missing share as a plain
+        // IOException (ERROR_BAD_NET_NAME / ERROR_BAD_NETPATH), not a
+        // not-found type. It is absence, not an entry anyone could redirect.
+        Skip.IfNot(OperatingSystem.IsWindows(), "a UNC share path is Windows-only");
+        Assert.StartsWith(new string(Path.DirectorySeparatorChar, 2), AbsentPaths.MissingShareSite, StringComparison.Ordinal); // a UNC path, never a drive-rooted one
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(AbsentPaths.MissingShareSite));
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(AbsentPaths.MissingShareSite, out var resolved));
+        Assert.Equal(AbsentPaths.MissingShareSite, resolved);
+    }
+
+    [SkippableFact]
+    public void Strict_predicate_is_false_for_a_drive_that_holds_no_volume()
+    {
+        // H1 fix round (I1): an empty card reader or optical drive answers
+        // ERROR_NOT_READY, a plain IOException. Absence, not uninspectable.
+        var site = AbsentPaths.SiteOnADriveWithNoVolume();
+        Skip.If(site is null, "no drive without a volume on this machine");
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(site!));
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(site!, out _));
+    }
 }

@@ -417,8 +417,87 @@ public class HtmlWriterTests
         var outDir = Path.Combine(junction!.LinkPath, "site");
 
         var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, outDir));
-        Assert.StartsWith($"refusing to render into '{outDir}': it is inside the bundle being rendered", ex.Message, StringComparison.Ordinal);
+        Assert.StartsWith($"refusing to render into '{outDir}': cannot determine where it resolves", ex.Message, StringComparison.Ordinal);
         Assert.Empty(Directory.EnumerateFileSystemEntries(insideBundle));
+    }
+
+    [SkippableFact]
+    public void Write_refuses_an_out_dir_through_a_junction_whose_target_cannot_be_read()
+    {
+        // H1 fix round (M2): "vlink"'s attributes are readable (its parent is
+        // listable), so it is seen as a link, but its target cannot be read --
+        // Directory.ResolveLinkTarget throws UnauthorizedAccessException.
+        // Before, that exception escaped HtmlWriter.Write undocumented; now
+        // the resolution fails and the guard refuses with its own message.
+        using var src = new TempDir();
+        using var linkHost = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+        var insideBundle = Path.Combine(src.Path, "generated-site");
+        Directory.CreateDirectory(insideBundle);
+        using var junction = linkHost.TryCreateUninspectableJunction("vlink", insideBundle, denyParentListing: false);
+        Skip.If(junction is null, "needs Windows (a junction plus a deny ACE)");
+        var outDir = Path.Combine(junction!.LinkPath, "site");
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, outDir));
+        Assert.StartsWith($"refusing to render into '{outDir}': cannot determine where it resolves", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(insideBundle));
+    }
+
+    [SkippableFact]
+    public void Write_to_an_out_dir_on_a_share_that_does_not_exist_reports_the_io_error_not_the_bundle_guard()
+    {
+        // H1 fix round (I1): a missing share is absence, not an uninspectable
+        // entry. The guard must not answer "it is inside the bundle being
+        // rendered"; the write reports Windows' own error (network name not
+        // found), as it did before the strict predicate.
+        Skip.IfNot(OperatingSystem.IsWindows(), "a UNC share path is Windows-only");
+        Assert.StartsWith(new string(Path.DirectorySeparatorChar, 2), AbsentPaths.MissingShareSite, StringComparison.Ordinal); // a UNC path, never a drive-rooted one
+        using var src = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+
+        var ex = Assert.ThrowsAny<IOException>(() => HtmlWriter.Write(site, AbsentPaths.MissingShareSite));
+        Assert.DoesNotContain("refusing to render", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Write_to_an_out_dir_on_a_drive_with_no_volume_reports_the_io_error_not_the_bundle_guard()
+    {
+        // H1 fix round (I1): `okf-render --out F:\site` on an empty drive
+        // reported "it is inside the bundle being rendered". It must report
+        // the device-not-ready error instead.
+        var outDir = AbsentPaths.SiteOnADriveWithNoVolume();
+        Skip.If(outDir is null, "no drive without a volume on this machine");
+        using var src = new TempDir();
+        var site = SiteModel.Build(SampleBundle(src));
+
+        var ex = Assert.ThrowsAny<IOException>(() => HtmlWriter.Write(site, outDir!));
+        Assert.DoesNotContain("refusing to render", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Write_refuses_a_page_file_that_is_an_uninspectable_junction_in_an_already_cached_directory()
+    {
+        // H1 fix round (M1): "dd/a.html" is written first, so "dd" is cached as
+        // verified; "dd/c.html" is then a junction named like the page, whose
+        // attributes cannot be read ("dd" denies listing). Only the per-file
+        // strict check can refuse it -- the cached directory's walk is
+        // skipped. The OS would refuse the write anyway (it is a directory),
+        // so this pins the guard, not an escape: the refusal must be the
+        // guard's ArgumentException, not the write's UnauthorizedAccessException.
+        using var src = new TempDir();
+        using var dest = new TempDir();
+        using var external = new TempDir();
+        Directory.CreateDirectory(Path.Combine(dest.Path, "dd"));
+        using var junction = dest.TryCreateUninspectableJunction(Path.Combine("dd", "c.html"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var first = new ViewerPage(ConceptId.Parse("dd/a"), "A", "dd/a.html", [], "body", [], []);
+        var second = new ViewerPage(ConceptId.Parse("dd/c"), "C", "dd/c.html", [], "body", [], []);
+        var site = new ViewerSite(src.Path, [first, second], string.Empty, []);
+
+        var ex = Assert.Throws<ArgumentException>(() => HtmlWriter.Write(site, dest.Path));
+        Assert.StartsWith("refusing to write 'dd/c.html'", ex.Message, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(dest.Path, "dd", "a.html")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
     }
 
     [Fact]

@@ -247,4 +247,29 @@ public class CatalogPathSafetyTests
         Assert.Null(diagnostic);
         Assert.Equal(Path.GetFullPath(Path.Combine(catalogRoot, "docs")), resolved);
     }
+
+
+    // ----------------------------------------------------------------
+    // H1 fix round, decision (b): an existing source path below a
+    // junction whose attributes cannot be read ("x/y", with "x" denying
+    // listing) is refused as ReparsePointInPath -- the lenient walk
+    // approved it. Windows only (a junction plus deny ACEs).
+    // ----------------------------------------------------------------
+    [SkippableFact]
+    public void Rejects_an_uninspectable_ancestor_within_root()
+    {
+        using var tmp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        using var external = new TempDir();
+        Directory.CreateDirectory(Path.Combine(external.Path, "inner"));
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var ok = CatalogPathResolver.TryResolve(
+            tmp.Path, tmp.Path, Path.Combine("x", "y", "inner"), out var resolved, out var diagnostic);
+
+        Assert.False(ok);
+        Assert.Null(resolved);
+        Assert.Equal(CatalogDiagnosticCode.ReparsePointInPath, diagnostic!.Code);
+    }
 }

@@ -428,6 +428,12 @@ public class IndexTests
         // which sorts after "x/y" at the same depth: "x" itself is indexed
         // last, and a directory it cannot list would abort the run for a
         // reason that has nothing to do with the guard under test.
+        //
+        // The skip decision comes FIRST, before anything the hook does: off
+        // Windows (or when the deny setup does not take), the hook would
+        // otherwise delete "x/y" and leave RegenerateIndexes writing into a
+        // directory that no longer exists -- a crash, not a skip.
+        Skip.IfNot(OperatingSystem.IsWindows(), "needs Windows (a junction plus deny ACEs)");
         using var tmp = new TempDir();
         WriteDoc(tmp, "x/y/a.md", "BigQuery Dataset", "A", "desc");
         WriteDoc(tmp, "x/zz/b.md", "BigQuery Dataset", "B", "desc");
@@ -442,6 +448,12 @@ public class IndexTests
             {
                 Directory.Delete(swapped, recursive: true);
                 junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+                if (junction is null)
+                {
+                    // Setup failed: put a plain directory back so the run
+                    // completes, and let the skip below report it.
+                    Directory.CreateDirectory(swapped);
+                }
             }
             else if (string.Equals(directory, later, StringComparison.Ordinal))
             {
@@ -453,10 +465,51 @@ public class IndexTests
         {
             var written = IndexGenerator.RegenerateIndexes(tmp.Path);
 
-            Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+            Skip.If(junction is null, "the junction's deny ACEs could not be set up on this machine");
             Assert.DoesNotContain(Path.Combine(swapped, "index.md"), written);
             Assert.Contains(Path.Combine(later, "index.md"), written);
             Assert.False(File.Exists(Path.Combine(external.Path, "index.md")));
+        }
+        finally
+        {
+            IndexGenerator.BeforeLateReparseCheckForTest = null;
+            junction?.Dispose();
+        }
+    }
+
+    [SkippableFact]
+    public void Index_write_is_skipped_for_an_index_file_swapped_for_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // H1 fix round (M1): right before "d"'s late checks, the seam plants a
+        // junction named "d/index.md" whose attributes cannot be read ("d"
+        // denies listing; "d" itself stays readable, so the ancestor check
+        // passes). Only the check on the index.md FILE node can skip it. (Not
+        // an escape: without that check the OS refuses to write a file over a
+        // directory, and the run throws.) Skipped before anything runs off
+        // Windows.
+        Skip.IfNot(OperatingSystem.IsWindows(), "needs Windows (a junction plus deny ACEs)");
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "d/a.md", "BigQuery Dataset", "A", "desc");
+        using var external = new TempDir();
+
+        var dir = Path.Combine(tmp.Path, "d");
+        UninspectableJunction? junction = null;
+        IndexGenerator.BeforeLateReparseCheckForTest = directory =>
+        {
+            if (string.Equals(directory, dir, StringComparison.Ordinal))
+            {
+                junction = tmp.TryCreateUninspectableJunction(Path.Combine("d", "index.md"), external.Path);
+            }
+        };
+
+        try
+        {
+            var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+
+            Skip.If(junction is null, "the junction's deny ACEs could not be set up on this machine");
+            Assert.DoesNotContain(Path.Combine(dir, "index.md"), written);
+            Assert.Contains(Path.Combine(tmp.Path, "index.md"), written);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
         }
         finally
         {

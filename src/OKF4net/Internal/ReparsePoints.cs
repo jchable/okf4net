@@ -31,7 +31,7 @@ internal static class ReparsePoints
     /// </summary>
     private enum EntryState
     {
-        /// <summary>No entry exists at the path (or at one of its parents).</summary>
+        /// <summary>No entry exists at the path (nor at one of its parents, nor a volume or share to hold it).</summary>
         Absent,
 
         /// <summary>A plain file or directory, not itself a link.</summary>
@@ -61,12 +61,11 @@ internal static class ReparsePoints
     /// the links among them (<c>Bundle</c>'s and <c>IndexGenerator</c>'s
     /// <c>CollectMarkdown</c>, <c>IndexGenerator</c>'s per-child skip) or
     /// reports on what it sees (<c>Bundle.TryResolveResource</c>'s status,
-    /// which <c>okf validate</c> reports; <c>CatalogPathResolver</c>'s
-    /// diagnostics). Those two also gate reads -- <c>TryResolveResource</c>
-    /// guards <c>ReadResourceText</c> for the agent tools and attestation, and
-    /// a catalog source path is then loaded -- and keep this predicate
-    /// anyway, by decision, so what validation and catalog loading report
-    /// does not change. A walk fails OPEN on an
+    /// which <c>okf validate</c> reports). That status also precedes a read,
+    /// so the read re-checks strictly instead: <c>Bundle.ReadResourceText</c>
+    /// refuses a resolved path that is, or sits below, a reparse point or an
+    /// uninspectable entry, and what validation reports stays unchanged. A
+    /// walk fails OPEN on an
     /// entry it cannot inspect because refusing there changes what a bundle
     /// loads or what <c>okf validate</c> reports, for a failure that is the
     /// filesystem's, not the bundle's. A GUARD -- code that refuses or allows
@@ -110,6 +109,26 @@ internal static class ReparsePoints
     /// one whose parent denies search, so the write that follows fails too;
     /// the two predicates differ there only in which error the caller reports.
     ///
+    /// Absence counts even when Windows reports it as a plain
+    /// <see cref="IOException"/> rather than a not-found type: a drive that
+    /// holds no volume (<c>ERROR_NOT_READY</c>, e.g. an empty card reader or
+    /// optical drive), a share that does not exist
+    /// (<c>ERROR_BAD_NET_NAME</c>) and a server that cannot be found
+    /// (<c>ERROR_BAD_NETPATH</c>) -- all measured. Nothing exists at such a
+    /// path and nothing can be created there, so it is not an entry anyone
+    /// could redirect; refusing it would only replace the caller's own,
+    /// accurate I/O error (for <c>okf-render --out F:\site</c>, "the device is
+    /// not ready") with a false guard diagnosis.
+    ///
+    /// Everything else that is not a not-found is uninspectable, including
+    /// failures that have nothing to do with links: an ACL that denies
+    /// reading attributes on a plain directory, an invalid name (Windows
+    /// <c>nul</c>, <c>a&lt;b</c>) or an over-long component. A guard refuses
+    /// those too -- it cannot tell them from a link it may not read -- which
+    /// is why a guard refusal that names a reparse point also says "or an
+    /// entry that could not be inspected" rather than naming a link it has
+    /// not seen.
+    ///
     /// Walks keep <see cref="IsReparsePoint"/> -- see its remarks for why.
     /// </remarks>
     internal static bool IsReparsePointOrUninspectable(string path) => Inspect(path) is EntryState.ReparsePoint or EntryState.Uninspectable;
@@ -143,7 +162,7 @@ internal static class ReparsePoints
                 ? EntryState.ReparsePoint
                 : EntryState.Plain;
         }
-        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException || IsAbsentVolumeOrShare(e))
         {
             return EntryState.Absent;
         }
@@ -152,6 +171,25 @@ internal static class ReparsePoints
             return EntryState.Uninspectable;
         }
     }
+
+    /// <summary>HRESULT of a Win32 <c>ERROR_NOT_READY</c> (21): the drive holds no volume.</summary>
+    private const int HResultNotReady = unchecked((int)0x80070015);
+
+    /// <summary>HRESULT of a Win32 <c>ERROR_BAD_NETPATH</c> (53): the network path (server) was not found.</summary>
+    private const int HResultBadNetPath = unchecked((int)0x80070035);
+
+    /// <summary>HRESULT of a Win32 <c>ERROR_BAD_NET_NAME</c> (67): the network name (share) was not found.</summary>
+    private const int HResultBadNetName = unchecked((int)0x80070043);
+
+    /// <summary>
+    /// <c>true</c> for the Windows I/O errors that mean "nothing is there" but
+    /// arrive as a plain <see cref="IOException"/> -- see
+    /// <see cref="IsReparsePointOrUninspectable"/>'s remarks. Matched on the
+    /// exact type, so no <see cref="IOException"/> subclass carrying one of
+    /// these codes for another reason is swept in.
+    /// </summary>
+    private static bool IsAbsentVolumeOrShare(Exception e) =>
+        e.GetType() == typeof(IOException) && e.HResult is HResultNotReady or HResultBadNetPath or HResultBadNetName;
 
     /// <summary>
     /// Resolves <paramref name="root"/> to a full path with any trailing
@@ -421,7 +459,9 @@ internal static class ReparsePoints
     /// <returns>
     /// <see langword="false"/> -- with <paramref name="resolved"/> set to
     /// <paramref name="path"/>, which the caller must not trust -- if an entry
-    /// on the walk could not be inspected (see
+    /// on the walk could not be inspected, or a link on it could not be
+    /// followed (<see cref="Directory.ResolveLinkTarget(string, bool)"/> threw:
+    /// a junction whose attributes are readable but whose target is not) (see
     /// <see cref="IsReparsePointOrUninspectable"/>): whether it redirects the
     /// path, and where to, is unknown. This resolution backs a GUARD
     /// (<c>HtmlWriter.GuardOutputDirectory</c>), so it fails closed and lets
@@ -478,7 +518,22 @@ internal static class ReparsePoints
 
             if (state == EntryState.ReparsePoint)
             {
-                var resolvedTarget = Directory.ResolveLinkTarget(current, returnFinalTarget: true);
+                FileSystemInfo? resolvedTarget;
+                try
+                {
+                    resolvedTarget = Directory.ResolveLinkTarget(current, returnFinalTarget: true);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    // A link whose attributes are readable but whose target
+                    // cannot be read (measured: a junction carrying a
+                    // deny-ReadAttributes ACE under a listable parent). Where
+                    // it leads is unknown -- the same answer as an
+                    // uninspectable entry, so the same refusal, not a throw
+                    // out of a Try method.
+                    return false;
+                }
+
                 if (resolvedTarget is null)
                 {
                     // A reparse point with no link target (see remarks):

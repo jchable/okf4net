@@ -445,7 +445,7 @@ public class FileMemoryStoreTests
         var write = await store.WriteAsync(scope, Entry("secret"), MemoryTier.User);
 
         Assert.False(write.Written);
-        Assert.Contains("resolves through a reparse point (symlink/junction) inside the bundle", write.Error);
+        Assert.Contains("resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle", write.Error);
         Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
     }
 
@@ -469,7 +469,7 @@ public class FileMemoryStoreTests
         var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
 
         Assert.Equal(0, delete.TiersDeleted);
-        Assert.Equal("Memory tier 'User' path is a reparse point; refusing to delete.", delete.Error);
+        Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete.", delete.Error);
         Assert.True(File.Exists(outsideFile));
     }
 }

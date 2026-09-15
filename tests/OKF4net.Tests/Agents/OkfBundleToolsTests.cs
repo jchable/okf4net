@@ -358,4 +358,80 @@ public class OkfBundleToolsTests
 
         Assert.Equal("Error: path 'x/y/z' not found in the bundle. Use okf_browse to list available directories.", result);
     }
+
+    [SkippableFact]
+    public void GetComputation_refuses_a_computation_file_reached_through_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // H1 fix round, decision (a): the reviewer's P-scenario. The bundle is
+        // loaded (and cached) BEFORE the junction exists -- a fresh load could
+        // not list "x" once it denies listing -- exactly as a long-lived
+        // okf-mcp instance holds it. "x/y" then becomes a junction to
+        // `external` whose attributes cannot be read. TryResolveResource keeps
+        // the lenient predicate (okf validate must not change) and still
+        // answers Resolved; the read itself must re-check strictly and refuse
+        // through okf_get_computation's existing "could not be read" path. On
+        // 7ee7287 the tool returned the file's content from outside the bundle.
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: x/y/secret.sql\n---\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        var tools = new OkfBundleTools(tmp.Path);
+        Assert.Contains("could not be resolved (Missing)", tools.GetComputation("c/rev"));
+        using var external = new TempDir();
+        external.Write("secret.sql", "SELECT 'OUTSIDE-THE-BUNDLE'\n");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var result = tools.GetComputation("c/rev");
+
+        Assert.DoesNotContain("OUTSIDE-THE-BUNDLE", result, StringComparison.Ordinal);
+        Assert.Contains("Error: computation file 'x/y/secret.sql' could not be read: ", result, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void AppendLog_refuses_a_log_file_that_is_an_uninspectable_junction()
+    {
+        // H1 fix round (M1): "log.md" is a junction named like the log, whose
+        // attributes cannot be read (the bundle root denies listing). Only the
+        // early check on log.md itself refuses it with this message. (Not an
+        // escape: without it the late strict check, or the OS refusing to write
+        // a file over a directory, still refuses.)
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path);
+        using var junction = tmp.TryCreateUninspectableJunction("log.md", external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var result = tools.AppendLog("Update", "entry");
+
+        Assert.Equal("Error: log.md is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to write through it.", result);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+    }
+
+    [SkippableFact]
+    public void AppendLog_late_guard_refuses_a_log_file_swapped_for_an_uninspectable_junction()
+    {
+        // H1 fix round (M1): nothing is at "log.md" when the early check runs;
+        // the seam then plants an uninspectable junction named like it. Only
+        // the late check on log.md itself refuses with this message. Skipped
+        // before anything runs off Windows.
+        Skip.IfNot(OperatingSystem.IsWindows(), "needs Windows (a junction plus deny ACEs)");
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path);
+        UninspectableJunction? junction = null;
+        tools.BeforeLateReparseCheckForTest = () => junction = tmp.TryCreateUninspectableJunction("log.md", external.Path);
+
+        try
+        {
+            var result = tools.AppendLog("Update", "entry");
+
+            Skip.If(junction is null, "the junction's deny ACEs could not be set up on this machine");
+            Assert.Equal("Error: log.md resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.", result);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+        }
+        finally
+        {
+            junction?.Dispose();
+        }
+    }
 }

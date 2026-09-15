@@ -1294,21 +1294,52 @@ and this project adheres to
 - **Link guards now refuse an entry whose link status cannot be inspected**,
   instead of treating it as a plain directory. A junction carrying a
   deny-ReadAttributes ACE, under a parent that denies listing, makes reading
-  its attributes fail while the OS still traverses it on the write that
-  follows; the shared predicate answered "not a link", and `okf-render` wrote
-  `x/y/z/two.html` outside `--out` (executed, not hypothesised). The fix is a
-  strict variant for guards only: render output (`--out` resolution and every
-  file written), concept writes (`BundleConceptWriter`, hence `okf verify`,
-  `okf_write_concept` and the catalog's memory writes), `log.md`
-  (`okf_append_log`), index writes, `okf_browse`, and the catalog memory
-  store's read, enumerate and recursive delete of a scope directory. Walks
-  keep the lenient predicate, so what a bundle loads, what an `index.md`
-  lists, what `okf validate` reports (§6.2 resource status) and what a catalog
-  reports do not change. An entry that does not exist yet is still allowed,
-  so new files and subdirectories are unaffected; error messages are
-  unchanged. Not a spec behaviour: the OKF spec says nothing about filesystem
-  links — this is the host's guarantee that a bundle-relative write stays in
-  the bundle (§3) or in the output directory it was given.
+  its attributes fail while the OS still traverses it on the write or read
+  that follows; the shared predicate answered "not a link", and `okf-render`
+  wrote `x/y/z/two.html` outside `--out` (executed, not hypothesised). The
+  fix is a strict variant for guards:
+  - render output: `--out` resolution and every file written;
+  - concept writes (`BundleConceptWriter`, hence `okf verify`,
+    `okf_write_concept` and memory writes), `log.md` (`okf_append_log`),
+    index writes and `okf_browse`;
+  - the memory store's read, enumerate and recursive delete of a scope
+    directory;
+  - **catalog source paths** (`CatalogPathResolver`): a knowledge source or a
+    memory tier root reached through such a junction is now refused as
+    `ReparsePointInPath`, which the catalog reports fail-fast. Before, a
+    knowledge search returned a passage from outside the catalog root, and a
+    memory tier wrote into, and recursively deleted, a directory outside it.
+    An ordinary catalog's diagnostics do not change: a path that does not
+    exist is still `TargetNotFound`;
+  - **resource reads**: `Bundle.ReadResourceText` now re-checks the path it is
+    given, strictly, right before reading — it must be inside the bundle root,
+    with no reparse point or uninspectable entry on the way — and throws
+    `UnauthorizedAccessException` otherwise. `okf_get_computation` and the
+    attestation orchestrator's computation and attester reads report that
+    through their existing "could not be read" errors; before,
+    `okf_get_computation` returned a file from outside the bundle held by a
+    long-lived tool instance. `Bundle.TryResolveResource` is unchanged, so
+    what `okf validate` reports (§6.2 resource status) does not change.
+
+  Walks keep the lenient predicate, so what a bundle loads and what an
+  `index.md` lists do not change. An entry that does not exist is still
+  allowed — new files and subdirectories, and equally an empty drive or a
+  missing network share, whose own I/O error is reported as before
+  (`okf-render --out F:\site` on an empty drive says the device is not
+  ready, not that the path is inside the bundle).
+
+  **Changed messages.** The existing refusals that named a reparse point now
+  say "a reparse point (symlink/junction), or an entry that could not be
+  inspected" (`BundleConceptWriter`, `okf_append_log`, the memory store,
+  `CatalogPathResolver`), since an ACL-protected plain directory or an invalid
+  name such as `nul` is refused the same way. `okf-render` has one new
+  refusal, "cannot determine where it resolves", for an `--out` path whose
+  link cannot be followed or inspected. `HtmlWriter.Write` no longer lets an
+  `UnauthorizedAccessException` from resolving `--out` through such a link
+  escape; it refuses with that message instead. Not a spec behaviour: the OKF
+  spec says nothing about filesystem links — this is the host's guarantee that a bundle-relative
+  read or write stays in the bundle (§3), the catalog root or the output
+  directory it was given.
 
 ## [0.5.0] - 2026-07-31
 

@@ -879,7 +879,7 @@ public sealed class OkfBundleTools
             // see ReparsePoints.IsReparsePointOrUninspectable).
             if (ReparsePoints.IsReparsePointOrUninspectable(logPath) || ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, BundleRoot))
             {
-                return "Error: log.md is a reparse point (symlink/junction), not a regular file -- refusing to write through it.";
+                return "Error: log.md is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to write through it.";
             }
 
             var today = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -935,7 +935,7 @@ public sealed class OkfBundleTools
                 if ((!string.IsNullOrEmpty(logParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, logParentDir))
                     || ReparsePoints.IsReparsePointOrUninspectable(logPath))
                 {
-                    return "Error: log.md resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+                    return "Error: log.md resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
                 }
 
                 File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), OkfEncodings.NoBom);

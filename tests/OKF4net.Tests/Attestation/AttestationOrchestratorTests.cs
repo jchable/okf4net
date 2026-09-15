@@ -1043,4 +1043,78 @@ public class AttestationOrchestratorTests
         Assert.True(outcome.Displayable);
         Assert.Null(captured!.AttesterSourceText);
     }
+
+    /// <summary>
+    /// H1 fix round, decision (a): the orchestrator's computation-file read re-checks the
+    /// resolved path strictly. The bundle is loaded BEFORE "x/y" becomes a junction to an
+    /// external directory whose attributes cannot be read (a fresh load could not list "x"
+    /// once it denies listing), exactly as a host holding a loaded <see cref="Bundle"/> would.
+    /// <see cref="Bundle.TryResolveResource"/> keeps the lenient predicate and answers
+    /// Resolved; the read must refuse through the orchestrator's existing "could not be read"
+    /// path, before the executor ever sees the text. On 7ee7287 it bound the outside file.
+    /// </summary>
+    [SkippableFact]
+    public async Task Computation_file_reached_through_an_uninspectable_junction_is_refused_before_binding()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: x/y/secret.sql\n" +
+            "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmp.Path, "x"));
+        var bundle = Bundle.Load(tmp.Path);
+        using var external = new TempDir();
+        external.Write("secret.sql", "SELECT 'OUTSIDE-THE-BUNDLE';\n");
+        using var junction = tmp.TryCreateUninspectableJunction(System.IO.Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        string? capturedText = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (contract, computation, values, ct) =>
+        {
+            capturedText = computation.InlineCode;
+            return ValueTask.FromResult(new BoundComputation(contract.Runtime ?? "bigquery", computation.InlineCode, null, values));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var outcome = await new AttestationOrchestrator(reg).RunAsync(bundle, ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
+
+        Assert.False(outcome.Displayable);
+        Assert.Null(capturedText);
+        Assert.Contains(outcome.Reasons, r => r.Contains("computation file 'x/y/secret.sql' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// H1 fix round, decision (a): the same strict re-check on the attester source read.
+    /// The attester must never be called with a script read from outside the bundle.
+    /// </summary>
+    [SkippableFact]
+    public async Task Attester_source_reached_through_an_uninspectable_junction_is_refused_without_calling_the_attester()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "parameters:\n  - { name: year, type: integer, required: true }\n" +
+            "executor: { receipt: [job_id, result] }\n" +
+            "attester: { resource: x/y/att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmp.Path, "x"));
+        var bundle = Bundle.Load(tmp.Path);
+        using var external = new TempDir();
+        external.Write("att.py", "def attest(**_):\n    return {}  # OUTSIDE-THE-BUNDLE\n");
+        using var junction = tmp.TryCreateUninspectableJunction(System.IO.Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        AttestationContext? captured = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (ctx, _) =>
+        {
+            captured = ctx;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var outcome = await orch.RunAsync(bundle, ConceptId.Parse("c/rev"), new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.False(outcome.Displayable);
+        Assert.Null(captured);
+        Assert.Contains(outcome.Reasons, r => r.Contains("attester resource 'x/y/att.py' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
+    }
 }

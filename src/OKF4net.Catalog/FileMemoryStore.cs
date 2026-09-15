@@ -66,7 +66,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
             if (IsReparseEscaped(root, subDir))
             {
-                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' path is a reparse point; refusing to read."));
+                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' path is a reparse point or could not be inspected; refusing to read."));
                 continue;
             }
 
@@ -153,7 +153,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
             if (IsReparseEscaped(root, subDir))
             {
-                errors.Add($"Memory tier '{currentTier}' path is a reparse point; refusing to delete.");
+                errors.Add($"Memory tier '{currentTier}' path is a reparse point or could not be inspected; refusing to delete.");
                 continue;
             }
 

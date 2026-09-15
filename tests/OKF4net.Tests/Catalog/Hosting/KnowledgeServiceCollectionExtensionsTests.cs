@@ -427,4 +427,48 @@ public class KnowledgeServiceCollectionExtensionsTests
         Assert.NotEmpty(context.Passages);
         Assert.All(context.Passages, p => Assert.Equal("hi", p.SourceId));
     }
+
+
+    /// <summary>
+    /// H1 fix round, decision (b): a knowledge source whose path crosses "x/y", a junction
+    /// to a directory OUTSIDE the catalog root whose attributes cannot be read ("x" denies
+    /// listing). <see cref="CatalogPathResolver"/>'s lenient walk approved it and the search
+    /// returned a passage read from outside the catalog root. The strict walk refuses the
+    /// source (<see cref="CatalogDiagnosticCode.ReparsePointInPath"/>), which the catalog
+    /// surfaces fail-fast as a <see cref="CatalogException"/> on first resolve, so nothing from
+    /// outside is ever loaded. The lenient build did not throw; the search then asserts, and
+    /// fails on, the outside passage.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_knowledge_source_reached_through_an_uninspectable_junction_is_never_searched()
+    {
+        using var root = new TempDir();
+        Directory.CreateDirectory(Path.Combine(root.Path, "x"));
+        var catalogPath = root.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "kb", "path": "./x/y/kb", "role": "knowledge" }
+              ]
+            }
+            """);
+        using var external = new TempDir();
+        external.Write(Path.Combine("kb", "secret.md"), "---\ntype: Note\ntitle: Secret\ndescription: zanzibarquux\n---\nzanzibarquux OUTSIDE-THE-CATALOG\n");
+        using var junction = root.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o => o.AddCatalogFile(catalogPath));
+        using var provider = services.BuildServiceProvider();
+        IKnowledgeResolver? resolver = null;
+        var error = Record.Exception(() => resolver = provider.GetRequiredService<IKnowledgeResolver>());
+        if (error is null)
+        {
+            var context = await resolver!.SearchAsync(new KnowledgeQuery("zanzibarquux"));
+            Assert.Empty(context.Passages);
+        }
+
+        var catalogError = Assert.IsType<CatalogException>(error);
+        Assert.Contains("or an entry that could not be inspected", catalogError.Message, StringComparison.Ordinal);
+    }
 }

@@ -451,4 +451,48 @@ public class FrontmatterResourceTests
         Assert.Equal(ResourceResolutionStatus.Resolved, status);
         Assert.Equal("SELECT 1\n", bundle.ReadResourceText(abs!));
     }
+
+
+    /// <summary>
+    /// H1 fix round, decision (a): <see cref="Bundle.ReadResourceText"/> re-checks the path
+    /// it is given, so a path outside the bundle root is refused even when a caller hands it
+    /// one directly -- the containment half of the strict re-check, portable.
+    /// </summary>
+    [Fact]
+    public void ReadResourceText_refuses_a_path_outside_the_bundle_root()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\ncomputation: ./q.sql\n---\n");
+        using var outside = new TempDir();
+        var secret = outside.Write("secret.sql", "SELECT 'OUTSIDE-THE-BUNDLE'\n");
+        var bundle = Bundle.Load(tmp.Path);
+
+        var ex = Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(secret));
+        Assert.DoesNotContain("OUTSIDE-THE-BUNDLE", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// H1 fix round, decision (a): the uninspectable half. <see cref="Bundle.TryResolveResource"/>
+    /// stays lenient -- its status is what <c>okf validate</c> reports -- and still answers
+    /// Resolved for a file below "x/y", a junction whose attributes cannot be read; the read
+    /// refuses. The bundle is loaded before the junction exists (a fresh load could not list
+    /// "x" once it denies listing).
+    /// </summary>
+    [SkippableFact]
+    public void ReadResourceText_refuses_a_resolved_path_below_an_uninspectable_junction_while_resolution_is_unchanged()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/comp.md", "---\ntype: Attested Computation\ncomputation: x/y/q.sql\n---\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = bundle.Concepts.Single();
+        using var external = new TempDir();
+        external.Write("q.sql", "SELECT 'OUTSIDE-THE-BUNDLE'\n");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        Assert.True(bundle.TryResolveResource(concept, "x/y/q.sql", out var abs, out var status));
+        Assert.Equal(ResourceResolutionStatus.Resolved, status);
+        Assert.Throws<UnauthorizedAccessException>(() => bundle.ReadResourceText(abs!));
+    }
 }

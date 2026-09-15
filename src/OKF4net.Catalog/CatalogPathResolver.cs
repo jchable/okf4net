@@ -17,7 +17,7 @@ namespace OKF4net.Catalog;
 /// make the OS silently follow the link out of the root the moment anything actually
 /// touches disk. This mirrors the containment convention <see cref="ReparsePoints.IsWithinBundleRoot"/>
 /// uses for bundle roots, and reuses the same shared <see cref="ReparsePoints.IsWithin"/>
-/// and <see cref="ReparsePoints.HasReparsePointAncestor(string, string, System.StringComparison)"/>
+/// and <see cref="ReparsePoints.HasReparsePointOrUninspectableAncestor(string, string, System.StringComparison)"/>
 /// core helpers those use for
 /// containment and reparse-point-ancestor detection (via <c>OKF4net</c>'s
 /// <c>InternalsVisibleTo</c> grant to this assembly) rather than duplicating a second,
@@ -81,7 +81,7 @@ public static class CatalogPathResolver
     /// <summary>
     /// Resolves <paramref name="sourcePath"/> relative to <paramref name="manifestDirectory"/>,
     /// canonicalizes it, and confirms it stays at/below <paramref name="catalogRoot"/> with
-    /// no reparse-point ancestor and no reparse-point target. Returns the resolved absolute
+    /// no reparse-point (or uninspectable) ancestor and no reparse-point target. Returns the resolved absolute
     /// directory, or a diagnostic explaining the rejection. Never throws.
     /// </summary>
     /// <param name="catalogRoot">The catalog's configured root directory.</param>
@@ -161,7 +161,7 @@ public static class CatalogPathResolver
         {
             diagnostic = new CatalogDiagnostic(
                 CatalogDiagnosticCode.ReparsePointInPath,
-                $"Source path '{sourcePath}' resolves through a reparse point (symlink/junction) at or above '{resolved}'.");
+                $"Source path '{sourcePath}' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, at or above '{resolved}'.");
             return false;
         }
 
@@ -185,9 +185,9 @@ public static class CatalogPathResolver
 
     /// <summary>
     /// <c>true</c> if <paramref name="path"/> itself, or any directory strictly between it
-    /// and <paramref name="root"/>, is a filesystem reparse point -- checked via
-    /// <see cref="ReparsePoints.IsReparsePoint"/>, which reports the entry's own type
-    /// (lstat-like) without following it.
+    /// and <paramref name="root"/>, is a filesystem reparse point OR cannot be inspected --
+    /// checked via <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>, which reports
+    /// the entry's own type (lstat-like) without following it.
     ///
     /// <paramref name="root"/> itself is deliberately exempt from this walk: a
     /// symlinked/mounted catalog root is a legitimate, explicit operator choice (symlinked
@@ -203,11 +203,18 @@ public static class CatalogPathResolver
     /// <paramref name="root"/> cannot stop the walk early and skip inspection
     /// of a planted reparse point.
     ///
-    /// Deliberately the LENIENT walk (an entry whose link status cannot be read counts as
-    /// "not a link"): what it answers is a catalog-load diagnostic, and loading keeps the
-    /// lenient predicate so what a catalog reports does not change -- see
-    /// <see cref="ReparsePoints.IsReparsePoint"/>'s remarks for the polarity rule.
+    /// The STRICT walk, because this is a GUARD, not a report: the directory it approves is
+    /// what the catalog then reads as knowledge (<c>OkfBundleKnowledgeSource</c>) and what a
+    /// memory tier writes into and recursively deletes (<c>AddMemory</c> takes each tier
+    /// root from <see cref="TryResolve"/>, and <c>FileMemoryStore</c>'s own walk stops at
+    /// that root). A junction whose attributes cannot be read, under a parent that denies
+    /// listing, was measured letting all three land outside the catalog root. An ordinary
+    /// catalog's diagnostics do not change: <see cref="Directory.Exists(string)"/> runs
+    /// first, so a path that does not exist is still <see cref="CatalogDiagnosticCode.TargetNotFound"/>,
+    /// and only an existing path with an entry that cannot be inspected on the way up is
+    /// newly <see cref="CatalogDiagnosticCode.ReparsePointInPath"/>. See
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>'s remarks for the polarity rule.
     /// </summary>
     private static bool HasReparsePointInPath(string root, string path) =>
-        ReparsePoints.HasReparsePointAncestor(root, path, ContainmentComparison);
+        ReparsePoints.HasReparsePointOrUninspectableAncestor(root, path, ContainmentComparison);
 }

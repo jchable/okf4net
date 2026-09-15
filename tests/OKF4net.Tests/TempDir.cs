@@ -242,7 +242,18 @@ public sealed class TempDir : IDisposable
     /// whose listing is denied, and on Windows does not reliably remove a
     /// junction by recursion either.
     /// </returns>
-    public UninspectableJunction? TryCreateUninspectableJunction(string relativeLink, string externalTarget)
+    /// <param name="relativeLink">The junction's path, relative to the temp root.</param>
+    /// <param name="externalTarget">The absolute directory the junction points at.</param>
+    /// <param name="denyParentListing">
+    /// <see langword="true"/> (the default) for the uninspectable junction
+    /// described above. <see langword="false"/> keeps the parent listable, so
+    /// the junction's attributes stay readable (it is still reported as a
+    /// reparse point) while its TARGET cannot be read:
+    /// <see cref="Directory.ResolveLinkTarget(string, bool)"/> throws
+    /// <see cref="UnauthorizedAccessException"/> -- also verified before
+    /// returning.
+    /// </param>
+    public UninspectableJunction? TryCreateUninspectableJunction(string relativeLink, string externalTarget, bool denyParentListing = true)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -254,7 +265,7 @@ public sealed class TempDir : IDisposable
             return null;
         }
 
-        var handle = new UninspectableJunction(System.IO.Path.Combine(Path, relativeLink), WindowsIdentity.GetCurrent().User!.Value);
+        var handle = new UninspectableJunction(System.IO.Path.Combine(Path, relativeLink), WindowsIdentity.GetCurrent().User!.Value, denyParentListing);
         if (!handle.Deny())
         {
             handle.Dispose();
@@ -285,31 +296,47 @@ public sealed class TempDir : IDisposable
 public sealed class UninspectableJunction : IDisposable
 {
     private readonly string _sid;
+    private readonly bool _denyParentListing;
     private bool _disposed;
 
-    internal UninspectableJunction(string linkPath, string sid)
+    internal UninspectableJunction(string linkPath, string sid, bool denyParentListing)
     {
         LinkPath = linkPath;
         ParentPath = System.IO.Path.GetDirectoryName(linkPath)!;
         _sid = "*" + sid;
+        _denyParentListing = denyParentListing;
     }
 
     /// <summary>The junction's absolute path.</summary>
     public string LinkPath { get; }
 
-    /// <summary>The junction's parent directory, which carries the deny-list ACE.</summary>
+    /// <summary>The junction's parent directory, which carries the deny-list ACE (when requested).</summary>
     public string ParentPath { get; }
 
-    /// <summary>Adds both deny ACEs and confirms the junction's attributes are now unreadable.</summary>
+    /// <summary>Adds the deny ACEs and confirms they had the promised effect.</summary>
     internal bool Deny()
     {
-        if (!Icacls(LinkPath, "/L", "/deny", _sid + ":(RA)") || !Icacls(ParentPath, "/deny", _sid + ":(RD)"))
+        if (!Icacls(LinkPath, "/L", "/deny", _sid + ":(RA)")
+            || (_denyParentListing && !Icacls(ParentPath, "/deny", _sid + ":(RD)")))
         {
             return false;
         }
 
         try
         {
+            if (!_denyParentListing)
+            {
+                // Attributes still readable (through the parent's listing),
+                // target not: ResolveLinkTarget must throw.
+                if ((File.GetAttributes(LinkPath) & FileAttributes.ReparsePoint) == 0)
+                {
+                    return false;
+                }
+
+                Directory.ResolveLinkTarget(LinkPath, returnFinalTarget: true);
+                return false; // Target still readable: the setup did not take effect.
+            }
+
             File.GetAttributes(LinkPath);
             return false; // Still inspectable: the setup did not take effect.
         }
@@ -380,5 +407,36 @@ public sealed class UninspectableJunction : IDisposable
         {
             return false;
         }
+    }
+}
+
+/// <summary>
+/// Paths that do not exist in ways Windows reports as a plain
+/// <see cref="IOException"/> rather than a not-found type -- an empty drive
+/// (<c>ERROR_NOT_READY</c>) and a missing share (<c>ERROR_BAD_NET_NAME</c>, or
+/// <c>ERROR_BAD_NETPATH</c> when the local server service is off).
+/// </summary>
+public static class AbsentPaths
+{
+    /// <summary>
+    /// A UNC path under a share that does not exist on this machine. Windows
+    /// only; on another platform it is just an odd relative name.
+    /// </summary>
+    public const string MissingShareSite = "\\\\localhost\\okf4net-h1-no-such-share$\\site";
+
+    /// <summary>
+    /// <c>X:\site</c> for the first drive that exists but holds no volume (an
+    /// empty card reader or optical drive), or <see langword="null"/> if this
+    /// machine has none.
+    /// </summary>
+    public static string? SiteOnADriveWithNoVolume()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        var drive = DriveInfo.GetDrives().FirstOrDefault(d => !d.IsReady);
+        return drive is null ? null : System.IO.Path.Combine(drive.RootDirectory.FullName, "site");
     }
 }

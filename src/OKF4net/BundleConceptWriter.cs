@@ -1122,7 +1122,7 @@ public sealed class BundleConceptWriter
         var targetParentDir = Path.GetDirectoryName(targetPath);
         if (!string.IsNullOrEmpty(targetParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, targetParentDir))
         {
-            return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+            return $"Error: '{id}' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
         }
 
         // Also reject the target FILE node itself being a reparse point (a
@@ -1134,7 +1134,7 @@ public sealed class BundleConceptWriter
         // for the same reason as the walk above.
         if (ReparsePoints.IsReparsePointOrUninspectable(targetPath))
         {
-            return $"Error: '{id}' is a reparse point (symlink/junction), not a regular file -- refusing to overwrite it.";
+            return $"Error: '{id}' is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to overwrite it.";
         }
 
         target = new ConceptTarget(id, targetPath);
@@ -1464,7 +1464,7 @@ public sealed class BundleConceptWriter
         if ((!string.IsNullOrEmpty(parentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, parentDir))
             || ReparsePoints.IsReparsePointOrUninspectable(targetPath))
         {
-            return $"Error: {subject} resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+            return $"Error: {subject} resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
         }
 
         return null;

@@ -426,10 +426,47 @@ public sealed class Bundle
     /// reinterprets a byte-order mark as a different encoding). Intended to be
     /// called only on an <paramref name="absolutePath"/> produced by
     /// <see cref="TryResolveResource"/> with
-    /// <see cref="ResourceResolutionStatus.Resolved"/> -- path safety is
-    /// established there, not here.
+    /// <see cref="ResourceResolutionStatus.Resolved"/>.
     /// </summary>
-    public string ReadResourceText(string absolutePath) => OkfEncodings.Strict.GetString(File.ReadAllBytes(absolutePath));
+    /// <remarks>
+    /// Path safety is established by <see cref="TryResolveResource"/>, and
+    /// re-checked here, STRICTLY, immediately before the read: the path must
+    /// still be inside <see cref="Root"/>, and neither it nor any directory
+    /// between it and <see cref="Root"/> may be a reparse point or an entry
+    /// whose link status cannot be inspected. <see cref="TryResolveResource"/>
+    /// keeps the lenient predicate, because its status is what <c>okf validate</c>
+    /// reports and that must not change; but it answers "not a link" for a
+    /// junction whose attributes the current user may not read, and the OS
+    /// still follows that junction on the read -- measured returning a file
+    /// outside the bundle root through <c>okf_get_computation</c>. A read is a
+    /// guard, so it fails closed; see
+    /// <c>ReparsePoints.IsReparsePointOrUninspectable</c>. Every in-repo reader
+    /// of a resolved resource (<c>okf_get_computation</c>, and
+    /// <c>AttestationOrchestrator</c>'s computation and attester source) goes
+    /// through this method, and each already reports a thrown
+    /// <see cref="UnauthorizedAccessException"/> as an unreadable resource.
+    /// </remarks>
+    /// <exception cref="UnauthorizedAccessException">
+    /// <paramref name="absolutePath"/> is outside <see cref="Root"/>, or it or a
+    /// directory between it and <see cref="Root"/> is a reparse point or could
+    /// not be inspected; or the OS denies the read.
+    /// </exception>
+    /// <exception cref="IOException">The file cannot be read.</exception>
+    /// <exception cref="System.Text.DecoderFallbackException">The content is not valid UTF-8.</exception>
+    public string ReadResourceText(string absolutePath)
+    {
+        var fullRoot = ReparsePoints.CanonicalizeRoot(Root);
+        var fullPath = System.IO.Path.GetFullPath(absolutePath);
+        if (!ReparsePoints.IsWithin(fullRoot, fullPath, PathComparison)
+            || ReparsePoints.IsReparsePointOrUninspectable(fullPath)
+            || ReparsePoints.HasReparsePointOrUninspectableAncestor(fullRoot, fullPath, PathComparison))
+        {
+            throw new UnauthorizedAccessException(
+                "The resource is outside the bundle root, or resolves through a reparse point (symlink/junction) or an entry that could not be inspected inside it; refusing to read it.");
+        }
+
+        return OkfEncodings.Strict.GetString(File.ReadAllBytes(fullPath));
+    }
 
     /// <summary>
     /// Recursively collects <c>*.md</c> file paths under <paramref name="dir"/>,
