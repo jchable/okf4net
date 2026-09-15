@@ -612,10 +612,11 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     [InlineData("ParityVariable", "Parity.Members.InVariable.f")]
     public void A_local_function_s_container_is_spelled_the_same_by_both_engines(string localFunction, string expectedContainer)
     {
-        // The join CodeGraphBuilder performs: the resolver's (TargetContainer, TargetName) must match the
-        // extractor's (Container, Name) exactly, or an Exact verdict overwrites the baseline and is then
-        // degraded for joining nothing. The literal is asserted as well, so the two engines cannot
-        // agree on a spelling that is wrong on both sides.
+        // The join key CodeGraphBuilder uses: the resolver's (TargetContainer, TargetName) must match the
+        // extractor's (Container, Name) exactly. Local functions are always Private and never reach a
+        // bundle, so this pins the two engines' shared spelling rule rather than any emitted edge; a
+        // local function is simply the only declaration that can sit under these nodes. The literal
+        // is asserted as well, so the two engines cannot agree on a spelling that is wrong on both sides.
         var symbol = Assert.Single(_scratch.Symbols, s => s.Name == localFunction);
 
         var site = Assert.Single(_scratch.SitesIn("ContainerParity.cs"), s => s.CalledName == localFunction);

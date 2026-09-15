@@ -1371,18 +1371,25 @@ and this project adheres to
   grammar `name` field, which includes accessors (`get`/`set`/`add`), named
   arguments, named tuple elements and member accesses (`.First()`), so a local
   function in a getter sat under `N.T.P.get` where `RoslynResolver` says
-  `N.T.P`, its `Exact` edge (§2.1) joined no symbol, and `CodeGraphBuilder`
-  degraded a link the name-match baseline had right. The walk is now an
-  allow-list mirroring `RoslynResolver.ContainerPathFromSyntax` kind for kind
-  (namespace, type, delegate, method, constructor, destructor, property,
-  event, local function, variable declarator). **Id churn:** a local function
-  declared in an accessor, in an indexer, or in a lambda passed as a named
-  argument, a tuple element or inside a member-access chain loses that segment
-  (`…/p/get/helper` → `…/p/helper`), and a getter and a setter of one property
-  each declaring a same-named local function now merge as §3.2 overloads. A
-  local function carries no access modifier and is always private, so these
-  ids exist only in a bundle generated with `--include-internal`
-  (`producers/`).
+  `N.T.P`, so the two engines' `(Container, Name)` join key (§2.1) disagreed.
+  The walk is now an allow-list mirroring
+  `RoslynResolver.ContainerPathFromSyntax` kind for kind (namespace, type,
+  delegate, method, constructor, destructor, property, event, local function,
+  variable declarator). **No generated bundle changes from this second half:**
+  the only declarations that can sit under those nodes are local functions,
+  which carry no access modifier, are always `Private`, and are excluded by
+  `FileEligibility.IsInScope` unconditionally — `--include-internal` does not
+  admit them. So a local function's container (`N.T.P.get` → `N.T.P`) never
+  becomes a concept id, a getter and a setter each declaring a same-named local
+  function never reach §3.2's overload merge, and a call to one renders as
+  unresolved both before and after. The change is visible to direct consumers
+  of `TreeSitterExtractor`'s `SymbolFact.Container` / `CallSite.CallerContainer`
+  and of resolver edges before `CodeGraphBuilder`'s scope pass, and it keeps the
+  join key correct should a future scope rule ever admit such a declaration.
+  The first half (field-initializer callers) does reach bundles: such a call
+  now appears under the in-scope field that holds it (`## Calls` or
+  `## Calls (unresolved)`), where it used to be dropped or, as above, listed
+  under an unrelated same-named field (`producers/`).
 
 ### Security
 

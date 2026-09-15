@@ -193,10 +193,17 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// (<c>Run(x: …)</c>), a named tuple element, and a <c>member_access_expression</c> (the
     /// <c>First</c> of <c>xs.Select(…).First()</c>). Measured: a local function in a getter came out
     /// under <c>N.T.P.get</c> where Roslyn says <c>N.T.P</c>, so the resolver's <c>Exact</c> target
-    /// joined no symbol and <c>CodeGraphBuilder</c> degraded an edge the name-match baseline had right.
-    /// Skipping the node types found so far would leave the next one wrong; naming what counts closes
-    /// the class. Everything not listed (accessors, indexers and operators included, which Roslyn's
+    /// did not match the extractor's <c>(Container, Name)</c> for the same declaration. Skipping the
+    /// node types found so far would leave the next one wrong; naming what counts closes the class.
+    /// Everything not listed (accessors, indexers and operators included, which Roslyn's
     /// <c>DeclaredName</c> also gives no name) contributes nothing on both sides.</para>
+    ///
+    /// <para><b>What this does not change: a generated bundle.</b> The only declarations that can sit
+    /// under a non-listed node are local functions, which are always <c>Private</c> and which
+    /// <c>FileEligibility.IsInScope</c> excludes unconditionally (<c>--include-internal</c> does not
+    /// admit them). So neither the old nor the new spelling reaches <c>CodeGraph.Symbols</c>, and a call
+    /// to one degrades to unresolved either way. The fix is to this extractor's output and the join
+    /// key the two engines share, not to any concept id.</para>
     ///
     /// <para>Pinned by execution rather than by these strings:
     /// <c>TreeSitterExtractorTests.Every_allowed_declaration_kind_still_contributes_its_container_segment</c>
