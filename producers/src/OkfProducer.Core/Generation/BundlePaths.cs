@@ -168,7 +168,31 @@ internal static class BundlePaths
         return file.LinkTarget is not null ? file : null;
     }
 
-    /// <summary>Whether <paramref name="path"/> lies strictly under <paramref name="root"/>, comparing whole path components.</summary>
+    /// <summary>
+    /// Whether <paramref name="path"/> starts with <paramref name="root"/> followed by a directory
+    /// separator, compared under <see cref="PathComparison"/> -- a plain string test, and deliberately
+    /// nothing more.
+    ///
+    /// <para><b>What it answers, precisely.</b> "Strictly under": the root itself is not inside, and
+    /// neither is any spelling of it with a trailing separator. It does not normalise either argument:
+    /// <c>root/../other/x</c> starts with <c>root/</c> and IS inside by this test, so it is only
+    /// meaningful for a <paramref name="path"/> that is already a full, normalised path (<see
+    /// cref="Path.GetFullPath(string)"/>) and a <paramref name="root"/> that is already resolved and
+    /// trimmed (<see cref="ResolveRoot"/>). A filesystem root (<c>C:\</c>, <c>/</c>) as
+    /// <paramref name="root"/> matches nothing, since its own separator is doubled by the test.</para>
+    ///
+    /// <para><b>Why it is not <see cref="TryGetPathUnderRoot"/>.</b> Its callers are
+    /// <see cref="BundleWriter"/>'s containment checks on paths it has itself built from
+    /// <see cref="ResolveRoot"/>'s answer: where a concept may be written, whether an owned prefix lies
+    /// in the bundle before anything under it is pruned, and how a refusal message names a path. There
+    /// the root itself must NOT count as inside -- a concept or a prune target that IS the bundle root
+    /// is exactly what must be refused -- and the comparison has to be the same <see
+    /// cref="PathComparison"/> <see cref="ResolveInsideRoot"/> uses, so the two cannot disagree about a
+    /// path they both check. <see cref="TryGetPathUnderRoot"/> answers the repository question instead
+    /// ("at or under, normalising both sides"), and is what the scanner and the code stage use; E11 fix
+    /// round 1 moved <c>RepositoryScanner</c> off this method, where it had been asking that other
+    /// question with the wrong tool.</para>
+    /// </summary>
     internal static bool IsInside(string root, string path) =>
         path.StartsWith(root + Path.DirectorySeparatorChar, PathComparison);
 
@@ -202,25 +226,34 @@ internal static class BundlePaths
     /// (<c>"."</c> for the root itself), or <see langword="false"/> when <paramref name="path"/> is not
     /// at or under <paramref name="root"/> at all.
     ///
-    /// <para><b>The one repository-containment question the code stage asks</b>, answered here so the
-    /// Roslyn engine, the tree-sitter engine and <see cref="SourceOwnershipMap"/> cannot drift apart on
-    /// it (E11: <c>CompilationFactory</c>, <c>RoslynResolver</c> and <c>SourceOwnershipMap</c> each carried
-    /// a copy, and <c>RoslynResolver</c>'s had drifted -- it tested the leading <c>..</c> as a string
-    /// PREFIX, so a directory literally named <c>..foo</c> read as outside the repository).</para>
+    /// <para><b>The one repository-containment question this producer asks</b>, answered here so the
+    /// scanner, the Roslyn engine, the tree-sitter engine and <see cref="SourceOwnershipMap"/> cannot drift
+    /// apart on it (E11: <c>CompilationFactory</c>, <c>RoslynResolver</c> and <c>SourceOwnershipMap</c>
+    /// each carried a copy, and <c>RoslynResolver</c>'s had drifted -- it tested the leading <c>..</c> as a
+    /// string PREFIX, so a directory literally named <c>..foo</c> read as outside the repository; E11 fix
+    /// round 1 moved <c>RepositoryScanner</c>'s solution-project filter off <see cref="IsInside"/> onto
+    /// this too).</para>
     ///
     /// <para>Not under the root means: a different drive or share (the relative answer comes back
-    /// rooted), or a first SEGMENT of exactly <c>..</c> -- a segment, not a prefix, since <c>..foo</c> is a
-    /// directory name and not a climb. <see cref="Path.GetRelativePath(string, string)"/> settles casing
-    /// on the platform's own terms rather than by a <see cref="StringComparison"/> picked here (measured
-    /// on Windows: <c>GetRelativePath(@"C:\REPO", @"C:\repo\a\x.cs")</c> is <c>a\x.cs</c>), and makes both
-    /// arguments absolute first, so a relative argument is resolved against the current directory. A
-    /// path the platform rejects outright is reported as not under the root.</para>
+    /// rooted), or a first SEGMENT of exactly <c>..</c>. Any other first segment is a name, not a climb:
+    /// <c>..foo</c>, <c>...</c>, <c>.. </c> (trailing space), and -- on POSIX, where a backslash is an
+    /// ordinary filename character -- <c>..\x</c>. Separators are the platform's own.
+    /// <see cref="Path.GetRelativePath(string, string)"/> settles casing on the platform's own terms
+    /// rather than by a <see cref="StringComparison"/> picked here (measured on Windows:
+    /// <c>GetRelativePath(@"C:\REPO", @"C:\repo\a\x.cs")</c> is <c>a\x.cs</c>), and makes both arguments
+    /// absolute first -- so a relative argument is resolved against the current directory, and an
+    /// unnormalised <c>root/../other/x</c> is correctly outside.</para>
     ///
-    /// <para><b>Lexical, and deliberately a different question from <see cref="IsInside"/>.</b> Nothing
-    /// here follows a link; see <see cref="HasLinkAncestor"/> for that. <see cref="IsInside"/> answers
-    /// "strictly under an already-resolved bundle root", excluding the root itself, and guards the
-    /// writer's deletes; this answers "at or under a repository root", and is what the code stage uses
-    /// to decide what a path is called and how far a link walk may go.</para>
+    /// <para><b>A path the platform rejects is not under the root, and that is a contract, not an
+    /// accident.</b> A path holding a NUL makes <see cref="Path.GetRelativePath(string, string)"/> throw
+    /// <see cref="ArgumentException"/>; this answers <see langword="false"/> instead. The copies this
+    /// replaced let that exception escape (<c>RoslynResolver.RelativeToRepository</c>,
+    /// <c>SourceOwnershipMap.Relativize</c>), so for them a NUL-bearing path now yields
+    /// <see langword="null"/> (not owned) rather than a throw -- the direction every other refusal in this
+    /// producer already takes for a path MSBuild printed.</para>
+    ///
+    /// <para><b>Lexical.</b> Nothing here follows a link; see <see cref="HasLinkAncestor"/> for that, and
+    /// <see cref="IsInside"/> for how its question differs.</para>
     /// </summary>
     internal static bool TryGetPathUnderRoot(string root, string path, out string relative)
     {
@@ -260,12 +293,21 @@ internal static class BundlePaths
     /// or above the repository root is the operator's own checkout layout, not something the scanned
     /// repository chose, so the caller's count stops below it.</para>
     ///
-    /// <para><b>Each level is tested with <see cref="IsReparsePoint"/></b>, so it fails closed: a level
-    /// that cannot be inspected (on POSIX, one under a directory without search permission; anywhere, a
-    /// path the platform rejects) counts as a link. A Windows deny ACE does not produce that case -- see
-    /// <c>BundlePathsTests.HasLinkAncestor_fails_closed_on_an_ancestor_it_cannot_inspect_posix</c>. The walk
-    /// only ever inspects the path string it was given, never a link's target, so a link loop cannot
-    /// make it run longer than <paramref name="levels"/> + 1 probes.</para>
+    /// <para><b>Each level fails closed, which <see cref="IsReparsePoint"/> alone does not.</b> Its catch
+    /// suggests otherwise, but it is never reached by a permission denial -- measured in E11 fix round 1:
+    /// on Linux (uid 1000) with <c>chmod 000</c> on an ancestor, and on Windows with an inheritable
+    /// deny-read ACE on one, <c>DirectoryInfo.LinkTarget</c> and <c>FileInfo.LinkTarget</c> both answer
+    /// <see langword="null"/> without throwing (the Unix readlink wrapper maps EACCES to "not a link").
+    /// So each level is first classified by <see cref="File.GetAttributes(string)"/>, which on both
+    /// platforms does throw <see cref="UnauthorizedAccessException"/> on exactly those levels (measured),
+    /// and only where the file beneath is itself unreadable: a Windows deny-list ACE that leaves the file
+    /// readable through traverse bypass, or a POSIX directory with search but no read permission, leaves
+    /// the attributes readable too, so that tree is not refused. The rule mirrors the core library's
+    /// strict guard: not found is not a link, and an access or any other I/O error is treated as one.
+    /// See <see cref="IsLinkOrUninspectable"/> for the per-level probe.</para>
+    ///
+    /// <para>The walk only ever inspects the path string it was given, never a link's target, so a link
+    /// loop cannot make it run longer than <paramref name="levels"/> + 1 levels.</para>
     /// </summary>
     /// <param name="path">The file (or directory) whose own link status and ancestry are tested.</param>
     /// <param name="levels">How many ancestor directories to test; <c>0</c> tests only <paramref name="path"/> itself.</param>
@@ -273,7 +315,7 @@ internal static class BundlePaths
     {
         ArgumentOutOfRangeException.ThrowIfNegative(levels);
 
-        if (IsReparsePoint(path))
+        if (IsLinkOrUninspectable(path))
         {
             return true;
         }
@@ -281,7 +323,7 @@ internal static class BundlePaths
         var directory = Path.GetDirectoryName(path);
         for (var i = 0; i < levels && !string.IsNullOrEmpty(directory); i++)
         {
-            if (IsReparsePoint(directory))
+            if (IsLinkOrUninspectable(directory))
             {
                 return true;
             }
@@ -290,6 +332,44 @@ internal static class BundlePaths
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// One level of <see cref="HasLinkAncestor"/>: <see langword="true"/> when <paramref name="path"/> is
+    /// a link by <see cref="IsReparsePoint"/>'s definition, or when its own metadata cannot be read (an
+    /// access denial, any other I/O error, a path the platform rejects).
+    ///
+    /// <para><b>One metadata probe classifies the level; <see cref="IsReparsePoint"/> still decides what
+    /// a link is.</b> <see cref="File.GetAttributes(string)"/> reports a path's OWN attributes without
+    /// following it, and every link carries <see cref="FileAttributes.ReparsePoint"/> there -- measured in
+    /// E11 fix round 1: on Windows a junction and a dangling junction; on Linux a directory symlink, a
+    /// dangling one, a file symlink, a dangling file symlink and a self-referencing loop, all reported
+    /// <c>ReparsePoint</c> without throwing. So a level whose attributes lack it is not a link and needs
+    /// no further probe, and a level that has it (which also covers a reparse point that is not a link)
+    /// is handed to <see cref="IsReparsePoint"/>. That is also what keeps the cost down. Measured
+    /// (a 12-level link-free path, 5000 calls x 6 rounds, Release), per file against the tree-sitter walk
+    /// this replaced: probing every level with <see cref="IsReparsePoint"/> alone, as E11 round 1 did,
+    /// cost x1.92 on Windows and x1.88 on Linux; adding a separate attribute read to that cost x3.00 and
+    /// x3.13; this form costs x1.02 and x1.63. A level the probe reports as not found is still asked of
+    /// <see cref="IsReparsePoint"/> rather than assumed plain.</para>
+    /// </summary>
+    private static bool IsLinkOrUninspectable(string path)
+    {
+        FileAttributes attributes;
+        try
+        {
+            attributes = File.GetAttributes(path);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return IsReparsePoint(path);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or ArgumentException or NotSupportedException)
+        {
+            return true;
+        }
+
+        return (attributes & FileAttributes.ReparsePoint) != 0 && IsReparsePoint(path);
     }
 
     /// <summary>

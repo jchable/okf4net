@@ -983,6 +983,49 @@ public class RepositoryScannerTests
         }
     }
 
+    // --- E11 fix round 1 (M2): the solution-project filter asks the shared containment question.
+    // Each case below is one the former `BundlePaths.IsInside(GetFullPath(repo).TrimEnd(sep), path)`
+    // answered differently, or one a naive move (passing the trimmed root) would break. The two
+    // disagreeing cases were RED against that expression transplanted into IsRepositoryPath.
+
+    [Fact]
+    public void A_solution_project_path_that_climbs_out_unnormalised_is_not_in_the_repository()
+    {
+        // `repo/../other/P.csproj` starts with `repo/` as a string, so the prefix test called it inside.
+        var repo = Path.Combine(Path.GetTempPath(), "okfproducer-scan-contain", "repo");
+        var climb = repo + Path.DirectorySeparatorChar + ".." + Path.DirectorySeparatorChar
+            + "other" + Path.DirectorySeparatorChar + "P.csproj";
+
+        Assert.False(RepositoryScanner.IsRepositoryPath(repo, climb));
+    }
+
+    [Fact]
+    public void The_repository_root_itself_is_at_or_under_the_repository()
+    {
+        // The prefix test is strictly-under, so it answered false here. No solution can name a directory
+        // as a project that also passes File.Exists, so this changes nothing a scan can reach; it is
+        // pinned so the scanner and the code stage give the one answer.
+        var repo = Path.Combine(Path.GetTempPath(), "okfproducer-scan-contain", "repo");
+
+        Assert.True(RepositoryScanner.IsRepositoryPath(repo, repo));
+        Assert.True(RepositoryScanner.IsRepositoryPath(repo + Path.DirectorySeparatorChar, repo));
+    }
+
+    [Fact]
+    public void Ordinary_inside_sibling_and_filesystem_root_answers_are_unchanged()
+    {
+        var repo = Path.Combine(Path.GetTempPath(), "okfproducer-scan-contain", "repo");
+
+        Assert.True(RepositoryScanner.IsRepositoryPath(repo, Path.Combine(repo, "src", "P.csproj")));
+        Assert.True(RepositoryScanner.IsRepositoryPath(repo + Path.DirectorySeparatorChar, Path.Combine(repo, "src", "P.csproj")));
+        Assert.False(RepositoryScanner.IsRepositoryPath(repo, Path.Combine(repo + "2", "P.csproj")));
+
+        // A repository AT a filesystem root. The old code trimmed `C:\` to `C:` and still matched by
+        // prefix; the shared check must be handed the untrimmed root, since `C:` is drive-relative.
+        var filesystemRoot = Path.GetPathRoot(Path.GetTempPath())!;
+        Assert.True(RepositoryScanner.IsRepositoryPath(filesystemRoot, Path.Combine(filesystemRoot, "src", "P.csproj")));
+    }
+
     private static void WriteProject(string directory, string packageId)
     {
         Directory.CreateDirectory(directory);

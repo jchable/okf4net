@@ -769,31 +769,62 @@ and this project adheres to
   `MsBuildProjectQuery.Run` each carried their own start/drain/timeout/kill
   code; both now call the internal `BoundedProcess.Run`, which redirects and
   closes stdin, drains stdout and stderr concurrently under caps, bounds the
-  whole call (reads included) by its timeout, kills the process tree on
-  giving up, and reports `Completed`/`NotStarted`/`TimedOut`/`Faulted` rather
-  than throwing — `MsBuildProjectQuery` maps those to its existing messages
-  verbatim. It holds no shared state and is safe for concurrent use. The
-  repository-containment test and the count-bounded link-ancestor walk that
-  `CompilationFactory`, `TreeSitterExtractor`, `RoslynResolver` and
-  `SourceOwnershipMap` each re-implemented now live once, in `BundlePaths`
+  whole call (reads included) by its timeout, and reports
+  `Completed`/`NotStarted`/`TimedOut`/`Faulted` rather than throwing —
+  `MsBuildProjectQuery` maps those to its existing messages verbatim. It holds
+  no shared state and is safe for concurrent use. On giving up it kills the
+  process tree **as it stands at that moment**: on Windows and POSIX a
+  descendant of a still-running child dies with it, but on POSIX a
+  descendant whose own parent already exited has been re-parented away and
+  survives (measured on Linux), so there the call is bounded while a
+  pipe-holding orphan may outlive it — unchanged from both former copies.
+  The repository-containment question — which `RepositoryScanner`'s
+  solution-project filter, `CompilationFactory`, `RoslynResolver` and
+  `SourceOwnershipMap` each answered with their own code — is now answered
+  once, by `BundlePaths.TryGetPathUnderRoot`; `BundleWriter` alone keeps the
+  deliberately different `BundlePaths.IsInside` (strictly under an
+  already-resolved bundle root, the root itself excluded). The count-bounded
+  link-ancestor walk `CompilationFactory` and `TreeSitterExtractor` each
+  re-implemented lives once too, as `BundlePaths.HasLinkAncestor`
   (`OkfProducer.Core` grants `InternalsVisibleTo` to the two code-graph
   projects rather than making either public). The walk is bounded by a
   directory count, never by meeting a root string, which is what once made
   `CompilationFactory` walk to the filesystem root for out-of-repository
   `Compile` items — that bug is now pinned by a regression test. Behaviour
-  changes, all at the edges: a `Compile` item under a directory literally
-  named `..foo` is now owned by the Roslyn engine (its former copy tested
-  `..` as a prefix and fell back to the name-matching baseline); a path or
-  ancestor whose link status cannot even be inspected is skipped as a
-  symlink rather than as unreadable (the file is skipped either way), and a
-  strong-name key file in that position leaves the compilation unsigned
-  instead of throwing out of `CompilationFactory`; the
-  `dotnet msbuild` child now gets a closed stdin; `git` answers are capped at
-  64 KiB and a failed `git` pipe read yields the outside-git fallback instead
-  of an exception; and the MSBuild reads gain the `WaitAsync` bound only the
-  `git` copy had — insurance rather than a fix, since on Windows / .NET 10 the
-  reads' cancellation token was measured to bound a grandchild holding the
-  pipe on its own. The golden captures move by zero bytes.
+  changes, all at the edges:
+  - an ancestor (or the file itself) whose metadata cannot be read — a
+    `chmod 000` directory above it on POSIX, an inheritable deny-read ACE on
+    Windows — now counts as a link, so tree-sitter reports the file as
+    `SkippedSymlink` rather than `SkippedUnreadable`. Either way nothing is
+    read. (The Roslyn side is unchanged in practice: such a `Compile` item or
+    key file already reports as not existing there, and was dropped or left
+    unused before the walk is reached.) A directory that merely cannot be
+    *listed* while its files stay readable by path is not refused;
+  - any first path segment other than exactly `..` is a name, not a climb —
+    `..foo`, `...`, `.. `, and on POSIX `..\x` (a backslash is a filename
+    character there) — so such paths are inside the repository for every
+    caller; `SourceOwnershipMap` still refuses the POSIX `..\x` case, because
+    its cross-platform `\`→`/` join fold would key it as `../x/…`, spelled as
+    a climb (the file is simply not owned);
+  - a repository-rooted path the platform rejects (a NUL in it) is "not in
+    the repository" for `RoslynResolver` and `SourceOwnershipMap` instead of
+    throwing `ArgumentException`;
+  - the solution-project filter now also calls an unnormalised
+    `repo/../other/P.csproj` outside (it only ever sees `GetFullPath`'d
+    paths, so no scan result changes on Windows or Linux);
+  - the `dotnet msbuild` child now gets a closed stdin; `git` answers are
+    capped at 64 KiB and a failed `git` pipe read yields the outside-git
+    fallback instead of an exception;
+  - the MSBuild reads gain the `WaitAsync` bound only the `git` copy had —
+    insurance rather than a fix: on Windows and on Linux (.NET 10) the reads'
+    cancellation token was measured to bound a grandchild holding the pipe on
+    its own.
+
+  The `..foo` ownership fix is listed under Fixed. The golden captures move by
+  zero bytes. Measured per file on a 12-level path, the walk costs x1.02 the
+  tree-sitter copy it replaced on Windows and x1.63 on Linux: each level is
+  classified by one attribute read, and only a level carrying the reparse-point
+  attribute is asked for its link target.
 
 ### Fixed
 
@@ -1525,6 +1556,16 @@ and this project adheres to
   a per-file skip uses (e.g. `- locked/: skipped, directory not readable`).
   The repository ROOT itself and a circular reparse point remain
   all-or-nothing, unchanged (§2.3).
+- **`okfgen`'s Roslyn stage now owns a `Compile` item under a directory whose
+  name merely starts with `..` (`producers/`).**
+  `RoslynResolver.RelativeToRepository` tested the repository-relative path's
+  `..` as a string prefix, so `..foo/Dotted.cs` read as outside the
+  repository: its tree was compiled but never owned, and its calls fell back
+  to the name-matching baseline. It now uses the shared
+  `BundlePaths.TryGetPathUnderRoot`, which treats only a first segment of
+  exactly `..` as a climb. Pinned end to end by
+  `A_compile_item_under_a_directory_named_with_a_leading_double_dot_is_still_owned`,
+  red before the change.
 
 ### Security
 

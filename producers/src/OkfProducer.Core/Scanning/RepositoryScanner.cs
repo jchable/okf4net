@@ -127,16 +127,36 @@ public sealed class RepositoryScanner : IRepositoryScanner
         // Such a project has no repository-relative path to publish -- Path.GetRelativePath would emit
         // a `../..` prefix, which every downstream `resource` and `sources` field would then carry --
         // so it is not this repository's package to describe.
-        var repoRoot = Path.GetFullPath(repoPath).TrimEnd(Path.DirectorySeparatorChar);
-
         return slnPaths
             .SelectMany(ParseSolutionProjectPaths)
             .Where(File.Exists)
-            .Where(path => BundlePaths.IsInside(repoRoot, path))
+            .Where(path => IsRepositoryPath(repoPath, path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
+
+    /// <summary>
+    /// Whether <paramref name="path"/> lies at or under the repository at <paramref name="repoPath"/> --
+    /// <see cref="BundlePaths.IsAtOrUnderRoot"/>, the same containment question the code stage asks of
+    /// every <c>Compile</c> item, rather than a local answer to it.
+    ///
+    /// <para><b>Why this moved (E11 fix round 1).</b> It used to be
+    /// <c>BundlePaths.IsInside(Path.GetFullPath(repoPath).TrimEnd(separator), path)</c>: a plain string
+    /// prefix test built for the bundle writer's already-resolved roots. It answered differently from the
+    /// shared check on an unnormalised climb (<c>repo/../other/x.csproj</c> starts with <c>repo/</c>, so
+    /// it read as inside) and on the root itself, and on macOS -- read-verified, not run -- on a casing
+    /// difference, since <see cref="BundlePaths.PathComparison"/> is ordinal there while
+    /// <see cref="Path.GetRelativePath(string, string)"/> is not. None of those is reachable through
+    /// <see cref="ParseSolutionProjectPaths"/> on Windows or Linux today, because every project path it
+    /// yields has been through <see cref="Path.GetFullPath(string)"/>; the point is that there is one
+    /// answer, so a future caller cannot inherit the other one. The root is deliberately passed
+    /// untrimmed: trimming a filesystem root (<c>C:\</c> to <c>C:</c>) turns it into a drive-RELATIVE
+    /// path, which <see cref="Path.GetRelativePath(string, string)"/> would resolve against that drive's
+    /// current directory.</para>
+    /// </summary>
+    internal static bool IsRepositoryPath(string repoPath, string path) =>
+        BundlePaths.IsAtOrUnderRoot(Path.GetFullPath(repoPath), path);
 
     private static IEnumerable<string> ParseSolutionProjectPaths(string slnPath)
     {

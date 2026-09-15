@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OkfProducer.CodeGraph.TreeSitter;
+using OkfProducer.CodeGraph.TreeSitter.Profiles;
+using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
 using OkfProducer.Tests.TestSupport;
 
@@ -201,14 +204,29 @@ public class BundlePathsTests
         }
     }
 
+    // --- E11 fix round 1 (I1): fail-closed on an ancestor that cannot be inspected, the SAME behaviour
+    // asserted on both platforms. Round 1's POSIX-only pin was red on Linux: LinkTarget answers null,
+    // without throwing, under both a chmod 000 ancestor (Linux) and an inheritable deny-read ACE
+    // (Windows), so IsReparsePoint's catch never fired. HasLinkAncestor now also asks whether each
+    // level's metadata can be read at all.
+
+    [DenyAceFact]
+    public void HasLinkAncestor_fails_closed_on_an_ancestor_it_cannot_inspect_windows()
+    {
+        using var tmp = new TempDir();
+        var root = Directory.CreateDirectory(Path.Combine(tmp.Path, "repo")).FullName;
+        var a = Path.Combine(root, "a");
+        var file = WriteFile(Path.Combine(a, "b", "X.cs"));
+
+        using (DenyAce.Deny(a, "(OI)(CI)(R)"))
+        {
+            AssertRefusedAsUninspectable(root, file);
+        }
+    }
+
     [UnixPermissionFact]
     public void HasLinkAncestor_fails_closed_on_an_ancestor_it_cannot_inspect_posix()
     {
-        // Directory `a` with mode 000: nothing beneath it can be lstat'ed, so whether `a/b` is a link is
-        // unanswerable -- and IsReparsePoint reports an unanswerable path as a link. No Windows twin, and
-        // measured rather than assumed (E11, Windows 11 / .NET 10, unelevated): a deny ACE of (RD), (X),
-        // (RA) or (F) on `a` left DirectoryInfo("a/b").LinkTarget answering normally -- the traverse
-        // bypass an ordinary user holds means no ACL this suite can set makes that probe throw.
         using var tmp = new TempDir();
         var root = Directory.CreateDirectory(Path.Combine(tmp.Path, "repo")).FullName;
         var a = Path.Combine(root, "a");
@@ -216,8 +234,75 @@ public class BundlePathsTests
 
         using (UnixPermission.DenyAll(a))
         {
-            Assert.True(BundlePaths.HasLinkAncestorUnderRoot(root, file));
+            AssertRefusedAsUninspectable(root, file);
         }
+    }
+
+    [DenyAceFact]
+    public void HasLinkAncestor_does_not_refuse_a_file_still_readable_under_an_unlistable_ancestor_windows()
+    {
+        // The other half of "fail closed without refusing legitimate trees": a deny-LIST ACE on `a`
+        // alone leaves `a/b/X.cs` readable (traverse bypass), and its attributes readable with it.
+        using var tmp = new TempDir();
+        var root = Directory.CreateDirectory(Path.Combine(tmp.Path, "repo")).FullName;
+        var a = Path.Combine(root, "a");
+        var file = WriteFile(Path.Combine(a, "b", "X.cs"));
+
+        using (DenyAce.Deny(a, isDirectory: true))
+        {
+            AssertNotRefused(root, file, a);
+        }
+    }
+
+    [UnixPermissionFact]
+    public void HasLinkAncestor_does_not_refuse_a_file_still_readable_under_an_unlistable_ancestor_posix()
+    {
+        // POSIX twin: `a` with search but no read permission (mode 0100) cannot be listed, yet
+        // `a/b/X.cs` can still be stat'ed and read by its path.
+        using var tmp = new TempDir();
+        var root = Directory.CreateDirectory(Path.Combine(tmp.Path, "repo")).FullName;
+        var a = Path.Combine(root, "a");
+        var file = WriteFile(Path.Combine(a, "b", "X.cs"));
+
+        if (OperatingSystem.IsWindows())
+        {
+            // Unreachable: UnixPermissionFact skips on Windows. Present so the analyzer can see the
+            // POSIX-only calls below are guarded.
+            throw new PlatformNotSupportedException();
+        }
+
+        var original = File.GetUnixFileMode(a);
+        File.SetUnixFileMode(a, UnixFileMode.UserExecute);
+        try
+        {
+            AssertNotRefused(root, file, a);
+        }
+        finally
+        {
+            File.SetUnixFileMode(a, original);
+        }
+    }
+
+    private static void AssertRefusedAsUninspectable(string root, string file)
+    {
+        // Precondition: the deny really took the effect this case is about -- the file is unreadable.
+        Assert.Throws<UnauthorizedAccessException>(() => File.ReadAllText(file));
+
+        Assert.True(BundlePaths.HasLinkAncestorUnderRoot(root, file));
+
+        // And end to end through the tree-sitter guard: skipped as a link, never read.
+        using var extractor = new TreeSitterExtractor();
+        var result = extractor.Extract("a/b/X.cs", file, CSharpProfile.Instance, ExtractionLimits.Default);
+        Assert.Equal(FileStatus.SkippedSymlink, result.Status);
+    }
+
+    private static void AssertNotRefused(string root, string file, string unlistable)
+    {
+        // Preconditions: the ancestor really cannot be listed, and the file really can be read.
+        Assert.Throws<UnauthorizedAccessException>(() => Directory.GetFileSystemEntries(unlistable));
+        Assert.Equal("namespace N;", File.ReadAllText(file));
+
+        Assert.False(BundlePaths.HasLinkAncestorUnderRoot(root, file));
     }
 
     private static string WriteFile(string path)

@@ -198,7 +198,22 @@ public sealed class SourceOwnershipMap
     /// relative is taken as-is (only separator-normalized): the caller has then already expressed it
     /// in the same space <c>SymbolFact.RelativePath</c> and <c>PackageManifest.RelativePath</c> use.
     /// Whether a rooted path lies under <paramref name="root"/> is <see cref="BundlePaths.TryGetPathUnderRoot"/>'s
-    /// answer, the one the code-graph engines use too (E11), rather than a local copy of it.
+    /// answer, the one the code-graph engines use too (E11), rather than a local copy of it -- which also
+    /// means a rooted path the platform rejects outright (a NUL in it) is dropped rather than thrown.
+    ///
+    /// <para><b>One rooted case is inside the repository and still refused (E11 fix round 1).</b> On
+    /// POSIX a backslash is an ordinary filename character, so a directory literally named <c>..\x</c> is
+    /// inside the root, and the shared check says so. But this map's keys go through
+    /// <see cref="Normalize"/>, whose <c>\</c> -&gt; <c>/</c> fold is the cross-platform join rule every
+    /// lookup applies too (<c>SourceOwnershipMapTests.One_spelling_of_a_path_is_enough_to_find_it</c>
+    /// pins it), and under that fold the key would be <c>../x/x.cs</c> -- spelled exactly like a climb out
+    /// of the repository, the key the old guard existed to refuse. Rendering it with POSIX separator
+    /// semantics instead (<c>..\x/x.cs</c>) is not available without breaking that rule: the same
+    /// rendering would key a directory named <c>a\b</c> as <c>a\b/x.cs</c>, which no normalised lookup
+    /// can ever reach, where today it resolves. So a key whose normalised first segment is <c>..</c> is
+    /// dropped: the file is simply not owned (no package link), which is the degraded-but-honest outcome
+    /// this type already chooses for anything it cannot key safely, and never a key that reads as
+    /// escaping the repository.</para>
     /// </summary>
     private static string? Relativize(string root, string path)
     {
@@ -213,7 +228,13 @@ public sealed class SourceOwnershipMap
             return Normalize(trimmed);
         }
 
-        return BundlePaths.TryGetPathUnderRoot(root, trimmed, out var relative) ? Normalize(relative) : null;
+        if (!BundlePaths.TryGetPathUnderRoot(root, trimmed, out var relative))
+        {
+            return null;
+        }
+
+        var key = Normalize(relative);
+        return key == ".." || key.StartsWith("../", StringComparison.Ordinal) ? null : key;
     }
 
     /// <summary>

@@ -692,7 +692,8 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// *ancestor* directories is a junction/symlink is exactly as unfollowed as a directly-symlinked
     /// file, and <see cref="CodeGraphBuilder"/>'s own walk (<see cref="Directory.EnumerateFiles"/>)
     /// does traverse through such a directory rather than stopping at it. That walk fails closed: a
-    /// path or level that cannot even be inspected is reported as <see cref="FileStatus.SkippedSymlink"/>
+    /// path or level whose metadata cannot even be read -- an access denial included, on Windows and
+    /// POSIX alike (<c>BundlePathsTests</c> pins both) -- is reported as <see cref="FileStatus.SkippedSymlink"/>
     /// rather than <see cref="FileStatus.SkippedUnreadable"/> -- either way nothing is read. A file over
     /// <paramref name="limits"/>'s <see cref="ExtractionLimits.MaxFileBytes"/> is rejected by its
     /// reported length alone -- it is never loaded into memory, let alone truncated to fit, since a

@@ -173,8 +173,24 @@ internal static class DenyAce
             throw new PlatformNotSupportedException("DenyAce.Deny is Windows-only; callers must check DenyAce.Supported first.");
         }
 
+        return Deny(path, isDirectory ? "(RD)" : "(R)");
+    }
+
+    /// <summary>
+    /// Adds a deny ACE with the given icacls <paramref name="rights"/> (e.g. <c>(OI)(CI)(R)</c>, an
+    /// inheritable deny-read on a directory and everything beneath it) and returns a handle whose
+    /// <see cref="IDisposable.Dispose"/> lifts it again -- removing the explicit ACE also removes what its
+    /// children inherited from it. The caller verifies the deny took the effect its test relies on.
+    /// </summary>
+    public static IDisposable Deny(string path, string rights)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("DenyAce.Deny is Windows-only; callers must check DenyAce.Supported first.");
+        }
+
         var sid = "*" + WindowsIdentity.GetCurrent().User!.Value;
-        RunIcacls(path, "/deny", sid + (isDirectory ? ":(RD)" : ":(R)"));
+        RunIcacls(path, "/deny", sid + ":" + rights);
         return new Lifted(path, sid);
     }
 
