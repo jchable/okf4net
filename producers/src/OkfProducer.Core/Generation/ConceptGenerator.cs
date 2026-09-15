@@ -991,8 +991,8 @@ public sealed class ConceptGenerator : IConceptGenerator
             // package is already reachable one level down from that ancestor (§5.2).
             children[packageId] =
             [
-                .. keys
-                    .Where(key => !keys.Any(other => IsProperAncestor(other, key)) && registeredByRawPath.ContainsKey(key))
+                .. MinimalUnderAncestry(keys)
+                    .Where(registeredByRawPath.ContainsKey)
                     .Select(key => new Child(registeredByRawPath[key], titlesByRawPath[key])),
             ];
         }
@@ -1089,6 +1089,50 @@ public sealed class ConceptGenerator : IConceptGenerator
     /// </summary>
     private static bool IsProperAncestor(string candidate, string key) =>
         key.Length > candidate.Length && key.StartsWith(candidate + char.MinValue, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The keys of <paramref name="keys"/> that are minimal under the ancestor relation, i.e. have no
+    /// proper ancestor (per <see cref="IsProperAncestor"/>) also present in the set -- in <c>O(k)</c>
+    /// instead of the pairwise <c>O(k²)</c> a naive "does any other key dominate me" scan would cost.
+    ///
+    /// <para><b>Why one sorted pass suffices.</b> <paramref name="keys"/> is ordered by
+    /// <see cref="StringComparer.Ordinal"/>, and <c>NUL</c> (<see cref="char.MinValue"/>) is the
+    /// smallest possible character, so under that comparer every descendant of a key <c>K</c> sorts
+    /// strictly between <c>K</c> and any key that is not a prefix of <c>K + NUL</c> -- i.e. immediately
+    /// after <c>K</c>, contiguously, with no unrelated key able to sort in between. The sole trap this
+    /// has to survive is a sibling whose own text happens to start with <c>K</c>'s text: for
+    /// <c>A\0B</c>, <c>A\0Ba</c>, <c>A\0B\0C</c>, the plain string <c>"A\0Ba"</c> sorts between
+    /// <c>"A\0B"</c> and <c>"A\0B\0C"</c> (<c>'a'</c> &gt; <c>NUL</c>), but it is not a descendant of
+    /// <c>A\0B</c> -- there is no <c>NUL</c> right after the shared prefix -- so it must survive
+    /// alongside it. Comparing against the boundary <c>lastMinimal + NUL</c>, not against
+    /// <c>lastMinimal</c> alone, is what tells the two apart: <c>"A\0Ba"</c> does not start with
+    /// <c>"A\0B" + NUL</c>, so it is kept and becomes the new <c>lastMinimal</c>; <c>"A\0B\0C"</c> does,
+    /// so it is dropped. Because a kept key's descendants all sort contiguously after it and before the
+    /// next kept key, tracking only the most recently kept minimal key -- rather than every minimal key
+    /// seen so far -- is enough: a later key can only be a descendant of the immediately preceding kept
+    /// key, never of one further back.</para>
+    ///
+    /// <para>Registration (<c>registeredByRawPath.ContainsKey</c>) is deliberately not folded into this
+    /// filter: it is applied by the caller <i>after</i> minimality, because an unregistered ancestor
+    /// must still suppress its descendants (§5.2) even though it will never itself appear in the
+    /// result.</para>
+    /// </summary>
+    internal static IEnumerable<string> MinimalUnderAncestry(SortedSet<string> keys)
+    {
+        // The ancestry boundary is rebuilt only when a key is kept, not on every comparison: a run of
+        // skipped descendants tests against the same boundary string instead of reallocating it each time.
+        string? lastMinimalBoundary = null;
+        foreach (var key in keys)
+        {
+            if (lastMinimalBoundary is not null && key.StartsWith(lastMinimalBoundary, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            lastMinimalBoundary = key + char.MinValue;
+            yield return key;
+        }
+    }
 
     /// <summary>
     /// The target frameworks every declaration of this symbol is excluded from -- so a symbol behind an

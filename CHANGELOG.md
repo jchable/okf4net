@@ -745,6 +745,25 @@ and this project adheres to
   `AttestationDiagnosticException` entry), now guarded by a test that puts a
   secret in a container's stdout and stderr. The container integration tests
   print the exception on failure too, rather than only the `Reasons`.
+- **`okfgen`'s package-child minimality filter is now `O(k)` instead of `O(k²)`
+  per package.** `ConceptGenerator.AttributePackages` computes, for each
+  package, the raw paths "minimal under the ancestor relation" it owns — a
+  path whose own ancestor the same package also claims is dropped, since it is
+  already reachable one level down from that ancestor (§5.2). That used to be
+  a pairwise `keys.Where(key => !keys.Any(other => IsProperAncestor(other,
+  key)))` scan. The extracted `ConceptGenerator.MinimalUnderAncestry` instead
+  makes one pass over the already-sorted `SortedSet<string>(Ordinal)`,
+  tracking only the most recently kept key: because the raw-path keys are
+  joined with `NUL` (the smallest character under `Ordinal`), every
+  descendant of a kept key sorts contiguously right after it, so comparing
+  each next key against `lastKept + NUL` (not `lastKept` alone, which would
+  wrongly drop a sibling like `A\0Ba` immediately after `A\0B`) is enough — no
+  quadratic re-scan of the whole set per key. Registration
+  (`registeredByRawPath.ContainsKey`) is still applied after minimality, so an
+  unregistered ancestor still suppresses its descendants. Behaviour is
+  unchanged — pinned by an equivalence property test against the original
+  pairwise expression over several thousand random key sets, and the golden
+  captures and `DeterminismTests` move by zero bytes (`producers/`).
 
 ### Fixed
 
