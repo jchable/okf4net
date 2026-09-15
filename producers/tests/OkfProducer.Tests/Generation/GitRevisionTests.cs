@@ -62,6 +62,16 @@ public class GitRevisionTests
         File.WriteAllText(trapGit, "not a real executable -- if this ever runs, the resolver picked the wrong one");
         File.WriteAllText(realGit, "not a real executable either -- only its path is asserted on, never launched");
 
+        // E11 fix round 1: on POSIX the resolver (correctly) requires the execute bit, so a candidate
+        // written without it is skipped and this test failed on Linux for a reason unrelated to what it
+        // pins -- the TEST was platform-biased, not the resolver. Both stand-ins get the bit, so the
+        // trap is a real competitor and the PATH one is a real hit. Neither is ever launched.
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(trapGit, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.SetUnixFileMode(realGit, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
         var originalCwd = Environment.CurrentDirectory;
         var originalPath = Environment.GetEnvironmentVariable("PATH");
         try

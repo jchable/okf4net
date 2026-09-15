@@ -180,12 +180,22 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // E7: MsBuildProjectQuery.ReadInputs' half of the fix. A relative KeyOriginatorFile is resolved
         // against the PROJECT's own directory, never this process's current directory -- the same
         // reasoning FullPath already applies to MSBuildSourceProjectFile.
+        //
+        // E11 fix round 1: the answer is spelled the way MSBuild itself prints it on this platform. This
+        // test used to hard-code `C:/repo` and `keys\k.snk`, and failed on Linux -- not because
+        // ReadKeyFile is wrong there, but because neither shape can reach it on Linux: `C:/repo` is not
+        // rooted, and MSBuild on Linux prints a project's `<AssemblyOriginatorKeyFile>keys\k.snk</...>`
+        // as `keys/k.snk` (measured: `dotnet msbuild -getProperty:AssemblyOriginatorKeyFile`,
+        // mcr.microsoft.com/dotnet/sdk:10.0, uid 1000). On Windows it prints the backslash verbatim, which
+        // is the shape this test pinned and still pins there.
+        var projectDirectory = Path.Combine(Path.GetTempPath(), "okfproducer-readinputs", "repo");
+        var printedKey = OperatingSystem.IsWindows() ? @"keys\k.snk" : "keys/k.snk";
         var inputs = MsBuildProjectQuery.ReadInputs(
-            "C:/repo/Some.csproj",
-            """{ "Properties": { "SignAssembly": "true", "KeyOriginatorFile": "keys\\k.snk" } }""");
+            Path.Combine(projectDirectory, "Some.csproj"),
+            $$"""{ "Properties": { "SignAssembly": "true", "KeyOriginatorFile": {{System.Text.Json.JsonSerializer.Serialize(printedKey)}} } }""");
 
         Assert.True(inputs.SignAssembly);
-        Assert.Equal(Path.GetFullPath(Path.Combine("C:/repo", "keys", "k.snk")), inputs.KeyFile);
+        Assert.Equal(Path.GetFullPath(Path.Combine(projectDirectory, "keys", "k.snk")), inputs.KeyFile);
     }
 
     [Fact]
