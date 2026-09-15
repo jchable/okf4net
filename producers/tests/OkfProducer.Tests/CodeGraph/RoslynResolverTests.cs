@@ -45,6 +45,46 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.True(inputs.References.Count > 100, $"only {inputs.References.Count} references resolved; is the repository restored?");
     }
 
+    [Fact]
+    public void Implicit_framework_defines_are_requested_exactly_once()
+    {
+        // The regression pin for adding "-t:AddImplicitDefineConstants" to Targets: on the SDKs this
+        // repository actually builds with (10.0.204, and 9.0.318 via global.json elsewhere in this
+        // file), the target already ran by the time ResolveReferences/GenerateGlobalUsings/
+        // GenerateAssemblyInfo finish (SDK 9.0.3xx+ moved it to AfterTargets="PrepareForBuild", which
+        // ResolveReferences already depends on -- dotnet/sdk#43908). Requesting it again must not
+        // duplicate the define it already produced -- green both before and after the fix on this
+        // host, which is exactly why Sdk8ImplicitDefinesRepositoryTest below exists to cover the SDK
+        // line where it is NOT already a no-op.
+        var inputs = MsBuildProjectQuery.Query(Path.Combine(_scratch.Root, "Scratch.csproj"));
+
+        var occurrences = inputs.DefineConstants
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Count(d => d == "NET10_0_OR_GREATER");
+        Assert.Equal(1, occurrences);
+    }
+
+    [Sdk8Fact]
+    public void Implicit_framework_defines_reach_the_compilation_on_sdk_8()
+    {
+        // The actual regression this task fixes, executed rather than merely reasoned about: SDK
+        // 8.0.425 wires AddImplicitDefineConstants to BeforeTargets="CoreCompile", which this query
+        // never runs, so without requesting the target explicitly DefineConstants on SDK 8 comes back
+        // as just TRACE;DEBUG;NET;NET8_0;NETCOREAPP -- no *_OR_GREATER symbol at all -- and
+        // `#if NET5_0_OR_GREATER` compiles the wrong way. This is skipped ([Sdk8Fact]) unless the
+        // `dotnet` on PATH lists an installed 8.0.x SDK; see task-E6-report.md for the manual
+        // before/after capture against a scratch SDK 8 install, since no SDK 8 is installed globally
+        // on the host this suite normally runs on.
+        using var repository = new Sdk8ImplicitDefinesRepository();
+
+        var resolver = RoslynResolver.Create(repository.Root, [repository.Project]);
+
+        var report = Assert.Single(resolver.Projects);
+        Assert.True(
+            report.Availability == RoslynProjectAvailability.Compiled,
+            $"expected Compiled, got {report.Availability}: {report.Detail}");
+    }
+
     [Theory]
     // Well-formed JSON that is not the object -getItem/-getProperty promise. TryGetProperty throws
     // InvalidOperationException on every one of these, not "returns false".
@@ -1882,6 +1922,56 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             : base("workspace")
         {
         }
+    }
+
+    /// <summary>
+    /// A restored net8.0 project pinned to an installed 8.0.x SDK via <c>global.json</c>, whose one
+    /// source file only compiles clean when <c>NET5_0_OR_GREATER</c> is actually defined --
+    /// <c>#else #error</c> otherwise, so a missing implicit define is a compile error
+    /// (<c>CompilationHadErrors</c>), not a silently-wrong branch a test would have to inspect IL to
+    /// notice. <c>rollForward: latestFeature</c> so this matches whatever 8.0.x feature band/patch
+    /// <see cref="HostFacts.Sdk8"/> found installed, not one specific version this repository cannot
+    /// know ahead of time.
+    /// </summary>
+    private sealed class Sdk8ImplicitDefinesRepository : ScratchRepository
+    {
+        public Sdk8ImplicitDefinesRepository()
+            : base("sdk8-implicit-defines")
+        {
+            Write("global.json", GlobalJson);
+            Project = Write("Sdk8.csproj", ProjectFile);
+            Write("Guarded.cs", Source);
+
+            Restore(Project);
+        }
+
+        public string Project { get; }
+
+        private const string GlobalJson = """
+            {
+              "sdk": {
+                "version": "8.0.100",
+                "rollForward": "latestFeature"
+              }
+            }
+            """;
+
+        private const string ProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net8.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private const string Source = """
+            #if NET5_0_OR_GREATER
+            namespace Sdk8Guarded;
+            public class Guarded { public int Value() => 1; }
+            #else
+            #error missing implicit framework defines
+            #endif
+            """;
     }
 
     /// <summary>

@@ -106,10 +106,31 @@ public static class MsBuildProjectQuery
     /// compile -- and a compilation with errors has an incomplete symbol table, which mis-attributes
     /// calls rather than merely missing them. Measured, not reasoned: adding these two targets is
     /// what took the spike's three probe projects to zero errors.
+    ///
+    /// <para>
+    /// <c>AddImplicitDefineConstants</c> is here for a fourth reason, found later and narrower than it
+    /// first looked. The suspect was <c>GenerateAssemblyInfo</c> -- it is not: measured with this exact
+    /// target list against SDK 10.0.204 and SDK 9.0.318, <c>DefineConstants</c> already carries the
+    /// full implicit set (<c>NET</c>, <c>NETCOREAPP</c>, <c>NET8_0</c>, every <c>NETx_OR_GREATER</c> up
+    /// to the project's TFM) whether or not <c>GenerateAssemblyInfo</c> runs. The real trigger is the
+    /// SDK line: SDK 8.0.425 declares <c>AddImplicitDefineConstants</c> with
+    /// <c>BeforeTargets="CoreCompile"</c> (<c>Microsoft.NET.Sdk.BeforeCommon.targets</c>), and this
+    /// query never runs <c>CoreCompile</c>, so on SDK 8 none of the requested targets ever populate the
+    /// <c>*_OR_GREATER</c> defines -- <c>DefineConstants</c> comes back as just
+    /// <c>TRACE;DEBUG;NET;NET8_0;NETCOREAPP</c>. SDK 9.0.3xx and 10 moved the same target to
+    /// <c>AfterTargets="PrepareForBuild"</c> (dotnet/sdk#43908), which <c>ResolveReferences</c> already
+    /// depends on, so those SDKs never showed the gap. Requesting the target explicitly closes it on
+    /// SDK 8 and is a measured no-op (no duplicate defines) on SDK 9.0.3xx+ and 10, where it has
+    /// already run by the time this list is evaluated. A project setting
+    /// <c>DisableImplicitFrameworkDefines=true</c> is unaffected either way, since the target's own
+    /// condition then skips it. A non-SDK-style project -- one with no
+    /// <c>AddImplicitDefineConstants</c> target at all -- already fails this query at
+    /// <c>GenerateGlobalUsings</c> (MSB4057) before reaching this target, so nothing new degrades.
+    /// </para>
     /// </summary>
     private static readonly string[] Targets =
     [
-        "-t:ResolveReferences", "-t:GenerateGlobalUsings", "-t:GenerateAssemblyInfo",
+        "-t:ResolveReferences", "-t:GenerateGlobalUsings", "-t:GenerateAssemblyInfo", "-t:AddImplicitDefineConstants",
     ];
 
     private static readonly string[] Items =

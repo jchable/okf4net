@@ -748,6 +748,24 @@ and this project adheres to
 
 ### Fixed
 
+- **`okfgen`'s MSBuild query now requests `AddImplicitDefineConstants`, so
+  `#if NETx_OR_GREATER` compiles correctly under an SDK 8 toolchain
+  (`producers/`).** `MsBuildProjectQuery`'s target list
+  (`ResolveReferences`/`GenerateGlobalUsings`/`GenerateAssemblyInfo`) never ran
+  `CoreCompile`, and SDK 8.0.425 wires `AddImplicitDefineConstants` to
+  `BeforeTargets="CoreCompile"` — so on that SDK line, `DefineConstants` came
+  back as just `TRACE;DEBUG;NET;NET8_0;NETCOREAPP`, missing every
+  `NETx_OR_GREATER` symbol, and a repository whose `global.json` pins SDK 8
+  had every such branch compiled the wrong way (a false `CompilationHadErrors`
+  on `#error` guards, or worse, a silently wrong branch on a plain `#if`).
+  Measured, not assumed to be `GenerateAssemblyInfo`-related as first
+  suspected: SDK 9.0.318 and 10.0.204 already carry the full implicit set
+  regardless, because dotnet/sdk#43908 moved the same target to
+  `AfterTargets="PrepareForBuild"`, which `ResolveReferences` already depends
+  on. Requesting the target explicitly closes the SDK 8 gap and is a measured
+  no-op (no duplicate defines) on SDK 9.0.3xx+/10. No hand-maintained
+  per-TFM fallback table — the target is public on every SDK that supports
+  `-getProperty`, and reimplementing its rules would fork them.
 - **A stage that ignores cancellation no longer keeps a run alive past
   `ComputationTimeout` or the caller's token, and can no longer turn a
   cancelled run into a displayable outcome (§10.5).** The orchestrator checked

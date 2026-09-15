@@ -372,3 +372,66 @@ internal sealed class UnixOnlyFact : FactAttribute
         }
     }
 }
+
+/// <summary>
+/// A <see cref="FactAttribute"/> that skips itself unless the <c>dotnet</c> on <c>PATH</c> lists an
+/// installed 8.0.x SDK -- the one line whose <c>AddImplicitDefineConstants</c> target runs too late
+/// for <c>MsBuildProjectQuery</c>'s target list to see its output (SDK 8 wires it to
+/// <c>BeforeTargets="CoreCompile"</c>, which this producer never asks MSBuild to run). SDK 9.0.3xx and
+/// 10 moved the same target to <c>AfterTargets="PrepareForBuild"</c> (dotnet/sdk#43908), so they never
+/// show the gap and cannot stand in for it here.
+///
+/// <para>
+/// Global installs only, deliberately: this probes <c>dotnet --list-sdks</c> exactly as
+/// <see cref="OkfProducer.CodeGraph.Roslyn.MsBuildProjectQuery"/>'s production caller would see it
+/// (the public overload always runs plain <c>dotnet</c>), never a scratch install pointed at by a
+/// per-test <c>DOTNET_ROOT</c>/<c>PATH</c> override -- a committed test cannot depend on a path that
+/// exists only on the machine that happened to install one for a manual RED capture.
+/// </para>
+/// </summary>
+internal sealed class Sdk8Fact : FactAttribute
+{
+    public Sdk8Fact()
+    {
+        if (!Sdk8.Installed)
+        {
+            Skip = "no 8.0.x SDK is listed by `dotnet --list-sdks` on this host";
+        }
+    }
+}
+
+/// <summary>Probes whether the <c>dotnet</c> on <c>PATH</c> has an 8.0.x SDK installed globally.</summary>
+internal static class Sdk8
+{
+    private static readonly Lazy<bool> Probe = new(ProbeOnce);
+
+    public static bool Installed => Probe.Value;
+
+    private static bool ProbeOnce()
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo("dotnet")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("--list-sdks");
+
+            using var process = Process.Start(startInfo)!;
+            var stdout = process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            return process.ExitCode == 0
+                && stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Any(line => line.StartsWith("8.0.", StringComparison.Ordinal));
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+}
