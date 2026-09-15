@@ -317,6 +317,33 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking (0.x): the frontmatter fence is `---` at column 0, and the YAML
+  subset rejects what the docs already said it rejects.**
+  - An indented `---` no longer opens or closes the frontmatter (§4: "delimited
+    by `---` on its own line"). A fence is `---` at column 0, optionally
+    followed by spaces or tabs; other trailing whitespace (NO-BREAK SPACE, a
+    lone `\r`) no longer counts either. The old trimmed comparison took an
+    indented `---` inside a `|` block scalar as the closing fence, silently
+    cutting the frontmatter there and moving the rest of it into the body; that
+    line is now block content. A document whose only closing line was indented
+    now fails as an unterminated frontmatter block, and one whose first line is
+    indented has no frontmatter. A leading byte-order mark still means no
+    frontmatter, as before.
+  - `okf verify` / `RecordVerifications` shares that predicate, so the
+    `FrontmatterBlockEdit` refusal of an indented closing fence is gone: it could
+    no longer trigger. A `verified` entry after such a line inside a block scalar
+    is now visible and merged instead of refused.
+  - Anchors (`&name`), aliases (`*name`) and tags (`!name`, `!!type`) starting
+    an unquoted node, and directives (`%YAML`, `%TAG`) and document markers
+    (`---`, `...`) at column 0, now fail parsing with a `YamlParseException`
+    that gives the line and names the feature. `README.md` already claimed the
+    subset rejected anchors, tags and multiple documents, but such a document
+    loaded, with those values read as plain strings (`k: *a` read as `"*a"`).
+    `Bundle.Load` reports the file in `ParseErrors` and `okf validate` as a
+    parse error. Quoted scalars, an indicator later in a plain scalar
+    (`a & b`), block-scalar content and a plain scalar's continuation lines are
+    unaffected.
+
 - **Breaking (0.x): link-guard refusals, see the Security entry below.**
   - `Bundle.ReadResourceText` now throws `UnauthorizedAccessException` for a
     path outside `Bundle.Root`, or one that is (or sits below) a reparse point

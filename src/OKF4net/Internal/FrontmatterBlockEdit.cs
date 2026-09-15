@@ -44,19 +44,15 @@ namespace OKF4net.Internal;
 /// where the frontmatter/body boundary sits (finding #C7-2: they used to,
 /// which let a fence-shaped line inside another key's block-scalar body
 /// silently swap places with the real closing fence for one of the two
-/// readers but not the other). The CLOSING fence <see cref="ReplaceTopLevelKey"/>
-/// locates via that predicate must itself start at column 0 -- if it does
-/// not (an indented <c>---</c>, e.g. inside another key's block-scalar body,
-/// which <c>Parse</c>'s own indentation-blind scan can mistake for the real
-/// fence), the edit REFUSES outright rather than editing against a boundary
-/// a §3 reader would not accept as a fence (finding #C7-A): the equality
-/// check alone is not enough here, because a document that misreads this way
-/// can have `document` and the re-parsed result agree with EACH OTHER while
-/// both are wrong relative to what the file visibly contains -- a genuine
-/// `verified` entry that Parse's misread boundary puts in the "body" is
-/// invisible to this edit, so stamping proceeds as if it did not exist,
-/// silently orphaning it. Trailing whitespace after a column-0 fence is
-/// still accepted (only LEADING whitespace triggers the refusal).</para>
+/// readers but not the other). That predicate accepts only a column-0
+/// <c>---</c> followed by nothing but spaces or tabs (§4), so an indented
+/// <c>---</c> -- e.g. a line of another key's block-scalar body -- is content
+/// for this scan exactly as it is for <c>Parse</c>. This type used to refuse a
+/// closing fence that was not at column 0 (finding #C7-A), because
+/// <c>Parse</c> then trimmed and could take such a line as the fence, putting
+/// a genuine <c>verified</c> entry after it into the "body" where this edit
+/// could not see it. With the column-0 predicate that misread cannot happen,
+/// and the refusal could no longer trigger, so it was removed.</para>
 ///
 /// <para>The document is re-parsed by the caller after the edit, and the
 /// caller is expected to verify the result by FULL STRUCTURAL EQUALITY
@@ -128,30 +124,9 @@ internal static class FrontmatterBlockEdit
             throw new DocumentValidationException("document has no closing frontmatter fence", []);
         }
 
-        // Refuse rather than edit against a MISREAD boundary: OkfDocument.Parse's
-        // fence scan is not indentation-aware (OkfDocument.IsFenceLine trims),
-        // so an indented "---" inside another key's block-scalar body -- e.g.
-        // "description: |\n  ---\n" -- can be the line Parse itself already
-        // treats as the closing fence, meaning content after it (a genuine
-        // "verified:" line included) is, per Parse, already part of the BODY
-        // and invisible to this edit. Silently proceeding there can leave a
-        // stale/duplicated `verified` line sitting inertly in the body while
-        // still re-parsing "successfully" against the (equally misread)
-        // `document` baseline -- finding #C7-A. This check is scoped to what
-        // FrontmatterBlockEdit itself locates and does NOT touch
-        // OkfDocument.Parse's own indentation-blind fence rule (that quirk
-        // reaches validate/info/search too and is out of scope here); a
-        // genuinely column-0 closing fence with TRAILING whitespace (e.g.
-        // "---  ") is still accepted, matching OkfDocument.IsFenceLine.
-        var closeContent = Content(close);
-        if (closeContent.Length == 0 || closeContent[0] != '-')
-        {
-            throw new DocumentValidationException(
-                "the document's frontmatter appears to close on an indented '---' line, "
-                + "which is not a valid fence (a fence must start at column 0); refusing "
-                + "rather than editing based on a misread frontmatter/body boundary",
-                []);
-        }
+        // No separate column-0 check on `close` (finding #C7-A's refusal used to
+        // live here): OkfDocument.IsFenceLine only accepts a line starting with
+        // "---", so the fence found above is at column 0 by construction.
 
         // Locate the line that DEFINES `key` at the top level (column 0),
         // using this library's own parser rule for what a mapping-entry line
@@ -160,12 +135,9 @@ internal static class FrontmatterBlockEdit
         // YamlMapping.Get's first-wins lookup would find it (finding #C7-1).
         // A line that does not start at column 0 with a non-blank,
         // non-comment character cannot be a top-level entry at all, so it is
-        // skipped before even asking the parser -- this is also what keeps a
-        // COLUMN-0 fence-shaped line from ever being mistaken for a key line
-        // (it has no ':' the split would accept as a key/value separator
-        // there, so TryReadTopLevelKeyLine already returns null for it, but
-        // skipping first avoids the question for every other continuation
-        // line too).
+        // skipped before even asking the parser. That includes an indented
+        // "---" (block-scalar content, not a fence); no column-0 fence line
+        // can occur before `close`, which is the first one.
         var keyLine = -1;
         var keyHasInlineValue = false;
         for (var i = 1; i < close; i++)

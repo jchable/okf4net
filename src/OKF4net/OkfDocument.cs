@@ -18,34 +18,46 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     private const string FrontmatterDelim = "---";
 
     /// <summary>
-    /// Whether <paramref name="line"/> is a frontmatter fence by this parser's
-    /// exact rule: its TRIMMED content (leading and trailing whitespace
-    /// stripped) equals <c>---</c>. Deliberately not indentation-aware -- an
-    /// INDENTED <c>---</c> (e.g. inside a <c>verified: |</c> block scalar's
-    /// own body) still matches, which is a real quirk of <see cref="Parse"/>'s
-    /// line-based fence scan (it runs before any YAML block-scalar parsing,
-    /// so it cannot tell such a line apart from a genuine fence): this
-    /// predicate does not fix that quirk. It is deliberately OUT OF SCOPE
-    /// here, not because fixing it would move any existing golden byte (it
-    /// would not -- no fixture or sample bundle in this repo has a fence
-    /// line with leading or trailing whitespace, checked by grep) but
-    /// because the quirk reaches every OTHER reader of a document
-    /// (<c>validate</c>, <c>info</c>, <c>search</c>, ...), not just this
-    /// editor, and deserves its own pass rather than a narrower fix smuggled
-    /// in here. <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> instead
-    /// refuses outright when the closing fence line IT locates via this
-    /// predicate is not itself at column 0 -- see its own remarks.
+    /// Whether <paramref name="line"/> is a frontmatter fence: it starts at
+    /// column 0 with <c>---</c>, and every character after those three is a
+    /// space or a tab (§4: "delimited by <c>---</c> on its own line"). Trailing
+    /// spaces and tabs are tolerated like Jekyll's <c>^---\s*$</c>, though more
+    /// narrowly: Ruby's <c>\s</c> also matches <c>\r</c>, <c>\f</c> and <c>\v</c>.
+    /// <paramref name="line"/> is a line as <see cref="LfLines"/> splits it, so
+    /// the <c>\r</c> of a CRLF terminator is already gone; a lone <c>\r</c>, or
+    /// any other whitespace such as NO-BREAK SPACE, makes the line not a fence.
+    ///
+    /// An INDENTED <c>---</c> is not a fence. It is ordinary frontmatter text:
+    /// the content of a block scalar (<c>description: |</c> whose body holds a
+    /// <c>---</c> line), a plain scalar's continuation, or invalid YAML. The
+    /// predicate used to compare the <c>Trim()</c>med line, which accepted such a
+    /// line as the closing fence and silently cut the frontmatter there. A
+    /// leading U+FEFF (byte-order mark) was not trimmed then and is not accepted
+    /// now: <see cref="Parse"/> reads a BOM-prefixed file as having no frontmatter.
     ///
     /// The single shared predicate <see cref="Parse"/> and
-    /// <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> both call: the two
-    /// USED to disagree (<see cref="Parse"/> trimmed, the surgical editor
-    /// compared for exact equality with no trim), so a document whose real
-    /// closing fence carried trailing whitespace, or whose block-scalar body
-    /// happened to contain a bare <c>---</c> line, could have the two decide
-    /// the frontmatter/body boundary sat at two DIFFERENT lines -- silently
-    /// moving body content into the edited frontmatter. See finding #C7-2.
+    /// <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> both call, so the two
+    /// cannot disagree about where the frontmatter/body boundary sits (finding
+    /// #C7-2: they used to, which silently moved body content into the edited
+    /// frontmatter).
     /// </summary>
-    internal static bool IsFenceLine(string line) => line.Trim() == FrontmatterDelim;
+    internal static bool IsFenceLine(string line)
+    {
+        if (!line.StartsWith(FrontmatterDelim, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        for (var i = FrontmatterDelim.Length; i < line.Length; i++)
+        {
+            if (line[i] is not (' ' or '\t'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     /// <summary>The YAML frontmatter block (empty if the file had none).</summary>
     public Frontmatter Frontmatter { get; }
@@ -65,11 +77,14 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     ///
     /// If the file does not begin with a <c>---</c> frontmatter delimiter,
     /// the entire text is treated as the body and the frontmatter is empty.
-    /// An opened-but-unclosed frontmatter block is an error.
+    /// An opened-but-unclosed frontmatter block is an error. Both delimiters
+    /// must be <c>---</c> at column 0, followed by nothing but spaces or tabs
+    /// (§4); an indented <c>---</c> neither opens nor closes the frontmatter.
     /// </summary>
     /// <exception cref="DocumentParseException">
     /// The frontmatter block is unterminated, is not a YAML mapping, or
-    /// contains invalid YAML.
+    /// contains invalid YAML, including a YAML feature outside the supported
+    /// subset (anchors, aliases, tags, directives, document markers).
     /// </exception>
     public static OkfDocument Parse(string text)
     {

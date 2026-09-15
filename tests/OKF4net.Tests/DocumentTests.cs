@@ -70,6 +70,130 @@ public class DocumentTests
         Assert.Equal("Unterminated YAML frontmatter block", ex.Message);
     }
 
+    // ---- §4 fence: "`---` on its own line" -----------------------------------
+
+    [Theory]
+    [InlineData("---\ntype: X\n---\nbody\n")]
+    [InlineData("---  \ntype: X\n---  \nbody\n")]
+    [InlineData("---\t\ntype: X\n---\t\nbody\n")]
+    [InlineData("--- \t\ntype: X\n---\nbody\n")]
+    public void A_column_0_fence_with_optional_trailing_spaces_or_tabs_opens_and_closes(string src)
+    {
+        var doc = OkfDocument.Parse(src);
+        Assert.Equal("X", doc.Frontmatter.Type);
+        Assert.Equal("body", doc.Body);
+    }
+
+    [Fact]
+    public void A_CRLF_fence_opens_and_closes()
+    {
+        var doc = OkfDocument.Parse("---\r\ntype: X\r\n---\r\nbody\r\n");
+        Assert.Equal("X", doc.Frontmatter.Type);
+        Assert.Equal("body", doc.Body);
+    }
+
+    /// <summary>
+    /// §4: an indented <c>---</c> is not "<c>---</c> on its own line", so it no
+    /// longer closes the frontmatter. With no other fence, the block is unterminated.
+    /// </summary>
+    [Theory]
+    [InlineData("---\ntype: X\n  ---\nbody\n")]
+    [InlineData("---\ntype: X\n\t---\nbody\n")]
+    [InlineData("---\ntype: X\n ---\nbody\n")]
+    public void An_indented_dash_line_does_not_close_the_frontmatter(string src)
+    {
+        var ex = Assert.Throws<DocumentParseException>(() => OkfDocument.Parse(src));
+        Assert.Equal("Unterminated YAML frontmatter block", ex.Message);
+    }
+
+    /// <summary>
+    /// Once it is not a fence, the indented line is ordinary YAML: here the
+    /// continuation of a multi-line plain scalar, with the real fence after it.
+    /// </summary>
+    [Fact]
+    public void An_indented_dash_line_before_the_real_fence_is_yaml_content()
+    {
+        var doc = OkfDocument.Parse("---\ntype: X\n  ---\n---\nbody\n");
+        Assert.Equal("X ---", doc.Frontmatter.Type);
+        Assert.Equal("body", doc.Body);
+    }
+
+    [Theory]
+    [InlineData("  ---\ntype: X\n---\nbody\n")]
+    [InlineData("\t---\ntype: X\n---\nbody\n")]
+    [InlineData("----\ntype: X\n----\nbody\n")]
+    [InlineData("--- x\ntype: X\n---\nbody\n")]
+    [InlineData("---x\ntype: X\n---\nbody\n")]
+    public void A_first_line_that_is_not_a_column_0_fence_means_no_frontmatter(string src)
+    {
+        var doc = OkfDocument.Parse(src);
+        Assert.True(doc.Frontmatter.IsEmpty);
+        Assert.Equal(src, doc.Body);
+    }
+
+    /// <summary>
+    /// Only spaces and tabs may follow the three dashes. Other whitespace that
+    /// <c>string.Trim</c> used to strip (NO-BREAK SPACE, vertical tab, form feed,
+    /// a lone carriage return not followed by <c>\n</c>) leaves the line ordinary text.
+    /// </summary>
+    [Theory]
+    [InlineData("---\ntype: X\n--- \nbody\n")]
+    [InlineData("---\ntype: X\n---\v\nbody\n")]
+    [InlineData("---\ntype: X\n---\f\nbody\n")]
+    [InlineData("---\ntype: X\n---\r")]
+    [InlineData("---\ntype: X\n----\n--- x\n")]
+    public void A_dash_line_with_anything_but_spaces_or_tabs_after_it_does_not_close(string src)
+    {
+        var ex = Assert.Throws<DocumentParseException>(() => OkfDocument.Parse(src));
+        Assert.Equal("Unterminated YAML frontmatter block", ex.Message);
+    }
+
+    /// <summary>
+    /// A leading UTF-8 BOM (U+FEFF) is not stripped by <see cref="OkfDocument.Parse"/>:
+    /// the first line is then not a fence and the whole text is body. The old
+    /// <c>Trim()</c>-based predicate behaved the same, since U+FEFF is not
+    /// <c>char.IsWhiteSpace</c>; pinned so the new predicate keeps it.
+    /// </summary>
+    [Fact]
+    public void A_leading_BOM_means_no_frontmatter_as_before()
+    {
+        const string src = "﻿---\ntype: X\n---\nbody\n";
+        var doc = OkfDocument.Parse(src);
+        Assert.True(doc.Frontmatter.IsEmpty);
+        Assert.Equal(src, doc.Body);
+    }
+
+    /// <summary>
+    /// The case that used to truncate silently: an indented <c>---</c> inside a
+    /// <c>|</c> block scalar was taken as the closing fence, cutting the block and
+    /// pushing the rest of the frontmatter into the body. It is block content now.
+    /// </summary>
+    [Fact]
+    public void An_indented_dash_line_inside_a_block_scalar_round_trips()
+    {
+        const string src = "---\ntype: X\ndescription: |\n  Intro\n  ---\n  Details\ntitle: T\n---\nbody\n";
+        var doc = OkfDocument.Parse(src);
+        Assert.Equal("Intro\n---\nDetails\n", doc.Frontmatter.Description);
+        Assert.Equal("T", doc.Frontmatter.Title);
+        Assert.Equal("body", doc.Body);
+
+        var reparsed = OkfDocument.Parse(doc.Serialize());
+        Assert.Equal(doc, reparsed);
+        Assert.Equal("Intro\n---\nDetails\n", reparsed.Frontmatter.Description);
+    }
+
+    /// <summary>
+    /// A rejected YAML feature surfaces from <see cref="OkfDocument.Parse"/> as a
+    /// <see cref="DocumentParseException"/> naming it, with the line counted from
+    /// the first frontmatter line, like every other YAML error.
+    /// </summary>
+    [Fact]
+    public void A_rejected_yaml_feature_is_a_document_parse_error()
+    {
+        var ex = Assert.Throws<DocumentParseException>(() => OkfDocument.Parse("---\ntype: X\nk: *a\n---\nbody\n"));
+        Assert.StartsWith("Invalid YAML in frontmatter: YAML error at line 2: YAML aliases", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Validate_rejects_missing_required_keys()
     {

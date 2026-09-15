@@ -9,6 +9,10 @@ public abstract class YamlValue
     /// <summary>
     /// Parses a single YAML value from text (the OKF frontmatter subset).
     /// </summary>
+    /// <exception cref="YamlParseException">
+    /// The text is not valid within the subset, including when it uses an
+    /// anchor, alias, tag, directive or document marker.
+    /// </exception>
     public static YamlValue Parse(string text) => YamlParser.Parse(text);
 
     /// <summary>

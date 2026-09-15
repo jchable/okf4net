@@ -129,35 +129,59 @@ public class FrontmatterBlockEditTests
 
     /// <summary>
     /// Finding #C7-2 (closing fence): <see cref="OkfDocument.Parse"/> accepts
-    /// a closing fence with trailing whitespace (its own predicate trims), so
-    /// this type must too, via the shared <see cref="OkfDocument.IsFenceLine"/>.
+    /// a column-0 closing fence followed by spaces or tabs, so this type must
+    /// too, via the shared <see cref="OkfDocument.IsFenceLine"/>.
     /// </summary>
-    [Fact]
-    public void A_closing_fence_with_trailing_whitespace_is_recognized()
+    [Theory]
+    [InlineData("---  ")]
+    [InlineData("---\t")]
+    public void A_closing_fence_with_trailing_whitespace_is_recognized(string fence)
     {
-        var doc = "---\ntype: Metric\ntitle: T\n---  \nbody\n";
+        var doc = "---\ntype: Metric\ntitle: T\n" + fence + "\nbody\n";
         var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
-        Assert.Equal("---\ntype: Metric\ntitle: T\n" + Block + "---  \nbody\n", edited);
+        Assert.Equal("---\ntype: Metric\ntitle: T\n" + Block + fence + "\nbody\n", edited);
     }
 
     /// <summary>
-    /// Round-2 finding #C7-A: a CLOSING fence with LEADING whitespace (unlike
-    /// trailing whitespace, accepted above) is refused, not edited against.
-    /// <see cref="OkfDocument.Parse"/>'s own fence scan is indentation-blind
-    /// and can mistake such a line for the real closing fence (e.g. one
-    /// sitting inside another key's block-scalar body), which would put
-    /// content after it -- a genuine <c>verified</c> entry included -- into
-    /// what <c>Parse</c> already considers the BODY, invisible to this edit;
-    /// stamping would then silently proceed as if that entry did not exist.
-    /// The end-to-end version of this scenario lives in
-    /// <c>RecordVerificationTests</c>.
+    /// H3 (§4), replacing round-2 finding #C7-A's refusal. An indented <c>---</c>
+    /// is not a fence for <see cref="OkfDocument.Parse"/> any more, and the edit
+    /// uses the same predicate, so the edit does not see a closing fence there
+    /// either: with no column-0 fence after it, the document has no closing fence.
+    /// Before H3, <c>Parse</c> took this line as the fence and the edit refused it
+    /// as "indented".
+    /// </summary>
+    [Theory]
+    [InlineData("  ---")]
+    [InlineData("\t---")]
+    public void An_indented_dash_line_is_not_a_closing_fence(string line)
+    {
+        var doc = "---\ntype: Metric\ntitle: T\n" + line + "\nbody\n";
+        var ex = Assert.Throws<DocumentValidationException>(() => FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block));
+        Assert.Equal("document has no closing frontmatter fence", ex.Message);
+    }
+
+    /// <summary>H3 (§4): an indented first line is not an opening fence, as for <see cref="OkfDocument.Parse"/>.</summary>
+    [Fact]
+    public void An_indented_dash_first_line_is_not_an_opening_fence()
+    {
+        var ex = Assert.Throws<DocumentValidationException>(
+            () => FrontmatterBlockEdit.ReplaceTopLevelKey("  ---\ntype: Metric\n---\n", "verified", Block));
+        Assert.Equal("document has no frontmatter fence to edit", ex.Message);
+    }
+
+    /// <summary>
+    /// H3 (§4): an indented <c>---</c> inside another key's block scalar is that
+    /// scalar's content for the edit as for <see cref="OkfDocument.Parse"/>. The
+    /// block is inserted before the real column-0 fence and the <c>---</c> line
+    /// stays where it was, and the result parses to the intended document.
     /// </summary>
     [Fact]
-    public void A_closing_fence_that_is_actually_indented_is_refused()
+    public void An_indented_dash_line_inside_a_block_scalar_is_content_for_the_edit()
     {
-        var doc = "---\ntype: Metric\ntitle: T\n  ---\nbody\n";
-        var ex = Assert.Throws<DocumentValidationException>(() => FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block));
-        Assert.Contains("indented", ex.Message);
+        var doc = "---\ntype: Metric\ndescription: |\n  Intro\n  ---\n  Details\ntitle: T\n---\nbody\n";
+        var edited = FrontmatterBlockEdit.ReplaceTopLevelKey(doc, "verified", Block);
+        Assert.Equal("---\ntype: Metric\ndescription: |\n  Intro\n  ---\n  Details\ntitle: T\n" + Block + "---\nbody\n", edited);
+        Assert.Equal("Intro\n---\nDetails\n", OkfDocument.Parse(edited).Frontmatter.Description);
     }
 
     /// <summary>

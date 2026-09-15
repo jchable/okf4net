@@ -604,40 +604,28 @@ public class RecordVerificationTests
     }
 
     /// <summary>
-    /// Finding #C7-2 / #C7-A (round 2): a bare "---" line INSIDE a
-    /// <c>verified: |</c> block scalar's own body is, by
-    /// <see cref="OkfDocument.Parse"/>'s own (pre-existing, line-based) fence
-    /// scan, mistaken for the closing fence -- so the document's real
-    /// "frontmatter" is just <c>type</c> and the malformed <c>verified</c>
-    /// block scalar, and everything from <c>title: T</c> onward is already,
-    /// per <c>Parse</c> itself, the BODY. The fix does not correct that
-    /// pre-existing quirk (it reaches <c>validate</c>/<c>info</c>/<c>search</c>
-    /// too and is out of scope here, not because it would move a golden byte
-    /// -- no fixture has a fence line with leading or trailing whitespace).
-    /// What round 2 adds: <c>FrontmatterBlockEdit</c> now REFUSES outright
-    /// when the closing fence line it locates is not itself at column 0,
-    /// rather than editing against that misread boundary and merely hoping
-    /// the equality check catches anything that went wrong with it -- round
-    /// 1 made the edit see the SAME boundary <c>Parse</c> does (closing the
-    /// silent body-into-frontmatter corruption #C7-2 was named for), but that
-    /// alone was not enough: this exact shape then re-passed the equality
-    /// check anyway (both sides consistently misread the same way) and wrote
-    /// a file whose visible <c>verified:</c> line sits between two pieces of
-    /// a split <c>description</c>, which a spec reader would not accept as a
-    /// fence and should never be edited against.
+    /// Finding #C7-2 / #C7-A, revisited by H3 (§4): a <c>---</c> line indented
+    /// inside a <c>verified: |</c> block scalar used to be taken by
+    /// <see cref="OkfDocument.Parse"/> as the closing fence, and the edit refused
+    /// to work against that misread boundary. An indented <c>---</c> is block
+    /// content now: the frontmatter is <c>type</c>, a (malformed, scalar)
+    /// <c>verified</c> and <c>title</c>, with the real fence after <c>title</c>.
+    /// The malformed scalar is replaced by a one-entry sequence, which is
+    /// <c>UpsertStamp</c>'s documented handling of a non-sequence <c>verified</c>,
+    /// and every other byte is kept.
     /// </summary>
     [Fact]
-    public void A_bare_fence_inside_a_verified_block_scalar_body_is_refused()
+    public void A_dash_line_inside_a_verified_block_scalar_is_content_and_the_scalar_is_replaced()
     {
         using var tmp = new TempDir();
-        const string before = "---\ntype: M\nverified: |\n  ---\ntitle: T\n---\nBody\n";
-        tmp.Write("metrics/x.md", before);
+        tmp.Write("metrics/x.md", "---\ntype: M\nverified: |\n  ---\ntitle: T\n---\nBody\n");
 
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
 
-        Assert.False(outcome.Recorded);
-        Assert.Contains("indented", outcome.Message);
-        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+        Assert.True(outcome.Recorded);
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\nBody\n",
+            Read(tmp, "metrics/x.md"));
     }
 
     /// <summary>
@@ -669,16 +657,14 @@ public class RecordVerificationTests
     }
 
     /// <summary>
-    /// Finding #C7-2 / #C7-A (round 2): the same mechanism as the block-scalar
-    /// case above, but with a real (non-malformed) <c>verified</c> sequence
-    /// preceding the stray indented fence -- the key search WOULD find and
-    /// correctly merge it (this is not the "hidden verified" shape), but the
-    /// closing fence <c>FrontmatterBlockEdit</c> located is still indented,
-    /// so it refuses before ever reaching the key search, on the same
-    /// column-0 rule as the block-scalar case.
+    /// Finding #C7-2 / #C7-A, revisited by H3 (§4): an indented <c>---</c> is no
+    /// longer a fence, so inside a <c>verified</c> sequence it is ordinary YAML,
+    /// and here invalid YAML (an indented line that belongs to nothing). The concept
+    /// is refused as unparseable before any edit, and the file is untouched. Before
+    /// H3 the line was taken as the closing fence and the edit refused it as indented.
     /// </summary>
     [Fact]
-    public void A_bare_fence_indented_inside_a_verified_sequence_is_refused()
+    public void A_dash_line_indented_inside_a_verified_sequence_is_refused_as_unparseable()
     {
         using var tmp = new TempDir();
         const string before = "---\ntype: M\nverified:\n  - {by: human:ada, at: 2025-01-01T00:00:00Z}\n  ---\ntags: [x]\n---\nBody\n";
@@ -687,38 +673,41 @@ public class RecordVerificationTests
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
 
         Assert.False(outcome.Recorded);
-        Assert.Contains("indented", outcome.Message);
+        Assert.Contains("could not be parsed", outcome.Message);
+        Assert.Contains("unexpected indentation", outcome.Message);
         Assert.Equal(before, Read(tmp, "metrics/x.md"));
     }
 
     /// <summary>
-    /// Finding #C7-A, the exact regression the round-2 review named "x04":
-    /// unlike the two shapes above, this one has a GENUINE, pre-existing
-    /// <c>verified: [bob]</c> line that Parse's indented-fence misread pushes
-    /// into what it considers the BODY -- invisible to the edit entirely.
-    /// Before this fix, the edit found no <c>verified</c> key (correctly, per
-    /// its own — Parse-consistent — view), inserted a brand-new one before
-    /// the misread fence, and the structural-equality check passed (both
-    /// `document` and the re-parsed result agreed, since both misread the
-    /// SAME way) -- reporting success while the file ended up holding TWO
-    /// visible <c>verified:</c> lines, bob's stamp permanently stale and
-    /// invisible to every OKF4net tool from then on, and <c>description</c>
-    /// split across the inserted block. The column-0 fence check refuses
-    /// this before any of that happens.
+    /// Finding #C7-A's "x04" shape, revisited by H3 (§4). Before H3,
+    /// <see cref="OkfDocument.Parse"/> took the indented <c>---</c> inside
+    /// <c>description: |</c> as the closing fence, which pushed the genuine
+    /// <c>verified: [bob]</c> entry into the body where no edit could see it; the
+    /// edit refused rather than orphan bob's stamp. An indented <c>---</c> is block
+    /// content now, so bob's entry is part of the frontmatter and the stamp merges
+    /// into it: bob is kept, ada is appended, and <c>description</c> keeps its
+    /// <c>---</c> line. The fixture gained <c>type: M</c> so the concept is
+    /// §11-conformant and the merge can be observed (without it, the concept is now
+    /// refused as having no <c>type</c>, which proves nothing about the fence).
     /// </summary>
     [Fact]
-    public void A_hidden_verified_entry_behind_an_indented_fence_is_refused_not_silently_orphaned()
+    public void A_verified_entry_after_a_dash_line_in_a_block_scalar_is_merged_not_orphaned()
     {
         using var tmp = new TempDir();
-        const string before =
-            "---\ndescription: |\n  Intro\n  ---\n  Details\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\ntitle: T\n---\n";
-        tmp.Write("metrics/x04.md", before);
+        tmp.Write(
+            "metrics/x04.md",
+            "---\ntype: M\ndescription: |\n  Intro\n  ---\n  Details\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\ntitle: T\n---\n");
 
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/x04"], "human:ada");
 
-        Assert.False(outcome.Recorded);
-        Assert.Contains("indented", outcome.Message);
-        Assert.Equal(before, Read(tmp, "metrics/x04.md"));
+        Assert.True(outcome.Recorded);
+        var after = Read(tmp, "metrics/x04.md");
+        Assert.Equal(
+            "---\ntype: M\ndescription: |\n  Intro\n  ---\n  Details\nverified:\n  -\n    by: human:bob\n    at: 2025-01-01T00:00:00Z\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\n",
+            after);
+        var reparsed = OkfDocument.Parse(after);
+        Assert.Equal("Intro\n---\nDetails\n", reparsed.Frontmatter.Description);
+        Assert.Equal(2, reparsed.Frontmatter.Verified.Count);
     }
 
     /// <summary>

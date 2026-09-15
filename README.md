@@ -116,9 +116,16 @@ extensive test suite, including byte-exact golden CLI comparisons.
   `description`, `timestamp`).
 - **A documented YAML subset.** Real OKF frontmatter is scalars, lists, and
   shallow maps. The parser handles block/flow collections, quoted/plain
-  scalars, `|`/`>` block scalars, and comments; it rejects (with a clear error)
-  the YAML features that never appear in frontmatter — anchors, tags, multiple
-  documents.
+  scalars, `|`/`>` block scalars, and comments. It rejects, with a
+  `YamlParseException` giving the line and naming the feature, the YAML features
+  that never appear in frontmatter: anchors (`&name`), aliases (`*name`) and
+  tags (`!name`, `!!type`) at the start of an unquoted node, and directives
+  (`%YAML`, `%TAG`) and document markers (`---`, `...`) on a line of their own
+  at column 0. A quoted scalar (`"*a"`), an indicator later in a plain scalar
+  (`a & b`), block-scalar content and a plain scalar's continuation lines stay
+  text. The frontmatter fences themselves are `---` at column 0, optionally
+  followed by spaces or tabs (§4); an indented `---` is frontmatter content, not
+  a fence.
 
 ## Usage
 

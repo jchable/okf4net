@@ -220,6 +220,28 @@ public class BundleTests
         Assert.Equal("a", bundle.Concepts[0].Id.ToString());
     }
 
+    /// <summary>
+    /// A YAML alias in one concept's frontmatter is a parse error for that file
+    /// only: it lands in <see cref="Bundle.ParseErrors"/> with a message naming the
+    /// feature, and the rest of the bundle still loads (permissive loading, §11).
+    /// </summary>
+    [Fact]
+    public void A_yaml_alias_lands_in_parse_errors_and_the_rest_loads()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("good.md", "---\ntype: Note\n---\nbody\n");
+        tmp.Write("bad.md", "---\ntype: Note\nk: *a\n---\nbody\n");
+
+        var bundle = Bundle.Load(tmp.Path);
+
+        Assert.Equal(1, bundle.Count);
+        Assert.Equal("good", bundle.Concepts[0].Id.ToString());
+        var (path, error) = Assert.Single(bundle.ParseErrors);
+        Assert.EndsWith("bad.md", path, StringComparison.Ordinal);
+        Assert.Contains("alias", error, StringComparison.Ordinal);
+        Assert.Contains("line 2", error, StringComparison.Ordinal);
+    }
+
     // ----------------------------------------------------------------
     // A2: symlink walk fidelity. The bundle walk classifies each directory
     // entry by its own type via lstat-based detection, reporting the type of

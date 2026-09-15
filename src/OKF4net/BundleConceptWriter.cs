@@ -705,17 +705,14 @@ public sealed class BundleConceptWriter
             // NotConformant is deliberately EXCLUDED here (left to fall
             // through to the unchanged prepare loop below, where
             // ValidateConformance already runs): a concept missing `type`
-            // can ALSO be one of the hostile shapes below it -- a fence
-            // misdetected inside a block-scalar body (finding #C7-A), a
-            // corrupted round-trip, an unemittable deep nesting -- and those
-            // failures are strictly MORE specific and were surfacing first
-            // long before this method existed (Parse's own line-based fence
-            // scan can misplace `type` into what it reads as the body, e.g.
-            // A_hidden_verified_entry_behind_an_indented_fence_is_refused_not_silently_orphaned's
-            // fixture, which is simultaneously "no type" AND the exact fence
-            // shape that must refuse with "indented" instead). Short-circuiting
-            // on NotConformant here would let §11's generic message pre-empt
-            // that specific, better diagnostic. Bailing out here for the
+            // can ALSO be one of the hostile shapes below it -- a corrupted
+            // round-trip, an unemittable deep nesting -- and those failures
+            // are strictly MORE specific and were surfacing first long before
+            // this method existed. (A third shape, an indented `---` inside a
+            // block scalar misread as the closing fence (finding #C7-A), no
+            // longer exists: OkfDocument.IsFenceLine accepts only a column-0
+            // fence, §4.) Short-circuiting on NotConformant here would let
+            // §11's generic message pre-empt a specific, better diagnostic. Bailing out here for the
             // OTHER five kinds carries no such risk FOR THE SAME ID: an
             // invalid id, a missing file, an unreadable file, an unparseable
             // document or a resolved-path duplicate are all structurally

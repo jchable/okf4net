@@ -23,13 +23,26 @@ internal static class YamlParser
     /// <summary>Shared message for every place <see cref="MaxNestingDepth"/> is enforced.</summary>
     private const string NestingDepthExceededMessage = "nesting depth limit exceeded";
 
+    // The YAML features the subset rejects rather than silently reading as
+    // plain strings (see README "A documented YAML subset"). Each message names
+    // the feature and never quotes the input.
+    private const string AnchorMessage = "YAML anchors (&name) are not supported by the OKF YAML subset";
+    private const string AliasMessage = "YAML aliases (*name) are not supported by the OKF YAML subset";
+    private const string TagMessage = "YAML tags (!name, !!type) are not supported by the OKF YAML subset";
+    private const string DirectiveMessage = "YAML directives (%YAML, %TAG) are not supported by the OKF YAML subset";
+    private const string DocumentMarkerMessage = "YAML document markers (---, ...) are not supported by the OKF YAML subset";
+
     /// <summary>
     /// Parses a YAML document (the OKF subset) into a <see cref="YamlValue"/>.
     /// Empty or comment/whitespace-only input parses to <see cref="YamlNull"/>.
+    /// Anchors, aliases, tags, directives and document markers are rejected
+    /// with a <see cref="YamlParseException"/> naming the feature.
     /// </summary>
     public static YamlValue Parse(string text)
     {
-        var p = new BlockParser(LfLines.Split(text));
+        var lines = LfLines.Split(text);
+        RejectDirectivesAndDocumentMarkers(lines);
+        var p = new BlockParser(lines);
         p.SkipBlankAndComments();
         if (p.Pos >= p.Lines.Count)
         {
@@ -46,6 +59,65 @@ internal static class YamlParser
 
         return value;
     }
+
+    /// <summary>
+    /// Rejects a YAML directive (a line starting with <c>%</c>) or document
+    /// marker (<c>---</c> or <c>...</c>, followed by the end of the line, a space
+    /// or a tab) at column 0. Only column 0 is checked, and that is exact rather
+    /// than approximate: this parser never reads a column-0 line as content. A
+    /// block scalar's body and a plain scalar's continuation lines must be
+    /// indented deeper than their parent (<see cref="BlockParser.ParseBlockScalar"/>
+    /// and <see cref="BlockParser.ParsePlainScalarOrContinuation"/> stop at the
+    /// first non-blank line that is not), whose indentation is never negative;
+    /// quoted and flow values are single-line. So an indented <c>%</c> or
+    /// <c>...</c> line inside a <c>|</c> block stays content, and a column-0 one
+    /// is always a structural line, where YAML reserves <c>%</c> for directives
+    /// and <c>---</c>/<c>...</c> for document markers.
+    /// </summary>
+    private static void RejectDirectivesAndDocumentMarkers(List<string> lines)
+    {
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            if (line.StartsWith('%'))
+            {
+                throw new YamlParseException(i + 1, DirectiveMessage);
+            }
+
+            if ((line.StartsWith("---", StringComparison.Ordinal) || line.StartsWith("...", StringComparison.Ordinal))
+                && (line.Length == 3 || line[3] is ' ' or '\t'))
+            {
+                throw new YamlParseException(i + 1, DocumentMarkerMessage);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Throws when <paramref name="token"/>, the text of an unquoted node with
+    /// leading whitespace already removed, starts with an anchor (<c>&amp;</c>),
+    /// alias (<c>*</c>) or tag (<c>!</c>) indicator. Only the node's first
+    /// character is checked, which is where YAML reads these indicators: a quoted
+    /// scalar starts with its quote, an indicator in the middle of a plain scalar
+    /// (<c>a &amp; b</c>) is text, and callers never pass block-scalar content or
+    /// a plain scalar's continuation lines (YAML restricts only a plain scalar's
+    /// first character). <paramref name="line"/> is 0-based, like the other helpers'.
+    /// </summary>
+    private static void RejectNodeIndicator(string token, int line)
+    {
+        if (token.Length > 0 && NodeIndicatorMessage(token[0]) is { } message)
+        {
+            throw new YamlParseException(line + 1, message);
+        }
+    }
+
+    /// <summary>The rejection message for a node starting with <paramref name="first"/>, or <c>null</c>.</summary>
+    private static string? NodeIndicatorMessage(char first) => first switch
+    {
+        '&' => AnchorMessage,
+        '*' => AliasMessage,
+        '!' => TagMessage,
+        _ => null,
+    };
 
     /// <summary>
     /// If <paramref name="line"/> is a top-level YAML mapping-entry line by
@@ -173,6 +245,7 @@ internal static class YamlParser
             }
 
             // A bare scalar / flow collection on a single line.
+            RejectNodeIndicator(trimmed, Pos);
             var v = ParseInlineValue(trimmed, Pos);
             Pos++;
             return v;
@@ -227,6 +300,12 @@ internal static class YamlParser
                 }
 
                 var split = SplitKeyValue(trimmed) ?? throw Err("expected 'key: value' mapping entry");
+
+                // The key and the inline value are the two unquoted-node starts
+                // on this line. `key: &a` followed by a nested block is caught
+                // here too, since `&a` is the inline rest.
+                RejectNodeIndicator(split.Key, Pos);
+                RejectNodeIndicator(split.Rest ?? string.Empty, Pos);
                 var keyValue = ParseScalar(split.Key, Pos);
                 var entryLine = Pos;
                 Pos++;
@@ -305,6 +384,10 @@ internal static class YamlParser
                 var itemOffset = indent + 1 + (dashRest.Length - dashRest.TrimStart().Length);
                 var itemText = content[1..].TrimStart();
                 var entryLine = Pos;
+
+                // Checked before the "- key: value" branch rewrites the line, so
+                // `- &a k: v` is reported as the item's anchor.
+                RejectNodeIndicator(itemText, entryLine);
 
                 if (itemText.Length == 0)
                 {
@@ -1098,6 +1181,13 @@ internal static class YamlParser
             // whitespace, a flow indicator, or end-of-input — mirroring the
             // block-style SplitKeyValue rule — so a bare ':' inside a value
             // (`human:ada`, `https://x`, an ISO time `00:00:00`) is kept.
+            // Every flow value and flow-mapping key that is not a collection or a
+            // quoted scalar reaches this point with Pos on its first character.
+            if (NodeIndicatorMessage(c) is { } indicatorMessage)
+            {
+                throw Err(indicatorMessage);
+            }
+
             var startPlain = Pos;
             while (Pos < Chars.Length)
             {

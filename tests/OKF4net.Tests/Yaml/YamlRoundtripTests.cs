@@ -80,6 +80,43 @@ public class YamlRoundtripTests
         }
     }
 
+    /// <summary>
+    /// The parser now rejects anchors, aliases, tags, directives and document
+    /// markers, so every string the emitter writes that starts with one of those
+    /// indicators must come out quoted: as a value, a sequence item, a nested
+    /// sequence item and a key.
+    /// </summary>
+    [Theory]
+    [InlineData("&a")]
+    [InlineData("*a")]
+    [InlineData("!a")]
+    [InlineData("!!str")]
+    [InlineData("!<tag:x>")]
+    [InlineData("%YAML 1.2")]
+    [InlineData("%")]
+    [InlineData("&")]
+    [InlineData("*")]
+    [InlineData("!")]
+    [InlineData("& b")]
+    [InlineData("...")]
+    [InlineData("... x")]
+    [InlineData("---")]
+    [InlineData("--- x")]
+    public void Strings_starting_with_a_rejected_indicator_roundtrip(string s)
+    {
+        var m = new YamlMapping();
+        m.Insert("k", new YamlString(s));
+        m.Insert("seq", new YamlSequence([new YamlString(s), new YamlSequence([new YamlString(s)])]));
+        m.Insert(s, new YamlString("keyed"));
+
+        var emitted = m.ToYamlString();
+        var reparsed = YamlValue.Parse(emitted).AsMapping()!;
+
+        Assert.Equal(m, reparsed);
+        Assert.Equal(s, reparsed.Get("k")!.AsString());
+        Assert.Equal("keyed", reparsed.Get(s)!.AsString());
+    }
+
     [Fact]
     public void Non_finite_and_large_floats_roundtrip()
     {
