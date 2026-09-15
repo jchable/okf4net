@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics;
 using OkfProducer.CodeGraph.Roslyn;
+using OkfProducer.Tests.Generation;
 using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.CodeGraph;
@@ -30,7 +31,31 @@ namespace OkfProducer.Tests.CodeGraph;
 /// dependency -- so this reaches the actual consumer of <c>DefineConstants</c>, not only the property
 /// string MSBuild reports.
 /// </para>
+///
+/// <para>
+/// <b>Why this class joins <see cref="ProcessEnvironmentCollectionDefinition"/>.</b> Fix round 1's own
+/// re-review found that <see cref="NestedDotnetEnvironment"/> mutates ~10 MSBuild/SDK-resolution
+/// environment variables process-wide (not per-thread), for the duration of this class's
+/// <c>Restore</c>+<c>Query</c> calls -- and several OTHER test classes in this assembly
+/// (<see cref="RoslynResolverTests"/> among them) shell out to a real <c>dotnet</c> from their own test
+/// methods, which by xunit's default behaviour can run concurrently with this one. That is exactly the
+/// situation <see cref="ProcessEnvironmentCollectionDefinition"/> exists for (see
+/// <c>GitRevisionTests</c>'s own remarks): putting only the class or classes that themselves MUTATE
+/// process-wide state into that <c>DisableParallelization</c> collection is what actually keeps a
+/// concurrently-running, unrelated real-<c>dotnet</c> call from landing inside the cleared window --
+/// re-review found this harmless *today* on this host (a same-SDK, PATH-resolved call is not
+/// observably different whether these variables are set or unset), but nothing enforced that as an
+/// invariant. A cleaner, production-code-free alternative -- threading the scrubbed variables through
+/// <c>ProcessStartInfo.Environment</c> on each child process individually, rather than mutating
+/// <see cref="Environment"/> process-wide at all -- was considered and rejected for this class: it would
+/// cover <see cref="Sdk8Repository.Restore"/>'s own <c>ProcessStartInfo</c> (test-owned), but
+/// <see cref="MsBuildProjectQuery.Query(string, string, TimeSpan)"/>'s internal <c>Run</c> builds its
+/// own <c>ProcessStartInfo</c> with no environment-overlay parameter, and adding one is a production
+/// code change this round of fixes was told not to make. Joining the collection is therefore the only
+/// complete fix available without touching production code.
+/// </para>
 /// </summary>
+[Collection(ProcessEnvironmentCollectionDefinition.Name)]
 public sealed class Sdk8ImplicitDefinesTests
 {
     [Sdk8Fact]
@@ -179,7 +204,11 @@ public sealed class Sdk8ImplicitDefinesTests
     /// host. Scoped and reversible, like <c>HostFacts</c>'s <c>DenyAce</c>/<c>UnixPermission</c>
     /// handles: <see cref="Clear"/> returns an <see cref="IDisposable"/> that restores every value it
     /// touched, including a variable that was genuinely unset (restored to unset, not to
-    /// <c>string.Empty</c>).
+    /// <c>string.Empty</c>). <see cref="Environment.SetEnvironmentVariable(string, string)"/> is
+    /// process-wide, not per-thread, so any caller of this helper MUST be a member of
+    /// <see cref="ProcessEnvironmentCollectionDefinition"/> (as <see cref="Sdk8ImplicitDefinesTests"/>
+    /// is) -- otherwise another, unrelated test class's own real-<c>dotnet</c> call could run
+    /// concurrently inside the cleared window.
     /// </summary>
     private static class NestedDotnetEnvironment
     {

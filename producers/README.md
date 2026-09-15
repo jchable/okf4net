@@ -59,6 +59,22 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--roslyn-timeout <seconds>` | *none* | Wall-clock budget for the whole Roslyn stage — the `dotnet msbuild` queries and the compilations after them. **Absent means unbounded**, which is the default and is deliberate: each query is capped at two minutes on its own, but nothing caps their sum, so a large repository runs for as long as it runs, and a budget would make the emitted bundle a function of how fast this machine is (§6.2 pins determinism at a fixed extractor version, not a fixed CPU). If the budget runs out the stage is abandoned **whole**, never truncated — you get the same uniformly name-matched bundle `--no-msbuild` produces, with a note naming the same two losses, rather than one whose exact and name-matched links are divided by machine speed with nothing recording where the line fell. |
 | `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. The tree-sitter engine skips a larger one *and counts it*, which makes the run partial: the concepts it owned are then not pruned. The Roslyn engine applies the same cap to the `Compile` items MSBuild reports, but drops an over-cap item **silently** — for a file the scan also walked the counted skip covers it, and for one it did not (a linked out-of-repository source, a generated file under `obj/`) nothing reports it: the project simply fails to compile and is named as such. |
 
+### Known limitation: `dotnet exec <dll>` can silently degrade an SDK-8-pinned sub-project
+
+Use `dotnet run --project producers/src/OkfProducer.Cli -- generate …` (above) or the packaged
+native executable (see "Packaging" below) to run `okfgen`. Invoking the already-built
+`OkfProducer.Cli.dll` directly via `dotnet exec OkfProducer.Cli.dll generate …` is **not**
+confirmed equivalent: measured against a scanned repository whose sub-project pins SDK 8 via
+`global.json`, with a real SDK 8 installed, the `dotnet exec` invocation degraded that
+sub-project silently — the run still exited `0` and wrote a bundle, with only
+`note: <project>.csproj: not compiled (MsBuildQueryFailed) ... A compatible .NET SDK was not
+found. Requested SDK version: 8.0.100` marking it, a line easy to miss in a CI log. The same
+reproduction against `dotnet run --project`, the native apphost (`OkfProducer.Cli.exe`), and
+the native apphost run from inside an MSBuild `<Exec>` target were all confirmed clean. Every
+`DOTNET_*`/`MSBuild*` environment variable and `PATH` were confirmed identical between the clean
+and the degraded run — the cause is not one of those, and it has not been root-caused further.
+See `ROADMAP.md` for the open investigation.
+
 ### Generating from a repository runs that repository's build logic
 
 Only point `okfgen` at a repository you would be willing to **build**.
