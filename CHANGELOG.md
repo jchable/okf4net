@@ -764,6 +764,36 @@ and this project adheres to
   unchanged — pinned by an equivalence property test against the original
   pairwise expression over several thousand random key sets, and the golden
   captures and `DeterminismTests` move by zero bytes (`producers/`).
+- **`okfgen` now has one bounded child-process runner and one link-ancestor
+  walk, instead of drifted copies (`producers/`).** `GitRevision.RunGit` and
+  `MsBuildProjectQuery.Run` each carried their own start/drain/timeout/kill
+  code; both now call the internal `BoundedProcess.Run`, which redirects and
+  closes stdin, drains stdout and stderr concurrently under caps, bounds the
+  whole call (reads included) by its timeout, kills the process tree on
+  giving up, and reports `Completed`/`NotStarted`/`TimedOut`/`Faulted` rather
+  than throwing — `MsBuildProjectQuery` maps those to its existing messages
+  verbatim. It holds no shared state and is safe for concurrent use. The
+  repository-containment test and the count-bounded link-ancestor walk that
+  `CompilationFactory`, `TreeSitterExtractor`, `RoslynResolver` and
+  `SourceOwnershipMap` each re-implemented now live once, in `BundlePaths`
+  (`OkfProducer.Core` grants `InternalsVisibleTo` to the two code-graph
+  projects rather than making either public). The walk is bounded by a
+  directory count, never by meeting a root string, which is what once made
+  `CompilationFactory` walk to the filesystem root for out-of-repository
+  `Compile` items — that bug is now pinned by a regression test. Behaviour
+  changes, all at the edges: a `Compile` item under a directory literally
+  named `..foo` is now owned by the Roslyn engine (its former copy tested
+  `..` as a prefix and fell back to the name-matching baseline); a path or
+  ancestor whose link status cannot even be inspected is skipped as a
+  symlink rather than as unreadable (the file is skipped either way), and a
+  strong-name key file in that position leaves the compilation unsigned
+  instead of throwing out of `CompilationFactory`; the
+  `dotnet msbuild` child now gets a closed stdin; `git` answers are capped at
+  64 KiB and a failed `git` pipe read yields the outside-git fallback instead
+  of an exception; and the MSBuild reads gain the `WaitAsync` bound only the
+  `git` copy had — insurance rather than a fix, since on Windows / .NET 10 the
+  reads' cancellation token was measured to bound a grandchild holding the
+  pipe on its own. The golden captures move by zero bytes.
 
 ### Fixed
 

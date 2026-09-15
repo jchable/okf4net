@@ -1074,7 +1074,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     {
         // The key path is repository-controlled data (an MSBuild property a Directory.Build.props can
         // set to anything), so this producer must not follow it outside the tree it was asked to scan --
-        // the same containment E7's ruling requires and CompilationFactory.IsWithinRepository checks.
+        // the same containment E7's ruling requires and BundlePaths.IsAtOrUnderRoot checks (E11 moved
+        // CompilationFactory's former private IsWithinRepository there).
         using var repository = new SignedFriendRepository();
         var outside = Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), "okf-producer-keyoutside-" + Guid.NewGuid().ToString("N")[..12]));
@@ -1111,9 +1112,9 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     public void A_key_file_behind_a_reparse_point_is_not_used()
     {
         // The same hazard TryParse already refuses for Compile items, reused here via
-        // IsBehindReparsePoint rather than forked: an ancestor directory between the repository root and
-        // the key file is a link, so the key file is reached only by leaving the tree this producer was
-        // told to scan, even though its own path string never climbs out with a "..".
+        // BundlePaths.HasLinkAncestorUnderRoot rather than forked: an ancestor directory between the
+        // repository root and the key file is a link, so the key file is reached only by leaving the tree
+        // this producer was told to scan, even though its own path string never climbs out with a "..".
         using var repository = new SignedFriendRepository();
         var outside = Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), "okf-producer-keylink-" + Guid.NewGuid().ToString("N")[..12]));
@@ -1333,6 +1334,22 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.Equal(RoslynProjectAvailability.CompilationHadErrors, report.Availability);
         Assert.Contains("CS0246", report.Detail, StringComparison.Ordinal);
         Assert.False(resolver.Owns("Main.cs"));
+    }
+
+    [Fact]
+    public void A_compile_item_under_a_directory_named_with_a_leading_double_dot_is_still_owned()
+    {
+        // E11: RoslynResolver's own copy of "is this path under the repository" tested the relative
+        // answer's `..` as a string PREFIX, so `..foo/Dotted.cs` -- a directory NAME, not a climb -- read
+        // as outside the repository: its tree was compiled but never owned, and its calls fell back to
+        // the name-matching baseline. The shared BundlePaths.TryGetPathUnderRoot tests the first SEGMENT.
+        using var repository = new DoubleDotDirectoryRepository();
+
+        var resolver = RoslynResolver.Create(repository.Root, [repository.Project]);
+
+        Assert.True(AllCompiled(resolver), Describe(resolver));
+        Assert.True(resolver.Owns("Plain.cs"), Describe(resolver));
+        Assert.True(resolver.Owns("..foo/Dotted.cs"), Describe(resolver));
     }
 
     [Fact]
@@ -2046,6 +2063,37 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
                 public static string Write(Payload payload) =>
                     System.Text.Json.JsonSerializer.Serialize(payload, PayloadContext.Default.Payload);
             }
+            """;
+    }
+
+    /// <summary>
+    /// A one-project repository with a source file under a directory literally named <c>..foo</c>.
+    /// Included explicitly, because the SDK's default globs exclude every directory whose name starts
+    /// with a dot.
+    /// </summary>
+    private sealed class DoubleDotDirectoryRepository : ScratchRepository
+    {
+        public DoubleDotDirectoryRepository()
+            : base("doubledot")
+        {
+            Project = Write("DoubleDot.csproj", ProjectFile);
+            Write("Plain.cs", "namespace DoubleDot;\npublic class Plain { public int Go() => new Dotted().Go(); }\n");
+            Write(Path.Combine("..foo", "Dotted.cs"), "namespace DoubleDot;\npublic class Dotted { public int Go() => 1; }\n");
+
+            Restore(Project);
+        }
+
+        public string Project { get; }
+
+        private const string ProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="..foo/Dotted.cs" />
+              </ItemGroup>
+            </Project>
             """;
     }
 

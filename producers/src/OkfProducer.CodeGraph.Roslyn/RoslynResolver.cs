@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Generation;
 
 namespace OkfProducer.CodeGraph.Roslyn;
 
@@ -1053,23 +1054,15 @@ public sealed class RoslynResolver : ISymbolResolver
     /// <summary>
     /// <paramref name="absolutePath"/> as a repository-relative, forward-slashed path, or
     /// <see langword="null"/> when it is not under <paramref name="repositoryRoot"/> at all (a linked
-    /// file from elsewhere, or a different drive).
+    /// file from elsewhere, or a different drive). The containment question itself is
+    /// <c>BundlePaths.TryGetPathUnderRoot</c>'s, shared with <c>CompilationFactory</c> and
+    /// <c>SourceOwnershipMap</c> (E11): this method's former private copy tested <c>..</c> as a string
+    /// prefix and so disowned a directory merely NAMED <c>..foo</c>.
     /// </summary>
-    private static string? RelativeToRepository(string repositoryRoot, string? absolutePath)
-    {
-        if (string.IsNullOrEmpty(absolutePath))
-        {
-            return null;
-        }
-
-        var relative = Path.GetRelativePath(repositoryRoot, absolutePath);
-        if (Path.IsPathRooted(relative) || relative.StartsWith("..", StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        return relative.Replace(Path.DirectorySeparatorChar, '/');
-    }
+    private static string? RelativeToRepository(string repositoryRoot, string? absolutePath) =>
+        !string.IsNullOrEmpty(absolutePath) && BundlePaths.TryGetPathUnderRoot(repositoryRoot, absolutePath, out var relative)
+            ? relative.Replace(Path.DirectorySeparatorChar, '/')
+            : null;
 
     /// <summary>
     /// <see cref="StringComparer.Ordinal"/>, the same rule every other path comparison in this

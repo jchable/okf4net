@@ -182,7 +182,8 @@ internal static class BundlePaths
     /// pointing anywhere at all, inside the bundle or out of it.</para>
     ///
     /// <para>An unanswerable path is reported as a link. Every caller uses this to decide whether to
-    /// walk INTO something: declining to walk costs coverage, and walking costs containment.</para>
+    /// walk INTO something -- or, through <see cref="HasLinkAncestor"/>, whether to read something --
+    /// and declining costs coverage where going ahead costs containment.</para>
     /// </summary>
     internal static bool IsReparsePoint(string path)
     {
@@ -194,5 +195,123 @@ internal static class BundlePaths
         {
             return true;
         }
+    }
+
+    /// <summary>
+    /// <paramref name="path"/> relative to <paramref name="root"/>, in the platform's own separators
+    /// (<c>"."</c> for the root itself), or <see langword="false"/> when <paramref name="path"/> is not
+    /// at or under <paramref name="root"/> at all.
+    ///
+    /// <para><b>The one repository-containment question the code stage asks</b>, answered here so the
+    /// Roslyn engine, the tree-sitter engine and <see cref="SourceOwnershipMap"/> cannot drift apart on
+    /// it (E11: <c>CompilationFactory</c>, <c>RoslynResolver</c> and <c>SourceOwnershipMap</c> each carried
+    /// a copy, and <c>RoslynResolver</c>'s had drifted -- it tested the leading <c>..</c> as a string
+    /// PREFIX, so a directory literally named <c>..foo</c> read as outside the repository).</para>
+    ///
+    /// <para>Not under the root means: a different drive or share (the relative answer comes back
+    /// rooted), or a first SEGMENT of exactly <c>..</c> -- a segment, not a prefix, since <c>..foo</c> is a
+    /// directory name and not a climb. <see cref="Path.GetRelativePath(string, string)"/> settles casing
+    /// on the platform's own terms rather than by a <see cref="StringComparison"/> picked here (measured
+    /// on Windows: <c>GetRelativePath(@"C:\REPO", @"C:\repo\a\x.cs")</c> is <c>a\x.cs</c>), and makes both
+    /// arguments absolute first, so a relative argument is resolved against the current directory. A
+    /// path the platform rejects outright is reported as not under the root.</para>
+    ///
+    /// <para><b>Lexical, and deliberately a different question from <see cref="IsInside"/>.</b> Nothing
+    /// here follows a link; see <see cref="HasLinkAncestor"/> for that. <see cref="IsInside"/> answers
+    /// "strictly under an already-resolved bundle root", excluding the root itself, and guards the
+    /// writer's deletes; this answers "at or under a repository root", and is what the code stage uses
+    /// to decide what a path is called and how far a link walk may go.</para>
+    /// </summary>
+    internal static bool TryGetPathUnderRoot(string root, string path, out string relative)
+    {
+        try
+        {
+            relative = Path.GetRelativePath(root, path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            relative = string.Empty;
+            return false;
+        }
+
+        if (Path.IsPathRooted(relative) || FirstSegment(relative) == "..")
+        {
+            relative = string.Empty;
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Whether <paramref name="path"/> is <paramref name="root"/> itself or lies under it; see <see cref="TryGetPathUnderRoot"/>.</summary>
+    internal static bool IsAtOrUnderRoot(string root, string path) => TryGetPathUnderRoot(root, path, out _);
+
+    /// <summary>
+    /// Whether <paramref name="path"/> is itself a link, or any of its first <paramref name="levels"/>
+    /// ancestor directories is -- counting up from its containing directory, and never further.
+    ///
+    /// <para><b>The bound is a count, never a string to stop at, and that is the whole point.</b> A walk
+    /// that stops only on meeting a root string runs to the filesystem root for any path that never
+    /// meets it -- a <c>Compile</c> item from outside the repository
+    /// (<c>&lt;Compile Include="..\..\Shared\X.cs"/&gt;</c>, ordinary in real solutions), or a root spelled
+    /// in a different case -- and on macOS or Linux, where a shared tree commonly sits under a symlinked
+    /// ancestor (<c>/tmp</c> -&gt; <c>/private/tmp</c>), that dropped every such item. That bug shipped
+    /// once in <c>CompilationFactory</c>; counting makes over-walking structurally impossible. A link at
+    /// or above the repository root is the operator's own checkout layout, not something the scanned
+    /// repository chose, so the caller's count stops below it.</para>
+    ///
+    /// <para><b>Each level is tested with <see cref="IsReparsePoint"/></b>, so it fails closed: a level
+    /// that cannot be inspected (on POSIX, one under a directory without search permission; anywhere, a
+    /// path the platform rejects) counts as a link. A Windows deny ACE does not produce that case -- see
+    /// <c>BundlePathsTests.HasLinkAncestor_fails_closed_on_an_ancestor_it_cannot_inspect_posix</c>. The walk
+    /// only ever inspects the path string it was given, never a link's target, so a link loop cannot
+    /// make it run longer than <paramref name="levels"/> + 1 probes.</para>
+    /// </summary>
+    /// <param name="path">The file (or directory) whose own link status and ancestry are tested.</param>
+    /// <param name="levels">How many ancestor directories to test; <c>0</c> tests only <paramref name="path"/> itself.</param>
+    internal static bool HasLinkAncestor(string path, int levels)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(levels);
+
+        if (IsReparsePoint(path))
+        {
+            return true;
+        }
+
+        var directory = Path.GetDirectoryName(path);
+        for (var i = 0; i < levels && !string.IsNullOrEmpty(directory); i++)
+        {
+            if (IsReparsePoint(directory))
+            {
+                return true;
+            }
+
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// <see cref="HasLinkAncestor"/> bounded by <paramref name="root"/>: tests <paramref name="path"/>
+    /// itself and every directory between it and <paramref name="root"/>, excluding the root. The count is
+    /// the number of directory segments in <paramref name="path"/>'s <see cref="TryGetPathUnderRoot"/>
+    /// answer; a path not under <paramref name="root"/> at all gets a count of <c>0</c>, so only the path
+    /// itself is tested -- there is no bound to walk within, and walking anyway is the bug
+    /// <see cref="HasLinkAncestor"/> describes. A <see langword="null"/> <paramref name="root"/> means the
+    /// caller has no root to bound by (<c>SourceFileGate.Unbounded</c>), and likewise tests only the path
+    /// itself.
+    /// </summary>
+    internal static bool HasLinkAncestorUnderRoot(string? root, string path) =>
+        HasLinkAncestor(path, root is not null && TryGetPathUnderRoot(root, path, out var relative) ? DirectorySegments(relative) : 0);
+
+    /// <summary>How many directory segments precede the last segment of a relative path (<c>a/b/x.cs</c> is 2, <c>x.cs</c> and <c>.</c> are 0).</summary>
+    private static int DirectorySegments(string relative) =>
+        relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Length - 1;
+
+    private static string FirstSegment(string relative)
+    {
+        var end = relative.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
+        return end < 0 ? relative : relative[..end];
     }
 }

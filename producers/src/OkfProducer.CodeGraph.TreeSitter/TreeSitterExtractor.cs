@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.Text;
 using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Generation;
 using TreeSitter;
 
 namespace OkfProducer.CodeGraph.TreeSitter;
@@ -682,13 +683,17 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
 
     /// <summary>
     /// Applies §2.3's hostile-input guards before a single byte is parsed. A reparse point (symlink
-    /// or junction, detected via the public <see cref="FileSystemInfo.LinkTarget"/> rather than an
-    /// internal seam this project cannot reach) is never followed -- checked both for
-    /// <paramref name="absolutePath"/> itself and for every directory between it and the repository
-    /// root, via <see cref="IsUnderReparsePoint"/>: a plain file reached only because one of its
+    /// or junction) is never followed -- checked both for <paramref name="absolutePath"/> itself and
+    /// for every directory between it and the repository root, via <c>BundlePaths.HasLinkAncestor</c>
+    /// in <c>OkfProducer.Core</c> (E11: the same count-bounded walk the Roslyn engine's
+    /// <c>CompilationFactory</c> uses, rather than a private copy of it; the count is
+    /// <paramref name="relativePath"/>'s own number of directory segments, which is exactly the number
+    /// of directories between the root and this file): a plain file reached only because one of its
     /// *ancestor* directories is a junction/symlink is exactly as unfollowed as a directly-symlinked
     /// file, and <see cref="CodeGraphBuilder"/>'s own walk (<see cref="Directory.EnumerateFiles"/>)
-    /// does traverse through such a directory rather than stopping at it. A file over
+    /// does traverse through such a directory rather than stopping at it. That walk fails closed: a
+    /// path or level that cannot even be inspected is reported as <see cref="FileStatus.SkippedSymlink"/>
+    /// rather than <see cref="FileStatus.SkippedUnreadable"/> -- either way nothing is read. A file over
     /// <paramref name="limits"/>'s <see cref="ExtractionLimits.MaxFileBytes"/> is rejected by its
     /// reported length alone -- it is never loaded into memory, let alone truncated to fit, since a
     /// partial parse would produce spans that point at the wrong code, worse than no extraction at
@@ -709,12 +714,11 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         byte[] bytes;
         try
         {
-            // The link check stays on the real FileInfo and is deliberately NOT behind the reader
+            // The link check stays on the real filesystem and is deliberately NOT behind the reader
             // seam. It is a containment decision, and a seam able to answer it is a seam able to
             // waive it -- a test double could then let a symlink through a check whose whole purpose
             // is that nothing does.
-            var fileInfo = new FileInfo(absolutePath);
-            if (fileInfo.LinkTarget is not null || IsUnderReparsePoint(absolutePath, relativePath))
+            if (BundlePaths.HasLinkAncestor(absolutePath, levels: relativePath.Count(c => c == '/')))
             {
                 return FileStatus.SkippedSymlink;
             }
@@ -754,32 +758,6 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
             source = string.Empty;
             return FileStatus.SkippedEncoding;
         }
-    }
-
-    /// <summary>
-    /// Walks up from <paramref name="absolutePath"/>'s containing directory exactly as many levels as
-    /// <paramref name="relativePath"/> has directory segments -- i.e. no further than the repository
-    /// root this file was discovered under -- checking each level's own <see cref="FileSystemInfo.LinkTarget"/>.
-    /// Bounding the walk by <paramref name="relativePath"/>'s own segment count avoids needing the
-    /// repository root as a separate argument: it is exactly the number of directories between the
-    /// root and this file, no more.
-    /// </summary>
-    private static bool IsUnderReparsePoint(string absolutePath, string relativePath)
-    {
-        var depth = relativePath.Count(c => c == '/');
-        var directory = Path.GetDirectoryName(absolutePath);
-
-        for (var i = 0; i < depth && directory is not null; i++)
-        {
-            if (new DirectoryInfo(directory).LinkTarget is not null)
-            {
-                return true;
-            }
-
-            directory = Path.GetDirectoryName(directory);
-        }
-
-        return false;
     }
 
     /// <inheritdoc/>

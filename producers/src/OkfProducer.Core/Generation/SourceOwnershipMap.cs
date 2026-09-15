@@ -197,6 +197,8 @@ public sealed class SourceOwnershipMap
     /// <see langword="null"/> when it lies outside <paramref name="root"/>. A path that is already
     /// relative is taken as-is (only separator-normalized): the caller has then already expressed it
     /// in the same space <c>SymbolFact.RelativePath</c> and <c>PackageManifest.RelativePath</c> use.
+    /// Whether a rooted path lies under <paramref name="root"/> is <see cref="BundlePaths.TryGetPathUnderRoot"/>'s
+    /// answer, the one the code-graph engines use too (E11), rather than a local copy of it.
     /// </summary>
     private static string? Relativize(string root, string path)
     {
@@ -211,11 +213,7 @@ public sealed class SourceOwnershipMap
             return Normalize(trimmed);
         }
 
-        var relative = Normalize(Path.GetRelativePath(root, trimmed));
-
-        return relative.StartsWith("../", StringComparison.Ordinal) || relative == ".." || Path.IsPathRooted(relative)
-            ? null
-            : relative;
+        return BundlePaths.TryGetPathUnderRoot(root, trimmed, out var relative) ? Normalize(relative) : null;
     }
 
     /// <summary>

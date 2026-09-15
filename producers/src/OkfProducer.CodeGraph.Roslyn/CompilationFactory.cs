@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Generation;
 
 namespace OkfProducer.CodeGraph.Roslyn;
 
@@ -305,7 +306,9 @@ public static class CompilationFactory
     /// <c>Directory.Build.props</c> can set to anything), so this producer must not follow it outside
     /// the tree it was asked to scan, or through a link planted to point somewhere it should not read --
     /// the same hazard <see cref="TryParse"/> already refuses for <c>Compile</c> items, reused here via
-    /// <see cref="IsWithinRepository"/> and <see cref="IsBehindReparsePoint"/> rather than forked.
+    /// <c>BundlePaths.IsAtOrUnderRoot</c> and <c>BundlePaths.HasLinkAncestorUnderRoot</c> rather than
+    /// forked (E11 moved both into <c>OkfProducer.Core</c>, so the tree-sitter engine walks with the very
+    /// same code).
     /// </para>
     ///
     /// <para>
@@ -365,12 +368,12 @@ public static class CompilationFactory
             return null;
         }
 
-        if (repositoryRoot is not null && !IsWithinRepository(file.FullName, repositoryRoot))
+        if (repositoryRoot is not null && !BundlePaths.IsAtOrUnderRoot(repositoryRoot, file.FullName))
         {
             return null;
         }
 
-        return IsBehindReparsePoint(file, repositoryRoot) ? null : file.FullName;
+        return BundlePaths.HasLinkAncestorUnderRoot(repositoryRoot, file.FullName) ? null : file.FullName;
     }
 
     /// <summary>
@@ -479,7 +482,7 @@ public static class CompilationFactory
         try
         {
             var file = new FileInfo(path);
-            if (!file.Exists || file.Length > gate.MaxFileBytes || IsBehindReparsePoint(file, gate.RepositoryRoot))
+            if (!file.Exists || file.Length > gate.MaxFileBytes || BundlePaths.HasLinkAncestorUnderRoot(gate.RepositoryRoot, file.FullName))
             {
                 return null;
             }
@@ -516,127 +519,6 @@ public static class CompilationFactory
         }
 
         return CSharpSyntaxTree.ParseText(SourceText.From(text), parseOptions, path);
-    }
-
-    /// <summary>
-    /// Whether <paramref name="file"/> is a link, or sits under a directory that is one, walking up no
-    /// further than <paramref name="repositoryRoot"/>.
-    ///
-    /// <para>
-    /// <b>The bound is a counted depth, not a string match, and that is the whole point.</b> The first
-    /// version of this walk terminated only on <c>Path.GetDirectoryName</c> returning null or on the
-    /// current directory comparing equal to the root -- so for a <c>Compile</c> item from outside the
-    /// repository (<c>&lt;Compile Include="..\..\Shared\X.cs"/&gt;</c>, ordinary in real solutions) the
-    /// root was never met and <i>every</i> ancestor up to the filesystem root was probed. That is the
-    /// opposite of what this doc claimed, and on macOS or Linux, where a shared tree commonly sits
-    /// under a symlinked ancestor (<c>/tmp</c> -&gt; <c>/private/tmp</c>), it dropped every such item.
-    /// A case-mismatched root on a case-insensitive filesystem degraded into the same walk.
-    /// </para>
-    ///
-    /// <para>
-    /// Counting instead makes over-walking structurally impossible, which is exactly how
-    /// <c>TreeSitterExtractor.IsUnderReparsePoint</c> is bounded: as many levels as the file's
-    /// repository-relative path has directory segments, and no more. A junction above the repository
-    /// is the operator's own checkout layout, not something the scanned repository chose.
-    /// <see cref="Path.GetRelativePath(string, string)"/> also settles the casing question on the
-    /// platform's own terms rather than by picking a <see cref="StringComparison"/> here (measured on
-    /// this host: <c>GetRelativePath(@"C:\REPO", @"C:\repo\a\x.cs")</c> is <c>a\x.cs</c>).
-    /// </para>
-    ///
-    /// <para>
-    /// A file outside the root keeps only the check on the file itself: there is no bound to walk
-    /// within, and walking anyway is the bug above.
-    /// </para>
-    /// </summary>
-    private static bool IsBehindReparsePoint(FileInfo file, string? repositoryRoot)
-    {
-        // MEASURED, contrary to what wave 2b round 1 recorded here. That note said a junction or a
-        // symbolic link needs privileges the test run does not have; it does not -- a directory
-        // junction needs no elevation on Windows. RoslynResolverTests' two DirectoryLinkFact tests now
-        // execute both halves of this method against a real link: the in-repository one reaches the
-        // walk's return-true below, and the out-of-repository one proves the walk does not run at all.
-        // What is still NOT executed is this first branch, a Compile item that is ITSELF a link
-        // (rather than sitting under one), which no fixture builds.
-        if (file.LinkTarget is not null)
-        {
-            return true;
-        }
-
-        if (repositoryRoot is null)
-        {
-            return false;
-        }
-
-        var depth = DepthUnderRoot(file.FullName, repositoryRoot);
-        var directory = file.DirectoryName;
-
-        for (var i = 0; i < depth && directory is not null; i++)
-        {
-            if (new DirectoryInfo(directory).LinkTarget is not null)
-            {
-                return true;
-            }
-
-            directory = Path.GetDirectoryName(directory);
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// How many directory levels separate <paramref name="fullPath"/> from
-    /// <paramref name="repositoryRoot"/>, or <c>0</c> when the file is not under that root at all --
-    /// a different drive, or a path that climbs out of it.
-    /// </summary>
-    private static int DepthUnderRoot(string fullPath, string repositoryRoot) =>
-        TryGetSegmentsUnderRoot(fullPath, repositoryRoot, out var segments) ? segments.Length - 1 : 0;
-
-    /// <summary>
-    /// Whether <paramref name="fullPath"/> sits inside <paramref name="repositoryRoot"/> at all --
-    /// unlike <see cref="DepthUnderRoot"/>, which answers "how far under" and cannot itself distinguish
-    /// "directly in the root" from "not under the root", both of which return depth <c>0</c>. E7 needs
-    /// exactly that distinction: a key file named directly in the repository root must still be usable,
-    /// while one on another drive or reached only by climbing out (<c>..\..\secrets\k.snk</c>) must not
-    /// be, and depth alone cannot tell those apart.
-    /// </summary>
-    private static bool IsWithinRepository(string fullPath, string repositoryRoot) =>
-        TryGetSegmentsUnderRoot(fullPath, repositoryRoot, out _);
-
-    /// <summary>
-    /// The shared computation behind <see cref="DepthUnderRoot"/> and <see cref="IsWithinRepository"/>:
-    /// <paramref name="fullPath"/>'s path segments relative to <paramref name="repositoryRoot"/>, or
-    /// <see langword="false"/> when it is not under that root at all -- a different drive (the relative
-    /// answer comes back rooted), or a leading <c>..</c> SEGMENT (not prefix: <c>..foo</c> is a
-    /// directory name, not a climb).
-    /// </summary>
-    private static bool TryGetSegmentsUnderRoot(string fullPath, string repositoryRoot, out string[] segments)
-    {
-        string relative;
-        try
-        {
-            relative = Path.GetRelativePath(Path.GetFullPath(repositoryRoot), fullPath);
-        }
-        catch (ArgumentException)
-        {
-            segments = [];
-            return false;
-        }
-
-        if (Path.IsPathRooted(relative))
-        {
-            segments = [];
-            return false;
-        }
-
-        var split = relative.Split(['/', '\\']);
-        if (split[0] == "..")
-        {
-            segments = [];
-            return false;
-        }
-
-        segments = split;
-        return true;
     }
 
     private static OutputKind OutputKindFor(string outputType) =>
