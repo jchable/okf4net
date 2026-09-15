@@ -566,4 +566,26 @@ public class YamlParserTests
         Assert.Equal("b", items[1].AsString());
         Assert.Equal(1L, items[2].AsMapping()!.Get("c")!.AsInt());
     }
+
+    /// <summary>
+    /// The emitter's key test: the line <c>key:</c> must split at the key's own
+    /// colon and give back the key itself. An earlier split (<c>a: b</c> splits
+    /// as <c>a</c>) and a trimmed key (<c> a</c>) count as not splitting there,
+    /// even though the line is still a mapping entry.
+    /// </summary>
+    [Theory]
+    [InlineData("abc", true)]
+    [InlineData("a[b]", true)]
+    [InlineData("a\"b\"c", true)]
+    [InlineData("a[b", false)]
+    [InlineData("a{b", false)]
+    [InlineData("a\"b", false)]
+    [InlineData("a'b", false)]
+    [InlineData("a: b", false)]
+    [InlineData(" a", false)]
+    [InlineData("a ", false)]
+    public void SplitsAtKeyEnd_requires_the_split_at_the_keys_own_colon(string key, bool expected)
+    {
+        Assert.Equal(expected, YamlParser.SplitsAtKeyEnd(key));
+    }
 }

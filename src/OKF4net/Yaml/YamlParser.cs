@@ -293,6 +293,18 @@ internal static class YamlParser
     }
 
     /// <summary>
+    /// Whether <see cref="SplitKeyValue"/> splits the line <c>key:</c> exactly at
+    /// the colon after <paramref name="key"/>, returning <paramref name="key"/>
+    /// itself as the key text. Used by <see cref="YamlEmitter"/> to decide whether
+    /// a key it would write plain must be quoted instead: every key line the
+    /// parser reads (top-level, nested, a sequence item's mapping) goes through
+    /// that split, and the split's state at the colon depends only on the text
+    /// before it, so <c>key:</c> and <c>key: value</c> split alike.
+    /// </summary>
+    internal static bool SplitsAtKeyEnd(string key) =>
+        SplitKeyValue(key + ":") is { } split && string.Equals(split.Key, key, StringComparison.Ordinal);
+
+    /// <summary>
     /// A single key/optional-rest split of a (left-trimmed) mapping-entry line.
     /// </summary>
     private readonly record struct KeyValueSplit(string Key, string? Rest);

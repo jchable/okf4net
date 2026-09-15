@@ -826,6 +826,23 @@ and this project adheres to
 
 ### Fixed
 
+- **The YAML emitter now quotes a frontmatter key the parser would read back
+  as something else (§4.1).** A key was judged as if it were a value, so one
+  containing `[`, `{`, `"` or `'` after its first character was written plain,
+  and the parser then read `a[b: v` as the single string `a[b: v` or rejected
+  the document. A string key that was already written plain is now
+  double-quoted, with the same escapes as a quoted value, when the parser's own
+  `key: value` split does not end at that key's colon. For such a key that is
+  exactly when it leaves a quote open (a `'` or `"` with no closing quote later
+  in the key, where a doubled `''` inside `'` and a `\`-escaped character inside
+  `"` do not close it) or leaves a flow level open (outside quotes, a `[` or
+  `{` not balanced by a later `]` or `}`; either closer closes either opener,
+  and one with nothing open is ignored). So `a[b`, `a"b` and `a[b]]c[` are
+  quoted, while `a[b]`, `a"b"c` and every ordinary key keep their plain form and
+  no emitted output changes for them. A deterministic 10 000-string fuzz went
+  from 496 failures to 0 at each of the three key positions (top-level, nested,
+  in a sequence item's mapping), and stays at 0 for values, sequence items and
+  whole-document scalars.
 - **A stage that ignores cancellation no longer keeps a run alive past
   `ComputationTimeout` or the caller's token, and can no longer turn a
   cancelled run into a displayable outcome (§10.5).** The orchestrator checked
