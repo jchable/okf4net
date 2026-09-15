@@ -795,11 +795,15 @@ and this project adheres to
   - an ancestor (or the file itself) whose metadata cannot be read — a
     `chmod 000` directory above it on POSIX, an inheritable deny-read ACE on
     Windows — now counts as a link, so tree-sitter reports the file as
-    `SkippedSymlink` rather than `SkippedUnreadable`. Either way nothing is
-    read. (The Roslyn side is unchanged in practice: such a `Compile` item or
-    key file already reports as not existing there, and was dropped or left
-    unused before the walk is reached.) A directory that merely cannot be
-    *listed* while its files stay readable by path is not refused;
+    `SkippedSymlink`, the Roslyn engine drops the `Compile` item, and a key
+    file there is not used. For those two shapes the file was unreadable
+    anyway, but not for every shape: on Windows a file beneath a level whose
+    read-attributes right is denied, under a parent that denies listing, still
+    opens by path, and **was read before** — including from outside the
+    repository through a junction (see Security). Such files are now refused
+    even when readable, deliberately, since the escape and a harmless
+    directory with the same ACEs cannot be told apart. A directory that merely
+    cannot be *listed* while its files stay readable by path is not refused;
   - any first path segment other than exactly `..` is a name, not a climb —
     `..foo`, `...`, `.. `, and on POSIX `..\x` (a backslash is a filename
     character there) — so such paths are inside the repository for every
@@ -1618,6 +1622,40 @@ and this project adheres to
   spec says nothing about filesystem links — this is the host's guarantee
   that a bundle-relative read or write stays in the bundle (§3), the catalog
   root or the output directory it was given.
+- **`okfgen`'s code stage no longer reads a source file or strong-name key
+  from outside the repository through a junction whose attributes are
+  denied (`producers/`, Windows).** Shape, executed: a directory `repo\p`
+  denying listing (`(RD)`), holding a junction `p\jra` that points outside
+  the repository and carries a deny read-attributes (`(RA)`) ACE. A file
+  beneath it still opens by its in-repository path (traverse bypass) and
+  reports as existing, but `LinkTarget` on the junction answers "not a link"
+  without throwing, and that was the only probe the producer's link walks
+  asked. Measured on Windows 11 at `da6225d` and at E11's first cut
+  (`f4f8250`), with the outside `y.cs` and `k.snk` addressed as
+  `repo\p\jra\y.cs` / `repo\p\jra\k.snk`:
+  - `CompilationFactory.Create` parsed the outside `y.cs` into the project's
+    compilation (a `Compile` item reaches it as a path MSBuild printed, not
+    through a listing of `p`);
+  - `CompilationFactory.Create` handed the outside `k.snk` to the compilation
+    as its strong-name key file (public signing on);
+  - `TreeSitterExtractor.Extract`, given that path directly, extracted the
+    outside file's symbols (`Extracted`). The repository walk itself does not
+    list `p`, so `CodeGraphBuilder` never handed it that path: it reports `p`
+    as inaccessible instead.
+
+  Now each level of `BundlePaths.HasLinkAncestor` is also classified by
+  `File.GetAttributes`, which throws on the denied junction, and an
+  uninspectable level counts as a link: no syntax tree, no key file,
+  `SkippedSymlink` — pinned end to end by
+  `A_junction_to_outside_whose_attributes_are_denied_under_an_unlistable_parent_is_never_read_windows`,
+  red with `f4f8250`'s walk. A plain directory with the same two ACEs cannot
+  be told apart and is refused too, even though its file is inside and
+  readable. POSIX has no analogue: opening the file needs search permission
+  on every ancestor, which is all `lstat` needs, so a link that cannot be
+  inspected cannot be read through either. Not an OKF spec behaviour: the
+  spec says nothing about filesystem links — this is the producer's own
+  hostile-input guarantee (the §2.3 guards `TreeSitterExtractor` applies)
+  that it reads only the repository it was pointed at.
 
 ## [0.5.0] - 2026-07-31
 

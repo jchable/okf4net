@@ -693,8 +693,12 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// file, and <see cref="CodeGraphBuilder"/>'s own walk (<see cref="Directory.EnumerateFiles"/>)
     /// does traverse through such a directory rather than stopping at it. That walk fails closed: a
     /// path or level whose metadata cannot even be read -- an access denial included, on Windows and
-    /// POSIX alike (<c>BundlePathsTests</c> pins both) -- is reported as <see cref="FileStatus.SkippedSymlink"/>
-    /// rather than <see cref="FileStatus.SkippedUnreadable"/> -- either way nothing is read. A file over
+    /// POSIX alike (<c>BundlePathsTests</c> pins both) -- is reported as <see cref="FileStatus.SkippedSymlink"/>,
+    /// and nothing is read. That is not only a relabelling of what used to be
+    /// <see cref="FileStatus.SkippedUnreadable"/>: on Windows a file can still open by path beneath a
+    /// level whose attributes are denied, and before E11 fix round 1 such a file WAS read -- including one
+    /// behind a junction pointing outside the repository (see <c>BundlePaths.HasLinkAncestor</c>). Some
+    /// readable, harmless files in that position are now refused too, deliberately. A file over
     /// <paramref name="limits"/>'s <see cref="ExtractionLimits.MaxFileBytes"/> is rejected by its
     /// reported length alone -- it is never loaded into memory, let alone truncated to fit, since a
     /// partial parse would produce spans that point at the wrong code, worse than no extraction at

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OkfProducer.CodeGraph.Roslyn;
 using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
+using OkfProducer.Core.Scanning;
 using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.Generation;
@@ -303,6 +305,97 @@ public class BundlePathsTests
         Assert.Equal("namespace N;", File.ReadAllText(file));
 
         Assert.False(BundlePaths.HasLinkAncestorUnderRoot(root, file));
+    }
+
+    /// <summary>
+    /// E11 fix round 2 (N1): the Windows containment escape fix round 1 closed without saying so.
+    ///
+    /// <para><b>The shape.</b> <c>repo\p</c> denies listing (<c>(RD)</c>); inside it, the junction
+    /// <c>p\jra</c> points OUTSIDE the repository and denies read-attributes (<c>(RA)</c>). Opening
+    /// <c>p\jra\y.cs</c> by path still works (traverse bypass) and <see cref="FileInfo.Exists"/> is true,
+    /// but <see cref="FileSystemInfo.LinkTarget"/> on <c>p\jra</c> answers <see langword="null"/> without
+    /// throwing -- so every link walk before round 1, which asked only that, saw no link and read the file
+    /// from outside the repository. <see cref="File.GetAttributes(string)"/> on <c>p\jra</c> throws
+    /// <see cref="UnauthorizedAccessException"/> instead, which is what the walk now treats as a link.</para>
+    ///
+    /// <para><b>What it pins, per entry point.</b> The shared walk; the tree-sitter guard;
+    /// <c>CompilationFactory</c>'s <c>Compile</c> item read (no syntax tree from outside); its key-file
+    /// use (the outside <c>.snk</c> is not handed to the compilation); and that the repository walk itself
+    /// never lists <c>p</c>, so in a <c>generate</c> run tree-sitter is not handed this file; the
+    /// <c>Compile</c> item and the key file reach <c>CompilationFactory</c> as paths MSBuild printed, not
+    /// through a listing of <c>p</c>.
+    /// RED against round 1's walk (<c>f4f8250</c>'s <c>BundlePaths.cs</c> checked out into the working copy
+    /// for one run, then restored): see the E11 report.</para>
+    ///
+    /// <para><b>No POSIX twin, because the shape does not exist there.</b> POSIX has no traverse bypass:
+    /// opening <c>p/jra/y.cs</c> requires search permission on <c>p</c>, which is all <c>lstat</c> on
+    /// <c>p/jra</c> requires too. A <c>chmod 000</c> <c>p</c> therefore makes the read fail as well as the
+    /// probe, and with <c>p</c> searchable <c>lstat</c> succeeds and reports the link -- there is no state
+    /// in which the file reads while the link cannot be seen.
+    /// <c>HasLinkAncestor_fails_closed_on_an_ancestor_it_cannot_inspect_posix</c> covers the chmod-000 case.</para>
+    /// </summary>
+    [DenyAceFact]
+    public void A_junction_to_outside_whose_attributes_are_denied_under_an_unlistable_parent_is_never_read_windows()
+    {
+        using var tmp = new TempDir();
+        var root = Directory.CreateDirectory(Path.Combine(tmp.Path, "repo")).FullName;
+        var p = Directory.CreateDirectory(Path.Combine(root, "p")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(tmp.Path, "outside")).FullName;
+        File.WriteAllText(Path.Combine(outside, "y.cs"), "namespace Outside; public class Leaked { }");
+        File.WriteAllBytes(Path.Combine(outside, "k.snk"), [1, 2, 3, 4]);
+        var junction = DirectoryLinks.Create(Path.Combine(p, "jra"), outside);
+        var compileItem = Path.Combine(junction, "y.cs");
+        var keyFile = Path.Combine(junction, "k.snk");
+
+        try
+        {
+            using (DenyAce.Deny(junction, "(RA)"))
+            using (DenyAce.Deny(p, "(RD)"))
+            {
+                // Preconditions: the attack shape really holds -- the outside file reads by its in-repository
+                // path, exists by FileInfo, and the link probe every earlier walk relied on sees nothing.
+                Assert.Contains("Leaked", File.ReadAllText(compileItem), StringComparison.Ordinal);
+                Assert.True(new FileInfo(compileItem).Exists);
+                Assert.True(new FileInfo(keyFile).Exists);
+                Assert.Null(new DirectoryInfo(junction).LinkTarget);
+                Assert.Throws<UnauthorizedAccessException>(() => Directory.GetFileSystemEntries(p));
+
+                // The shared walk.
+                Assert.True(BundlePaths.HasLinkAncestorUnderRoot(root, compileItem));
+                Assert.True(BundlePaths.HasLinkAncestorUnderRoot(root, keyFile));
+
+                // Tree-sitter, handed the path directly.
+                using var extractor = new TreeSitterExtractor();
+                var extracted = extractor.Extract("p/jra/y.cs", compileItem, CSharpProfile.Instance, ExtractionLimits.Default);
+                Assert.Equal(FileStatus.SkippedSymlink, extracted.Status);
+                Assert.Empty(extracted.Symbols);
+
+                // The repository walk never lists `p`, so a generate run's tree-sitter pass does not reach it.
+                var graph = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], [])
+                    .Build(new RepositorySnapshot(root, "test-repo", [], []), ExtractionLimits.Default, ScopeOptions.Default);
+                Assert.DoesNotContain(graph.Symbols, s => s.Name == "Leaked");
+                Assert.Equal(["p"], graph.Status.InaccessibleDirectories);
+
+                // Roslyn: the Compile item is not read, and the key file is not used.
+                var inputs = new ProjectInputs(
+                    Path.Combine(root, "App.csproj"), "App", [compileItem], [], string.Empty, string.Empty,
+                    Nullable: false, AllowUnsafe: false, "Library", "net10.0")
+                {
+                    SignAssembly = true,
+                    KeyFile = keyFile,
+                };
+                var compilation = CompilationFactory.Create(inputs, projectCompilations: null, new SourceFileGate(long.MaxValue, root), out _);
+                Assert.Empty(compilation.SyntaxTrees);
+                Assert.Null(compilation.Options.CryptoKeyFile);
+                Assert.False(compilation.Options.PublicSign);
+            }
+        }
+        finally
+        {
+            // Both ACEs are lifted by the `using` blocks above (in reverse order, even on a failed
+            // assertion) before the junction itself is removed -- never recursively, which would follow it.
+            Unlink(junction);
+        }
     }
 
     private static string WriteFile(string path)

@@ -299,12 +299,28 @@ internal static class BundlePaths
     /// deny-read ACE on one, <c>DirectoryInfo.LinkTarget</c> and <c>FileInfo.LinkTarget</c> both answer
     /// <see langword="null"/> without throwing (the Unix readlink wrapper maps EACCES to "not a link").
     /// So each level is first classified by <see cref="File.GetAttributes(string)"/>, which on both
-    /// platforms does throw <see cref="UnauthorizedAccessException"/> on exactly those levels (measured),
-    /// and only where the file beneath is itself unreadable: a Windows deny-list ACE that leaves the file
-    /// readable through traverse bypass, or a POSIX directory with search but no read permission, leaves
-    /// the attributes readable too, so that tree is not refused. The rule mirrors the core library's
-    /// strict guard: not found is not a link, and an access or any other I/O error is treated as one.
-    /// See <see cref="IsLinkOrUninspectable"/> for the per-level probe.</para>
+    /// platforms does throw <see cref="UnauthorizedAccessException"/> on exactly those levels (measured).
+    /// The rule mirrors the core library's strict guard: not found is not a link, and an access or any
+    /// other I/O error is treated as one. See <see cref="IsLinkOrUninspectable"/> for the per-level
+    /// probe.</para>
+    ///
+    /// <para><b>That refuses some files that ARE readable, deliberately -- and one such shape was a
+    /// containment escape.</b> On Windows, a level whose own read-attributes right is denied, under a
+    /// parent that denies listing, cannot have its attributes read even though a file beneath it still
+    /// opens by path (traverse bypass). Measured (E11 fix round 2): a junction <c>repo\p\jra</c> pointing
+    /// OUTSIDE the repository, carrying a deny <c>(RA)</c> ACE, under <c>repo\p</c> denying <c>(RD)</c>.
+    /// <c>LinkTarget</c> on it answers <see langword="null"/>, so before this probe the walk saw no link:
+    /// at <c>da6225d</c> and at E11 round 1 (<c>f4f8250</c>), <c>TreeSitterExtractor</c> extracted the
+    /// outside file, <c>CompilationFactory</c> parsed it into the compilation, and a key file there was
+    /// handed to the compilation as its strong-name key. That shape and a harmless one (a plain directory
+    /// with the same two ACEs, whose readable file the E11 re-review measured going from
+    /// <c>Extracted</c> to <c>SkippedSymlink</c>) look identical to every probe available here, so both
+    /// are refused. What is
+    /// NOT refused: a Windows deny-list ACE alone, or a POSIX directory with search but no read
+    /// permission, which leave the attributes readable -- measured. POSIX has no traverse bypass, so no
+    /// POSIX shape reads a file whose ancestor cannot be stat'ed. Pinned by
+    /// <c>BundlePathsTests.A_junction_to_outside_whose_attributes_are_denied_under_an_unlistable_parent_is_never_read_windows</c>
+    /// and the <c>HasLinkAncestor_does_not_refuse_*</c> twins.</para>
     ///
     /// <para>The walk only ever inspects the path string it was given, never a link's target, so a link
     /// loop cannot make it run longer than <paramref name="levels"/> + 1 levels.</para>
