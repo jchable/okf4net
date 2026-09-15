@@ -24,9 +24,11 @@ internal enum BoundedOutcome
     NotStarted,
 
     /// <summary>
-    /// The exit, or the end of either stream, had not been reached when the timeout elapsed. The
-    /// process tree was killed, best effort. This includes a process that itself exited in time while
-    /// something it started still held its output pipes open.
+    /// The exit, or the end of either stream, had not been reached when the timeout elapsed, and the
+    /// call returned on time regardless. That includes a process that itself exited in time while
+    /// something it started still held its output pipes open. A kill of the process tree was attempted,
+    /// best effort -- see <see cref="BoundedProcess"/> for exactly which descendants that reaches on each
+    /// platform, which is not all of them.
     /// </summary>
     TimedOut,
 
@@ -88,13 +90,23 @@ internal sealed record BoundedResult(
 /// MEASURED on Windows / .NET 10 (E11): the token alone was enough there -- with
 /// <c>WaitAsync</c> removed, <c>BoundedProcessTests</c>' grandchild-holds-the-pipe case still returned
 /// on time, and it hung for the grandchild's full lifetime only once the reads were ALSO given no
-/// token. So on that host the second bound is belt and braces, not a fix for an observed hang; on
-/// other platforms it is unmeasured. A read left stuck is abandoned: it completes on its own once the
-/// pipe closes, and its eventual fault is observed so it cannot surface as an unobserved task
-/// exception.</description></item>
-/// <item><description><b>A timed-out or faulted child is killed with its whole tree</b>, and a failure
-/// to kill is swallowed: every caller is about to report its own, more useful failure, and an exception
-/// escaping here would replace it.</description></item>
+/// token. The E11 review measured the same on Linux (<c>mcr.microsoft.com/dotnet/sdk:10.0</c>). So the
+/// second bound is belt and braces, not a fix for an observed hang. A read left stuck is abandoned: it
+/// completes on its own once the pipe closes, and its eventual fault is observed so it cannot surface
+/// as an unobserved task exception.</description></item>
+/// <item><description><b>A timed-out or faulted child is killed with its process tree as it stands
+/// when the call gives up</b> (<see cref="Process.Kill(bool)"/> with <c>entireProcessTree: true</c>),
+/// and a failure to kill is swallowed: every caller is about to report its own, more useful failure,
+/// and an exception escaping here would replace it. <b>What that reaches differs by platform</b>, and
+/// the guarantee is only this. On both, a descendant of a child that is still running when the call
+/// gives up is killed with it (<c>BoundedProcessTests</c> pins a grandchild of a live child). On POSIX,
+/// a descendant whose own parent has ALREADY exited has been re-parented away from the tree and is not
+/// reached: measured by the E11 review on Linux, a child that exits at once leaving
+/// <c>(sleep 3; echo g &gt; g.txt) &amp;</c> holding its stdout makes the call return
+/// <see cref="BoundedOutcome.TimedOut"/> on time, and the grandchild survives to write its file. On
+/// Windows the same shape (<c>start /b</c>) was measured killed. So on POSIX the call is bounded but a
+/// pipe-holding orphan may outlive it; this predates the runner, both former copies behaved the
+/// same.</description></item>
 /// </list>
 ///
 /// <para><b>What it deliberately does not own.</b> It does not resolve the executable:

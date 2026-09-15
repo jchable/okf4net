@@ -74,6 +74,35 @@ public class BoundedProcessTests
     }
 
     [Fact]
+    public void A_grandchild_of_a_child_still_running_at_the_timeout_is_killed_with_it()
+    {
+        // What "kills the process tree" guarantees on BOTH platforms: a descendant whose parent is still
+        // alive when the call gives up. (An orphan whose parent already exited is NOT reachable on
+        // POSIX -- see BoundedProcess's summary -- so no test here claims it.) The child starts a
+        // background grandchild that writes its marker after ~5 s, then itself waits ~30 s. `.\grand.cmd`,
+        // not a bare name: this test host sets NoDefaultCurrentDirectoryInExePath, so cmd would not find
+        // the script in its working directory -- and a grandchild that never started would pass this
+        // test for the wrong reason (measured: it did, until the mutant below exposed it).
+        using var dir = new TempDir();
+        File.WriteAllText(Path.Combine(dir.Path, "grand.cmd"), "@ping -n 6 127.0.0.1 >nul\r\n@echo g> g.txt\r\n");
+        var marker = Path.Combine(dir.Path, "g.txt");
+
+        var clock = Stopwatch.StartNew();
+        var result = Shell(
+            dir.Path,
+            "start /b cmd /d /c .\\grand.cmd& ping -n 31 127.0.0.1 >nul",
+            "(sleep 5; echo g > g.txt) & sleep 30",
+            TimeSpan.FromMilliseconds(1000));
+        var elapsed = clock.Elapsed;
+
+        Assert.Equal(BoundedOutcome.TimedOut, result.Outcome);
+        Assert.True(elapsed < TimeSpan.FromSeconds(4), $"returned after {elapsed}, not near the 1 s timeout.");
+
+        Thread.Sleep(TimeSpan.FromSeconds(8) - elapsed);
+        Assert.False(File.Exists(marker), "the grandchild of a live child survived the tree kill.");
+    }
+
+    [Fact]
     public void A_child_that_exits_while_a_grandchild_holds_its_pipes_is_still_bounded_by_the_timeout()
     {
         // The child exits at once, but a background grandchild inherits its stdout and keeps it open for
