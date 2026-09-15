@@ -1342,6 +1342,23 @@ and this project adheres to
   whole base name, never a prefix. **Id churn:** an existing bundle containing a
   code, package or doc name whose slug's base name exactly matches one of
   these words gets a new id on the next `okfgen generate` (`producers/`).
+- **`okfgen`'s effective-visibility cap (§5.4) no longer caps a namespace's own
+  members when a type happens to share the namespace's full dotted name** (a
+  finding, `FileEligibility.IsInScope`) — a CA1724-style collision (a
+  `Logging` class beside an `X.Logging` namespace) that is common in real
+  code. `SymbolFact.Container` is a flat dotted string, so a type nested
+  inside a type named `B` and a type merely declared inside a same-spelled
+  namespace `A.B` both read `Container = "A.B"`; the cap walk could not tell
+  them apart, so an internal `class B` in namespace `A` capped every public
+  symbol of the unrelated namespace `A.B`, whatever it declared, to
+  `internal`. The walk now stops at `SymbolFact.ContainerNamespace` (always a
+  dotted prefix of `Container`) rather than walking every segment, so it caps
+  only the segments genuinely below the namespace — a type nested one level
+  inside a real enclosing type still caps correctly, including across a
+  `partial` type's two files, where `declared` keeps only the first-seen
+  declaration. A run with no such collision is unaffected, and a
+  `SymbolFact` built without `ContainerNamespace` (an older extraction, a
+  hand-built fixture) keeps the prior behaviour exactly.
 
 ### Security
 
