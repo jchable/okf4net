@@ -1321,7 +1321,9 @@ and this project adheres to
   relaxed the restriction, verified on build 26200, but a bundle generated
   there must stay writable when checked out or regenerated on the
   still-supported kernels that keep it). `con`, `prn`, `aux`, `nul`,
-  `com1`-`com9` and `lpt1`-`lpt9` address a system device rather than a
+  `com0`-`com9` and `lpt0`-`lpt9` (Microsoft's documented reserved list,
+  `com0`/`lpt0` included even though some Windows versions' path parser
+  accepts them) address a system device rather than a
   regular file there, so a bare `aux.md` or `aux/con.md` is unwritable, and
   the restriction applies to a segment's base name (the part before its
   first `.`) regardless of extension, so a NuGet `PackageId` such as

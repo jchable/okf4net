@@ -130,26 +130,26 @@ public static class CodeConceptIds
     }
 
     /// <summary>
-    /// The Win32 device names <c>CreateFile</c> reserves, regardless of extension or directory
-    /// (case-insensitive): <c>con</c>, <c>prn</c>, <c>aux</c>, <c>nul</c>, <c>com1</c>-<c>com9</c>,
-    /// <c>lpt1</c>-<c>lpt9</c>. Opening one of these as a path addresses a system device rather than a
-    /// regular file on Windows 10 and Windows Server -- Windows 11 relaxed the restriction (verified
-    /// on build 26200: <c>aux.md</c>, <c>aux/con.md</c> and similar all wrote and listed normally
-    /// there), but a bundle this producer writes on Windows 11 must still be writable when checked out
-    /// or regenerated on the still-supported kernels that keep the restriction, so the suffix is
-    /// unconditional rather than probed at generation time. Superscript variants (<c>COM¹</c>) and
-    /// the pseudo-device <c>CONIN$</c> are unreachable after <see cref="ConceptId.Slugify"/>, which
+    /// The Win32 device names Microsoft's "Naming Files, Paths, and Namespaces" documentation lists
+    /// as reserved, regardless of extension or directory (case-insensitive): <c>con</c>, <c>prn</c>,
+    /// <c>aux</c>, <c>nul</c>, <c>com0</c>-<c>com9</c>, <c>lpt0</c>-<c>lpt9</c>. Opening one of these
+    /// as a path addresses a system device rather than a regular file on Windows 10 and Windows
+    /// Server -- Windows 11 relaxed the restriction (verified on build 26200: <c>aux.md</c>,
+    /// <c>aux/con.md</c> and similar all wrote and listed normally there), but a bundle this producer
+    /// writes on Windows 11 must still be writable when checked out or regenerated on the
+    /// still-supported kernels that keep the restriction, so the suffix is unconditional rather than
+    /// probed at generation time. <c>com0</c> and <c>lpt0</c> are included even though some Windows
+    /// versions' path parser accepts them as ordinary filenames: this table follows the documented
+    /// rule rather than a particular OS build's observed behaviour, and suffixing either costs one
+    /// character -- the conservative reading is free. Superscript variants (<c>COM¹</c>) and the
+    /// pseudo-device <c>CONIN$</c> are unreachable after <see cref="ConceptId.Slugify"/>, which
     /// already rejects the characters that spell them, so this table only needs the ASCII forms.
-    /// <c>com0</c> and <c>lpt0</c> are deliberately excluded: Windows reserves only <c>com1</c>-<c>com9</c>
-    /// and <c>lpt1</c>-<c>lpt9</c> (device numbering starts at 1), and treats <c>com0</c>/<c>lpt0</c>
-    /// as ordinary filenames on the versions this restriction still applies to -- adding them would
-    /// suffix a name Windows itself does not reserve.
     /// </summary>
     private static readonly HashSet<string> ReservedDeviceNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "con", "prn", "aux", "nul",
-        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+        "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
     };
 
     /// <summary>

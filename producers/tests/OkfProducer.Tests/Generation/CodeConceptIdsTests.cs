@@ -192,6 +192,19 @@ public class CodeConceptIdsTests
     }
 
     [Fact]
+    public void Com0_and_lpt0_are_suffixed_like_every_other_reserved_number()
+    {
+        // Fix round 2: Microsoft's "Naming Files, Paths, and Namespaces" page lists COM0 and LPT0
+        // among the reserved names to avoid, even though some Windows versions' path parser accepts
+        // them as ordinary files -- ReservedDeviceNames follows the documented rule, not one build's
+        // observed behaviour, so both are suffixed like com1-9/lpt1-9. com10 stays unaffected
+        // (Names_that_only_resemble_a_device_name_are_not_suffixed): the predicate is an exact match,
+        // never a prefix, so "0" appended after "com1" does not make com10 resemble com0.
+        Assert.Equal("code/csharp/n/com0_", CodeConceptIds.For(Type("N", "Com0"), CSharp));
+        Assert.Equal("code/csharp/n/lpt0_.x", CodeConceptIds.For(Type("N", "Lpt0.x"), CSharp));
+    }
+
+    [Fact]
     public void The_device_name_suffix_does_not_reapply_to_its_own_dotted_output()
     {
         // Idempotence for the dotted case specifically (fix round 1's regression class): re-running
@@ -221,6 +234,8 @@ public class CodeConceptIdsTests
             CodeConceptIds.For(Type("N", "Aux."), CSharp),
             CodeConceptIds.For(Type("N", "Nul"), CSharp),
             CodeConceptIds.For(Type("N", "Com5"), CSharp),
+            CodeConceptIds.For(Type("N", "Com0"), CSharp),
+            CodeConceptIds.For(Type("N", "Lpt0.x"), CSharp),
             CodeConceptIds.For(Type("N", "Auxiliary"), CSharp),
         ];
 
