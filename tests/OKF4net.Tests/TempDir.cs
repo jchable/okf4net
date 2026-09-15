@@ -439,4 +439,42 @@ public static class AbsentPaths
         var drive = DriveInfo.GetDrives().FirstOrDefault(d => !d.IsReady);
         return drive is null ? null : System.IO.Path.Combine(drive.RootDirectory.FullName, "site");
     }
+
+    /// <summary>
+    /// The HRESULTs <c>ReparsePoints</c> maps to "absent" when they arrive on
+    /// a plain <see cref="IOException"/>: <c>ERROR_NOT_READY</c> (0x80070015),
+    /// <c>ERROR_BAD_NETPATH</c> (0x80070035) and <c>ERROR_BAD_NET_NAME</c>
+    /// (0x80070043). Mirrored here on purpose, so a test can tell "this host
+    /// produces the case" apart from "our mapping handles it".
+    /// </summary>
+    public static readonly IReadOnlyList<int> AbsenceHResults =
+        [unchecked((int)0x80070015), unchecked((int)0x80070035), unchecked((int)0x80070043)];
+
+    /// <summary>
+    /// Probes the environment BEFORE a test asserts anything: reads
+    /// <paramref name="path"/>'s attributes and reports whether this host
+    /// answers with exactly the case under test -- a plain
+    /// <see cref="IOException"/> carrying one of <see cref="AbsenceHResults"/>.
+    /// A host that answers otherwise (loopback SMB blocked, workstation
+    /// service off, a drive reporting <c>ERROR_NO_MEDIA_IN_DRIVE</c>, ...) does
+    /// not produce the case, and the caller skips with
+    /// <paramref name="observed"/> in the reason rather than failing on the
+    /// host's network setup. Reads only; never creates anything.
+    /// </summary>
+    /// <param name="path">The path to probe.</param>
+    /// <param name="observed">What the host answered, for a skip reason.</param>
+    public static bool HostReportsAbsenceAsPlainIOException(string path, out string observed)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            observed = $"no exception (attributes {attributes})";
+            return false;
+        }
+        catch (Exception e)
+        {
+            observed = $"{e.GetType().Name} HResult 0x{e.HResult:X8}";
+            return e.GetType() == typeof(IOException) && AbsenceHResults.Contains(e.HResult);
+        }
+    }
 }

@@ -445,6 +445,12 @@ public sealed class Bundle
     /// <c>AttestationOrchestrator</c>'s computation and attester source) goes
     /// through this method, and each already reports a thrown
     /// <see cref="UnauthorizedAccessException"/> as an unreadable resource.
+    ///
+    /// The re-check applies to whatever path a caller passes, not only to
+    /// <see cref="TryResolveResource"/> output: a path outside <see cref="Root"/>
+    /// handed in directly is refused too. This method no longer reads an
+    /// arbitrary file, which is a breaking change for any caller that used it
+    /// that way, outside its documented contract.
     /// </remarks>
     /// <exception cref="UnauthorizedAccessException">
     /// <paramref name="absolutePath"/> is outside <see cref="Root"/>, or it or a

@@ -450,8 +450,15 @@ public class HtmlWriterTests
         // entry. The guard must not answer "it is inside the bundle being
         // rendered"; the write reports Windows' own error (network name not
         // found), as it did before the strict predicate.
+        //
+        // The case is probed first: a host that does not answer a missing share
+        // with ERROR_BAD_NET_NAME/ERROR_BAD_NETPATH skips, naming its answer.
+        // Once the case is produced, a guard refusal here fails.
         Skip.IfNot(OperatingSystem.IsWindows(), "a UNC share path is Windows-only");
         Assert.StartsWith(new string(Path.DirectorySeparatorChar, 2), AbsentPaths.MissingShareSite, StringComparison.Ordinal); // a UNC path, never a drive-rooted one
+        Skip.IfNot(
+            AbsentPaths.HostReportsAbsenceAsPlainIOException(AbsentPaths.MissingShareSite, out var observed),
+            $"this host answers a missing share with {observed}, not ERROR_BAD_NET_NAME/ERROR_BAD_NETPATH on a plain IOException");
         using var src = new TempDir();
         var site = SiteModel.Build(SampleBundle(src));
 
@@ -465,8 +472,12 @@ public class HtmlWriterTests
         // H1 fix round (I1): `okf-render --out F:\site` on an empty drive
         // reported "it is inside the bundle being rendered". It must report
         // the device-not-ready error instead.
+        // Probed first, like the share test above.
         var outDir = AbsentPaths.SiteOnADriveWithNoVolume();
         Skip.If(outDir is null, "no drive without a volume on this machine");
+        Skip.IfNot(
+            AbsentPaths.HostReportsAbsenceAsPlainIOException(outDir!, out var observed),
+            $"this host answers the empty drive {outDir} with {observed}, not ERROR_NOT_READY on a plain IOException");
         using var src = new TempDir();
         var site = SiteModel.Build(SampleBundle(src));
 

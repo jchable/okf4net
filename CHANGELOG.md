@@ -317,6 +317,34 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking (0.x): link-guard refusals, see the Security entry below.**
+  - `Bundle.ReadResourceText` now throws `UnauthorizedAccessException` for a
+    path outside `Bundle.Root`, or one that is (or sits below) a reparse point
+    or an entry that could not be inspected. It used to read any path it was
+    given. Its documented contract already limited it to
+    `TryResolveResource`'s `Resolved` output, which still reads unchanged.
+  - `CatalogPathResolver.TryResolve` returns false (`ReparsePointInPath`) for
+    an existing source path below an entry that could not be inspected, which
+    `FileKnowledgeCatalog` reports fail-fast as a `CatalogException`.
+  - Public error strings changed. Code that matches them must update:
+    - `BundleConceptWriter` (`WriteConcept`, `AppendToConceptAtomic`,
+      `RecordVerifications`): "resolves through a reparse point
+      (symlink/junction) inside the bundle" became "…(symlink/junction), or
+      an entry that could not be inspected, inside the bundle", and "is a
+      reparse point (symlink/junction), not a regular file" became "…
+      (symlink/junction) or could not be inspected, not a regular file".
+    - `OkfBundleTools.AppendLog` (`okf_append_log`): the same two changes
+      for `log.md`.
+    - `FileMemoryStore` (`ReadAsync` diagnostic, `DeleteScopeAsync` error):
+      "path is a reparse point; refusing to …" became "path is a reparse
+      point or could not be inspected; refusing to …".
+    - `CatalogPathResolver`'s `ReparsePointInPath` diagnostic message gains
+      ", or an entry that could not be inspected,".
+    - `HtmlWriter.Write` has a new `ArgumentException`, "refusing to render
+      into '…': cannot determine where it resolves …". It replaces the
+      `UnauthorizedAccessException` that could escape while resolving
+      `--out` through a link.
+
 - `BundleConceptWriter.RecordVerifications` (§11) now names the offending
   concept when it refuses a batch — a concept missing `type` used to escape
   as an unattributed "Missing required frontmatter keys: type" (an
@@ -1337,9 +1365,9 @@ and this project adheres to
   link cannot be followed or inspected. `HtmlWriter.Write` no longer lets an
   `UnauthorizedAccessException` from resolving `--out` through such a link
   escape; it refuses with that message instead. Not a spec behaviour: the OKF
-  spec says nothing about filesystem links — this is the host's guarantee that a bundle-relative
-  read or write stays in the bundle (§3), the catalog root or the output
-  directory it was given.
+  spec says nothing about filesystem links — this is the host's guarantee
+  that a bundle-relative read or write stays in the bundle (§3), the catalog
+  root or the output directory it was given.
 
 ## [0.5.0] - 2026-07-31
 

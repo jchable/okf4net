@@ -349,8 +349,16 @@ public class ReparsePointsTests
         // H1 fix round (I1): Windows reports a missing share as a plain
         // IOException (ERROR_BAD_NET_NAME / ERROR_BAD_NETPATH), not a
         // not-found type. It is absence, not an entry anyone could redirect.
+        //
+        // The case is probed first: only a host that really answers with one
+        // of those codes produces it, and another host skips (naming what it
+        // answered) instead of failing on its network setup. Once the case is
+        // produced, a wrong mapping fails.
         Skip.IfNot(OperatingSystem.IsWindows(), "a UNC share path is Windows-only");
         Assert.StartsWith(new string(Path.DirectorySeparatorChar, 2), AbsentPaths.MissingShareSite, StringComparison.Ordinal); // a UNC path, never a drive-rooted one
+        Skip.IfNot(
+            AbsentPaths.HostReportsAbsenceAsPlainIOException(AbsentPaths.MissingShareSite, out var observed),
+            $"this host answers a missing share with {observed}, not ERROR_BAD_NET_NAME/ERROR_BAD_NETPATH on a plain IOException");
 
         Assert.False(ReparsePoints.IsReparsePointOrUninspectable(AbsentPaths.MissingShareSite));
         Assert.True(ReparsePoints.TryResolveThroughReparsePoints(AbsentPaths.MissingShareSite, out var resolved));
@@ -362,8 +370,12 @@ public class ReparsePointsTests
     {
         // H1 fix round (I1): an empty card reader or optical drive answers
         // ERROR_NOT_READY, a plain IOException. Absence, not uninspectable.
+        // Probed first, like the share test above.
         var site = AbsentPaths.SiteOnADriveWithNoVolume();
         Skip.If(site is null, "no drive without a volume on this machine");
+        Skip.IfNot(
+            AbsentPaths.HostReportsAbsenceAsPlainIOException(site!, out var observed),
+            $"this host answers the empty drive {site} with {observed}, not ERROR_NOT_READY on a plain IOException");
 
         Assert.False(ReparsePoints.IsReparsePointOrUninspectable(site!));
         Assert.True(ReparsePoints.TryResolveThroughReparsePoints(site!, out _));
