@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
+using OkfProducer.Core.Generation;
 
 namespace OkfProducer.CodeGraph.Roslyn;
 
@@ -392,121 +392,87 @@ public static class MsBuildProjectQuery
                 $"could not start `dotnet msbuild` for {projectPath}: its directory does not exist.");
         }
 
-        var startInfo = new ProcessStartInfo(executable)
+        // MSBuild resolves Directory.Build.props/targets from the project's own directory, so run there
+        // rather than wherever the producer happened to be invoked from. Note what that sentence means:
+        // those files are then FOUND, and being found means being evaluated, and being evaluated means
+        // running. See this class's threat-model paragraph -- the choice here is between evaluating the
+        // project correctly and evaluating it wrongly, not between running repository logic and not
+        // running it.
+        var allArguments = new List<string>(arguments.Count + 3)
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            // MSBuild resolves Directory.Build.props/targets from the project's own directory, so run
-            // there rather than wherever the producer happened to be invoked from. Note what that
-            // sentence means: those files are then FOUND, and being found means being evaluated, and
-            // being evaluated means running. See this class's threat-model paragraph -- the choice
-            // here is between evaluating the project correctly and evaluating it wrongly, not between
-            // running repository logic and not running it.
-            WorkingDirectory = workingDirectory,
+            "msbuild",
+            projectPath,
+
+            // Node reuse is on by default, and it is wrong for this caller twice over. It leaves worker
+            // processes alive after the build -- N of them per producer run, which a tool meant for CI
+            // has no business doing -- and those workers INHERIT the redirected pipes, so the reads can
+            // stay open long after the msbuild process itself has exited, holding a call whose
+            // process-level timeout has already been satisfied. BoundedProcess bounds that case too (its
+            // deadline covers the reads, not only the exit), but a worker that is never started is
+            // better than one that is waited out.
+            "-nodeReuse:false",
         };
+        allArguments.AddRange(arguments);
 
-        startInfo.ArgumentList.Add("msbuild");
-        startInfo.ArgumentList.Add(projectPath);
+        // One runner for every child process this producer starts (E11): it redirects and closes stdin,
+        // drains both streams concurrently under the caps below -- capped rather than read to the end,
+        // because what msbuild prints on stdout is repository-controlled and an unbounded read of it is
+        // an OutOfMemoryException a scanned repository can ask for -- bounds the WHOLE call, reads
+        // included, by `timeout`, and kills the process tree when it gives up. What it reports is mapped
+        // below to this class's own messages, verbatim, so every failure still leaves as
+        // MsBuildQueryException -- the one type RoslynResolver.QueryProjectClosure catches, which is what
+        // keeps one project's failure from ending the whole repository's run.
+        var result = BoundedProcess.Run(executable, allArguments, workingDirectory, timeout, MaxStdoutChars, MaxStderrChars);
 
-        // Node reuse is on by default, and it is wrong for this caller twice over. It leaves worker
-        // processes alive after the build -- N of them per producer run, which a tool meant for CI has
-        // no business doing -- and those workers INHERIT the redirected pipes, so the readers below can
-        // stay open long after the msbuild process itself has exited, hanging a call whose process-level
-        // timeout has already been satisfied.
-        startInfo.ArgumentList.Add("-nodeReuse:false");
-
-        foreach (var argument in arguments)
+        switch (result.Outcome)
         {
-            startInfo.ArgumentList.Add(argument);
-        }
+            case BoundedOutcome.NotStarted when result.Exception is Win32Exception notFound:
+                // The "MSBuild absent" degradation path from the brief: no dotnet on PATH at all.
+                throw new MsBuildQueryException(
+                    $"could not start `dotnet msbuild` for {projectPath}: the dotnet CLI was not found.", notFound);
 
-        Process process;
-        try
-        {
-            process = Process.Start(startInfo)
-                ?? throw new MsBuildQueryException($"could not start `dotnet msbuild` for {projectPath}.");
-        }
-        catch (Win32Exception e)
-        {
-            // The "MSBuild absent" degradation path from the brief: no dotnet on PATH at all.
-            throw new MsBuildQueryException(
-                $"could not start `dotnet msbuild` for {projectPath}: the dotnet CLI was not found.", e);
-        }
+            case BoundedOutcome.NotStarted:
+                throw new MsBuildQueryException($"could not start `dotnet msbuild` for {projectPath}.");
 
-        using (process)
-        {
-            // One token bounds the WHOLE call, not just the process. Process.WaitForExit(int) waits for
-            // the process to exit but not for the redirected readers to finish, so reading them
-            // afterwards is an unbounded block sitting just past a timeout that has already been
-            // honoured -- and anything else holding the write end of those pipes (an inherited MSBuild
-            // worker; see -nodeReuse:false above) keeps them open with no escape. Cancelling the reads
-            // as well as the wait closes that gap.
-            using var deadline = new CancellationTokenSource(timeout);
-
-            // Both streams are drained concurrently, never one ReadToEnd() after the other: MSBuild
-            // writes enough to fill a pipe buffer, and a sequential read deadlocks the moment the
-            // stream being read second fills up while the process blocks writing to it.
-            //
-            // Capped, not ReadToEndAsync: what msbuild prints on stdout is repository-controlled, and
-            // an unbounded read of it is an OutOfMemoryException a scanned repository can ask for. See
-            // ReadCappedAsync for the measurement that sets the caps -- and for the mechanism that does
-            // NOT do it, since the obvious guess is wrong.
-            var stdoutTask = ReadCappedAsync(process.StandardOutput, MaxStdoutChars, deadline.Token);
-            var stderrTask = ReadCappedAsync(process.StandardError, MaxStderrChars, deadline.Token);
-
-            CappedRead stdoutRead;
-            CappedRead stderrRead;
-            int exitCode;
-            try
-            {
-                process.WaitForExitAsync(deadline.Token).GetAwaiter().GetResult();
-                stdoutRead = stdoutTask.GetAwaiter().GetResult();
-                stderrRead = stderrTask.GetAwaiter().GetResult();
-                exitCode = process.ExitCode;
-            }
-            catch (OperationCanceledException)
-            {
-                TryKill(process);
+            case BoundedOutcome.TimedOut:
                 throw new MsBuildQueryException(
                     $"`dotnet msbuild` for {projectPath} did not finish within {timeout.TotalSeconds:0} s.");
-            }
-            catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
-            {
+
+            case BoundedOutcome.Faulted:
                 // The SUCCESS path has its own failure mode, and it is the one that used to escape raw.
-                // WaitForExitAsync can return normally and a subsequent read still throw -- a pipe torn
-                // down abnormally by a killed or crashed msbuild, by a scanner holding the handle, or by
-                // a worker going away mid-write -- and process.ExitCode throws InvalidOperationException
-                // if the process object is not in the state that read requires. Every one of those means
+                // The exit wait can return normally and a subsequent read still throw -- a pipe torn down
+                // abnormally by a killed or crashed msbuild, by a scanner holding the handle, or by a
+                // worker going away mid-write -- and the exit code throws InvalidOperationException if
+                // the process object is not in the state that read requires. Every one of those means
                 // exactly what a non-zero exit means: this project's inputs are unknown. Left unwrapped
                 // they escaped RoslynResolver.QueryProjectClosure's deliberately narrow
                 // `catch (MsBuildQueryException)`, so a single project's abnormal msbuild aborted
                 // generation for the WHOLE repository instead of degrading that one project to the
                 // name-matching baseline.
-                TryKill(process);
+                var fault = result.Exception!;
                 throw new MsBuildQueryException(
-                    $"`dotnet msbuild` for {projectPath} ended abnormally while its output was being read: {e.Message}", e);
-            }
-
-            if (exitCode != 0)
-            {
-                var detail = stderrRead.Text.Length > 0 ? stderrRead.Text : stdoutRead.Text;
-                throw new MsBuildQueryException(
-                    $"`dotnet msbuild` for {projectPath} exited {exitCode}. "
-                    + $"A project that has not been restored fails here. {Truncate(detail, 400)}");
-            }
-
-            if (stdoutRead.Overflowed)
-            {
-                // After the exit code, deliberately: a project that ALSO failed is better described by
-                // its own error than by "it printed too much".
-                throw new MsBuildQueryException(
-                    $"`dotnet msbuild` for {projectPath} printed more than {MaxStdoutChars / (1024 * 1024)} MiB "
-                    + "on stdout, which no legitimate -getItem/-getProperty answer approaches. The answer was "
-                    + "not read.");
-            }
-
-            return stdoutRead.Text;
+                    $"`dotnet msbuild` for {projectPath} ended abnormally while its output was being read: {fault.Message}", fault);
         }
+
+        if (result.ExitCode != 0)
+        {
+            var detail = result.Stderr.Length > 0 ? result.Stderr : result.Stdout;
+            throw new MsBuildQueryException(
+                $"`dotnet msbuild` for {projectPath} exited {result.ExitCode}. "
+                + $"A project that has not been restored fails here. {Truncate(detail, 400)}");
+        }
+
+        if (result.StdoutOverflowed)
+        {
+            // After the exit code, deliberately: a project that ALSO failed is better described by its
+            // own error than by "it printed too much".
+            throw new MsBuildQueryException(
+                $"`dotnet msbuild` for {projectPath} printed more than {MaxStdoutChars / (1024 * 1024)} MiB "
+                + "on stdout, which no legitimate -getItem/-getProperty answer approaches. The answer was "
+                + "not read.");
+        }
+
+        return result.Stdout;
     }
 
     /// <summary>
@@ -514,32 +480,9 @@ public static class MsBuildProjectQuery
     /// near this: measured on this host, <c>src/OKF4net.Mcp/OKF4net.Mcp.csproj</c> -- a restored
     /// project with over a hundred resolved references -- answers in <b>456,364 bytes</b>, and a
     /// one-file scratch project in <b>344,326</b>. 32 MiB is ~70x the larger of those.
-    /// </summary>
-    private const int MaxStdoutChars = 32 * 1024 * 1024;
-
-    /// <summary>
-    /// How much of msbuild's stderr is kept. Far smaller, because the only use it is ever put to is
-    /// <c>Truncate(stderr, 400)</c> inside a failure message.
-    /// </summary>
-    private const int MaxStderrChars = 1024 * 1024;
-
-    /// <summary>What one capped stream read produced.</summary>
-    /// <param name="Text">The characters kept, up to the cap.</param>
-    /// <param name="Overflowed">Whether the stream held more than the cap and the rest was discarded.</param>
-    private readonly record struct CappedRead(string Text, bool Overflowed);
-
-    /// <summary>
-    /// Reads <paramref name="reader"/> to the end, keeping at most <paramref name="maxChars"/>
-    /// characters and discarding -- but still draining -- anything past that.
     ///
     /// <para>
-    /// <b>Draining past the cap is the point, not a detail.</b> Simply stopping would leave the child
-    /// blocked on a full pipe until the two-minute timeout killed it; discarding keeps the process
-    /// moving to its own exit while the producer's memory stays bounded.
-    /// </para>
-    ///
-    /// <para>
-    /// <b>What makes this reachable, measured -- and it is not the obvious mechanism.</b> The escape
+    /// <b>What makes the cap reachable, measured -- and it is not the obvious mechanism.</b> The escape
     /// register offered <c>-v:diag</c> injected through a repository's <c>Directory.Build.rsp</c>. That
     /// does not reproduce: in <c>-getItem</c>/<c>-getProperty</c> mode the console log is suppressed
     /// entirely, and on this host a query run with <c>-v:diag</c> in the rsp, and one run with a
@@ -548,79 +491,17 @@ public static class MsBuildProjectQuery
     /// reproduce is the JSON itself, whose size the repository controls: a fifteen-line
     /// <c>Directory.Build.targets</c> declaring 10,000 <c>Compile</c> items took the same query from
     /// 344,326 bytes to <b>10,457,323 bytes in 1.1 s</b>. One more doubling level in that file is
-    /// ~100 MB, and it costs the repository nothing.
+    /// ~100 MB, and it costs the repository nothing. Past the cap the stream is still drained, not
+    /// abandoned (see <c>BoundedProcess</c>), so the child is never left blocked on a full pipe.
     /// </para>
     /// </summary>
-    private static async Task<CappedRead> ReadCappedAsync(StreamReader reader, int maxChars, CancellationToken token)
-    {
-        var buffer = new char[8192];
-        var kept = new StringBuilder();
-        var overflowed = false;
-
-        while (true)
-        {
-            var read = await reader.ReadAsync(buffer.AsMemory(), token).ConfigureAwait(false);
-            if (read == 0)
-            {
-                break;
-            }
-
-            var room = maxChars - kept.Length;
-            if (room >= read)
-            {
-                kept.Append(buffer, 0, read);
-                continue;
-            }
-
-            if (room > 0)
-            {
-                kept.Append(buffer, 0, room);
-            }
-
-            overflowed = true;
-        }
-
-        return new CappedRead(kept.ToString(), overflowed);
-    }
+    private const int MaxStdoutChars = 32 * 1024 * 1024;
 
     /// <summary>
-    /// Kills the msbuild process and its workers, or gives up quietly.
-    ///
-    /// <para>
-    /// Both call sites are <i>inside</i> a <c>catch</c> that is about to throw an
-    /// <see cref="MsBuildQueryException"/>, so anything escaping here replaces the wrapped, per-project
-    /// failure with a raw one that <c>RoslynResolver.QueryProjectClosure</c> does not catch -- the
-    /// whole-run abort this class keeps being fixed for. <see cref="Process.Kill(bool)"/> with
-    /// <c>entireProcessTree: true</c> is documented to throw <see cref="AggregateException"/> when part
-    /// of the tree could not be killed, which the two catches below did not cover.
-    /// </para>
-    ///
-    /// <para>
-    /// NOT MEASURED: read-verified against the documented contract only. Arranging a process tree whose
-    /// partial kill fails is not something a test can do deterministically on this host, so no
-    /// executable test reaches the <see cref="AggregateException"/> branch.
-    /// </para>
+    /// How much of msbuild's stderr is kept. Far smaller, because the only use it is ever put to is
+    /// <c>Truncate(stderr, 400)</c> inside a failure message.
     /// </summary>
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-            // Already exited between the timeout and here; nothing to kill.
-        }
-        catch (Win32Exception)
-        {
-            // Access denied killing the tree; the process is left to the OS rather than failing the run twice.
-        }
-        catch (AggregateException)
-        {
-            // Part of the tree survived. Same answer as access denied: the survivors are left to the OS,
-            // and the caller's own MsBuildQueryException is the failure that gets reported.
-        }
-    }
+    private const int MaxStderrChars = 1024 * 1024;
 
     /// <summary>
     /// Parses MSBuild's answer, and checks it is the <i>object</i> <c>-getItem</c>/<c>-getProperty</c>
