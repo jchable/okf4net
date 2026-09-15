@@ -1819,7 +1819,62 @@ Also (auto-merged, but will not compile): every `dev` test that sets `TmpfsMount
 
 ### Task H3: Frontmatter closing fence and YAML anchors match what the docs say
 
-**Findings:** `OkfDocument.Parse` accepts an indented `---` as the closing fence (an undocumented divergence from §3); YAML anchors/aliases parse as plain strings although CLAUDE.md says the subset rejects them. **Scope to settle with the user, per finding:** fix the parser (may refuse bundles that load today) vs. document the divergence (`docs/spec-conformance/`) and correct CLAUDE.md. Adversarial executed review required for any parser change.
+**Findings:**
+- `OkfDocument.Parse` accepts an indented `---` as the closing fence, an undocumented divergence from §4 ("delimited by `---` on its own line"). The shared predicate is `OkfDocument.IsFenceLine(line) => line.Trim() == "---"` (`src/OKF4net/OkfDocument.cs:48`), also used by `Internal/FrontmatterBlockEdit.cs` (task C7).
+- The YAML subset (`src/OKF4net/Yaml/YamlParser.cs`) rejects none of anchors, aliases, tags, directives or document markers. `&a`, `*a` and `!!str` values parse as plain strings. `README.md:117-121` and `CLAUDE.md:41` say the subset "rejects (with a clear error) … anchors, tags, multiple documents".
+
+**USER DECISIONS (2026-09-15):**
+1. **Fix the fence.** Only a line whose first three characters are `---`, followed by nothing or only spaces/tabs, opens or closes the frontmatter. The `\r` of CRLF is already stripped by `LfLines`. Leading whitespace is no longer accepted. Trailing spaces/tabs are tolerated, as in Jekyll's `^---\s*$`.
+2. **Reject what the docs say is rejected**, with a clear `YamlParseException` (line number plus a message naming the feature): anchors, aliases, tags, directives, document markers. Only the constructs themselves are rejected: an indicator at the start of an unquoted node, not a `&`, `*` or `!` inside a string.
+
+**Files:** `src/OKF4net/OkfDocument.cs`, `src/OKF4net/Yaml/YamlParser.cs`, `src/OKF4net/Internal/FrontmatterBlockEdit.cs` (C7), tests (`OkfDocumentTests`, `YamlParserTests` or their current names, `FrontmatterBlockEdit` tests, `RecordVerificationTests` if the fence refusal is pinned there), `README.md`, `CLAUDE.md`, `CHANGELOG.md`.
+
+**Required behaviour: fence**
+- `IsFenceLine` becomes: `line.StartsWith("---", Ordinal)` and every character after index 3 is `' '` or `'\t'`.
+- Check how a UTF-8 BOM on the first line is handled today, since `string.Trim()` does not strip U+FEFF. Keep that behaviour exactly.
+- An indented `---` inside the frontmatter is now an ordinary line: YAML content, or content of a block scalar. Pin the block-scalar case, which used to truncate the frontmatter silently: a `|` block whose content contains an indented `---` line must now round-trip that line.
+- An indented `---` on the first line means the document has no frontmatter (the whole text is body), as for any other non-fence first line.
+- `FrontmatterBlockEdit` (C7) uses the same predicate and has explicit logic that refuses an indented closing fence. Re-align it so the scan and the parser agree, and keep C7's guarantee that the edit refuses unless `reparsed.Equals(document)`. Remove refusal logic that can no longer trigger, and update C7's comments that describe the old trimming.
+
+**Required behaviour: YAML rejections.** The message names the feature, e.g. `"YAML anchors (&name) are not supported in OKF frontmatter"`. The feature must be named in the message, not quoted from the bundle.
+- **Anchor:** an unquoted node (mapping value, sequence item, flow item, or a mapping key) whose first character is `&`, including `key: &a` followed by a nested block.
+- **Alias:** an unquoted node whose first character is `*`.
+- **Tag:** an unquoted node whose first character is `!` (`!tag`, `!!str`, `!<…>`).
+- **Directive:** a frontmatter line starting with `%` at column 0 (`%YAML 1.2`, `%TAG …`).
+- **Document marker:** a frontmatter line that is exactly `...` (optionally followed by whitespace) at column 0. `---` cannot occur inside the frontmatter, because it closes it.
+- **Not rejected:**
+  - quoted scalars (`"*a"`, `'&b'`);
+  - indicators in the middle of a plain scalar (`a & b`, `x*y`, `wow!`);
+  - block-scalar (`|`, `>`) content;
+  - continuation lines of a multi-line plain scalar that happen to start with `*`, `&` or `!` (YAML only restricts a plain scalar's first character).
+  - Verify each one against the parser's actual plain-scalar continuation handling.
+- How rejections surface: `Bundle.Load` puts them in `ParseErrors` as today for any `YamlParseException`, and `okf validate` reports them as parse errors. No golden capture contains any of these constructs (controller grep of `bundles/`, `tests/fixtures/`, `samples/`: none). Re-check, and stop if one would change.
+- `YamlEmitter` already quotes strings starting with these indicators (`YamlEmitter.cs:316`). Add a round-trip test: every emitted string starting with `&`, `*`, `!`, `%` parses back to the same string.
+
+**Tests (RED first where the current code accepts):**
+- Fence, accepted:
+  - `---` then `---` closes;
+  - `---  ` and `---\t` close;
+  - CRLF works.
+- Fence, no longer a fence:
+  - `  ---` as the closing line: the frontmatter does not close there;
+  - `  ---` as the first line: no frontmatter;
+  - the block-scalar-with-indented-`---` round-trip;
+  - `----` and `--- x` are not fences (unchanged).
+- YAML, rejected (one row each, asserting the exception, the line number and that the message names the feature):
+  - `k: &a v`, `k: *a`, `k: !!str v`, `k: !tag v`;
+  - `- &a v`, `- *a`, `[*a]`, `{x: *a}`;
+  - `&a k: v`;
+  - `%YAML 1.2`;
+  - `...`.
+- YAML, accepted: `k: "*a"`, `k: 'a&'`, `k: a & b`, `k: x*y`, `k: wow!`, a `|` block containing `*a` and `&b` lines, a multi-line plain scalar whose continuation line starts with `*`.
+- Bundle level: a concept with `k: *a` lands in `Bundle.ParseErrors` with the feature-naming message, and the rest of the bundle loads.
+
+**Docs:**
+- `README.md` and `CLAUDE.md` list exactly what is rejected, true to the code.
+- CHANGELOG, Breaking (0.x): an indented `---` no longer opens or closes the frontmatter (§4); anchors, aliases, tags, directives and document markers now fail parsing with a clear error, as the docs already claimed. Say that such a document previously loaded with those values read as plain strings.
+
+**Review:** adversarial and executed (hostile inputs, mutants), per the project's rule for parsers of untrusted input.
 
 ## Phase F — Close
 
