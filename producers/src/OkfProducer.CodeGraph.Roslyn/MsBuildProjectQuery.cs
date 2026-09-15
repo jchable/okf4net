@@ -123,12 +123,22 @@ public static class MsBuildProjectQuery
     /// SDK 8 and is a measured no-op (no duplicate defines) on SDK 9.0.3xx+ and 10, where it has
     /// already run by the time this list is evaluated. A project setting
     /// <c>DisableImplicitFrameworkDefines=true</c> is unaffected either way, since the target's own
-    /// condition then skips it. A non-SDK-style project -- one with no
-    /// <c>AddImplicitDefineConstants</c> target at all -- already fails this query at
-    /// <c>GenerateGlobalUsings</c> (MSB4057) before reaching this target, so nothing new degrades.
+    /// condition then skips it -- measured, not only reasoned from the target's MSBuild condition: see
+    /// <c>RoslynResolverTests.A_project_disabling_implicit_framework_defines_gains_none_of_them</c>. A
+    /// non-SDK-style project -- one with no <c>AddImplicitDefineConstants</c> target at all -- already
+    /// fails this query at <c>GenerateGlobalUsings</c> (MSB4057) before reaching this target, so
+    /// nothing new degrades.
     /// </para>
     /// </summary>
-    private static readonly string[] Targets =
+    /// <remarks>
+    /// <see langword="internal"/> rather than <see langword="private"/> so
+    /// <c>RoslynResolverTests.The_msbuild_query_always_requests_the_implicit_defines_target</c> can pin
+    /// this exact list on every host, not only one with an SDK 8 installed to reproduce the actual
+    /// gap this target closes -- see that test, and
+    /// <c>CodeGraph.Sdk8ImplicitDefinesTests</c> for the SDK-8-gated end-to-end proof, for why an
+    /// always-running structural pin exists alongside it.
+    /// </remarks>
+    internal static readonly string[] Targets =
     [
         "-t:ResolveReferences", "-t:GenerateGlobalUsings", "-t:GenerateAssemblyInfo", "-t:AddImplicitDefineConstants",
     ];

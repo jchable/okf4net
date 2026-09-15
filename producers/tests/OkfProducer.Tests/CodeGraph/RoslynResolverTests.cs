@@ -46,6 +46,25 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
+    public void The_msbuild_query_always_requests_the_implicit_defines_target()
+    {
+        // The ALWAYS-RUNNING pin for this task's actual fix, per fix round 1: [Sdk8Fact] (see
+        // Sdk8ImplicitDefinesTests) can only exercise the real SDK-8 gap on a host that has one, so it
+        // is a real guard but not a standing one everywhere this suite runs. This test needs no SDK
+        // and no process at all -- it pins the literal argument list MsBuildProjectQuery.Query builds,
+        // so dropping "-t:AddImplicitDefineConstants" from Targets fails HERE, on every host, the
+        // moment it happens, rather than only being caught by a reviewer who happens to have SDK 8
+        // installed. Targets is `internal` (from `private`) for exactly this assertion.
+        Assert.Contains("-t:AddImplicitDefineConstants", MsBuildProjectQuery.Targets);
+
+        // Named alongside it because the DEFECT report described dropping the argument entirely, not
+        // reordering it -- pinning presence, not position, matches what could actually regress.
+        Assert.Contains("-t:ResolveReferences", MsBuildProjectQuery.Targets);
+        Assert.Contains("-t:GenerateGlobalUsings", MsBuildProjectQuery.Targets);
+        Assert.Contains("-t:GenerateAssemblyInfo", MsBuildProjectQuery.Targets);
+    }
+
+    [Fact]
     public void Implicit_framework_defines_are_requested_exactly_once()
     {
         // The regression pin for adding "-t:AddImplicitDefineConstants" to Targets: on the SDKs this
@@ -54,8 +73,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // GenerateAssemblyInfo finish (SDK 9.0.3xx+ moved it to AfterTargets="PrepareForBuild", which
         // ResolveReferences already depends on -- dotnet/sdk#43908). Requesting it again must not
         // duplicate the define it already produced -- green both before and after the fix on this
-        // host, which is exactly why Sdk8ImplicitDefinesRepositoryTest below exists to cover the SDK
-        // line where it is NOT already a no-op.
+        // host, which is exactly why CodeGraph.Sdk8ImplicitDefinesTests exists separately, to cover
+        // the SDK line where it is NOT already a no-op.
         var inputs = MsBuildProjectQuery.Query(Path.Combine(_scratch.Root, "Scratch.csproj"));
 
         var occurrences = inputs.DefineConstants
@@ -64,25 +83,22 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         Assert.Equal(1, occurrences);
     }
 
-    [Sdk8Fact]
-    public void Implicit_framework_defines_reach_the_compilation_on_sdk_8()
+    [Fact]
+    public void A_project_disabling_implicit_framework_defines_gains_none_of_them()
     {
-        // The actual regression this task fixes, executed rather than merely reasoned about: SDK
-        // 8.0.425 wires AddImplicitDefineConstants to BeforeTargets="CoreCompile", which this query
-        // never runs, so without requesting the target explicitly DefineConstants on SDK 8 comes back
-        // as just TRACE;DEBUG;NET;NET8_0;NETCOREAPP -- no *_OR_GREATER symbol at all -- and
-        // `#if NET5_0_OR_GREATER` compiles the wrong way. This is skipped ([Sdk8Fact]) unless the
-        // `dotnet` on PATH lists an installed 8.0.x SDK; see task-E6-report.md for the manual
-        // before/after capture against a scratch SDK 8 install, since no SDK 8 is installed globally
-        // on the host this suite normally runs on.
-        using var repository = new Sdk8ImplicitDefinesRepository();
+        // The doc comment on Targets claims DisableImplicitFrameworkDefines=true is unaffected by
+        // requesting AddImplicitDefineConstants explicitly, reasoned from the target's own MSBuild
+        // condition rather than measured -- fix round 1 flagged that gap. Measured here, on this
+        // host's own SDK: DefineConstants must come back with no *_OR_GREATER symbol at all, matching
+        // MSBuild's documented behaviour for that property.
+        using var repository = new DisabledImplicitDefinesRepository();
 
-        var resolver = RoslynResolver.Create(repository.Root, [repository.Project]);
+        var inputs = MsBuildProjectQuery.Query(repository.Project);
 
-        var report = Assert.Single(resolver.Projects);
-        Assert.True(
-            report.Availability == RoslynProjectAvailability.Compiled,
-            $"expected Compiled, got {report.Availability}: {report.Detail}");
+        var defines = inputs.DefineConstants.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.DoesNotContain(defines, d => d.EndsWith("_OR_GREATER", StringComparison.Ordinal));
+        Assert.Contains("TRACE", defines);
+        Assert.Contains("DEBUG", defines);
     }
 
     [Theory]
@@ -1925,52 +1941,36 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     /// <summary>
-    /// A restored net8.0 project pinned to an installed 8.0.x SDK via <c>global.json</c>, whose one
-    /// source file only compiles clean when <c>NET5_0_OR_GREATER</c> is actually defined --
-    /// <c>#else #error</c> otherwise, so a missing implicit define is a compile error
-    /// (<c>CompilationHadErrors</c>), not a silently-wrong branch a test would have to inspect IL to
-    /// notice. <c>rollForward: latestFeature</c> so this matches whatever 8.0.x feature band/patch
-    /// <see cref="HostFacts.Sdk8"/> found installed, not one specific version this repository cannot
-    /// know ahead of time.
+    /// A restored net10.0 project with <c>DisableImplicitFrameworkDefines</c> set, so
+    /// <c>A_project_disabling_implicit_framework_defines_gains_none_of_them</c> can measure -- on this
+    /// host's own SDK, no SDK 8 required -- that requesting <c>AddImplicitDefineConstants</c>
+    /// explicitly does not override a project that opted out of it.
     /// </summary>
-    private sealed class Sdk8ImplicitDefinesRepository : ScratchRepository
+    private sealed class DisabledImplicitDefinesRepository : ScratchRepository
     {
-        public Sdk8ImplicitDefinesRepository()
-            : base("sdk8-implicit-defines")
+        public DisabledImplicitDefinesRepository()
+            : base("disabled-implicit-defines")
         {
-            Write("global.json", GlobalJson);
-            Project = Write("Sdk8.csproj", ProjectFile);
-            Write("Guarded.cs", Source);
+            Project = Write("Disabled.csproj", ProjectFile);
+            Write("Widget.cs", Source);
 
             Restore(Project);
         }
 
         public string Project { get; }
 
-        private const string GlobalJson = """
-            {
-              "sdk": {
-                "version": "8.0.100",
-                "rollForward": "latestFeature"
-              }
-            }
-            """;
-
         private const string ProjectFile = """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net8.0</TargetFramework>
+                <TargetFramework>net10.0</TargetFramework>
+                <DisableImplicitFrameworkDefines>true</DisableImplicitFrameworkDefines>
               </PropertyGroup>
             </Project>
             """;
 
         private const string Source = """
-            #if NET5_0_OR_GREATER
-            namespace Sdk8Guarded;
-            public class Guarded { public int Value() => 1; }
-            #else
-            #error missing implicit framework defines
-            #endif
+            namespace DisabledDefines;
+            public class Widget { public int Value() => 1; }
             """;
     }
 

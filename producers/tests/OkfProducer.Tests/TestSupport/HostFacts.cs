@@ -374,41 +374,84 @@ internal sealed class UnixOnlyFact : FactAttribute
 }
 
 /// <summary>
-/// A <see cref="FactAttribute"/> that skips itself unless the <c>dotnet</c> on <c>PATH</c> lists an
-/// installed 8.0.x SDK -- the one line whose <c>AddImplicitDefineConstants</c> target runs too late
-/// for <c>MsBuildProjectQuery</c>'s target list to see its output (SDK 8 wires it to
+/// A <see cref="FactAttribute"/> that skips itself unless a <c>dotnet</c> executable with an installed
+/// 8.0.x SDK can be found -- the one SDK line whose <c>AddImplicitDefineConstants</c> target runs too
+/// late for <c>MsBuildProjectQuery</c>'s target list to see its output (SDK 8 wires it to
 /// <c>BeforeTargets="CoreCompile"</c>, which this producer never asks MSBuild to run). SDK 9.0.3xx and
 /// 10 moved the same target to <c>AfterTargets="PrepareForBuild"</c> (dotnet/sdk#43908), so they never
 /// show the gap and cannot stand in for it here.
 ///
 /// <para>
-/// Global installs only, deliberately: this probes <c>dotnet --list-sdks</c> exactly as
-/// <see cref="OkfProducer.CodeGraph.Roslyn.MsBuildProjectQuery"/>'s production caller would see it
-/// (the public overload always runs plain <c>dotnet</c>), never a scratch install pointed at by a
-/// per-test <c>DOTNET_ROOT</c>/<c>PATH</c> override -- a committed test cannot depend on a path that
-/// exists only on the machine that happened to install one for a manual RED capture.
+/// A test gated on this attribute must still not rely on <c>PATH</c> order to reach the SDK 8 it
+/// found: <see cref="Sdk8.ExecutablePath"/> is the exact executable to pass explicitly wherever a
+/// production seam accepts one (<c>MsBuildProjectQuery.Query(path, executable, timeout)</c>'s
+/// internal overload, and this class's own <c>Restore</c> helper). Round 1 of this task committed a
+/// test that instead put an SDK 8 <c>dotnet</c> first on <c>PATH</c> so <c>RoslynResolver.Create</c>'s
+/// hard-coded <c>"dotnet"</c> would pick it up -- which also made every *other* test in the same file
+/// share that <c>PATH</c>, including <c>RoslynResolverTests.ScratchProject</c>'s own net10.0 restore,
+/// breaking the whole class before the SDK-8 test's body ever ran. See
+/// <c>Sdk8ImplicitDefinesTests</c>, kept in its own class with no shared fixture for exactly this
+/// reason.
 /// </para>
 /// </summary>
 internal sealed class Sdk8Fact : FactAttribute
 {
     public Sdk8Fact()
     {
-        if (!Sdk8.Installed)
+        if (Sdk8.ExecutablePath is null)
         {
-            Skip = "no 8.0.x SDK is listed by `dotnet --list-sdks` on this host";
+            Skip = "no SDK 8.x dotnet found: set " + Sdk8.ExecutableEnvironmentVariable
+                + " to a dotnet(.exe) path with an installed 8.x SDK, or make `dotnet --list-sdks` on PATH report one";
         }
     }
 }
 
-/// <summary>Probes whether the <c>dotnet</c> on <c>PATH</c> has an 8.0.x SDK installed globally.</summary>
+/// <summary>
+/// Locates a <c>dotnet</c> executable backed by an installed 8.0.x SDK, so a test can point
+/// <c>MsBuildProjectQuery.Query</c>'s <c>executable</c> parameter (or an equivalent seam) at it
+/// explicitly rather than depending on <c>PATH</c> order for the whole test process -- see
+/// <see cref="Sdk8Fact"/>'s remarks for why that distinction matters here specifically.
+/// </summary>
 internal static class Sdk8
 {
-    private static readonly Lazy<bool> Probe = new(ProbeOnce);
+    /// <summary>
+    /// An explicit override: a full path to a <c>dotnet</c>/<c>dotnet.exe</c> whose SDK is 8.x, such
+    /// as one <c>dotnet-install.ps1 -Channel 8.0 -InstallDir &lt;scratch&gt;</c> puts on disk. Checked
+    /// first, and used as given (only existence is verified) -- this is how a manual RED/GREEN capture
+    /// against a scratch install points the test at it without ever touching the global <c>dotnet</c>
+    /// or <c>PATH</c>.
+    /// </summary>
+    public const string ExecutableEnvironmentVariable = "OKF_TEST_DOTNET8";
 
-    public static bool Installed => Probe.Value;
+    private static readonly Lazy<string?> Probe = new(ProbeOnce);
 
-    private static bool ProbeOnce()
+    /// <summary>The located <c>dotnet</c> executable's path, or <see langword="null"/> if none was found.</summary>
+    public static string? ExecutablePath => Probe.Value;
+
+    private static string? ProbeOnce()
     {
+        var overridden = Environment.GetEnvironmentVariable(ExecutableEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(overridden))
+        {
+            // An override that does not exist is treated as "not found" -- surfaced as a skip reason
+            // naming the variable, not a silent fall-through to the PATH lookup below, which would
+            // hide a typo'd path behind an unrelated "no SDK 8 on PATH" message.
+            return File.Exists(overridden) ? overridden : null;
+        }
+
+        return LocateFromListSdks();
+    }
+
+    /// <summary>
+    /// Falls back to whatever <c>dotnet --list-sdks</c> reports on <c>PATH</c>, parsing its own answer
+    /// (<c>"8.0.425 [C:\Program Files\dotnet\sdk]"</c>) for an 8.x line and turning the bracketed SDK
+    /// root into the sibling <c>dotnet</c>/<c>dotnet.exe</c> next to it -- the same layout every
+    /// <c>dotnet-install</c> script and installer produces (an <c>sdk/</c> directory beside the
+    /// muxer), verified by existence before being returned.
+    /// </summary>
+    private static string? LocateFromListSdks()
+    {
+        string stdout;
         try
         {
             var startInfo = new ProcessStartInfo("dotnet")
@@ -421,17 +464,50 @@ internal static class Sdk8
             startInfo.ArgumentList.Add("--list-sdks");
 
             using var process = Process.Start(startInfo)!;
-            var stdout = process.StandardOutput.ReadToEnd();
+            stdout = process.StandardOutput.ReadToEnd();
             process.StandardError.ReadToEnd();
             process.WaitForExit();
 
-            return process.ExitCode == 0
-                && stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Any(line => line.StartsWith("8.0.", StringComparison.Ordinal));
+            if (process.ExitCode != 0)
+            {
+                return null;
+            }
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            return false;
+            return null;
         }
+
+        var executableName = OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
+        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!line.StartsWith("8.", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var open = line.IndexOf('[');
+            var close = line.IndexOf(']');
+            if (open < 0 || close < 0 || close <= open)
+            {
+                continue;
+            }
+
+            // The bracket is the SDK root ("...\sdk"); the muxer sits one level up from it.
+            var sdkRoot = line[(open + 1)..close];
+            var installRoot = Path.GetDirectoryName(sdkRoot.TrimEnd('\\', '/'));
+            if (installRoot is null)
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(installRoot, executableName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }
