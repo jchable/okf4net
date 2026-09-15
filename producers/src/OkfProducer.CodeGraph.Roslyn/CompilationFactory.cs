@@ -266,18 +266,20 @@ public static class CompilationFactory
             .WithNullableContextOptions(inputs.Nullable ? NullableContextOptions.Enable : NullableContextOptions.Disable)
             .WithAllowUnsafe(inputs.AllowUnsafe);
 
-        if (inputs.SignAssembly && inputs.KeyFile is not null && IsKeyFileUsable(inputs.KeyFile, gate.RepositoryRoot))
+        if (inputs.SignAssembly && inputs.KeyFile is not null
+            && UsableKeyFileOrNull(inputs.KeyFile, gate.RepositoryRoot) is { } usableKeyFile)
         {
-            options = options.WithCryptoKeyFile(inputs.KeyFile).WithPublicSign(true);
+            options = options.WithCryptoKeyFile(usableKeyFile).WithPublicSign(true);
         }
 
         return CSharpCompilation.Create(inputs.AssemblyName, trees, references, options);
     }
 
     /// <summary>
-    /// Whether <paramref name="keyFile"/> is safe for this analysis-only compilation to read as a
-    /// strong-name key (E7, finding: signed <c>InternalsVisibleTo</c> refused -- CS0281 -- because
-    /// nothing here ever told Roslyn a key at all).
+    /// The safe, Roslyn-ready form of <paramref name="keyFile"/> for this analysis-only compilation to
+    /// read as a strong-name key, or <see langword="null"/> when it must not be used at all (E7,
+    /// finding: signed <c>InternalsVisibleTo</c> refused -- CS0281 -- because nothing here ever told
+    /// Roslyn a key at all).
     ///
     /// <para>
     /// <b>Always public-sign, never delay-sign or fully sign.</b> This compilation is never emitted --
@@ -305,13 +307,45 @@ public static class CompilationFactory
     /// the same hazard <see cref="TryParse"/> already refuses for <c>Compile</c> items, reused here via
     /// <see cref="IsWithinRepository"/> and <see cref="IsBehindReparsePoint"/> rather than forked.
     /// </para>
+    ///
+    /// <para>
+    /// <b>Normalised once, then reused for every check AND for the eventual <c>WithCryptoKeyFile</c>
+    /// call -- E7 fix round 1, Important finding.</b> A key path with a trailing directory separator (a
+    /// project authoring <c>&lt;KeyOriginatorFile&gt;App.snk\&lt;/KeyOriginatorFile&gt;</c> -- ordinary,
+    /// valid XML) made <c>FileInfo(path).Exists</c> report <see langword="true"/> for a path that names
+    /// a real file, because that check is lenient about a trailing separator where Roslyn's own file
+    /// open is not: measured, <c>WithCryptoKeyFile(path).WithPublicSign(true)</c> against that exact
+    /// string still failed with CS7027 ("invalid directory name") plus CS8102, on top of the very CS0281
+    /// this method exists to fix -- contradicting the guarantee the paragraph above states. Trimming the
+    /// trailing separator(s) here, once, before the existence/containment/reparse checks, and returning
+    /// that SAME trimmed string for <see cref="Create"/> to hand to <c>WithCryptoKeyFile</c> closes the
+    /// gap by construction: whatever string reaches Roslyn has already passed every check against the
+    /// identical bytes, so no check can pass on one spelling while Roslyn rejects another.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Out of scope, deliberately (brief requirement 5).</b> <c>AssemblyKeyContainerName</c> (a
+    /// legacy CSP key-container name, resolved against a machine-level key store) is never queried by
+    /// <see cref="MsBuildProjectQuery"/> and has no field on <see cref="ProjectInputs"/>, so a project
+    /// that sets only that property -- no <c>KeyOriginatorFile</c>/<c>AssemblyOriginatorKeyFile</c> --
+    /// compiles unsigned here, identically to a project with no signing intent at all: this producer has
+    /// no business reading a machine-level CSP store for an analysis-only compilation it never emits. A
+    /// source-level <c>[assembly: AssemblyKeyFile(...)]</c>/<c>[assembly: AssemblyKeyName(...)]</c>
+    /// attribute is likewise never inspected: this class parses <c>Compile</c> items into syntax trees
+    /// and never evaluates assembly-level attributes before building <see cref="CSharpCompilationOptions"/>,
+    /// and even the real <c>csc</c> lets an explicit <c>/keyfile</c> (what <c>WithCryptoKeyFile</c> is)
+    /// win over that attribute -- so the MSBuild-property route this class already takes is the correct
+    /// source of truth either way.
+    /// </para>
     /// </summary>
-    private static bool IsKeyFileUsable(string keyFile, string? repositoryRoot)
+    private static string? UsableKeyFileOrNull(string keyFile, string? repositoryRoot)
     {
+        var normalized = keyFile.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
         FileInfo file;
         try
         {
-            file = new FileInfo(keyFile);
+            file = new FileInfo(normalized);
         }
         catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
         {
@@ -320,21 +354,23 @@ public static class CompilationFactory
             // whole query for a malformed KeyOriginatorFile/AssemblyOriginatorKeyFile before this method
             // is ever reached in production, so this catch is reachable only from a hand-built
             // ProjectInputs (a test) -- kept anyway, because "unsigned" is the correct degrade for any
-            // KeyFile this method cannot even name, not a crash.
-            return false;
+            // KeyFile this method cannot even name, not a crash. (A string of nothing but separators
+            // trims to empty, and `new FileInfo("")` throws ArgumentException, landing here too -- no
+            // separate empty-string check needed.)
+            return null;
         }
 
         if (!file.Exists)
         {
-            return false;
+            return null;
         }
 
         if (repositoryRoot is not null && !IsWithinRepository(file.FullName, repositoryRoot))
         {
-            return false;
+            return null;
         }
 
-        return !IsBehindReparsePoint(file, repositoryRoot);
+        return IsBehindReparsePoint(file, repositoryRoot) ? null : file.FullName;
     }
 
     /// <summary>

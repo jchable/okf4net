@@ -148,7 +148,13 @@ public static class MsBuildProjectQuery
         "-getItem:ReferencePath", "-getItem:Compile",
     ];
 
-    private static readonly string[] Properties =
+    /// <remarks>
+    /// <see langword="internal"/> rather than <see langword="private"/> (E7 fix round 1, Minor-2) so
+    /// <c>RoslynResolverTests.The_msbuild_query_always_requests_the_signing_properties</c> can pin the
+    /// three signing properties this list carries on every host, with no <c>dotnet</c> and no restore
+    /// needed -- mirroring exactly why <see cref="Targets"/> is <see langword="internal"/> (E6).
+    /// </remarks>
+    internal static readonly string[] Properties =
     [
         "-getProperty:DefineConstants", "-getProperty:LangVersion",
         "-getProperty:Nullable", "-getProperty:AllowUnsafeBlocks",

@@ -66,6 +66,23 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
+    public void The_msbuild_query_always_requests_the_signing_properties()
+    {
+        // E7 fix round 1, Minor-2: the sibling fast, environment-independent pin for the three
+        // signing properties, alongside E6's Targets pin above. Without it, only
+        // A_signed_friend_assembly_resolves_an_internal_call_that_CS0281_refused_before_E7 (a slow,
+        // real dotnet-msbuild round trip) would notice one of these being dropped from Properties --
+        // and only via applicationInputs.SignAssembly being unexpectedly false, several steps removed
+        // from the actual cause. This pins the literal Properties list MsBuildProjectQuery.RunQuery
+        // builds instead, so dropping any of the three fails HERE, on every host, with no dotnet and
+        // no restore needed. Properties is `internal` (from `private`) for exactly this assertion,
+        // mirroring Targets' own reason (E6).
+        Assert.Contains("-getProperty:SignAssembly", MsBuildProjectQuery.Properties);
+        Assert.Contains("-getProperty:KeyOriginatorFile", MsBuildProjectQuery.Properties);
+        Assert.Contains("-getProperty:AssemblyOriginatorKeyFile", MsBuildProjectQuery.Properties);
+    }
+
+    [Fact]
     public void Implicit_framework_defines_are_requested_exactly_once()
     {
         // The regression pin for adding "-t:AddImplicitDefineConstants" to Targets: on the SDKs this
@@ -1132,6 +1149,45 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             {
             }
         }
+    }
+
+    [Fact]
+    public void A_key_file_path_with_a_trailing_separator_still_resolves_the_friend_grant_with_no_CS7027()
+    {
+        // E7 fix round 1, Important finding: a key path with a trailing directory separator (an XML
+        // author writing <KeyOriginatorFile>App.snk\</KeyOriginatorFile> -- syntactically ordinary) made
+        // FileInfo(path).Exists report true for a path that names a real FILE, because .NET's Exists
+        // check is lenient about a trailing separator where Roslyn's own file open is not: measured by
+        // the review, WithCryptoKeyFile(path).WithPublicSign(true) against that exact string failed with
+        // CS7027 ("Nom de repertoire non valide") plus CS8102, alongside the CS0281 this whole feature
+        // exists to fix -- directly contradicting the "never CS7027" guarantee IsKeyFileUsable's own doc
+        // comment made. This is the REAL key, still inside the repository, still not behind any link --
+        // only the trailing separator is added -- so the fix must resolve the friend grant cleanly, not
+        // merely avoid CS7027 by degrading to unsigned (that would still leave CS0281, which the two
+        // "not used" tests above assert deliberately; this one asserts zero errors at all).
+        using var repository = new SignedFriendRepository();
+        var gate = new SourceFileGate(long.MaxValue, repository.Root);
+
+        var libraryInputs = MsBuildProjectQuery.Query(repository.LibraryProject);
+        var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject)
+            with
+        { KeyFile = repository.KeyFile + Path.DirectorySeparatorChar };
+
+        var library = CompilationFactory.Create(libraryInputs, projectCompilations: null, gate, out _);
+        var application = CompilationFactory.Create(
+            applicationInputs,
+            new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>(StringComparer.Ordinal)
+            {
+                [repository.LibraryProject] = library,
+            },
+            gate,
+            out var unusable);
+
+        Assert.Empty(unusable);
+        var errors = application.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).ToList();
+        Assert.True(errors.Count == 0, Describe(errors));
+        Assert.DoesNotContain(errors, d => d.Id == "CS7027");
+        Assert.DoesNotContain(errors, d => d.Id == "CS8102");
     }
 
     private static string Describe(IReadOnlyList<Microsoft.CodeAnalysis.Diagnostic> diagnostics) =>
