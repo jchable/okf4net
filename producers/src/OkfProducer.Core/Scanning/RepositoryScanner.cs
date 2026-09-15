@@ -9,9 +9,14 @@ namespace OkfProducer.Core.Scanning;
 /// Detects npm (<c>package.json</c>, root only) and NuGet package manifests, and a root
 /// <c>README.md</c>. NuGet projects are resolved from the project references of every <c>*.sln</c>
 /// anywhere in the tree when there is at least one, otherwise by recursively walking for
-/// <c>*.csproj</c>; both walks skip <c>bin</c>/<c>obj</c>/<c>.git</c>/<c>node_modules</c>. Malformed
-/// manifests are skipped, not fatal -- permissive, matching the rest of this codebase's scan
-/// philosophy.
+/// <c>*.csproj</c>; both walks skip <c>bin</c>/<c>obj</c>/<c>.git</c>/<c>node_modules</c>, a
+/// subdirectory that is itself a symbolic link or a junction (so the walk cannot loop through one back
+/// onto a repository it has already visited), and a subdirectory whose listing cannot be read.
+/// Malformed manifests, and manifests or a <c>README.md</c> this process cannot read, are skipped, not
+/// fatal -- permissive, matching the rest of this codebase's scan philosophy. The repository ROOT
+/// itself is the one exception: a <c>repoPath</c> that cannot be listed still throws, because
+/// <c>OkfgenCli.Generate</c> already rejects a missing one and an unreadable one is a usage error, not
+/// degraded input.
 /// </summary>
 public sealed class RepositoryScanner : IRepositoryScanner
 {
@@ -77,7 +82,13 @@ public sealed class RepositoryScanner : IRepositoryScanner
 
             return new PackageManifest("npm", "package.json", name, description);
         }
-        catch (JsonException)
+        // Mirrors FileEligibility.ReferencesTestSdk's catch list: a manifest this process cannot read
+        // (permissions, a path the platform rejects) is skipped like a malformed one, not fatal.
+        catch (Exception e) when (e is JsonException
+            or IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or System.Security.SecurityException)
         {
             return null;
         }
@@ -129,8 +140,22 @@ public sealed class RepositoryScanner : IRepositoryScanner
 
     private static IEnumerable<string> ParseSolutionProjectPaths(string slnPath)
     {
+        // Read eagerly, inside the try, rather than iterating File.ReadLines directly below: this
+        // method is a yield iterator, and `yield return` cannot appear inside a try block that has a
+        // catch clause, so the read has to fully happen (and fully fail, if it is going to) before any
+        // yielding starts.
+        string[] lines;
+        try
+        {
+            lines = File.ReadLines(slnPath).ToArray();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or System.Security.SecurityException)
+        {
+            lines = [];
+        }
+
         var slnDirectory = Path.GetDirectoryName(slnPath)!;
-        foreach (var line in File.ReadLines(slnPath))
+        foreach (var line in lines)
         {
             var trimmed = line.TrimStart();
             if (!trimmed.StartsWith("Project(", StringComparison.Ordinal))
@@ -159,25 +184,56 @@ public sealed class RepositoryScanner : IRepositoryScanner
 
     /// <summary>
     /// Every file matching <paramref name="searchPattern"/> at or below <paramref name="directory"/>,
-    /// skipping <see cref="ExcludedDirectoryNames"/>. Shared by the solution walk and the
-    /// <c>.csproj</c> fallback so the two cannot come to disagree about which directories are build
-    /// output.
+    /// skipping <see cref="ExcludedDirectoryNames"/>, a subdirectory that is itself a link (so the walk
+    /// cannot loop back through one onto a repository it has already visited), and a subdirectory whose
+    /// listing this process cannot read. Shared by the solution walk and the <c>.csproj</c> fallback so
+    /// the two cannot come to disagree about which directories are build output.
+    ///
+    /// <para><paramref name="isRoot"/> draws the one line this permissiveness does not cross: an
+    /// unreadable <paramref name="directory"/> is swallowed when it is a subdirectory reached by
+    /// recursion (<see langword="false"/>), but propagates when it is the repository root itself
+    /// (<see langword="true"/>, the default for every external caller) -- see the type's own remarks
+    /// for why. The root is never checked for being a link, for the same reason: an operator may
+    /// legitimately point <c>--repo</c> at a junction.</para>
     /// </summary>
-    private static IEnumerable<string> EnumerateFilesRecursively(string directory, string searchPattern)
+    private static IEnumerable<string> EnumerateFilesRecursively(string directory, string searchPattern, bool isRoot = true)
     {
-        foreach (var file in Directory.EnumerateFiles(directory, searchPattern, SearchOption.TopDirectoryOnly))
+        // Listed eagerly, inside the try, rather than enumerated lazily below: this method is a yield
+        // iterator, and `yield return` cannot appear inside a try block that has a catch clause, so the
+        // listing has to fully happen (and fully fail, if it is going to) before any yielding starts.
+        List<string> files;
+        List<string> subDirectories;
+        try
+        {
+            files = Directory.EnumerateFiles(directory, searchPattern, SearchOption.TopDirectoryOnly).ToList();
+            subDirectories = Directory.EnumerateDirectories(directory).ToList();
+        }
+        catch (Exception e) when (!isRoot && (e is IOException or UnauthorizedAccessException))
+        {
+            files = [];
+            subDirectories = [];
+        }
+
+        foreach (var file in files)
         {
             yield return file;
         }
 
-        foreach (var subDirectory in Directory.EnumerateDirectories(directory))
+        foreach (var subDirectory in subDirectories)
         {
-            if (!ExcludedDirectoryNames.Contains(Path.GetFileName(subDirectory), StringComparer.OrdinalIgnoreCase))
+            if (ExcludedDirectoryNames.Contains(Path.GetFileName(subDirectory), StringComparer.OrdinalIgnoreCase))
             {
-                foreach (var file in EnumerateFilesRecursively(subDirectory, searchPattern))
-                {
-                    yield return file;
-                }
+                continue;
+            }
+
+            if (BundlePaths.IsReparsePoint(subDirectory))
+            {
+                continue;
+            }
+
+            foreach (var file in EnumerateFilesRecursively(subDirectory, searchPattern, isRoot: false))
+            {
+                yield return file;
             }
         }
     }
@@ -204,36 +260,55 @@ public sealed class RepositoryScanner : IRepositoryScanner
 
             return new PackageManifest("nuget", relativePath, name, string.IsNullOrWhiteSpace(description) ? null : description);
         }
-        catch (System.Xml.XmlException)
+        // Mirrors FileEligibility.ReferencesTestSdk's catch list: a manifest this process cannot read
+        // (permissions, a path the platform rejects) is skipped like a malformed one, not fatal.
+        catch (Exception e) when (e is System.Xml.XmlException
+            or IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or System.Security.SecurityException)
         {
             return null;
         }
     }
 
+    /// <summary>
+    /// The first Markdown ATX heading (<c>#</c>) outside a fenced code block, or <see langword="null"/>
+    /// when there is none -- including when <paramref name="readmePath"/> cannot be read at all. The
+    /// caller (<see cref="Scan"/>) already falls back to the repository name in that case: the README
+    /// still exists and is still a doc entry, only its title degrades.
+    /// </summary>
     private static string? ExtractTitle(string readmePath)
     {
-        var inFencedCodeBlock = false;
-        foreach (var line in File.ReadLines(readmePath))
+        try
         {
-            var trimmed = line.TrimStart();
-            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            var inFencedCodeBlock = false;
+            foreach (var line in File.ReadLines(readmePath))
             {
-                inFencedCodeBlock = !inFencedCodeBlock;
-                continue;
+                var trimmed = line.TrimStart();
+                if (trimmed.StartsWith("```", StringComparison.Ordinal))
+                {
+                    inFencedCodeBlock = !inFencedCodeBlock;
+                    continue;
+                }
+
+                if (inFencedCodeBlock)
+                {
+                    continue;
+                }
+
+                if (trimmed.StartsWith("# ", StringComparison.Ordinal))
+                {
+                    var heading = trimmed[2..].Trim();
+                    return heading.Length == 0 ? null : heading;
+                }
             }
 
-            if (inFencedCodeBlock)
-            {
-                continue;
-            }
-
-            if (trimmed.StartsWith("# ", StringComparison.Ordinal))
-            {
-                var heading = trimmed[2..].Trim();
-                return heading.Length == 0 ? null : heading;
-            }
+            return null;
         }
-
-        return null;
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or System.Security.SecurityException)
+        {
+            return null;
+        }
     }
 }

@@ -1040,9 +1040,11 @@ public class CliTests
         //
         // Reachable, measured on this host: a directory junction pointing at one of its own ancestors
         // makes the code stage's walk throw before it has listed a single file, so the run writes
-        // `overview` alone and exits 0. (Only with a root `*.sln`: without one the SCANNER's own
-        // recursive `.csproj` walk hits the cycle first and the run fails loudly instead. That is a
-        // property of the scanner, not of this report, which is why this test drives the values.)
+        // `overview` alone and exits 0 -- with or without a root `*.sln`. (RepositoryScanner's own
+        // recursive walk no longer aborts on the same cycle -- it skips a link instead of following it
+        // -- so the sln's presence no longer changes which stage hits the cycle first. That is a
+        // property of the code stage's walk, not of this report, which is why this test drives the
+        // values.)
         var truncated = GenerateRun.Summarize(
             noMsBuild: false,
             new RunStatus(false, []),

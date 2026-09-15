@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OkfProducer.Core.Scanning;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.Scanning;
 
@@ -455,6 +456,281 @@ public class RepositoryScannerTests
         {
             Directory.Delete(repo, recursive: true);
             Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    // --- E3: a link or an unreadable subdirectory/manifest is skipped, not fatal. ---
+
+    [DirectoryLinkFact]
+    public void Scan_completes_through_a_directory_junction_that_loops_back_to_the_repository_root_with_no_sln()
+    {
+        var repo = CreateTempRepo();
+        string? loop = null;
+        try
+        {
+            File.WriteAllText(Path.Combine(repo, "A.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>A</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+            var subDir = Path.Combine(repo, "sub");
+            Directory.CreateDirectory(subDir);
+            loop = DirectoryLinks.Create(Path.Combine(subDir, "loop"), repo);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("A", pkg.Name);
+        }
+        finally
+        {
+            // Non-recursive: removes the link only, never descends through it into the repository it
+            // loops back to.
+            if (loop is not null)
+            {
+                Directory.Delete(loop);
+            }
+
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [DirectoryLinkFact]
+    public void Scan_completes_through_a_directory_junction_that_loops_back_to_the_repository_root_with_a_root_sln()
+    {
+        var repo = CreateTempRepo();
+        string? loop = null;
+        try
+        {
+            File.WriteAllText(Path.Combine(repo, "A.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>A</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(repo, "S.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "A", "A.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                """);
+            var subDir = Path.Combine(repo, "sub");
+            Directory.CreateDirectory(subDir);
+            loop = DirectoryLinks.Create(Path.Combine(subDir, "loop"), repo);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("A", pkg.Name);
+        }
+        finally
+        {
+            if (loop is not null)
+            {
+                Directory.Delete(loop);
+            }
+
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [DenyAceFact]
+    public void Scan_completes_when_a_solution_less_csproj_denies_read()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            var csproj = Path.Combine(repo, "B.csproj");
+            File.WriteAllText(csproj, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <PackageId>B</PackageId>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            using (DenyAce.Deny(csproj, isDirectory: false))
+            {
+                var snapshot = new RepositoryScanner().Scan(repo);
+
+                Assert.Empty(snapshot.Packages);
+            }
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [DenyAceFact]
+    public void Scan_completes_when_one_of_several_solutions_denies_read()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            WriteProject(Path.Combine(repo, "src", "A"), "A");
+            File.WriteAllText(Path.Combine(repo, "Good.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "A", "src\A\A.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                """);
+            var badSln = Path.Combine(repo, "Bad.sln");
+            File.WriteAllText(badSln, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ghost", "src\Ghost\Ghost.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                """);
+
+            using (DenyAce.Deny(badSln, isDirectory: false))
+            {
+                var snapshot = new RepositoryScanner().Scan(repo);
+
+                // Bad.sln contributes nothing -- it cannot even be read -- but Good.sln's project is
+                // still found, proving the unreadable solution does not abort the whole resolution.
+                var pkg = Assert.Single(snapshot.Packages);
+                Assert.Equal("A", pkg.Name);
+            }
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [DenyAceFact]
+    public void Scan_still_yields_the_readme_doc_entry_titled_with_the_repo_name_when_it_denies_read()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            var readme = Path.Combine(repo, "README.md");
+            File.WriteAllText(readme, "# A Title This Run Cannot Read\n");
+
+            using (DenyAce.Deny(readme, isDirectory: false))
+            {
+                var snapshot = new RepositoryScanner().Scan(repo);
+
+                // The file exists, so it is still a doc entry; only its title falls back, because
+                // BuildDocConcept never reads its content, only the title Scan hands it.
+                var doc = Assert.Single(snapshot.Docs);
+                Assert.Equal("README.md", doc.RelativePath);
+                Assert.Equal(new DirectoryInfo(repo).Name, doc.Title);
+            }
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [DenyAceFact]
+    public void Scan_completes_when_package_json_denies_read()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            var packageJson = Path.Combine(repo, "package.json");
+            File.WriteAllText(packageJson, """{ "name": "unreadable-lib" }""");
+
+            using (DenyAce.Deny(packageJson, isDirectory: false))
+            {
+                var snapshot = new RepositoryScanner().Scan(repo);
+
+                Assert.Empty(snapshot.Packages);
+            }
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [DenyAceFact]
+    public void Scan_completes_past_a_subdirectory_that_denies_listing()
+    {
+        var repo = CreateTempRepo();
+        var locked = Path.Combine(repo, "locked");
+        Directory.CreateDirectory(locked);
+        try
+        {
+            WriteProject(Path.Combine(repo, "ok"), "A");
+
+            using (DenyAce.Deny(locked, isDirectory: true))
+            {
+                var snapshot = new RepositoryScanner().Scan(repo);
+
+                var pkg = Assert.Single(snapshot.Packages);
+                Assert.Equal("A", pkg.Name);
+            }
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [UnixOnlyFact]
+    public void Scan_completes_and_skips_a_dangling_csproj_symlink()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            File.CreateSymbolicLink(Path.Combine(repo, "x.csproj"), Path.Combine(repo, "does-not-exist.csproj"));
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            Assert.Empty(snapshot.Packages);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    // A pin, not a regression test: this shape was already correct before E3 (`EnumerateFiles` never
+    // yields a directory, and `.Where(File.Exists)` filters a solution's reference to one out), and
+    // stays that way after it -- named ALREADY_GREEN so nobody mistakes it for evidence E3 changed
+    // this behaviour.
+    [Fact]
+    public void Scan_ignores_a_directory_literally_named_dot_csproj_ALREADY_GREEN_no_sln()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(repo, "y.csproj"));
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            Assert.Empty(snapshot.Packages);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Scan_ignores_a_directory_literally_named_dot_csproj_ALREADY_GREEN_with_sln()
+    {
+        var repo = CreateTempRepo();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(repo, "y.csproj"));
+            File.WriteAllText(Path.Combine(repo, "S.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "y", "y.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                """);
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            Assert.Empty(snapshot.Packages);
+        }
+        finally
+        {
+            Directory.Delete(repo, recursive: true);
         }
     }
 

@@ -173,8 +173,9 @@ a number would be the very defect this line exists to end.
 
 **It is unconditional within a stated bound, and the bound is not "every run".** A run that
 throws *before* generation prints `error:` and exits 1 having reported nothing — reachable,
-not theoretical: a circular junction in a repository with no root `*.sln` makes the
-scanner's own recursive `.csproj` walk throw. What holds is: **every run that reaches the
+not theoretical: the scanner skips a link and a subdirectory or manifest it cannot read, but
+not the repository root itself — a `--repo` that exists yet cannot be listed still makes its
+recursive `.sln`/`.csproj` walk throw. What holds is: **every run that reaches the
 generation stage, and therefore every run that exits 0**. The report is emitted before the
 write, so even a run whose write failed has said what its analysis found.
 

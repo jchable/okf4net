@@ -1390,6 +1390,32 @@ and this project adheres to
   now appears under the in-scope field that holds it (`## Calls` or
   `## Calls (unresolved)`), where it used to be dropped or, as above, listed
   under an unrelated same-named field (`producers/`).
+- **`okfgen`'s repository scan no longer aborts on a directory link, or on a
+  subdirectory or manifest it cannot read** (a finding, `RepositoryScanner`).
+  A directory junction/symlink anywhere in the tree previously made the
+  recursive `.sln`/`.csproj` walk loop until it threw `IOException` (the OS's
+  own path-length refusal), aborting the whole run before it wrote anything —
+  reachable through an accidental self-referencing link, not only a crafted
+  one. The walk now skips a subdirectory that is itself a link, the same way
+  `BundleWriter`/`BundleDrift` already do (`BundlePaths.IsReparsePoint`), so a
+  cycle is never entered rather than merely bounded. Separately, a `.csproj`,
+  `.sln`, `package.json` or `README.md` this process cannot read (a
+  permission-denying ACL, most concretely) threw `UnauthorizedAccessException`
+  out of `Scan` instead of being treated like a malformed one: `ScanNuGetManifest`
+  and `ScanNpmManifest` now widen their catch to match
+  `FileEligibility.ReferencesTestSdk`'s list (`IOException`,
+  `UnauthorizedAccessException`, `NotSupportedException`,
+  `SecurityException`, plus `XmlException`/`JsonException`), and a
+  subdirectory whose own listing throws the same way is skipped, its siblings
+  still walked. An unreadable `README.md` still produces a doc entry, titled
+  with the repository name (`BuildDocConcept` never reads its content, only
+  the title `Scan` hands it) — matching the existing no-heading fallback.
+  **Deliberately still throwing:** the repository ROOT itself — a `--repo`
+  that exists but cannot be listed is a usage error `OkfgenCli.Generate`
+  already reports as `error:`, not degraded input to route around; and a
+  `.sln` entry that resolves through a link inside the repository, unchanged
+  and consistent with `CodeGraphBuilder`, which also walks through links
+  (`producers/`).
 
 ### Security
 

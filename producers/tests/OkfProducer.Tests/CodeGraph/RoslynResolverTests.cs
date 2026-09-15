@@ -7,6 +7,7 @@ using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Scanning;
+using OkfProducer.Tests.TestSupport;
 using Xunit.Abstractions;
 
 namespace OkfProducer.Tests.CodeGraph;
@@ -1744,123 +1745,6 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
               </PropertyGroup>
             </Project>
             """;
-    }
-
-    /// <summary>
-    /// A <see cref="FactAttribute"/> that skips itself when this host cannot create a directory link
-    /// at all, rather than passing vacuously.
-    ///
-    /// <para>
-    /// It skips on very few hosts. <see cref="Directory.CreateSymbolicLink(string, string)"/> works
-    /// unprivileged on Linux and macOS, and on Windows a directory JUNCTION needs no elevation either
-    /// -- measured on this host, where <c>mklink /J</c> succeeds as an ordinary user and
-    /// <see cref="FileSystemInfo.LinkTarget"/> reports its target, which is the only thing
-    /// <c>CompilationFactory</c> reads. Wave 2b round 1 recorded the reparse-point branch as
-    /// unreachable from a test for want of privileges; that was not true, and these two tests are what
-    /// it cost to find out.
-    /// </para>
-    /// </summary>
-    private sealed class DirectoryLinkFactAttribute : FactAttribute
-    {
-        public DirectoryLinkFactAttribute()
-        {
-            if (!DirectoryLinks.Supported)
-            {
-                Skip = "this host can create neither a directory symbolic link nor a junction";
-            }
-        }
-    }
-
-    /// <summary>Creates directory links for the fixtures that need one, by whichever mechanism this host allows.</summary>
-    private static class DirectoryLinks
-    {
-        private static readonly Lazy<bool> Probe = new(ProbeOnce);
-
-        public static bool Supported => Probe.Value;
-
-        /// <summary>Creates <paramref name="target"/>, links <paramref name="link"/> to it, and returns the link's path.</summary>
-        public static string Create(string link, string target)
-        {
-            Directory.CreateDirectory(target);
-            Directory.CreateDirectory(Path.GetDirectoryName(link)!);
-
-            if (!TryLink(link, target))
-            {
-                throw new InvalidOperationException($"could not create a directory link at {link} -> {target}.");
-            }
-
-            return link;
-        }
-
-        private static bool TryLink(string link, string target)
-        {
-            try
-            {
-                Directory.CreateSymbolicLink(link, target);
-                return new DirectoryInfo(link).LinkTarget is not null;
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
-            {
-                // Windows without Developer Mode refuses a symbolic link; a junction is still allowed.
-            }
-
-            if (!OperatingSystem.IsWindows())
-            {
-                return false;
-            }
-
-            var startInfo = new ProcessStartInfo("cmd")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add("mklink");
-            startInfo.ArgumentList.Add("/J");
-            startInfo.ArgumentList.Add(link);
-            startInfo.ArgumentList.Add(target);
-
-            try
-            {
-                using var process = Process.Start(startInfo)!;
-                var stdout = process.StandardOutput.ReadToEndAsync();
-                var stderr = process.StandardError.ReadToEndAsync();
-                process.WaitForExit();
-                stdout.GetAwaiter().GetResult();
-                stderr.GetAwaiter().GetResult();
-            }
-            catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
-            {
-                return false;
-            }
-
-            return Directory.Exists(link) && new DirectoryInfo(link).LinkTarget is not null;
-        }
-
-        private static bool ProbeOnce()
-        {
-            var scratch = Path.Combine(Path.GetTempPath(), "okf-producer-linkprobe-" + Guid.NewGuid().ToString("N")[..12]);
-            try
-            {
-                // The target has to exist before the probe: `mklink /J` refuses a missing one, so a
-                // probe without this step would report "unsupported" on a host that supports it fine.
-                Directory.CreateDirectory(Path.Combine(scratch, "target"));
-                return TryLink(Path.Combine(scratch, "link"), Path.Combine(scratch, "target"));
-            }
-            finally
-            {
-                try
-                {
-                    Directory.Delete(scratch, recursive: true);
-                }
-                catch (IOException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
-            }
-        }
     }
 
     /// <summary>

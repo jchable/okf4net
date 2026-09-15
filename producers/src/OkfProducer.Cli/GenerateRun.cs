@@ -140,11 +140,12 @@ internal static class GenerateRun
     ///
     /// <para><b>The bound is exact, and this doc comment used to overstate it as "every run".</b> A run
     /// that throws before generation prints <c>error:</c> and exits 1 having reported nothing -- and
-    /// that is reachable, not theoretical: a circular junction in a repository with no root
-    /// <c>*.sln</c> makes <c>RepositoryScanner</c>'s own recursive <c>.csproj</c> walk throw, which
-    /// <c>OkfgenCli.Generate</c> catches. Everything downstream of the scan is covered, because the
-    /// report is emitted BEFORE the write: a run whose write failed has still said what its analysis
-    /// found. And nothing can exit 0 without passing here -- <c>Write</c> reaches its return only
+    /// that is reachable, not theoretical: <c>RepositoryScanner</c> skips a link and a subdirectory or
+    /// manifest it cannot read, but not the repository ROOT itself -- a <c>--repo</c> that exists yet
+    /// cannot be listed still makes its recursive <c>.sln</c>/<c>.csproj</c> walk throw at the very
+    /// first call, which <c>OkfgenCli.Generate</c> catches. Everything downstream of the scan is
+    /// covered, because the report is emitted BEFORE the write: a run whose write failed has still said
+    /// what its analysis found. And nothing can exit 0 without passing here -- <c>Write</c> reaches its return only
     /// through this method, and <c>Check</c> only through the callback <c>BundleDrift.Check</c> invokes
     /// unconditionally once the bundle directory exists.</para>
     /// </param>
