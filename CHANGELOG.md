@@ -1316,6 +1316,26 @@ and this project adheres to
   timeouts or teardown): the requested `ContainerRunSpec.Timeout` bounds the
   whole run, and teardown after it fires is part of what the caller is
   still waiting on.
+- **`okfgen` no longer produces a Win32 reserved device name as a concept id
+  segment** (a finding, low severity, Windows Server/10 kernels — Windows 11
+  relaxed the restriction, verified on build 26200, but a bundle generated
+  there must stay writable when checked out or regenerated on the
+  still-supported kernels that keep it). `con`, `prn`, `aux`, `nul`,
+  `com1`-`com9` and `lpt1`-`lpt9` address a system device rather than a
+  regular file there, so a bare `aux.md` or `aux/con.md` is unwritable, and
+  the restriction applies to a segment's base name (the part before its
+  first `.`) regardless of extension, so a NuGet `PackageId` such as
+  `Aux.Core` was equally affected (`packages/aux.core`). Both id families —
+  code ids (`CodeConceptIds.Compose`) and package/doc ids
+  (`ConceptIdRegistry.Register`, touched for this) — now suffix a matching
+  segment with `_` (`aux_`, `packages/aux.core_`), the same convention on
+  both, applied before the registry's existing numeric-collision loop so a
+  synthesized `aux_` still collides with a real segment already registered
+  under that exact name. A name that only resembles a reserved word
+  (`Auxiliary`, `Com10`, `Console`) is unaffected — the match is on the whole
+  base name, never a prefix. **Id churn:** an existing bundle containing a
+  code, package or doc name whose slug's base name exactly matches one of
+  these words gets a new id on the next `okfgen generate` (`producers/`).
 
 ### Security
 

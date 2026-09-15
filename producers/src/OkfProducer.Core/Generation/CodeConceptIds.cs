@@ -102,7 +102,14 @@ public static class CodeConceptIds
     /// <summary>
     /// The shared composer behind <see cref="For"/> and <see cref="ForContainer"/>: <c>code</c>, the
     /// language (slugified, or skipped when it yields no segment at all -- see <see cref="For"/>'s
-    /// remarks), then every part slugified after word-boundary splitting.
+    /// remarks), then every part slugified after word-boundary splitting and, when it is a
+    /// <see cref="IsWindowsDeviceName">Windows reserved device name</see>, suffixed with <c>_</c>
+    /// (E9). Applied to every part -- container segments and the leaf name alike -- so a non-leaf
+    /// container segment gets the same treatment as the leaf: <see cref="ForContainer"/> and the raw
+    /// fallback branch of <see cref="ConceptGenerator.RegisterCodeId"/>/<see cref="ConceptGenerator.RegisterContainerId"/>
+    /// compose a whole multi-segment path in one call here, and everything above the last <c>/</c>
+    /// becomes the <c>prefix</c> argument <see cref="ConceptIdRegistry.Register"/> never re-derives --
+    /// only this loop ever sees those ancestor segments.
     /// </summary>
     private static string Compose(string language, IReadOnlyList<string> parts)
     {
@@ -115,10 +122,47 @@ public static class CodeConceptIds
 
         foreach (var part in parts)
         {
-            segments.Add(ConceptId.Slugify(SplitWordBoundaries(part)));
+            var slug = ConceptId.Slugify(SplitWordBoundaries(part));
+            segments.Add(IsWindowsDeviceName(slug) ? slug + "_" : slug);
         }
 
         return string.Join("/", segments);
+    }
+
+    /// <summary>
+    /// The Win32 device names <c>CreateFile</c> reserves, regardless of extension or directory
+    /// (case-insensitive): <c>con</c>, <c>prn</c>, <c>aux</c>, <c>nul</c>, <c>com1</c>-<c>com9</c>,
+    /// <c>lpt1</c>-<c>lpt9</c>. Opening one of these as a path addresses a system device rather than a
+    /// regular file on Windows 10 and Windows Server -- Windows 11 relaxed the restriction (verified
+    /// on build 26200: <c>aux.md</c>, <c>aux/con.md</c> and similar all wrote and listed normally
+    /// there), but a bundle this producer writes on Windows 11 must still be writable when checked out
+    /// or regenerated on the still-supported kernels that keep the restriction, so the suffix is
+    /// unconditional rather than probed at generation time. Superscript variants (<c>COM¹</c>) and
+    /// the pseudo-device <c>CONIN$</c> are unreachable after <see cref="ConceptId.Slugify"/>, which
+    /// already rejects the characters that spell them, so this table only needs the ASCII forms.
+    /// </summary>
+    private static readonly HashSet<string> ReservedDeviceNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    };
+
+    /// <summary>
+    /// True when the part of the already-slugified <paramref name="segment"/> before its first
+    /// <c>.</c> (or all of it, when there is no <c>.</c>) is a <see cref="ReservedDeviceNames">Win32
+    /// reserved device name</see>, matched exactly rather than as a prefix -- <c>auxiliary</c> and
+    /// <c>com10</c> are ordinary names, not reserved ones. Checked on the base name because the
+    /// restriction applies there too: <c>aux.core.md</c> is exactly as unwritable on Windows 10/Server
+    /// as <c>aux.md</c> is. Shared by <see cref="Compose"/> (code ids, every part) and
+    /// <see cref="ConceptIdRegistry.Register"/> (package/doc ids, which never reach <see cref="Compose"/>
+    /// at all) so both id families use the one <c>_</c> suffix convention rather than two.
+    /// </summary>
+    internal static bool IsWindowsDeviceName(string segment)
+    {
+        var dot = segment.IndexOf('.');
+        var baseName = dot < 0 ? segment : segment[..dot];
+        return ReservedDeviceNames.Contains(baseName);
     }
 
     /// <summary>
@@ -244,11 +288,21 @@ public sealed class ConceptIdRegistry
     private readonly HashSet<string> _usedIds = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Slugifies <paramref name="naturalName"/> with <see cref="ConceptId.Slugify"/>, then finds the
-    /// first of <c>&lt;prefix&gt;/&lt;slug&gt;</c>, <c>&lt;prefix&gt;/&lt;slug&gt;-2</c>,
+    /// Slugifies <paramref name="naturalName"/> with <see cref="ConceptId.Slugify"/>, appends <c>_</c>
+    /// when the slug is a <see cref="CodeConceptIds.IsWindowsDeviceName">Windows reserved device
+    /// name</see> (E9 -- the one place this check runs for package/doc ids, which never reach
+    /// <see cref="CodeConceptIds.Compose"/>), then finds the first of
+    /// <c>&lt;prefix&gt;/&lt;slug&gt;</c>, <c>&lt;prefix&gt;/&lt;slug&gt;-2</c>,
     /// <c>&lt;prefix&gt;/&lt;slug&gt;-3</c>, ... not yet registered and whose final segment is not
     /// reserved (<see cref="ConceptGenerator.IsReservedSegment"/> -- <c>index</c>/<c>log</c> would
-    /// collide with the bundle's own <c>index.md</c>/<c>log.md</c>), registers it, and returns it.
+    /// collide with the bundle's own <c>index.md</c>/<c>log.md</c>), registers it, and returns it. The
+    /// device-name suffix is applied before that loop runs, so it does not bypass the loop's own
+    /// collision handling: if a real segment already occupies the suffixed slug (e.g. a symbol
+    /// literally named <c>Aux_</c> already registered as <c>aux_</c>), a later call for the device
+    /// name <c>Aux</c> still collides on <c>aux_</c> and falls through to <c>aux_-2</c> like any other
+    /// collision. A candidate arriving from <see cref="CodeConceptIds.Compose"/> is already suffixed,
+    /// and re-checking it here is a no-op: the trailing <c>_</c> it already carries means the base name
+    /// before the first <c>.</c> no longer equals the reserved word exactly.
     ///
     /// <para><b>The key stored is the id returned, on every path.</b> The candidate is parsed into a
     /// <see cref="ConceptId"/> first, and its canonical string is what enters the used-id set, rather
@@ -267,6 +321,10 @@ public sealed class ConceptIdRegistry
     public ConceptId Register(string prefix, string naturalName)
     {
         var baseSlug = ConceptId.Slugify(naturalName);
+        if (CodeConceptIds.IsWindowsDeviceName(baseSlug))
+        {
+            baseSlug += "_";
+        }
 
         var segment = baseSlug;
         var suffix = 2;

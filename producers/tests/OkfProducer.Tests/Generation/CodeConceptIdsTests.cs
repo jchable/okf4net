@@ -126,6 +126,51 @@ public class CodeConceptIdsTests
         Assert.NotEqual(first.ToString(), second.ToString());
     }
 
+    [Fact]
+    public void A_container_and_a_name_that_are_both_windows_reserved_device_names_are_suffixed()
+    {
+        // E9 (finding, low, Windows Server kernels): `con`, `prn`, `aux`, `nul`, `com1`-`com9` and
+        // `lpt1`-`lpt9` address a system device on Windows 10/Server, not a regular file, so a bare
+        // `aux/con.md` would be unwritable there -- one commit, two bundles. `_` is a valid concept-id
+        // character (ConceptId.ValidateSegment admits it), so the suffix stays a readable id rather
+        // than falling back to a numeric collision suffix.
+        Assert.Equal("code/csharp/aux_/con_", CodeConceptIds.For(Type("Aux", "Con"), CSharp));
+    }
+
+    [Fact]
+    public void A_reserved_name_inside_a_multi_segment_container_path_is_suffixed_in_place()
+    {
+        // The non-leaf segment ("lpt1") is never seen by ConceptIdRegistry.Register on this path --
+        // ForContainer composes the whole string at once -- so Compose itself must carry the check,
+        // not only the registry.
+        Assert.Equal("code/csharp/lpt1_/tools", CodeConceptIds.ForContainer("csharp", ["Lpt1", "Tools"]));
+    }
+
+    [Theory]
+    // A name that merely CONTAINS or extends a reserved word is not reserved: the predicate matches
+    // the base name (the part before the first `.`) exactly, never as a prefix.
+    [InlineData("Auxiliary", "auxiliary")]
+    [InlineData("Com10", "com10")]
+    [InlineData("Console", "console")]
+    public void Names_that_only_resemble_a_device_name_are_not_suffixed(string name, string expectedSlug)
+        => Assert.Equal($"code/csharp/n/{expectedSlug}", CodeConceptIds.For(Type("N", name), CSharp));
+
+    [Fact]
+    public void A_device_name_suffix_still_collides_with_a_real_segment_of_the_same_suffixed_name()
+    {
+        // The suffix is applied before the registry's existing collision loop runs, so a real segment
+        // that happens to already be named "aux_" still forces the synthesized one to a numeric
+        // suffix on top -- the collision rule is not bypassed by the device-name rewrite.
+        var registry = new ConceptIdRegistry();
+
+        var real = registry.Register("code/csharp/n", "Aux_");
+        var device = registry.Register("code/csharp/n", "Aux");
+
+        Assert.Equal("code/csharp/n/aux_", real.ToString());
+        Assert.NotEqual(real.ToString(), device.ToString());
+        Assert.StartsWith("code/csharp/n/aux_-", device.ToString());
+    }
+
     [Theory]
     // Rule 3, digit -> upper is NOT a boundary: a mid-word digit (this repository's own root
     // namespace) does not split. On its own this case does not distinguish rule 3 from "never split

@@ -255,6 +255,23 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void A_package_name_that_is_a_windows_reserved_device_name_is_suffixed()
+    {
+        // E9 (finding, low, Windows Server kernels): a NuGet PackageId "Aux.Core" slugifies to
+        // "aux.core", whose base name (before the first ".") is the reserved device "aux" -- as
+        // unwritable as a bare "aux.md" on Windows 10/Server. Package/doc ids never go through
+        // CodeConceptIds.Compose (only code ids do), so ConceptIdRegistry.Register carries the same
+        // check, with the same "_" suffix convention as the code-id family.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Aux.Core.csproj", "Aux.Core", null)],
+            []);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        Assert.Contains(concepts, c => c.Id.ToString() == "packages/aux.core_");
+    }
+
+    [Fact]
     public void A_nuget_description_never_manufactures_a_bundle_link()
     {
         // A `.csproj` <Description> is written by a human -- for NuGet, not for this bundle. Nobody
