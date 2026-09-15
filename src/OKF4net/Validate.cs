@@ -223,6 +223,16 @@ public enum DiagnosticCode
     /// matches the words, not the meaning.
     /// </summary>
     NonConventionalHeading,
+
+    /// <summary>
+    /// A concept has no frontmatter block, yet its first line would be a fence
+    /// (<c>---</c> plus optional spaces or tabs) once a leading byte-order mark and
+    /// leading spaces or tabs are removed. §4 delimits the frontmatter with <c>---</c>
+    /// "on its own line", read here as column 0 (<see cref="OkfDocument.Parse"/>), so
+    /// the file has no frontmatter. A <see cref="Severity.Warning"/> naming the likely
+    /// cause, reported next to the <see cref="MissingType"/> error it explains.
+    /// </summary>
+    FrontmatterFenceNotAtColumn0,
 }
 
 /// <summary>
@@ -343,6 +353,19 @@ public static class BundleValidator
                     "missing required frontmatter field `type`",
                     DiagnosticCode.MissingType,
                     "type"));
+            }
+
+            // A spec-neutral hint for the likeliest cause of the error above: a first
+            // line that would be the opening fence but is indented or behind a BOM, so
+            // OkfDocument.Parse read the file as having no frontmatter (§4).
+            if (concept.Document.DisplacedFirstLineFenceCause() is { } fenceCause)
+            {
+                diagnostics.Add(new Diagnostic(
+                    Severity.Warning,
+                    concept.Path,
+                    concept.Id,
+                    $"line 1 looks like a frontmatter fence but {fenceCause}, so the file has no frontmatter (§4)",
+                    DiagnosticCode.FrontmatterFenceNotAtColumn0));
             }
 
             foreach (var field in Frontmatter.RecommendedFieldsFor(fm))

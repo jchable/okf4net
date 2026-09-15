@@ -118,14 +118,30 @@ extensive test suite, including byte-exact golden CLI comparisons.
   shallow maps. The parser handles block/flow collections, quoted/plain
   scalars, `|`/`>` block scalars, and comments. It rejects, with a
   `YamlParseException` giving the line and naming the feature, the YAML features
-  that never appear in frontmatter: anchors (`&name`), aliases (`*name`) and
-  tags (`!name`, `!!type`) at the start of an unquoted node, and directives
-  (`%YAML`, `%TAG`) and document markers (`---`, `...`) on a line of their own
-  at column 0. A quoted scalar (`"*a"`), an indicator later in a plain scalar
-  (`a & b`), block-scalar content and a plain scalar's continuation lines stay
-  text. The frontmatter fences themselves are `---` at column 0, optionally
-  followed by spaces or tabs (§4); an indented `---` is frontmatter content, not
-  a fence.
+  that never appear in frontmatter:
+  - anchors (`&name`), aliases (`*name`) and tags (`!name`, `!!type`) at the
+    start of an unquoted node: a block key or value, a sequence item, a node on
+    its own line, or a flow item or key;
+  - directives, meaning a line starting at column 0 with `%` (`%YAML 1.2`);
+  - document markers, meaning a line starting at column 0 with `---` or `...`
+    followed by the end of the line, a space or a tab (`...`, `--- x`, `... # end`);
+  - an indented `---` line (spaces or tabs, then `---`, then optional spaces or
+    tabs) anywhere except inside `|`/`>` block-scalar content, reported as a
+    mistyped frontmatter fence;
+  - text after a closing quote other than a `#` comment (`k: "a" b`).
+
+  A quoted scalar (`"*a"`), an indicator later in a plain scalar (`a & b`,
+  `50%`), a value starting with `%` (`k: %foo`), block-scalar content and a plain
+  scalar's continuation lines stay text. Constructs the subset does not parse
+  as YAML structure are read as plain strings, so an indicator inside them is not
+  detected: compact nested sequences (`- - *a`, `k: - *a`), flow-collection keys
+  (`[*a]: v`) and `?` complex keys (`? *a`, `{? *a : b}`).
+
+  The frontmatter fences themselves are `---` at column 0, optionally followed
+  by spaces or tabs (§4). An indented `---` is not a fence. On line 1 it means
+  the file has no frontmatter, which `okf validate` flags with a warning next to
+  the missing-`type` error. Inside the frontmatter it is the parse error above,
+  except as block-scalar content.
 
 ## Usage
 

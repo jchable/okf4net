@@ -242,6 +242,32 @@ public class BundleTests
         Assert.Contains("line 2", error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// H3 review I1 (§4): the reviewer's two shapes of a closing fence typed with a
+    /// leading space and a later column-0 <c>---</c> in the body. Each concept lands
+    /// in <see cref="Bundle.ParseErrors"/> with the indented-fence message (line 3 of
+    /// the frontmatter, file line 4). Neither loads with a rewritten title or a lost
+    /// heading.
+    /// </summary>
+    [Theory]
+    [InlineData("---\ntype: Metric\ntitle: T\n ---\n\n# Heading\n\n---\n\n## Section\ntext\n")]
+    [InlineData("---\ntype: Metric\ntitle: T\n ---\n\n# Heading\n\nSome text.\n\n---\n\nMore.\n")]
+    public void An_indented_closing_fence_lands_in_parse_errors_naming_it(string content)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("good.md", "---\ntype: Note\n---\nbody\n");
+        tmp.Write("bad.md", content);
+
+        var bundle = Bundle.Load(tmp.Path);
+
+        Assert.Equal("good", Assert.Single(bundle.Concepts).Id.ToString());
+        var (path, error) = Assert.Single(bundle.ParseErrors);
+        Assert.EndsWith("bad.md", path, StringComparison.Ordinal);
+        Assert.Equal(
+            "Invalid YAML in frontmatter: YAML error at line 3: indented frontmatter fence: a `---` line must start at column 0 (§4)",
+            error);
+    }
+
     // ----------------------------------------------------------------
     // A2: symlink walk fidelity. The bundle walk classifies each directory
     // entry by its own type via lstat-based detection, reporting the type of

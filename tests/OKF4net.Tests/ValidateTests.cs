@@ -105,6 +105,52 @@ public class ValidateTests
         Assert.False(report.IsConformant);
     }
 
+    /// <summary>
+    /// H3 review I1 (§4): when a concept has no frontmatter block and its first line,
+    /// with a leading U+FEFF and leading spaces/tabs removed, is a fence, a warning
+    /// names the cause next to the <see cref="DiagnosticCode.MissingType"/> error.
+    /// </summary>
+    [Theory]
+    [InlineData(" ---\ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but is not at column 0, so the file has no frontmatter (§4)")]
+    [InlineData("  ---  \ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but is not at column 0, so the file has no frontmatter (§4)")]
+    [InlineData("\uFEFF---\ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but starts with a byte-order mark, so the file has no frontmatter (§4)")]
+    [InlineData("\uFEFF\t---\ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but starts with a byte-order mark and is not at column 0, so the file has no frontmatter (§4)")]
+    [InlineData(" ---", "line 1 looks like a frontmatter fence but is not at column 0, so the file has no frontmatter (§4)")]
+    public void A_first_line_fence_off_column_0_gets_a_hint(string content, string message)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("bad.md", content);
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var hint = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.FrontmatterFenceNotAtColumn0);
+        Assert.Equal(Severity.Warning, hint.Severity);
+        Assert.Equal(message, hint.Message);
+        Assert.Null(hint.Field);
+        Assert.Contains(report.Diagnostics, d => d.Code == DiagnosticCode.MissingType);
+    }
+
+    /// <summary>
+    /// No hint where line 1 is not a displaced fence: ordinary text, a real fence, an
+    /// empty frontmatter block whose BODY starts with an indented <c>---</c> (line 1 is
+    /// the real opening fence there), or a displaced line that is not exactly a fence.
+    /// </summary>
+    [Theory]
+    [InlineData("# Title\n\nbody\n")]
+    [InlineData("---\ntype: M\n---\nbody\n")]
+    [InlineData("---\n---\n ---\nbody\n")]
+    [InlineData(" ----\ntype: M\n---\nbody\n")]
+    [InlineData(" --- x\ntype: M\n---\nbody\n")]
+    [InlineData("\u00A0---\ntype: M\n---\nbody\n")]
+    [InlineData("")]
+    public void No_fence_hint_without_a_displaced_first_line_fence(string content)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("bad.md", content);
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.FrontmatterFenceNotAtColumn0);
+    }
+
     [Fact]
     public void Empty_type_string_is_an_error()
     {

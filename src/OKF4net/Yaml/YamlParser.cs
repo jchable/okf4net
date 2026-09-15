@@ -31,18 +31,56 @@ internal static class YamlParser
     private const string TagMessage = "YAML tags (!name, !!type) are not supported by the OKF YAML subset";
     private const string DirectiveMessage = "YAML directives (%YAML, %TAG) are not supported by the OKF YAML subset";
     private const string DocumentMarkerMessage = "YAML document markers (---, ...) are not supported by the OKF YAML subset";
+    private const string IndentedFenceMessage = "indented frontmatter fence: a `---` line must start at column 0 (§4)";
+    private const string TrailingAfterQuotedMessage = "unexpected content after quoted scalar";
 
     /// <summary>
     /// Parses a YAML document (the OKF subset) into a <see cref="YamlValue"/>.
     /// Empty or comment/whitespace-only input parses to <see cref="YamlNull"/>.
-    /// Anchors, aliases, tags, directives and document markers are rejected
-    /// with a <see cref="YamlParseException"/> naming the feature.
+    /// Anchors, aliases, tags, directives, document markers and indented
+    /// <c>---</c> lines outside block-scalar content are rejected with a
+    /// <see cref="YamlParseException"/> naming the feature.
     /// </summary>
     public static YamlValue Parse(string text)
     {
         var lines = LfLines.Split(text);
-        RejectDirectivesAndDocumentMarkers(lines);
-        var p = new BlockParser(lines);
+
+        // The parser works on a copy: its "- key: value" branch rewrites lines in
+        // place, and the line-level checks below must see the original text.
+        var p = new BlockParser([.. lines]);
+        YamlValue? value = null;
+        YamlParseException? failure = null;
+        try
+        {
+            value = ParseDocument(p);
+        }
+        catch (YamlParseException e)
+        {
+            failure = e;
+        }
+
+        // A line-level problem at or before the line the parser stopped on (Pos) is
+        // reported instead of the parser's own error, which it usually causes: a
+        // mistyped fence typically surfaces as "unexpected indentation" or "expected
+        // 'key: value'" on that line or a later one, or as "unterminated flow
+        // sequence" on the line before it, with Pos already on it.
+        // Every line before Pos has been consumed, with block-scalar content marked.
+        // The line at Pos cannot be block content either: a failure inside a block
+        // scalar is a tab in its indentation, which is never content, and every
+        // other failure leaves Pos on or just after a line that is not a block
+        // header. A line past Pos was never classified, so it is not judged.
+        var lastExamined = failure is null ? lines.Count - 1 : Math.Min(p.Pos, lines.Count - 1);
+        RejectLineLevelConstructs(lines, p.BlockScalarContent, lastExamined);
+        if (failure is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+        }
+
+        return value!;
+    }
+
+    private static YamlValue ParseDocument(BlockParser p)
+    {
         p.SkipBlankAndComments();
         if (p.Pos >= p.Lines.Count)
         {
@@ -61,22 +99,30 @@ internal static class YamlParser
     }
 
     /// <summary>
-    /// Rejects a YAML directive (a line starting with <c>%</c>) or document
-    /// marker (<c>---</c> or <c>...</c>, followed by the end of the line, a space
-    /// or a tab) at column 0. Only column 0 is checked, and that is exact rather
-    /// than approximate: this parser never reads a column-0 line as content. A
-    /// block scalar's body and a plain scalar's continuation lines must be
-    /// indented deeper than their parent (<see cref="BlockParser.ParseBlockScalar"/>
-    /// and <see cref="BlockParser.ParsePlainScalarOrContinuation"/> stop at the
-    /// first non-blank line that is not), whose indentation is never negative;
-    /// quoted and flow values are single-line. So an indented <c>%</c> or
-    /// <c>...</c> line inside a <c>|</c> block stays content, and a column-0 one
-    /// is always a structural line, where YAML reserves <c>%</c> for directives
-    /// and <c>---</c>/<c>...</c> for document markers.
+    /// Rejects, for lines 0 to <paramref name="lastExamined"/> in order (the first
+    /// one found wins), three line-level constructs:
+    /// <list type="bullet">
+    /// <item>a YAML directive: a line starting with <c>%</c> at column 0;</item>
+    /// <item>a document marker: <c>---</c> or <c>...</c> at column 0, followed by
+    /// the end of the line, a space or a tab;</item>
+    /// <item>an indented frontmatter fence: a line of one or more spaces/tabs and
+    /// then a fence (<see cref="OkfDocument.IsFenceLine"/>), unless the parser read
+    /// it as block-scalar content (<paramref name="blockScalarContent"/>): indented
+    /// at least as deep as its block's first content line. §4 fences
+    /// start at column 0, so such a line is almost always a mistyped closing fence.
+    /// Reading it as a plain-scalar continuation (YAML's own reading) silently
+    /// rewrote the preceding value and pulled body lines into the frontmatter.</item>
+    /// </list>
+    /// The column-0 rules need no exemption. This parser never reads a column-0 line
+    /// as content: a block scalar's body and a plain scalar's continuation lines
+    /// must be indented deeper than their parent, whose indentation is never
+    /// negative, and quoted and flow values are single-line. So a column-0 line is
+    /// always structural, where YAML reserves <c>%</c> for directives and
+    /// <c>---</c>/<c>...</c> for document markers.
     /// </summary>
-    private static void RejectDirectivesAndDocumentMarkers(List<string> lines)
+    private static void RejectLineLevelConstructs(List<string> lines, bool[] blockScalarContent, int lastExamined)
     {
-        for (var i = 0; i < lines.Count; i++)
+        for (var i = 0; i <= lastExamined; i++)
         {
             var line = lines[i];
             if (line.StartsWith('%'))
@@ -89,7 +135,89 @@ internal static class YamlParser
             {
                 throw new YamlParseException(i + 1, DocumentMarkerMessage);
             }
+
+            if (line.Length > 0 && (line[0] is ' ' or '\t')
+                && !blockScalarContent[i]
+                && OkfDocument.IsFenceLine(line.TrimStart(' ', '\t')))
+            {
+                throw new YamlParseException(i + 1, IndentedFenceMessage);
+            }
         }
+    }
+
+    /// <summary>
+    /// Throws when <paramref name="token"/>, a trimmed scalar token, is a quoted
+    /// scalar followed by anything other than whitespace or a <c>#</c> comment,
+    /// such as <c>"a" *b</c>. That text used to be silently dropped. This is the same
+    /// rule <see cref="ParseInlineValue"/> applies after a flow collection.
+    /// <paramref name="line"/> is 0-based.
+    /// </summary>
+    private static void RejectContentAfterQuoted(string token, int line)
+    {
+        if (token.Length == 0 || token[0] is not ('"' or '\''))
+        {
+            return;
+        }
+
+        var end = QuotedScalarEnd(token);
+        if (end < 0)
+        {
+            return; // unterminated: the scalar parser reports that itself
+        }
+
+        var rest = token.AsSpan(end).TrimStart();
+        if (rest.Length > 0 && rest[0] != '#')
+        {
+            throw new YamlParseException(line + 1, TrailingAfterQuotedMessage);
+        }
+    }
+
+    /// <summary>
+    /// The index just past the closing quote of the quoted scalar starting at
+    /// <paramref name="s"/>[0], scanned exactly as <see cref="ParseDoubleQuoted"/> /
+    /// <see cref="ParseSingleQuoted"/> scan it, or -1 when it is unterminated.
+    /// </summary>
+    private static int QuotedScalarEnd(string s)
+    {
+        var quote = s[0];
+        var i = 1;
+        while (i < s.Length)
+        {
+            var c = s[i];
+            if (quote == '"' && c == '\\')
+            {
+                i++;
+                if (i >= s.Length)
+                {
+                    return -1;
+                }
+
+                // ParseDoubleQuoted skips a \u escape's four following characters
+                // whenever four are available, whatever they are.
+                if (s[i] == 'u' && s.Length - (i + 1) >= 4)
+                {
+                    i += 4;
+                }
+
+                i++;
+                continue;
+            }
+
+            if (c == quote)
+            {
+                if (quote == '\'' && i + 1 < s.Length && s[i + 1] == '\'')
+                {
+                    i += 2;
+                    continue;
+                }
+
+                return i + 1;
+            }
+
+            i++;
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -174,6 +302,14 @@ internal static class YamlParser
     private sealed class BlockParser(List<string> lines)
     {
         public List<string> Lines { get; } = lines;
+
+        /// <summary>
+        /// Whether each line was read by <see cref="ParseBlockScalar"/> as block-scalar
+        /// content (indented at least as deep as the block's first content line), the
+        /// one place an indented fence-shaped line is legal (see
+        /// <see cref="RejectLineLevelConstructs"/>).
+        /// </summary>
+        public bool[] BlockScalarContent { get; } = new bool[lines.Count];
 
         public int Pos { get; set; }
 
@@ -306,6 +442,7 @@ internal static class YamlParser
                 // here too, since `&a` is the inline rest.
                 RejectNodeIndicator(split.Key, Pos);
                 RejectNodeIndicator(split.Rest ?? string.Empty, Pos);
+                RejectContentAfterQuoted(split.Key, Pos);
                 var keyValue = ParseScalar(split.Key, Pos);
                 var entryLine = Pos;
                 Pos++;
@@ -501,6 +638,13 @@ internal static class YamlParser
 
                 blockIndent ??= ind;
                 var bi = blockIndent.Value;
+
+                // A line indented less than the block's first content line is not
+                // block content in YAML (it ends the block). This parser has always
+                // consumed it anyway, so it is not marked. A mistyped fence right
+                // after a block (" ---" after two-space content) is then still
+                // reported as an indented fence, not silently read as content.
+                BlockScalarContent[Pos] = ind >= bi;
                 body.Add(line.Length >= bi ? line[bi..] : string.Empty);
                 Pos++;
             }
@@ -755,6 +899,7 @@ internal static class YamlParser
             return v;
         }
 
+        RejectContentAfterQuoted(t, line);
         return ParseScalar(t, line);
     }
 

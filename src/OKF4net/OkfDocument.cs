@@ -65,6 +65,53 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     /// <summary>Everything after the frontmatter.</summary>
     public string Body { get; }
 
+    /// <summary>
+    /// Whether <see cref="Parse"/> found a fenced frontmatter block, even an empty
+    /// one. <see langword="false"/> for a document parsed without one (then
+    /// <see cref="Body"/> is the whole text) and for any document built by the
+    /// constructor. Not part of <see cref="Equals(OkfDocument?)"/>.
+    /// </summary>
+    internal bool HasFrontmatterBlock { get; private init; }
+
+    /// <summary>
+    /// For a document <see cref="Parse"/> read as having no frontmatter block, why
+    /// its first line looks like a fence but is not one: it would be a fence (see
+    /// <see cref="IsFenceLine"/>) once a leading U+FEFF and leading spaces or tabs
+    /// are removed. Returns <c>"is not at column 0"</c>,
+    /// <c>"starts with a byte-order mark"</c>, both joined with <c>and</c>, or
+    /// <see langword="null"/> when the first line is not such a line or the document
+    /// has a frontmatter block. Backs the §4 hint
+    /// <see cref="DiagnosticCode.FrontmatterFenceNotAtColumn0"/>.
+    /// </summary>
+    internal string? DisplacedFirstLineFenceCause()
+    {
+        if (HasFrontmatterBlock)
+        {
+            return null;
+        }
+
+        var newline = Body.IndexOf('\n');
+        var line = newline < 0 ? Body : Body[..(newline > 0 && Body[newline - 1] == '\r' ? newline - 1 : newline)];
+        var bom = line.StartsWith('\uFEFF');
+        if (bom)
+        {
+            line = line[1..];
+        }
+
+        var indented = line.Length > 0 && line[0] is ' ' or '\t';
+        if (!(bom || indented) || !IsFenceLine(line.TrimStart(' ', '\t')))
+        {
+            return null;
+        }
+
+        return (bom, indented) switch
+        {
+            (true, true) => "starts with a byte-order mark and is not at column 0",
+            (true, false) => "starts with a byte-order mark",
+            _ => "is not at column 0",
+        };
+    }
+
     /// <summary>Creates a document from frontmatter and a body.</summary>
     public OkfDocument(Frontmatter frontmatter, string body)
     {
@@ -84,7 +131,8 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     /// <exception cref="DocumentParseException">
     /// The frontmatter block is unterminated, is not a YAML mapping, or
     /// contains invalid YAML, including a YAML feature outside the supported
-    /// subset (anchors, aliases, tags, directives, document markers).
+    /// subset (anchors, aliases, tags, directives, document markers, an indented
+    /// <c>---</c> line outside block-scalar content, text after a closing quote).
     /// </exception>
     public static OkfDocument Parse(string text)
     {
@@ -133,7 +181,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
             body = body[1..];
         }
 
-        return new OkfDocument(frontmatter, body);
+        return new OkfDocument(frontmatter, body) { HasFrontmatterBlock = true };
     }
 
     /// <summary>Like <see cref="Parse"/>, but returns <c>false</c> instead of throwing.</summary>

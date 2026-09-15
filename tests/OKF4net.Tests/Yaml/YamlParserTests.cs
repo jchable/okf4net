@@ -338,7 +338,7 @@ public class YamlParserTests
 
     // ---- Unsupported YAML features: rejected, not read as strings ------------
 
-    private static readonly string[] FeatureWords = ["anchor", "alias", "tag", "directive", "document marker"];
+    private static readonly string[] FeatureWords = ["anchor", "alias", "tag", "directive", "document marker", "indented frontmatter fence"];
 
     /// <summary>
     /// Each construct the README says the subset rejects. Before, most of these
@@ -386,6 +386,17 @@ public class YamlParserTests
     [InlineData("type: T\n*a: v\n", 2, "alias")]
     [InlineData("type: T\nitems:\n  - *a: v\n", 3, "alias")]
     [InlineData("type: T\r\nk: !!str v\r\n", 2, "tag")]
+    [InlineData("title: T\n ---\n", 2, "indented frontmatter fence")]
+    [InlineData("title: T\n  ---  \n", 2, "indented frontmatter fence")]
+    [InlineData("outer:\n  a: 1\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("tags:\n  - a\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("tags: [a,\n  ---\n  b]\n", 2, "indented frontmatter fence")]
+    [InlineData("k:\n  ---\n", 2, "indented frontmatter fence")]
+    [InlineData("k: first\n  more\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("k: \"a\"\n  ---\n", 2, "indented frontmatter fence")]
+    [InlineData("k: |\n\t---\n", 2, "indented frontmatter fence")]
+    [InlineData("title: T\n ---\n*a: b\n", 2, "indented frontmatter fence")]
+    [InlineData("title: T\n ---\n\n%YAML 1.2\n", 2, "indented frontmatter fence")]
     public void Unsupported_feature_is_rejected_with_its_line_and_name(string src, int line, string feature)
     {
         var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(src));
@@ -433,6 +444,16 @@ public class YamlParserTests
     [InlineData("k: first\n  *second\n", "first *second")]
     [InlineData("k: first\n  &second\n  !third\n", "first &second !third")]
     [InlineData("k: first\n  %second\n  ...\n  --- x\n", "first %second ... --- x")]
+    [InlineData("k: 50%", "50%")]
+    [InlineData("k: %foo", "%foo")]
+    [InlineData("k: 100% done", "100% done")]
+    [InlineData("k: |\n  ---\n  x\n", "---\nx\n")]
+    [InlineData("k: >\n  a\n  ---\n", "a ---\n")]
+    [InlineData("k: \"a\" # comment", "a")]
+    [InlineData("k: 'a'   ", "a")]
+    [InlineData("k: \"a\"#comment", "a")]
+    [InlineData("k: 'it''s' # c", "it's")]
+    [InlineData("k: \"a \\\" b\" # c", "a \" b")]
     public void Indicators_outside_node_start_stay_strings(string src, string expected)
     {
         var v = YamlValue.Parse(src).AsMapping()!.Get("k")!;
@@ -451,5 +472,76 @@ public class YamlParserTests
         var flowMap = m.Get("map")!.AsMapping()!;
         Assert.Equal("v", flowMap.Get("*k")!.AsString());
         Assert.Equal("c", flowMap.Get("a&b")!.AsString());
+    }
+
+    /// <summary>
+    /// H3 review M4: a directive is a column-0 line only. A value, sequence item or
+    /// flow item that starts with <c>%</c> is a plain string. This kills the mutant that
+    /// rejects <c>%</c> at the start of a node.
+    /// </summary>
+    [Fact]
+    public void A_node_starting_with_percent_is_a_string_not_a_directive()
+    {
+        var m = YamlValue.Parse("k: %foo\nratio: 50%\nseq:\n  - %x\nseq2:\n- %y\nflow: [%a, 50%]\nmap: {%k: %v}\n").AsMapping()!;
+        Assert.Equal("%foo", m.Get("k")!.AsString());
+        Assert.Equal("50%", m.Get("ratio")!.AsString());
+        Assert.Equal(new[] { "%x" }, m.Get("seq")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        Assert.Equal(new[] { "%y" }, m.Get("seq2")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        Assert.Equal(new[] { "%a", "50%" }, m.Get("flow")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        Assert.Equal("%v", m.Get("map")!.AsMapping()!.Get("%k")!.AsString());
+    }
+
+    /// <summary>
+    /// H3 review M1: a quoted scalar followed by anything other than whitespace or a
+    /// comment used to have that trailing text silently dropped (<c>k: "a" *b</c> read
+    /// as <c>"a"</c>). It is now rejected, like trailing content after a flow
+    /// collection.
+    /// </summary>
+    [Theory]
+    [InlineData("k: \"a\" *b", 1)]
+    [InlineData("k: 'a' b", 1)]
+    [InlineData("k: \"a\"b", 1)]
+    [InlineData("k: 'it''s' x", 1)]
+    [InlineData("- \"a\" b\n", 1)]
+    [InlineData("list:\n- \"a\" b\n", 2)]
+    [InlineData("items:\n  - 'a' b\n", 2)]
+    [InlineData("\"a\" b", 1)]
+    [InlineData("type: T\n\"k\" x: v\n", 2)]
+    [InlineData("k:\n  \"a\" b\n", 2)]
+    public void Content_after_a_quoted_scalar_is_rejected(string src, int line)
+    {
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(src));
+        Assert.Equal(line, ex.Line);
+        Assert.EndsWith("unexpected content after quoted scalar", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Documented gap (README "A documented YAML subset", H3 review M1). These pin
+    /// what the docs say, not a desired behaviour. Constructs the subset does not parse
+    /// as YAML structure (compact nested sequences, flow-collection keys, <c>?</c>
+    /// complex keys) are read as plain strings, so an alias inside them is not
+    /// detected. Fixing a gap means updating the README sentence with this test.
+    /// </summary>
+    [Fact]
+    public void Documented_gap_structures_the_subset_does_not_parse_hide_indicators()
+    {
+        Assert.Equal("- *a", YamlValue.Parse("- - *a").AsSequence()![0].AsString());
+        Assert.Equal("- *a", YamlValue.Parse("k: - *a").AsMapping()!.Get("k")!.AsString());
+        Assert.Equal("v", YamlValue.Parse("[*a]: v").AsMapping()!.Get("[*a]")!.AsString());
+        Assert.Equal("? *a", YamlValue.Parse("? *a").AsString());
+        Assert.Equal("b", YamlValue.Parse("k: {? *a : b}").AsMapping()!.Get("k")!.AsMapping()!.Get("? *a")!.AsString());
+    }
+
+    /// <summary>A quoted key or item followed by a colon or a comment is not trailing content.</summary>
+    [Fact]
+    public void Quoted_keys_and_items_with_comments_still_parse()
+    {
+        var m = YamlValue.Parse("\"k\": v\n'q' : w # c\nitems:\n  - \"a\" # c\n  - 'b'\n  - \"c\": 1\n").AsMapping()!;
+        Assert.Equal("v", m.Get("k")!.AsString());
+        Assert.Equal("w", m.Get("q")!.AsString());
+        var items = m.Get("items")!.AsSequence()!;
+        Assert.Equal("a", items[0].AsString());
+        Assert.Equal("b", items[1].AsString());
+        Assert.Equal(1L, items[2].AsMapping()!.Get("c")!.AsInt());
     }
 }

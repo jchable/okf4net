@@ -658,10 +658,10 @@ public class RecordVerificationTests
 
     /// <summary>
     /// Finding #C7-2 / #C7-A, revisited by H3 (§4): an indented <c>---</c> is no
-    /// longer a fence, so inside a <c>verified</c> sequence it is ordinary YAML,
-    /// and here invalid YAML (an indented line that belongs to nothing). The concept
-    /// is refused as unparseable before any edit, and the file is untouched. Before
-    /// H3 the line was taken as the closing fence and the edit refused it as indented.
+    /// longer a fence. Outside block-scalar content it is a parse error naming the
+    /// mistyped fence (H3 review I1), so the concept is refused as unparseable
+    /// before any edit, and the file is untouched. Before H3 the line was taken as
+    /// the closing fence and the edit refused it as indented.
     /// </summary>
     [Fact]
     public void A_dash_line_indented_inside_a_verified_sequence_is_refused_as_unparseable()
@@ -674,7 +674,7 @@ public class RecordVerificationTests
 
         Assert.False(outcome.Recorded);
         Assert.Contains("could not be parsed", outcome.Message);
-        Assert.Contains("unexpected indentation", outcome.Message);
+        Assert.Contains("YAML error at line 4: indented frontmatter fence", outcome.Message);
         Assert.Equal(before, Read(tmp, "metrics/x.md"));
     }
 
@@ -708,6 +708,46 @@ public class RecordVerificationTests
         var reparsed = OkfDocument.Parse(after);
         Assert.Equal("Intro\n---\nDetails\n", reparsed.Frontmatter.Description);
         Assert.Equal(2, reparsed.Frontmatter.Verified.Count);
+    }
+
+    /// <summary>
+    /// H3 review I1: the parser and <c>FrontmatterBlockEdit</c> still agree once an
+    /// indented <c>---</c> outside block content is a parse error. With the line inside
+    /// a block scalar, before or after <c>verified</c>, under each accepted closing
+    /// fence and line ending, the stamp lands. Only <c>verified</c> changes, and the
+    /// block keeps its <c>---</c>. With the line outside block content, the concept is
+    /// refused before any edit and the file is untouched.
+    /// </summary>
+    [Theory]
+    [InlineData("---\ntype: M\ndescription: |\n  one\n  ---\n  two\nverified:\n- {by: human:bob, at: 2025-01-01T00:00:00Z}\n---\nbody\n", true)]
+    [InlineData("---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\ndescription: >\n  one\n  ---\n---\t\nbody\n", true)]
+    [InlineData("---\r\ntype: M\r\ndescription: |\r\n  one\r\n  ---\r\nverified: [{by: human:bob, at: 2025-01-01T00:00:00Z}]\r\n---  \r\nbody\r\n", true)]
+    [InlineData("---\ntype: M\ndescription: one\n  ---\nverified: [{by: human:bob, at: 2025-01-01T00:00:00Z}]\n---\nbody\n", false)]
+    [InlineData("---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\n ---\n\n# Heading\n\n---\nbody\n", false)]
+    public void Parser_and_block_edit_agree_on_indented_dash_lines(string before, bool stampable)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        var after = Read(tmp, "metrics/x.md");
+        if (!stampable)
+        {
+            Assert.False(outcome.Recorded);
+            Assert.Contains("indented frontmatter fence", outcome.Message);
+            Assert.Equal(before, after);
+            return;
+        }
+
+        Assert.True(outcome.Recorded, outcome.Message);
+        var original = OkfDocument.Parse(before);
+        var reparsed = OkfDocument.Parse(after);
+        Assert.Equal(original.Body, reparsed.Body);
+        Assert.Equal(original.Frontmatter.Description, reparsed.Frontmatter.Description);
+        Assert.Contains("---", reparsed.Frontmatter.Description);
+        Assert.Equal(new[] { "human:bob", "human:ada" }, reparsed.Frontmatter.Verified.Select(v => v.By!.Value.Raw).ToArray());
+        Assert.Equal(original.Frontmatter.AsMapping().Keys, reparsed.Frontmatter.AsMapping().Keys);
     }
 
     /// <summary>

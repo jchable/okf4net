@@ -321,28 +321,76 @@ and this project adheres to
   subset rejects what the docs already said it rejects.**
   - An indented `---` no longer opens or closes the frontmatter (§4: "delimited
     by `---` on its own line"). A fence is `---` at column 0, optionally
-    followed by spaces or tabs; other trailing whitespace (NO-BREAK SPACE, a
+    followed by spaces or tabs. Other trailing whitespace (NO-BREAK SPACE, a
     lone `\r`) no longer counts either. The old trimmed comparison took an
     indented `---` inside a `|` block scalar as the closing fence, silently
     cutting the frontmatter there and moving the rest of it into the body; that
-    line is now block content. A document whose only closing line was indented
-    now fails as an unterminated frontmatter block, and one whose first line is
-    indented has no frontmatter. A leading byte-order mark still means no
+    line is now block content. A leading byte-order mark still means no
     frontmatter, as before.
-  - `okf verify` / `RecordVerifications` shares that predicate, so the
+  - What happens to a mistyped (indented) fence:
+    - **On line 1:** the file has no frontmatter. `okf validate` still reports
+      the missing `type`, and a new warning,
+      `DiagnosticCode.FrontmatterFenceNotAtColumn0`, names the cause: "line 1
+      looks like a frontmatter fence but is not at column 0 / starts with a
+      byte-order mark, so the file has no frontmatter (§4)".
+    - **As the closing line, with no column-0 `---` later in the file:** the
+      document fails as `Unterminated YAML frontmatter block`.
+    - **As the closing line, with a column-0 `---` later** (e.g. a thematic
+      break in the body): the frontmatter runs to that later line. The indented
+      line then fails parsing with `YAML error at line N: indented frontmatter
+      fence: a `---` line must start at column 0 (§4)`, whether it sits after a
+      plain value, in a mapping, after a sequence item, inside an unterminated
+      flow collection, or on its own. N counts from the first frontmatter line,
+      like every YAML error. Before this rule, one such shape loaded silently,
+      with the preceding value rewritten (`title: "T ---"`) and a following
+      `# Heading` read as a YAML comment. Another failed with an unrelated error
+      on a body line.
+    - **Inside `|`/`>` block-scalar content:** the line is still content. The
+      exception is a line indented less than the block's first content line,
+      which YAML does not treat as content either; it gets the error above.
+    - **Residual gap:** a mistyped closing fence directly after a block scalar,
+      indented at least as deep as that block's content (or as the block's first
+      line), is still read as block content. The body up to the next column-0
+      `---` then joins the frontmatter, where it fails or is read as comments.
+  - `okf verify` / `RecordVerifications` shares the fence predicate, so the
     `FrontmatterBlockEdit` refusal of an indented closing fence is gone: it could
-    no longer trigger. A `verified` entry after such a line inside a block scalar
-    is now visible and merged instead of refused.
+    no longer trigger. A `verified` entry after an indented `---` inside a block
+    scalar is now visible and merged instead of refused. An indented `---`
+    outside block content is refused as unparseable before any edit.
   - Anchors (`&name`), aliases (`*name`) and tags (`!name`, `!!type`) starting
-    an unquoted node, and directives (`%YAML`, `%TAG`) and document markers
-    (`---`, `...`) at column 0, now fail parsing with a `YamlParseException`
-    that gives the line and names the feature. `README.md` already claimed the
-    subset rejected anchors, tags and multiple documents, but such a document
-    loaded, with those values read as plain strings (`k: *a` read as `"*a"`).
-    `Bundle.Load` reports the file in `ParseErrors` and `okf validate` as a
-    parse error. Quoted scalars, an indicator later in a plain scalar
-    (`a & b`), block-scalar content and a plain scalar's continuation lines are
-    unaffected.
+    an unquoted node (block key or value, sequence item, a node on its own line,
+    flow item or key) now fail parsing with a `YamlParseException` that gives the
+    line and names the feature. `README.md` already claimed the subset rejected
+    anchors and tags, but such a document loaded, with those values read as plain
+    strings (`k: *a` read as `"*a"`).
+  - Directives, meaning a line starting at column 0 with `%`, and document
+    markers, meaning a line starting at column 0 with `---` or `...` followed by
+    the end of the line, a space or a tab (`...`, `--- x`, `... # end`), fail the
+    same way. Inside a frontmatter mapping, such a line already failed when it
+    was not also a `key: value` entry, but with an unrelated "expected 'key:
+    value'" message. What used to load was:
+    - a key spelled that way (`%x: 1`, `... x: v`);
+    - a top-level scalar passed to `YamlValue.Parse` (`...`, `%x`, `--- x`).
+  - **Re-emit a file written by an earlier `YamlEmitter` with a top-level key
+    beginning with `... ` (three dots and a space).** Such keys were emitted
+    unquoted (`... x: v`) and now fail as a document marker. The emitter now
+    quotes them. No other frontmatter key or value an earlier emitter wrote is
+    newly rejected: it quoted every string starting with `%`, `-`, `&`, `*`, `!` or a
+    quote, with a leading space, or containing a tab, and it never wrote block
+    scalars or continuation lines.
+  - A quoted scalar followed by anything other than whitespace or a `#` comment
+    (`k: "a" *b`, `k: 'a' b`, `"k" x: v`) now fails with `unexpected content after
+    quoted scalar`, the rule already applied after a flow collection. The
+    trailing text used to be silently dropped (`k: "a" *b` read as `"a"`).
+  - Unaffected: quoted scalars, an indicator later in a plain scalar (`a & b`,
+    `50%`), a value starting with `%` (`k: %foo`), block-scalar content and a
+    plain scalar's continuation lines.
+  - Still not detected, documented in the README: structures the subset does not
+    parse are read as plain strings, so an indicator inside them is text:
+    compact nested sequences (`- - *a`), flow-collection keys (`[*a]: v`) and
+    `?` complex keys.
+  - `Bundle.Load` reports every rejected file in `ParseErrors`, and `okf validate`
+    reports it as a parse error.
 
 - **Breaking (0.x): link-guard refusals, see the Security entry below.**
   - `Bundle.ReadResourceText` now throws `UnauthorizedAccessException` for a

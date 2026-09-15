@@ -1798,6 +1798,61 @@ public class CliTests
         Assert.Contains("title: Users", r.Out);
     }
 
+    /// <summary>
+    /// H3 review I1 (§4): a closing fence typed with a leading space, followed later by
+    /// a column-0 <c>---</c> thematic break in the body. The frontmatter then runs to
+    /// that break. One shape used to validate "conformant" with the heading silently
+    /// read as a YAML comment and <c>title</c> = <c>"T ---"</c>; the other failed on a
+    /// body line. Both now name the indented fence. The line number is counted from the
+    /// first frontmatter line, like every YAML error (golden-locked): line 3 there is
+    /// file line 4.
+    /// </summary>
+    [Theory]
+    [InlineData("---\ntype: Metric\ntitle: T\n ---\n\n# Heading\n\n---\n\n## Section\ntext\n")]
+    [InlineData("---\ntype: Metric\ntitle: T\n ---\n\n# Heading\n\nSome text.\n\n---\n\nMore.\n")]
+    public void Validate_names_an_indented_closing_fence(string content)
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        tmp.Write("metrics/x.md", content);
+
+        var r = Run("validate", bundle);
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains(
+            "x.md: unparseable concept document: Invalid YAML in frontmatter: YAML error at line 3: "
+            + "indented frontmatter fence: a `---` line must start at column 0 (§4)",
+            r.Out,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// H3 review I1 (§4): an opening fence typed with a leading space (or behind a
+    /// byte-order mark) means the file has no frontmatter. The bare "missing
+    /// required frontmatter field `type`" error stays, since it is true, and a warning
+    /// now names the cause.
+    /// </summary>
+    [Theory]
+    [InlineData(" ---\ntype: Metric\ntitle: T\n---\n\nbody\n", "is not at column 0")]
+    [InlineData("\t---\ntype: Metric\ntitle: T\n---\n\nbody\n", "is not at column 0")]
+    [InlineData("\uFEFF---\ntype: Metric\ntitle: T\n---\n\nbody\n", "starts with a byte-order mark")]
+    [InlineData("\uFEFF  ---\ntype: Metric\ntitle: T\n---\n\nbody\n", "starts with a byte-order mark and is not at column 0")]
+    public void Validate_hints_at_a_first_line_fence_that_is_not_at_column_0(string content, string cause)
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        tmp.Write("metrics/x.md", content);
+
+        var r = Run("validate", bundle);
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("x.md: missing required frontmatter field `type`", r.Out, StringComparison.Ordinal);
+        var expectedTail = "x.md: line 1 looks like a frontmatter fence but " + cause + ", so the file has no frontmatter (§4)";
+        Assert.Single(
+            r.Out.Split('\n'),
+            l => l.StartsWith("[warning] ", StringComparison.Ordinal) && l.EndsWith(expectedTail, StringComparison.Ordinal));
+    }
+
     /// <summary>A reader that fails the test if the CLI reads from it at all.</summary>
     private sealed class ThrowingReader : TextReader
     {

@@ -11,7 +11,8 @@ public abstract class YamlValue
     /// </summary>
     /// <exception cref="YamlParseException">
     /// The text is not valid within the subset, including when it uses an
-    /// anchor, alias, tag, directive or document marker.
+    /// anchor, alias, tag, directive, document marker, an indented <c>---</c> line
+    /// outside block-scalar content, or text after a closing quote.
     /// </exception>
     public static YamlValue Parse(string text) => YamlParser.Parse(text);
 
