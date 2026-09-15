@@ -1876,6 +1876,37 @@ Also (auto-merged, but will not compile): every `dev` test that sets `TmpfsMount
 
 **Review:** adversarial and executed (hostile inputs, mutants), per the project's rule for parsers of untrusted input.
 
+### Task H4: The YAML emitter quotes every key the parser would misread
+
+**Finding (pre-existing; found by the H3 review's fuzz; identical on `b881385` and `7b111b3`):** `YamlEmitter` writes a frontmatter KEY containing `[`, `{`, `"` or `'` after its first character without quoting it. The parser then misreads or rejects the result:
+- `{"a[b": "v"}` → emitted `a[b: v` → re-parsed as the scalar string `"a[b: v"` at top level, or throws `unexpected indentation in mapping` when nested.
+- Fuzz (10 000 random strings, length 0–8, alphabet ``&*!%@`-?:,[]{}#|>'"abcXYZ .\n\t``, seed 20260915): 992 failures, 496 at top-level keys and 496 at nested keys. Values, sequence items and top-level scalars: 0.
+- Root cause: `IsSafePlain` (`src/OKF4net/Yaml/YamlEmitter.cs` ~323–373) judges a key as if it were a standalone scalar.
+
+**USER DECISION (2026-09-15):** fix it in this wave, after H3, as task H4 in the main lane.
+
+**Files:** `src/OKF4net/Yaml/YamlEmitter.cs`; tests `tests/OKF4net.Tests/Yaml/YamlRoundtripTests.cs` (and the emitter tests' current home); `CHANGELOG.md`.
+
+**Required behaviour:**
+- In key position, the emitter quotes any key the parser would not read back as the same key. At minimum this covers keys containing `"`, `'`, `[` or `{`.
+  - Prefer a precise key-context rule that mirrors the parser's key-splitting logic over "quote anything unusual", so ordinary keys keep their plain form and no golden moves.
+  - Read how the parser splits `key: value` (`YamlParser` key-line reading, `TryReadTopLevelKeyLine`) and derive the rule from it. Say in the doc comment which parser behaviour each quoting condition mirrors.
+- Choose the quoting style consistently with how the emitter already quotes values (single or double, and escaping).
+- Nothing changes for keys that round-trip today: no golden capture, no producer golden and no `BundleConceptWriter` output may move for ordinary keys. Verify with `GoldenParityTests` and `dotnet test producers/OkfProducer.sln`.
+
+**Tests (RED first):**
+1. A deterministic key-position fuzz in `YamlRoundtripTests`:
+   - the review's alphabet and seed, 10 000 strings, as a top-level key, a nested key, and a key inside a sequence item's mapping;
+   - emit then parse, asserting structural identity;
+   - bounded runtime (well under a second or two).
+   - RED on the H3 head: 992 failures expected at the top level and nested.
+2. Explicit rows: `a[b`, `a{b`, `a"b`, `a'b`, `[ab`, `{ab`, `"ab`, `'ab` as keys round-trip; `abc`, `a-b`, `a.b`, `a b` keep their plain form (assert the emitted text).
+3. Mutation check: remove the new key-context condition and confirm the fuzz goes RED.
+
+**CHANGELOG:** Fixed — the YAML emitter now quotes a frontmatter key containing `[`, `{`, `"` or `'` (or whatever the final rule is, stated exactly), which it previously wrote plain and the parser then read back as a different structure or rejected.
+
+**Review:** executed (fuzz re-run, mutants, golden/producer checks).
+
 ## Phase F — Close
 
 ### Task F1: Full verification, CHANGELOG read-through, PR
