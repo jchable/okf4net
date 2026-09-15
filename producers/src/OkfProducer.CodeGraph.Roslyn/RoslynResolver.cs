@@ -869,8 +869,20 @@ public sealed class RoslynResolver : ISymbolResolver
     /// containers. A namespace contributes the text of its name clause, so <c>namespace A.B</c> is
     /// one segment <c>A.B</c> exactly as the grammar's single <c>name</c> field makes it, and
     /// C#'s file-scoped form -- a syntactic ancestor here, a sibling over there -- lands in the same
-    /// place the extractor prepends it. A lambda, an accessor list, an operator and an indexer expose
-    /// no name and so contribute no segment, on both sides.
+    /// place the extractor prepends it. A lambda, an accessor, an operator and an indexer contribute
+    /// no segment, on both sides.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>The kinds that count are a closed list on both sides, and they must stay the same list.</b>
+    /// Here it is <see cref="BaseNamespaceDeclarationSyntax"/> plus the arms of
+    /// <see cref="DeclaredName"/>; over there it is <c>TreeSitterExtractor.ContainerSegmentNodeTypes</c>,
+    /// whose doc maps each grammar node type to its syntax kind here. The grammar puts a <c>name</c>
+    /// field on accessors, named arguments, named tuple elements and member accesses too, so "has a
+    /// <c>name</c> field" is not a stand-in for "is one of these kinds" over there; adding an arm to
+    /// <see cref="DeclaredName"/> means adding its node type to that list.
+    /// <c>RoslynResolverTests.A_local_function_s_container_is_spelled_the_same_by_both_engines</c>
+    /// holds the two against each other.
     /// </para>
     ///
     /// <para>

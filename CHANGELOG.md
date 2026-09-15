@@ -1359,6 +1359,30 @@ and this project adheres to
   declaration. A run with no such collision is unaffected, and a
   `SymbolFact` built without `ContainerNamespace` (an older extraction, a
   hand-built fixture) keeps the prior behaviour exactly.
+- **`okfgen`'s tree-sitter extractor no longer credits a field-initializer call
+  to a lambda's local, nor adds non-declaration segments to a container path**
+  (a finding, `TreeSitterExtractor`). A call inside a lambda in a field
+  initializer (`Lazy<int> _lazy = new(() => { var result = Compute(); … })`)
+  was attributed to the nearest `variable_declarator` above it — the lambda's
+  local `result` — so with a field named `result` on the same type the edge
+  hung off that real, unrelated field; it now takes the declarator of the field
+  declaration itself (`_lazy`), still per declarator in `a = Foo(), b = Bar()`.
+  Separately, the container walk took a segment from any ancestor with a
+  grammar `name` field, which includes accessors (`get`/`set`/`add`), named
+  arguments, named tuple elements and member accesses (`.First()`), so a local
+  function in a getter sat under `N.T.P.get` where `RoslynResolver` says
+  `N.T.P`, its `Exact` edge (§2.1) joined no symbol, and `CodeGraphBuilder`
+  degraded a link the name-match baseline had right. The walk is now an
+  allow-list mirroring `RoslynResolver.ContainerPathFromSyntax` kind for kind
+  (namespace, type, delegate, method, constructor, destructor, property,
+  event, local function, variable declarator). **Id churn:** a local function
+  declared in an accessor, in an indexer, or in a lambda passed as a named
+  argument, a tuple element or inside a member-access chain loses that segment
+  (`…/p/get/helper` → `…/p/helper`), and a getter and a setter of one property
+  each declaring a same-named local function now merge as §3.2 overloads. A
+  local function carries no access modifier and is always private, so these
+  ids exist only in a bundle generated with `--include-internal`
+  (`producers/`).
 
 ### Security
 

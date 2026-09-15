@@ -16,10 +16,11 @@ namespace OkfProducer.CodeGraph.TreeSitter;
 /// <remarks>
 /// Not every piece of this class is language-neutral yet: attaching a doc comment (walking
 /// <see cref="Node.PreviousSibling"/> for a leading run of <c>comment</c>-typed nodes) and reading a
-/// container from a <c>name</c> field are conventions shared by nearly every tree-sitter grammar, but
-/// C#'s file-scoped namespace form (<c>namespace N;</c>, a sibling of the declarations it covers
-/// rather than their syntactic parent) and the caller-resolution walk's fixed lists of "type" and
-/// "member" node-type names are C#-specific. <see cref="LanguageProfile"/>'s six fields (as shipped)
+/// segment's text from a <c>name</c> field are conventions shared by nearly every tree-sitter grammar,
+/// but C#'s file-scoped namespace form (<c>namespace N;</c>, a sibling of the declarations it covers
+/// rather than their syntactic parent), the caller-resolution walk's fixed lists of "type" and
+/// "member" node-type names, and the container walk's allow-list of node types that contribute a
+/// segment are C#-specific. <see cref="LanguageProfile"/>'s six fields (as shipped)
 /// have no hook for a second language to override these; a Java/TypeScript/JavaScript profile would
 /// need this class extended, not just a new <see cref="LanguageProfile"/> value.
 /// </remarks>
@@ -146,19 +147,69 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     /// Ancestor node types <see cref="ExtractCallSites"/> stops at when walking up from a call site to
     /// find its caller. <c>field_declaration</c>/<c>event_field_declaration</c> (a call in a field or
     /// event-field initializer, e.g. <c>private readonly Foo _x = new Bar();</c>) are included even
-    /// though neither has its own <c>name</c> field -- <see cref="ExtractCallSites"/> falls back to the
-    /// nearest <see cref="VariableDeclaratorNodeTypes"/> ancestor for the name in that case, so a call
-    /// in a multi-declarator statement (<c>public int a = Foo(), b = Bar();</c>) still attributes to
-    /// the right declarator, not to the statement as a whole.
+    /// though neither has its own <c>name</c> field -- <see cref="FieldDeclaratorContaining"/> supplies
+    /// the name in that case, so a call in a multi-declarator statement
+    /// (<c>public int a = Foo(), b = Bar();</c>) still attributes to the right declarator, not to the
+    /// statement as a whole.
     /// </summary>
     private static readonly string[] CallerMemberAncestorNodeTypes =
     [
         "method_declaration", "constructor_declaration", "destructor_declaration", "property_declaration",
         "event_declaration", "delegate_declaration", "local_function_statement",
-        "field_declaration", "event_field_declaration",
+        FieldDeclarationNodeType, EventFieldDeclarationNodeType,
     ];
 
-    private static readonly string[] VariableDeclaratorNodeTypes = ["variable_declarator"];
+    private const string FieldDeclarationNodeType = "field_declaration";
+    private const string EventFieldDeclarationNodeType = "event_field_declaration";
+    private const string VariableDeclarationNodeType = "variable_declaration";
+    private const string VariableDeclaratorNodeType = "variable_declarator";
+
+    /// <summary>
+    /// The ONLY ancestor node types <see cref="ComputeContainerPath"/> takes a segment from. An
+    /// allow-list, mirroring <c>RoslynResolver.ContainerPathFromSyntax</c> and the arms of its
+    /// <c>DeclaredName</c> switch node kind for node kind (<c>RoslynResolver.ContainerPathOf</c>'s doc
+    /// points back here; change both together):
+    /// <list type="bullet">
+    /// <item><c>namespace_declaration</c> -- <c>BaseNamespaceDeclarationSyntax</c>, its <c>Name</c>
+    /// clause. (The file-scoped form is a SIBLING in this grammar and is prepended separately; it is
+    /// deliberately absent here, so it can never also be collected and produce <c>N.N</c>.)</item>
+    /// <item><see cref="TypeDeclarationNodeTypes"/> -- <c>BaseTypeDeclarationSyntax</c> (class,
+    /// interface, struct, record, record struct, enum).</item>
+    /// <item><c>delegate_declaration</c> -- <c>DelegateDeclarationSyntax</c>.</item>
+    /// <item><c>method_declaration</c>, <c>constructor_declaration</c>,
+    /// <c>destructor_declaration</c>, <c>property_declaration</c>, <c>event_declaration</c> --
+    /// <c>MethodDeclarationSyntax</c>, <c>ConstructorDeclarationSyntax</c>,
+    /// <c>DestructorDeclarationSyntax</c>, <c>PropertyDeclarationSyntax</c>,
+    /// <c>EventDeclarationSyntax</c>.</item>
+    /// <item><c>local_function_statement</c> -- <c>LocalFunctionStatementSyntax</c>.</item>
+    /// <item><c>variable_declarator</c> -- <c>VariableDeclaratorSyntax</c>, for a field and a local
+    /// alike: a local function inside a lambda assigned to <c>f</c> sits under <c>…M.f</c> on both
+    /// sides.</item>
+    /// </list>
+    ///
+    /// <para><b>Why an allow-list and not "any ancestor with a <c>name</c> field".</b> That was the rule,
+    /// and the grammar puts a <c>name</c> field on far more than declarations: an
+    /// <c>accessor_declaration</c> (<c>get</c>, <c>set</c>, <c>add</c>), a named <c>argument</c>
+    /// (<c>Run(x: …)</c>), a named tuple element, and a <c>member_access_expression</c> (the
+    /// <c>First</c> of <c>xs.Select(…).First()</c>). Measured: a local function in a getter came out
+    /// under <c>N.T.P.get</c> where Roslyn says <c>N.T.P</c>, so the resolver's <c>Exact</c> target
+    /// joined no symbol and <c>CodeGraphBuilder</c> degraded an edge the name-match baseline had right.
+    /// Skipping the node types found so far would leave the next one wrong; naming what counts closes
+    /// the class. Everything not listed (accessors, indexers and operators included, which Roslyn's
+    /// <c>DeclaredName</c> also gives no name) contributes nothing on both sides.</para>
+    ///
+    /// <para>Pinned by execution rather than by these strings:
+    /// <c>TreeSitterExtractorTests.Every_allowed_declaration_kind_still_contributes_its_container_segment</c>
+    /// (a misspelt entry drops a segment) and
+    /// <c>RoslynResolverTests.A_local_function_s_container_is_spelled_the_same_by_both_engines</c>.</para>
+    /// </summary>
+    private static readonly string[] ContainerSegmentNodeTypes =
+    [
+        NamespaceDeclarationNodeType,
+        .. TypeDeclarationNodeTypes,
+        "delegate_declaration", "method_declaration", "constructor_declaration", "destructor_declaration",
+        "property_declaration", "event_declaration", "local_function_statement", VariableDeclaratorNodeType,
+    ];
 
     // Keyed by LanguageProfile.Language (e.g. "csharp"), not by the LanguageProfile record itself:
     // LanguageProfile's record equality is reference-based over FileExtensions (an IReadOnlyList<string>
@@ -845,11 +896,11 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
                 : string.Empty;
 
             // A field/event-field declaration has no name field of its own (its declarators do), so
-            // fall back to the nearest enclosing variable_declarator -- the specific name a call inside
-            // that declarator's initializer should attribute to, correct even when the statement
-            // declares more than one name (public int a = Foo(), b = Bar();).
+            // the name comes from the declarator of THAT declaration whose initializer holds the call
+            // -- correct even when the statement declares more than one name
+            // (public int a = Foo(), b = Bar();).
             var callerName = callerMember?.GetChildForField(NameFieldName)?.Text
-                ?? FindNearestAncestor(callee, VariableDeclaratorNodeTypes)?.GetChildForField(NameFieldName)?.Text
+                ?? (callerMember is not null ? FieldDeclaratorContaining(callerMember, callee) : null)?.GetChildForField(NameFieldName)?.Text
                 ?? string.Empty;
 
             sites.Add(new CallSite(
@@ -861,6 +912,33 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         }
 
         return sites;
+    }
+
+    /// <summary>
+    /// For a <c>field_declaration</c> or <c>event_field_declaration</c>, the declarator the call at
+    /// <paramref name="callee"/> belongs to: among the DIRECT <c>variable_declarator</c> children of the
+    /// member's own <c>variable_declaration</c>, the one whose span contains the call. <see langword="null"/>
+    /// for any other member type, or when no declarator's span contains the call.
+    ///
+    /// <para><b>Not the nearest declarator ancestor of the call</b>, which is what this used to take.
+    /// A lambda in the initializer declares its own locals, and those are declarators too: in
+    /// <c>Lazy&lt;int&gt; _lazy = new(() =&gt; { var result = Compute(); … })</c> the nearest one is the
+    /// local <c>result</c>, and with a field named <c>result</c> on the same type the call was credited
+    /// to that real, unrelated field.</para>
+    /// </summary>
+    private static Node? FieldDeclaratorContaining(Node member, Node callee)
+    {
+        if (member.Type is not (FieldDeclarationNodeType or EventFieldDeclarationNodeType))
+        {
+            return null;
+        }
+
+        return member.Children
+            .Where(c => c.Type == VariableDeclarationNodeType)
+            .SelectMany(d => d.Children)
+            .FirstOrDefault(c => c.Type == VariableDeclaratorNodeType
+                && c.StartIndex <= callee.StartIndex
+                && callee.StartIndex < c.EndIndex);
     }
 
     private static bool IsTypeDeclaration(string nodeType) =>
@@ -959,19 +1037,21 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
     }
 
     /// <summary>
-    /// Builds the dotted <c>N.Outer.Inner</c> path above <paramref name="decl"/>: every ancestor
-    /// that exposes a <c>name</c> field (a namespace, a type, or -- for a local function -- the
-    /// method it's nested in) contributes one segment, outermost first. A C# file-scoped namespace
+    /// Builds the dotted <c>N.Outer.Inner</c> path above <paramref name="decl"/>: every ancestor whose
+    /// node type is in <see cref="ContainerSegmentNodeTypes"/> (a namespace, a type, a member, a local
+    /// function, a variable declarator) and exposes a <c>name</c> field contributes one segment,
+    /// outermost first. Any other ancestor contributes nothing, even one with a <c>name</c> field of
+    /// its own -- see that list for the shapes that forced it. A C# file-scoped namespace
     /// (<c>namespace N;</c>) is a *sibling* of the declarations it covers, not their syntactic
     /// parent, so it never surfaces from the ancestor walk and must be prepended separately.
     ///
     /// <para>
     /// A <c>file_scoped_namespace_declaration</c> met during the ancestor walk contributes no segment
-    /// of its own, so the prepended name can never also be collected here and produce <c>N.N</c>.
-    /// That is a structural guarantee of this method rather than a shape that was measured: on every
-    /// shape probed the declaration was a sibling, but <see cref="ReadNamespaceContext"/> may now
-    /// recover one from anywhere in the tree, and this walk is the only thing standing between a
-    /// reparented one and a doubled segment.
+    /// of its own (it is not on the allow-list), so the prepended name can never also be collected here
+    /// and produce <c>N.N</c>. That is a structural guarantee of this method rather than a shape that
+    /// was measured: on every shape probed the declaration was a sibling, but
+    /// <see cref="ReadNamespaceContext"/> may now recover one from anywhere in the tree, and this walk
+    /// is the only thing standing between a reparented one and a doubled segment.
     /// </para>
     /// </summary>
     private static string ComputeContainerPath(Node decl, string? fileScopedNamespaceName)
@@ -980,7 +1060,9 @@ public sealed class TreeSitterExtractor : ILanguageExtractor, IDisposable
         var current = decl.Parent;
         while (current is not null)
         {
-            var nameField = current.Type == FileScopedNamespaceNodeType ? null : current.GetChildForField(NameFieldName);
+            var nameField = Array.IndexOf(ContainerSegmentNodeTypes, current.Type) >= 0
+                ? current.GetChildForField(NameFieldName)
+                : null;
             if (nameField is not null)
             {
                 // Through the SAME qualification the declaration itself gets, or the container path

@@ -543,6 +543,90 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         }
         """;
 
+    // One local function per container shape, each called once from where it is declared. The first
+    // group holds a node with a grammar `name` field that is NOT a declaration (an accessor, a named
+    // argument, a named tuple element, a member access's `.First`, an indexer's or operator's body);
+    // the second group holds one of every declaration kind that DOES contribute a segment. Every name
+    // starts with `Parity` so no other scenario's name-match ambiguity changes.
+    public const string ContainerParitySource = """
+        namespace Parity
+        {
+            public class Accessors
+            {
+                private int _backing;
+                public int Backing => _backing;
+                public int Getter { get { int ParityGet() => 1; return ParityGet(); } }
+                public int Setter { set { int ParitySet() => value; _backing = ParitySet(); } }
+                public event System.Action Evented { add { int ParityAdd() => 1; _backing = ParityAdd(); } remove { } }
+                public int this[int i] { get { int ParityIndexer() => i; return ParityIndexer(); } }
+                public static Accessors operator +(Accessors a, Accessors b) { int ParityOperator() => 1; a._backing = ParityOperator(); return b; }
+            }
+
+            public class Arguments
+            {
+                static int Take(System.Func<int> x) => x();
+                public int Named() => Take(x: () => { int ParityNamedArgument() => 3; return ParityNamedArgument(); });
+                public (int a, System.Func<int> b) Tupled() => (a: 1, b: () => { int ParityTupleElement() => 4; return ParityTupleElement(); });
+                public int Chained() => new[] { 1 }.Select(v => { int ParityMemberAccess() => v; return ParityMemberAccess(); }).First();
+            }
+
+            public struct AStruct { public int InStruct() { int ParityStruct() => 1; return ParityStruct(); } }
+            public record ARecord { public int InRecord() { int ParityRecord() => 1; return ParityRecord(); } }
+            public record struct ARecordStruct { public int InRecordStruct() { int ParityRecordStruct() => 1; return ParityRecordStruct(); } }
+            public interface IDefault { int InInterface() { int ParityInterface() => 1; return ParityInterface(); } }
+            public class Generic<T> { public int InGeneric() { int ParityGeneric() => 1; return ParityGeneric(); } }
+
+            public class Members
+            {
+                private int _n;
+                public int N => _n;
+                public Members() { int ParityConstructor() => 1; _n = ParityConstructor(); }
+                ~Members() { int ParityDestructor() => 1; _n = ParityDestructor(); }
+                public int InLocal() { int ParityOuter() { int ParityNested() => 1; return ParityNested(); } return ParityOuter(); }
+                public System.Func<int> Field = () => { int ParityField() => 1; return ParityField(); };
+                public int InVariable() { System.Func<int> f = () => { int ParityVariable() => 1; return ParityVariable(); }; return f(); }
+            }
+        }
+        """;
+
+    [Theory]
+    // No segment for a non-declaration `name` field.
+    [InlineData("ParityGet", "Parity.Accessors.Getter")]
+    [InlineData("ParitySet", "Parity.Accessors.Setter")]
+    [InlineData("ParityAdd", "Parity.Accessors.Evented")]
+    [InlineData("ParityIndexer", "Parity.Accessors")]
+    [InlineData("ParityOperator", "Parity.Accessors")]
+    [InlineData("ParityNamedArgument", "Parity.Arguments.Named")]
+    [InlineData("ParityTupleElement", "Parity.Arguments.Tupled")]
+    [InlineData("ParityMemberAccess", "Parity.Arguments.Chained")]
+    // One segment for every declaration kind on the allow-list.
+    [InlineData("ParityStruct", "Parity.AStruct.InStruct")]
+    [InlineData("ParityRecord", "Parity.ARecord.InRecord")]
+    [InlineData("ParityRecordStruct", "Parity.ARecordStruct.InRecordStruct")]
+    [InlineData("ParityInterface", "Parity.IDefault.InInterface")]
+    [InlineData("ParityGeneric", "Parity.Generic`1.InGeneric")]
+    [InlineData("ParityConstructor", "Parity.Members.Members")]
+    [InlineData("ParityDestructor", "Parity.Members.Members")]
+    [InlineData("ParityNested", "Parity.Members.InLocal.ParityOuter")]
+    [InlineData("ParityField", "Parity.Members.Field")]
+    [InlineData("ParityVariable", "Parity.Members.InVariable.f")]
+    public void A_local_function_s_container_is_spelled_the_same_by_both_engines(string localFunction, string expectedContainer)
+    {
+        // The join CodeGraphBuilder performs: the resolver's (TargetContainer, TargetName) must match the
+        // extractor's (Container, Name) exactly, or an Exact verdict overwrites the baseline and is then
+        // degraded for joining nothing. The literal is asserted as well, so the two engines cannot
+        // agree on a spelling that is wrong on both sides.
+        var symbol = Assert.Single(_scratch.Symbols, s => s.Name == localFunction);
+
+        var site = Assert.Single(_scratch.SitesIn("ContainerParity.cs"), s => s.CalledName == localFunction);
+        var edge = Assert.Single(_scratch.Resolver.Resolve([site], _scratch.Symbols));
+
+        Assert.Equal(EdgeConfidence.Exact, edge.Confidence);
+        Assert.Equal(expectedContainer, edge.TargetContainer);
+        Assert.Equal(localFunction, edge.TargetName);
+        Assert.Equal(expectedContainer, symbol.Container);
+    }
+
     [Fact]
     public void A_verbatim_identifier_keeps_its_at_sign_in_the_container_as_well_as_the_name()
     {
@@ -1143,6 +1227,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             ("Verbatim.cs", VerbatimSource, false),
             ("ContainerSpelling.cs", ContainerSpellingSource, false),
             ("ExplicitImplementation.cs", ExplicitImplementationSource, false),
+            ("ContainerParity.cs", ContainerParitySource, false),
             ("BomCrlf.cs", BomCrlfSource, true),
         ];
 
