@@ -1798,7 +1798,24 @@ Also (auto-merged, but will not compile): every `dev` test that sets `TmpfsMount
 
 ### Task H2: `okf index dir\` writes the root `index.md`
 
-**Finding:** with a trailing separator, `IndexGenerator` (`src/OKF4net/IndexGenerator.cs` ~184 / ~400) computes the root's parent as the bundle itself and omits the root `index.md` — the library half of E1. **Scope to settle with the user:** normalise in `IndexGenerator` (every caller) vs. in the CLI only.
+**Finding:** with a trailing separator, `IndexGenerator` (`src/OKF4net/IndexGenerator.cs` ~184 / ~400) computes the root's parent as the bundle itself and omits the root `index.md` — the library half of E1.
+
+**USER DECISION (2026-09-15): fix it inside `IndexGenerator`, for every caller** (`okf index`, `okf_regenerate_indexes`, any host).
+
+**Files:** `src/OKF4net/IndexGenerator.cs`; tests `tests/OKF4net.Tests/IndexTests.cs` and a CLI-level test beside the existing `okf index` tests; `CHANGELOG.md`.
+
+**Required behaviour:**
+- `RegenerateIndexesWith` resolves `bundleRoot` through `ReparsePoints.CanonicalizeRoot` (`Path.TrimEndingDirectorySeparator(Path.GetFullPath(...))`) instead of a bare `Path.GetFullPath` (~line 191). Every later use then sees the trimmed root: `DirectoriesToIndex`'s `rootParent` (~410), the reparse-ancestor walks, and the returned paths.
+- Grep `IndexGenerator.cs` for every other `Path.GetFullPath` applied to a root and apply the same treatment. Leave the root of a drive (`C:\`, `/`) as `CanonicalizeRoot` already does.
+- The list of written paths returned for `dir\` is identical to the list for `dir`.
+
+**Tests (RED first):**
+1. Library: `RegenerateIndexes(root + Path.DirectorySeparatorChar)` writes the root `index.md` and returns the same list as `RegenerateIndexes(root)`. Compare the whole written tree byte for byte against a run without the separator.
+2. The alternate separator on Windows (`root + '/'`).
+3. CLI: `okf index <dir>\` (in-process `OkfCli.Run`) writes the root `index.md`.
+4. Check `tests/fixtures/golden` for any `okf index` capture that passes a trailing separator. If one would change, stop and report instead of touching it.
+
+**CHANGELOG:** Fixed — `okf index dir/` and `IndexGenerator.RegenerateIndexes` with a trailing directory separator now write the root `index.md` (§8).
 
 ### Task H3: Frontmatter closing fence and YAML anchors match what the docs say
 
