@@ -2,7 +2,7 @@
 type: C# Member
 title: Scanner.Gone
 description: Reads a legacy manifest. The symbol a mutation deletes; it is last in the file on purpose.
-resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L25-L27
+resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L26-L28
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Reads a legacy manifest. The symbol a mutation deletes; it is last in the file o
 
 ## Signatures
 
-- `public void Gone()` — `src/Scanner.cs#L25-L27`
+- `public void Gone()` — `src/Scanner.cs#L26-L28`

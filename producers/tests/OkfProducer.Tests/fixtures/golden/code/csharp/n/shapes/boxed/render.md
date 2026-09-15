@@ -2,7 +2,7 @@
 type: C# Member
 title: Boxed.Render
 description: Renders the box. The doc comment carries Corner and markdown-significant characters -- [brackets], a `backtick` and a <tag> -- so the neutralisation layer is exercised by the golden rather than only by unit tests.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L61-L66
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L62-L67
 tags:
   - csharp
   - member
@@ -18,7 +18,7 @@ Renders the box. The doc comment carries Corner and markdown-significant charact
 
 ## Signatures
 
-- `public string Render()` — `src/Shapes.cs#L61-L66`
+- `public string Render()` — `src/Shapes.cs#L62-L67`
 
 ## Calls (unresolved)
 

@@ -2,7 +2,7 @@
 type: C# Type
 title: Shapes.Point
 description: A struct, so the value-type arm of the declaration query is exercised.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L26-L27
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L27-L28
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ A struct, so the value-type arm of the declaration query is exercised.
 
 ## Signatures
 
-- `public struct Point` — `src/Shapes.cs#L26-L27`
+- `public struct Point` — `src/Shapes.cs#L27-L28`
 
 ## Contains
 

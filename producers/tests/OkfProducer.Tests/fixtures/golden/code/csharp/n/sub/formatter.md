@@ -2,7 +2,7 @@
 type: C# Type
 title: Sub.Formatter
 description: Formats one report line.
-resource: https://example.com/acme/fixture/blob/main/src/Sub/Formatter.cs#L4-L5
+resource: https://example.com/acme/fixture/blob/main/src/Sub/Formatter.cs#L5-L6
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ Formats one report line.
 
 ## Signatures
 
-- `public class Formatter` — `src/Sub/Formatter.cs#L4-L5`
+- `public class Formatter` — `src/Sub/Formatter.cs#L5-L6`
 
 ## Contains
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Declaration shapes the golden did not cover. Before this file, the captured bundle held three
 // classes and their methods and nothing else: no interface, struct, record or enum, no constructor,
 // event, field or local function, no nested or generic type, no explicit interface implementation,

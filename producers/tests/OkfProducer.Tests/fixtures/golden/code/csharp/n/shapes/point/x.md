@@ -2,7 +2,7 @@
 type: C# Member
 title: Point.X
 description: Two declarators on one field, which is the rule no fixture reached.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L29
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L30
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Two declarators on one field, which is the rule no fixture reached.
 
 ## Signatures
 
-- `public int X, Y` — `src/Shapes.cs#L29`
+- `public int X, Y` — `src/Shapes.cs#L30`

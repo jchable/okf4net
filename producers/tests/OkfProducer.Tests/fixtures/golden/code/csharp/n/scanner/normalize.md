@@ -2,7 +2,7 @@
 type: C# Member
 title: Scanner.Normalize
 description: Normalizes one repository-relative path. The one call target this repository resolves.
-resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L15-L18
+resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L16-L19
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Normalizes one repository-relative path. The one call target this repository res
 
 ## Signatures
 
-- `public string Normalize(string path)` — `src/Scanner.cs#L15-L18`
+- `public string Normalize(string path)` — `src/Scanner.cs#L16-L19`

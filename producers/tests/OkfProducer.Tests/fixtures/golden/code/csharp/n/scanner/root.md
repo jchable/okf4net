@@ -2,7 +2,7 @@
 type: C# Member
 title: Scanner.Root
 description: The root this scanner starts from.
-resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L7
+resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L8
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ The root this scanner starts from.
 
 ## Signatures
 
-- `public string Root` — `src/Scanner.cs#L7`
+- `public string Root` — `src/Scanner.cs#L8`

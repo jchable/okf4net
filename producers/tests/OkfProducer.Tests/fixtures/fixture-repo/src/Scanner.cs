@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 namespace N;
 
 /// <summary>Walks a repository and reports what it finds.</summary>
