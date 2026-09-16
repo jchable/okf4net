@@ -326,6 +326,21 @@ are the concrete entry points.
   `PATH` were confirmed identical between the clean and the degraded run, so the cause is not one
   of those — not yet root-caused further. See `producers/README.md`, "Known limitation:
   `dotnet exec <dll>`…".
+- **Measured and dropped: parallel `dotnet msbuild` queries.** Measured (2026-09-15) on a 20-core
+  host with SDK 10.0.204, against a throwaway prototype querying each dependency wave with
+  `MaxDegreeOfParallelism = Math.Min(ProcessorCount, 4)` (4 here), 5 warm runs per configuration
+  interleaved with the serial build. It is faster: on this repository (19 projects detected, 1 wave
+  — every detected project is a query root, so nothing is left to discover transitively) the median
+  `okfgen generate` went from 40.2 s to 25.0 s (−15.1 s, −37.7 %); on a synthetic 40-project,
+  5-level repository (also 1 wave) from 77.8 s to 46.5 s (−31.3 s, −40.2 %). It was dropped anyway,
+  because it is not safe on a tree that has not been built yet: 2 of 3 parallel runs over a cleaned
+  synthetic tree lost 1–2 projects to `MSB3491` write collisions in the `obj/` of a *shared
+  referenced* project, and each loss silently degraded the bundle — the affected projects' exact
+  `## Calls` links fell back to name matching — while the run still exited `0`. Warm trees hid it
+  entirely: all 10 warm parallel runs wrote a bundle byte-identical to the serial one. Those
+  collisions exist because the query builds the projects it references at all, so the precondition
+  for revisiting parallelism is removing that: the query must stop building referenced projects and
+  writing into the scanned repository's `obj/` (lane task E13).
 
 ## Out of scope
 
