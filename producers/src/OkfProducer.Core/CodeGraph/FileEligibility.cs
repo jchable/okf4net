@@ -100,6 +100,21 @@ public static class FileEligibility
     /// <para>A container that is not among <paramref name="declared"/> caps nothing: it is a namespace,
     /// or a type in a file this run did not read. Treating an unknown container as private would delete
     /// concepts over a file the run merely failed to open, which §2.3 rates well below keeping them.</para>
+    ///
+    /// <para><b>Why the walk stops at <see cref="SymbolFact.ContainerNamespace"/>, when it is recorded.</b>
+    /// <see cref="SymbolFact.Container"/> is a flat dotted string, so a type nested inside another type
+    /// and a type merely declared inside a same-spelled namespace are indistinguishable from it alone --
+    /// a CA1724-style collision (a <c>Logging</c> class beside an <c>X.Logging</c> namespace) that is
+    /// common in real code. With <c>Container = "A.B"</c> for a type genuinely declared in namespace
+    /// <c>A.B</c>, walking every segment looked up <c>("A", "B")</c>, and if that pair happened to also
+    /// be a real declared type (any type literally named <c>B</c> in namespace <c>A</c>), every public
+    /// symbol of the unrelated namespace <c>A.B</c> was capped to that type's visibility.
+    /// <see cref="SymbolFact.ContainerNamespace"/> is always a dotted prefix of <c>Container</c> (see its
+    /// own doc), so stopping the walk as soon as what remains of <c>Container</c> is no longer longer
+    /// than it draws exactly the line between "still inside a type" and "now at the namespace" --
+    /// without it (an older extraction, or a hand-built fact), the walk covers every segment exactly as
+    /// before, which is why every fixture in this solution that never sets it keeps its prior
+    /// behaviour.</para>
     /// </summary>
     /// <param name="fact">The symbol to test.</param>
     /// <param name="declared">Every symbol this run extracted, before any scope filtering.</param>
@@ -111,11 +126,20 @@ public static class FileEligibility
 
         var effective = fact.Visibility;
         var container = fact.Container;
+        var namespaceLength = fact.ContainerNamespace?.Length;
 
         // Upward one type at a time, taking the least visible seen. Bounded by the container's segment
-        // count, so a cycle is not expressible: each step strictly shortens the path.
+        // count, so a cycle is not expressible: each step strictly shortens the path. When
+        // ContainerNamespace was recorded, the walk additionally stops the moment what remains of
+        // container is no longer longer than it -- the namespace boundary -- rather than walking past
+        // it into a same-spelled type that never actually encloses this fact.
         while (container.Length > 0 && effective != SymbolVisibility.Private)
         {
+            if (namespaceLength is { } stopLength && container.Length <= stopLength)
+            {
+                break;
+            }
+
             var lastDot = container.LastIndexOf('.');
             var parentContainer = lastDot < 0 ? string.Empty : container[..lastDot];
             var name = lastDot < 0 ? container : container[(lastDot + 1)..];

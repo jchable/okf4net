@@ -270,6 +270,116 @@ public class TreeSitterExtractorTests : IDisposable
         Assert.Equal("N.T.M", local.Container);
     }
 
+    [Theory]
+    [InlineData("""
+        namespace N;
+        public sealed class T
+        {
+            public int result;
+            private readonly System.Lazy<int> _lazy = new(() => { var result = Compute(); return result; });
+            static int Compute() => 1;
+        }
+        """, "Compute", "_lazy")]
+    [InlineData("""
+        namespace N;
+        public sealed class T
+        {
+            public event System.Action E = () => { var handler = Make(); };
+            static int Make() => 1;
+        }
+        """, "Make", "E")]
+    [InlineData(
+        "namespace N;\npublic class T { public System.Func<int> a = () => { var x = Foo(); return x; }, b = () => { var y = Bar(); return y; }; }",
+        "Foo",
+        "a")]
+    [InlineData(
+        "namespace N;\npublic class T { public System.Func<int> a = () => { var x = Foo(); return x; }, b = () => { var y = Bar(); return y; }; }",
+        "Bar",
+        "b")]
+    public void A_call_in_a_field_initializer_lambda_attributes_to_the_field_not_to_a_local_declared_inside_it(
+        string source, string calledName, string expectedCaller)
+    {
+        // The nearest variable_declarator ANCESTOR of the call is the lambda's own local (`result`,
+        // `handler`, `x`, `y`), not the field. In the first case that local shares its name with a real
+        // field, so the call was credited to a wrong symbol that exists rather than to nothing.
+        var result = ExtractSource(source);
+
+        var site = Assert.Single(result.Sites, s => s.CalledName == calledName);
+        Assert.Equal("N.T", site.CallerContainer);
+        Assert.Equal(expectedCaller, site.CallerName);
+    }
+
+    /// <summary>
+    /// Shapes whose ancestor chain holds a node with a <c>name</c> field that is not a declaration:
+    /// an accessor (<c>get</c>, <c>add</c>), a named argument, a named tuple element, the member
+    /// name of a member access (<c>.First</c>), and an indexer's accessor. Each expected container is
+    /// the spelling <c>RoslynResolver</c> gives the same local function;
+    /// <c>RoslynResolverTests.A_local_function_s_container_is_spelled_the_same_by_both_engines</c>
+    /// asserts that equality against the real resolver.
+    /// </summary>
+    [Theory]
+    [InlineData("namespace N;\npublic class T2 { public int P { get { int Helper() => 2; return Helper(); } } }", "Helper", "N.T2.P")]
+    [InlineData("namespace N;\npublic class T4 { public event System.Action E { add { int L1() => 1; L1(); } remove { } } }", "L1", "N.T4.E")]
+    [InlineData("namespace N;\npublic class T3 { static void Invoke(System.Func<int> x) { } public void Go() { Invoke(x: () => { int L3() => 3; return L3(); }); } }", "L3", "N.T3.Go")]
+    [InlineData("namespace N;\npublic class T5 { public (int, System.Func<int>) B() => (a: 1, b: (System.Func<int>)(() => { int L4() => 4; return L4(); })); }", "L4", "N.T5.B")]
+    [InlineData("using System.Linq;\nnamespace N;\npublic class T5 { public int Q() => new[] { 1 }.Select(v => { int L2() => v; return L2(); }).First(); }", "L2", "N.T5.Q")]
+    [InlineData("namespace N;\npublic class T7 { public int this[int i] { get { int L5() => i; return L5(); } } }", "L5", "N.T7")]
+    public void A_name_field_on_a_node_that_is_not_a_declaration_contributes_no_container_segment(
+        string source, string localFunction, string expectedContainer)
+    {
+        var result = ExtractSource(source);
+
+        var local = Assert.Single(result.Symbols, s => s.Name == localFunction);
+        Assert.Equal(expectedContainer, local.Container);
+
+        AssertContainerNamespaceIsADottedPrefix(result);
+    }
+
+    /// <summary>
+    /// The other half of the allow-list: every node type it names is confirmed against the vendored
+    /// grammar by execution rather than assumed, because a misspelt entry would silently drop that
+    /// declaration's segment. One local function per allowed kind; the expected spelling is again
+    /// Roslyn's (see the resolver-side parity test named above).
+    /// </summary>
+    [Theory]
+    [InlineData("namespace N.Sub { public class C { public void M() { int L() => 1; L(); } } }", "N.Sub.C.M")]
+    [InlineData("namespace N;\npublic struct S { public void M() { int L() => 1; L(); } }", "N.S.M")]
+    [InlineData("namespace N;\npublic record R { public void M() { int L() => 1; L(); } }", "N.R.M")]
+    [InlineData("namespace N;\npublic record struct RS { public void M() { int L() => 1; L(); } }", "N.RS.M")]
+    [InlineData("namespace N;\npublic interface I { void M() { int L() => 1; L(); } }", "N.I.M")]
+    [InlineData("namespace N;\npublic class G<T> { public void M() { int L() => 1; L(); } }", "N.G`1.M")]
+    [InlineData("namespace N;\npublic class C { public C() { int L() => 1; L(); } }", "N.C.C")]
+    [InlineData("namespace N;\npublic class C { ~C() { int L() => 1; L(); } }", "N.C.C")]
+    [InlineData("namespace N;\npublic class C { public int P { set { int L() => 1; L(); } } }", "N.C.P")]
+    [InlineData("namespace N;\npublic class C { public void M() { void Outer() { int L() => 1; L(); } Outer(); } }", "N.C.M.Outer")]
+    [InlineData("namespace N;\npublic class C { public System.Func<int> F = () => { int L() => 1; return L(); }; }", "N.C.F")]
+    [InlineData("namespace N;\npublic class C { public void M() { System.Func<int> f = () => { int L() => 1; return L(); }; } }", "N.C.M.f")]
+    public void Every_allowed_declaration_kind_still_contributes_its_container_segment(string source, string expectedContainer)
+    {
+        var result = ExtractSource(source);
+
+        var local = Assert.Single(result.Symbols, s => s.Name == "L");
+        Assert.Equal(expectedContainer, local.Container);
+
+        AssertContainerNamespaceIsADottedPrefix(result);
+    }
+
+    /// <summary>
+    /// <see cref="SymbolFact.ContainerNamespace"/> is documented as a dotted prefix of
+    /// <see cref="SymbolFact.Container"/>, and <c>FileEligibility</c> relies on it. The two are built by
+    /// separate walks, so a change to one is checked against the other here.
+    /// </summary>
+    private static void AssertContainerNamespaceIsADottedPrefix(ExtractionResult result) =>
+        Assert.All(result.Symbols, s =>
+        {
+            if (s.ContainerNamespace is { } ns)
+            {
+                Assert.True(
+                    s.Container == ns || s.Container.StartsWith(ns + ".", StringComparison.Ordinal),
+                    $"{s.Name}: ContainerNamespace '{ns}' is not a dotted prefix of Container '{s.Container}'.");
+            }
+        });
+
     [Fact]
     public void An_enum_yields_its_type_symbol_but_no_member_symbols()
     {

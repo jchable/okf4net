@@ -823,6 +823,90 @@ and this project adheres to
   `AttestationDiagnosticException` entry), now guarded by a test that puts a
   secret in a container's stdout and stderr. The container integration tests
   print the exception on failure too, rather than only the `Reasons`.
+- **`okfgen`'s package-child minimality filter is now `O(k)` instead of `O(k²)`
+  per package.** `ConceptGenerator.AttributePackages` computes, for each
+  package, the raw paths "minimal under the ancestor relation" it owns — a
+  path whose own ancestor the same package also claims is dropped, since it is
+  already reachable one level down from that ancestor (§5.2). That used to be
+  a pairwise `keys.Where(key => !keys.Any(other => IsProperAncestor(other,
+  key)))` scan. The extracted `ConceptGenerator.MinimalUnderAncestry` instead
+  makes one pass over the already-sorted `SortedSet<string>(Ordinal)`,
+  tracking only the most recently kept key: because the raw-path keys are
+  joined with `NUL` (the smallest character under `Ordinal`), every
+  descendant of a kept key sorts contiguously right after it, so comparing
+  each next key against `lastKept + NUL` (not `lastKept` alone, which would
+  wrongly drop a sibling like `A\0Ba` immediately after `A\0B`) is enough — no
+  quadratic re-scan of the whole set per key. Registration
+  (`registeredByRawPath.ContainsKey`) is still applied after minimality, so an
+  unregistered ancestor still suppresses its descendants. Behaviour is
+  unchanged — pinned by an equivalence property test against the original
+  pairwise expression over several thousand random key sets, and the golden
+  captures and `DeterminismTests` move by zero bytes (`producers/`).
+- **`okfgen` now has one bounded child-process runner and one link-ancestor
+  walk, instead of drifted copies (`producers/`).** `GitRevision.RunGit` and
+  `MsBuildProjectQuery.Run` each carried their own start/drain/timeout/kill
+  code; both now call the internal `BoundedProcess.Run`, which redirects and
+  closes stdin, drains stdout and stderr concurrently under caps, bounds the
+  whole call (reads included) by its timeout, and reports
+  `Completed`/`NotStarted`/`TimedOut`/`Faulted` rather than throwing —
+  `MsBuildProjectQuery` maps those to its existing messages verbatim. It holds
+  no shared state and is safe for concurrent use. On giving up it kills the
+  process tree **as it stands at that moment**: on Windows and POSIX a
+  descendant of a still-running child dies with it, but on POSIX a
+  descendant whose own parent already exited has been re-parented away and
+  survives (measured on Linux), so there the call is bounded while a
+  pipe-holding orphan may outlive it — unchanged from both former copies.
+  The repository-containment question — which `RepositoryScanner`'s
+  solution-project filter, `CompilationFactory`, `RoslynResolver` and
+  `SourceOwnershipMap` each answered with their own code — is now answered
+  once, by `BundlePaths.TryGetPathUnderRoot`; `BundleWriter` alone keeps the
+  deliberately different `BundlePaths.IsInside` (strictly under an
+  already-resolved bundle root, the root itself excluded). The count-bounded
+  link-ancestor walk `CompilationFactory` and `TreeSitterExtractor` each
+  re-implemented lives once too, as `BundlePaths.HasLinkAncestor`
+  (`OkfProducer.Core` grants `InternalsVisibleTo` to the two code-graph
+  projects rather than making either public). The walk is bounded by a
+  directory count, never by meeting a root string, which is what once made
+  `CompilationFactory` walk to the filesystem root for out-of-repository
+  `Compile` items — that bug is now pinned by a regression test. Behaviour
+  changes, all at the edges:
+  - an ancestor (or the file itself) whose metadata cannot be read — a
+    `chmod 000` directory above it on POSIX, an inheritable deny-read ACE on
+    Windows — now counts as a link, so tree-sitter reports the file as
+    `SkippedSymlink`, the Roslyn engine drops the `Compile` item, and a key
+    file there is not used. For those two shapes the file was unreadable
+    anyway, but not for every shape: on Windows a file beneath a level whose
+    read-attributes right is denied, under a parent that denies listing, still
+    opens by path, and **was read before** — including from outside the
+    repository through a junction (see Security). Such files are now refused
+    even when readable, deliberately, since the escape and a harmless
+    directory with the same ACEs cannot be told apart. A directory that merely
+    cannot be *listed* while its files stay readable by path is not refused;
+  - any first path segment other than exactly `..` is a name, not a climb —
+    `..foo`, `...`, `.. `, and on POSIX `..\x` (a backslash is a filename
+    character there) — so such paths are inside the repository for every
+    caller; `SourceOwnershipMap` still refuses the POSIX `..\x` case, because
+    its cross-platform `\`→`/` join fold would key it as `../x/…`, spelled as
+    a climb (the file is simply not owned);
+  - a repository-rooted path the platform rejects (a NUL in it) is "not in
+    the repository" for `RoslynResolver` and `SourceOwnershipMap` instead of
+    throwing `ArgumentException`;
+  - the solution-project filter now also calls an unnormalised
+    `repo/../other/P.csproj` outside (it only ever sees `GetFullPath`'d
+    paths, so no scan result changes on Windows or Linux);
+  - the `dotnet msbuild` child now gets a closed stdin; `git` answers are
+    capped at 64 KiB and a failed `git` pipe read yields the outside-git
+    fallback instead of an exception;
+  - the MSBuild reads gain the `WaitAsync` bound only the `git` copy had —
+    insurance rather than a fix: on Windows and on Linux (.NET 10) the reads'
+    cancellation token was measured to bound a grandchild holding the pipe on
+    its own.
+
+  The `..foo` ownership fix is listed under Fixed. The golden captures move by
+  zero bytes. Measured per file on a 12-level path, the walk costs x1.02 the
+  tree-sitter copy it replaced on Windows and x1.63 on Linux: each level is
+  classified by one attribute read, and only a level carrying the reparse-point
+  attribute is asked for its link target.
 
 ### Fixed
 
@@ -843,6 +927,104 @@ and this project adheres to
   from 496 failures to 0 at each of the three key positions (top-level, nested,
   in a sequence item's mapping), and stays at 0 for values, sequence items and
   whole-document scalars.
+- **`okfgen generate` no longer builds the repository it is scanning, so a run
+  writes no file into that repository's `obj/` or `bin/` (`producers/`).** The
+  MSBuild query asks for `-t:ResolveReferences`, which depends on
+  `ResolveProjectReferences` — and outside Visual Studio `BuildProjectReferences`
+  defaults to `true`, so that target *built every referenced project*. Measured
+  on SDK 10.0.204: one resolver stage over a restored, never-built three-project
+  chain wrote **39 files** into the scanned tree — `bin/`, the full
+  `obj/Debug/<tfm>/` compile output of both referenced projects, `ref/` and
+  `refint/` assemblies included — for a repository `okfgen` was only asked to
+  read. The query now passes `-p:BuildProjectReferences=false`, and what MSBuild
+  still generates for the queried project itself (`*.GlobalUsings.g.cs` and
+  `*.AssemblyInfo.cs` — `Compile` items that must exist on disk for Roslyn to
+  parse them, and which no switch produces without writing) is redirected into a
+  per-run `okfgen-msbuild-*` directory under the system temp that the producer
+  deletes when the stage ends. That path is escaped the way MSBuild expects
+  (`%XX`, `%` included): unescaped, MSBuild *decodes* `%XX` in a `-p:` value, so
+  a temp directory holding `%41` sent the files to a sibling of the scratch (and
+  `%2E%2E` out of it) where nothing ever deleted them, and one holding `;` failed
+  every query with `MSB1006` — both measured, both pinned. What the query still
+  creates in the scanned repository is **empty directories**: a
+  `bin/<Configuration>/<TFM>/` per never-built project, from `PrepareForBuild`'s
+  `<MakeDir Directories="$(OutDir);…">`, never written into. They are left on
+  purpose: redirecting `OutDir` too removes them but moves the referenced
+  projects' `ReferencePath` into the scratch (measured) — the assembly
+  `CompilationFactory` falls back to on a built tree. A killed run's leftover
+  scratch is swept by a later run once it is a day old, touching only directories
+  named exactly as the producer names them and never following a link. On a
+  restored-but-never-built tree, a project whose dependency cannot be compiled
+  from source is now reported `ReferencesUnresolved` (that dependency's `bin/`
+  assembly used to exist because the query built it), and its note says to build
+  the repository once and re-run. The reference set is unchanged, not merely
+  similar: measured before and after, 169 `ReferencePath` items on that
+  three-project chain and 213 on this repository's own `src/OKF4net.Mcp`, with
+  identical `Identity` sets, identical resolved properties, and the transitive
+  project reference still tagged with its `.csproj` so `CompilationFactory` keeps
+  substituting a from-source compilation for it. `-p:DesignTimeBuild=true` was
+  measured to stop the same builds and was *not* chosen: it is a signal
+  repository-authored targets routinely condition on, so it would quietly change
+  what the scanned repository's own logic does while buying nothing extra. Pinned
+  by an acceptance test that snapshots the scanned tree around a whole resolver
+  stage — files with their sizes and last-write times, and directories, so the
+  empty output directories are a named exception rather than an invisible one.
+  What this does **not** bound is
+  what the repository's own MSBuild logic writes while it is evaluated — see
+  `producers/README.md`, "Generating from a repository runs that repository's
+  build logic".
+- **`--roslyn-timeout` is pinned to bound the project-query stage, checked
+  between individual project queries (`producers/`).** `GenerateRun` hands every
+  detected project in as a query root, so nothing is discovered transitively and
+  the closure is a single pass: a deadline consulted once before that pass would
+  leave the option bounding only the compilations after it. The serial loop does
+  consult `StageDeadline` at the top of every iteration, and nothing said so — an
+  abandoned stage returns nothing at all, so a run that queried one project of
+  three and one that queried all three were indistinguishable from outside. The
+  loop now reports how far it got, and a test holds it: three projects, a budget
+  larger than the loop's own set-up and smaller than one `dotnet msbuild`
+  invocation, one query run, the stage abandoned whole and reported degraded
+  exactly as before. Moving the check back out of the loop turns that count into
+  three and the test red.
+- **`okfgen`'s MSBuild query now requests `AddImplicitDefineConstants`, so
+  `#if NETx_OR_GREATER` compiles correctly under an SDK 8 toolchain
+  (`producers/`).** `MsBuildProjectQuery`'s target list
+  (`ResolveReferences`/`GenerateGlobalUsings`/`GenerateAssemblyInfo`) never ran
+  `CoreCompile`, and SDK 8.0.425 wires `AddImplicitDefineConstants` to
+  `BeforeTargets="CoreCompile"` — so on that SDK line, `DefineConstants` came
+  back as just `TRACE;DEBUG;NET;NET8_0;NETCOREAPP`, missing every
+  `NETx_OR_GREATER` symbol, and a repository whose `global.json` pins SDK 8
+  had every such branch compiled the wrong way (a false `CompilationHadErrors`
+  on `#error` guards, or worse, a silently wrong branch on a plain `#if`).
+  Measured, not assumed to be `GenerateAssemblyInfo`-related as first
+  suspected: SDK 9.0.318 and 10.0.204 already carry the full implicit set
+  regardless, because dotnet/sdk#43908 moved the same target to
+  `AfterTargets="PrepareForBuild"`, which `ResolveReferences` already depends
+  on. Requesting the target explicitly closes the SDK 8 gap and is a measured
+  no-op (no duplicate defines) on SDK 9.0.3xx+/10. No hand-maintained
+  per-TFM fallback table — the target is public on every SDK that supports
+  `-getProperty`, and reimplementing its rules would fork them.
+- **`okfgen`'s Roslyn stage now signs its analysis-only compilation, so a
+  project's own `InternalsVisibleTo` friend grant resolves instead of failing
+  `CS0281` (`producers/`).** `CompilationFactory.Create` built every
+  `CSharpCompilationOptions` with no key at all, so a signed consumer calling
+  an internal member of a friend assembly it names via
+  `InternalsVisibleTo("Consumer, PublicKey=…")` still compiled as if it had no
+  public key (`""`), and Roslyn reports `CS0281` — measured against Roslyn
+  5.3.0 in the pre-flight. `MsBuildProjectQuery` now also queries
+  `SignAssembly`, `KeyOriginatorFile` (preferred — it is the value
+  `Microsoft.Common.CurrentVersion.targets` actually passes `csc`'s
+  `/keyfile`) and `AssemblyOriginatorKeyFile` (fallback), and
+  `CompilationFactory.Create` always **public-signs** with the resolved key —
+  never the project's own `DelaySign`/`PublicSign` — since this compilation is
+  never emitted and public signing alone (no `StrongNameProvider`) resolves the
+  friend grant without the `CS7027` a bare `.WithCryptoKeyFile` adds. A key
+  file that is missing, outside the repository root, or reached through a
+  reparse point (a directory junction/symlink above it) is never read — the
+  compilation degrades to unsigned exactly as before E7, rather than trading
+  today's partial success (the name-matching baseline) for a whole-project
+  `CS7027` failure, and rather than following repository-controlled data
+  outside the tree `okfgen` was asked to scan.
 - **A stage that ignores cancellation no longer keeps a run alive past
   `ComputationTimeout` or the caller's token, and can no longer turn a
   cancelled run into a displayable outcome (§10.5).** The orchestrator checked
@@ -1423,6 +1605,137 @@ and this project adheres to
   for the identical reason), which trims a trailing separator -- the
   platform's and the alternate one -- before anything downstream compares
   against it.
+- **`okfgen` no longer produces a Win32 reserved device name as a concept id
+  segment** (a finding, low severity, Windows Server/10 kernels — Windows 11
+  relaxed the restriction, verified on build 26200, but a bundle generated
+  there must stay writable when checked out or regenerated on the
+  still-supported kernels that keep it). `con`, `prn`, `aux`, `nul`,
+  `com0`-`com9` and `lpt0`-`lpt9` (Microsoft's documented reserved list,
+  `com0`/`lpt0` included even though some Windows versions' path parser
+  accepts them) address a system device rather than a
+  regular file there, so a bare `aux.md` or `aux/con.md` is unwritable, and
+  the restriction applies to a segment's base name (the part before its
+  first `.`) regardless of extension, so a NuGet `PackageId` such as
+  `Aux.Core` was equally affected (`packages/aux.core`). Both id families —
+  code ids (`CodeConceptIds.Compose`) and package/doc ids
+  (`ConceptIdRegistry.Register`, touched for this) — now suffix the matching
+  segment's base name with `_`, through one shared helper
+  (`CodeConceptIds.SuffixWindowsDeviceName`) so the two sites cannot diverge:
+  `aux` → `aux_`, `packages/aux.core` → `packages/aux_.core` — the suffix
+  lands right after the base name, before the first `.`, not appended at the
+  end of the slug (`aux.core_` is still reserved: its base name is still
+  exactly `aux`). Applied before the registry's existing numeric-collision
+  loop, so a synthesized `aux_` still collides with a real segment already
+  registered under that exact name. A name that only resembles a reserved
+  word (`Auxiliary`, `Com10`, `Console`) is unaffected — the match is on the
+  whole base name, never a prefix. **Id churn:** an existing bundle containing a
+  code, package or doc name whose slug's base name exactly matches one of
+  these words gets a new id on the next `okfgen generate` (`producers/`).
+- **`okfgen`'s effective-visibility cap (§5.4) no longer caps a namespace's own
+  members when a type happens to share the namespace's full dotted name** (a
+  finding, `FileEligibility.IsInScope`) — a CA1724-style collision (a
+  `Logging` class beside an `X.Logging` namespace) that is common in real
+  code. `SymbolFact.Container` is a flat dotted string, so a type nested
+  inside a type named `B` and a type merely declared inside a same-spelled
+  namespace `A.B` both read `Container = "A.B"`; the cap walk could not tell
+  them apart, so an internal `class B` in namespace `A` capped every public
+  symbol of the unrelated namespace `A.B`, whatever it declared, to
+  `internal`. The walk now stops at `SymbolFact.ContainerNamespace` (always a
+  dotted prefix of `Container`) rather than walking every segment, so it caps
+  only the segments genuinely below the namespace — a type nested one level
+  inside a real enclosing type still caps correctly, including across a
+  `partial` type's two files, where `declared` keeps only the first-seen
+  declaration. A run with no such collision is unaffected, and a
+  `SymbolFact` built without `ContainerNamespace` (an older extraction, a
+  hand-built fixture) keeps the prior behaviour exactly.
+- **`okfgen`'s tree-sitter extractor no longer credits a field-initializer call
+  to a lambda's local, nor adds non-declaration segments to a container path**
+  (a finding, `TreeSitterExtractor`). A call inside a lambda in a field
+  initializer (`Lazy<int> _lazy = new(() => { var result = Compute(); … })`)
+  was attributed to the nearest `variable_declarator` above it — the lambda's
+  local `result` — so with a field named `result` on the same type the edge
+  hung off that real, unrelated field; it now takes the declarator of the field
+  declaration itself (`_lazy`), still per declarator in `a = Foo(), b = Bar()`.
+  Separately, the container walk took a segment from any ancestor with a
+  grammar `name` field, which includes accessors (`get`/`set`/`add`), named
+  arguments, named tuple elements and member accesses (`.First()`), so a local
+  function in a getter sat under `N.T.P.get` where `RoslynResolver` says
+  `N.T.P`, so the two engines' `(Container, Name)` join key (§2.1) disagreed.
+  The walk is now an allow-list mirroring
+  `RoslynResolver.ContainerPathFromSyntax` kind for kind (namespace, type,
+  delegate, method, constructor, destructor, property, event, local function,
+  variable declarator). **No generated bundle changes from this second half:**
+  the only declarations that can sit under those nodes are local functions,
+  which carry no access modifier, are always `Private`, and are excluded by
+  `FileEligibility.IsInScope` unconditionally — `--include-internal` does not
+  admit them. So a local function's container (`N.T.P.get` → `N.T.P`) never
+  becomes a concept id, a getter and a setter each declaring a same-named local
+  function never reach §3.2's overload merge, and a call to one renders as
+  unresolved both before and after. The change is visible to direct consumers
+  of `TreeSitterExtractor`'s `SymbolFact.Container` / `CallSite.CallerContainer`
+  and of resolver edges before `CodeGraphBuilder`'s scope pass, and it keeps the
+  join key correct should a future scope rule ever admit such a declaration.
+  The first half (field-initializer callers) does reach bundles: such a call
+  now appears under the in-scope field that holds it (`## Calls` or
+  `## Calls (unresolved)`), where it used to be dropped or, as above, listed
+  under an unrelated same-named field (`producers/`).
+- **`okfgen`'s repository scan no longer aborts on a directory link, or on a
+  subdirectory or manifest it cannot read** (a finding, `RepositoryScanner`).
+  A directory junction/symlink anywhere in the tree previously made the
+  recursive `.sln`/`.csproj` walk loop until it threw `IOException` (the OS's
+  own path-length refusal), aborting the whole run before it wrote anything —
+  reachable through an accidental self-referencing link, not only a crafted
+  one. The walk now skips a subdirectory that is itself a link, the same way
+  `BundleWriter`/`BundleDrift` already do (`BundlePaths.IsReparsePoint`), so a
+  cycle is never entered rather than merely bounded. Separately, a `.csproj`,
+  `.sln`, `package.json` or `README.md` this process cannot read (a
+  permission-denying ACL, most concretely) threw `UnauthorizedAccessException`
+  out of `Scan` instead of being treated like a malformed one: `ScanNuGetManifest`
+  and `ScanNpmManifest` now widen their catch to match
+  `FileEligibility.ReferencesTestSdk`'s list (`IOException`,
+  `UnauthorizedAccessException`, `NotSupportedException`,
+  `SecurityException`, plus `XmlException`/`JsonException`), and a
+  subdirectory whose own listing throws the same way is skipped, its siblings
+  still walked. An unreadable `README.md` still produces a doc entry, titled
+  with the repository name (`BuildDocConcept` never reads its content, only
+  the title `Scan` hands it) — matching the existing no-heading fallback.
+  **Deliberately still throwing:** the repository ROOT itself — a `--repo`
+  that exists but cannot be listed is a usage error `OkfgenCli.Generate`
+  already reports as `error:`, not degraded input to route around; and a
+  `.sln` entry that resolves through a link inside the repository, unchanged
+  and consistent with `CodeGraphBuilder`, which also walks through links
+  (`producers/`).
+- **One unreadable directory no longer empties the whole code walk** (E5,
+  `CodeGraphBuilder`). The code stage's file enumeration used
+  `Directory.EnumerateFiles(repo, "*", SearchOption.AllDirectories)`, which
+  throws `UnauthorizedAccessException` for the whole call the instant it
+  reaches an inaccessible subdirectory — the existing outer catch then
+  discarded every file already found, including every sibling the locked
+  directory has nothing to do with, and the run reported zero symbols on a
+  repository that was otherwise perfectly readable. `EnumerateFiles` now
+  passes `EnumerationOptions { RecurseSubdirectories = true,
+  IgnoreInaccessible = true, AttributesToSkip = 0 }` (the last field
+  deliberately overrides its non-zero default, so a hidden or system file this
+  producer used to see is still seen), and a second, directory-scoped pass
+  names exactly which directories were inaccessible in the new
+  `RunStatus.InaccessibleDirectories` — kept off `RunStatus.Skipped`
+  deliberately, since a directory is not a file this run attempted and adding
+  it there would inflate the "N source file(s) visited" count
+  `GenerateRun.Summarize` derives from that list's length. `Summarize` names
+  each inaccessible directory in the same unanalysed listing and the same cap
+  a per-file skip uses (e.g. `- locked/: skipped, directory not readable`).
+  The repository ROOT itself and a circular reparse point remain
+  all-or-nothing, unchanged (§2.3).
+- **`okfgen`'s Roslyn stage now owns a `Compile` item under a directory whose
+  name merely starts with `..` (`producers/`).**
+  `RoslynResolver.RelativeToRepository` tested the repository-relative path's
+  `..` as a string prefix, so `..foo/Dotted.cs` read as outside the
+  repository: its tree was compiled but never owned, and its calls fell back
+  to the name-matching baseline. It now uses the shared
+  `BundlePaths.TryGetPathUnderRoot`, which treats only a first segment of
+  exactly `..` as a climb. Pinned end to end by
+  `A_compile_item_under_a_directory_named_with_a_leading_double_dot_is_still_owned`,
+  red before the change.
 
 ### Security
 
@@ -1475,6 +1788,40 @@ and this project adheres to
   spec says nothing about filesystem links — this is the host's guarantee
   that a bundle-relative read or write stays in the bundle (§3), the catalog
   root or the output directory it was given.
+- **`okfgen`'s code stage no longer reads a source file or strong-name key
+  from outside the repository through a junction whose attributes are
+  denied (`producers/`, Windows).** Shape, executed: a directory `repo\p`
+  denying listing (`(RD)`), holding a junction `p\jra` that points outside
+  the repository and carries a deny read-attributes (`(RA)`) ACE. A file
+  beneath it still opens by its in-repository path (traverse bypass) and
+  reports as existing, but `LinkTarget` on the junction answers "not a link"
+  without throwing, and that was the only probe the producer's link walks
+  asked. Measured on Windows 11 at `da6225d` and at E11's first cut
+  (`f4f8250`), with the outside `y.cs` and `k.snk` addressed as
+  `repo\p\jra\y.cs` / `repo\p\jra\k.snk`:
+  - `CompilationFactory.Create` parsed the outside `y.cs` into the project's
+    compilation (a `Compile` item reaches it as a path MSBuild printed, not
+    through a listing of `p`);
+  - `CompilationFactory.Create` handed the outside `k.snk` to the compilation
+    as its strong-name key file (public signing on);
+  - `TreeSitterExtractor.Extract`, given that path directly, extracted the
+    outside file's symbols (`Extracted`). The repository walk itself does not
+    list `p`, so `CodeGraphBuilder` never handed it that path: it reports `p`
+    as inaccessible instead.
+
+  Now each level of `BundlePaths.HasLinkAncestor` is also classified by
+  `File.GetAttributes`, which throws on the denied junction, and an
+  uninspectable level counts as a link: no syntax tree, no key file,
+  `SkippedSymlink` — pinned end to end by
+  `A_junction_to_outside_whose_attributes_are_denied_under_an_unlistable_parent_is_never_read_windows`,
+  red with `f4f8250`'s walk. A plain directory with the same two ACEs cannot
+  be told apart and is refused too, even though its file is inside and
+  readable. POSIX has no analogue: opening the file needs search permission
+  on every ancestor, which is all `lstat` needs, so a link that cannot be
+  inspected cannot be read through either. Not an OKF spec behaviour: the
+  spec says nothing about filesystem links — this is the producer's own
+  hostile-input guarantee (the §2.3 guards `TreeSitterExtractor` applies)
+  that it reads only the repository it was pointed at.
 
 ## [0.5.0] - 2026-07-31
 

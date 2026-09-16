@@ -313,6 +313,51 @@ are the concrete entry points.
   no-`--repo-url` fallback, kept deliberately: omitting the field costs the same 10 warnings
   (measured, 2026-09-03) and the path is the only pointer those concepts have to their own subject.
   See `producers/README.md`, "What `--repo-url` changes".
+- **Known limitation: `dotnet exec <dll>` can silently degrade an SDK-8-pinned sub-project —
+  investigation open.** Measured (2026-09-15): building the solution and running
+  `dotnet exec <path-to>/OkfProducer.Cli.dll generate --repo <repo> --out <bundle>` against a
+  scanned repository whose sub-project pins SDK 8 via `global.json`, with a real SDK 8 installed,
+  silently degrades that sub-project's Roslyn resolution — the run exits `0` and writes a bundle,
+  with only a `note: <project>.csproj: not compiled (MsBuildQueryFailed) ... A compatible .NET SDK
+  was not found. Requested SDK version: 8.0.100` marking it. The same reproduction against
+  `dotnet run --project producers/src/OkfProducer.Cli -- generate …` (the documented invocation),
+  the native apphost (`OkfProducer.Cli.exe`), and the native apphost run from inside an MSBuild
+  `<Exec>` target were all confirmed clean. Every `DOTNET_*`/`MSBuild*` environment variable and
+  `PATH` were confirmed identical between the clean and the degraded run, so the cause is not one
+  of those — not yet root-caused further. See `producers/README.md`, "Known limitation:
+  `dotnet exec <dll>`…".
+- **Measured and dropped: parallel `dotnet msbuild` queries.** Measured (2026-09-15) on a 20-core
+  host with SDK 10.0.204, against a throwaway prototype querying each dependency wave with
+  `MaxDegreeOfParallelism = Math.Min(ProcessorCount, 4)` (4 here), 5 warm runs per configuration
+  interleaved with the serial build. It is faster: on this repository (19 projects detected, 1 wave
+  — every detected project is a query root, so nothing is left to discover transitively) the median
+  `okfgen generate` went from 40.2 s to 25.0 s (−15.1 s, −37.7 %); on a synthetic 40-project,
+  5-level repository (also 1 wave) from 77.8 s to 46.5 s (−31.3 s, −40.2 %). It was dropped anyway,
+  because it is not safe on a tree that has not been built yet: 2 of 3 parallel runs over a cleaned
+  synthetic tree lost 1–2 projects to `MSB3491` write collisions in the `obj/` of a *shared
+  referenced* project, and each loss silently degraded the bundle — the affected projects' exact
+  `## Calls` links fell back to name matching — while the run still exited `0`. Warm trees hid it
+  entirely: all 10 warm parallel runs wrote a bundle byte-identical to the serial one. Those
+  collisions exist because the query builds the projects it references at all, so the precondition
+  for revisiting parallelism is removing that: the query must stop building referenced projects and
+  writing into the scanned repository's `obj/` (lane task E13).
+  **That precondition is now met.** E13 added `-p:BuildProjectReferences=false` and redirected
+  `IntermediateOutputPath` into a producer-owned scratch directory, so a query no longer builds
+  anything and writes no file into the scanned repository — pinned by an acceptance test that
+  snapshots the tree (files with sizes and mtimes, and directories) around a whole resolver stage.
+  What it still creates there is an empty `bin/<Configuration>/<TFM>/` per never-built project,
+  from `PrepareForBuild`'s `MakeDir $(OutDir)`. That is not a new collision source for a parallel
+  query: `MakeDir` creates only what is missing (Learn's `MakeDir` task reference) and
+  `PrepareForBuild` calls it with `ContinueOnError="true"`. Redirecting `OutDir` would move
+  referenced projects' `ReferencePath` into the scratch (measured), so the directory is left. The
+  `obj/` write
+  collisions the prototype hit have no source left. What has **not** been redone is the measurement:
+  the timings above were taken against a query that built its whole reference closure, which is most
+  of what each query cost, so the 37–40 % saving is a number for code that no longer exists and
+  revisiting parallelism starts by measuring again. Two obstacles also still stand, neither about
+  `obj/`: `StageDeadline` is not thread-safe and is consulted per project *inside* the query loop
+  (E13 pinned that too), and nothing has established that a repository's own MSBuild logic — which a
+  query evaluates, and which can write wherever it likes — is safe to run several copies of at once.
 
 ## Out of scope
 

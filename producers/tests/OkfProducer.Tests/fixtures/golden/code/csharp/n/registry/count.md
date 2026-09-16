@@ -2,7 +2,7 @@
 type: C# Member
 title: Registry.Count
 description: public int Count(string raw), a member of N.Registry.
-resource: https://example.com/acme/fixture/blob/main/src/Registry.cs#L18-L21
+resource: https://example.com/acme/fixture/blob/main/src/Registry.cs#L19-L22
 tags:
   - csharp
   - member
@@ -18,7 +18,7 @@ public int Count(string raw), a member of N.Registry.
 
 ## Signatures
 
-- `public int Count(string raw)` — `src/Registry.cs#L18-L21`
+- `public int Count(string raw)` — `src/Registry.cs#L19-L22`
 
 ## Calls (unresolved)
 

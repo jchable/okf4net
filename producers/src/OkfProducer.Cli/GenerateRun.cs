@@ -140,11 +140,12 @@ internal static class GenerateRun
     ///
     /// <para><b>The bound is exact, and this doc comment used to overstate it as "every run".</b> A run
     /// that throws before generation prints <c>error:</c> and exits 1 having reported nothing -- and
-    /// that is reachable, not theoretical: a circular junction in a repository with no root
-    /// <c>*.sln</c> makes <c>RepositoryScanner</c>'s own recursive <c>.csproj</c> walk throw, which
-    /// <c>OkfgenCli.Generate</c> catches. Everything downstream of the scan is covered, because the
-    /// report is emitted BEFORE the write: a run whose write failed has still said what its analysis
-    /// found. And nothing can exit 0 without passing here -- <c>Write</c> reaches its return only
+    /// that is reachable, not theoretical: <c>RepositoryScanner</c> skips a link and a subdirectory or
+    /// manifest it cannot read, but not the repository ROOT itself -- a <c>--repo</c> that exists yet
+    /// cannot be listed still makes its recursive <c>.sln</c>/<c>.csproj</c> walk throw at the very
+    /// first call, which <c>OkfgenCli.Generate</c> catches. Everything downstream of the scan is
+    /// covered, because the report is emitted BEFORE the write: a run whose write failed has still said
+    /// what its analysis found. And nothing can exit 0 without passing here -- <c>Write</c> reaches its return only
     /// through this method, and <c>Check</c> only through the callback <c>BundleDrift.Check</c> invokes
     /// unconditionally once the bundle directory exists.</para>
     /// </param>
@@ -575,18 +576,26 @@ internal static class GenerateRun
         // (the vendored grammar mis-parses an empty collection expression), so naming those would bury
         // the ones that matter under hundreds that do not. Capped, because the count is not bounded by
         // anything: a generated tree can put thousands of files over the cap at once.
-        var unanalysed = status.Skipped
+        //
+        // status.InaccessibleDirectories (E5) is appended here, AFTER the per-file entries and inside
+        // the SAME cap, rather than getting its own section: both are "§2.3 named the cause", and a
+        // directory earns no separate budget just because RunStatus keeps it off Skipped (that split
+        // is only about not inflating the "N source file(s) visited" count above, which is derived
+        // from Skipped.Count alone and stays correct either way).
+        var unanalysedLines = status.Skipped
             .Where(f => f.Status is not (FileStatus.Extracted or FileStatus.PartiallyExtracted))
+            .Select(f => $"{f.Path}: {Label(f.Status)}")
+            .Concat(status.InaccessibleDirectories.Select(d => $"{d}/: skipped, directory not readable"))
             .ToList();
 
-        foreach (var (path, fileStatus) in unanalysed.Take(UnanalysedFilesListed))
+        foreach (var line in unanalysedLines.Take(UnanalysedFilesListed))
         {
-            lines.Add($"  - {path}: {Label(fileStatus)}");
+            lines.Add($"  - {line}");
         }
 
-        if (unanalysed.Count > UnanalysedFilesListed)
+        if (unanalysedLines.Count > UnanalysedFilesListed)
         {
-            lines.Add($"  - ... and {Count(unanalysed.Count - UnanalysedFilesListed)} more");
+            lines.Add($"  - ... and {Count(unanalysedLines.Count - UnanalysedFilesListed)} more");
         }
 
         return lines;

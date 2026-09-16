@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OkfProducer.Core.Generation;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.Generation;
 
@@ -115,6 +116,40 @@ public class SourceOwnershipMapTests
 
         Assert.Equal("src/A/A.csproj", map.OwnerOf("src/A/Scanner.cs"));
         Assert.Equal("src/A/A.csproj", map.OwnerOf("src\\A\\Scanner.cs"));
+    }
+
+    [UnixOnlyFact]
+    public void A_posix_directory_named_dot_dot_backslash_is_never_keyed_as_a_climb_posix()
+    {
+        // E11 fix round 1 (M3). On POSIX `..\x` is one directory NAME inside the repository, and the
+        // shared containment check now says so -- but under Normalize's `\` fold its key would be
+        // `../x/Hidden.cs`, spelled as a climb out of the repository. Round 1 stored exactly that key.
+        // A sibling named `a\b` (same fold, no climb) must keep resolving, which is why the fix is a
+        // refusal of the climb spelling rather than a change to the fold.
+        var root = Path.Combine(Path.GetTempPath(), "okfproducer-ownership");
+        var map = SourceOwnershipMap.From(root,
+            [
+                new ProjectCompileItems(
+                    Path.Combine(root, "A.csproj"),
+                    "net10.0",
+                    [root + "/..\\x/Hidden.cs", root + "/a\\b/Kept.cs"]),
+            ]);
+
+        Assert.Null(map.OwnerOf("../x/Hidden.cs"));
+        Assert.Null(map.OwnerOf("..\\x/Hidden.cs"));
+        Assert.Equal("A.csproj", map.OwnerOf("a\\b/Kept.cs"));
+    }
+
+    [Fact]
+    public void A_rooted_compile_path_the_platform_rejects_is_dropped_rather_than_thrown()
+    {
+        // E11 (M3): Relativize's former copy let Path.GetRelativePath's ArgumentException for a NUL
+        // escape; the shared check's contract is "not under the root", so the file is simply not owned.
+        var root = Path.Combine(Path.GetTempPath(), "okfproducer-ownership");
+        var map = SourceOwnershipMap.From(root,
+            [new ProjectCompileItems(Path.Combine(root, "A.csproj"), "net10.0", [Path.Combine(root, "a\0b.cs")])]);
+
+        Assert.Empty(map.ClaimantsOf("a\0b.cs"));
     }
 
     [Fact]

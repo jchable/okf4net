@@ -2,7 +2,7 @@
 type: C# Type
 title: N.Registry
 description: Keeps the scanners one run knows about.
-resource: https://example.com/acme/fixture/blob/main/src/Registry.cs#L4-L5
+resource: https://example.com/acme/fixture/blob/main/src/Registry.cs#L5-L6
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ Keeps the scanners one run knows about.
 
 ## Signatures
 
-- `public class Registry` — `src/Registry.cs#L4-L5`
+- `public class Registry` — `src/Registry.cs#L5-L6`
 
 ## Contains
 

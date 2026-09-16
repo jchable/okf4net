@@ -2,7 +2,7 @@
 type: C# Member
 title: Registry.Register
 description: Registers a scanner against the repository root.
-resource: https://example.com/acme/fixture/blob/main/src/Registry.cs#L7-L10
+resource: https://example.com/acme/fixture/blob/main/src/Registry.cs#L8-L11
 tags:
   - csharp
   - member
@@ -18,8 +18,8 @@ Registers a scanner against the repository root.
 
 ## Signatures
 
-- `public string Register(Scanner scanner)` — `src/Registry.cs#L7-L10`
-- `public string Register(Scanner scanner, string root)` — `src/Registry.cs#L13-L16`
+- `public string Register(Scanner scanner)` — `src/Registry.cs#L8-L11`
+- `public string Register(Scanner scanner, string root)` — `src/Registry.cs#L14-L17`
 
 ## Calls
 

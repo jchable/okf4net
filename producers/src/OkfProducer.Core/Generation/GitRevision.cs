@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -229,7 +228,8 @@ public static class GitRevision
     /// <summary>
     /// Runs <c>git &lt;arguments&gt;</c> in <paramref name="repoRoot"/> and returns its trimmed stdout,
     /// or <see langword="null"/> on any failure whatsoever -- no directory, no <c>git</c> binary, a
-    /// non-zero exit (not a repository, no commits yet, a detached worktree with no HEAD), or a timeout.
+    /// non-zero exit (not a repository, no commits yet, a detached worktree with no HEAD), a timeout, a
+    /// pipe that failed while being read, or an answer longer than <see cref="MaxOutputChars"/>.
     /// Every one of those collapses to the single "outside a git repository" fallback callers use; a
     /// caller that needs to tell them apart has no use for this type today.
     /// </summary>
@@ -254,89 +254,28 @@ public static class GitRevision
             return null;
         }
 
-        var startInfo = new ProcessStartInfo(gitExecutable)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
+        // The absolute path, never the bare name, goes to the runner: BoundedProcess hands its
+        // executable to ProcessStartInfo unresolved, so the resolution above is what keeps the current
+        // directory out of the search. The runner owns the rest of what used to be spelled out here --
+        // stdin redirected and closed at once (a child blocked reading a live console would otherwise
+        // hang until Timeout), both streams drained concurrently and capped, the deadline enforced on
+        // the reads as well as the exit, and the tree killed on a timeout -- see its own summary.
+        var result = BoundedProcess.Run(gitExecutable, arguments, repoRoot, Timeout, MaxOutputChars, MaxOutputChars);
 
-            // Redirected and then closed immediately below, never written to: none of the git
-            // subcommands this type runs read stdin, but without redirecting it the child inherits
-            // WHATEVER this process's own stdin is -- a live console under an interactive terminal --
-            // and a program that unexpectedly blocks reading it (a corrupted `git`, or the wrong
-            // executable entirely at the resolved path) would hang until Timeout rather than failing
-            // fast. Redirecting to a pipe and closing our end hands the child immediate EOF instead.
-            RedirectStandardInput = true,
-            WorkingDirectory = repoRoot,
-        };
-
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        Process process;
-        try
-        {
-            process = Process.Start(startInfo)
-                ?? throw new Win32Exception();
-        }
-        catch (Win32Exception)
-        {
-            // `git` not being found is already handled above, by ResolveGitExecutable returning null --
-            // this remains for a resolved executable that still cannot be launched (permissions, an
-            // antivirus block, a corrupt binary), folded into the same fallback as "not a repository"
-            // since both leave this run with nothing to stamp.
-            return null;
-        }
-
-        process.StandardInput.Close();
-
-        using (process)
-        {
-            using var cts = new CancellationTokenSource(Timeout);
-
-            // Both streams drained concurrently, never one ReadToEnd() after the other: a filled pipe
-            // buffer on either side would otherwise deadlock a process that is blocked writing to it.
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
-            var exitTask = process.WaitForExitAsync(cts.Token);
-
-            string stdout;
-            try
-            {
-                // Bounded TWICE, deliberately. `cts` is the fast path and works in the ordinary case,
-                // but cancelling a synchronous pipe read is not guaranteed to interrupt it -- the same
-                // gap `MsBuildProjectQuery` (OkfProducer.CodeGraph.Roslyn) closed for the same reason.
-                // `WaitAsync(Timeout)` throws once the timeout elapses regardless of whether the
-                // awaited tasks ever observe their own cancellation, so this call returns on time
-                // either way; a read left stuck is abandoned to complete on its own once TryKill below
-                // closes the pipe, but nothing here blocks on it any longer.
-                Task.WhenAll(exitTask, stdoutTask, stderrTask).WaitAsync(Timeout).GetAwaiter().GetResult();
-                stdout = stdoutTask.Result;
-            }
-            catch (Exception e) when (e is OperationCanceledException or TimeoutException)
-            {
-                TryKill(process);
-                return null;
-            }
-
-            return process.ExitCode == 0 ? stdout.Trim() : null;
-        }
+        // Every other outcome folds into the one "outside a git repository" fallback: NotStarted is a
+        // resolved executable that still could not be launched (permissions, an antivirus block, a
+        // corrupt binary), TimedOut and Faulted leave nothing trustworthy to stamp, and an answer that
+        // overflowed MaxOutputChars was truncated, which for a sha or a branch name is simply wrong.
+        return result is { Outcome: BoundedOutcome.Completed, ExitCode: 0, StdoutOverflowed: false }
+            ? result.Stdout.Trim()
+            : null;
     }
 
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-            // Already exited between the timeout and here; nothing to kill.
-        }
-        catch (Win32Exception)
-        {
-            // Access denied killing the tree; left to the OS rather than failing the run twice.
-        }
-    }
+    /// <summary>
+    /// How much of one <c>git</c> answer is kept. Every subcommand this type runs prints one short line
+    /// -- a 40- or 64-character sha, an ISO-8601 date, a branch name -- so 64&nbsp;KiB is far past any
+    /// legitimate answer; it exists so no answer can be unbounded, and an answer that reaches it is
+    /// refused rather than truncated.
+    /// </summary>
+    private const int MaxOutputChars = 64 * 1024;
 }

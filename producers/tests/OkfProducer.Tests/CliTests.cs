@@ -7,6 +7,7 @@ using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 using OkfProducer.Tests.Generation;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests;
 
@@ -1040,9 +1041,11 @@ public class CliTests
         //
         // Reachable, measured on this host: a directory junction pointing at one of its own ancestors
         // makes the code stage's walk throw before it has listed a single file, so the run writes
-        // `overview` alone and exits 0. (Only with a root `*.sln`: without one the SCANNER's own
-        // recursive `.csproj` walk hits the cycle first and the run fails loudly instead. That is a
-        // property of the scanner, not of this report, which is why this test drives the values.)
+        // `overview` alone and exits 0 -- with or without a root `*.sln`. (RepositoryScanner's own
+        // recursive walk no longer aborts on the same cycle -- it skips a link instead of following it
+        // -- so the sln's presence no longer changes which stage hits the cycle first. That is a
+        // property of the code stage's walk, not of this report, which is why this test drives the
+        // values.)
         var truncated = GenerateRun.Summarize(
             noMsBuild: false,
             new RunStatus(false, []),
@@ -1142,6 +1145,29 @@ public class CliTests
         Assert.Equal("  - src/File0.cs: skipped, over --max-file-size", lines[1]);
         Assert.Equal("  - src/File9.cs: skipped, over --max-file-size", lines[10]);
         Assert.Equal("  - ... and 2 more", lines[11]);
+    }
+
+    [Fact]
+    public void An_inaccessible_directory_is_named_in_the_unanalysed_list_without_inflating_the_visited_count()
+    {
+        // E5: RunStatus.InaccessibleDirectories is a separate list from Skipped on purpose -- a
+        // directory is not a file this run attempted, so folding it into Skipped would inflate the
+        // "N source file(s) visited" count below, which this test's real point is to disprove. §2.3
+        // still asks for the cause to be named, so it rides the same unanalysed listing and the same
+        // UnanalysedFilesListed cap as a per-file skip, just after the per-file entries.
+        var status = new RunStatus(false, [("src/ok.cs", FileStatus.Extracted)]) { InaccessibleDirectories = ["locked"] };
+
+        var lines = GenerateRun.Summarize(
+            noMsBuild: false,
+            status,
+            projectsDetected: 0,
+            [],
+            owns: null,
+            []);
+
+        Assert.Contains("1 source file(s) visited, all extracted", lines[0], StringComparison.Ordinal);
+        Assert.Contains("THE TRAVERSAL DID NOT COMPLETE", lines[0], StringComparison.Ordinal);
+        Assert.Contains("  - locked/: skipped, directory not readable", lines);
     }
 
     [Fact]
@@ -1385,6 +1411,40 @@ public class CliTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+    }
+
+    [DenyAceFact]
+    public void The_generate_verb_reports_an_unreadable_repository_root_on_stderr_and_exits_one()
+    {
+        // I1 (E3 fix round 1): the one deliberate exception to the scanner's permissiveness -- an
+        // unreadable repository ROOT still aborts the whole run -- reaches the operator as an ordinary
+        // `error: ...` line and exit code 1, through OkfgenCli.Generate's existing
+        // `InvalidOperationException or OkfException or IOException or UnauthorizedAccessException`
+        // catch, not as an unhandled exception.
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        using (DenyAce.Deny(repo, isDirectory: true))
+        {
+            var result = Run("generate", "--repo", repo, "--out", bundle);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+            Assert.Contains(repo, result.Error, StringComparison.Ordinal);
+        }
+    }
+
+    [UnixPermissionFact]
+    public void The_generate_verb_reports_an_unreadable_repository_root_on_stderr_and_exits_one_posix()
+    {
+        using var workspace = NewWorkspace(out var repo, out var bundle);
+
+        using (UnixPermission.DenyAll(repo))
+        {
+            var result = Run("generate", "--repo", repo, "--out", bundle);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.StartsWith("error: ", result.Error, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

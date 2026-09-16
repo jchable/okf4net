@@ -27,9 +27,12 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// <see cref="RunStatus.IsComplete"/> but, on its own, leaves <see cref="RunStatus.TraversalComplete"/>
     /// <see langword="true"/> (the file WAS visited). Only <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/>
     /// being found already elapsed at a between-files checkpoint, <paramref name="cancellationToken"/>
-    /// itself being cancelled, or the walk failing outright (a missing/unreadable repository root, or
-    /// an enumeration failure such as a circular reparse point) before every eligible file is even
-    /// visited flips <see cref="RunStatus.TraversalComplete"/> to <see langword="false"/> -- see
+    /// itself being cancelled, the walk failing outright (a missing/unreadable repository root, or an
+    /// enumeration failure such as a circular reparse point -- both still empty the whole file list),
+    /// or one inaccessible subdirectory being found among otherwise-readable ones (named in
+    /// <see cref="RunStatus.InaccessibleDirectories"/>; every OTHER file is still visited and
+    /// reported) before every eligible file is even visited flips
+    /// <see cref="RunStatus.TraversalComplete"/> to <see langword="false"/> -- see
     /// <see cref="RunStatus"/>'s own doc comment for why that distinction exists and matters to Task
     /// 11's pruning gate. <paramref name="cancellationToken"/> defaults to <see langword="default"/>
     /// (never cancelled by the caller) and is linked internally with the timeout, so a caller does not
@@ -78,21 +81,56 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         var incomplete = false;
 
         // The file list is materialised in its own try, separate from the per-file loop below: a
-        // failure here (a missing or unreadable repository root, or a circular reparse point -- see
-        // both catch clauses) means the walk itself could not produce a list, so nothing was ever
-        // attempted and the run is unconditionally incomplete. An IOException raised later, while
-        // extracting one specific file, must NOT be folded into this same catch: that would abort
-        // every remaining file over one file's failure and destroy the diagnosis -- RunStatus would
-        // stay honestly incomplete, but Skipped would come back empty with no indication which file
-        // was responsible. Every extractor already reports that kind of per-file failure as a
-        // FileStatus on its ExtractionResult instead of throwing (see ILanguageExtractor.Extract's
-        // own contract), so nothing inside the loop below is expected to throw at all in normal
-        // operation; if something still does, it is a genuine, unexpected bug, and is deliberately
-        // left to propagate rather than be silently absorbed here.
+        // failure here (a missing or unreadable repository ROOT, or a circular reparse point -- see
+        // both catch clauses) means the walk itself could not produce a list at all, so nothing was
+        // ever attempted and the run is unconditionally incomplete with an empty file list. Only the
+        // root and a cycle are all-or-nothing like that now (E5): a single inaccessible SUBdirectory
+        // no longer takes the rest of the walk down with it -- see the nested try just below, which
+        // names it in `inaccessibleDirectories` instead of emptying `orderedRelativePaths`. An
+        // IOException raised later, while extracting one specific file, must NOT be folded into this
+        // same catch: that would abort every remaining file over one file's failure and destroy the
+        // diagnosis -- RunStatus would stay honestly incomplete, but Skipped would come back empty
+        // with no indication which file was responsible. Every extractor already reports that kind of
+        // per-file failure as a FileStatus on its ExtractionResult instead of throwing (see
+        // ILanguageExtractor.Extract's own contract), so nothing inside the loop below is expected to
+        // throw at all in normal operation; if something still does, it is a genuine, unexpected bug,
+        // and is deliberately left to propagate rather than be silently absorbed here.
         List<string> orderedRelativePaths;
+        List<string> inaccessibleDirectories = [];
         try
         {
             orderedRelativePaths = EnumerateFiles(snapshot.RepoPath).ToList();
+
+            // A second, directory-scoped pass, inside the same try: `EnumerateFiles` above already
+            // asks .NET to IGNORE an inaccessible subdirectory rather than throw for it (E5 -- see
+            // that method's own doc comment), which is exactly what stops one locked directory from
+            // discarding every other file's results below. But silently ignoring it would also make
+            // that directory's contents vanish with no trace at all -- indistinguishable from a
+            // directory that legitimately holds nothing this producer cares about. This pass exists
+            // only to name the ones .NET just skipped: it does not change which files were found.
+            foreach (var directory in EnumerateDirectories(snapshot.RepoPath))
+            {
+                try
+                {
+                    // `.Any()` rather than a bare enumeration: the call must FORCE .NET to actually
+                    // list the directory's entries (a raw `IEnumerable` is lazy and would never touch
+                    // the filesystem, never throw, and never prove anything), but the result itself is
+                    // never used -- an empty, genuinely-readable directory is not inaccessible.
+                    Directory.EnumerateFileSystemEntries(directory).Any();
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Deliberately not IOException here (unlike the outer catch below): a directory
+                    // that is itself the loop of a circular reparse point throws PathTooLongException
+                    // (an IOException subtype) partway through THIS SAME `EnumerateDirectories` walk,
+                    // not UnauthorizedAccessException, and that failure means the walk itself could
+                    // not be trusted to have found every directory -- it belongs in the outer catch,
+                    // discarding this list along with `orderedRelativePaths`, not folded in here as one
+                    // more named entry among directories the walk otherwise did enumerate correctly.
+                    inaccessibleDirectories.Add(Path.GetRelativePath(snapshot.RepoPath, directory).Replace(Path.DirectorySeparatorChar, '/'));
+                    incomplete = true;
+                }
+            }
         }
         catch (IOException)
         {
@@ -110,11 +148,13 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             // would make Task 11's pruning gate delete every concept in the user's bundle on what was
             // really a broken run, not an empty one.
             orderedRelativePaths = [];
+            inaccessibleDirectories = [];
             incomplete = true;
         }
         catch (UnauthorizedAccessException)
         {
             orderedRelativePaths = [];
+            inaccessibleDirectories = [];
             incomplete = true;
         }
 
@@ -285,7 +325,7 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // extraction quality: a symbol may have moved to a file this run never reached at all, so
         // RunStatus.TraversalComplete carries it separately from RunStatus.IsComplete (see both types'
         // own doc comments for the full reasoning §6.3 and this task's own measurement forced).
-        var status = new RunStatus(!incomplete, skipped);
+        var status = new RunStatus(!incomplete, skipped) { InaccessibleDirectories = inaccessibleDirectories };
 
         return new CodeGraph(symbols, edges, status) { CappedByContainer = cappedByContainer };
     }
@@ -320,16 +360,66 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
 
     /// <summary>
     /// Deliberately does not pre-check <see cref="Directory.Exists"/>: letting
-    /// <see cref="Directory.EnumerateFiles(string, string, SearchOption)"/> throw
+    /// <see cref="Directory.EnumerateFiles(string, string, EnumerationOptions)"/> throw
     /// <see cref="DirectoryNotFoundException"/> (an <see cref="IOException"/> subtype) naturally for a
     /// missing <paramref name="repoPath"/> is what lets <see cref="Build"/>'s enumeration-scoped
     /// <c>catch</c> turn that into an incomplete run instead of this method silently returning an
-    /// empty sequence that would read as "zero files, nothing wrong" (C-1).
+    /// empty sequence that would read as "zero files, nothing wrong" (C-1); <see cref="EnumerationOptions.IgnoreInaccessible"/>
+    /// only swallows an <see cref="UnauthorizedAccessException"/> hit while DESCENDING into an already-found
+    /// directory, not the initial check of <paramref name="repoPath"/> itself, so a missing or
+    /// unreadable root still throws exactly as before.
+    ///
+    /// <para>
+    /// <see cref="EnumerationOptions.IgnoreInaccessible"/> is set (E5, §2.3): without it, one
+    /// inaccessible subdirectory anywhere under <paramref name="repoPath"/> throws
+    /// <see cref="UnauthorizedAccessException"/> mid-enumeration and <see cref="Build"/>'s catch
+    /// discards every file this call already found, including every sibling the locked directory has
+    /// nothing to do with -- reachable on an ordinary repository (a build output directory chmod'd
+    /// 000, a permission-restricted vendor drop), not only a crafted one. Ignoring it here is what lets
+    /// <see cref="Build"/>'s separate directory-scoped pass name the exact directory that was skipped,
+    /// instead of the whole run going dark with no diagnosis at all.
+    /// </para>
+    ///
+    /// <para>
+    /// <see cref="EnumerationOptions.AttributesToSkip"/> is set to <c>0</c> deliberately, overriding
+    /// its non-zero default (<c>Hidden | System</c>): a caller of the two-argument
+    /// <see cref="Directory.EnumerateFiles(string, string, SearchOption)"/> overload this replaces gets
+    /// files.NET considers hidden or system; silently narrowing that set on top of the
+    /// <see cref="EnumerationOptions.IgnoreInaccessible"/> switch above would be a second, unrelated
+    /// behaviour change riding on this fix.
+    /// </para>
     /// </summary>
     private static IEnumerable<string> EnumerateFiles(string repoPath) =>
-        Directory.EnumerateFiles(repoPath, "*", SearchOption.AllDirectories)
+        Directory.EnumerateFiles(repoPath, "*", WalkOptions)
             .Select(path => Path.GetRelativePath(repoPath, path).Replace(Path.DirectorySeparatorChar, '/'))
             .OrderBy(path => path, StringComparer.Ordinal);
+
+    /// <summary>
+    /// Every directory <paramref name="repoPath"/> contains, recursively, in no particular order --
+    /// <see cref="Build"/>'s directory-scoped pass probes each for actual readability itself, so
+    /// ordering here is not load-bearing the way it is for <see cref="EnumerateFiles"/>'s file list.
+    /// Shares <see cref="WalkOptions"/> with that method: an inaccessible directory is still yielded
+    /// here (it was found as a NAME in its still-readable parent's own listing, which is all locating
+    /// it takes) even though nothing under it can be. What <see cref="EnumerationOptions.IgnoreInaccessible"/>
+    /// stops this walk from doing is descending PAST it -- a grandchild directory that exists only
+    /// inside an inaccessible one is never discovered at all, silently, which is why
+    /// <see cref="Build"/>'s probe below only needs to check one level per inaccessible directory
+    /// found, not walk further to see how much was lost beneath it.
+    /// </summary>
+    private static IEnumerable<string> EnumerateDirectories(string repoPath) =>
+        Directory.EnumerateDirectories(repoPath, "*", WalkOptions);
+
+    /// <summary>
+    /// The <see cref="EnumerationOptions"/> both repository walks above share. See
+    /// <see cref="EnumerateFiles"/>'s own doc comment for why each non-default field is set the way it
+    /// is; kept in one place so the two walks cannot drift apart on the same host-visible behaviour.
+    /// </summary>
+    private static readonly EnumerationOptions WalkOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        AttributesToSkip = 0,
+    };
 
     private LanguageProfile? SelectProfile(string relativePath)
     {

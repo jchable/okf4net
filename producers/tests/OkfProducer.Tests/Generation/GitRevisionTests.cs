@@ -23,14 +23,17 @@ namespace OkfProducer.Tests.Generation;
 /// (<c>BlastRadiusTests</c>, <c>CheckTests</c>, <c>DeterminismTests</c>). In xunit 2.x, a collection
 /// carrying <see cref="CollectionDefinitionAttribute.DisableParallelization"/> runs ALONE, after every
 /// parallel collection has finished -- not merely non-parallel with respect to its own members, which
-/// an earlier version of this comment claimed. Putting only <b>this</b> class in such a collection
-/// (<see cref="ProcessEnvironmentCollectionDefinition"/>) is therefore what actually keeps it from
-/// overlapping the other four classes above, which stay in their own (parallel, unmarked) collections
-/// -- putting them in the SAME named collection as this one, as an earlier round did, would have
-/// serialised them against each other for nothing, since none of them mutates process state themselves;
-/// they only read <c>PATH</c> indirectly by shelling out. <see cref="Environment.CurrentDirectory"/>,
-/// <c>PATH</c> and (where a test sets it) <c>NoDefaultCurrentDirectoryInExePath</c> are restored in
-/// <c>finally</c> in every test here regardless of outcome.</para>
+/// an earlier version of this comment claimed. Putting <b>only a class that itself mutates
+/// process-wide state</b> in such a collection (<see cref="ProcessEnvironmentCollectionDefinition"/>)
+/// is therefore what actually keeps it from overlapping the other four classes above, which stay in
+/// their own (parallel, unmarked) collections -- putting them in the SAME named collection as this one,
+/// as an earlier round did, would have serialised them against each other for nothing, since none of
+/// them mutates process state themselves; they only read <c>PATH</c> indirectly by shelling out.
+/// <see cref="Environment.CurrentDirectory"/>, <c>PATH</c> and (where a test sets it)
+/// <c>NoDefaultCurrentDirectoryInExePath</c> are restored in <c>finally</c> in every test here
+/// regardless of outcome. <c>CodeGraph.Sdk8ImplicitDefinesTests</c> shares this same collection for the
+/// identical reason, mutating a different set of process-wide environment variables (MSBuild/SDK
+/// resolution, not <c>PATH</c>/current directory) -- see its own remarks for why.</para>
 ///
 /// <para><b><c>NoDefaultCurrentDirectoryInExePath</c> is not incidental.</b> This harness's own process
 /// sets that environment variable, which makes Windows' <c>CreateProcess</c> skip the current directory
@@ -58,6 +61,16 @@ public class GitRevisionTests
         var realGit = Path.Combine(pathDir.Path, gitName);
         File.WriteAllText(trapGit, "not a real executable -- if this ever runs, the resolver picked the wrong one");
         File.WriteAllText(realGit, "not a real executable either -- only its path is asserted on, never launched");
+
+        // E11 fix round 1: on POSIX the resolver (correctly) requires the execute bit, so a candidate
+        // written without it is skipped and this test failed on Linux for a reason unrelated to what it
+        // pins -- the TEST was platform-biased, not the resolver. Both stand-ins get the bit, so the
+        // trap is a real competitor and the PATH one is a real hit. Neither is ever launched.
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(trapGit, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.SetUnixFileMode(realGit, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
 
         var originalCwd = Environment.CurrentDirectory;
         var originalPath = Environment.GetEnvironmentVariable("PATH");
@@ -353,16 +366,22 @@ public class GitRevisionTests
 }
 
 /// <summary>
-/// The xunit collection <see cref="GitRevisionTests"/> alone belongs to. <c>DisableParallelization</c>
-/// on a <see cref="CollectionDefinitionAttribute"/> makes THIS collection run by itself, after every
-/// ordinary (parallel) collection has finished -- so nothing that shells out to a real <c>git</c>
-/// (<c>CliTests</c>, <c>BlastRadiusTests</c>, <c>CheckTests</c>, <c>DeterminismTests</c>, all left in
-/// their own default collections) can be mid-flight while <see cref="GitRevisionTests"/> is narrowing
-/// <c>PATH</c> or repointing <see cref="Environment.CurrentDirectory"/>. No fixture is attached -- this
-/// exists purely to declare the collection and its parallelization setting.
+/// The xunit collection for every test class that mutates PROCESS-WIDE environment state (as opposed
+/// to merely reading it, or shelling out without mutating it). <c>DisableParallelization</c> on a
+/// <see cref="CollectionDefinitionAttribute"/> makes THIS collection run by itself, after every
+/// ordinary (parallel) collection has finished -- so nothing that shells out to a real <c>dotnet</c> or
+/// <c>git</c> (<c>CliTests</c>, <c>BlastRadiusTests</c>, <c>CheckTests</c>, <c>DeterminismTests</c>,
+/// <c>RoslynResolverTests</c>, all left in their own default collections, since none of them mutates
+/// process state itself) can be mid-flight while a member of THIS collection is narrowing <c>PATH</c>,
+/// repointing <see cref="Environment.CurrentDirectory"/>, or clearing MSBuild/SDK-resolution
+/// environment variables. Two members today: <see cref="GitRevisionTests"/> (the original reason this
+/// collection exists -- see its own remarks) and <c>CodeGraph.Sdk8ImplicitDefinesTests</c> (added for
+/// its <c>NestedDotnetEnvironment</c>, a different set of variables, same underlying hazard). No
+/// fixture is attached -- this exists purely to declare the collection and its parallelization
+/// setting.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public class ProcessEnvironmentCollectionDefinition
 {
-    public const string Name = "Process environment (current directory / PATH) -- GitRevisionTests only";
+    public const string Name = "Process environment (PATH / current directory / MSBuild env vars) -- mutators only";
 }

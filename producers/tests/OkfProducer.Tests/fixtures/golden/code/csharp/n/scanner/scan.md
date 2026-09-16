@@ -2,7 +2,7 @@
 type: C# Member
 title: Scanner.Scan
 description: Scans the root. Nothing calls this, so adding an overload cannot move another concept.
-resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L10-L12
+resource: https://example.com/acme/fixture/blob/main/src/Scanner.cs#L11-L13
 tags:
   - csharp
   - member
@@ -18,4 +18,4 @@ Scans the root. Nothing calls this, so adding an overload cannot move another co
 
 ## Signatures
 
-- `public void Scan()` — `src/Scanner.cs#L10-L12`
+- `public void Scan()` — `src/Scanner.cs#L11-L13`

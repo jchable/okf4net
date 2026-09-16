@@ -2,7 +2,7 @@
 type: C# Type
 title: Shapes.Holder`1
 description: Arity one. A separate concept from Holder, which it was not before.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L96-L97
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L97-L98
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ Arity one. A separate concept from Holder, which it was not before.
 
 ## Signatures
 
-- `public class Holder<T>` — `src/Shapes.cs#L96-L97`
+- `public class Holder<T>` — `src/Shapes.cs#L97-L98`
 
 ## Contains
 

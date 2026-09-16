@@ -131,6 +131,80 @@ public class ScopeTests : IDisposable
     }
 
     [Fact]
+    public void A_namespace_sharing_a_types_name_does_not_cap_the_namespaces_own_members()
+    {
+        // §5.4 (E4): the walk above used Container alone, and a type `A.B` and a namespace `A.B` both
+        // spell the same dotted string -- a CA1724-style collision (a class beside a same-named
+        // namespace) that is common in the wild. Declared: `internal class B` in namespace `A`. Fact:
+        // `public class C`, genuinely top-level in namespace `A.B`, not nested inside `B` at all.
+        // `ContainerNamespace` disambiguates: it equals `Container` exactly, so there is no enclosing
+        // type between the namespace and this fact, and the internal `B` must not cap it.
+        var declaredType = new SymbolFact(SymbolKind.Type, "csharp", "A", "B", "internal class B",
+            SymbolVisibility.Internal, "a.cs", 0, 1, 1, 2, null);
+        var declared = new Dictionary<(string Container, string Name), SymbolFact>
+        {
+            [("A", "B")] = declaredType,
+        };
+
+        var fact = new SymbolFact(SymbolKind.Type, "csharp", "A.B", "C", "public class C",
+            SymbolVisibility.Public, "c.cs", 0, 1, 1, 2, null)
+        {
+            ContainerNamespace = "A.B",
+        };
+
+        Assert.True(FileEligibility.IsInScope(fact, declared, ScopeOptions.Default));
+    }
+
+    [Fact]
+    public void A_genuinely_nested_member_under_the_same_collision_stays_capped()
+    {
+        // Regression pin alongside the test above, over the identical declared set: this fact really
+        // is nested one level inside the internal `B` (`ContainerNamespace` stops one segment short of
+        // `Container`), so the fix must still cap it -- proving the disambiguation narrows the walk
+        // rather than disabling it.
+        var declaredType = new SymbolFact(SymbolKind.Type, "csharp", "A", "B", "internal class B",
+            SymbolVisibility.Internal, "a.cs", 0, 1, 1, 2, null);
+        var declared = new Dictionary<(string Container, string Name), SymbolFact>
+        {
+            [("A", "B")] = declaredType,
+        };
+
+        var fact = new SymbolFact(SymbolKind.Member, "csharp", "A.B", "Inner", "public void Inner()",
+            SymbolVisibility.Public, "a.cs", 0, 1, 1, 2, null)
+        {
+            ContainerNamespace = "A",
+        };
+
+        Assert.False(FileEligibility.IsInScope(fact, declared, ScopeOptions.Default));
+    }
+
+    [Fact]
+    public void A_partial_types_internal_visibility_still_caps_a_type_nested_in_another_file()
+    {
+        // The heuristic the plan's Step 2 proposed -- cap only when the enclosing type is declared in
+        // the SAME file -- leaks exactly this shape: C# nesting cannot cross files except through
+        // `partial`, so an internal partial type's nested member declared in the partial's OTHER file
+        // would wrongly stop being capped. `declared` keeps only the first-seen declaration of `P`
+        // (from `p.cs`), and `InP` is declared in `q.cs`; the fix must cap on `ContainerNamespace`
+        // alone, never on `RelativePath`, so this stays capped regardless of which file `P` was first
+        // recorded from.
+        var declaredType = new SymbolFact(SymbolKind.Type, "csharp", "A", "P", "internal partial class P",
+            SymbolVisibility.Internal, "p.cs", 0, 1, 1, 2, null);
+        var declared = new Dictionary<(string Container, string Name), SymbolFact>
+        {
+            [("A", "P")] = declaredType,
+        };
+
+        var fact = new SymbolFact(SymbolKind.Type, "csharp", "A.P", "InP", "public class InP",
+            SymbolVisibility.Public, "q.cs", 0, 1, 1, 2, null)
+        {
+            ContainerNamespace = "A",
+        };
+
+        Assert.False(FileEligibility.IsInScope(fact, declared, ScopeOptions.Default));
+    }
+
+    [Fact]
     public void Project_ownership_matching_is_case_sensitive()
     {
         // M-1: a case-sensitive filesystem can hold both src/Foo and src/foo as genuinely distinct
@@ -226,6 +300,68 @@ public class ScopeTests : IDisposable
         Assert.Equal(EdgeConfidence.Unresolved, narrowEdge.Confidence);
         Assert.Null(narrowEdge.TargetContainer);
         Assert.Null(narrowEdge.TargetName);
+    }
+
+    [Fact]
+    public void A_namespace_type_name_collision_only_uncaps_the_namespaces_own_members_end_to_end()
+    {
+        // The same reproduction and the same partial-leak guard as the unit tests above, but driven
+        // through the real tree-sitter extractor and the real CodeGraphBuilder rather than a
+        // hand-built `declared` dictionary -- the stub could in principle model the wrong thing.
+        // `a.cs`/`c.cs` reproduce the collision: `A.B` names both an internal type and a namespace.
+        // `p.cs`/`q.cs` add the partial-leak shape from the same declared-set-vs-file gap. Under the
+        // fix, only `Inner`, `Nested`, `InP` and `Z` are genuinely nested inside an internal type and
+        // stay capped; `C` and `M` are declared in namespace `A.B`, not inside type `B`, and must not
+        // be. Before the fix all six were capped, because the walk could not tell "nested in type B"
+        // from "declared in namespace A.B" apart.
+        var repoPath = CreateRepository(
+            ("a.cs", """
+                namespace A
+                {
+                    internal class B
+                    {
+                        public void Inner() { }
+                        public class Nested { }
+                    }
+                }
+                """),
+            ("c.cs", """
+                namespace A.B
+                {
+                    public class C
+                    {
+                        public void M() { }
+                    }
+                }
+                """),
+            ("p.cs", """
+                namespace A
+                {
+                    internal partial class P { }
+                }
+                """),
+            ("q.cs", """
+                namespace A
+                {
+                    partial class P
+                    {
+                        public class InP
+                        {
+                            public void Z() { }
+                        }
+                    }
+                }
+                """));
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+
+        using var extractor = new TreeSitterExtractor();
+        var builder = new CodeGraphBuilder(extractor, [CSharpProfile.Instance], [new NameMatchResolver()]);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.Contains(graph.Symbols, s => s.Container == "A.B" && s.Name == "C");
+        Assert.Contains(graph.Symbols, s => s.Container == "A.B.C" && s.Name == "M");
+        Assert.Equal(4, graph.CappedByContainer);
     }
 
     private string CreateRepository(params (string RelativePath, string Source)[] files)

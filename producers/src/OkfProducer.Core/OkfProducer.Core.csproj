@@ -14,6 +14,18 @@
     <InternalsVisibleTo Include="OkfProducer.Tests" />
   </ItemGroup>
 
+  <!--
+    E11: BoundedProcess (the one child-process runner) and BundlePaths' containment and link-walk
+    helpers are shared by both code-graph engines, which used to carry private copies that drifted
+    apart. Granted to exactly those two assemblies rather than made public: they are plumbing, not
+    producer API, and a public type here would be one more thing a consumer of OkfProducer.Core
+    could come to depend on.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="OkfProducer.CodeGraph.Roslyn" />
+    <InternalsVisibleTo Include="OkfProducer.CodeGraph.TreeSitter" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
