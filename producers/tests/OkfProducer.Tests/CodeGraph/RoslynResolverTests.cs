@@ -105,9 +105,9 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // restored three-project fixture and three `dotnet msbuild` round trips to say so. This pins
         // the one switch that guarantee rests on, with no dotnet and no restore: without
         // BuildProjectReferences=false, `-t:ResolveReferences` BUILDS every referenced project
-        // (measured: 34 files written into a never-built three-project tree, bin/ included), because
-        // the property defaults to true outside Visual Studio. ReadOnlySwitches is `internal` for
-        // exactly this assertion.
+        // (measured: 39 files written into a never-built three-project tree, 34 of them into the two
+        // projects merely REFERENCED, bin/ included), because the property defaults to true outside
+        // Visual Studio. ReadOnlySwitches is `internal` for exactly this assertion.
         Assert.Contains("-p:BuildProjectReferences=false", MsBuildProjectQuery.ReadOnlySwitches);
     }
 
@@ -136,8 +136,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // BUILD the repository it was asked to read. `-t:ResolveReferences` depends on
         // ResolveProjectReferences, which outside Visual Studio builds every referenced project, so a
         // run over this three-project chain wrote bin/, obj/Debug/<tfm>/, ref/ and refint/ output for
-        // Lib and Mid into a tree the producer was only scanning. RED on the code before E13: 34 new
-        // files for one query of App alone.
+        // Lib and Mid into a tree the producer was only scanning. RED on the code before E13, and
+        // measured there with this exact fixture shape: 39 new files for one stage.
         //
         // The repository is restored and never built, which is the state that makes the assertion
         // meaningful: restore output (obj/project.assets.json and friends) is there before the
@@ -177,20 +177,19 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
 
         var inputs = Query(repository.ApplicationProject);
 
-        var projectReferences = inputs.References
-            .Where(r => r.ProjectPath is not null)
-            .Select(r => r.ProjectPath!)
-            .OrderBy(p => p, StringComparer.Ordinal)
-            .ToList();
+        var projectReferences = inputs.References.Where(r => r.ProjectPath is not null).ToList();
         Assert.Equal(
             new[] { repository.LibraryProject, repository.MiddleProject }.OrderBy(p => p, StringComparer.Ordinal),
-            projectReferences);
+            projectReferences.Select(r => r.ProjectPath!).OrderBy(p => p, StringComparer.Ordinal));
 
-        // The reference assemblies genuinely are not there -- this is a restored, never-built tree --
-        // so the substitution is not a convenience here, it is the only way the symbols exist at all.
-        Assert.All(projectReferences, p => Assert.False(File.Exists(Path.ChangeExtension(p, ".dll"))));
+        // The assemblies MSBuild resolved those two references TO are genuinely not on disk -- this is
+        // a restored, never-built tree, and the query no longer builds one. Asserted on
+        // AssemblyPath, the value CompilationFactory would actually fall back to reading, not on a
+        // path derived from the .csproj: the point is that the from-source substitution is the only
+        // way Lib's and Mid's symbols reach this compilation at all.
+        Assert.All(projectReferences, r => Assert.False(File.Exists(r.AssemblyPath), r.AssemblyPath));
 
-        // The end of the chain: a call from App into Lib, two project hops away, resolved Exact.
+        // The end of the chain: with that substitution, all three still compile clean.
         var resolver = RoslynResolver.Create(repository.Root, repository.Projects);
         Assert.True(AllCompiled(resolver));
     }

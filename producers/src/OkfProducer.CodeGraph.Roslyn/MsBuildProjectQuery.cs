@@ -158,6 +158,10 @@ public sealed class MsBuildQueryScratch : IDisposable
         }
         catch (IOException)
         {
+            // Swallowed on purpose, both of them. A file another process is still holding, or a
+            // directory removed under us, must not fail a producer run that has already done its work
+            // and written its bundle -- the entire cost is one directory left in the system temp,
+            // which producers/README.md names. Nothing downstream reads this directory again.
         }
         catch (UnauthorizedAccessException)
         {
@@ -294,9 +298,10 @@ public static class MsBuildProjectQuery
     /// Studio <c>BuildProjectReferences</c> defaults to <see langword="true"/>, so that target
     /// <b>builds every referenced project</b> -- which is what this query used to do. Measured on this
     /// host (SDK 10.0.204, Windows 11) over a restored, never-built <c>App -> Mid -> Lib</c>
-    /// repository, one query of <c>App</c> wrote <b>34 files</b> into the scanned tree: <c>Lib/bin/</c>,
-    /// <c>Mid/bin/</c> and both projects' full <c>obj/Debug/net10.0/</c> compile output, including
-    /// <c>ref/</c> and <c>refint/</c> assemblies. With <c>-p:BuildProjectReferences=false</c> the two
+    /// repository, one query of <c>App</c> wrote <b>39 files</b> into the scanned tree, <b>34 of them
+    /// into the two projects it merely references</b>: <c>Lib/bin/</c>, <c>Mid/bin/</c> and both
+    /// projects' full <c>obj/Debug/net10.0/</c> compile output, <c>ref/</c> and <c>refint/</c>
+    /// assemblies included. With <c>-p:BuildProjectReferences=false</c> the two
     /// referenced projects are not touched at all, and the answer is byte-for-byte the same one: 169
     /// <c>ReferencePath</c> items in both runs, the same two <c>MSBuildSourceProjectFile</c> values
     /// (including the <b>transitive</b> <c>Lib</c>, which never stopped being reported), and identical
