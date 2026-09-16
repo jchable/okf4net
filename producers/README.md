@@ -98,7 +98,7 @@ explicit command-line switch wins on conflict, so the producer's own `-nodeReuse
 cannot be flipped from the rsp; and the mitigation above is unchanged, because it never
 rested on which targets were asked for.
 
-**What a run writes into the scanned repository: nothing.** Running its build logic and
+**What a run writes into the scanned repository: no file.** Running its build logic and
 writing its build output are two different things, and until E13 `okfgen` did both.
 `-t:ResolveReferences` depends on `ResolveProjectReferences`, and outside Visual Studio
 `BuildProjectReferences` defaults to `true`, so the query *built every referenced project* —
@@ -108,21 +108,35 @@ wrote 39 files into the tree (`bin/`, both referenced projects' whole `obj/Debug
 the files MSBuild still generates for the queried project itself — `*.GlobalUsings.g.cs` and
 `*.AssemblyInfo.cs`, which are `Compile` items Roslyn has to read, so there is no switch that
 yields the item without the file — are redirected into an `okfgen-msbuild-*` directory under
-the system temp directory, deleted when the Roslyn stage ends. A run killed before it gets
-there (Ctrl+C, a crash) leaves that one directory behind; that is the whole of the residue.
-Two things this does **not** promise. It does not stop the *repository's own* MSBuild logic
-from writing wherever it likes while it is evaluated — that is the paragraph above, and it is
-not something a switch can bound. And it says nothing about `--out`: the bundle directory is
-written to, deliberately, and pointing it inside the scanned repository is your choice.
+the system temp directory, deleted when the Roslyn stage ends. The path is escaped the way
+MSBuild expects (`%XX`), so a temp directory holding `%` or `;` works rather than sending the
+files somewhere else.
+
+What the query *does* still create in the scanned repository is directories: an **empty**
+`bin/<Configuration>/<TFM>/` for each never-built project, made by `PrepareForBuild`'s
+`<MakeDir Directories="$(OutDir);…">`. Nothing is written into them. They are left on purpose:
+redirecting `OutDir` as well removes them, but a `-p:` switch reaches the referenced projects
+too, and measured, it moves their reference path from `lib/bin/Debug/net10.0/Lib.dll` into the
+scratch — the assembly the Roslyn stage falls back to on a built tree. An already-built tree
+gains nothing at all.
+
+A run killed before the stage ends (Ctrl+C, a crash) leaves its `okfgen-msbuild-*` directory
+behind. The next run that reaches the Roslyn stage deletes this producer's own leftovers once
+they are a day old — only directories named exactly as it names them, never through a link —
+so they do not accumulate. Two things none of this promises. It does not stop the *repository's
+own* MSBuild logic from writing wherever it likes while it is evaluated — that is the paragraph
+above, and it is not something a switch can bound. And it says nothing about `--out`: the bundle
+directory is written to, deliberately, and pointing it inside the scanned repository is your
+choice.
 
 One consequence, on a repository that was **restored but never built**. The Roslyn stage
 substitutes a from-source compilation for every project reference it can compile, and falls
 back to the referenced project's `bin/` assembly for one it cannot (a project using Roslyn
 source generators is the common case — see the limitation above). That assembly used to exist
 because the query had just built it; now it does not, so the *dependent* project is reported
-`ReferencesUnresolved` and its own calls fall back to name matching as well. Build the
-repository first — or accept the wider degradation — if some project in it does not compile
-without its generators. On an already-built tree nothing changes.
+`ReferencesUnresolved` and its own calls fall back to name matching as well — and its note names
+the project and says to build the repository once and re-run. On an already-built tree nothing
+changes.
 
 `--no-msbuild` is the way out. It skips the whole stage: **no `dotnet msbuild` is spawned and
 no MSBuild logic from the scanned tree is evaluated**, and calls are resolved by the

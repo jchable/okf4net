@@ -343,8 +343,14 @@ are the concrete entry points.
   writing into the scanned repository's `obj/` (lane task E13).
   **That precondition is now met.** E13 added `-p:BuildProjectReferences=false` and redirected
   `IntermediateOutputPath` into a producer-owned scratch directory, so a query no longer builds
-  anything and no longer writes into the scanned repository at all — pinned by an acceptance test
-  that snapshots the tree (paths, sizes, mtimes) around a whole resolver stage. The `obj/` write
+  anything and writes no file into the scanned repository — pinned by an acceptance test that
+  snapshots the tree (files with sizes and mtimes, and directories) around a whole resolver stage.
+  What it still creates there is an empty `bin/<Configuration>/<TFM>/` per never-built project,
+  from `PrepareForBuild`'s `MakeDir $(OutDir)`. That is not a new collision source for a parallel
+  query: `MakeDir` creates only what is missing (Learn's `MakeDir` task reference) and
+  `PrepareForBuild` calls it with `ContinueOnError="true"`. Redirecting `OutDir` would move
+  referenced projects' `ReferencePath` into the scratch (measured), so the directory is left. The
+  `obj/` write
   collisions the prototype hit have no source left. What has **not** been redone is the measurement:
   the timings above were taken against a query that built its whole reference closure, which is most
   of what each query cost, so the 37–40 % saving is a number for code that no longer exists and

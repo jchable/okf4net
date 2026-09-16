@@ -833,7 +833,7 @@ and this project adheres to
 ### Fixed
 
 - **`okfgen generate` no longer builds the repository it is scanning, so a run
-  writes nothing into that repository's `obj/` or `bin/` (`producers/`).** The
+  writes no file into that repository's `obj/` or `bin/` (`producers/`).** The
   MSBuild query asks for `-t:ResolveReferences`, which depends on
   `ResolveProjectReferences` — and outside Visual Studio `BuildProjectReferences`
   defaults to `true`, so that target *built every referenced project*. Measured
@@ -846,7 +846,23 @@ and this project adheres to
   `*.AssemblyInfo.cs` — `Compile` items that must exist on disk for Roslyn to
   parse them, and which no switch produces without writing) is redirected into a
   per-run `okfgen-msbuild-*` directory under the system temp that the producer
-  deletes when the stage ends. The reference set is unchanged, not merely
+  deletes when the stage ends. That path is escaped the way MSBuild expects
+  (`%XX`, `%` included): unescaped, MSBuild *decodes* `%XX` in a `-p:` value, so
+  a temp directory holding `%41` sent the files to a sibling of the scratch (and
+  `%2E%2E` out of it) where nothing ever deleted them, and one holding `;` failed
+  every query with `MSB1006` — both measured, both pinned. What the query still
+  creates in the scanned repository is **empty directories**: a
+  `bin/<Configuration>/<TFM>/` per never-built project, from `PrepareForBuild`'s
+  `<MakeDir Directories="$(OutDir);…">`, never written into. They are left on
+  purpose: redirecting `OutDir` too removes them but moves the referenced
+  projects' `ReferencePath` into the scratch (measured) — the assembly
+  `CompilationFactory` falls back to on a built tree. A killed run's leftover
+  scratch is swept by a later run once it is a day old, touching only directories
+  named exactly as the producer names them and never following a link. On a
+  restored-but-never-built tree, a project whose dependency cannot be compiled
+  from source is now reported `ReferencesUnresolved` (that dependency's `bin/`
+  assembly used to exist because the query built it), and its note says to build
+  the repository once and re-run. The reference set is unchanged, not merely
   similar: measured before and after, 169 `ReferencePath` items on that
   three-project chain and 213 on this repository's own `src/OKF4net.Mcp`, with
   identical `Identity` sets, identical resolved properties, and the transitive
@@ -855,8 +871,10 @@ and this project adheres to
   measured to stop the same builds and was *not* chosen: it is a signal
   repository-authored targets routinely condition on, so it would quietly change
   what the scanned repository's own logic does while buying nothing extra. Pinned
-  by an acceptance test that snapshots the scanned tree (paths, sizes and
-  last-write times) around a whole resolver stage. What this does **not** bound is
+  by an acceptance test that snapshots the scanned tree around a whole resolver
+  stage — files with their sizes and last-write times, and directories, so the
+  empty output directories are a named exception rather than an invisible one.
+  What this does **not** bound is
   what the repository's own MSBuild logic writes while it is evaluated — see
   `producers/README.md`, "Generating from a repository runs that repository's
   build logic".
