@@ -341,6 +341,17 @@ are the concrete entry points.
   collisions exist because the query builds the projects it references at all, so the precondition
   for revisiting parallelism is removing that: the query must stop building referenced projects and
   writing into the scanned repository's `obj/` (lane task E13).
+  **That precondition is now met.** E13 added `-p:BuildProjectReferences=false` and redirected
+  `IntermediateOutputPath` into a producer-owned scratch directory, so a query no longer builds
+  anything and no longer writes into the scanned repository at all — pinned by an acceptance test
+  that snapshots the tree (paths, sizes, mtimes) around a whole resolver stage. The `obj/` write
+  collisions the prototype hit have no source left. What has **not** been redone is the measurement:
+  the timings above were taken against a query that built its whole reference closure, which is most
+  of what each query cost, so the 37–40 % saving is a number for code that no longer exists and
+  revisiting parallelism starts by measuring again. Two obstacles also still stand, neither about
+  `obj/`: `StageDeadline` is not thread-safe and is consulted per project *inside* the query loop
+  (E13 pinned that too), and nothing has established that a repository's own MSBuild logic — which a
+  query evaluates, and which can write wherever it likes — is safe to run several copies of at once.
 
 ## Out of scope
 

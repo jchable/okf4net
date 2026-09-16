@@ -832,6 +832,47 @@ and this project adheres to
 
 ### Fixed
 
+- **`okfgen generate` no longer builds the repository it is scanning, so a run
+  writes nothing into that repository's `obj/` or `bin/` (`producers/`).** The
+  MSBuild query asks for `-t:ResolveReferences`, which depends on
+  `ResolveProjectReferences` — and outside Visual Studio `BuildProjectReferences`
+  defaults to `true`, so that target *built every referenced project*. Measured
+  on SDK 10.0.204: one resolver stage over a restored, never-built three-project
+  chain wrote **39 files** into the scanned tree — `bin/`, the full
+  `obj/Debug/<tfm>/` compile output of both referenced projects, `ref/` and
+  `refint/` assemblies included — for a repository `okfgen` was only asked to
+  read. The query now passes `-p:BuildProjectReferences=false`, and what MSBuild
+  still generates for the queried project itself (`*.GlobalUsings.g.cs` and
+  `*.AssemblyInfo.cs` — `Compile` items that must exist on disk for Roslyn to
+  parse them, and which no switch produces without writing) is redirected into a
+  per-run `okfgen-msbuild-*` directory under the system temp that the producer
+  deletes when the stage ends. The reference set is unchanged, not merely
+  similar: measured before and after, 169 `ReferencePath` items on that
+  three-project chain and 213 on this repository's own `src/OKF4net.Mcp`, with
+  identical `Identity` sets, identical resolved properties, and the transitive
+  project reference still tagged with its `.csproj` so `CompilationFactory` keeps
+  substituting a from-source compilation for it. `-p:DesignTimeBuild=true` was
+  measured to stop the same builds and was *not* chosen: it is a signal
+  repository-authored targets routinely condition on, so it would quietly change
+  what the scanned repository's own logic does while buying nothing extra. Pinned
+  by an acceptance test that snapshots the scanned tree (paths, sizes and
+  last-write times) around a whole resolver stage. What this does **not** bound is
+  what the repository's own MSBuild logic writes while it is evaluated — see
+  `producers/README.md`, "Generating from a repository runs that repository's
+  build logic".
+- **`--roslyn-timeout` is pinned to bound the project-query stage, checked
+  between individual project queries (`producers/`).** `GenerateRun` hands every
+  detected project in as a query root, so nothing is discovered transitively and
+  the closure is a single pass: a deadline consulted once before that pass would
+  leave the option bounding only the compilations after it. The serial loop does
+  consult `StageDeadline` at the top of every iteration, and nothing said so — an
+  abandoned stage returns nothing at all, so a run that queried one project of
+  three and one that queried all three were indistinguishable from outside. The
+  loop now reports how far it got, and a test holds it: three projects, a budget
+  larger than the loop's own set-up and smaller than one `dotnet msbuild`
+  invocation, one query run, the stage abandoned whole and reported degraded
+  exactly as before. Moving the check back out of the loop turns that count into
+  three and the test red.
 - **`okfgen`'s MSBuild query now requests `AddImplicitDefineConstants`, so
   `#if NETx_OR_GREATER` compiles correctly under an SDK 8 toolchain
   (`producers/`).** `MsBuildProjectQuery`'s target list
