@@ -294,6 +294,11 @@ public sealed class RoslynResolver : ISymbolResolver
         // One scratch for the whole stage, disposed after the compilations and not after the queries:
         // the `Compile` items MSBuild generated live in it, and CompilationFactory reads them while
         // compiling. Deleting it earlier would take every project's implicit global usings with it.
+        //
+        // A killed earlier run leaves its scratch behind and nothing else would ever remove it, so this
+        // moment -- the producer about to add another -- is when its own day-old leftovers are cleared.
+        // Best-effort (see SweepStale); it cannot fail the stage.
+        MsBuildQueryScratch.SweepStale();
         using var scratch = new MsBuildQueryScratch();
 
         var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports, deadline, scratch, out projectsQueried);
@@ -581,6 +586,31 @@ public sealed class RoslynResolver : ISymbolResolver
         return compiled;
     }
 
+    /// <summary>
+    /// The one clause a <see cref="RoslynProjectAvailability.ReferencesUnresolved"/> report needs to be
+    /// actionable (E13 fix round 1, Minor-1): when the unusable reference is a repository project's
+    /// <c>bin/</c> assembly that simply is not on disk, say which project and that building once fixes it.
+    /// Empty otherwise -- a reference that exists but could not be READ has a different remedy, and
+    /// "build first" would send the operator the wrong way.
+    ///
+    /// <para><b>Why this case got common.</b> Before E13 the query built every referenced project, so
+    /// that assembly was always there by the time this ran. Now, on a restored-but-never-built tree, a
+    /// dependency Roslyn cannot compile from source (a generator-dependent project is the usual one)
+    /// leaves its dependents with nothing to bind against. <c>GenerateRun.ReportProjects</c> already adds
+    /// that the project's calls fall back to name matching; this adds what to do about it.</para>
+    /// </summary>
+    private static string BuildFirstRemedy(ProjectInputs inputs, UnusableReference first)
+    {
+        var project = inputs.References
+            .FirstOrDefault(r => string.Equals(r.AssemblyPath, first.AssemblyPath, StringComparison.Ordinal))
+            ?.ProjectPath;
+
+        return project is not null && !File.Exists(first.AssemblyPath)
+            ? $" (the build output of {Path.GetFileName(project)}, which this run did not compile from source "
+              + "either: build the repository once and re-run to resolve it exactly)"
+            : string.Empty;
+    }
+
     private static void Compile(
         string projectPath,
         Dictionary<string, ProjectInputs> queried,
@@ -637,7 +667,8 @@ public sealed class RoslynResolver : ISymbolResolver
                     projectPath,
                     RoslynProjectAvailability.ReferencesUnresolved,
                     $"{unusableReferences.Count} reference(s) unusable and not compiled from source, "
-                    + $"first: {unusableReferences[0].AssemblyPath} -- {unusableReferences[0].Reason}");
+                    + $"first: {unusableReferences[0].AssemblyPath} -- {unusableReferences[0].Reason}"
+                    + BuildFirstRemedy(inputs, unusableReferences[0]));
                 return;
             }
 

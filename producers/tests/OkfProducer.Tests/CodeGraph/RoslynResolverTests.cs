@@ -100,7 +100,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     public void The_msbuild_query_always_refuses_to_build_the_referenced_projects()
     {
         // E13's always-running pin, the third of the same family as the two above (E6's Targets, E7's
-        // Properties). The real guard is the slow one -- A_resolver_run_writes_nothing_into_the_
+        // Properties). The real guard is the slow one -- A_resolver_run_writes_no_file_into_the_
         // scanned_repository, which snapshots a repository around a whole stage -- and it needs a
         // restored three-project fixture and three `dotnet msbuild` round trips to say so. This pins
         // the one switch that guarantee rests on, with no dotnet and no restore: without
@@ -112,25 +112,177 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
-    public void A_scratch_path_MSBuild_could_not_be_given_is_refused_by_name()
+    public void Escaping_a_property_value_turns_every_MSBuild_special_character_into_its_literal()
     {
-        // The one failure mode the redirect introduces, and it is a host's temp directory, not a
-        // scanned repository's doing. MSBuild splits a -p: switch on `;`, so a TMPDIR holding one
-        // makes the whole switch unparseable -- measured directly against `dotnet msbuild`:
-        // `-p:IntermediateOutputPath=.../a;b/` fails with MSB1006 "Switch: b/App/", for every project,
-        // with nothing in that message naming the temp directory. Refused here instead, as the same
-        // MsBuildQueryException every other query failure raises -- so the run still degrades to name
-        // matching one project at a time rather than crashing -- but saying what to change.
-        using var scratch = new MsBuildQueryScratch(Path.Combine(Path.GetTempPath(), "okfgen-a;b"));
+        // The always-running pin for E13 fix round 1, Important-2: no dotnet, no restore. Every
+        // character in Learn's "MSBuild special characters" table, escaped as %XX so MSBuild reads the
+        // literal back. The end-to-end proof that MSBuild really decodes these to the literal is
+        // A_temp_path_holding_an_MSBuild_special_character_keeps_the_scratch_under_its_root; this is
+        // what fails the moment one character is dropped from the escape set.
+        Assert.Equal("%25%24%40%27%28%29%3B%3F%2A", MsBuildProjectQuery.EscapePropertyValue("%$@'();?*"));
 
-        var ex = Assert.Throws<MsBuildQueryException>(() => scratch.IntermediateOutputPathFor(RepoProject("src/OKF4net/OKF4net.csproj")));
+        // The `%` ordering, pinned by the input that exposes it: a temp path already holding the text
+        // `%3B` must reach MSBuild as `%253B` and decode back to `%3B`, never to `;`.
+        Assert.Equal("%253B", MsBuildProjectQuery.EscapePropertyValue("%3B"));
 
-        Assert.Contains("holds a `;`", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("TMPDIR", ex.Message, StringComparison.Ordinal);
+        // And nothing else is touched: separators, drive letters, spaces and hex digits pass through.
+        Assert.Equal("C:/Temp dir/okfgen-msbuild-0a1b/", MsBuildProjectQuery.EscapePropertyValue("C:/Temp dir/okfgen-msbuild-0a1b/"));
+    }
+
+    [Theory]
+    // %41 decodes to `A`: unescaped, the files landed in a SIBLING of the scratch root, Dispose removed
+    // a directory that was never created, and they survived the run -- fail-open, measured.
+    [InlineData("tmp%41x")]
+    // `;` splits the -p: switch: unescaped, MSB1006 and every query fails -- fail-closed, measured.
+    [InlineData("tmp;x")]
+    // Both at once, which a fix for only one of them would miss.
+    [InlineData("tmp%41;x")]
+    // %2E%2E decodes to `..`: unescaped, a directory traversal out of the root, measured.
+    [InlineData("tmp/%2E%2E/x")]
+    public void A_temp_path_holding_an_MSBuild_special_character_keeps_the_scratch_under_its_root(string rootName)
+    {
+        // E13 fix round 1, Important-2. The scratch root is made of whatever TMPDIR/TEMP hold, and
+        // MSBuild does not take a -p: value literally. The internal root constructor stands in for such
+        // a TMPDIR -- the public constructor only prepends Path.GetTempPath() to a fixed name -- because
+        // setting TMPDIR in-process would reach every test running in parallel.
+        //
+        // A private parent per run, so "nothing was written anywhere else" is checkable: a misdirected
+        // write (the %41 and %2E%2E cases, unescaped) still lands inside it, just not under Root.
+        var parent = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "okf-producer-escape-" + Guid.NewGuid().ToString("N")[..12])).FullName;
+        try
+        {
+            var root = Path.Combine(parent, rootName.Replace('/', Path.DirectorySeparatorChar));
+            var scratch = new MsBuildQueryScratch(root);
+            try
+            {
+                var inputs = MsBuildProjectQuery.Query(Path.Combine(_scratch.Root, "Scratch.csproj"), scratch);
+
+                // Every generated Compile item -- the ones not under the project's own directory --
+                // exists, and exists under Root, spelled exactly as Root spells it.
+                var generated = inputs.CompileFiles
+                    .Where(f => !f.StartsWith(_scratch.Root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                    .ToList();
+                Assert.Contains(generated, f => f.EndsWith("AssemblyInfo.cs", StringComparison.Ordinal));
+                Assert.All(generated, f =>
+                {
+                    Assert.StartsWith(root + Path.DirectorySeparatorChar, f, StringComparison.Ordinal);
+                    Assert.True(File.Exists(f), f);
+                });
+            }
+            finally
+            {
+                scratch.Dispose();
+            }
+
+            // Deleted with the scratch, and no file survived anywhere else in the parent -- the
+            // fail-open shape is exactly files outside Root that Dispose never looks at.
+            Assert.False(Directory.Exists(root), root);
+            Assert.Empty(Directory.EnumerateFiles(parent, "*", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            Directory.Delete(parent, recursive: true);
+        }
     }
 
     [Fact]
-    public void A_resolver_run_writes_nothing_into_the_scanned_repository()
+    public void The_sweep_removes_only_the_producers_own_day_old_scratch_roots()
+    {
+        // E13 fix round 1, Minor-2. A killed run leaves its okfgen-msbuild-* behind and nothing else
+        // would ever remove it. The sweep has to be narrow enough to be safe on a shared temp
+        // directory: this producer's own name shape only, and never young enough to be a concurrent
+        // run's live scratch.
+        var directory = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "okf-producer-sweep-" + Guid.NewGuid().ToString("N")[..12])).FullName;
+        try
+        {
+            var now = DateTime.UtcNow;
+            var old = now - TimeSpan.FromDays(3);
+
+            var stale = Aged(Path.Combine(directory, "okfgen-msbuild-0123456789ab"), old, withChild: true);
+            var fresh = Aged(Path.Combine(directory, "okfgen-msbuild-ba9876543210"), now, withChild: false);
+
+            // Old at the root, but a project directory inside it was written a minute ago: a live run
+            // that simply started querying a while back.
+            var live = Aged(Path.Combine(directory, "okfgen-msbuild-aaaaaaaaaaaa"), old, withChild: true);
+            Directory.SetLastWriteTimeUtc(Directory.EnumerateDirectories(live).Single(), now - TimeSpan.FromMinutes(1));
+
+            // The prefix, but not the shape the constructor produces: somebody else's directory.
+            var foreign = Aged(Path.Combine(directory, "okfgen-msbuild-notes"), old, withChild: false);
+
+            var deleted = MsBuildQueryScratch.SweepStale(directory, MsBuildQueryScratch.StaleAfter, now);
+
+            Assert.Equal(1, deleted);
+            Assert.False(Directory.Exists(stale));
+            Assert.True(Directory.Exists(fresh));
+            Assert.True(Directory.Exists(live));
+            Assert.True(Directory.Exists(foreign));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+
+        static string Aged(string path, DateTime lastWrite, bool withChild)
+        {
+            Directory.CreateDirectory(path);
+            if (withChild)
+            {
+                var child = Directory.CreateDirectory(Path.Combine(path, "0123456789abcdef")).FullName;
+                File.WriteAllText(Path.Combine(child, "App.AssemblyInfo.cs"), "// generated");
+                Directory.SetLastWriteTimeUtc(child, lastWrite);
+            }
+
+            Directory.SetLastWriteTimeUtc(path, lastWrite);
+            return path;
+        }
+    }
+
+    [DirectoryLinkFact]
+    public void The_sweep_does_not_follow_a_link_planted_under_its_own_name()
+    {
+        // On a shared /tmp another user can create a link named okfgen-msbuild-<12 hex> that points
+        // somewhere of yours. The sweep does not act on it at all: a clock thirty days ahead and a
+        // zero threshold, so nothing but the link check can be what spares it.
+        //
+        // Stated precisely, because the obvious story is not the measured one: on .NET 10 / Windows 11,
+        // DirectoryInfo.Delete(recursive: true) on a junction removes the junction and does NOT follow
+        // it -- keep.txt survived a direct probe. So the check is defence in depth, not the only thing
+        // between the sweep and your files, and with it removed this test goes RED on the deletion
+        // COUNT (the link itself is deleted), not on keep.txt. What it pins is that the sweep never
+        // treats a link as its own directory, rather than trusting every runtime's recursive delete
+        // to keep making that choice.
+        var directory = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "okf-producer-sweeplink-" + Guid.NewGuid().ToString("N")[..12])).FullName;
+        var link = Path.Combine(directory, "okfgen-msbuild-cafecafecafe");
+        try
+        {
+            var target = Directory.CreateDirectory(Path.Combine(directory, "precious")).FullName;
+            var keep = Path.Combine(target, "keep.txt");
+            File.WriteAllText(keep, "mine");
+            DirectoryLinks.Create(link, target);
+
+            var deleted = MsBuildQueryScratch.SweepStale(directory, TimeSpan.Zero, DateTime.UtcNow + TimeSpan.FromDays(30));
+
+            Assert.Equal(0, deleted);
+            Assert.True(File.Exists(keep));
+            Assert.True(Directory.Exists(link));
+        }
+        finally
+        {
+            // The link first, on its own and non-recursively, so the cleanup never walks through it.
+            if (Directory.Exists(link))
+            {
+                Directory.Delete(link);
+            }
+
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void A_resolver_run_writes_no_file_into_the_scanned_repository()
     {
         // E13's acceptance test, and the finding it pins is not subtle: `okfgen generate` used to
         // BUILD the repository it was asked to read. `-t:ResolveReferences` depends on
@@ -146,13 +298,32 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // Size and last-write time are part of the snapshot, not just the file list: MSBuild rewriting
         // a file it found already present -- a stale AssemblyInfo.cs from an earlier run -- would be
         // invisible to a name-only comparison and is exactly as much of a write.
+        //
+        // Directories are part of it too, and that is fix round 1: the snapshot used to list files
+        // only, so it could not see what the query still does create -- an empty
+        // bin/<Configuration>/<TFM>/ for every never-built project, from PrepareForBuild's
+        // `<MakeDir Directories="$(OutDir);...">`. Measured RED against a plain equality once the
+        // directories were visible: exactly app/, lib/ and mid/ each gaining bin/, bin/Debug/,
+        // bin/Debug/net10.0/. That residue is a named exception below rather than an invisible one.
+        // It is left rather than redirected because redirecting OutDir moves the ReferencePath
+        // identity of every referenced project into the scratch (measured) -- the bin/ path
+        // CompilationFactory falls back to on a built tree. See MsBuildQueryScratch.
         using var repository = new ChainedProjectRepository();
 
         var before = Snapshot(repository.Root);
         var resolver = RoslynResolver.Create(repository.Root, repository.Projects);
         var after = Snapshot(repository.Root);
 
-        Assert.True(before.SequenceEqual(after), DescribeTreeChange(before, after));
+        // Nothing removed and no file added or rewritten: every file entry is identical.
+        var removed = before.Except(after, StringComparer.Ordinal).ToList();
+        var added = after.Except(before, StringComparer.Ordinal).ToList();
+        Assert.True(removed.Count == 0, DescribeTreeChange(before, after));
+        Assert.True(added.All(e => e.EndsWith('/')), DescribeTreeChange(before, after));
+
+        // And the only directories added are a project's own empty output-directory chain. Not
+        // required to exist -- an SDK that stops creating them is not a regression -- but nothing else
+        // may appear: a directory under obj/, a stray one at the root, anything shaped differently.
+        Assert.All(added, entry => Assert.Matches(OutputDirectoryChain, entry));
 
         // And it must still be a real answer. A query that resolved nothing would also write nothing,
         // so the guarantee above is only worth having next to this: all three projects compiled, from
@@ -232,14 +403,37 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     /// <summary>
-    /// Every file under <paramref name="root"/> as <c>relative path|size|last write (UTC ticks)</c>,
-    /// ordinal-sorted -- the comparable form of "this tree was not touched".
+    /// Every entry under <paramref name="root"/>, ordinal-sorted -- the comparable form of "this tree
+    /// was not touched". A file is <c>relative path|size|last write (UTC ticks)</c>; a directory is its
+    /// relative path with a trailing <c>/</c>.
+    ///
+    /// <para>
+    /// Directories are in it, and E13's first version left them out: it enumerated FILES, so it was
+    /// structurally blind to the empty <c>bin/Debug/net10.0/</c> directories every query of a
+    /// never-built project creates, and would stay blind to any future write that is directory-shaped.
+    /// A directory records existence only, not its last-write time: that time moves whenever a child is
+    /// added, so it would report <c>app/</c> as changed for the very <c>app/bin/</c> this already lists.
+    /// </para>
     /// </summary>
     private static List<string> Snapshot(string root) =>
-        Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Select(f => $"{Path.GetRelativePath(root, f).Replace('\\', '/')}|{new FileInfo(f).Length}|{File.GetLastWriteTimeUtc(f).Ticks}")
+        Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
+            .Select(entry =>
+            {
+                var relative = Path.GetRelativePath(root, entry).Replace('\\', '/');
+                return Directory.Exists(entry)
+                    ? relative + "/"
+                    : $"{relative}|{new FileInfo(entry).Length}|{File.GetLastWriteTimeUtc(entry).Ticks}";
+            })
             .OrderBy(e => e, StringComparer.Ordinal)
             .ToList();
+
+    /// <summary>
+    /// The one directory shape a query may add to a never-built project in
+    /// <see cref="ChainedProjectRepository"/>: <c>&lt;project&gt;/bin/</c>, <c>bin/Debug/</c> or
+    /// <c>bin/Debug/net10.0/</c>, as <see cref="Snapshot"/> spells a directory.
+    /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex OutputDirectoryChain =
+        new(@"^(app|lib|mid)/bin/(Debug/(net10\.0/)?)?$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>
     /// What changed between two <see cref="Snapshot"/>s, as the failure message -- a bare "not equal"
@@ -1565,7 +1759,36 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // asserted only the status would pass on a report that fired for the opposite reason.
         Assert.Contains("could not be read", report.Detail, StringComparison.Ordinal);
         Assert.DoesNotContain("not on disk", report.Detail, StringComparison.Ordinal);
+        // And the build-first remedy is NOT offered for it: the file is right there, and building would
+        // not release whatever is holding it (E13 fix round 1, Minor-1).
+        Assert.DoesNotContain("build the repository once", report.Detail, StringComparison.Ordinal);
         Assert.False(resolver.Owns("Caller.cs"));
+    }
+
+    [Fact]
+    public void A_dependent_of_a_project_not_compiled_from_source_is_told_to_build_first()
+    {
+        // E13 fix round 1, Minor-1. E13 stopped the query building referenced projects, so on a
+        // restored-but-never-built tree a dependency this resolver cannot compile from source leaves
+        // its dependents nothing to bind against, and they are reported ReferencesUnresolved. The
+        // report used to name the missing .dll and stop there; the note an operator reads is the only
+        // place the remedy can live, since the run still exits 0.
+        //
+        // LangVersion 99 stands in for the common real cause (a project whose source needs a Roslyn
+        // generator): both are "MSBuild answers, CompilationFactory will not compile it", and this one
+        // needs no generator package to reproduce.
+        using var repository = new StrandedDependencyRepository();
+
+        var resolver = RoslynResolver.Create(repository.Root, [repository.ApplicationProject, repository.LibraryProject]);
+
+        var library = Assert.Single(resolver.Projects, p => p.ProjectPath == repository.LibraryProject);
+        Assert.Equal(RoslynProjectAvailability.UnknownLanguageVersion, library.Availability);
+
+        var application = Assert.Single(resolver.Projects, p => p.ProjectPath == repository.ApplicationProject);
+        Assert.Equal(RoslynProjectAvailability.ReferencesUnresolved, application.Availability);
+        Assert.Contains("not on disk", application.Detail, StringComparison.Ordinal);
+        Assert.Contains("the build output of Lib.csproj", application.Detail, StringComparison.Ordinal);
+        Assert.Contains("build the repository once and re-run", application.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2115,6 +2338,49 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
                 public int Go() => new Mid.Service().Use() + new Lib.Helper().Value();
                 public List<int> Empty() => [];
             }
+            """;
+    }
+
+    /// <summary>
+    /// <c>App -> Lib</c>, restored and never built, where <c>Lib</c> pins a <c>LangVersion</c> no Roslyn
+    /// build knows -- so MSBuild answers for it but <c>CompilationFactory</c> refuses to compile it, and
+    /// <c>App</c> is left with neither a from-source compilation nor a <c>bin/</c> assembly to reference.
+    /// </summary>
+    private sealed class StrandedDependencyRepository : ScratchRepository
+    {
+        public StrandedDependencyRepository()
+            : base("strandeddep")
+        {
+            LibraryProject = Write("lib/Lib.csproj", LibraryProjectFile);
+            ApplicationProject = Write("app/App.csproj", ApplicationProjectFile);
+            Write("lib/Helper.cs", "namespace Lib;\npublic class Helper { public int Value() => 7; }\n");
+            Write("app/Caller.cs", "namespace App;\npublic class Caller { public int Go() => new Lib.Helper().Value(); }\n");
+
+            Restore(ApplicationProject);
+        }
+
+        public string LibraryProject { get; }
+
+        public string ApplicationProject { get; }
+
+        private const string LibraryProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <LangVersion>99</LangVersion>
+              </PropertyGroup>
+            </Project>
+            """;
+
+        private const string ApplicationProjectFile = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="..\lib\Lib.csproj" />
+              </ItemGroup>
+            </Project>
             """;
     }
 

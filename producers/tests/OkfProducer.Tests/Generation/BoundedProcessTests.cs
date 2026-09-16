@@ -180,8 +180,11 @@ public class BoundedProcessTests
     [Fact]
     public void Concurrent_runs_share_no_state()
     {
-        // E10b will call MsBuildProjectQuery.Query -- and so this runner -- from several threads at once.
-        // Eight simultaneous children, each echoing its own index: every result must carry exactly its
+        // Written when E10b planned to call MsBuildProjectQuery.Query -- and so this runner -- from several
+        // threads at once. E10b measured that and dropped it (see ROADMAP.md, "Measured and dropped:
+        // parallel `dotnet msbuild` queries"), so no production caller runs this concurrently today. The
+        // test stays: the runner has no reason to hold shared state, and revisiting parallelism starts
+        // from exactly this property. Eight simultaneous children, each echoing its own index: every result must carry exactly its
         // own child's output, which a shared buffer, token or process field would cross.
         using var dir = new TempDir();
 

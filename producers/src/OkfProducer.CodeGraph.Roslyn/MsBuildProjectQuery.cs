@@ -67,21 +67,46 @@ public sealed class MsBuildQueryException : Exception
 /// <para><b>Residue.</b> <see cref="Dispose"/> deletes the root recursively, best-effort -- a file
 /// another process is holding must not fail a producer run that has already finished its work. A run
 /// killed before it disposes (Ctrl+C, a crash) leaves one <c>okfgen-msbuild-*</c> directory in the
-/// system temp directory, which is the whole of what this producer can leave behind anywhere.</para>
+/// system temp directory. Nothing else would ever remove it, so <see cref="SweepStale()"/> -- called by
+/// <c>RoslynResolver</c> as the stage starts -- deletes this producer's own leftovers once they are a
+/// day old.</para>
+///
+/// <para><b>One thing in the scanned repository is not redirected: empty output directories.</b>
+/// <c>PrepareForBuild</c> (<c>Microsoft.Common.CurrentVersion.targets</c>, line 1208 in SDK 10.0.204)
+/// runs <c>&lt;MakeDir Directories="$(OutDir);$(IntermediateOutputPath);..."/&gt;</c>, and both
+/// <c>ResolveReferences</c> and <c>GenerateAssemblyInfo</c> depend on it, so a never-built project
+/// gains an empty <c>bin/&lt;Configuration&gt;/&lt;TFM&gt;/</c>. Nothing is ever written into it. It is
+/// left deliberately: redirecting <c>OutDir</c> as well removes the directories, but a <c>-p:</c> switch
+/// is a global property that reaches the referenced projects too, and measured, it moves their
+/// <c>ReferencePath</c> identity from <c>Lib/bin/Debug/net10.0/Lib.dll</c> into the scratch -- the
+/// very path <see cref="CompilationFactory"/> falls back to reading on a built tree. An empty
+/// directory is the cheaper of the two.</para>
 /// </summary>
 public sealed class MsBuildQueryScratch : IDisposable
 {
+    /// <summary>The name every scratch root starts with, and the only one <see cref="SweepStale()"/> touches.</summary>
+    internal const string DirectoryPrefix = "okfgen-msbuild-";
+
+    /// <summary>
+    /// How old a leftover root must be before <see cref="SweepStale()"/> removes it. A day, because the
+    /// sweep cannot tell a killed run's directory from a concurrent run's live one by anything but age,
+    /// and a stage lasting a day would need hundreds of projects each running into the two-minute query
+    /// cap.
+    /// </summary>
+    internal static readonly TimeSpan StaleAfter = TimeSpan.FromDays(1);
+
     /// <summary>A scratch rooted in the system temp directory, under a name unique to this instance.</summary>
     public MsBuildQueryScratch()
-        : this(Path.Combine(Path.GetTempPath(), "okfgen-msbuild-" + Guid.NewGuid().ToString("N")[..12]))
+        : this(Path.Combine(Path.GetTempPath(), DirectoryPrefix + Guid.NewGuid().ToString("N")[..12]))
     {
     }
 
     /// <remarks>
-    /// <see langword="internal"/> so
-    /// <c>RoslynResolverTests.A_scratch_path_MSBuild_could_not_be_given_is_refused_by_name</c> can
-    /// build the one root shape <see cref="IntermediateOutputPathFor"/> refuses. The production root
-    /// comes from <see cref="Path.GetTempPath"/>; it is not an operator knob.
+    /// <see langword="internal"/> so the escaping tests can put the characters MSBuild treats specially
+    /// -- <c>%</c> and <c>;</c> -- into the root, which is exactly what a <c>TMPDIR</c> holding them
+    /// produces through the public constructor. Setting <c>TMPDIR</c> in-process instead would reach
+    /// every test running in parallel. The production root comes from <see cref="Path.GetTempPath"/>;
+    /// it is not an operator knob.
     /// </remarks>
     internal MsBuildQueryScratch(string root) => Root = root;
 
@@ -93,8 +118,9 @@ public sealed class MsBuildQueryScratch : IDisposable
     public string Root { get; }
 
     /// <summary>
-    /// The <c>IntermediateOutputPath</c> value for one project: a per-project subdirectory of
-    /// <see cref="Root"/>, forward-slash separated and ending in a separator as MSBuild requires.
+    /// Where one project's intermediate output goes: a per-project subdirectory of <see cref="Root"/>,
+    /// forward-slash separated and ending in a separator as MSBuild requires. This is the <i>literal</i>
+    /// path; <c>MsBuildProjectQuery</c> escapes it before it becomes a <c>-p:</c> value.
     ///
     /// <para>
     /// Per-project, because two projects sharing one intermediate directory would write each other's
@@ -110,33 +136,11 @@ public sealed class MsBuildQueryScratch : IDisposable
     /// classic Windows argument-quoting hazard. MSBuild normalises separators itself -- the
     /// <c>%(FullPath)</c> values it prints back come out in the platform's own spelling either way.
     /// </para>
-    ///
-    /// <para>
-    /// <b>One root shape is refused rather than passed on.</b> MSBuild splits a <c>-p:</c> switch on
-    /// <c>;</c>, so a temp directory containing one makes the whole switch unparseable -- measured:
-    /// <c>-p:IntermediateOutputPath=.../a;b/</c> fails the query with <c>MSB1006 "Switch: b/App/"</c>,
-    /// for every project, with nothing in that message pointing at the temp directory. The producer
-    /// cannot escape its way out (the split happens before any quoting this side controls) and has no
-    /// second writable location to fall back to, so the honest move is to fail with the cause named:
-    /// still one <see cref="MsBuildQueryException"/> per project, so the run degrades to name matching
-    /// exactly as any other query failure does, but with a message an operator can act on.
-    /// </para>
     /// </summary>
     /// <param name="projectFullPath">The project's absolute path, as <c>Path.GetFullPath</c> returns it.</param>
-    /// <exception cref="MsBuildQueryException">
-    /// <see cref="Root"/> holds a <c>;</c>, which MSBuild cannot be given inside a <c>-p:</c> switch.
-    /// </exception>
     public string IntermediateOutputPathFor(string projectFullPath)
     {
         ArgumentException.ThrowIfNullOrEmpty(projectFullPath);
-
-        if (Root.Contains(';', StringComparison.Ordinal))
-        {
-            throw new MsBuildQueryException(
-                $"the temporary directory `{Root}` holds a `;`, which MSBuild reads as a property "
-                + "separator inside -p:IntermediateOutputPath and cannot be escaped. Point TMPDIR/TEMP "
-                + "at a path without one, or run with --no-msbuild.");
-        }
 
         var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(projectFullPath)))[..16];
         return (Root + Path.DirectorySeparatorChar + digest + Path.DirectorySeparatorChar).Replace('\\', '/');
@@ -161,12 +165,96 @@ public sealed class MsBuildQueryScratch : IDisposable
             // Swallowed on purpose, both of them. A file another process is still holding, or a
             // directory removed under us, must not fail a producer run that has already done its work
             // and written its bundle -- the entire cost is one directory left in the system temp,
-            // which producers/README.md names. Nothing downstream reads this directory again.
+            // which a later run's SweepStale removes. Nothing downstream reads this directory again.
         }
         catch (UnauthorizedAccessException)
         {
         }
     }
+
+    /// <summary>
+    /// Removes scratch roots a killed run left in the system temp directory, once they are a day old.
+    /// Best-effort throughout: a sweep that fails costs nothing but the directories it could not
+    /// remove, so no exception ever leaves it.
+    /// </summary>
+    /// <returns>How many directories were deleted.</returns>
+    public static int SweepStale() => SweepStale(Path.GetTempPath(), StaleAfter, DateTime.UtcNow);
+
+    /// <summary>
+    /// <see cref="SweepStale()"/> over <paramref name="directory"/>, against an explicit clock, so a
+    /// test can age a directory without waiting a day.
+    ///
+    /// <para><b>What it will touch, and nothing else.</b> A direct child of
+    /// <paramref name="directory"/> whose name is <see cref="DirectoryPrefix"/> followed by exactly
+    /// twelve lowercase hex digits -- the shape the public constructor produces, so a user's own
+    /// <c>okfgen-msbuild-notes</c> is not this producer's to delete. Not a symbolic link or junction:
+    /// on a shared <c>/tmp</c> another user can plant one under a matching name, and a sweep must not
+    /// be what follows it. And not younger than <paramref name="olderThan"/>, judged by the newest
+    /// last-write time of the root and its immediate subdirectories, since a live run creates one
+    /// subdirectory per project it queries.</para>
+    /// </summary>
+    internal static int SweepStale(string directory, TimeSpan olderThan, DateTime utcNow)
+    {
+        var deleted = 0;
+        try
+        {
+            foreach (var candidate in Directory.EnumerateDirectories(directory, DirectoryPrefix + "*"))
+            {
+                if (TryDeleteStale(candidate, olderThan, utcNow))
+                {
+                    deleted++;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // The directory itself could not be listed. Nothing to sweep, and no run fails for it.
+        }
+
+        return deleted;
+    }
+
+    private static bool TryDeleteStale(string candidate, TimeSpan olderThan, DateTime utcNow)
+    {
+        try
+        {
+            var info = new DirectoryInfo(candidate);
+            if (!IsOwnRootName(info.Name)
+                || info.Attributes.HasFlag(FileAttributes.ReparsePoint)
+                || info.LinkTarget is not null)
+            {
+                return false;
+            }
+
+            var newest = info.LastWriteTimeUtc;
+            foreach (var child in info.EnumerateDirectories())
+            {
+                if (child.LastWriteTimeUtc > newest)
+                {
+                    newest = child.LastWriteTimeUtc;
+                }
+            }
+
+            if (utcNow - newest < olderThan)
+            {
+                return false;
+            }
+
+            info.Delete(recursive: true);
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // One directory that cannot be read or removed -- another user's on a shared /tmp, a file
+            // still held -- is skipped, never a reason to stop sweeping the rest.
+            return false;
+        }
+    }
+
+    private static bool IsOwnRootName(string name) =>
+        name.Length == DirectoryPrefix.Length + 12
+        && name.StartsWith(DirectoryPrefix, StringComparison.Ordinal)
+        && name.AsSpan(DirectoryPrefix.Length).IndexOfAnyExcept("0123456789abcdef") < 0;
 }
 
 /// <summary>
@@ -197,7 +285,7 @@ public sealed class MsBuildQueryScratch : IDisposable
 /// unchanged, because it never rested on the target list. It was the enumerated <i>bound</i> that was
 /// untrue, not the conclusion.</para>
 ///
-/// <para><b>It nonetheless does not WRITE into the scanned repository (E13).</b> Two different things,
+/// <para><b>It nonetheless writes no FILE into the scanned repository (E13).</b> Two different things,
 /// and the second used to be false as well. <c>-t:ResolveReferences</c> pulls in
 /// <c>ResolveProjectReferences</c>, and outside Visual Studio that target <i>builds every referenced
 /// project</i>, so a query of one project wrote the whole compile output of its reference closure into
@@ -205,7 +293,10 @@ public sealed class MsBuildQueryScratch : IDisposable
 /// repository the producer was only asked to read. <see cref="ReadOnlySwitches"/> ends that, and what
 /// MSBuild still generates for the queried project itself (its <c>Compile</c> items, which have to
 /// exist for Roslyn to parse them) is redirected into a <see cref="MsBuildQueryScratch"/> the producer
-/// deletes. What this does NOT bound is what the repository's own MSBuild logic chooses to write while
+/// deletes. What is left is an empty <c>bin/&lt;Configuration&gt;/&lt;TFM&gt;/</c> directory per
+/// never-built project, created by <c>PrepareForBuild</c> and never written into -- see
+/// <see cref="MsBuildQueryScratch"/> for why redirecting it costs more than it saves. What this does NOT
+/// bound is what the repository's own MSBuild logic chooses to write while
 /// it runs: a <c>Directory.Build.targets</c> hooked on <c>ResolveReferences</c> can write anything it
 /// likes, anywhere, and the paragraphs above are why that is not a contradiction.</para>
 ///
@@ -371,14 +462,15 @@ public static class MsBuildProjectQuery
     /// that is stable and readable from the project file itself: "newest" would have this producer
     /// silently change which symbols exist whenever a TFM is added.
     /// </para>
-    /// </summary>
     ///
-    /// <para><b>Nothing is written into the scanned repository.</b> The referenced projects are not
+    /// <para><b>No file is written into the scanned repository.</b> The referenced projects are not
     /// built (<see cref="ReadOnlySwitches"/>) and whatever MSBuild still generates -- the
     /// <c>Compile</c> items the SDK writes before naming them -- is redirected into
     /// <paramref name="scratch"/>. Those generated files are part of the answer, so
-    /// <paramref name="scratch"/> must outlive every use of the returned
-    /// <see cref="ProjectInputs"/>; see <see cref="MsBuildQueryScratch"/>.</para>
+    /// <paramref name="scratch"/> must outlive every use of the returned <see cref="ProjectInputs"/>.
+    /// What the query does still create in the scanned repository is a <i>directory</i>: an empty
+    /// <c>bin/&lt;Configuration&gt;/&lt;TFM&gt;/</c> per never-built project. See
+    /// <see cref="MsBuildQueryScratch"/> for both, and for why that directory is left.</para>
     /// </summary>
     /// <param name="projectPath">Path to a <c>.csproj</c>; relative paths are made absolute.</param>
     /// <param name="scratch">Where MSBuild's intermediate output goes instead of the repository's <c>obj/</c>.</param>
@@ -597,13 +689,71 @@ public static class MsBuildProjectQuery
         // The scanned repository is read, not built, and this is the half of that guarantee MSBuild
         // cannot be argued out of: the generated Compile items have to be written somewhere. They go
         // into the producer's own scratch directory, which it deletes. See MsBuildQueryScratch.
-        arguments.Add($"-p:IntermediateOutputPath={intermediateOutputPath}");
+        // Escaped, because the path comes from TMPDIR/TEMP and MSBuild does not take it literally.
+        arguments.Add($"-p:IntermediateOutputPath={EscapePropertyValue(intermediateOutputPath)}");
 
         arguments.AddRange(Targets);
         arguments.AddRange(Items);
         arguments.AddRange(Properties);
 
         return Run(projectPath, arguments, executable, timeout);
+    }
+
+    /// <summary>
+    /// <paramref name="value"/> escaped with MSBuild's own <c>%XX</c> notation, so MSBuild reads it back
+    /// as exactly the literal string it is -- every character in Microsoft Learn's "MSBuild special
+    /// characters" table: <c>% $ @ ' ( ) ; ? *</c>.
+    ///
+    /// <para><b>Why, measured rather than argued</b> (SDK 10.0.204, Windows 11, an
+    /// <c>-p:IntermediateOutputPath=</c> value under a scratch directory, the query's full target list).
+    /// Unescaped, MSBuild does not take the value literally, and the failures differ in the one way that
+    /// matters -- which direction they fail in:</para>
+    /// <list type="bullet">
+    /// <item><c>%XX</c> is <b>decoded</b>: <c>a%41b</c> wrote into <c>aAb</c>, and <c>x/%2E%2E/y</c>
+    /// wrote into <c>y</c>, a directory traversal. That fails <b>open</b>: the generated files land
+    /// outside <see cref="MsBuildQueryScratch.Root"/>, <see cref="MsBuildQueryScratch.Dispose"/> deletes
+    /// a directory that was never created, and the files survive every successful run. <c>%</c> is a
+    /// legal character in a Windows account name and in any <c>TMPDIR</c>.</item>
+    /// <item><c>;</c> splits the switch: <c>MSB1006</c>, every query fails.</item>
+    /// <item><c>@(Compile)</c> is expanded inside the SDK's targets and fails the query.</item>
+    /// <item><c>$</c>, <c>$(Foo)</c>, <c>@</c>, <c>'</c>, <c>(</c>, <c>)</c> and a space were each
+    /// taken literally -- escaped anyway, because a command-line value's handling is MSBuild's to change
+    /// and Learn's own guidance is that escaping a character where it is not special "does no
+    /// harm".</item>
+    /// </list>
+    /// <para>Escaped, each of those -- and all of them in one path, <c>p%;$@'()q</c> -- produced the
+    /// literal directory, byte for byte. <c>?</c> and <c>*</c> cannot occur in a Windows path; they are
+    /// in the set because they are in MSBuild's.</para>
+    ///
+    /// <para>
+    /// One pass, one character at a time, which is what makes <c>%</c> safe: an input <c>%3B</c> becomes
+    /// <c>%253B</c> and decodes back to <c>%3B</c>, never to <c>;</c>. A two-step
+    /// <c>Replace(";", "%3B").Replace("%", "%25")</c> would get that backwards, which is why
+    /// <c>RoslynResolverTests.Escaping_a_property_value_turns_every_MSBuild_special_character_into_its_literal</c>
+    /// pins the <c>%3B</c> case by name.
+    /// </para>
+    /// </summary>
+    internal static string EscapePropertyValue(string value)
+    {
+        var escaped = new StringBuilder(value.Length);
+        foreach (var c in value)
+        {
+            _ = c switch
+            {
+                '%' => escaped.Append("%25"),
+                '$' => escaped.Append("%24"),
+                '@' => escaped.Append("%40"),
+                '\'' => escaped.Append("%27"),
+                '(' => escaped.Append("%28"),
+                ')' => escaped.Append("%29"),
+                ';' => escaped.Append("%3B"),
+                '?' => escaped.Append("%3F"),
+                '*' => escaped.Append("%2A"),
+                _ => escaped.Append(c),
+            };
+        }
+
+        return escaped.ToString();
     }
 
     private static string Run(string projectPath, IReadOnlyList<string> arguments, string executable, TimeSpan timeout)
