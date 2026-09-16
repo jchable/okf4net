@@ -243,7 +243,11 @@ headings → `OkfDocument.Computation()`.
   heading of any level containing the word *example(s)* or *schema(s)* when the
   concept carries no exact level-1 `# Examples` / `# Schema`
   (`CheckConventionalHeadings` in `src/OKF4net/Validate.cs`, headings from
-  `LinkScanner.ExtractAtxHeadings`, fenced code skipped). It is a word match,
+  `LinkScanner.ExtractAtxHeadings`, fenced code skipped; after Copilot's review
+  of #101, a heading is matched on its text as it renders, without raw HTML,
+  code span backticks or link destinations but with a code span's content, and
+  is found inside block quotes and list
+  items too). It is a word match,
   not a judgement of "when applicable": it catches a variant name
   (`# Worked example`, which `bundles/meridian_transit` carried before a manual
   fix) and cannot see an example section titled without the word. `#
@@ -342,8 +346,8 @@ README mapping: `Frontmatter.Sources`/`Generated`/`Verified`/`TrustTier`/
 
   Verified against commonmark.js 0.31.2 on 300 000 random bodies built from these
   constructs: no difference in which footnote references are visible, except
-  reference links (`[^k][label]` with `label` defined renders as a link), which no
-  scanner here reads — a separate feature, not a question of code or HTML. Tests:
+  reference links (`[^k][label]` with `label` defined renders as a link) — a
+  separate feature, since added (see S6.1-1). Tests:
   `Code_inside_a_block_quote_is_code`, `Links_inside_a_block_quote_are_links`,
   `Nothing_inside_an_html_block_is_a_link`, `An_html_block_ends_where_commonmark_ends_it`,
   `Raw_inline_html_is_not_markdown`, `Html_lookalikes_are_text`,
@@ -425,6 +429,61 @@ README mapping: `OKF4net.LinkScanner`, `Bundle.LinksFrom`/`Backlinks`.
   `Relative` enum members) plus `ConceptLink.Classify` (Links.cs:36-60) and
   `ConceptLink.Resolve` (Links.cs:71-76). Tests:
   `tests/OKF4net.Tests/LinksTests.cs:44-75`.
+
+  **Update 2026-09-14 — all standard link forms.** §6.1 says concepts link "using
+  standard markdown links", yet `LinkScanner.ExtractLinks` read only the inline
+  form, so a reference link (`[text][label]`, `[label][]`, `[label]`, and
+  `![alt][label]`) was invisible to the graph, backlinks, broken-link detection,
+  `okf parse`, index entries and the viewer; and an angle-bracket destination
+  (`[x](<a.md>)`) kept its brackets and never resolved. Both now follow CommonMark
+  (§4.7, §6.3): references resolve against the body's link reference definitions
+  (collected by the block pass that blanks them), labels normalized as
+  commonmark.js does, and the target is the definition's destination.
+  **Interpretation, recorded here:** a bracket starting with `^` is a footnote —
+  OKF's citation mechanism (§4.2, §5.1) — and never a reference link, where
+  commonmark.js, having no footnotes, would read `[^k][r]` as one link; this keeps
+  `CitationMissingSourceId` meaningful and matches GitHub's rendering. Checked
+  against commonmark.js on 120 000 random bodies and against `dev`'s output on the
+  same cases: nothing regresses beyond that interpretation. The same change
+  brought inline links to CommonMark's link algorithm, fixing four older
+  divergences — a destination containing spaces was accepted, a link inside a
+  link's text did not suppress the outer link, a link could not span a line
+  ending, and an escaped `\[` opened an inline link. Code spans and raw HTML are
+  resolved in the same left-to-right pass as links, as commonmark.js resolves
+  them, so neither starts inside a link's destination and a tag after a `]` that
+  closes no link still hides what it holds (Copilot's review of #105 found
+  `foo](<a title="[in](/in.md)">)` extracting `/in.md`). An external audit found
+  `>\t[x]: /` defining nothing: a paragraph's lines lose their leading whitespace
+  (§4.8), so a definition may follow any spaces and tabs. Two differences from
+  commonmark.js 0.31.2 remain, both where we follow the spec text: when a
+  duplicate definition sits above a setext underline, commonmark.js resolves to
+  the later one, where §4.7 says "the first one takes precedence"; and
+  commonmark.js skips only spaces between a link's parts (`reSpnl`), where §6.3
+  allows "spaces, tabs, and up to one line ending", so `[t](x\t)` is a link here.
+  Against a copy of commonmark.js patched to skip tabs there, 150 000 bodies built
+  around tabs and containers differ only by the duplicate-definition case. A review finding on the same
+  code was checked against commonmark.js 0.31.2 and not taken: labels are
+  matched without resolving backslash escapes (`[foo\*]` does not match
+  `[foo*]:`), as §4.7's normalization and commonmark.js both have it. Tests:
+  `Reference_links_resolve_to_their_definition`,
+  `Reference_labels_match_as_commonmark_normalizes_them`,
+  `Reference_links_follow_commonmark_sequencing`,
+  `Footnotes_and_code_never_form_reference_links`,
+  `Angle_bracket_destinations_lose_their_brackets`,
+  `Reference_and_angle_bracket_edge_cases_follow_commonmark`,
+  `Inline_link_destinations_follow_commonmark`,
+  `A_link_inside_link_text_suppresses_the_outer_link`,
+  `A_link_may_span_a_line_ending_within_its_paragraph`,
+  `Escaped_brackets_open_and_close_nothing`,
+  `Links_raw_html_and_code_spans_resolve_in_one_pass`,
+  `Footnotes_in_link_destinations_are_not_citations`,
+  `Reference_definition_destinations_resolve_escapes`,
+  `Reference_definitions_may_follow_spaces_and_tabs`,
+  `Headings_read_as_they_render` in `LinksTests.cs`;
+  `A_reference_link_counts_for_broken_links_and_backlinks`,
+  `Index_entry_opening_on_a_reference_link_is_an_entry` and
+  `Index_item_whose_link_crosses_a_line_ending_has_that_link` in `ValidateTests.cs`;
+  `Build_rewires_reference_and_angle_bracket_links` in `SiteModelTests.cs`.
 - **S6.1-2** (MUST, tolerate broken links) — **Implemented** (Major).
   `src/OKF4net/Bundle.cs:246` (doc comment): `"All broken internal links...
   Broken links are permitted by the spec (§6.1) — this is informational."`
@@ -582,7 +641,8 @@ README mapping: `OKF4net.IndexGenerator`.
   not warned: review of #99 showed a "does not begin with a link" rule flagging
   those, and they give a reader something to follow. Items come from
   `LinkScanner.ExtractIndexListItems`, the one parser behind
-  `ExtractIndexEntries` too; thematic breaks, prose and code are not items.
+  `ExtractIndexEntries` too; thematic breaks, prose and code are not items, and
+  a block quote after an item does not continue it (Copilot, review of #101).
   Writing it exposed a defect in the shared parser:
   whitespace was skipped on the code-blanked line, where an inline code span is
   spaces, so `` * `x` [a](b) `` read as a link entry, and so did a prose line

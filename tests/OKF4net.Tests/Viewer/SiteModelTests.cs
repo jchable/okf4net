@@ -206,6 +206,33 @@ public class SiteModelTests
         Assert.Equal("../a/b.md", link.RawTarget);
     }
 
+    /// <summary>
+    /// The two gaps viewer.js used to document: a reference-style link and an
+    /// angle-bracket destination never reached the rewiring table, so the rendered page
+    /// kept a dead link to a <c>.md</c> file. marked puts the definition's destination —
+    /// and the destination without its angle brackets — in the href, which is exactly the
+    /// key the table now carries.
+    /// </summary>
+    [Theory]
+    [InlineData("See [the term][t].\n\n[t]: ../glossary/term.md\n")]
+    [InlineData("See [term].\n\n[term]: ../glossary/term.md \"Term\"\n")]
+    [InlineData("See [the term](<../glossary/term.md>).\n")]
+    public void Build_rewires_reference_and_angle_bracket_links(string body)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");
+        tmp.Write("glossary/term.md", "---\ntype: term\ntitle: Term\ndescription: d\n---\nA term.\n");
+        tmp.Write("tables/users.md", "---\ntype: table\ntitle: Users\ndescription: d\n---\n" + body);
+
+        var site = SiteModel.Build(Bundle.Load(tmp.Path));
+
+        var users = site.Pages.Single(p => p.Id.ToString() == "tables/users");
+        var link = Assert.Single(users.Links);
+        Assert.Equal("../glossary/term.md", link.RawTarget);
+        Assert.Equal("../glossary/term.html", link.Href);
+        Assert.True(link.Exists);
+    }
+
     [Fact]
     public void Build_marks_a_link_to_a_missing_concept_as_broken()
     {
