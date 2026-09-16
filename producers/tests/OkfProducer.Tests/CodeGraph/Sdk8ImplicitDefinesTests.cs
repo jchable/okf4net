@@ -24,7 +24,7 @@ namespace OkfProducer.Tests.CodeGraph;
 /// invocation: <see cref="Sdk8"/> locates an SDK 8 <c>dotnet</c> executable (an explicit
 /// <c>OKF_TEST_DOTNET8</c> override, or one parsed out of <c>dotnet --list-sdks</c>'s own answer) and
 /// every call here -- <c>restore</c> and the query -- passes that path explicitly, through
-/// <see cref="MsBuildProjectQuery.Query(string, string, TimeSpan)"/>'s existing internal
+/// <see cref="MsBuildProjectQuery.Query(string, MsBuildQueryScratch, string, TimeSpan)"/>'s existing internal
 /// <c>executable</c> overload (the same seam <c>RoslynResolverTests</c> already uses for its
 /// "missing dotnet" and "query timeout" cases). <see cref="CompilationFactory.Create"/> then compiles
 /// in-process from the returned <see cref="ProjectInputs"/> -- no further process, no <c>PATH</c>
@@ -49,7 +49,7 @@ namespace OkfProducer.Tests.CodeGraph;
 /// <c>ProcessStartInfo.Environment</c> on each child process individually, rather than mutating
 /// <see cref="Environment"/> process-wide at all -- was considered and rejected for this class: it would
 /// cover <see cref="Sdk8Repository.Restore"/>'s own <c>ProcessStartInfo</c> (test-owned), but
-/// <see cref="MsBuildProjectQuery.Query(string, string, TimeSpan)"/>'s internal <c>Run</c> builds its
+/// <see cref="MsBuildProjectQuery.Query(string, MsBuildQueryScratch, string, TimeSpan)"/>'s internal <c>Run</c> builds its
 /// own <c>ProcessStartInfo</c> with no environment-overlay parameter, and adding one is a production
 /// code change this round of fixes was told not to make. Joining the collection is therefore the only
 /// complete fix available without touching production code.
@@ -85,7 +85,8 @@ public sealed class Sdk8ImplicitDefinesTests
         using var repository = new Sdk8Repository();
         repository.Restore(sdk8);
 
-        var inputs = MsBuildProjectQuery.Query(repository.Project, sdk8, TimeSpan.FromMinutes(2));
+        using var scratch = new MsBuildQueryScratch();
+        var inputs = MsBuildProjectQuery.Query(repository.Project, scratch, sdk8, TimeSpan.FromMinutes(2));
 
         // The property MSBuild reports, checked first because a failure here is the more direct
         // diagnosis -- "the query never asked for the define" vs. "the compiler did something else

@@ -400,7 +400,7 @@ internal sealed class UnixOnlyFact : FactAttribute
 /// <para>
 /// A test gated on this attribute must still not rely on <c>PATH</c> order to reach the SDK 8 it
 /// found: <see cref="Sdk8.ExecutablePath"/> is the exact executable to pass explicitly wherever a
-/// production seam accepts one (<c>MsBuildProjectQuery.Query(path, executable, timeout)</c>'s
+/// production seam accepts one (<c>MsBuildProjectQuery.Query(path, scratch, executable, timeout)</c>'s
 /// internal overload, and this class's own <c>Restore</c> helper). Round 1 of this task committed a
 /// test that instead put an SDK 8 <c>dotnet</c> first on <c>PATH</c> so <c>RoslynResolver.Create</c>'s
 /// hard-coded <c>"dotnet"</c> would pick it up -- which also made every *other* test in the same file

@@ -97,6 +97,20 @@ namespace OkfProducer.CodeGraph.Roslyn;
 /// verdict survives -- but the edge is <see cref="EdgeConfidence.ByName"/>, not
 /// <see cref="EdgeConfidence.Exact"/>. Precision degrades across the reverse-dependency cone of the
 /// failing project, not just within it.</para>
+///
+/// <para><b>E13 widened that cone on a tree that was never built, and that is a consequence worth
+/// naming rather than a bug.</b> "Those bind against its <c>bin/</c> assembly" assumes the assembly is
+/// there -- and until E13 it always was, because the query itself built every referenced project into
+/// the scanned repository (measured: <c>lib/bin/Debug/net10.0/Lib.dll</c> was one of the 39 files a
+/// single stage wrote into a never-built three-project chain). The query no longer builds anything, so
+/// on a repository that was restored but never built there is nothing to bind against:
+/// <see cref="CompilationFactory"/> reports the reference unusable and the <i>dependent</i> project is
+/// reported <see cref="RoslynProjectAvailability.ReferencesUnresolved"/> rather than compiling against
+/// metadata, so its own calls fall back to name matching too. On a built tree -- the ordinary case for
+/// someone running <c>okfgen</c> over their own checkout -- nothing changes, because the assembly is
+/// there for its own reasons. The trade was taken deliberately: writing build output into a repository
+/// the producer was asked to <i>read</i> is not an acceptable price for a resolution gain on one shape
+/// of failing project.</para>
 /// </summary>
 public sealed class RoslynResolver : ISymbolResolver
 {
@@ -228,19 +242,61 @@ public sealed class RoslynResolver : ISymbolResolver
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
 
-        resolver = CreateWithin(repositoryPath, projectPaths, limits, new StageDeadline(timeout));
+        return TryCreateWithin(repositoryPath, projectPaths, limits, timeout, out resolver, out _);
+    }
+
+    /// <summary>
+    /// <see cref="TryCreateWithin(string, IReadOnlyList{string}, ExtractionLimits?, TimeSpan, out RoslynResolver?)"/>,
+    /// additionally reporting how many projects the query loop actually queried.
+    ///
+    /// <para><b>Why this seam exists.</b> The budget's whole point is that it stops the stage
+    /// <i>between individual project queries</i>, not merely before the first one -- and an abandoned
+    /// stage returns nothing at all, so from the outside a run that queried one project of three and a
+    /// run that queried all three are indistinguishable. This count is what
+    /// <c>RoslynResolverTests.An_expired_budget_stops_the_query_loop_between_projects</c> holds, and
+    /// moving the deadline check back out of the loop is what makes it go red. It counts attempts, so a
+    /// project whose query failed still counts: what is being pinned is how far the loop got.</para>
+    ///
+    /// <para><see langword="internal"/>, and the public overload is the only production caller: an
+    /// operator has no use for the number, and a test cannot obtain it any other way.</para>
+    /// </summary>
+    internal static bool TryCreateWithin(
+        string repositoryPath,
+        IReadOnlyList<string> projectPaths,
+        ExtractionLimits? limits,
+        TimeSpan timeout,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out RoslynResolver? resolver,
+        out int projectsQueried)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
+
+        resolver = CreateWithin(repositoryPath, projectPaths, limits, new StageDeadline(timeout), out projectsQueried);
         return resolver is not null;
     }
 
     private static RoslynResolver? CreateWithin(
         string repositoryPath, IReadOnlyList<string> projectPaths, ExtractionLimits? limits, StageDeadline deadline)
+        => CreateWithin(repositoryPath, projectPaths, limits, deadline, out _);
+
+    private static RoslynResolver? CreateWithin(
+        string repositoryPath,
+        IReadOnlyList<string> projectPaths,
+        ExtractionLimits? limits,
+        StageDeadline deadline,
+        out int projectsQueried)
     {
         ArgumentException.ThrowIfNullOrEmpty(repositoryPath);
         ArgumentNullException.ThrowIfNull(projectPaths);
 
         var repositoryRoot = Path.GetFullPath(repositoryPath);
         var gate = new SourceFileGate((limits ?? ExtractionLimits.Default).MaxFileBytes, repositoryRoot);
-        var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports, deadline);
+
+        // One scratch for the whole stage, disposed after the compilations and not after the queries:
+        // the `Compile` items MSBuild generated live in it, and CompilationFactory reads them while
+        // compiling. Deleting it earlier would take every project's implicit global usings with it.
+        using var scratch = new MsBuildQueryScratch();
+
+        var queried = QueryProjectClosure(repositoryRoot, projectPaths, out var reports, deadline, scratch, out projectsQueried);
         var compiled = CompileInDependencyOrder(queried, reports, gate, deadline);
 
         // Asked once, after both loops, because both stop at the same flag: whichever of them tripped
@@ -431,15 +487,27 @@ public sealed class RoslynResolver : ISymbolResolver
     /// over every project reference that resolves to a <c>.csproj</c> under the repository root.
     /// Queried in sorted order and de-duplicated by absolute path, so the closure is the same set in
     /// the same order regardless of the order <paramref name="projectPaths"/> arrives in.
+    ///
+    /// <para>
+    /// The loop is serial and consults <paramref name="deadline"/> at the top of <b>every</b>
+    /// iteration, not once before them all: <c>GenerateRun</c> hands every detected project in as a
+    /// root, so nothing is left to discover transitively and the whole closure would otherwise be one
+    /// unbounded pass -- which would leave <c>--roslyn-timeout</c> bounding only the compile loop after
+    /// it. <paramref name="projectsQueried"/> is what pins that; see
+    /// <see cref="TryCreateWithin(string, IReadOnlyList{string}, ExtractionLimits?, TimeSpan, out RoslynResolver?, out int)"/>.
+    /// </para>
     /// </summary>
     private static Dictionary<string, ProjectInputs> QueryProjectClosure(
         string repositoryRoot,
         IReadOnlyList<string> projectPaths,
         out Dictionary<string, RoslynProjectReport> reports,
-        StageDeadline deadline)
+        StageDeadline deadline,
+        MsBuildQueryScratch scratch,
+        out int projectsQueried)
     {
         var queried = new Dictionary<string, ProjectInputs>(PathComparer);
         reports = new Dictionary<string, RoslynProjectReport>(PathComparer);
+        projectsQueried = 0;
 
         var pending = new List<string>(projectPaths.Select(Path.GetFullPath).OrderBy(p => p, StringComparer.Ordinal));
         var seen = new HashSet<string>(pending, PathComparer);
@@ -454,9 +522,10 @@ public sealed class RoslynResolver : ISymbolResolver
             var projectPath = pending[i];
 
             ProjectInputs inputs;
+            projectsQueried++;
             try
             {
-                inputs = MsBuildProjectQuery.Query(projectPath);
+                inputs = MsBuildProjectQuery.Query(projectPath, scratch);
             }
             catch (MsBuildQueryException e)
             {

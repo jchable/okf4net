@@ -21,16 +21,30 @@ namespace OkfProducer.Tests.CodeGraph;
 /// <c>src/OKF4net</c>, since <c>OkfProducer.Core</c> references it); every assertion that depends on
 /// that says so in its failure message, so a clean-clone failure explains itself.
 /// </summary>
-public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.ScratchProject>
+public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.ScratchProject>, IDisposable
 {
     private readonly ScratchProject _scratch;
     private readonly ITestOutputHelper _output;
+
+    /// <summary>
+    /// One scratch per test, because the generated <c>Compile</c> items MSBuild writes into it are
+    /// part of the query's answer: a test that queries and then compiles reads them, so disposing
+    /// between the two would cost every implicit global using. Constructing one touches no filesystem
+    /// (see <see cref="MsBuildQueryScratch"/>), so the tests that never query pay nothing for it.
+    /// </summary>
+    private readonly MsBuildQueryScratch _queryScratch = new();
 
     public RoslynResolverTests(ScratchProject scratch, ITestOutputHelper output)
     {
         _scratch = scratch;
         _output = output;
     }
+
+    /// <summary>Deletes whatever MSBuild left in this test's scratch directory.</summary>
+    public void Dispose() => _queryScratch.Dispose();
+
+    /// <summary><see cref="MsBuildProjectQuery.Query(string, MsBuildQueryScratch)"/> against this test's scratch.</summary>
+    private ProjectInputs Query(string projectPath) => MsBuildProjectQuery.Query(projectPath, _queryScratch);
 
     [Fact]
     public void The_msbuild_query_returns_generated_sources_too()
@@ -39,7 +53,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // AssemblyInfo.cs, and ImplicitUsings is on by default, so every file relying on an implicit
         // using then fails -- and a compilation with errors mis-attributes calls rather than merely
         // missing them.
-        var inputs = MsBuildProjectQuery.Query(RepoProject("src/OKF4net/OKF4net.csproj"));
+        var inputs = Query(RepoProject("src/OKF4net/OKF4net.csproj"));
 
         Assert.Contains(inputs.CompileFiles, f => f.EndsWith("GlobalUsings.g.cs", StringComparison.Ordinal));
         Assert.Contains(inputs.CompileFiles, f => f.EndsWith("AssemblyInfo.cs", StringComparison.Ordinal));
@@ -83,6 +97,164 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
     }
 
     [Fact]
+    public void The_msbuild_query_always_refuses_to_build_the_referenced_projects()
+    {
+        // E13's always-running pin, the third of the same family as the two above (E6's Targets, E7's
+        // Properties). The real guard is the slow one -- A_resolver_run_writes_nothing_into_the_
+        // scanned_repository, which snapshots a repository around a whole stage -- and it needs a
+        // restored three-project fixture and three `dotnet msbuild` round trips to say so. This pins
+        // the one switch that guarantee rests on, with no dotnet and no restore: without
+        // BuildProjectReferences=false, `-t:ResolveReferences` BUILDS every referenced project
+        // (measured: 34 files written into a never-built three-project tree, bin/ included), because
+        // the property defaults to true outside Visual Studio. ReadOnlySwitches is `internal` for
+        // exactly this assertion.
+        Assert.Contains("-p:BuildProjectReferences=false", MsBuildProjectQuery.ReadOnlySwitches);
+    }
+
+    [Fact]
+    public void A_scratch_path_MSBuild_could_not_be_given_is_refused_by_name()
+    {
+        // The one failure mode the redirect introduces, and it is a host's temp directory, not a
+        // scanned repository's doing. MSBuild splits a -p: switch on `;`, so a TMPDIR holding one
+        // makes the whole switch unparseable -- measured directly against `dotnet msbuild`:
+        // `-p:IntermediateOutputPath=.../a;b/` fails with MSB1006 "Switch: b/App/", for every project,
+        // with nothing in that message naming the temp directory. Refused here instead, as the same
+        // MsBuildQueryException every other query failure raises -- so the run still degrades to name
+        // matching one project at a time rather than crashing -- but saying what to change.
+        using var scratch = new MsBuildQueryScratch(Path.Combine(Path.GetTempPath(), "okfgen-a;b"));
+
+        var ex = Assert.Throws<MsBuildQueryException>(() => scratch.IntermediateOutputPathFor(RepoProject("src/OKF4net/OKF4net.csproj")));
+
+        Assert.Contains("holds a `;`", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("TMPDIR", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_resolver_run_writes_nothing_into_the_scanned_repository()
+    {
+        // E13's acceptance test, and the finding it pins is not subtle: `okfgen generate` used to
+        // BUILD the repository it was asked to read. `-t:ResolveReferences` depends on
+        // ResolveProjectReferences, which outside Visual Studio builds every referenced project, so a
+        // run over this three-project chain wrote bin/, obj/Debug/<tfm>/, ref/ and refint/ output for
+        // Lib and Mid into a tree the producer was only scanning. RED on the code before E13: 34 new
+        // files for one query of App alone.
+        //
+        // The repository is restored and never built, which is the state that makes the assertion
+        // meaningful: restore output (obj/project.assets.json and friends) is there before the
+        // snapshot, so what this compares is purely what the QUERY added.
+        //
+        // Size and last-write time are part of the snapshot, not just the file list: MSBuild rewriting
+        // a file it found already present -- a stale AssemblyInfo.cs from an earlier run -- would be
+        // invisible to a name-only comparison and is exactly as much of a write.
+        using var repository = new ChainedProjectRepository();
+
+        var before = Snapshot(repository.Root);
+        var resolver = RoslynResolver.Create(repository.Root, repository.Projects);
+        var after = Snapshot(repository.Root);
+
+        Assert.True(before.SequenceEqual(after), DescribeTreeChange(before, after));
+
+        // And it must still be a real answer. A query that resolved nothing would also write nothing,
+        // so the guarantee above is only worth having next to this: all three projects compiled, from
+        // a repository that was never built.
+        Assert.True(AllCompiled(resolver), string.Join("; ", resolver.Projects.Select(p => $"{p.ProjectPath}: {p.Availability} {p.Detail}")));
+        Assert.Equal(3, resolver.Projects.Count);
+    }
+
+    [Fact]
+    public void A_project_reference_stays_resolved_from_source_two_levels_deep()
+    {
+        // The reference-completeness half of E13: not building the referenced projects must not cost
+        // the reference set. MSBuild reports a ProjectReference's TRANSITIVE closure too, each item
+        // tagged with the .csproj it came from, and that tag is what CompilationFactory keys its
+        // from-source substitution on -- so App must name BOTH Mid (direct) and Lib (transitive), in a
+        // repository where neither has a bin/ assembly to point at.
+        //
+        // Measured before and after E13 on this host: 169 ReferencePath items either way, same two
+        // MSBuildSourceProjectFile values. This is what fails if `-p:BuildProjectReferences=false`
+        // ever turns out to prune the closure rather than merely not build it.
+        using var repository = new ChainedProjectRepository();
+
+        var inputs = Query(repository.ApplicationProject);
+
+        var projectReferences = inputs.References
+            .Where(r => r.ProjectPath is not null)
+            .Select(r => r.ProjectPath!)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(
+            new[] { repository.LibraryProject, repository.MiddleProject }.OrderBy(p => p, StringComparer.Ordinal),
+            projectReferences);
+
+        // The reference assemblies genuinely are not there -- this is a restored, never-built tree --
+        // so the substitution is not a convenience here, it is the only way the symbols exist at all.
+        Assert.All(projectReferences, p => Assert.False(File.Exists(Path.ChangeExtension(p, ".dll"))));
+
+        // The end of the chain: a call from App into Lib, two project hops away, resolved Exact.
+        var resolver = RoslynResolver.Create(repository.Root, repository.Projects);
+        Assert.True(AllCompiled(resolver));
+    }
+
+    [Fact]
+    public void An_expired_budget_stops_the_query_loop_between_projects()
+    {
+        // E10b's measurement asked whether --roslyn-timeout still bounds the QUERY stage, given that
+        // GenerateRun hands every detected project in as a root: nothing is discovered transitively,
+        // so the closure is one pass, and a deadline consulted once before that pass would bound
+        // nothing at all. The serial loop does consult it per project -- this is what says so out
+        // loud, because an abandoned stage returns null either way and cannot be asked how far it got.
+        //
+        // The budget is two-sided and both sides are measured, not guessed. 150 ms is far more than
+        // the loop's own set-up (three Path.GetFullPath calls and a HashSet), so the FIRST check
+        // passes; and it is below what one `dotnet msbuild` costs, since the host process alone
+        // exceeds 200 ms before MSBuild reads a line of the project -- the same measurement
+        // A_query_that_outruns_its_deadline_is_killed_and_reported_as_a_timeout rests on. So the
+        // second check trips, and the loop stops after one query of three.
+        //
+        // RED the moment the check moves back out of the loop: the count is 3, not 1.
+        using var repository = new ChainedProjectRepository();
+
+        var completed = RoslynResolver.TryCreateWithin(
+            repository.Root,
+            repository.Projects,
+            limits: null,
+            TimeSpan.FromMilliseconds(150),
+            out var resolver,
+            out var projectsQueried);
+
+        // The stage is abandoned whole and reported as such -- the existing degradation path, unchanged.
+        Assert.False(completed);
+        Assert.Null(resolver);
+
+        // The point: it stopped BETWEEN queries. <= 1 rather than == 1 because a host slow enough to
+        // spend 150 ms reaching the first check would legitimately run zero -- what cannot happen, and
+        // what a wave-granularity check would do, is run all three.
+        Assert.True(projectsQueried <= 1, $"the query loop ran {projectsQueried} of {repository.Projects.Count} projects; the budget stopped bounding it");
+    }
+
+    /// <summary>
+    /// Every file under <paramref name="root"/> as <c>relative path|size|last write (UTC ticks)</c>,
+    /// ordinal-sorted -- the comparable form of "this tree was not touched".
+    /// </summary>
+    private static List<string> Snapshot(string root) =>
+        Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Select(f => $"{Path.GetRelativePath(root, f).Replace('\\', '/')}|{new FileInfo(f).Length}|{File.GetLastWriteTimeUtc(f).Ticks}")
+            .OrderBy(e => e, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// What changed between two <see cref="Snapshot"/>s, as the failure message -- a bare "not equal"
+    /// over a few hundred entries says nothing about which write reappeared.
+    /// </summary>
+    private static string DescribeTreeChange(List<string> before, List<string> after)
+    {
+        var added = after.Except(before, StringComparer.Ordinal).Take(12).ToList();
+        var removed = before.Except(after, StringComparer.Ordinal).Take(12).ToList();
+        return $"the scanned repository changed: {after.Count - before.Count} file(s) net. "
+            + $"Added/modified: {string.Join(", ", added)}. Gone: {string.Join(", ", removed)}";
+    }
+
+    [Fact]
     public void Implicit_framework_defines_are_requested_exactly_once()
     {
         // The regression pin for adding "-t:AddImplicitDefineConstants" to Targets: on the SDKs this
@@ -93,7 +265,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // duplicate the define it already produced -- green both before and after the fix on this
         // host, which is exactly why CodeGraph.Sdk8ImplicitDefinesTests exists separately, to cover
         // the SDK line where it is NOT already a no-op.
-        var inputs = MsBuildProjectQuery.Query(Path.Combine(_scratch.Root, "Scratch.csproj"));
+        var inputs = Query(Path.Combine(_scratch.Root, "Scratch.csproj"));
 
         var occurrences = inputs.DefineConstants
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -111,7 +283,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // MSBuild's documented behaviour for that property.
         using var repository = new DisabledImplicitDefinesRepository();
 
-        var inputs = MsBuildProjectQuery.Query(repository.Project);
+        var inputs = Query(repository.Project);
 
         var defines = inputs.DefineConstants.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Assert.DoesNotContain(defines, d => d.EndsWith("_OR_GREATER", StringComparison.Ordinal));
@@ -948,7 +1120,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // symbols exist the day someone adds a TFM.
         using var repository = new MultiTargetRepository();
 
-        var inputs = MsBuildProjectQuery.Query(repository.Project);
+        var inputs = Query(repository.Project);
 
         Assert.Equal("net10.0", inputs.TargetFramework);
         Assert.NotEmpty(inputs.CompileFiles);
@@ -986,8 +1158,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // built pair of projects -- and shows the CompilationReference route closing it.
         using var repository = new TwoProjectRepository();
 
-        var libraryInputs = MsBuildProjectQuery.Query(repository.LibraryProject);
-        var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject);
+        var libraryInputs = Query(repository.LibraryProject);
+        var applicationInputs = Query(repository.ApplicationProject);
 
         var libraryReference = Assert.Single(applicationInputs.References, r => r.ProjectPath is not null);
         // Ordinal, not ignoreCase: the substitution below keys on this path, and the whole producer
@@ -1031,8 +1203,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         using var repository = new SignedFriendRepository();
         var gate = new SourceFileGate(long.MaxValue, repository.Root);
 
-        var libraryInputs = MsBuildProjectQuery.Query(repository.LibraryProject);
-        var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject);
+        var libraryInputs = Query(repository.LibraryProject);
+        var applicationInputs = Query(repository.ApplicationProject);
 
         Assert.True(applicationInputs.SignAssembly);
         Assert.Equal(repository.KeyFile, applicationInputs.KeyFile);
@@ -1065,7 +1237,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // whole-project failure. A gitignored private .snk in a fresh clone is exactly this case.
         using var repository = new SignedFriendRepository();
         var gate = new SourceFileGate(long.MaxValue, repository.Root);
-        var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject)
+        var applicationInputs = Query(repository.ApplicationProject)
             with
         { KeyFile = Path.Combine(repository.Root, "app", "does-not-exist.snk") };
 
@@ -1095,7 +1267,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             File.Copy(repository.KeyFile, outsideKey);
 
             var gate = new SourceFileGate(long.MaxValue, repository.Root);
-            var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject) with { KeyFile = outsideKey };
+            var applicationInputs = Query(repository.ApplicationProject) with { KeyFile = outsideKey };
 
             var application = CompilationFactory.Create(applicationInputs, projectCompilations: null, gate, out _);
 
@@ -1137,7 +1309,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             var link = DirectoryLinks.Create(Path.Combine(repository.Root, "app", "linked"), outside.FullName);
 
             var gate = new SourceFileGate(long.MaxValue, repository.Root);
-            var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject)
+            var applicationInputs = Query(repository.ApplicationProject)
                 with
             { KeyFile = Path.Combine(link, "keys", "linked.snk") };
 
@@ -1179,8 +1351,8 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         using var repository = new SignedFriendRepository();
         var gate = new SourceFileGate(long.MaxValue, repository.Root);
 
-        var libraryInputs = MsBuildProjectQuery.Query(repository.LibraryProject);
-        var applicationInputs = MsBuildProjectQuery.Query(repository.ApplicationProject)
+        var libraryInputs = Query(repository.LibraryProject);
+        var applicationInputs = Query(repository.ApplicationProject)
             with
         { KeyFile = repository.KeyFile + Path.DirectorySeparatorChar };
 
@@ -1291,7 +1463,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // the threat model: a Directory.Build.targets rewriting the answer the producer asked for.
         using var repository = new FloodingAnswerRepository();
 
-        var ex = Assert.Throws<MsBuildQueryException>(() => MsBuildProjectQuery.Query(repository.Project));
+        var ex = Assert.Throws<MsBuildQueryException>(() => Query(repository.Project));
 
         // Named, so a refusal that fired for some other reason -- an unrestored project, a missing
         // dotnet -- cannot pass this. And refused rather than truncated: a truncated answer parses to
@@ -1377,7 +1549,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         // Preconditions, measured rather than assumed from how the fixture was written: MSBuild really
         // hands the injected item over as a reference, and the file it names really is on disk. Without
         // both, the report below could be the ordinary absent-reference path wearing the same status.
-        var inputs = MsBuildProjectQuery.Query(repository.Project);
+        var inputs = Query(repository.Project);
         Assert.Contains(
             inputs.References,
             r => string.Equals(r.AssemblyPath, repository.HeldAssembly, StringComparison.Ordinal));
@@ -1708,6 +1880,16 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             Write("app/Program.cs", ApplicationSource);
 
             Restore(ApplicationProject);
+
+            // Built, not merely restored, and E13 is why it now has to say so. Three of the tests on
+            // this fixture compile the application with `projectCompilations: null` -- no from-source
+            // substitution -- so the only way Library's symbols reach them is the resolved `bin/`
+            // assembly, and what they assert on is CS0281 (a friend grant refused for the wrong key),
+            // which cannot be reached at all if the reference is simply missing (CS0103). That assembly
+            // used to appear as a SIDE EFFECT of the query, back when `-t:ResolveReferences` built
+            // every referenced project into the scanned tree. E13 stopped that -- which is the whole
+            // point of E13 -- so the build these tests always depended on is now asked for out loud.
+            Build(LibraryProject);
         }
 
         public string LibraryProject { get; }
@@ -1862,6 +2044,77 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
             public class Program
             {
                 public static string Run() => new Library.Greeter().Greet("world");
+            }
+            """;
+    }
+
+    /// <summary>
+    /// Three restored, never-built projects in a chain -- <c>App -> Mid -> Lib</c> -- with
+    /// <c>ImplicitUsings</c> on, which is what makes the SDK generate <c>*.GlobalUsings.g.cs</c>
+    /// alongside <c>*.AssemblyInfo.cs</c> and therefore what gives E13's redirect something to move.
+    ///
+    /// <para>
+    /// Three rather than two so the query has a <b>transitive</b> project reference to report (App
+    /// never names Lib), and so the deadline test has more than one project left to skip after the
+    /// first. One <c>dotnet restore</c> covers all three: restore walks the reference graph.
+    /// </para>
+    /// </summary>
+    private sealed class ChainedProjectRepository : ScratchRepository
+    {
+        public ChainedProjectRepository()
+            : base("chain")
+        {
+            LibraryProject = Write("lib/Lib.csproj", Project(null));
+            MiddleProject = Write("mid/Mid.csproj", Project(@"..\lib\Lib.csproj"));
+            ApplicationProject = Write("app/App.csproj", Project(@"..\mid\Mid.csproj"));
+            Write("lib/Helper.cs", LibrarySource);
+            Write("mid/Service.cs", MiddleSource);
+            Write("app/Caller.cs", ApplicationSource);
+
+            Restore(ApplicationProject);
+        }
+
+        public string LibraryProject { get; }
+
+        public string MiddleProject { get; }
+
+        public string ApplicationProject { get; }
+
+        /// <summary>All three, as <c>GenerateRun</c> hands them in: every detected project is a root.</summary>
+        public IReadOnlyList<string> Projects => [ApplicationProject, MiddleProject, LibraryProject];
+
+        private static string Project(string? projectReference) =>
+            $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <ImplicitUsings>enable</ImplicitUsings>
+                <Nullable>enable</Nullable>
+              </PropertyGroup>
+            {(projectReference is null ? string.Empty : $"""
+                <ItemGroup>
+                  <ProjectReference Include="{projectReference}" />
+                </ItemGroup>
+
+            """)}</Project>
+            """;
+
+        private const string LibrarySource = """
+            namespace Lib;
+            public class Helper { public int Value() => 7; }
+            """;
+
+        private const string MiddleSource = """
+            namespace Mid;
+            public class Service { public int Use() => new Lib.Helper().Value(); }
+            """;
+
+        private const string ApplicationSource = """
+            namespace App;
+            public class Caller
+            {
+                public int Go() => new Mid.Service().Use() + new Lib.Helper().Value();
+                public List<int> Empty() => [];
             }
             """;
     }
@@ -2495,6 +2748,14 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         startInfo.ArgumentList.Add(verb);
         startInfo.ArgumentList.Add(projectPath);
 
+        // Same reason MsBuildProjectQuery passes -nodeReuse:false in production, and here it is about
+        // cleanup rather than about the answer: a reused MSBuild worker outlives the `dotnet build`
+        // that started it and keeps handles open under the fixture's obj/, so ScratchRepository.Dispose
+        // silently fails its recursive delete and the fixture directory survives in the system temp.
+        // Measured after E13 made SignedFriendRepository build for real: 20 undeleted
+        // `okf-producer-signedfriend-*` directories after four suite runs, where there had been none.
+        startInfo.ArgumentList.Add("-nodeReuse:false");
+
         using var process = Process.Start(startInfo)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
@@ -2517,7 +2778,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         var project = Path.Combine(repo.Path, "Absent.csproj");
         File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
 
-        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, "okfgen-no-such-executable", TimeSpan.FromMinutes(2)));
+        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, _queryScratch, "okfgen-no-such-executable", TimeSpan.FromMinutes(2)));
 
         Assert.IsType<MsBuildQueryException>(ex);
         Assert.Contains("Absent.csproj", ex.Message, StringComparison.Ordinal);
@@ -2551,7 +2812,7 @@ public sealed class RoslynResolverTests : IClassFixture<RoslynResolverTests.Scra
         var project = Path.Combine(repo.Path, "Slow.csproj");
         File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
 
-        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, "dotnet", TimeSpan.FromMilliseconds(200)));
+        var ex = Record.Exception(() => MsBuildProjectQuery.Query(project, _queryScratch, "dotnet", TimeSpan.FromMilliseconds(200)));
 
         Assert.IsType<MsBuildQueryException>(ex);
         Assert.Contains("did not finish within", ex.Message, StringComparison.Ordinal);

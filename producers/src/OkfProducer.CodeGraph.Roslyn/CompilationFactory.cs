@@ -71,7 +71,8 @@ public sealed class UnknownLanguageVersionException : InvalidOperationException
 /// <c>FileStatus.SkippedTooLarge</c> that reaches <c>RunStatus</c> and makes the run partial; this
 /// gate returns nothing at all. For a file the scanner also walked the two coincide, because the
 /// extractor refuses the same file and counts it. For a <c>Compile</c> item the scanner never saw --
-/// a linked out-of-repository source, a generated file under <c>obj/</c> -- nothing counts it: the
+/// a linked out-of-repository source, an SDK-generated file in the query's
+/// <see cref="MsBuildQueryScratch"/> -- nothing counts it: the
 /// item is dropped here and surfaces, if at all, as an unrelated
 /// <c>"N compilation error(s): CS0246 ..."</c> on this project with no hint that the size cap caused
 /// it. Reporting it needs a channel from here to <c>RoslynProjectReport</c>, which is
