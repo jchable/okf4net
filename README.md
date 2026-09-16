@@ -111,9 +111,10 @@ extensive test suite, including byte-exact golden CLI comparisons.
   collects parse failures in `ParseErrors` and keeps going. Broken
   cross-links are retained as graph edges to non-existent concepts.
 - **Two levels of validation.** `OkfDocument.ValidateConformance()` enforces
-  only what §11 requires (a non-empty `type`). `OkfDocument.Validate()` matches
-  the stricter producer-side check from the reference agent (`type`, `title`,
-  `description`, `timestamp`).
+  only what §11 requires (a non-empty `type`). `OkfDocument.Validate()` is the
+  stricter producer-side check: `type`, `title` and `description`
+  (`Frontmatter.RequiredKeys`). `timestamp` is a legacy §13.1 field since the
+  v0.2 bump and is not required.
 - **A documented YAML subset.** Real OKF frontmatter is scalars, lists, and
   shallow maps. The parser handles block/flow collections, quoted/plain
   scalars, `|`/`>` block scalars, and comments. It rejects, with a

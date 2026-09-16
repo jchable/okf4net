@@ -43,8 +43,10 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// <see cref="Get"/> rather than a value check, so the exemption covers
     /// only the form §4.1 licenses. A declared <c>resource</c> whose value is
     /// unusable (<c>resource: ""</c>, <c>resource:</c>, <c>resource: null</c>,
-    /// <c>resource: []</c>, <c>resource: {}</c>) is a malformed value, not a
-    /// statement of abstractness, and keeps warning exactly as it does for
+    /// <c>resource: []</c>, <c>resource: {}</c>, and -- since
+    /// <see cref="YamlValue.IsEmptyValue"/> is a falsiness test, not an emptiness
+    /// test -- <c>resource: false</c>, <c>resource: 0</c>) is a malformed value,
+    /// not a statement of abstractness, and keeps warning exactly as it does for
     /// title/description/tags: the carve-out moves one axis only (key
     /// presence) and never suppresses the value check.
     /// </summary>

@@ -37,8 +37,9 @@ and this project adheres to
     against the concept's declared `parameters` and **never edits the sanctioned
     text**, placeholders included. Both executors and the attester receive only
     that filtered set.
-  - `ContainerRuntimeProfile` / `ContainerAttesterOptions` carry per-run ceilings
-    (`--memory`, `--cpus`, `--pids-limit`, wall clock) and reject a non-positive
+  - `ContainerIsolation`, reached through `ContainerRuntimeProfile.Isolation` and
+    `ContainerAttesterOptions.Isolation`, carries the per-run ceilings
+    (`--memory`, `--cpus`, `--pids-limit`, wall clock) and rejects a non-positive
     value rather than accept it: to docker and podman, zero there means
     *unlimited*, so a profile written with `MemoryBytes = 0` would remove the very
     ceiling it looks like it sets.
@@ -60,10 +61,11 @@ and this project adheres to
   - Every run's stdout and stderr are capped at 8 Mi characters, and exceeding
     the cap fails the stage rather than truncating quietly. `Timeout` must be a
     duration a timer can enforce — `Timeout.InfiniteTimeSpan` is rejected rather
-    than read as "no ceiling" — and is checked before any process starts; a
-    `kill` the engine never answers is abandoned after five seconds, so a
-    timed-out run still returns. A receipt is a JSON object and nothing else: a
-    run whose stdout is the literal `null` is rejected, not read as empty.
+    than read as "no ceiling" — and is checked before any process starts;
+    teardown after a timeout, both `kill` attempts included, is abandoned once
+    one 3-second budget is spent (see Fixed), so a timed-out run still returns.
+    A receipt is a JSON object and nothing else: a run whose stdout is the
+    literal `null` is rejected, not read as empty.
   - **Not published to NuGet**, deliberately, and the `.csproj` carries no
     packaging block — see the root README's project table. Its useful operation
     needs a container engine on `PATH` and a reachable daemon, which no package
@@ -155,7 +157,7 @@ and this project adheres to
   they first appear rather than re-sorted by score, so the two orderings compose
   instead of one silently undoing the other. Pass `items.Count` for a full
   reordering when what bounds the list is a budget rather than a slot count.
-- **`OkfBundleTools.GetTools(OkfToolMode)`** — chooses how the three
+- **`OkfBundleTools.GetTools(OkfToolMode)`** — chooses how the four
   write-capable tools are exposed. `ReadOnly` omits them; `RequireApprovalForWrites`
   wraps exactly those in `ApprovalRequiredAIFunction` so the Agent Framework
   asks the host before a mutation; `ReadWrite` is the historical ungated
@@ -489,11 +491,12 @@ and this project adheres to
   problem rather than an unhandled exception.
 - **Breaking (combined effect on 0.5.0 bundles): a bare `attester.resource` /
   `computation` path that used to resolve beside the concept now resolves
-  from the bundle root (§6.2), AND an unresolvable `attester.resource` now
+  from the bundle root (this repo's reading of §6.2, which names no base — see
+  the §6.2 entry below), AND an unresolvable `attester.resource` now
   fails the run closed — together, a bundle whose attester script sits next
   to its concept goes from running under 0.5.0 to never executing.** There is
-  deliberately no fallback (the spec's Appendix A resolves bare paths from the
-  root); instead `okf validate` now says where the file was found and what to
+  deliberately no fallback (Appendix A's layout only resolves from the root);
+  instead `okf validate` now says where the file was found and what to
   write (`./script.py`). Also: `resource` is omitted from an Attested
   Computation's recommended fields by `Frontmatter.RecommendedFieldsFor`, the
   one definition of §4.1's carve-out.
@@ -539,8 +542,10 @@ and this project adheres to
 
 - **Breaking (`OKF4net.Attestation.Containers`, unpublished): receipts and
   attester verdicts with duplicate JSON properties, or with numbers that cannot
-  be represented exactly, now fail the stage instead of being silently resolved
-  (§10.5).** A top-level duplicate receipt key used to be last-wins, a nested one
+  be represented exactly, now fail the stage instead of being silently
+  resolved.** A host rule: the spec says nothing about receipt JSON; this keeps
+  §10.5's attest step judging the receipt the container actually wrote. A
+  top-level duplicate receipt key used to be last-wins, a nested one
   escaped as a raw `ArgumentException`, `1e400` became infinity, `1e-400` became
   zero, and `9223372036854775808` was rounded to a `double` — so the receipt the
   attester judged could carry a value the container never wrote, or read
@@ -865,7 +870,9 @@ and this project adheres to
   per package.** `ConceptGenerator.AttributePackages` computes, for each
   package, the raw paths "minimal under the ancestor relation" it owns — a
   path whose own ancestor the same package also claims is dropped, since it is
-  already reachable one level down from that ancestor (§5.2). That used to be
+  already reachable one level down from that ancestor (§5.2 of the producer's
+  code-graph design, `docs/superpowers/specs/2026-08-31-okf-producer-code-graph-design.md`,
+  not of the OKF spec). That used to be
   a pairwise `keys.Where(key => !keys.Any(other => IsProperAncestor(other,
   key)))` scan. The extracted `ConceptGenerator.MinimalUnderAncestry` instead
   makes one pass over the already-sorted `SortedSet<string>(Ordinal)`,
@@ -1065,7 +1072,8 @@ and this project adheres to
   outside the tree `okfgen` was asked to scan.
 - **A stage that ignores cancellation no longer keeps a run alive past
   `ComputationTimeout` or the caller's token, and can no longer turn a
-  cancelled run into a displayable outcome (§10.5).** The orchestrator checked
+  cancelled run into a displayable outcome.** A host guarantee: §10 sets no
+  time limit or cancellation rule. The orchestrator checked
   the token only *before* each stage, so a binder/executor/attester already
   running when the token fired ran to completion and its result was used: under
   a 30 ms `ComputationTimeout`, an attester sleeping 350 ms made
@@ -1106,7 +1114,8 @@ and this project adheres to
   without reading the clock, and not an early refusal of an already-stale
   concept — a run still executes and reports it as stale at the gate.
 - **Invalid UTF-8 on a container's stdout fails the stage instead of being
-  replaced with U+FFFD in the receipt (§10.5).** `CliContainerEngine` decoded
+  replaced with U+FFFD in the receipt.** A host rule, like the strict receipt
+  JSON above: the spec defines no receipt encoding. `CliContainerEngine` decoded
   stdout with a replacement fallback, so a container writing the bytes
   `{"x":"\xff"}` produced the receipt `{"x":"\uFFFD"}` — the engine silently
   rewrote the data the attester authenticates. stdout is now decoded strictly,
@@ -1146,7 +1155,8 @@ and this project adheres to
   and `BundleWriter`'s own, and (for the index) the one `IndexGenerator`
   makes internally, closed here by normalising `outPath`/`repoPath` once at
   `BundleWriter.Write`'s and `GenerateRun.Execute`'s own entry points
-  rather than by touching `IndexGenerator` itself (`producers/`).
+  (`producers/`). `IndexGenerator` now also normalises its own root, for
+  every caller — see the `okf index dir/` entry.
 - The viewer sanitizer unwraps a disallowed element instead of flattening its
   subtree to text (a link or table inside `<details>`/`<div>` survives). It
   marks disallowed elements, then detaches every node bottom-up and
@@ -1633,8 +1643,6 @@ and this project adheres to
   The result is checked by full structural equality against the intended
   document — frontmatter and body — rather than a `verified`-entry count, so
   a future mis-edit is refused rather than silently written.
-- `okf-render` treats a lone `-` as an argument, like `okf` (the two
-  scanners had drifted; there is now one).
 - `samples/acme-retail-agent` restores again (NU1605 after the
   `Microsoft.Agents.AI` 1.20.0 bump).
 - **`okf-render` refuses a bundle holding two concept ids that differ only by
@@ -1708,8 +1716,9 @@ and this project adheres to
   whole base name, never a prefix. **Id churn:** an existing bundle containing a
   code, package or doc name whose slug's base name exactly matches one of
   these words gets a new id on the next `okfgen generate` (`producers/`).
-- **`okfgen`'s effective-visibility cap (§5.4) no longer caps a namespace's own
-  members when a type happens to share the namespace's full dotted name** (a
+- **`okfgen`'s effective-visibility cap (code-graph design §5.4) no longer caps
+  a namespace's own members when a type happens to share the namespace's full
+  dotted name** (a
   finding, `FileEligibility.IsInScope`) — a CA1724-style collision (a
   `Logging` class beside an `X.Logging` namespace) that is common in real
   code. `SymbolFact.Container` is a flat dotted string, so a type nested
@@ -1737,7 +1746,8 @@ and this project adheres to
   grammar `name` field, which includes accessors (`get`/`set`/`add`), named
   arguments, named tuple elements and member accesses (`.First()`), so a local
   function in a getter sat under `N.T.P.get` where `RoslynResolver` says
-  `N.T.P`, so the two engines' `(Container, Name)` join key (§2.1) disagreed.
+  `N.T.P`, so the two engines' `(Container, Name)` join key (code-graph design
+  §2.1) disagreed.
   The walk is now an allow-list mirroring
   `RoslynResolver.ContainerPathFromSyntax` kind for kind (namespace, type,
   delegate, method, constructor, destructor, property, event, local function,
@@ -1747,8 +1757,8 @@ and this project adheres to
   `FileEligibility.IsInScope` unconditionally — `--include-internal` does not
   admit them. So a local function's container (`N.T.P.get` → `N.T.P`) never
   becomes a concept id, a getter and a setter each declaring a same-named local
-  function never reach §3.2's overload merge, and a call to one renders as
-  unresolved both before and after. The change is visible to direct consumers
+  function never reach the code-graph design's §3.2 overload merge, and a call
+  to one renders as unresolved both before and after. The change is visible to direct consumers
   of `TreeSitterExtractor`'s `SymbolFact.Container` / `CallSite.CallerContainer`
   and of resolver edges before `CodeGraphBuilder`'s scope pass, and it keeps the
   join key correct should a future scope rule ever admit such a declaration.
@@ -1802,7 +1812,7 @@ and this project adheres to
   each inaccessible directory in the same unanalysed listing and the same cap
   a per-file skip uses (e.g. `- locked/: skipped, directory not readable`).
   The repository ROOT itself and a circular reparse point remain
-  all-or-nothing, unchanged (§2.3).
+  all-or-nothing, unchanged (code-graph design §2.3).
 - **`okfgen`'s Roslyn stage now owns a `Compile` item under a directory whose
   name merely starts with `..` (`producers/`).**
   `RoslynResolver.RelativeToRepository` tested the repository-relative path's
@@ -1897,8 +1907,9 @@ and this project adheres to
   on every ancestor, which is all `lstat` needs, so a link that cannot be
   inspected cannot be read through either. Not an OKF spec behaviour: the
   spec says nothing about filesystem links — this is the producer's own
-  hostile-input guarantee (the §2.3 guards `TreeSitterExtractor` applies)
-  that it reads only the repository it was pointed at.
+  hostile-input guarantee (the code-graph design's §2.3 guards, which
+  `TreeSitterExtractor` applies) that it reads only the repository it was
+  pointed at.
 
 ## [0.5.0] - 2026-07-31
 
