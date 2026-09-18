@@ -98,7 +98,27 @@ internal enum VerificationTargetProblemKind
 /// had is both wasted I/O and, for a reparse-point check, a second window for the answer to change
 /// underneath it. <see langword="null"/> for every other kind.
 /// </param>
-internal readonly record struct VerificationTargetProblem(VerificationTargetProblemKind Kind, string ConceptId, string? Detail = null);
+internal readonly record struct VerificationTargetProblem(VerificationTargetProblemKind Kind, string ConceptId, string? Detail = null)
+{
+    /// <summary>
+    /// <see cref="Detail"/> terminated by EXACTLY ONE period — the single rule
+    /// for the two renderers whose house style is a period-ended sentence
+    /// (<see cref="BundleConceptWriter"/>'s own <c>FormatVerificationTargetProblem</c>
+    /// and the <c>okf_verify</c> tool; the <c>okf verify</c> CLI verb terminates
+    /// nothing and interpolates <see cref="Detail"/> directly).
+    ///
+    /// Neither "always append" nor "never append" is right, which is why this
+    /// exists rather than a literal <c>.</c> at each call site: an
+    /// <see cref="IOException"/>'s message always ends in a period already, so
+    /// appending one produced a doubled <c>..</c> on every unreadable-concept
+    /// refusal, while a library-authored parser message (<c>"… are not
+    /// supported by the OKF YAML subset"</c>) never ends in one and needs it.
+    /// </summary>
+    internal string DetailAsSentence() =>
+        Detail is null or "" ? string.Empty
+        : Detail.EndsWith('.') ? Detail
+        : Detail + ".";
+}
 
 /// <summary>
 /// The core, thread-safe write primitive for OKF bundles: producer-validated,
@@ -1334,10 +1354,12 @@ public sealed class BundleConceptWriter
         VerificationTargetProblemKind.InvalidId => problem.Detail!,
         VerificationTargetProblemKind.NotFound =>
             $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+        // DetailAsSentence, not "{Detail}.": an IOException's message already
+        // ends in a period, and appending one doubled it (see that method).
         VerificationTargetProblemKind.ParseFailure =>
-            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.Detail}.",
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.DetailAsSentence()}",
         VerificationTargetProblemKind.Unreadable =>
-            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.Detail}.",
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.DetailAsSentence()}",
         VerificationTargetProblemKind.NotConformant =>
             $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
         VerificationTargetProblemKind.DuplicateName =>

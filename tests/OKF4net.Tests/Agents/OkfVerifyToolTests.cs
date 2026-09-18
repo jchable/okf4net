@@ -119,6 +119,88 @@ public class OkfVerifyToolTests
     }
 
     /// <summary>
+    /// A concept that EXISTS but no longer parses (here a YAML anchor, which
+    /// the §4 subset rejects) must not be reported as missing. Before the
+    /// tool's switch grew a <c>ParseFailure</c> arm it fell through to the
+    /// catch-all and answered <c>concept "metrics/dau" does not exist.</c> —
+    /// telling the model to create a concept that is already on disk and
+    /// naming its own error. The refusal itself was always right; only the
+    /// diagnosis was wrong.
+    /// </summary>
+    [Fact]
+    public void Verify_names_the_parse_error_of_an_existing_but_unparseable_concept()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\ntitle: &t Daily\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md"));
+
+        var text = ToolsOver(tmp).Verify("metrics/dau", "human:ada");
+
+        Assert.StartsWith(
+            "Error: concept \"metrics/dau\" could not be parsed as a valid OKF document: ",
+            text);
+        Assert.Contains("anchors", text);
+        Assert.DoesNotContain("does not exist", text);
+        // No doubled ".." where the parser's own message already ends in one.
+        Assert.DoesNotContain("..", text);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// Same class as the parse failure above, from the other kind the switch
+    /// used to swallow: an id the §2 grammar rejects is not a missing concept
+    /// either — nothing was looked for on disk. The detail is
+    /// <c>ValidateConceptTarget</c>'s own already-prefixed sentence, returned
+    /// as-is so exactly one <c>Error: </c> reaches the model.
+    /// </summary>
+    [Fact]
+    public void Verify_says_why_an_id_is_invalid_rather_than_calling_it_missing()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\n---\n\nbody\n");
+
+        var text = ToolsOver(tmp).Verify("metrics/../dau", "human:ada");
+
+        Assert.StartsWith("Error: invalid concept id \"metrics/../dau\"", text);
+        Assert.DoesNotContain("does not exist", text);
+        Assert.DoesNotContain("Error: Error:", text);
+    }
+
+    /// <summary>
+    /// The tool's <c>Unreadable</c> arm had no test at all: a concept file
+    /// held open exclusively is neither missing nor unparseable, and the arm
+    /// could have been deleted (falling through to "does not exist") without
+    /// a single assertion noticing. Mirrors
+    /// <c>CliTests.Verify_reports_a_locked_concept_file_cleanly_instead_of_crashing</c>,
+    /// including its probe-before-asserting skip for platforms/filesystems
+    /// that do not enforce <c>FileShare.None</c> against a second reader.
+    /// </summary>
+    [SkippableFact]
+    public void Verify_reports_a_locked_concept_file_as_unreadable()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\n---\n\nbody\n");
+        var dauPath = Path.Combine(tmp.Path, "metrics", "dau.md");
+
+        using var exclusive = new FileStream(dauPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        try
+        {
+            using var probe = new FileStream(dauPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            throw new SkipException("exclusive file locks are not enforced on this platform/filesystem");
+        }
+        catch (IOException)
+        {
+            // Expected: a second reader really is denied here, continue.
+        }
+
+        var text = ToolsOver(tmp).Verify("metrics/dau", "human:ada");
+
+        Assert.StartsWith("Error: concept \"metrics/dau\" could not be read: ", text);
+        Assert.DoesNotContain("does not exist", text);
+    }
+
+    /// <summary>
     /// A repeated id is refused outright, rather than silently collapsed to
     /// one stamp or double-recorded as two.
     /// </summary>

@@ -693,9 +693,29 @@ public sealed class OkfBundleTools
                         $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
                     VerificationTargetProblemKind.DuplicateName =>
                         $"Error: concept {DebugQuote.Quote(problem.ConceptId)} is named more than once.",
+                    // The file exists and names its own parse error: falling
+                    // through to "does not exist" (which this did until now)
+                    // told the model to go and create a concept that is
+                    // already there. The detail is the parser's own message
+                    // -- library-authored, never bundle text. Rendered through
+                    // DetailAsSentence, not "{Detail}.", which doubled the
+                    // period on every unreadable-concept refusal.
+                    VerificationTargetProblemKind.ParseFailure =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.DetailAsSentence()}",
                     VerificationTargetProblemKind.Unreadable =>
-                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.Detail}.",
-                    _ => $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.DetailAsSentence()}",
+                    // Already a complete "Error: "-prefixed sentence naming the
+                    // id (ValidateConceptTarget's own return value, captured
+                    // once by CheckVerificationTargets), so it is returned
+                    // as-is -- the same arm FormatVerificationTargetProblem has.
+                    VerificationTargetProblemKind.InvalidId => problem.Detail!,
+                    VerificationTargetProblemKind.NotFound =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+                    // Deliberately NOT "does not exist": a kind added to the
+                    // enum later must not be misdiagnosed as a missing file,
+                    // which is exactly what happened to ParseFailure and
+                    // InvalidId while this switch ended at a catch-all arm.
+                    _ => $"Error: concept {DebugQuote.Quote(problem.ConceptId)} cannot be verified.",
                 };
             }
 
@@ -1456,7 +1476,13 @@ public sealed class OkfBundleTools
 
         foreach (var (concept, score) in shown)
         {
-            var title = concept.Document.Frontmatter.Title ?? concept.Id.ToString();
+            // OneLine on the title: it comes from frontmatter, where a `|`
+            // block scalar carries line breaks perfectly legally, and one
+            // result is one "* " line here. (The excerpt below needs no such
+            // call -- ConceptSearch.Excerpt returns a single split line by
+            // construction -- and `query`/`tag` above come from the caller,
+            // not from the bundle.)
+            var title = OneLine(concept.Document.Frontmatter.Title ?? concept.Id.ToString());
             var lc = concept.Document.Frontmatter.Lifecycle;
             sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')');
             if (lc.Status == ConceptStatus.Deprecated)
@@ -1629,7 +1655,42 @@ public sealed class OkfBundleTools
     private static IEnumerable<string> FormatBacklinks(IEnumerable<ConceptId> backlinks) =>
         backlinks.Select(source => source.ToString());
 
-    /// <summary>Appends a markdown <c>## </c>-heading section, one bullet per line, or <see cref="NoneLine"/> if empty.</summary>
+    /// <summary>
+    /// <b>The one rule for untrusted text in a line-oriented tool result:</b>
+    /// every line terminator collapses to a single space, so a value that a
+    /// bundle, a container or a warehouse authored can occupy exactly the one
+    /// line the renderer gave it and cannot forge a second.
+    ///
+    /// <para><see cref="string.ReplaceLineEndings(string)"/> and not a hand-rolled
+    /// <c>\r</c>/<c>\n</c> pass: it also folds <c>FF</c>, <c>NEL</c> (U+0085)
+    /// and <c>LS</c>/<c>PS</c> (U+2028/U+2029), which a markdown or JavaScript
+    /// line splitter downstream may well treat as terminators even though
+    /// <see cref="char.IsControl(char)"/> does not classify the last two.
+    /// It is the same neutralisation the orchestrator's <c>RunStageAsync</c>
+    /// and <see cref="FormatOutcome"/>'s <c>Error:</c> line already applied,
+    /// promoted here so the remaining sinks cannot keep diverging one at a
+    /// time (they did: the verdict detail, the reason lines, the receipt keys
+    /// and the receipt string values were each left raw by a change that fixed
+    /// one of the others).</para>
+    ///
+    /// <para><b>What it is not.</b> Nothing else is escaped: a value keeps its
+    /// <c>-</c>, <c>#</c> and backticks, because the alternative — escaping
+    /// markdown — would hide the data the model is meant to read, and forging
+    /// a BULLET or a HEADING is what needs a line break of its own to begin
+    /// with. Collections already arrive as JSON (which escapes its own line
+    /// endings), so they pass through this unchanged.</para>
+    /// </summary>
+    /// <param name="value">Text from outside this library: a bundle, a receipt, an attester.</param>
+    private static string OneLine(string value) => value.ReplaceLineEndings(" ");
+
+    /// <summary>
+    /// Appends a markdown <c>## </c>-heading section, one bullet per line, or
+    /// <see cref="NoneLine"/> if empty. Every bullet goes through
+    /// <see cref="OneLine"/>: the bullets carry bundle text (a concept title,
+    /// a raw link target) and orchestrator <c>Reasons</c> (which embed an
+    /// attester's verdict detail), and "one bullet per line" is a promise this
+    /// method makes, so it is this method that keeps it.
+    /// </summary>
     private static void AppendSection(StringBuilder sb, string heading, IEnumerable<string> lines)
     {
         sb.Append("## ").Append(heading).Append('\n');
@@ -1637,7 +1698,7 @@ public sealed class OkfBundleTools
         foreach (var line in lines)
         {
             any = true;
-            sb.Append("- ").Append(line).Append('\n');
+            sb.Append("- ").Append(OneLine(line)).Append('\n');
         }
 
         if (!any)
@@ -1728,6 +1789,15 @@ public sealed class OkfBundleTools
     /// fields, and every reason (if any) that kept the run from being
     /// displayable, plus a captured binder/executor/attester exception's
     /// message, if any.
+    ///
+    /// <para><b>Every value here that this library did not author goes through
+    /// <see cref="OneLine"/>.</b> §10.5 step 6 makes the <c>displayable</c> and
+    /// <c>verdict</c> lines the gate the model reads, and the attester's
+    /// verdict detail, the orchestrator's reason lines and the receipt's own
+    /// keys and string values are all authored outside it — by a bundle's
+    /// attester script, by a container, by a warehouse. A single line break in
+    /// any of them printed a second, forged <c>- displayable: yes</c> right
+    /// under the real <c>- displayable: no</c>.</para>
     /// </summary>
     private static string FormatOutcome(AttestationOutcome outcome)
     {
@@ -1741,7 +1811,11 @@ public sealed class OkfBundleTools
             sb.Append(verdict.Passed ? "passed" : "failed");
             if (!string.IsNullOrEmpty(verdict.Detail))
             {
-                sb.Append(" (").Append(verdict.Detail).Append(')');
+                // The attester authored this, and an attester is a script a
+                // bundle names: a newline here forged a second "- displayable:
+                // yes" line one line below the real "- displayable: no". See
+                // OneLine.
+                sb.Append(" (").Append(OneLine(verdict.Detail)).Append(')');
             }
         }
         else
@@ -1758,7 +1832,10 @@ public sealed class OkfBundleTools
             sb.Append("- receipt:").Append('\n');
             foreach (var (key, value) in receipt.Fields)
             {
-                sb.Append("  - ").Append(key).Append(": ").Append(FormatReceiptValue(value)).Append('\n');
+                // Both the field NAME and its value come from whatever the
+                // executor returned -- a JSON object key can hold a newline as
+                // readily as a string value can. See OneLine.
+                sb.Append("  - ").Append(OneLine(key)).Append(": ").Append(FormatReceiptValue(value)).Append('\n');
             }
         }
         else
@@ -1783,17 +1860,16 @@ public sealed class OkfBundleTools
             // already renders it into Reasons. The exception object stays on
             // outcome.Error for the host either way.
             //
-            // ReplaceLineEndings(" "), matching the orchestrator's own
-            // RunStageAsync: this text lands in the same agent-facing markdown
-            // blob as Reasons (see this method's doc comment), and a
-            // diagnostic message CAN carry an embedded newline -- e.g. a
-            // ContainerExecutionException whose message interpolates a
-            // downstream JsonException.Message built from bundle-influenced
-            // stdout (Internal/ReceiptParsing.cs). Left unneutralized here, an
-            // untrusted newline could spoof extra "- " bullet lines or section
-            // headers in the rendered output.
+            // OneLine, matching the orchestrator's own RunStageAsync: this text
+            // lands in the same agent-facing markdown blob as Reasons (see this
+            // method's doc comment), and a diagnostic message CAN carry an
+            // embedded newline -- e.g. a ContainerExecutionException whose
+            // message interpolates a downstream JsonException.Message built
+            // from bundle-influenced stdout (Internal/ReceiptParsing.cs). Left
+            // unneutralized here, an untrusted newline could spoof extra "- "
+            // bullet lines or section headers in the rendered output.
             var errorLine = outcome.Error is AttestationDiagnosticException diagnostic
-                ? $"{diagnostic.GetType().Name}: {diagnostic.Message.ReplaceLineEndings(" ")}"
+                ? $"{diagnostic.GetType().Name}: {OneLine(diagnostic.Message)}"
                 : outcome.Error.GetType().Name;
             sb.Append('\n').Append("Error: ").Append(errorLine).Append('\n');
         }
@@ -1817,7 +1893,10 @@ public sealed class OkfBundleTools
     private static string FormatReceiptValue(object? value) => value switch
     {
         null => NoneLine,
-        string s => s,
+        // OneLine: a scalar string is the one arm that carries warehouse or
+        // script text verbatim -- the JSON arm below escapes its own line
+        // endings, and no other arm can produce one.
+        string s => OneLine(s),
         bool b => b ? "true" : "false",
         IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
         _ => JsonSerializer.Serialize(value),

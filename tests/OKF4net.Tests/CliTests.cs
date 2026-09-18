@@ -1212,12 +1212,18 @@ public class CliTests
 
     /// <summary>
     /// §7-adjacent line-forging hole for the positional concept id: `okf
-    /// verify` echoes an unresolved id verbatim in "unknown concept …", so an
-    /// id containing a newline could forge a plausible "recorded …" line on
-    /// stderr for a run that wrote nothing — the same class of attack
+    /// verify` echoes an unresolved id verbatim, so an id containing a newline
+    /// could forge a plausible "recorded …" line on stderr for a run that
+    /// wrote nothing — the same class of attack
     /// `LineSafeText.ContainsControlCharacter` already closed for `--by`/`--at`
     /// on the write path. The id must come back quote-escaped
     /// (<see cref="OKF4net.Internal.DebugQuote"/>) instead of raw.
+    ///
+    /// A control character is not a legal §2 segment character, so this id is
+    /// refused as `InvalidId` rather than as an unknown concept — which is the
+    /// arm that renders `ValidateConceptTarget`'s own sentence (I1). The
+    /// escaping is what this test is about, and it holds on either arm; the
+    /// wording is pinned exactly so a future re-route cannot quietly drop it.
     /// </summary>
     [Fact]
     public void Verify_escapes_a_control_bearing_concept_id_instead_of_forging_a_line()
@@ -1225,7 +1231,12 @@ public class CliTests
         var forged = "metrics/nope\nrecorded metrics/dau  human:ada  2026-01-01T00:00:00Z";
         var (code, _, err) = Run("verify", OkfV02, forged, "--by", "human:ada");
         Assert.Equal(1, code);
-        Assert.Equal("error: unknown concept \"metrics/nope\\nrecorded metrics/dau  human:ada  2026-01-01T00:00:00Z\"\n", err);
+        Assert.Equal(
+            "error: invalid concept id \"metrics/nope\\nrecorded metrics/dau  human:ada  2026-01-01T00:00:00Z\". "
+            + "Concept ids are '/'-separated segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.\n",
+            err);
+        // The whole message is one line: nothing the caller supplied broke out.
+        Assert.Single(err.TrimEnd('\n').Split('\n'));
     }
 
     /// <summary>
@@ -1277,6 +1288,58 @@ public class CliTests
         Assert.Equal(1, r.Code);
         Assert.Equal("error: concept \"metrics/dau\" is named more than once\n", r.Err);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// A concept that EXISTS but no longer parses (here a YAML anchor, which
+    /// the §4 subset rejects) must not be reported as missing. Before
+    /// <c>CmdVerify</c>'s switch grew a <c>ParseFailure</c> arm it fell through
+    /// to the catch-all and printed <c>unknown concept "metrics/dau"</c>,
+    /// sending the caller to look for a file that was sitting right there
+    /// naming its own error — the exact shape <c>okf validate</c> reports
+    /// correctly. The refusal itself was always right; only the diagnosis was
+    /// wrong.
+    /// </summary>
+    [Fact]
+    public void Verify_names_the_parse_error_of_an_existing_but_unparseable_concept()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\ntitle: &t Daily\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md"));
+
+        var r = Run("verify", tmp.Path, "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith(
+            "error: concept \"metrics/dau\" could not be parsed as a valid OKF document: ",
+            r.Err);
+        Assert.Contains("anchors", r.Err);
+        Assert.DoesNotContain("unknown concept", r.Err);
+        // No doubled ".." where the parser's own message already ends in one.
+        Assert.DoesNotContain("..\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// Same class as the parse failure above, from the other kind the switch
+    /// used to swallow: an id the §2 grammar rejects is not an "unknown
+    /// concept" either — nothing was looked for on disk. The detail is
+    /// <c>ValidateConceptTarget</c>'s own sentence, rendered minus the
+    /// <c>Error: </c> prefix the CLI supplies itself (so exactly one prefix
+    /// reaches stderr).
+    /// </summary>
+    [Fact]
+    public void Verify_says_why_an_id_is_invalid_rather_than_calling_it_unknown()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/../dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error: invalid concept id \"metrics/../dau\"", r.Err);
+        Assert.DoesNotContain("unknown concept", r.Err);
+        Assert.DoesNotContain("Error:", r.Err);
     }
 
     [Fact]
@@ -1346,16 +1409,19 @@ public class CliTests
 
     /// <summary>
     /// A concept whose frontmatter never even PARSES (as opposed to one that
-    /// parses but lacks `type`) is, like today, simply absent from the bundle
-    /// -- `Bundle.Load` is permissive and skips it -- so the CLI reports the
-    /// same "unknown concept" it reports for a missing id, not a bare parse
-    /// error. `BundleConceptWriter.CheckVerificationTargets` reads the file
-    /// directly (no `Bundle.Load`), so this pins that its own parse-failure
-    /// path collapses into the same CLI wording as before, rather than
-    /// leaking a raw YAML/frontmatter error message.
+    /// parses but lacks `type`) is absent from the bundle — `Bundle.Load` is
+    /// permissive and skips it — but it is NOT missing from disk, and this
+    /// test used to pin the opposite: it asserted the "unknown concept"
+    /// wording, on the reasoning that collapsing into it kept a raw
+    /// YAML/frontmatter message out of the CLI. That traded a leaked detail
+    /// for a wrong diagnosis, and the final whole-branch review caught it
+    /// (I1): `CheckVerificationTargets` reads the file directly (no
+    /// `Bundle.Load`) and knows perfectly well the file is there, so the verb
+    /// now says so. The parser's message is library-authored — a fixed
+    /// sentence from the §4 YAML subset — not bundle text quoted back.
     /// </summary>
     [Fact]
-    public void Verify_reports_an_unparseable_concept_as_unknown()
+    public void Verify_reports_an_unparseable_concept_as_a_parse_failure_not_as_unknown()
     {
         using var tmp = new TempDir();
         var bundle = NewBundleWithTwoConcepts(tmp);
@@ -1368,7 +1434,10 @@ public class CliTests
         var r = Run("verify", bundle, "metrics/dau", "metrics/broken", "--by", "human:ada");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: unknown concept \"metrics/broken\"\n", r.Err);
+        Assert.Equal(
+            "error: concept \"metrics/broken\" could not be parsed as a valid OKF document: "
+            + "Unterminated YAML frontmatter block\n",
+            r.Err);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
 
@@ -1418,7 +1487,7 @@ public class CliTests
         var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "metrics/nope", "--by", "human:ada", "--dry-run");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: concept \"metrics//dau\" is named more than once.\n", r.Err);
+        Assert.Equal("error: concept \"metrics//dau\" is named more than once\n", r.Err);
         Assert.Equal("", r.Out);
     }
 
@@ -1723,8 +1792,10 @@ public class CliTests
     /// as strings, so <c>CmdVerify</c>'s own raw-string duplicate check passes
     /// them, and both resolve to the same file, so
     /// <c>writer.CheckVerificationTargets</c>'s resolved-path check refuses
-    /// the batch — with the writer's own <c>DuplicateName</c> wording
-    /// (trailing period), formatted directly by <c>CmdVerify</c>'s own
+    /// the batch — with the same <c>DuplicateName</c> wording the raw-string
+    /// check above produces (no trailing period, the CLI's house style: a
+    /// caller must not be able to tell the two checks apart by a stray
+    /// period), formatted directly by <c>CmdVerify</c>'s own
     /// <c>switch</c> over <see cref="OKF4net.VerificationTargetProblemKind"/>,
     /// never through <c>RecordVerifications</c> or its
     /// <c>outcome.Message.Replace("Error: ", …)</c> call — this case is
@@ -1747,7 +1818,7 @@ public class CliTests
         var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "--by", "human:ada");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: concept \"metrics//dau\" is named more than once.\n", r.Err);
+        Assert.Equal("error: concept \"metrics//dau\" is named more than once\n", r.Err);
         Assert.Equal(string.Empty, r.Out);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }

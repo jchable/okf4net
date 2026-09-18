@@ -69,6 +69,13 @@ public static class OkfCli
         "        --stale, --trust <tiers>, --status <s>, --type <t>\n" +
         "                         Filter `audit`'s worklist";
 
+    /// <summary>
+    /// The prefix <c>BundleConceptWriter</c>'s own messages carry. The CLI
+    /// writes its own lowercase <c>error: </c> prefix, so a writer-authored
+    /// message it re-renders must shed this one first or arrive doubled.
+    /// </summary>
+    private const string WriterErrorPrefix = "Error: ";
+
     /// <summary>Accepted by every verb, so never part of a <see cref="VerbSpec"/>'s own flag lists.</summary>
     private static readonly string[] HelpFlags = ["-h", "--help"];
 
@@ -708,13 +715,14 @@ public static class OkfCli
         // still refuse and exit 1, not silently print "would record" for
         // every id including the unknown one.
         //
-        // DuplicateName gets the writer's OWN wording here (period included,
-        // matching FormatVerificationTargetProblem) rather than the
-        // raw-string check's above (no period): a concept named more than
-        // once by two DIFFERENT spellings that resolve to the SAME file is
-        // exactly what that check does not catch, and this is the layer that
-        // does (see Verify_reports_a_writer_failure_without_doubling_the_error_prefix,
-        // which pins the with-period wording for that exact case).
+        // DuplicateName is spelled here EXACTLY as the raw-string check above
+        // spells it (no trailing period, the CLI's house style): the two
+        // checks catch different shapes of the same mistake -- a concept named
+        // once per spelling, where two DIFFERENT spellings resolve to the SAME
+        // file, is what the raw-string check does not catch and this layer
+        // does -- and a caller should not be able to tell which one fired from
+        // a stray period (see
+        // Verify_reports_a_writer_failure_without_doubling_the_error_prefix).
         var problem = writer.CheckVerificationTargets(ids);
         if (problem is { } p)
         {
@@ -723,10 +731,34 @@ public static class OkfCli
                 VerificationTargetProblemKind.NotConformant =>
                     $"concept {DebugQuote.Quote(p.ConceptId)} has no `type` and is not §11-conformant",
                 VerificationTargetProblemKind.DuplicateName =>
-                    $"concept {DebugQuote.Quote(p.ConceptId)} is named more than once.",
+                    $"concept {DebugQuote.Quote(p.ConceptId)} is named more than once",
+                // The file exists and names its own parse error: falling
+                // through to "unknown concept" (which this did until now) sent
+                // the caller looking for a missing file instead of at the YAML
+                // they had just broken. The detail is the parser's own message
+                // -- library-authored, never bundle text.
+                VerificationTargetProblemKind.ParseFailure =>
+                    $"concept {DebugQuote.Quote(p.ConceptId)} could not be parsed as a valid OKF document: {p.Detail}",
                 VerificationTargetProblemKind.Unreadable =>
                     $"concept {DebugQuote.Quote(p.ConceptId)} could not be read: {p.Detail}",
-                _ => $"unknown concept {DebugQuote.Quote(p.ConceptId)}",
+                // Already a complete sentence naming the id (ValidateConceptTarget's
+                // own return value, captured once by CheckVerificationTargets), so
+                // it is rendered as-is minus the "Error: " prefix the CLI supplies
+                // itself. Only a LEADING prefix is stripped, not every occurrence
+                // the way the RecordVerifications message below is treated: this
+                // detail embeds the caller's own id (DebugQuote-escaped), and an id
+                // that literally contains "Error: " must come back echoed intact.
+                VerificationTargetProblemKind.InvalidId =>
+                    p.Detail!.StartsWith(WriterErrorPrefix, StringComparison.Ordinal)
+                        ? p.Detail![WriterErrorPrefix.Length..]
+                        : p.Detail!,
+                VerificationTargetProblemKind.NotFound =>
+                    $"unknown concept {DebugQuote.Quote(p.ConceptId)}",
+                // Deliberately NOT "unknown concept": a kind added to the enum
+                // later must not be misdiagnosed as a missing file, which is
+                // exactly what happened to ParseFailure and InvalidId while
+                // this switch ended at a catch-all "unknown concept" arm.
+                _ => $"concept {DebugQuote.Quote(p.ConceptId)} cannot be verified",
             });
         }
 
@@ -760,7 +792,7 @@ public static class OkfCli
 
         if (!outcome.Recorded)
         {
-            throw new CliOperationException(outcome.Message.Replace("Error: ", string.Empty, StringComparison.Ordinal));
+            throw new CliOperationException(outcome.Message.Replace(WriterErrorPrefix, string.Empty, StringComparison.Ordinal));
         }
 
         return 0;
