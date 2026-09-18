@@ -226,14 +226,19 @@ internal static class ReparsePoints
     /// the same walk over the strict predicate.
     /// </remarks>
     /// <param name="root">
-    /// The walk's upper bound. Deliberately never inspected by this walk --
-    /// the loop's exit test (<paramref name="rootComparison"/>) stops before
-    /// <see cref="IsReparsePoint"/> is ever called on <paramref name="root"/>
-    /// itself -- callers that need <paramref name="path"/> itself checked
-    /// (e.g. an existing concept file that may itself be a planted symlink)
-    /// must call <see cref="IsReparsePoint"/> on it separately.
+    /// The walk's upper bound, and the ONE entry it never inspects -- the
+    /// loop's exit test (<paramref name="rootComparison"/>) stops before the
+    /// predicate is ever called on <paramref name="root"/> itself. A caller
+    /// that must also refuse a root which is itself a link checks it
+    /// separately, with the STRICT predicate
+    /// (<see cref="IsReparsePointOrUninspectable"/>) if it is a guard.
     /// </param>
-    /// <param name="path">The starting point of the upward walk.</param>
+    /// <param name="path">
+    /// The starting point of the upward walk, and the FIRST entry the
+    /// predicate is applied to -- a caller that passes the target file itself,
+    /// rather than its parent directory, needs no second call to cover a
+    /// planted file symlink at that exact path.
+    /// </param>
     /// <param name="rootComparison">
     /// The comparison used to detect that the walk has reached
     /// <paramref name="root"/>. Every current caller of this walk and of its
@@ -313,10 +318,15 @@ internal static class ReparsePoints
     /// <see cref="File.ReadAllText(string)"/>, <see cref="File.WriteAllText(string, string)"/>)
     /// -- silently reading or writing outside the bundle. Walking every
     /// intermediate directory and rejecting on the first reparse point closes
-    /// that gap. Never inspects <paramref name="path"/> itself -- a caller
-    /// whose target could itself be a planted file symlink (not just an
-    /// ancestor directory) must separately check <see cref="IsReparsePoint"/>
-    /// on it.
+    /// that gap. <paramref name="path"/> itself is the first entry tested, not
+    /// skipped, so a planted file symlink AT <paramref name="path"/> is caught
+    /// here; only <paramref name="bundleRoot"/> is never inspected. What this
+    /// overload does NOT do is fail closed: it is the LENIENT walk, and an
+    /// entry whose link status cannot be read counts as "not a link". A GUARD
+    /// -- anything that then writes, deletes, or reads outward -- calls
+    /// <see cref="HasReparsePointOrUninspectableAncestor(string, string)"/>
+    /// instead, and <see cref="IsReparsePointOrUninspectable"/> for a single
+    /// entry (see that method's remarks).
     /// </summary>
     /// <remarks>
     /// <see cref="StringComparison.Ordinal"/> on every platform, not an

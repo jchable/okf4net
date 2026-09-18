@@ -205,9 +205,17 @@ internal static class BundlePaths
     /// Unlike <see cref="ResolveInsideRoot"/> this does not follow the link, so it answers for a link
     /// pointing anywhere at all, inside the bundle or out of it.</para>
     ///
-    /// <para>An unanswerable path is reported as a link. Every caller uses this to decide whether to
-    /// walk INTO something -- or, through <see cref="HasLinkAncestor"/>, whether to read something --
-    /// and declining costs coverage where going ahead costs containment.</para>
+    /// <para><b>This does not, on its own, fail closed.</b> The catch below reports a link for a path
+    /// the platform rejects or a genuine I/O error, but it is NOT reached by a permission denial: both
+    /// <c>DirectoryInfo.LinkTarget</c> and <c>FileInfo.LinkTarget</c> answer <see langword="null"/>
+    /// without throwing there (measured in E11 fix round 1, on Linux with <c>chmod 000</c> and on
+    /// Windows with a deny-read ACE -- the Unix readlink wrapper maps EACCES to "not a link"), so an
+    /// uninspectable path comes back "not a link" from HERE. Reporting it as a link is
+    /// <see cref="IsLinkOrUninspectable"/>'s job, which classifies the level with
+    /// <see cref="File.GetAttributes(string)"/> first; that is the predicate
+    /// <see cref="HasLinkAncestor"/> -- and so every guard that decides whether to READ something --
+    /// actually walks over. This method's own callers use it to decide whether to walk INTO a
+    /// directory, where declining costs coverage rather than containment.</para>
     /// </summary>
     internal static bool IsReparsePoint(string path)
     {

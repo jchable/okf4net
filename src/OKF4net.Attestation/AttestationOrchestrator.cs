@@ -146,7 +146,14 @@ public sealed class AttestationOrchestrator
         // stage and could return a DISPLAYABLE success: for §10 that means a
         // computation actually ran, possibly against a live warehouse, after
         // the caller had withdrawn. RunStageAsync also stops awaiting a stage
-        // the moment the token fires, and re-checks after it (§10.5).
+        // the moment the token fires, and re-checks after it.
+        //
+        // No § for this: §10 sets no time limit and no cancellation rule at
+        // all (§10.5, which numbers the steps, is explicitly informative and
+        // says nothing about withdrawing a run). This is a host-side rule this
+        // implementation adopts on its own, and it is only §10.5's step-6 gate
+        // -- "refuse to display a failing attestation" -- that makes getting it
+        // wrong visible as a displayable success.
         var (bindOk, bound, bindReason, bindError) = await RunStageAsync(
             "binder",
             ct => runtime.Binder.BindAsync(contract, resolved, parameterValues, ct),
@@ -270,8 +277,10 @@ public sealed class AttestationOrchestrator
     /// <see cref="TaskCanceledException"/> tied to the caller's token rather
     /// than the stage's exception.
     ///
-    /// <para><b>The token is enforced around the stage, not only before it
-    /// (§10.5).</b> Checking at entry alone let a stage that ignores its token
+    /// <para><b>The token is enforced around the stage, not only before it.</b>
+    /// A host-side rule, carrying no § of its own — §10 sets no time limit and
+    /// no cancellation rule, and §10.5 is informative. Checking at entry alone
+    /// let a stage that ignores its token
     /// run to completion and have its result used: a 30 ms
     /// <c>ComputationTimeout</c> waited out a 350 ms attester and came back
     /// <c>displayable: yes</c>, and a stage that cancelled the token and then
@@ -363,7 +372,8 @@ public sealed class AttestationOrchestrator
     /// <paramref name="cancellationToken"/> fires, whether or not the stage
     /// observes the token itself; then checks the token once more, so a stage
     /// that completed successfully after cancellation never contributes its
-    /// result (§10.5). See <see cref="RunStageAsync{T}"/>'s remarks.
+    /// result — a host-side rule with no § behind it, see
+    /// <see cref="RunStageAsync{T}"/>'s remarks.
     ///
     /// <para>Both steps are needed. <see cref="Task.WaitAsync(CancellationToken)"/>
     /// alone returns a stage that is already complete even when the token is

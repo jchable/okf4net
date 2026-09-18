@@ -91,9 +91,10 @@ are the concrete entry points.
   [#86](https://github.com/jchable/okf4net/issues/86), which carries the
   reproduction.
   **The design question comes before the fix, and it is bigger than the title
-  suggests.** `CanonicalizeRoot` has eleven call sites across five projects —
-  `Bundle`, `IndexGenerator`, `BundleConceptWriter`, `OKF4net.Catalog`
-  (`CatalogPathResolver`, `FileMemoryStore`), `OKF4net.Viewer` — and three of
+  suggests.** `CanonicalizeRoot` has thirteen call sites across three projects
+  — `OKF4net` (`Bundle`, `IndexGenerator`, `BundleConceptWriter` and
+  `ReparsePoints` itself), `OKF4net.Catalog` (`CatalogPathResolver`,
+  `FileMemoryStore`) and `OKF4net.Viewer` (`HtmlWriter`) — and three of
   them are the path-safety guards themselves, `IsWithinBundleRoot` and the
   2-arg `HasReparsePointAncestor` and its strict twin
   `HasReparsePointOrUninspectableAncestor`. Making it resolve reparse points would therefore

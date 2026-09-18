@@ -707,7 +707,7 @@ public class ValidateTests
         tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
-        Assert.Contains("a file exists at computations/query.sql; a bare path resolves from the bundle root (§6.2) — write ./query.sql for the concept-relative form", d.Message, StringComparison.Ordinal);
+        Assert.Contains("a file exists at computations/query.sql; a bare path resolves from the bundle root (this implementation's reading of §6.2) — write ./query.sql for the concept-relative form", d.Message, StringComparison.Ordinal);
     }
 
     /// <summary>

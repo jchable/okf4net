@@ -694,7 +694,12 @@ public static class BundleValidator
         }
 
         var relativeToRoot = Path.GetRelativePath(bundle.Root, candidate).Replace('\\', '/');
-        return $" — a file exists at {relativeToRoot}; a bare path resolves from the bundle root (§6.2) — write ./{resource.RawPath} for the concept-relative form";
+        // "this implementation's reading of §6.2", not a bare "(§6.2)": §6.2
+        // lists the accepted SHAPES of a path-valued field ("a relative path")
+        // and names no base for one. Resolving it from the bundle root is a
+        // reading this repo chose (docs/spec-conformance/, S6.2-1), and the
+        // hint says so rather than telling a producer the spec settled it.
+        return $" — a file exists at {relativeToRoot}; a bare path resolves from the bundle root (this implementation's reading of §6.2) — write ./{resource.RawPath} for the concept-relative form";
     }
 
     /// <summary>Non-throwing check that the concept carries a conformant <c>type</c> (§11), without relying on exceptions for control flow.</summary>
