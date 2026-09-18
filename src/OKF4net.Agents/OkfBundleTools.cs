@@ -1026,7 +1026,12 @@ public sealed class OkfBundleTools
             var sb = new StringBuilder();
             foreach (var diagnostic in report.Diagnostics)
             {
-                sb.Append(diagnostic).Append('\n');
+                // One diagnostic, one line -- and a diagnostic message can
+                // embed frontmatter (a resource path, a `type`), so the fold
+                // is what makes that true. The CLI's own validate output is
+                // golden-locked and is rendered elsewhere; this is the tool's
+                // renderer only.
+                sb.Append(OneLine(diagnostic.ToString())).Append('\n');
             }
 
             var errors = report.ErrorCount;
@@ -1145,7 +1150,10 @@ public sealed class OkfBundleTools
             var fm = concept.Document.Frontmatter;
             if (!fm.IsAttestedComputation)
             {
-                return $"Concept '{conceptId}' is not an Attested Computation (type: {fm.Type ?? "(none)"}).";
+                // OneLine on `type`: it is frontmatter, so it can be a block
+                // scalar. `conceptId` is the caller's own argument, already
+                // rejected upstream if it carries a control character.
+                return $"Concept '{conceptId}' is not an Attested Computation (type: {OneLine(fm.Type ?? "(none)")}).";
             }
 
             var sb = new StringBuilder();
@@ -1160,7 +1168,11 @@ public sealed class OkfBundleTools
                     if (!bundle.TryResolveResource(concept, file.Path!, out var absolutePath, out var status)
                         || status != ResourceResolutionStatus.Resolved)
                     {
-                        sb.Append("Error: computation file '").Append(file.Path).Append("' could not be resolved (").Append(status).Append(").\n");
+                        // OneLine on file.Path here and on the two lines below:
+                        // it is the frontmatter `computation` field, so a block
+                        // scalar can put a line break in the middle of an
+                        // "Error: "/"File: " line. `status` is an enum.
+                        sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be resolved (").Append(status).Append(").\n");
                         break;
                     }
 
@@ -1176,11 +1188,11 @@ public sealed class OkfBundleTools
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
-                        sb.Append("Error: computation file '").Append(file.Path).Append("' could not be read: ").Append(e.Message).Append('\n');
+                        sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be read: ").Append(OneLine(e.Message)).Append('\n');
                         break;
                     }
 
-                    sb.Append("File: ").Append(file.Path).Append('\n').Append('\n');
+                    sb.Append("File: ").Append(OneLine(file.Path!)).Append('\n').Append('\n');
                     sb.Append("```\n").Append(text.TrimEnd('\n')).Append('\n').Append("```\n");
                     break;
 
@@ -1707,6 +1719,16 @@ public sealed class OkfBundleTools
         }
     }
 
+    /// <summary>
+    /// Appends the concept's frontmatter as one <c>key: value</c> line per
+    /// entry. Both sides go through <see cref="OneLine"/>: a <c>|</c> block
+    /// scalar is perfectly legal YAML, and a line break in one of these values
+    /// printed what looked like another frontmatter ENTRY -- a bundle could
+    /// show a <c>type:</c> or <c>verified:</c> line it does not actually carry.
+    /// Folding a genuinely multi-line value (typically a <c>description</c>)
+    /// onto one line is the accepted cost, and is what a <c>&gt;</c> folded
+    /// scalar would have rendered anyway.
+    /// </summary>
     private static void AppendFrontmatterBlock(StringBuilder sb, Frontmatter frontmatter)
     {
         var map = frontmatter.AsMapping();
@@ -1717,7 +1739,7 @@ public sealed class OkfBundleTools
 
         foreach (var key in map.Keys)
         {
-            sb.Append(key).Append(": ").Append(FormatFrontmatterValue(map.Get(key))).Append('\n');
+            sb.Append(OneLine(key)).Append(": ").Append(OneLine(FormatFrontmatterValue(map.Get(key)))).Append('\n');
         }
 
         sb.Append('\n');
@@ -1732,11 +1754,21 @@ public sealed class OkfBundleTools
     /// Shared by <see cref="GetComputation"/>'s full rendering and
     /// <see cref="ReadConcept"/>'s compact enrichment, so the two summaries
     /// can never drift apart.
+    ///
+    /// <para><b>Every value here comes out of frontmatter, so every one of them
+    /// goes through <see cref="OneLine"/>.</b> Each is a §10.2 field a bundle
+    /// author writes, and YAML lets any of them be a <c>|</c> block scalar: a
+    /// newline in <c>runtime</c> or <c>attester.resource</c> forged a second
+    /// <c>- </c> line in a block whose whole job is to tell a model what will be
+    /// run and what will vouch for it. Same rule and same reason as
+    /// <see cref="FormatOutcome"/>'s — see <see cref="OneLine"/>. The literals
+    /// around them (<see cref="NoneLine"/>, <c>(inline)</c>, <c>(unnamed)</c>,
+    /// <c>[required]</c>) are this library's own and need no call.</para>
     /// </summary>
     private static void AppendContractSummary(StringBuilder sb, AttestedComputationContract contract)
     {
         sb.Append("## Contract").Append('\n');
-        sb.Append("- runtime: ").Append(contract.Runtime ?? NoneLine).Append('\n');
+        sb.Append("- runtime: ").Append(OneLine(contract.Runtime ?? NoneLine)).Append('\n');
 
         if (contract.Parameters.Count == 0)
         {
@@ -1747,10 +1779,10 @@ public sealed class OkfBundleTools
             sb.Append("- parameters:").Append('\n');
             foreach (var parameter in contract.Parameters)
             {
-                sb.Append("  - ").Append(parameter.Name.Length == 0 ? "(unnamed)" : parameter.Name);
+                sb.Append("  - ").Append(parameter.Name.Length == 0 ? "(unnamed)" : OneLine(parameter.Name));
                 if (parameter.Type is not null)
                 {
-                    sb.Append(" (").Append(parameter.Type).Append(')');
+                    sb.Append(" (").Append(OneLine(parameter.Type)).Append(')');
                 }
 
                 if (parameter.Required)
@@ -1762,14 +1794,17 @@ public sealed class OkfBundleTools
             }
         }
 
-        sb.Append("- computation: ").Append(string.IsNullOrEmpty(contract.ComputationPath) ? "(inline)" : contract.ComputationPath).Append('\n');
+        sb.Append("- computation: ").Append(string.IsNullOrEmpty(contract.ComputationPath) ? "(inline)" : OneLine(contract.ComputationPath)).Append('\n');
 
         sb.Append("- executor: ");
         if (contract.Executor is { } executor)
         {
-            sb.Append(executor.Resource ?? NoneLine)
+            // The joined list, not each item: a newline inside ONE receipt
+            // field name breaks the line just as a newline between two would,
+            // and folding after the join covers both with one call.
+            sb.Append(OneLine(executor.Resource ?? NoneLine))
               .Append(" (receipt: ")
-              .Append(executor.Receipt.Count == 0 ? NoneLine : string.Join(", ", executor.Receipt))
+              .Append(executor.Receipt.Count == 0 ? NoneLine : OneLine(string.Join(", ", executor.Receipt)))
               .Append(')');
         }
         else
@@ -1778,7 +1813,7 @@ public sealed class OkfBundleTools
         }
 
         sb.Append('\n');
-        sb.Append("- attester: ").Append(contract.Attester?.Resource ?? NoneLine).Append('\n');
+        sb.Append("- attester: ").Append(OneLine(contract.Attester?.Resource ?? NoneLine)).Append('\n');
     }
 
     /// <summary>

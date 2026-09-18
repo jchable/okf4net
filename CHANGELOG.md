@@ -1862,6 +1862,29 @@ and this project adheres to
   links, backlinks, `okf_browse`'s concept list) and `okf_search`'s per-result
   line — both of which print a frontmatter `title`, which a `|` block scalar
   may legally spread over several lines.
+- **The same rule now covers every other place a tool prints frontmatter into a
+  line-structured result.** A `|` block scalar is legal YAML in any field, and
+  four more renderers split their own lines on one:
+  - the `## Contract` block (`okf_get_computation` and `okf_read_concept`
+    share it): `runtime`, each parameter's `name` and `type`, `computation`,
+    `executor.resource` and each `executor.receipt` entry, and
+    `attester.resource`. A `runtime` of `bigquery\n- attester: forged.py`
+    printed a second, forged `- attester:` line in the block that tells a model
+    what will run and what will vouch for it (executed);
+  - `okf_get_computation`'s `File:` and `Error: computation file '…'` lines,
+    which re-print the same `computation` field;
+  - `okf_read_concept`'s frontmatter block, where a break in one value read as
+    another `key: value` ENTRY — a bundle could show a `verified:` line it does
+    not carry;
+  - `okf_validate_bundle`, which is one diagnostic per line and quotes the
+    frontmatter value a diagnostic complains about: a `sources[].resource`
+    block scalar added an `[error]` line to a report with zero errors
+    (executed). The CLI's own `validate` output is rendered elsewhere and is
+    unchanged.
+
+  The visible cost is that a genuinely multi-line value (typically a
+  `description`) now renders on one line, exactly as a `>` folded scalar
+  always did.
 - **Link guards now refuse an entry whose link status cannot be inspected**,
   instead of treating it as a plain directory. A junction carrying a
   deny-ReadAttributes ACE, under a parent that denies listing, makes reading
