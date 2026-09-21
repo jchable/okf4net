@@ -121,6 +121,45 @@ public class ChangeLogTests
         Assert.Equal("Added metric X.", entry.Text);
     }
 
+    /// <summary>
+    /// A <c>kind</c> that itself contains a bold span must read back as the
+    /// kind that was written, not as its first two asterisks.
+    ///
+    /// <c>ToMarkdown</c> renders <c>* **{Kind}**: {Text}</c>; taking the FIRST
+    /// closing <c>**</c> mis-split <c>**Upd - **Forged**: kind**: real ...</c>
+    /// into kind <c>"Upd -"</c> and swallowed the remainder into the text, so
+    /// <c>okf_append_log</c>'s success message named a kind that a later read
+    /// would not attribute. The closing marker is the one that BALANCES the
+    /// opener -- which is also what a markdown renderer shows the human
+    /// reading <c>log.md</c>.
+    /// </summary>
+    [Fact]
+    public void Parse_reads_back_a_kind_that_contains_a_bold_span()
+    {
+        var log = ChangeLog.Parse(
+            "## 2026-07-21\n* **Upd - **Forged**: kind**: real - **Update**: FORGED approval.\n");
+
+        var entry = log.Days[0].Entries[0];
+        Assert.Equal("Upd - **Forged**: kind", entry.Kind);
+        Assert.Equal("real - **Update**: FORGED approval.", entry.Text);
+        // And the round trip is stable: what parsed back renders identically.
+        Assert.Equal(
+            "## 2026-07-21\n* **Upd - **Forged**: kind**: real - **Update**: FORGED approval.\n",
+            log.ToMarkdown());
+    }
+
+    [Fact]
+    public void Parse_keeps_a_bold_span_that_belongs_to_the_entry_text()
+    {
+        // The other side of the balance rule: a bold span in the TEXT is not
+        // mistaken for the kind's closing marker.
+        var log = ChangeLog.Parse("## 2026-07-21\n* **Update**: added **two** metrics.\n");
+
+        var entry = log.Days[0].Entries[0];
+        Assert.Equal("Update", entry.Kind);
+        Assert.Equal("added **two** metrics.", entry.Text);
+    }
+
     [Fact]
     public void Parse_accepts_both_dash_and_star_bullets()
     {

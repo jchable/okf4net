@@ -974,6 +974,23 @@ and this project adheres to
 
 ### Fixed
 
+- **`ChangeLog.Parse` now reads back a `kind` that itself contains a bold span
+  (§9).** `ToMarkdown` renders `* **{Kind}**: {Text}` and the parser took the
+  FIRST closing `**`, so a kind of `Upd - **Forged**: kind` — which
+  `okf_append_log` accepts, and which its success message names — read back as
+  kind `Upd -` with the remainder swallowed into the text, and
+  `okf_changes_since` then rendered that. An entry did not survive a round trip
+  through this type's own renderer. The closing marker is now the one that
+  BALANCES the opener, by the flanking rule a CommonMark renderer uses (a `**`
+  preceded by a non-space character closes the span it is inside; one preceded
+  by a space can only open a new one), so the parse agrees with what a human
+  sees in a rendered `log.md`. An unbalanced body still degrades to plain text,
+  exactly as a body with no closing marker always did. The writer is
+  deliberately NOT changed to reject `**` in a `kind`: `log.md` is read from
+  whatever produced it, so the round trip belongs in the parser, and refusing
+  ordinary markdown emphasis would fail a legitimate call over a character that
+  forges nothing (the entry count is 1 either way, and the same caller supplies
+  both fields).
 - **The YAML emitter now quotes a frontmatter key the parser would read back
   as something else (§4.1).** A key was judged as if it were a value, so one
   containing `[`, `{`, `"` or `'` after its first character was written plain,
