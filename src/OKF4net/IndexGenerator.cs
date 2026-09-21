@@ -9,8 +9,7 @@ namespace OKF4net;
 /// Some producers synthesize subdirectory descriptions with an LLM; since
 /// OKF tooling must not require any particular model or network access, the
 /// description synthesizer here is a pluggable delegate with a deterministic,
-/// dependency-free default (<see cref="DefaultSynthesize"/>). Adapted and
-/// modified from the original Apache-2.0 source; see the NOTICE file.
+/// dependency-free default (<see cref="DefaultSynthesize"/>).
 /// </summary>
 public static class IndexGenerator
 {

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-OKF4net — a zero-dependency .NET (C# / net10.0) implementation of the Open Knowledge Format (OKF) v0.2: knowledge bundles as directories of markdown files with YAML frontmatter. It is an independent implementation built from the OKF spec, backed by an extensive test suite including byte-exact golden CLI captures (see `tests/fixtures/`). Licensed LGPL-3.0-or-later; portions derived from upstream Apache-2.0 work remain Apache-2.0 (see NOTICE).
+OKF4net — a zero-dependency .NET (C# / net10.0) implementation of the Open Knowledge Format (OKF) v0.2: knowledge bundles as directories of markdown files with YAML frontmatter. It is an independent implementation built from the OKF spec, backed by an extensive test suite including byte-exact golden CLI captures (see `tests/fixtures/`). Licensed LGPL-3.0-or-later, with no third-party code in anything it builds; the only Apache-2.0 material in the repository is the vendored spec and the upstream sample bundles, neither of which is packaged (see NOTICE).
 
 ## Commands
 

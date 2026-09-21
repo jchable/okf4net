@@ -19,8 +19,8 @@ a directory of markdown files with YAML frontmatter.
 > OKF4net is an independent, zero-dependency .NET implementation of the Open
 > Knowledge Format, built from the OKF v0.2 specification. It is backed by an
 > extensive test suite, including byte-exact golden CLI comparisons (see
-> [`tests/fixtures/`](tests/fixtures/README.md)). For the full derivation and
-> attribution chain, see [`NOTICE`](NOTICE).
+> [`tests/fixtures/`](tests/fixtures/README.md)). Everything it builds is
+> LGPL-3.0-or-later; see [`NOTICE`](NOTICE).
 
 **📖 [Documentation & project site → jchable.github.io/okf4net](https://jchable.github.io/okf4net/)** —
 a guided project overview, getting-started walkthroughs, and developer docs:
@@ -726,13 +726,18 @@ later (LGPL-3.0-or-later)** — see [`LICENSE`](LICENSE) for the full LGPLv3
 text and [`LICENSE.GPL-3.0`](LICENSE.GPL-3.0) for the GPLv3 text it
 incorporates by reference.
 
-This is a derivative work: its document parser, concept-id conventions, and
-index generator derive from the Apache-2.0-licensed
-[OKF reference implementation](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-by Google LLC. Portions derived from that and prior upstream work remain
-subject to the Apache License, Version 2.0 — see
-[`LICENSE.Apache-2.0`](LICENSE.Apache-2.0). Full attribution, including the
-complete derivation chain, is in [`NOTICE`](NOTICE).
+That applies to everything this project builds: every OKF4net library and
+binary is original work, LGPL-3.0-or-later in its entirety, with no
+third-party source code included or linked in. The packages published to
+NuGet carry that one licence, and nothing else.
+
+Two kinds of Apache-2.0 material live in this repository, both documentation
+or sample data rather than code, and neither packaged for distribution: the
+vendored [OKF specification](docs/spec/README.md) and the upstream sample
+bundles under [`bundles/`](bundles/README.md), both Copyright Google LLC. They
+are covered by [`LICENSE.Apache-2.0`](LICENSE.Apache-2.0); [`NOTICE`](NOTICE)
+has the details, along with the MIT-licensed copy of marked embedded in
+`OKF4net.Viewer`.
 
 This is an independent implementation and is not affiliated with or endorsed by
 Google.

@@ -27,7 +27,6 @@
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
     <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
-    <None Include="..\..\LICENSE.Apache-2.0" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>

@@ -73,7 +73,7 @@ export default function Contributing() {
             <p>
               <code>tests/fixtures/</code> contains <strong>byte-exact golden files</strong>: several tests compare
               generated output byte-for-byte against them. Most were captured from this project's own former Rust
-              implementation before its removal (see <code>NOTICE</code>); a couple of newer ones (v0.2, §10
+              implementation before its removal (see <code>tests/fixtures/README.md</code>); a couple of newer ones (v0.2, §10
               Attested Computation) postdate that implementation and are hand-verified against the spec text
               instead — none of them currently re-check against Google's own OKF reference implementation, whose
               CLI has no equivalent commands to compare output against. They are protected by{' '}
