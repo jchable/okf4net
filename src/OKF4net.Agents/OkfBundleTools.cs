@@ -820,8 +820,13 @@ public sealed class OkfBundleTools
     /// line-break rejection is the load-bearing one: a newline lets an entry
     /// forge a fabricated <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet
     /// that a later <c>ChangeLog.Parse</c> would read back as genuine
-    /// audit-trail history. Rejected outright rather than stripped, so the
-    /// caller learns the write did not happen.
+    /// audit-trail history. <c>\n</c> and <c>\r</c> are rejected outright
+    /// rather than stripped, so the caller learns the write did not happen.
+    ///
+    /// <b>That is true of <c>\n</c> and <c>\r</c> only.</b> The other four
+    /// separators a downstream renderer breaks on — U+000C, U+0085, U+2028 and
+    /// U+2029 — are accepted here and folded at the write instead; see
+    /// <see cref="FoldLogField"/> for why the two halves differ.
     /// </summary>
     /// <param name="value">The argument's value.</param>
     /// <param name="fieldName">The argument's name, as it appears in the message.</param>
@@ -845,6 +850,32 @@ public sealed class OkfBundleTools
 
         return null;
     }
+
+    /// <summary>
+    /// The four separators <see cref="GuardLogField"/> deliberately does NOT
+    /// reject, folded to a single space before the value is written.
+    ///
+    /// <para><b>Why the asymmetry.</b> <c>\n</c> and <c>\r</c> are REFUSED
+    /// (<see cref="GuardLogField"/>): <c>ChangeLog.Parse</c> is LF-line-based,
+    /// so those two are the characters that would make a later read back a
+    /// forged <c>## date</c> heading or <c>* entry</c> bullet as genuine
+    /// audit-trail history (§9), and a caller who sent one needs to learn the
+    /// write did not happen. U+000C, U+0085, U+2028 and U+2029 cannot do that —
+    /// the §9 parser does not split on them — but they DO split a downstream
+    /// markdown or JavaScript renderer of the same file, and they were
+    /// persisted verbatim into the user's repository, where every other
+    /// consumer inherits them. Refusing them too would fail a call over a
+    /// character most callers cannot see, so they are folded and the call
+    /// succeeds. Same rule as the read side (<see cref="OneLine"/>): nothing
+    /// downstream can start a new line.</para>
+    ///
+    /// <para><see cref="string.ReplaceLineEndings(string)"/> rather than a
+    /// hand-rolled set: it is the same helper the rendering side uses, and by
+    /// the time this runs <see cref="GuardLogField"/> has already refused the
+    /// only two terminators it folds that we do not want folded silently.</para>
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    private static string FoldLogField(string value) => value.Trim().ReplaceLineEndings(" ");
 
     /// <summary>
     /// Appends one entry to the bundle root's <c>log.md</c> under today's
@@ -903,7 +934,8 @@ public sealed class OkfBundleTools
             }
 
             var today = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var entry = new LogEntry(kind.Trim(), text.Trim());
+            var foldedKind = FoldLogField(kind);
+            var entry = new LogEntry(foldedKind, FoldLogField(text));
 
             // Serialized under _bundleLock (shared with WriteConcept and
             // RegenerateIndexes): without it, two concurrent AppendLog calls
@@ -962,7 +994,10 @@ public sealed class OkfBundleTools
                 _bundle = null;
             }
 
-            return $"Appended a '{kind}' entry under {today} in log.md.";
+            // The FOLDED kind, not the raw argument: this message is itself a
+            // line-structured tool result, and echoing the argument verbatim
+            // would put back the separator the write just removed.
+            return $"Appended a '{foldedKind}' entry under {today} in log.md.";
         });
     }
 
@@ -1000,7 +1035,11 @@ public sealed class OkfBundleTools
             sb.Append("Regenerated ").Append(relative.Count).Append(" index file(s):").Append('\n');
             foreach (var rel in relative)
             {
-                sb.Append("- ").Append(rel).Append('\n');
+                // Same sink shape as AppendLogFileChanges's "## {rel}" and
+                // "> Skipped {rel}": `rel` is a Path.GetRelativePath over a
+                // bundle path (just above), and a directory name may carry a
+                // line terminator. One index file, one "- " line.
+                sb.Append("- ").Append(OneLine(rel)).Append('\n');
             }
 
             return sb.ToString();

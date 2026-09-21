@@ -1901,6 +1901,29 @@ and this project adheres to
   second, forged bullet (executed). The rule was always "nothing downstream can
   start a new line", not "no literal newline got in" — which is why the shared
   fold is `ReplaceLineEndings` and covers all four.
+- **And on the WRITE side: `okf_append_log` no longer persists a soft line
+  separator into the user's `log.md`.** Its guard applied the criterion the
+  entries above exist to correct — it refused `\n` and `\r` and accepted
+  U+000C, U+0085, U+2028 and U+2029, which were then written verbatim into the
+  file (hexdumped), where every other consumer of `log.md` inherits them: a
+  client-side markdown renderer, a JavaScript log reader, any future viewer
+  page. This is the one place in this area where the defect was *persistent*
+  rather than per-render. Those four are now folded to a space at the write,
+  and the success message echoes the folded `kind` rather than the raw
+  argument. `\n` and `\r` stay **refused** rather than folded, deliberately:
+  `ChangeLog.Parse` (§9) is LF-line-based, so those two are the ones that
+  could make a later read back a forged `## date` heading or `* entry` bullet
+  as genuine audit-trail history, and a caller who sent one must learn the
+  write did not happen. The other four cannot forge history on re-read, so
+  failing an otherwise good call over a character most callers cannot see
+  would cost more than it buys.
+- **`okf_regenerate_indexes`' own bullet list is folded too.** It rendered
+  `- {relative path}` raw, and a directory name may carry a soft line
+  terminator (NTFS and POSIX both accept one): a bundle with a directory named
+  `sub␊- index.md␊dir` made two regenerated index files print as three `- `
+  lines (executed). Same sink shape, same source and same threat as the
+  `## {path}` heading and `> Skipped {path}` note above, which is why it is
+  folded the same way.
 - **Link guards now refuse an entry whose link status cannot be inspected**,
   instead of treating it as a plain directory. A junction carrying a
   deny-ReadAttributes ACE, under a parent that denies listing, makes reading

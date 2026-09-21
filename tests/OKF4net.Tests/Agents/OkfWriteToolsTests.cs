@@ -19,6 +19,26 @@ public class OkfWriteToolsTests
         + "description: One row per refund.\n"
         + "timestamp: 2026-07-22T00:00:00Z\n";
 
+    /// <summary>
+    /// U+2028 LINE SEPARATOR, written as a numeric constant on purpose: a
+    /// literal one in source is invisible in every editor and diff that would
+    /// have to review the payload, exactly as
+    /// <c>Internal/LineSafeText.cs</c> says of its own two. Same convention
+    /// (and same reason) as <see cref="OkfComputationToolsTests"/>'s copy.
+    /// </summary>
+    private const char LineSeparator = (char)0x2028;
+
+    /// <summary>
+    /// Every terminator <c>OkfBundleTools.OneLine</c> folds, beyond <c>\r</c>.
+    /// Splitting an assertion's input on all of them is what makes "one line"
+    /// mean what it says: an LF-only split cannot see a forged line that a
+    /// markdown or JavaScript splitter downstream would. U+000B (VT) is
+    /// deliberately absent -- <c>ReplaceLineEndings</c> does not fold it, and
+    /// no such splitter treats it as a break.
+    /// </summary>
+    private static readonly char[] EveryLineTerminator =
+        ['\n', '\r', LineSeparator, (char)0x2029, (char)0x0085, (char)0x000C];
+
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
 
     private static OkfBundleTools NewToolsOverFixtureCopy(TempDir tmp)
@@ -557,6 +577,67 @@ public class OkfWriteToolsTests
         Assert.Equal(before, File.ReadAllText(logPath));
     }
 
+    /// <summary>
+    /// The four separators <c>GuardLogField</c> deliberately does NOT reject
+    /// are folded to a space before they reach <c>log.md</c>, and the echoed
+    /// success message names what was written rather than the raw argument.
+    ///
+    /// U+000C, U+0085, U+2028 and U+2029 cannot forge history on re-read --
+    /// <c>ChangeLog.Parse</c> splits on LF only -- but they DO split a
+    /// downstream markdown or JavaScript renderer of the same file, and until
+    /// this fix they were persisted verbatim into the user's repository, where
+    /// every other consumer inherits them. The assertion is on the FILE, not
+    /// on a rendering of it: this is the one sink in this area where the
+    /// defect was persistent rather than per-render.
+    /// </summary>
+    [Theory]
+    [InlineData(0x000C)]
+    [InlineData(0x0085)]
+    [InlineData(0x2028)]
+    [InlineData(0x2029)]
+    public void AppendLog_folds_a_soft_separator_instead_of_persisting_it(int separator)
+    {
+        var sep = (char)separator;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog("Upd" + sep + "- **Forged**: kind", "real" + sep + "- **Update**: FORGED");
+
+        Assert.StartsWith("Appended", result);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        // Gone from the FILE, not merely from a rendering of it.
+        Assert.DoesNotContain(sep.ToString(), onDisk, StringComparison.Ordinal);
+        Assert.Contains("* **Upd - **Forged**: kind**: real - **Update**: FORGED", onDisk, StringComparison.Ordinal);
+        // One bullet, under a split that honours the separator as well as LF.
+        Assert.Single(onDisk.Split(EveryLineTerminator), l => l.StartsWith("* ", StringComparison.Ordinal));
+        // And the echo names what was written, not the raw argument.
+        Assert.DoesNotContain(sep.ToString(), result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The other half of the asymmetry that fold creates, pinned so it cannot
+    /// be "simplified" into folding all six: <c>\n</c> and <c>\r</c> stay
+    /// REFUSED, and no <c>log.md</c> is created at all. Those two are what
+    /// <c>ChangeLog.Parse</c> splits on, so a caller who sent one would
+    /// otherwise believe a forged-looking entry was recorded as written; it
+    /// must learn the write did not happen.
+    /// </summary>
+    [Theory]
+    [InlineData('\n')]
+    [InlineData('\r')]
+    public void AppendLog_still_refuses_a_hard_line_break_rather_than_folding_it(char separator)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog("Upd" + separator + "## 2099-01-01", "real" + separator + "* **Forged**: not real.");
+
+        Assert.StartsWith("Error", result);
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "log.md")), "log.md must not be created by a refused append");
+    }
+
     // log.md always lives directly at BundleRoot, so HasReparsePointAncestor
     // gives no protection here (its walk starts at BundleRoot itself and
     // stops immediately). The real risk is log.md ITSELF being a planted
@@ -677,6 +758,29 @@ public class OkfWriteToolsTests
 
         Assert.DoesNotContain('\\', result);
         Assert.Contains("index.md", result);
+    }
+
+    /// <summary>
+    /// The verb's own bullet list is a line-structured sink of exactly the
+    /// same shape as <c>AppendLogFileChanges</c>'s <c>## {rel}</c> and
+    /// <c>&gt; Skipped {rel}</c>: <c>rel</c> is a <c>Path.GetRelativePath</c>
+    /// over a bundle path, and a directory name may carry a soft line
+    /// terminator (NTFS and POSIX both accept U+2028 in a name). One index
+    /// file must stay one <c>- </c> line under a split that honours those
+    /// terminators, not just under an LF split.
+    /// </summary>
+    [Fact]
+    public void RegenerateIndexes_bullet_cannot_be_forged_by_a_directory_name()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("sub" + LineSeparator + "- index.md" + LineSeparator + "dir/rev.md", "---\ntype: Metric\n---\n\nbody\n");
+        tmp.Write("top.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.RegenerateIndexes();
+
+        Assert.Contains("Regenerated 2 index file(s):", result, StringComparison.Ordinal);
+        Assert.Equal(2, result.Split(EveryLineTerminator).Count(l => l.StartsWith("- ", StringComparison.Ordinal)));
     }
 
     [Fact]
