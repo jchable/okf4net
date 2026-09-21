@@ -1885,6 +1885,22 @@ and this project adheres to
   The visible cost is that a genuinely multi-line value (typically a
   `description`) now renders on one line, exactly as a `>` folded scalar
   always did.
+- **And the last two: `okf_read_concept`'s `# ` heading and
+  `okf_changes_since`'s bullets.** The heading printed the frontmatter `title`
+  raw while the same value was folded twice elsewhere in the same result, so a
+  `title: |` printed a complete, forged `## Backlinks` section — heading and
+  bullet — ABOVE the real one, where a model scanning for that header finds the
+  forged copy first (executed). The three renderers that print a title
+  (`okf_read_concept`'s heading, `okf_search`'s result lines, `okf_browse`'s
+  concept list) now share one derivation instead of three copies.
+  `okf_changes_since` renders `log.md` as `- **{Kind}**: {Text}` bullets under a
+  `## {path}` heading, with a `> Skipped …` note for a log it cannot read: a
+  literal newline can never reach any of those (`ChangeLog.Parse` is
+  LF-line-based, which is why the earlier sweep passed over them), but U+2028,
+  U+2029, U+0085 and U+000C can, and a `log.md` bullet carrying one printed a
+  second, forged bullet (executed). The rule was always "nothing downstream can
+  start a new line", not "no literal newline got in" — which is why the shared
+  fold is `ReplaceLineEndings` and covers all four.
 - **Link guards now refuse an entry whose link status cannot be inspected**,
   instead of treating it as a plain directory. A junction carrying a
   deny-ReadAttributes ACE, under a parent that denies listing, makes reading

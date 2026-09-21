@@ -214,8 +214,17 @@ internal static class BundlePaths
     /// <see cref="IsLinkOrUninspectable"/>'s job, which classifies the level with
     /// <see cref="File.GetAttributes(string)"/> first; that is the predicate
     /// <see cref="HasLinkAncestor"/> -- and so every guard that decides whether to READ something --
-    /// actually walks over. This method's own callers use it to decide whether to walk INTO a
-    /// directory, where declining costs coverage rather than containment.</para>
+    /// actually walks over.
+    ///
+    /// <para><b>That is tolerable at all three of this method's own callers, but not for one reason.</b>
+    /// Two of them (<c>RepositoryScanner</c>'s subdirectory descent and <c>BundleDrift</c>'s walk)
+    /// use it to decide whether to walk INTO a directory, and there a wrong "not a link" costs
+    /// coverage, not containment. The third, <c>BundleWriter.FirstLinkUnder</c>, is the opposite
+    /// shape: its caller <c>ResetBundle</c> uses a non-null answer to REFUSE a recursive delete, so a
+    /// wrong "not a link" lets the delete proceed. What keeps that safe is not this predicate but
+    /// <see cref="Directory.Delete(string, bool)"/> itself, which unlinks a reparse point rather than
+    /// descending through it -- the scan is there to turn a half-finished delete into a clean refusal,
+    /// belt and braces over a containment guarantee the BCL already makes.</para>
     /// </summary>
     internal static bool IsReparsePoint(string path)
     {
