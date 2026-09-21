@@ -173,6 +173,41 @@ public class OkfVerifyToolTests
     }
 
     /// <summary>
+    /// The doubled-period rule itself, pinned UNCONDITIONALLY.
+    ///
+    /// The end-to-end pin below is a <c>[SkippableFact]</c>: it needs a
+    /// platform that enforces <c>FileShare.None</c> against a second reader,
+    /// and it skips itself where that does not hold (measured running on
+    /// Windows and on Linux; macOS is one of the three CI legs and has never
+    /// been verified). On a leg where it skips, the mutant it exists to catch
+    /// -- reinstating "always append" -- would go green with no signal.
+    /// This drives <see cref="VerificationTargetProblem.DetailAsSentence"/>
+    /// directly, so the rule is pinned on every platform, and it does not rest
+    /// on an OS-authored message happening to end in a period: both halves of
+    /// the rule are supplied as data.
+    ///
+    /// The locked-file test stays as the END-TO-END case -- that the real
+    /// <c>Unreadable</c> arm routes an <see cref="IOException"/>'s message
+    /// through this method at all -- which this one cannot show.
+    /// </summary>
+    [Theory]
+    // An IOException's message: already ends in a period, so nothing is added.
+    [InlineData("The process cannot access the file.", "The process cannot access the file.")]
+    // A library-authored parser message: ends in no period, so one is added.
+    [InlineData("anchors are not supported by the OKF YAML subset", "anchors are not supported by the OKF YAML subset.")]
+    // An ellipsis already ends in a period; appending one would doubt it.
+    [InlineData("the detail trails off...", "the detail trails off...")]
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    public void DetailAsSentence_terminates_a_detail_with_exactly_one_period(string? detail, string expected)
+    {
+        var problem = new VerificationTargetProblem(
+            VerificationTargetProblemKind.Unreadable, "metrics/dau", detail);
+
+        Assert.Equal(expected, problem.DetailAsSentence());
+    }
+
+    /// <summary>
     /// The tool's <c>Unreadable</c> arm had no test at all: a concept file
     /// held open exclusively is neither missing nor unparseable, and the arm
     /// could have been deleted (falling through to "does not exist") without
