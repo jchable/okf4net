@@ -173,11 +173,27 @@ public class ReparsePointsTests
     /// The common case -- no reparse point anywhere in the ancestry -- needs
     /// no filesystem privilege to exercise, so it runs unconditionally.
     /// </summary>
+    /// <remarks>
+    /// <c>TempDir</c>'s own root is not guaranteed link-free: on macOS
+    /// <c>/var</c> is itself a symlink to <c>/private/var</c>, and the default
+    /// temp directory lives under it, so a raw <c>tmp.Path</c>-based path
+    /// genuinely DOES have a reparse-point ancestor there -- resolving it is
+    /// then correct behavior, not a bug, and asserting the raw path comes
+    /// back unchanged would fail for the right reasons on that platform. The
+    /// root is therefore resolved once, the same way the method under test
+    /// would resolve it, and the expectation is built from that already-
+    /// resolved root. This keeps the assertion meaningful everywhere: the
+    /// claim under test is that resolving a path whose ancestry contains no
+    /// (further) reparse point is a no-op, which still fails if the method
+    /// starts mangling paths it should leave alone.
+    /// </remarks>
     [Fact]
     public void ResolveThroughReparsePoints_returns_the_path_unchanged_when_no_ancestor_is_a_reparse_point()
     {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "a", "b.txt");
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(tmp.Path, out var resolvedRoot));
+
+        var path = Path.Combine(resolvedRoot, "a", "b.txt");
 
         Assert.True(ReparsePoints.TryResolveThroughReparsePoints(path, out var resolved));
 
