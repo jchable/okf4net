@@ -333,7 +333,7 @@ public sealed class OkfBundleTools
             }
 
             var sb = new StringBuilder();
-            sb.Append("# ").Append(concept.Document.Frontmatter.Title ?? concept.Id.ToString()).Append('\n').Append('\n');
+            sb.Append("# ").Append(DisplayTitle(concept, concept.Id.ToString())).Append('\n').Append('\n');
 
             var fm = concept.Document.Frontmatter;
             var lc = fm.Lifecycle;
@@ -1406,7 +1406,11 @@ public sealed class OkfBundleTools
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            notes.Append("> Skipped ").Append(rel).Append(" (could not be read: ")
+            // `rel` is a path on disk, and a POSIX filename may hold a line
+            // terminator; folded here and at the "## " heading below for the
+            // same reason every other structured line is. `SkipReason` is a
+            // fixed library word.
+            notes.Append("> Skipped ").Append(OneLine(rel)).Append(" (could not be read: ")
                 .Append(SkipReason(ex)).Append(").").Append('\n').Append('\n');
             return false;
         }
@@ -1421,7 +1425,7 @@ public sealed class OkfBundleTools
             return false;
         }
 
-        changes.Append("## ").Append(rel).Append('\n');
+        changes.Append("## ").Append(OneLine(rel)).Append('\n');
         foreach (var day in matchingDays)
         {
             AppendLogDay(changes, day);
@@ -1431,7 +1435,27 @@ public sealed class OkfBundleTools
         return true;
     }
 
-    /// <summary>Appends one <c>### {date}</c> section and its bulleted entries (bold <c>Kind</c> when present) to <paramref name="sb"/>.</summary>
+    /// <summary>
+    /// Appends one <c>### {date}</c> section and its bulleted entries (bold
+    /// <c>Kind</c> when present) to <paramref name="sb"/>.
+    ///
+    /// <para><b>The entries are folded even though a <c>\n</c> cannot reach
+    /// them.</b> <see cref="ChangeLog.Parse"/> is LF-line-based, so a literal
+    /// newline never survives into <c>Kind</c> or <c>Text</c> — which is
+    /// exactly why this sink went unnoticed. The SOFT terminators do survive:
+    /// U+2028, U+2029, U+0085 and U+000C are ordinary characters to an
+    /// LF-based parser and line breaks to the markdown and JavaScript
+    /// splitters downstream, and a <c>log.md</c> bullet carrying one printed a
+    /// second, forged <c>- **Update**: …</c> bullet (measured). That is the
+    /// whole reason <see cref="OneLine"/> is
+    /// <see cref="string.ReplaceLineEndings(string)"/> rather than a
+    /// <c>\r</c>/<c>\n</c> pass, so the rule applies here like everywhere else
+    /// — "a literal newline cannot get in" is not the test; "nothing
+    /// downstream can start a new line" is.</para>
+    ///
+    /// <para><c>day.Date</c> needs no fold: only dates matching
+    /// <see cref="ChangeLog.IsIsoDate"/> reach here.</para>
+    /// </summary>
     private static void AppendLogDay(StringBuilder sb, LogDay day)
     {
         sb.Append("### ").Append(day.Date).Append('\n');
@@ -1439,11 +1463,11 @@ public sealed class OkfBundleTools
         {
             if (entry.Kind is not null)
             {
-                sb.Append("- **").Append(entry.Kind).Append("**: ").Append(entry.Text).Append('\n');
+                sb.Append("- **").Append(OneLine(entry.Kind)).Append("**: ").Append(OneLine(entry.Text)).Append('\n');
             }
             else
             {
-                sb.Append("- ").Append(entry.Text).Append('\n');
+                sb.Append("- ").Append(OneLine(entry.Text)).Append('\n');
             }
         }
     }
@@ -1488,13 +1512,13 @@ public sealed class OkfBundleTools
 
         foreach (var (concept, score) in shown)
         {
-            // OneLine on the title: it comes from frontmatter, where a `|`
-            // block scalar carries line breaks perfectly legally, and one
+            // DisplayTitle folds it: `title` comes from frontmatter, where a
+            // `|` block scalar carries line breaks perfectly legally, and one
             // result is one "* " line here. (The excerpt below needs no such
             // call -- ConceptSearch.Excerpt returns a single split line by
             // construction -- and `query`/`tag` above come from the caller,
             // not from the bundle.)
-            var title = OneLine(concept.Document.Frontmatter.Title ?? concept.Id.ToString());
+            var title = DisplayTitle(concept, concept.Id.ToString());
             var lc = concept.Document.Frontmatter.Lifecycle;
             sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')');
             if (lc.Status == ConceptStatus.Deprecated)
@@ -1615,7 +1639,11 @@ public sealed class OkfBundleTools
         {
             var lines = concepts
                 .OrderBy(c => c.Id)
-                .Select(c => $"{c.Id} — {c.Document.Frontmatter.Title ?? c.Id.Name}");
+                // The id is already printed beside it here, so the fallback is
+                // the last segment rather than the whole id. AppendSection
+                // folds its bullets too; going through DisplayTitle keeps the
+                // derivation itself in one place.
+                .Select(c => $"{c.Id} — {DisplayTitle(c, c.Id.Name)}");
             AppendSection(sb, "Concepts", lines);
         }
 
@@ -1694,6 +1722,26 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="value">Text from outside this library: a bundle, a receipt, an attester.</param>
     private static string OneLine(string value) => value.ReplaceLineEndings(" ");
+
+    /// <summary>
+    /// A concept's display title — its frontmatter <c>title</c>, or
+    /// <paramref name="fallback"/> (always derived from the already-validated
+    /// <see cref="ConceptId"/>) when it has none — folded by
+    /// <see cref="OneLine"/>.
+    ///
+    /// <para><b>One call site for the one frontmatter field three different
+    /// renderers print into a line of their own structure</b>: this method's
+    /// <c>okf_read_concept</c> H1, <see cref="FormatSearchResults"/>'s
+    /// <c>* </c> lines and <see cref="BuildLevelListing"/>'s concept list. Two
+    /// of the three folded it and the H1 did not, and a <c>title: |</c> block
+    /// scalar there printed a complete, forged <c>## Backlinks</c> section —
+    /// with a bullet — ABOVE the real one, in the same result. Three copies of
+    /// one derivation is what let that happen, so there is now one.</para>
+    /// </summary>
+    /// <param name="concept">The concept whose title is being rendered.</param>
+    /// <param name="fallback">What to print when the concept declares no <c>title</c>.</param>
+    private static string DisplayTitle(Concept concept, string fallback) =>
+        OneLine(concept.Document.Frontmatter.Title ?? fallback);
 
     /// <summary>
     /// Appends a markdown <c>## </c>-heading section, one bullet per line, or

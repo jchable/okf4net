@@ -141,8 +141,12 @@ public class OkfVerifyToolTests
             text);
         Assert.Contains("anchors", text);
         Assert.DoesNotContain("does not exist", text);
-        // No doubled ".." where the parser's own message already ends in one.
-        Assert.DoesNotContain("..", text);
+        // Exactly one terminating period: DetailAsSentence adds one only when
+        // the detail has none. Asserted on the END of the message rather than
+        // as `DoesNotContain("..")`, which would also fire on an id holding
+        // `..` or on any future detail that uses an ellipsis.
+        Assert.EndsWith("subset.", text);
+        Assert.False(text.EndsWith("..", StringComparison.Ordinal), "the detail's terminating period was doubled");
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
     }
 
