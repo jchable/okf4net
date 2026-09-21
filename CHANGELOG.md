@@ -1917,6 +1917,28 @@ and this project adheres to
   write did not happen. The other four cannot forge history on re-read, so
   failing an otherwise good call over a character most callers cannot see
   would cost more than it buys.
+- **And one character class over: `okf_append_log` now REFUSES a control
+  character or a bidirectional override in either field.** The fold above
+  settled the six *line separators*; it left open the class this repo's own
+  shared predicate names first. ESC, backspace, BEL and U+202E reached neither
+  `LineSafeText.ContainsControlCharacter` nor anything equivalent, so they were
+  written verbatim into the user's `log.md` and echoed back in the success
+  message (executed, hexdumped). `ESC[2K ESC[1A` rewrites the terminal line
+  `cat log.md` just printed and backspace erases it, while U+202E reorders the
+  stored text on display — and a `log.md` is an audit trail a HUMAN reads, so
+  what is forged is that reading. The guard now runs the shared predicate (one
+  predicate, every call site) over the FOLDED value — by then U+000C, U+0085,
+  U+2028 and U+2029 are spaces, so the decision above stands untouched — plus a
+  local check for the two bidirectional overrides U+202D/U+202E, which
+  `char.IsControl` does not classify and which are therefore NOT added to the
+  shared predicate that also gates §7 actors. Three treatments, one boundary:
+  `\n`/`\r` refused (they forge §9 history on re-read), those four soft
+  separators folded (they only split a downstream renderer), every other
+  control character and the two overrides refused (no legitimate use in a log
+  entry). Nothing is written and nothing is echoed on a refusal. The limit,
+  stated plainly: this closes the WRITE. A `log.md` an earlier build already
+  wrote is not cleaned retroactively, and `okf_changes_since` still echoes what
+  it finds there, folding line terminators only.
 - **`okf_regenerate_indexes`' own bullet list is folded too.** It rendered
   `- {relative path}` raw, and a directory name may carry a soft line
   terminator (NTFS and POSIX both accept one): a bundle with a directory named

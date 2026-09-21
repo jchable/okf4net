@@ -638,6 +638,76 @@ public class OkfWriteToolsTests
         Assert.False(File.Exists(Path.Combine(tmp.Path, "log.md")), "log.md must not be created by a refused append");
     }
 
+    /// <summary>
+    /// The third treatment, and the boundary between all three: a control
+    /// character or a bidirectional override is REFUSED outright -- neither
+    /// written nor echoed.
+    ///
+    /// <c>\n</c>/<c>\r</c> are refused because they split <c>log.md</c> on
+    /// re-read (§9); U+000C/U+0085/U+2028/U+2029 are folded because they split
+    /// only a downstream renderer and most callers cannot see them; ESC,
+    /// backspace, BEL and U+202E are refused because none has a legitimate use
+    /// in a log entry and each forges what a HUMAN reading the audit trail
+    /// sees -- <c>ESC[2K ESC[1A</c> rewrites the terminal line <c>cat log.md</c>
+    /// just printed, and U+202E reorders the stored text on display. Folding
+    /// them to a space would silently rewrite the caller's words; persisting
+    /// them writes a rendering attack into the user's own repository.
+    ///
+    /// Numeric constants, not literals: a literal ESC or U+202E in source is
+    /// invisible in every editor and diff that would have to review it -- the
+    /// convention <c>Internal/LineSafeText.cs</c> sets.
+    /// </summary>
+    [Theory]
+    [InlineData(0x001B)] // ESC -- forges appearance in a terminal
+    [InlineData(0x0008)] // BACKSPACE -- erases what was already printed
+    [InlineData(0x0007)] // BEL
+    [InlineData(0x202E)] // RIGHT-TO-LEFT OVERRIDE -- reorders the display
+    public void AppendLog_refuses_a_control_character_or_a_bidi_override(int codePoint)
+    {
+        var c = (char)codePoint;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+        var logPath = Path.Combine(tmp.Path, "log.md");
+
+        var kindRefusal = tools.AppendLog("Upd" + c + "ate", "an ordinary entry");
+
+        Assert.StartsWith("Error: invalid kind", kindRefusal);
+        // The refusal must not echo the payload back either: this string is
+        // itself a tool result something may render.
+        Assert.DoesNotContain(c.ToString(), kindRefusal, StringComparison.Ordinal);
+        Assert.False(File.Exists(logPath), "log.md must not be created by a refused append");
+
+        var textRefusal = tools.AppendLog("Update", "real" + c + "text");
+
+        Assert.StartsWith("Error: invalid text", textRefusal);
+        Assert.DoesNotContain(c.ToString(), textRefusal, StringComparison.Ordinal);
+        Assert.False(File.Exists(logPath), "log.md must not be created by a refused append");
+    }
+
+    /// <summary>
+    /// The other side of that boundary: refusing control characters must not
+    /// cost an entry the ordinary non-ASCII it legitimately carries. Accents,
+    /// CJK and a non-BMP emoji (a surrogate PAIR, which a char-by-char guard
+    /// could misread) all reach both the file and the echo unchanged.
+    /// </summary>
+    [Fact]
+    public void AppendLog_still_accepts_accents_cjk_and_a_non_bmp_emoji()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+        const string Kind = "Mise à jour";
+        var text = "Ajout du concept 日本語 " + char.ConvertFromUtf32(0x1F680) + " (fusée).";
+
+        var result = tools.AppendLog(Kind, text);
+
+        Assert.StartsWith("Appended", result);
+        Assert.Contains(Kind, result, StringComparison.Ordinal);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        Assert.Contains("* **" + Kind + "**: " + text, onDisk, StringComparison.Ordinal);
+    }
+
     // log.md always lives directly at BundleRoot, so HasReparsePointAncestor
     // gives no protection here (its walk starts at BundleRoot itself and
     // stops immediately). The real risk is log.md ITSELF being a planted

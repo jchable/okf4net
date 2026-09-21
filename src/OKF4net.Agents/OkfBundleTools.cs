@@ -815,18 +815,42 @@ public sealed class OkfBundleTools
     /// Validates one <see cref="AppendLog"/> argument, returning the rejection
     /// message or <see langword="null"/> when it is acceptable.
     ///
-    /// Both of that method's arguments get the identical three checks, so they
-    /// share one validator rather than two copies that could drift. The
-    /// line-break rejection is the load-bearing one: a newline lets an entry
-    /// forge a fabricated <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet
-    /// that a later <c>ChangeLog.Parse</c> would read back as genuine
-    /// audit-trail history. <c>\n</c> and <c>\r</c> are rejected outright
-    /// rather than stripped, so the caller learns the write did not happen.
+    /// Both of that method's arguments get the identical checks, so they share
+    /// one validator rather than two copies that could drift.
     ///
-    /// <b>That is true of <c>\n</c> and <c>\r</c> only.</b> The other four
-    /// separators a downstream renderer breaks on — U+000C, U+0085, U+2028 and
-    /// U+2029 — are accepted here and folded at the write instead; see
-    /// <see cref="FoldLogField"/> for why the two halves differ.
+    /// <para><b>Three treatments, one boundary.</b> A caller-supplied field is
+    /// written into the user's repository AND echoed into a tool result, so
+    /// every character that survives does so for a stated reason:</para>
+    ///
+    /// <list type="bullet">
+    /// <item><c>\n</c> and <c>\r</c> — <b>REJECTED</b>. They split
+    /// <c>log.md</c> on re-read: a newline lets an entry forge a fabricated
+    /// <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet that a later
+    /// <c>ChangeLog.Parse</c> reads back as genuine audit-trail history (§9).
+    /// Rejected rather than stripped, so the caller learns the write did not
+    /// happen.</item>
+    /// <item>U+000C, U+0085, U+2028 and U+2029 — <b>FOLDED</b> to a space at
+    /// the write (<see cref="FoldLogField"/>), not rejected. They cannot forge
+    /// a §9 line, they only split a downstream renderer, and most callers
+    /// cannot see them, so failing a call over one would cost more than it
+    /// buys.</item>
+    /// <item>Every other control character (ESC, backspace, BEL, the rest of
+    /// C0/C1) and the bidirectional overrides U+202D/U+202E —
+    /// <b>REJECTED</b>. None has a legitimate use in a log entry, and each
+    /// forges what a HUMAN reading the audit trail sees rather than what it
+    /// says: <c>ESC[2K ESC[1A</c> rewrites the terminal line <c>cat log.md</c>
+    /// just printed, backspace erases it, and U+202E reorders the stored text
+    /// on display. Folding them would silently rewrite the caller's words, and
+    /// persisting them writes a rendering attack into the repository.</item>
+    /// </list>
+    ///
+    /// <para>The control-character half reuses
+    /// <see cref="LineSafeText.ContainsControlCharacter"/> — the repo's shared
+    /// predicate, already used at <c>okf_verify</c>'s <c>by</c> — rather than a
+    /// second character list here, which is exactly the drift that predicate's
+    /// own doc comment exists to prevent. It also matches U+2028/U+2029, so it
+    /// runs over the FOLDED value: by then those four are spaces, and only the
+    /// characters this guard means to refuse are left.</para>
     /// </summary>
     /// <param name="value">The argument's value.</param>
     /// <param name="fieldName">The argument's name, as it appears in the message.</param>
@@ -848,7 +872,64 @@ public sealed class OkfBundleTools
                 + "forge fake '## date' or '* entry' lines in log.md).";
         }
 
+        // Over the FOLDED value, not the raw one: ContainsControlCharacter
+        // also matches U+2028/U+2029, which the fold turns into spaces --
+        // guarding the folded text is what lets this reuse the shared
+        // predicate unchanged instead of forking a second character list.
+        // Everything left here is a character the write refuses outright.
+        var folded = FoldLogField(value);
+
+        if (LineSafeText.ContainsControlCharacter(folded))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a control character (ESC, "
+                + "backspace and BEL forge what a human reading log.md sees).";
+        }
+
+        if (ContainsBidiOverride(folded))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a bidirectional override "
+                + "(U+202D/U+202E reorder the stored text on display).";
+        }
+
         return null;
+    }
+
+    /// <summary>
+    /// True when the value carries a Unicode bidirectional OVERRIDE — U+202D
+    /// (LEFT-TO-RIGHT OVERRIDE) or U+202E (RIGHT-TO-LEFT OVERRIDE) — which
+    /// reorders the characters a reader is shown without changing the bytes
+    /// stored, so the <c>log.md</c> a human reads and the <c>log.md</c> a tool
+    /// reads disagree.
+    ///
+    /// Local to this guard rather than added to
+    /// <see cref="LineSafeText.ContainsControlCharacter"/>: neither code point
+    /// is a <see cref="char.IsControl(char)"/> character, so putting them there
+    /// would widen the shared cross-assembly predicate that also gates §7
+    /// actors and <c>at</c> timestamps — a decision for those call sites, not
+    /// one this tool may take on their behalf.
+    ///
+    /// Deliberately the two OVERRIDES only. The neighbouring bidi formatting
+    /// characters — the embeddings U+202A/U+202B, the terminator U+202C, the
+    /// isolates U+2066–U+2069, and the marks U+200E/U+200F/U+061C — can
+    /// reorder a rendering too and are NOT rejected here: same class, but
+    /// widening the rule past "overrides" is a decision that has not been
+    /// taken. Recorded rather than assumed.
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    private static bool ContainsBidiOverride(string value)
+    {
+        foreach (var c in value)
+        {
+            // Numeric constants on purpose: a literal U+202D/U+202E in source
+            // is invisible in every editor and diff that would review this
+            // line (same convention as Internal/LineSafeText.cs).
+            if (c is (char)0x202D or (char)0x202E)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
