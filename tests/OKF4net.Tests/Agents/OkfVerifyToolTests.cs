@@ -141,12 +141,14 @@ public class OkfVerifyToolTests
             text);
         Assert.Contains("anchors", text);
         Assert.DoesNotContain("does not exist", text);
-        // Exactly one terminating period: DetailAsSentence adds one only when
-        // the detail has none. Asserted on the END of the message rather than
-        // as `DoesNotContain("..")`, which would also fire on an id holding
-        // `..` or on any future detail that uses an ellipsis.
+        // This detail ends in no period of its own, so DetailAsSentence adds
+        // one. Asserted on the END of the message rather than as
+        // `DoesNotContain("..")`, which would also fire on an id holding `..`
+        // or on any future detail that uses an ellipsis. The no-doubling half
+        // of the rule cannot be tested here — this arm never takes the
+        // already-ends-in-a-period branch — and lives in
+        // Verify_reports_a_locked_concept_file_as_unreadable, which does.
         Assert.EndsWith("subset.", text);
-        Assert.False(text.EndsWith("..", StringComparison.Ordinal), "the detail's terminating period was doubled");
         Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
     }
 
@@ -202,6 +204,12 @@ public class OkfVerifyToolTests
 
         Assert.StartsWith("Error: concept \"metrics/dau\" could not be read: ", text);
         Assert.DoesNotContain("does not exist", text);
+        // The OS message already ends in a period, so this is the one arm
+        // where DetailAsSentence must NOT append a second one -- the I1 fix
+        // itself, which until now no assertion pinned (reinstating "always
+        // append" left the whole suite green).
+        Assert.EndsWith(".", text);
+        Assert.False(text.EndsWith("..", StringComparison.Ordinal), "the detail's terminating period was doubled");
     }
 
     /// <summary>
