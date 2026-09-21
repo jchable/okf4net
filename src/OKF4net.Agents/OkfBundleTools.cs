@@ -971,9 +971,11 @@ public sealed class OkfBundleTools
     /// uses, then re-rendered through <see cref="ChangeLog.ToMarkdown"/> — the
     /// strict §9 model — so any non-conforming prose or comments in a
     /// hand-authored <c>log.md</c> are not preserved. Never throws for
-    /// expected errors (a null/blank/embedded-null <paramref name="kind"/> or
-    /// <paramref name="text"/>, or a <c>log.md</c> that fails strict UTF-8
-    /// decoding) — those are reported as a plain-text message instead.
+    /// expected errors (a <paramref name="kind"/> or <paramref name="text"/>
+    /// that <see cref="GuardLogField"/> refuses — empty, or carrying a line
+    /// break, a control character or a bidirectional override — or a
+    /// <c>log.md</c> that fails strict UTF-8 decoding) — those are reported as
+    /// a plain-text message instead.
     /// </summary>
     /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
     /// <param name="text">The entry text.</param>
