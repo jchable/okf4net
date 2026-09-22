@@ -291,25 +291,42 @@ public class CliContainerEngineRunTests
     /// call (a real <c>sleep 0.75</c> on POSIX; an approximate <c>ping</c>-based wait
     /// on Windows that in practice can run notably shorter, measured 275-485 ms) and
     /// records one marker line per call, so this test can assert the retry actually
-    /// happened (two lines). It does not depend on either call taking any particular
-    /// duration: whether each is a few hundred ms or the full ~750 ms, two calls plus
-    /// the 250 ms delay between them stay comfortably under
-    /// <see cref="CliContainerEngine.TeardownBudget"/>'s 3 s production default, which
-    /// is all the assertion below requires.
+    /// happened (two lines).
+    /// <para>
+    /// <see cref="CliContainerEngine.TeardownBudget"/> is shrunk here, like the sibling
+    /// <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/>, rather than
+    /// asserting against its 3 s production default -- that default left the assertion
+    /// below only 0.5 s of headroom for process-startup and scheduling overhead, and it
+    /// failed for real on a loaded windows-latest CI runner (3.59 s against a 3.5 s
+    /// bound). <c>budget</c> below is a local variable, not the production constant,
+    /// and the bound is computed FROM it (<c>budget</c> plus a fixed slack), so the two
+    /// stay linked instead of drifting apart the way the literal 3.5 s did. 2 s of
+    /// budget is comfortably above what the two ~750 ms attempts plus the 250 ms delay
+    /// between them need (well over the 500 ms <c>RetryThreshold</c> remains after the
+    /// first attempt, so the retry reliably fires) while still being far smaller than
+    /// the production default; the 3 s of slack on top matches the sibling's headroom
+    /// and was confirmed empirically (20 local runs, see the flaky-teardown-fix report)
+    /// rather than picked by guesswork.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_slow_failing_kill_still_gets_retried_within_the_budget()
     {
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
-        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail));
+        var budget = TimeSpan.FromSeconds(2);
+        var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail))
+        {
+            TeardownBudget = budget,
+        };
         var clock = Stopwatch.StartNew();
 
         var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
             async () => await engine.RunAsync(Spec(TimeSpan.FromMilliseconds(30))));
 
+        var bound = budget + TimeSpan.FromSeconds(3);
         Assert.Contains("exceeded its timeout", ex.Message);
-        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(3.5), $"the timed-out run took {clock.Elapsed}");
+        Assert.True(clock.Elapsed < bound, $"the timed-out run took {clock.Elapsed} against a bound of {bound} (budget {budget})");
         Assert.Equal(2, CountMarkerLines(marker));
     }
 
