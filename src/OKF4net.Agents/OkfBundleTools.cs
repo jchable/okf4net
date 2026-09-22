@@ -393,7 +393,9 @@ public sealed class OkfBundleTools
 
             if (segments.Any(s => s == "..") || Path.IsPathRooted(relPath))
             {
-                return $"Error: invalid path '{path}' — '..' segments and absolute paths are not allowed.";
+                // Folded: `path` is the tool's own argument, which the guard
+                // above rejects for shape, not for line terminators. See OneLine.
+                return $"Error: invalid path '{OneLine(path ?? string.Empty)}' — '..' segments and absolute paths are not allowed.";
             }
 
             var bundle = GetBundle();
@@ -406,7 +408,10 @@ public sealed class OkfBundleTools
                 || !Directory.Exists(fullDir)
                 || ReparsePoints.HasReparsePointOrUninspectableAncestor(bundle.Root, fullDir))
             {
-                return $"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.";
+                // Folded, same reason as the invalid-path line above: this is
+                // the one Browse message an arbitrary string reaches, since
+                // any path that does not resolve lands here. See OneLine.
+                return $"Error: path '{OneLine(path ?? string.Empty)}' not found in the bundle. Use okf_browse to list available directories.";
             }
 
             var indexPath = Path.Combine(fullDir, IndexFilename);
@@ -505,9 +510,12 @@ public sealed class OkfBundleTools
 
             if (scored.Count == 0)
             {
+                // Folded, like the results header: this line is a tool result
+                // of its own, and `query`/`tag` being the caller's arguments
+                // says nothing about what they carry (see OneLine).
                 return effectiveTag is null
-                    ? $"No results for query '{query}'."
-                    : $"No results for query '{query}' with tag '{effectiveTag}'.";
+                    ? $"No results for query '{OneLine(query)}'."
+                    : $"No results for query '{OneLine(query)}' with tag '{OneLine(effectiveTag)}'.";
             }
 
             return FormatSearchResults(query, effectiveTag, scored, Now);
@@ -707,8 +715,16 @@ public sealed class OkfBundleTools
                     // Already a complete "Error: "-prefixed sentence naming the
                     // id (ValidateConceptTarget's own return value, captured
                     // once by CheckVerificationTargets), so it is returned
-                    // as-is -- the same arm FormatVerificationTargetProblem has.
-                    VerificationTargetProblemKind.InvalidId => problem.Detail!,
+                    // as-is -- the same arm FormatVerificationTargetProblem has
+                    // -- except for the fold. This is the ONE arm whose message
+                    // embeds an id that ConceptId's ASCII-only grammar has NOT
+                    // vetted (it is the arm for an id that failed to parse),
+                    // and DebugQuote.Quote escapes Cc controls but not U+2028/
+                    // U+2029, which are Zl/Zp. So a soft terminator in a
+                    // caller's id forged a line here. Folded at this renderer
+                    // rather than inside DebugQuote: that helper is shared with
+                    // the golden-locked CLI. See OneLine.
+                    VerificationTargetProblemKind.InvalidId => OneLine(problem.Detail!),
                     VerificationTargetProblemKind.NotFound =>
                         $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
                     // Deliberately NOT "does not exist": a kind added to the
@@ -726,6 +742,17 @@ public sealed class OkfBundleTools
             // never dates anything itself.
             var outcome = _writer.RecordVerifications(ids, by, at);
 
+            // `by` and `record.ConceptId` are NOT folded on their way into
+            // these lines, and neither exemption rests on provenance (see
+            // OneLine). `by` was REFUSED above by
+            // LineSafeText.ContainsControlCharacter, which covers every C0/C1
+            // control plus U+2028/U+2029 -- a strictly stronger outcome than
+            // folding, and the one the write gate applies too. `record.ConceptId`
+            // exists only for ids that CheckVerificationTargets accepted and
+            // RecordVerifications then wrote, so it has passed ConceptId's
+            // ASCII-only segment charset. AuditText itself is shared with the
+            // golden-locked CLI verb and must not move.
+            //
             // The same line shape as the CLI verb, via the shared AuditText:
             // the CLI's bytes are golden-locked, so the wording must not move
             // because an agent-facing string was tuned. The tool's tests
@@ -1245,6 +1272,13 @@ public sealed class OkfBundleTools
             return "Error: invalid date — it must not contain a null character.";
         }
 
+        // Not folded below, and the reason is a GRAMMAR, not provenance (see
+        // OneLine): ChangeLog.IsIsoDate accepts exactly ten characters, all of
+        // them ASCII digits but for the two '-' it requires at index 4 and 7.
+        // A value that reaches the "# Changes since {date}" heading or the
+        // "No changes since {date}." line has therefore been proved to carry
+        // no terminator at all. If that predicate is ever loosened, these two
+        // sinks need OneLine.
         var date = sinceDate.Trim();
         if (!ChangeLog.IsIsoDate(date))
         {
@@ -1311,10 +1345,19 @@ public sealed class OkfBundleTools
             var fm = concept.Document.Frontmatter;
             if (!fm.IsAttestedComputation)
             {
-                // OneLine on `type`: it is frontmatter, so it can be a block
-                // scalar. `conceptId` is the caller's own argument, already
-                // rejected upstream if it carries a control character.
-                return $"Concept '{conceptId}' is not an Attested Computation (type: {OneLine(fm.Type ?? "(none)")}).";
+                // OneLine on both. `type` is frontmatter, so it can be a block
+                // scalar. `conceptId` is folded too, and the fold is honest
+                // about being belt-and-braces: reaching this line means
+                // ConceptId.TryParse ACCEPTED the id, and ConceptId's segment
+                // charset is ASCII letters/digits/_/./- only, so no terminator
+                // can be here today and no test can make this fold matter.
+                // It is written anyway because the comment it replaces claimed
+                // the wrong guarantee -- "the caller's own argument, already
+                // rejected upstream if it carries a control character", when
+                // GuardConceptId rejects only a NUL -- and because ConceptId's
+                // own remarks point at an open upstream question about relaxing
+                // that ASCII-only rule. This line must not depend on the answer.
+                return $"Concept '{OneLine(conceptId)}' is not an Attested Computation (type: {OneLine(fm.Type ?? "(none)")}).";
             }
 
             var sb = new StringBuilder();
@@ -1677,10 +1720,15 @@ public sealed class OkfBundleTools
         var shown = ConceptSearch.TopDiversified(scored, MaxResults);
 
         var sb = new StringBuilder();
-        sb.Append("# Search: \"").Append(query).Append('"');
+
+        // `query` and `tag` are the tool's own arguments and are folded anyway:
+        // an external audit of PR #108 called okf_search with a query carrying
+        // an LF and got a forged `## FORGED` heading out of this very line. See
+        // OneLine for why provenance is not the boundary.
+        sb.Append("# Search: \"").Append(OneLine(query)).Append('"');
         if (tag is not null)
         {
-            sb.Append(" (tag: ").Append(tag).Append(')');
+            sb.Append(" (tag: ").Append(OneLine(tag)).Append(')');
         }
 
         sb.Append('\n').Append('\n');
@@ -1692,8 +1740,7 @@ public sealed class OkfBundleTools
             // `|` block scalar carries line breaks perfectly legally, and one
             // result is one "* " line here. (The excerpt below needs no such
             // call -- ConceptSearch.Excerpt returns a single split line by
-            // construction -- and `query`/`tag` above come from the caller,
-            // not from the bundle.)
+            // construction.)
             var title = DisplayTitle(concept, concept.Id.ToString());
             var lc = concept.Document.Frontmatter.Lifecycle;
             sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')');
@@ -1797,7 +1844,12 @@ public sealed class OkfBundleTools
         }
 
         var sb = new StringBuilder();
-        sb.Append("# ").Append(segments.Count == 0 ? "(bundle root)" : relPath).Append('\n').Append('\n');
+
+        // `relPath` is Browse's own `path` argument, trimmed. Reaching here
+        // means the directory exists, and a POSIX directory name may hold a
+        // line terminator -- so the H1 this method promises is folded like
+        // every other interpolated value. See OneLine.
+        sb.Append("# ").Append(segments.Count == 0 ? "(bundle root)" : OneLine(relPath)).Append('\n').Append('\n');
 
         if (subdirectories.Count == 0 && concepts.Count == 0)
         {
@@ -1872,10 +1924,30 @@ public sealed class OkfBundleTools
         backlinks.Select(source => source.ToString());
 
     /// <summary>
-    /// <b>The one rule for untrusted text in a line-oriented tool result:</b>
-    /// every line terminator collapses to a single space, so a value that a
-    /// bundle, a container or a warehouse authored can occupy exactly the one
-    /// line the renderer gave it and cannot forge a second.
+    /// <b>The one rule for EVERY value a line-oriented tool result
+    /// interpolates, whatever its provenance:</b> every line terminator
+    /// collapses to a single space, so the value occupies exactly the one line
+    /// the renderer gave it and cannot forge a second.
+    ///
+    /// <para><b>Provenance is not the boundary.</b> That sentence used to read
+    /// "untrusted text", and it carried a deliberate exemption with it: an
+    /// earlier re-review folded bundle, container and warehouse text but left a
+    /// tool's OWN arguments (<c>query</c>, <c>tag</c>, <c>path</c>,
+    /// <c>conceptId</c>) raw, as "caller-supplied, not bundle text". That
+    /// reasoning is wrong. The caller is the model, and a model's argument
+    /// routinely carries text it read a moment earlier — out of a bundle, off a
+    /// web page, out of another tool's result — so "caller-supplied" says
+    /// nothing at all about whether the text is hostile. An external audit of
+    /// PR #108 demonstrated it: <c>okf_search</c> called with
+    /// <c>revenue</c> + LF + <c>## FORGED</c> printed <c># Search: "revenue</c>
+    /// and then a forged <c>## FORGED</c> heading, in the tool's own result
+    /// header. The test is therefore never "who supplied this value"; it is
+    /// "does this renderer promise that this value occupies one line". Where a
+    /// value IS left raw, the justification must name a grammar that has
+    /// already been validated (<see cref="ChangeLog.IsIsoDate"/> for
+    /// <see cref="ChangesSince"/>'s date) or a refusal that has already run
+    /// (<see cref="LineSafeText.ContainsControlCharacter"/> for
+    /// <see cref="Verify"/>'s actor) — never where the value came from.</para>
     ///
     /// <para><see cref="string.ReplaceLineEndings(string)"/> and not a hand-rolled
     /// <c>\r</c>/<c>\n</c> pass: it also folds <c>FF</c>, <c>NEL</c> (U+0085)
@@ -1896,7 +1968,7 @@ public sealed class OkfBundleTools
     /// with. Collections already arrive as JSON (which escapes its own line
     /// endings), so they pass through this unchanged.</para>
     /// </summary>
-    /// <param name="value">Text from outside this library: a bundle, a receipt, an attester.</param>
+    /// <param name="value">Any value about to be interpolated into a line this library promises to keep whole: bundle text, a receipt field, an attester's detail — or one of the tool's own arguments.</param>
     private static string OneLine(string value) => value.ReplaceLineEndings(" ");
 
     /// <summary>
@@ -2267,8 +2339,20 @@ public sealed class OkfBundleTools
         }
     }
 
+    /// <summary>
+    /// The shared "not found" line for <see cref="ReadConcept"/>,
+    /// <see cref="Graph"/>, <see cref="GetComputation"/> and
+    /// <see cref="RunComputationAsync"/>.
+    ///
+    /// <para><paramref name="conceptId"/> is folded. It is the caller's own
+    /// argument, and <see cref="GuardConceptId"/> rejects only a NUL — every
+    /// other terminator reaches here, on the one path an arbitrary string is
+    /// guaranteed to take (an id that does not parse is "not found"). See
+    /// <see cref="OneLine"/>.</para>
+    /// </summary>
+    /// <param name="conceptId">The id the caller asked for, as given.</param>
     private static string ConceptNotFoundMessage(string conceptId) =>
-        $"Concept '{conceptId}' not found. Use okf_browse to list available concepts.";
+        $"Concept '{OneLine(conceptId)}' not found. Use okf_browse to list available concepts.";
 
     /// <summary>
     /// The common conceptId guard shared by <see cref="ReadConcept"/>,

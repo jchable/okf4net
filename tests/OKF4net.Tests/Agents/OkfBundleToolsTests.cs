@@ -434,4 +434,92 @@ public class OkfBundleToolsTests
             junction?.Dispose();
         }
     }
+
+    /// <summary>
+    /// U+2028 LINE SEPARATOR, as a numeric constant: a literal one in source is
+    /// invisible in every editor and diff that would have to review the payload.
+    /// </summary>
+    private const char LineSeparator = (char)0x2028;
+
+    /// <summary>Every terminator <c>OkfBundleTools.OneLine</c> folds.</summary>
+    private static readonly char[] EveryLineTerminator =
+        ['\n', '\r', LineSeparator, (char)0x2029, (char)0x0085, (char)0x000C];
+
+    private static void AssertNoLineStartsWith(string rendered, string marker) =>
+        Assert.DoesNotContain(
+            rendered.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith(marker, StringComparison.Ordinal));
+
+    /// <summary>
+    /// <c>okf_browse</c>'s "not found" line echoes its own <c>path</c>
+    /// argument, and every path that does not resolve reaches it — so an
+    /// arbitrary string is guaranteed to be rendered there. Same class as the
+    /// <c>okf_search</c> header the PR #108 audit reproduced: an argument's
+    /// provenance is not a boundary (see <c>OkfBundleTools.OneLine</c>).
+    /// </summary>
+    [Fact]
+    public void Browse_path_cannot_forge_a_heading_in_the_not_found_message()
+    {
+        using var tmp = new TempDir();
+        var rendered = new OkfBundleTools(tmp.Path).Browse("nowhere\n## FORGED");
+
+        AssertNoLineStartsWith(rendered, "## FORGED");
+        Assert.Equal(
+            "Error: path 'nowhere ## FORGED' not found in the bundle. Use okf_browse to list available directories.",
+            rendered);
+    }
+
+    /// <summary>The same argument, through <c>okf_browse</c>'s other refusal.</summary>
+    [Fact]
+    public void Browse_path_cannot_forge_a_heading_in_the_invalid_path_message()
+    {
+        using var tmp = new TempDir();
+        var rendered = new OkfBundleTools(tmp.Path).Browse("../escape\n## FORGED");
+
+        AssertNoLineStartsWith(rendered, "## FORGED");
+        Assert.Equal(
+            "Error: invalid path '../escape ## FORGED' — '..' segments and absolute paths are not allowed.",
+            rendered);
+    }
+
+    /// <summary>
+    /// The generated level listing prints the requested path as its H1. Getting
+    /// a terminator in there needs a directory that really exists under that
+    /// name, which is why the payload is U+2028: Windows rejects C0 controls in
+    /// filenames but accepts U+2028, and U+2028 is exactly the soft terminator
+    /// an LF-based reading of "this is one line" never sees.
+    /// </summary>
+    [Fact]
+    public void Browse_path_cannot_forge_a_line_in_the_generated_listing()
+    {
+        using var tmp = new TempDir();
+        var dir = "sub" + LineSeparator + "FORGED";
+        Directory.CreateDirectory(Path.Combine(tmp.Path, dir));
+
+        var rendered = new OkfBundleTools(tmp.Path).Browse(dir);
+
+        AssertNoLineStartsWith(rendered, "FORGED");
+        Assert.StartsWith("# sub FORGED", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>ConceptNotFoundMessage</c> is shared by <c>okf_read_concept</c>,
+    /// <c>okf_graph</c>, <c>okf_get_computation</c> and
+    /// <c>okf_run_computation</c>, and it is the path an id that does not parse
+    /// always takes — so it, not the tools' happy paths, is where an arbitrary
+    /// <c>conceptId</c> gets rendered. <c>GuardConceptId</c> rejects only a NUL.
+    /// </summary>
+    [Fact]
+    public void An_unknown_concept_id_cannot_forge_a_heading_in_the_not_found_message()
+    {
+        using var tmp = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path);
+        const string Expected = "Concept 'ghost ## FORGED' not found. Use okf_browse to list available concepts.";
+
+        foreach (var rendered in new[] { tools.ReadConcept("ghost\n## FORGED"), tools.Graph("ghost\n## FORGED") })
+        {
+            AssertNoLineStartsWith(rendered, "## FORGED");
+            Assert.Equal(Expected, rendered);
+        }
+    }
 }

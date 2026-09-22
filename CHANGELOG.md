@@ -1862,6 +1862,38 @@ and this project adheres to
 
 ### Security
 
+- **A tool's OWN arguments can forge a line too, and they no longer can.**
+  Pre-existing on `dev`, found by an external audit of PR #108:
+  `okf_search("revenue" + LF + "## FORGED")` printed `# Search: "revenue` and
+  then a complete, forged `## FORGED` markdown heading — in the tool's own
+  result header (executed). The `No results for query '…'` line carried the
+  same hole, for both `query` and `tag`.
+  The cause was not a missed call site but a rule with an exemption in it: the
+  rounds above folded "untrusted text" and deliberately left a tool's own
+  arguments (`query`, `tag`, `path`, `conceptId`) raw as *caller-supplied, not
+  bundle text*. **Provenance is not the boundary.** The caller is the model, and
+  a model's argument routinely carries text it read a moment earlier — out of a
+  bundle, off a web page, out of another tool's result — so "caller-supplied"
+  says nothing about whether the text is hostile. The rule is now: **every value
+  a line-structured tool result interpolates is folded, whatever its
+  provenance**, and it is stated where the old distinction was
+  (`OkfBundleTools.OneLine`'s doc comment). Where a value is still rendered raw,
+  the justification must name a grammar that has already been validated
+  (`ChangeLog.IsIsoDate` for `okf_changes_since`'s date) or a refusal that has
+  already run (`LineSafeText.ContainsControlCharacter` for `okf_verify`'s
+  actor) — never where the value came from. Sinks closed, all reachable and each
+  pinned by a test that fails when its fold is removed: `okf_search`'s results
+  header and no-results line (`query`, `tag`); `okf_browse`'s
+  `Error: invalid path '…'`, `Error: path '…' not found` and the `# {path}`
+  heading of a generated level listing; the shared
+  `Concept '…' not found.` line behind `okf_read_concept`, `okf_graph`,
+  `okf_get_computation` and `okf_run_computation` (`GuardConceptId` rejects only
+  a NUL); and `okf_verify`'s refusal for an id that does not parse, whose
+  message is `DebugQuote`-quoted — which escapes every Cc control but not
+  U+2028/U+2029, since those are Zl/Zp.
+  Unchanged on purpose: `okf_read_concept`'s concept **body** still does not go
+  through `OneLine` at all, exactly as the `okf_changes_since` entry below
+  already records — this round neither widens nor narrows that residue.
 - **`okf_run_computation` no longer lets a bundle, a container or a warehouse
   forge a line in the outcome the model reads.** §10.5 step 6 makes
   `- displayable: …` and `- verdict: …` the gate an agent checks before showing
