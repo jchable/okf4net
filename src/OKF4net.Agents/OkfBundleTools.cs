@@ -848,13 +848,18 @@ public sealed class OkfBundleTools
     /// and the <c>log.md</c> a tool reads disagree. Ordinary right-to-left
     /// TEXT is NOT affected: Arabic and Hebrew letters carry their own strong
     /// direction and need none of these.</item>
-    /// <item><c>\t</c> — <b>ACCEPTED, verbatim.</b> The one control character
-    /// a log message may legitimately carry. Not folded either: this guard
-    /// rewrites a caller's words only when the character would otherwise break
-    /// structure, and a tab cannot — <c>ChangeLog.Parse</c> splits on LF, a tab
-    /// is not a terminator, and it can never reach the START of a line (the
-    /// renderer always emits <c>* </c> first), the only position where
-    /// markdown would read it as an indented code block.</item>
+    /// <item><c>\t</c> — <b>ACCEPTED, verbatim in the interior of the field.</b>
+    /// The one control character a log message may legitimately carry. Not
+    /// folded to a space the way the four soft separators are: this guard
+    /// rewrites a caller's words only when the character would otherwise
+    /// break structure, and an interior tab cannot — <c>ChangeLog.Parse</c>
+    /// splits on LF, a tab is not a terminator, and it can never reach the
+    /// START of a line (the renderer always emits <c>* </c> first), the only
+    /// position where markdown would read it as an indented code block. A
+    /// LEADING or TRAILING tab does not survive, though: <see cref="FoldLogField"/>
+    /// trims the field before this guard or the writer ever sees it, exactly
+    /// as it has always trimmed a leading/trailing space — so <c>"\tUpdate\t"</c>
+    /// is written (and echoed) as <c>Update</c>, not <c>&lt;TAB&gt;Update&lt;TAB&gt;</c>.</item>
     /// </list>
     ///
     /// <para>The control-character half reuses
@@ -961,10 +966,14 @@ public sealed class OkfBundleTools
             or (char)0x202A or (char)0x202B or (char)0x202C or (char)0x202D or (char)0x202E
             or (char)0x2066 or (char)0x2067 or (char)0x2068 or (char)0x2069;
 
-
     /// <summary>
     /// The four separators <see cref="GuardLogField"/> deliberately does NOT
-    /// reject, folded to a single space before the value is written.
+    /// reject, folded to a single space before the value is written. Leading
+    /// and trailing whitespace, tabs included, is removed first by the
+    /// <see cref="string.Trim()"/> this method also does — the same trimming
+    /// an ordinary leading/trailing space has always had, and the reason a
+    /// tab is "verbatim" only in the interior of a field (see the <c>\t</c>
+    /// item on <see cref="GuardLogField"/>).
     ///
     /// <para><b>Why the asymmetry.</b> <c>\n</c> and <c>\r</c> are REFUSED
     /// (<see cref="GuardLogField"/>): <c>ChangeLog.Parse</c> is LF-line-based,
@@ -1003,7 +1012,7 @@ public sealed class OkfBundleTools
     /// hand-authored <c>log.md</c> are not preserved. Never throws for
     /// expected errors (a <paramref name="kind"/> or <paramref name="text"/>
     /// that <see cref="GuardLogField"/> refuses — empty, or carrying a line
-    /// break, a control character or a bidirectional override — or a
+    /// break, a control character or a bidirectional control character — or a
     /// <c>log.md</c> that fails strict UTF-8 decoding) — those are reported as
     /// a plain-text message instead.
     /// </summary>
@@ -1558,11 +1567,16 @@ public sealed class OkfBundleTools
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            // `rel` is a path on disk, and a POSIX filename may hold a line
-            // terminator; folded here and at the "## " heading below for the
-            // same reason every other structured line is. `SkipReason` is a
-            // fixed library word.
-            notes.Append("> Skipped ").Append(OneLine(rel)).Append(" (could not be read: ")
+            // `rel` is a path on disk, not text this process wrote: a POSIX
+            // filename may hold a line terminator, and (as of the post-audit
+            // re-review's Important 1) any of the other filesystems here
+            // accepts a bidi control in a directory name too, with no
+            // privilege needed. It goes through `OneLineLogText`, not
+            // `OneLine` alone, for the same reason entry text does — folding
+            // the four soft separators answers "nothing downstream can start
+            // a new line", not "nothing can reorder what a human is shown".
+            // `SkipReason` is a fixed library word.
+            notes.Append("> Skipped ").Append(OneLineLogText(rel)).Append(" (could not be read: ")
                 .Append(SkipReason(ex)).Append(").").Append('\n').Append('\n');
             return false;
         }
@@ -1577,7 +1591,7 @@ public sealed class OkfBundleTools
             return false;
         }
 
-        changes.Append("## ").Append(OneLine(rel)).Append('\n');
+        changes.Append("## ").Append(OneLineLogText(rel)).Append('\n');
         foreach (var day in matchingDays)
         {
             AppendLogDay(changes, day);
@@ -1908,12 +1922,17 @@ public sealed class OkfBundleTools
     /// established rule for this sink; everything the fold leaves behind is a
     /// character that has no business in a rendered line at all.</para>
     ///
-    /// <para>Scoped to the <c>log.md</c> readers this round. The same
-    /// exposure exists wherever <see cref="OneLine"/> alone renders text this
-    /// library did not write (concept bodies, titles, receipt values, and the
-    /// relative PATHS printed by this method's own callers) — folding a line
-    /// terminator was never a claim about ESC. Widening it is a separate
-    /// decision, not an oversight here.</para>
+    /// <para>Scoped to the <c>log.md</c> readers this round — which, as of
+    /// the post-audit re-review's Important 1, includes the relative path
+    /// <see cref="AppendLogFileChanges"/> prints in its own <c>## {path}</c>
+    /// heading and <c>&gt; Skipped {path}</c> note: a path is text this
+    /// library did not write either, so it needs the same treatment as entry
+    /// content, not a new escaper. The same exposure still exists wherever
+    /// <see cref="OneLine"/> ALONE renders text this library did not write
+    /// (concept bodies, titles, receipt values, and other paths such as
+    /// <see cref="GetComputation"/>'s computation-file path) — folding a line
+    /// terminator was never a claim about ESC. Widening it further is a
+    /// separate decision, not an oversight here.</para>
     /// </summary>
     /// <param name="value">Text read back out of a <c>log.md</c>.</param>
     private static string OneLineLogText(string value)

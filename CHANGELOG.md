@@ -1954,15 +1954,20 @@ and this project adheres to
   as U+202E, and no reader of a rendered `log.md` can see that distinction.
   Ordinary right-to-left TEXT is unaffected — Arabic and Hebrew letters carry
   their own strong direction and need none of these (pinned by a test).
-  **TAB is accepted, verbatim**, as the one control character a log message may
-  legitimately carry: it is exempted from the check (the predicate itself is
-  untouched — it sees a probe in which tabs are spaces) and it is not folded
-  either, because the write rewrites a caller's words only when the character
-  would otherwise break structure, and a tab cannot. So: `\n`/`\r` refused
-  (they forge §9 history on re-read), the four soft separators folded (they
-  only split a downstream renderer), tab accepted as-is, every other control
-  character and every bidi control refused. Nothing is written and nothing is
-  echoed on a refusal.
+  **TAB is accepted, verbatim in the interior of a field**, as the one control
+  character a log message may legitimately carry there: it is exempted from
+  the check (the predicate itself is untouched — it sees a probe in which tabs
+  are spaces) and it is not folded to a space either, because the write
+  rewrites a caller's words only when the character would otherwise break
+  structure, and an interior tab cannot. A tab at either EDGE of a field does
+  not survive, though: `FoldLogField`'s `Trim()` removes it exactly as it has
+  always removed a leading/trailing space, so `"\tUpdate\t"` still writes as
+  `Update` (whitespace-only, so no security consequence — recorded so
+  "verbatim" isn't read as absolute). So: `\n`/`\r` refused (they forge §9
+  history on re-read), the four soft separators folded (they only split a
+  downstream renderer), an interior tab accepted as-is (edge tabs trimmed like
+  edge spaces), every other control character and every bidi control refused.
+  Nothing is written and nothing is echoed on a refusal.
 - **`okf_changes_since` now escapes what an existing `log.md` already carries,
   instead of passing it through.** The guard above closes the WRITE; a `log.md`
   written by an older build, by another producer or by hand still carries
@@ -1970,20 +1975,45 @@ and this project adheres to
   fold only — so ESC, backspace and every bidi control reached the model and
   whatever renders the tool result. A read has nothing to refuse (the file
   exists, and the entries are a human's words), so both fields now render each
-  such character VISIBLY as `<U+XXXX>`: every word a human wrote survives —
-  nothing is silently dropped, which an audit trail's own reader must never do
-  — while nothing left in the line can reorder a display or drive a terminal.
-  It is also the form a reader can act on: `<U+202E>` in a rendered entry says
-  exactly what is in the file and that someone put it there. TAB is exempt on
-  this side too, matching the write. The date heading needs nothing: only
+  such character VISIBLY as `<U+XXXX>`: every word the escaper can see
+  survives — nothing IT drops silently, which an audit trail's own reader must
+  never do — while nothing left in the line can reorder a display or drive a
+  terminal. (This is a claim about the escaper, not about the whole read path:
+  `ChangeLog.Parse` already `Trim()`s each field's leading/trailing whitespace,
+  tabs included, before the escaper ever runs — pre-existing §9 behaviour,
+  whitespace-only, not introduced here.) It is also the form a reader can act
+  on: `<U+202E>` in a rendered entry says exactly what is in the file and that
+  someone put it there. TAB is exempt on this side too (in the interior;
+  see above), matching the write. The date heading needs nothing: only
   `ChangeLog.IsIsoDate` headings are rendered, and that grammar admits digits
   and hyphens only. Scoped to the `log.md` entry readers: the same exposure
   remains wherever `OneLine` alone renders text this library did not write —
-  the log file's own relative PATH in `## {path}` and `> Skipped {path}`,
-  `okf_regenerate_indexes`' path bullets, `okf_read_concept`'s verbatim concept
-  BODY, frontmatter values, contract and receipt fields, and validator
-  diagnostics — which is the established echo-only posture, recorded here
-  rather than widened silently.
+  `okf_regenerate_indexes`' path bullets, frontmatter values, contract and
+  receipt fields, and validator diagnostics — which is the established
+  echo-only posture, recorded here rather than widened silently.
+  `okf_read_concept`'s concept BODY is a wider gap than that list implies: it
+  is not rendered through `OneLine` at all, so ESC and a bidi control both
+  come back completely raw, not merely un-escaped.
+- **Post-audit re-review, Important 1: `okf_changes_since`'s own `## {path}`
+  heading and `> Skipped {path}` note now escape too**, closing a gap the §9
+  entry above left open on the day it landed: those two lines rendered the
+  log file's relative PATH through the plain `OneLine` fold alone, not the
+  `OneLineLogText` escaper introduced for entry content, so a bidi control in
+  a directory name (accepted by NTFS with no privilege needed; executed)
+  reached the model, a terminal or a markdown viewer raw — an unterminated
+  override reverses the remainder of the rendered line, so the path a human
+  is shown is not the path on disk. A path is not log entry text, but it is
+  text this library did not write, which is exactly what `OneLineLogText`
+  exists to make inert — so both sites now call it instead of `OneLine`, no
+  new helper. `okf_regenerate_indexes`' own path bullets are a separate,
+  already-disclosed sink (see the entry below) and are deliberately left for
+  a later shared pass rather than folded into this one-line fix.
+  - **Accepted residue, not fixed here — recorded so a later reader does not
+    mistake it for new:** a lone unpaired UTF-16 surrogate in a log field
+    (e.g. `\uD83D` with no low surrogate following) is silently transcoded to
+    U+FFFD on write; this is `OkfEncodings`' existing replacement-fallback
+    behaviour, not anything this area does, and U+FFFD is inert, so no fix is
+    proposed.
 - **`okf_regenerate_indexes`' own bullet list is folded too.** It rendered
   `- {relative path}` raw, and a directory name may carry a soft line
   terminator (NTFS and POSIX both accept one): a bundle with a directory named

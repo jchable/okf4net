@@ -782,6 +782,30 @@ public class OkfWriteToolsTests
         Assert.Contains("* **Upd" + tab + "ate**: real" + tab + "text", onDisk, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Post-audit re-review, Minor 3: "verbatim" above is exact only for an
+    /// INTERIOR tab. <c>FoldLogField</c> is <c>value.Trim().ReplaceLineEndings(" ")</c>,
+    /// and <c>Trim()</c> runs first, so a tab at either edge of a field is
+    /// gone before the guard or the writer ever sees it — the same trimming
+    /// an ordinary leading/trailing space has always had. Benign (whitespace
+    /// only), but worth pinning so the doc comments' now-qualified claim
+    /// stays true.
+    /// </summary>
+    [Fact]
+    public void AppendLog_trims_a_leading_and_trailing_tab_like_a_leading_and_trailing_space()
+    {
+        var tab = (char)0x0009;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog(tab + "Update" + tab, tab + "real text" + tab);
+
+        Assert.StartsWith("Appended", result);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        Assert.Contains("* **Update**: real text", onDisk, StringComparison.Ordinal);
+        Assert.DoesNotContain(tab.ToString(), onDisk, StringComparison.Ordinal);
+    }
 
     // log.md always lives directly at BundleRoot, so HasReparsePointAncestor
     // gives no protection here (its walk starts at BundleRoot itself and
