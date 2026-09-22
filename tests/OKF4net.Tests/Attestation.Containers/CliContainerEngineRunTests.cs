@@ -293,20 +293,32 @@ public class CliContainerEngineRunTests
     /// records one marker line per call, so this test can assert the retry actually
     /// happened (two lines).
     /// <para>
-    /// <see cref="CliContainerEngine.TeardownBudget"/> is shrunk here, like the sibling
-    /// <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/>, rather than
-    /// asserting against its 3 s production default -- that default left the assertion
-    /// below only 0.5 s of headroom for process-startup and scheduling overhead, and it
-    /// failed for real on a loaded windows-latest CI runner (3.59 s against a 3.5 s
-    /// bound). <c>budget</c> below is a local variable, not the production constant,
-    /// and the bound is computed FROM it (<c>budget</c> plus a fixed slack), so the two
-    /// stay linked instead of drifting apart the way the literal 3.5 s did. 2 s of
-    /// budget is comfortably above what the two ~750 ms attempts plus the 250 ms delay
-    /// between them need (well over the 500 ms <c>RetryThreshold</c> remains after the
-    /// first attempt, so the retry reliably fires) while still being far smaller than
-    /// the production default; the 3 s of slack on top matches the sibling's headroom
-    /// and was confirmed empirically (20 local runs, see the flaky-teardown-fix report)
-    /// rather than picked by guesswork.
+    /// <see cref="CliContainerEngine.TeardownBudget"/> is widened here rather than
+    /// shrunk, unlike the sibling <see cref="A_hung_engine_kill_does_not_hang_the_timed_out_run"/>:
+    /// that sibling shrinks its budget purely for test speed (a hung <c>kill</c>
+    /// consumes its whole slice of the budget every time, so a smaller budget makes a
+    /// deterministically slow test faster without changing what it proves). This test
+    /// is different -- its <c>kill</c> answers on its own, so the retry firing depends
+    /// on the budget still having the internal <c>RetryThreshold</c> (500 ms) left
+    /// over after the first attempt, and that first attempt's real cost is <em>not</em>
+    /// just the ~750 ms POSIX <c>sleep</c> (or the Windows <c>ping</c>, measured
+    /// 275-485 ms): it also carries process-spawn and pipe-drain overhead that a
+    /// previous 2 s budget gave only ~750 ms of headroom to absorb, which was enough on
+    /// an unloaded box but not on a loaded windows-latest runner (3.59 s against a
+    /// 3.5 s bound) and, per the CI run this comment now documents, not on a loaded
+    /// ubuntu-latest runner either (only 1 of the 2 expected `kill` markers was
+    /// written -- the retry was skipped because too little budget was left). A 3.5 s
+    /// (windows) or 2 s (POSIX) budget both left too little of that margin. Rather than
+    /// re-tuning the same knob a second time, <c>budget</c> here is set to comfortably
+    /// exceed 2x the slower attempt plus the retry delay (2 x 0.75 s + 0.25 s = 1.75 s
+    /// on POSIX; smaller on Windows) by roughly 3 s of headroom -- enough to absorb
+    /// even a heavily loaded shared CI runner's scheduling noise without the
+    /// RetryThreshold check ever coming close to the edge. The assertion below still
+    /// derives its elapsed bound from this budget plus a fixed slack (matching the
+    /// sibling's own pattern) rather than a bare literal, so the two numbers cannot
+    /// drift apart the way the old literal 3.5 s did. Confirmed empirically: 20 runs on
+    /// Windows and 20 runs in a Linux container (dotnet/sdk:10.0), see the
+    /// retry-test-fix report.
     /// </para>
     /// </summary>
     [Fact]
@@ -314,7 +326,7 @@ public class CliContainerEngineRunTests
     {
         using var tmp = new TempDir();
         var marker = System.IO.Path.Combine(tmp.Path, "kill-calls.txt");
-        var budget = TimeSpan.FromSeconds(2);
+        var budget = TimeSpan.FromSeconds(5);
         var engine = new CliContainerEngine(DispatchingEngine(tmp, marker, runHangSeconds: 20, killMode: KillMode.SlowFail))
         {
             TeardownBudget = budget,
