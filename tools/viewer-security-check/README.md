@@ -12,8 +12,9 @@ no dangerous URL schemes, no raw `<script>`/`<svg onload>`/`<iframe>`/
 second battery of ordinary markdown (heading, list, bold, fenced code,
 relative link, plain image, GFM task-list checkboxes rendering with correct
 checked/unchecked state, disallowed wrapper tags like `<details>`/`<div>`
-keeping their text) asserts the sanitizer isn't so aggressive it breaks
-normal rendering.
+being unwrapped -- dropped themselves, but with their already-sanitized
+children, links and tables included, kept in place) asserts the sanitizer
+isn't so aggressive it breaks normal rendering.
 
 ## Why this exists
 
@@ -22,8 +23,19 @@ normal rendering.
 allowlist (a handful of tags gated further by an attribute-value constraint,
 e.g. `<input>` survives only as `type="checkbox"`, forced `disabled`), a
 per-tag attribute allowlist that drops every `on*` handler, URL-scheme
-validation on `href`/`src`, and an opaque-tags table (`<script>`/`<style>`)
-dropped with no text kept, since their content is source, not prose. That
+validation on `href`/`src`, and an opaque-tags table (`<script>`, `<style>`,
+`<iframe>`, `<noembed>`, `<noframes>`, `<xmp>`, `<plaintext>`, `<template>`,
+`<base>`) dropped with no content kept at all, since it is source, not prose.
+A disallowed tag that is *not* on that opaque table (e.g. `<div>`,
+`<details>`) is unwrapped instead: the element itself is dropped, but its
+already-sanitized children move up in its place. The unwrap detaches every
+node bottom-up and re-appends each kept node top-down, so every unwrap
+mutation moves one childless node (removing an opaque element still drags its
+subtree); the "Unwrap cost" cases in `run.js` count the nodes every mutation
+drags while sanitizing and assert that stays within 4 × N (N = nodes in the
+parsed body) on four shapes, one of them nested opaque elements -- a
+deterministic count, not a timing, and no case in the harness asserts a
+wall-clock bound. That
 sanitizer is the whole defense, not one layer of it.
 
 An earlier version of this file also patched marked's `renderer.html` hooks

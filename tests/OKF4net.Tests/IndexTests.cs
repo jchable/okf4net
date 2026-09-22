@@ -229,6 +229,70 @@ public class IndexTests
     }
 
     [Fact]
+    public void Regenerate_with_trailing_separator_writes_the_root_index_and_matches_the_separatorless_run()
+    {
+        // §8: bundleRoot with a trailing directory separator used to make
+        // DirectoriesToIndex's `rootParent` (Path.GetDirectoryName(bundleRoot))
+        // equal to bundleRoot itself (Path.GetFullPath alone does not trim a
+        // trailing separator -- see ReparsePoints.CanonicalizeRoot's remarks),
+        // so the ancestor walk from any md file's directory broke BEFORE ever
+        // adding the bundle root to the set of directories to index, and the
+        // root index.md was silently never written. Compare the two runs'
+        // entire written trees byte for byte, not just "the root got written",
+        // so any other divergence a bare GetFullPath swap could introduce
+        // would also fail this test.
+        using var plain = new TempDir();
+        WriteDoc(plain, "datasets/ga4.md", "BigQuery Dataset", "GA4 Dataset", "GA4 obfuscated ecommerce sample.");
+        WriteDoc(plain, "tables/users.md", "BigQuery Table", "users", "Per-user dimension.");
+        var plainWritten = IndexGenerator.RegenerateIndexes(plain.Path);
+
+        using var trailing = new TempDir();
+        WriteDoc(trailing, "datasets/ga4.md", "BigQuery Dataset", "GA4 Dataset", "GA4 obfuscated ecommerce sample.");
+        WriteDoc(trailing, "tables/users.md", "BigQuery Table", "users", "Per-user dimension.");
+        var trailingRoot = trailing.Path + Path.DirectorySeparatorChar;
+        var trailingWritten = IndexGenerator.RegenerateIndexes(trailingRoot);
+
+        // The root index.md must actually be among the files written.
+        Assert.Contains(Path.Combine(plain.Path, "index.md"), plainWritten);
+        Assert.Contains(Path.Combine(trailing.Path, "index.md"), trailingWritten);
+
+        // Same count and same relative set of written paths.
+        Assert.Equal(plainWritten.Count, trailingWritten.Count);
+        var plainRel = plainWritten.Select(p => Path.GetRelativePath(plain.Path, p)).OrderBy(p => p, StringComparer.Ordinal).ToList();
+        var trailingRel = trailingWritten.Select(p => Path.GetRelativePath(trailing.Path, p)).OrderBy(p => p, StringComparer.Ordinal).ToList();
+        Assert.Equal(plainRel, trailingRel);
+
+        // Byte-for-byte identical content for every written file.
+        foreach (var rel in plainRel)
+        {
+            var plainContent = File.ReadAllText(Path.Combine(plain.Path, rel));
+            var trailingContent = File.ReadAllText(Path.Combine(trailing.Path, rel));
+            Assert.Equal(plainContent, trailingContent);
+        }
+    }
+
+    [Fact]
+    public void Regenerate_with_trailing_alt_separator_writes_the_root_index()
+    {
+        // The alternate separator ('/' on Windows) must be trimmed the same
+        // way as the platform's primary separator -- Path.TrimEndingDirectorySeparator
+        // (via ReparsePoints.CanonicalizeRoot) trims both.
+        if (Path.DirectorySeparatorChar == Path.AltDirectorySeparatorChar)
+        {
+            return; // The spelling differs only on platforms such as Windows.
+        }
+
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "datasets/ga4.md", "BigQuery Dataset", "GA4 Dataset", "GA4 obfuscated ecommerce sample.");
+
+        var trailingAltRoot = tmp.Path + Path.AltDirectorySeparatorChar;
+        var written = IndexGenerator.RegenerateIndexes(trailingAltRoot);
+
+        Assert.Contains(Path.Combine(tmp.Path, "index.md"), written);
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
+    }
+
+    [Fact]
     public void Regenerate_skips_empty_directories()
     {
         using var tmp = new TempDir();
@@ -415,6 +479,109 @@ public class IndexTests
         Assert.False(File.Exists(Path.Combine(external.Path, "index.md")));
     }
 
+    [SkippableFact]
+    public void Index_write_is_skipped_for_a_directory_swapped_for_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1: same substitution window as the test above, but the junction
+        // that replaces "x/y" cannot be inspected by the current user (deny
+        // ReadAttributes on it, deny listing on "x"), while the write still
+        // traverses it. The lenient IsReparsePoint answered "not a link" and
+        // x/y's index.md landed in `external`. The late guard must fail closed.
+        //
+        // The deny-listing ACE on "x" is lifted again in the hook for "x/zz",
+        // which sorts after "x/y" at the same depth: "x" itself is indexed
+        // last, and a directory it cannot list would abort the run for a
+        // reason that has nothing to do with the guard under test.
+        //
+        // The skip decision comes FIRST, before anything the hook does: off
+        // Windows (or when the deny setup does not take), the hook would
+        // otherwise delete "x/y" and leave RegenerateIndexes writing into a
+        // directory that no longer exists -- a crash, not a skip.
+        Skip.IfNot(OperatingSystem.IsWindows(), "needs Windows (a junction plus deny ACEs)");
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "x/y/a.md", "BigQuery Dataset", "A", "desc");
+        WriteDoc(tmp, "x/zz/b.md", "BigQuery Dataset", "B", "desc");
+        using var external = new TempDir();
+
+        var swapped = Path.Combine(tmp.Path, "x", "y");
+        var later = Path.Combine(tmp.Path, "x", "zz");
+        UninspectableJunction? junction = null;
+        IndexGenerator.BeforeLateReparseCheckForTest = directory =>
+        {
+            if (string.Equals(directory, swapped, StringComparison.Ordinal))
+            {
+                Directory.Delete(swapped, recursive: true);
+                junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+                if (junction is null)
+                {
+                    // Setup failed: put a plain directory back so the run
+                    // completes, and let the skip below report it.
+                    Directory.CreateDirectory(swapped);
+                }
+            }
+            else if (string.Equals(directory, later, StringComparison.Ordinal))
+            {
+                junction?.Lift();
+            }
+        };
+
+        try
+        {
+            var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+
+            Skip.If(junction is null, "the junction's deny ACEs could not be set up on this machine");
+            Assert.DoesNotContain(Path.Combine(swapped, "index.md"), written);
+            Assert.Contains(Path.Combine(later, "index.md"), written);
+            Assert.False(File.Exists(Path.Combine(external.Path, "index.md")));
+        }
+        finally
+        {
+            IndexGenerator.BeforeLateReparseCheckForTest = null;
+            junction?.Dispose();
+        }
+    }
+
+    [SkippableFact]
+    public void Index_write_is_skipped_for_an_index_file_swapped_for_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // H1 fix round (M1): right before "d"'s late checks, the seam plants a
+        // junction named "d/index.md" whose attributes cannot be read ("d"
+        // denies listing; "d" itself stays readable, so the ancestor check
+        // passes). Only the check on the index.md FILE node can skip it. (Not
+        // an escape: without that check the OS refuses to write a file over a
+        // directory, and the run throws.) Skipped before anything runs off
+        // Windows.
+        Skip.IfNot(OperatingSystem.IsWindows(), "needs Windows (a junction plus deny ACEs)");
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "d/a.md", "BigQuery Dataset", "A", "desc");
+        using var external = new TempDir();
+
+        var dir = Path.Combine(tmp.Path, "d");
+        UninspectableJunction? junction = null;
+        IndexGenerator.BeforeLateReparseCheckForTest = directory =>
+        {
+            if (string.Equals(directory, dir, StringComparison.Ordinal))
+            {
+                junction = tmp.TryCreateUninspectableJunction(Path.Combine("d", "index.md"), external.Path);
+            }
+        };
+
+        try
+        {
+            var written = IndexGenerator.RegenerateIndexes(tmp.Path);
+
+            Skip.If(junction is null, "the junction's deny ACEs could not be set up on this machine");
+            Assert.DoesNotContain(Path.Combine(dir, "index.md"), written);
+            Assert.Contains(Path.Combine(tmp.Path, "index.md"), written);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+        }
+        finally
+        {
+            IndexGenerator.BeforeLateReparseCheckForTest = null;
+            junction?.Dispose();
+        }
+    }
+
     // ----------------------------------------------------------------
     // F2 [Security]: the late guard re-checked HasReparsePointAncestor
     // (ancestors of the directory about to be indexed) but never the
@@ -462,7 +629,7 @@ public class IndexTests
     }
 
     // ----------------------------------------------------------------
-    // A4: symlinked-root regression guard. HasReparsePointAncestor's late
+    // A4: symlinked-root regression guard. HasReparsePointOrUninspectableAncestor's late
     // re-check must NEVER inspect bundleRoot itself -- only directories
     // strictly between the write target and bundleRoot. A bundle root that
     // is itself a symlink/junction/mount is a legitimate, common setup

@@ -230,6 +230,30 @@ public class PruningTests
     }
 
     [Fact]
+    public void A_deleted_source_file_loses_its_concepts_even_with_a_trailing_slash_on_repo()
+    {
+        // Same defect, same shape as A_deleted_source_file_loses_its_concepts, but with a trailing
+        // separator on --repo (as shell completion, or a path ending in `/`/`\` typed by hand, would
+        // pass it). RepositoryFileExists used to build `root + DirectorySeparatorChar` from an
+        // untrimmed `Path.GetFullPath(repoPath)`, which for a trailing-slash repoPath is already
+        // separator-terminated -- so the comparison doubled up and no real candidate path could ever
+        // start with it. Every file then read as "outside the repository", which the conservative
+        // fallback treats as "still exists", so a deleted file's concept was never pruned.
+        using var tmp = new TempDir();
+        tmp.WriteSource("src/X.cs");
+        WriteRun(tmp, [A, "code/csharp/n/x/y"], complete: true,
+            sources: Owners(("code/csharp/n/x/y", ["src/X.cs"])),
+            attempted: [(SharedSource, FileStatus.Extracted), ("src/X.cs", FileStatus.Extracted)]);
+
+        File.Delete(Path.Combine(tmp.RepoPath, "src", "X.cs"));
+        var result = WriteRun(tmp, [A], complete: true, repoPath: tmp.RepoPath + Path.DirectorySeparatorChar);
+
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/x/y.md")));
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "code/csharp/n/t/a.md")));
+        Assert.Equal(new[] { "code/csharp/n/x/y" }, result.Pruned.Select(id => id.ToString()));
+    }
+
+    [Fact]
     public void A_source_file_that_still_exists_but_was_not_visited_keeps_its_concepts()
     {
         // Identical to the test above except that the file is still on disk. It fell out of scope --

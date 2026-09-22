@@ -25,6 +25,8 @@ public class CliTests
     private static readonly string V02BundlePath =
         Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02");
 
+    private static readonly string OkfV02 = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02");
+
     private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
 
     [Fact]
@@ -273,6 +275,17 @@ public class CliTests
     }
 
     /// <summary>
+    /// `asOf` is that instant's date only; `evaluatedAt` is the exact instant
+    /// §5.5 staleness was evaluated at, from the same single clock read.
+    /// </summary>
+    [Fact]
+    public void Validate_json_reports_the_instant_it_evaluated_at()
+    {
+        var (_, out_, _) = Run("validate", OkfV02, "--as-of", "2099-06-01", "--json");
+        Assert.Contains("\"asOf\":\"2099-06-01\",\"evaluatedAt\":\"2099-06-01T00:00:00Z\"", out_, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// One document, one spelling: a consumer grouping findings by trust tier
     /// must be able to look that tier straight up in the counts object.
     /// </summary>
@@ -438,6 +451,22 @@ public class CliTests
         using var tmp = new TempDir();
         tmp.Write("a.md", "---\ntype: Thing\ntitle: A\n---\n\nbody\n");
         var r = Run("index", tmp.Path);
+        Assert.Equal(0, r.Code);
+        Assert.Contains("index file(s) regenerated", r.Out);
+        Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
+    }
+
+    [Fact]
+    public void Index_with_trailing_separator_still_writes_the_root_index()
+    {
+        // §8: `okf index dir\` used to make IndexGenerator compute the root's
+        // parent as the bundle itself, so the ancestor walk never added the
+        // root to the set of directories to index and the root index.md was
+        // silently omitted -- see IndexTests' library-level coverage of the
+        // same bug in RegenerateIndexesWith. This pins it at the CLI surface.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Thing\ntitle: A\n---\n\nbody\n");
+        var r = Run("index", tmp.Path + Path.DirectorySeparatorChar);
         Assert.Equal(0, r.Code);
         Assert.Contains("index file(s) regenerated", r.Out);
         Assert.True(File.Exists(Path.Combine(tmp.Path, "index.md")));
@@ -925,23 +954,18 @@ public class CliTests
     }
 
     /// <summary>
-    /// A repeated flag resolves to its FIRST occurrence, the rule every verb
-    /// inherited from the original `Array.IndexOf` lookup and which the design
-    /// spec (§4.1) documents. The later occurrence still consumes its own
-    /// value, so that value never lands in the positional slot.
+    /// A repeated valued flag is refused rather than resolved to its first
+    /// occurrence: a script that appends an override flag (e.g. a later
+    /// `--as-of`) got the earlier value with no diagnostic otherwise -- the
+    /// exact "silently different behaviour than asked for" this scanner
+    /// exists to stop.
     /// </summary>
     [Fact]
-    public void Audit_a_repeated_flag_resolves_to_its_first_occurrence()
+    public void A_valued_flag_given_twice_is_refused_rather_than_first_wins()
     {
-        var r = Run("audit", V02BundlePath, "--trust", "human-reviewed", "--trust", "unverified", "--json");
-
-        Assert.Equal(0, r.Code);
-
-        using var doc = JsonDocument.Parse(r.Out);
-        var trust = doc.RootElement.GetProperty("query").GetProperty("trust")
-            .EnumerateArray().Select(e => e.GetString()).ToList();
-
-        Assert.Equal(["human-reviewed"], trust);
+        var (code, _, err) = Run("audit", OkfV02, "--as-of", "2020-01-01", "--as-of", "2099-01-01");
+        Assert.Equal(1, code);
+        Assert.Equal("error: option --as-of given more than once\n", err);
     }
 
     [Fact]
@@ -1187,6 +1211,84 @@ public class CliTests
     }
 
     /// <summary>
+    /// §7-adjacent line-forging hole for the positional concept id: `okf
+    /// verify` echoes an unresolved id verbatim, so an id containing a newline
+    /// could forge a plausible "recorded …" line on stderr for a run that
+    /// wrote nothing — the same class of attack
+    /// `LineSafeText.ContainsControlCharacter` already closed for `--by`/`--at`
+    /// on the write path. The id must come back quote-escaped
+    /// (<see cref="OKF4net.Internal.DebugQuote"/>) instead of raw.
+    ///
+    /// A control character is not a legal §2 segment character, so this id is
+    /// refused as `InvalidId` rather than as an unknown concept — which is the
+    /// arm that renders `ValidateConceptTarget`'s own sentence (I1). The
+    /// escaping is what this test is about, and it holds on either arm; the
+    /// wording is pinned exactly so a future re-route cannot quietly drop it.
+    /// </summary>
+    [Fact]
+    public void Verify_escapes_a_control_bearing_concept_id_instead_of_forging_a_line()
+    {
+        var forged = "metrics/nope\nrecorded metrics/dau  human:ada  2026-01-01T00:00:00Z";
+        var (code, _, err) = Run("verify", OkfV02, forged, "--by", "human:ada");
+        Assert.Equal(1, code);
+        Assert.Equal(
+            "error: invalid concept id \"metrics/nope\\nrecorded metrics/dau  human:ada  2026-01-01T00:00:00Z\". "
+            + "Concept ids are '/'-separated segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.\n",
+            err);
+        // The whole message is one line: nothing the caller supplied broke out.
+        Assert.Single(err.TrimEnd('\n').Split('\n'));
+    }
+
+    /// <summary>
+    /// The blind spot in the test above, found by an external audit of PR #108
+    /// through the agent-side twin of this message: its last assertion splits
+    /// on <c>\n</c> ALONE, and <c>DebugQuote</c> escaped every Cc control but
+    /// not U+2028/U+2029, which are Zl/Zp. So a SOFT separator in the id came
+    /// back verbatim and forged a plausible <c>recorded …</c> line on stderr
+    /// for a run that wrote nothing — a markdown or JavaScript reader of that
+    /// stream ends a line on either character. <c>DebugQuote</c> now escapes
+    /// both numerically, which closes this message, <c>okf_verify</c>'s and
+    /// <c>okf_write_concept</c>'s in one place rather than three.
+    ///
+    /// <para>Both separators are exercised, as numeric constants — a literal
+    /// one in source is invisible in every editor and diff that would have to
+    /// review it.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(0x2028, "2028")]
+    [InlineData(0x2029, "2029")]
+    public void Verify_escapes_a_soft_line_separator_in_a_concept_id(int separator, string hex)
+    {
+        var forged = "metrics/nope" + (char)separator + "recorded metrics/dau  human:ada  2026-01-01T00:00:00Z";
+        var (code, _, err) = Run("verify", OkfV02, forged, "--by", "human:ada");
+
+        Assert.Equal(1, code);
+        Assert.Equal(
+            "error: invalid concept id \"metrics/nope\\u{" + hex + "}recorded metrics/dau  human:ada  2026-01-01T00:00:00Z\". "
+            + "Concept ids are '/'-separated segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.\n",
+            err);
+
+        // Split on EVERY terminator, not on '\n' alone -- that is exactly the
+        // assertion the test above was missing.
+        Assert.Single(err.TrimEnd('\n').Split('\n', '\r', (char)0x2028, (char)0x2029, (char)0x0085, (char)0x000C));
+    }
+
+    /// <summary>
+    /// §13.1: redirected stdin is not guaranteed free of a UTF-8 BOM (a
+    /// preamble byte sequence, not a Unicode whitespace code point), and
+    /// <c>Console.In</c> does not strip one on its own; <c>Trim()</c> does not
+    /// treat U+FEFF as whitespace either. Without an explicit strip, the first
+    /// id read from `okf verify -` on a BOM-prefixed stream fails to resolve.
+    /// </summary>
+    [Fact]
+    public void Verify_from_stdin_ignores_a_leading_byte_order_mark()
+    {
+        var (code, out_, _) = TestPaths.RunWithStdin("\uFEFFmetrics/dau\n", "verify", OkfV02, "--by", "human:ada", "--dry-run", "-");
+        Assert.Equal(0, code);
+        Assert.Equal("would record metrics/dau  human:ada  (now)\n", out_);
+    }
+
+    /// <summary>
     /// A document with no `type` loads into the bundle but is refused at
     /// write time by <c>BundleConceptWriter.RecordVerifications</c> itself,
     /// which validates every concept before writing any — so this pins that
@@ -1218,8 +1320,60 @@ public class CliTests
         var r = Run("verify", bundle, "metrics/dau", "metrics/dau", "--by", "human:ada");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: concept 'metrics/dau' is named more than once\n", r.Err);
+        Assert.Equal("error: concept \"metrics/dau\" is named more than once\n", r.Err);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// A concept that EXISTS but no longer parses (here a YAML anchor, which
+    /// the §4 subset rejects) must not be reported as missing. Before
+    /// <c>CmdVerify</c>'s switch grew a <c>ParseFailure</c> arm it fell through
+    /// to the catch-all and printed <c>unknown concept "metrics/dau"</c>,
+    /// sending the caller to look for a file that was sitting right there
+    /// naming its own error — the exact shape <c>okf validate</c> reports
+    /// correctly. The refusal itself was always right; only the diagnosis was
+    /// wrong.
+    /// </summary>
+    [Fact]
+    public void Verify_names_the_parse_error_of_an_existing_but_unparseable_concept()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", "---\ntype: Metric\ntitle: &t Daily\n---\n\nbody\n");
+        var before = File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md"));
+
+        var r = Run("verify", tmp.Path, "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith(
+            "error: concept \"metrics/dau\" could not be parsed as a valid OKF document: ",
+            r.Err);
+        Assert.Contains("anchors", r.Err);
+        Assert.DoesNotContain("unknown concept", r.Err);
+        // No doubled ".." where the parser's own message already ends in one.
+        Assert.DoesNotContain("..\n", r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(tmp.Path, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// Same class as the parse failure above, from the other kind the switch
+    /// used to swallow: an id the §2 grammar rejects is not an "unknown
+    /// concept" either — nothing was looked for on disk. The detail is
+    /// <c>ValidateConceptTarget</c>'s own sentence, rendered minus the
+    /// <c>Error: </c> prefix the CLI supplies itself (so exactly one prefix
+    /// reaches stderr).
+    /// </summary>
+    [Fact]
+    public void Verify_says_why_an_id_is_invalid_rather_than_calling_it_unknown()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/../dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error: invalid concept id \"metrics/../dau\"", r.Err);
+        Assert.DoesNotContain("unknown concept", r.Err);
+        Assert.DoesNotContain("Error:", r.Err);
     }
 
     [Fact]
@@ -1255,6 +1409,187 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Equal("would record metrics/dau  human:ada  (now)\n", r.Out);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    // --- C13 guards -----------------------------------------------------
+    // These three pin behaviour the C13 refactor (BundleConceptWriter.
+    // CheckVerificationTargets replacing CmdVerify's own per-id loop) must
+    // NOT change. Written and confirmed green BEFORE that refactor so a
+    // regression it could introduce -- most concretely, `--dry-run` no
+    // longer failing on an unknown id because the CLI's pre-check was
+    // deleted outright instead of kept ahead of the dry-run branch -- would
+    // be caught by them turning red, not by a golden byte diff (`verify.out`
+    // only captures the two success lines).
+
+    /// <summary>
+    /// `--dry-run` must still fail on an unknown id rather than print "would
+    /// record" for a concept the batch was never going to write -- the exact
+    /// regression a version of the C13 refactor that dropped the CLI's
+    /// pre-check instead of keeping an equivalent ahead of `--dry-run` would
+    /// introduce.
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_still_fails_on_an_unknown_id()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/nope", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown concept \"metrics/nope\"\n", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// A concept whose frontmatter never even PARSES (as opposed to one that
+    /// parses but lacks `type`) is absent from the bundle — `Bundle.Load` is
+    /// permissive and skips it — but it is NOT missing from disk, and this
+    /// test used to pin the opposite: it asserted the "unknown concept"
+    /// wording, on the reasoning that collapsing into it kept a raw
+    /// YAML/frontmatter message out of the CLI. That traded a leaked detail
+    /// for a wrong diagnosis, and the final whole-branch review caught it
+    /// (I1): `CheckVerificationTargets` reads the file directly (no
+    /// `Bundle.Load`) and knows perfectly well the file is there, so the verb
+    /// now says so. The parser's message is library-authored — a fixed
+    /// sentence from the §4 YAML subset — not bundle text quoted back.
+    /// </summary>
+    [Fact]
+    public void Verify_reports_an_unparseable_concept_as_a_parse_failure_not_as_unknown()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        // Unterminated frontmatter block: OkfDocument.Parse throws
+        // DocumentParseException rather than returning a document with an
+        // empty `type`.
+        tmp.Write("metrics/broken.md", "---\ntype: Metric\n");
+        var before = File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md"));
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics/broken", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal(
+            "error: concept \"metrics/broken\" could not be parsed as a valid OKF document: "
+            + "Unterminated YAML frontmatter block\n",
+            r.Err);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
+    }
+
+    /// <summary>
+    /// `verify` must fail the same way every other bundle verb does on a
+    /// bundle root that does not exist, now that it no longer calls
+    /// <c>Load(path)</c> at all (it reads only the concept files it is asked
+    /// about). Compared against `validate`'s stderr rather than a hardcoded
+    /// string, the same way <c>Index_on_a_missing_bundle_root_exits_one_like_the_other_bundle_verbs</c>
+    /// pins `index` against it, so the two guards cannot drift apart.
+    /// </summary>
+    [Fact]
+    public void Verify_on_a_missing_bundle_root_exits_one_like_the_other_bundle_verbs()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "okf-missing-" + Guid.NewGuid().ToString("N"));
+
+        var verify = Run("verify", missing, "metrics/dau", "--by", "human:ada");
+        var validate = Run("validate", missing);
+
+        Assert.Equal(1, verify.Code);
+        Assert.StartsWith("error:", verify.Err);
+        Assert.DoesNotContain("at OKF4net", verify.Err);
+        Assert.Equal(validate.Err, verify.Err);
+        Assert.Equal("", verify.Out);
+    }
+
+    /// <summary>
+    /// Post-review regression (IMPORTANT 1): a resolved-path duplicate in the
+    /// batch used to make <c>CheckVerificationTargets</c> return at
+    /// <c>DuplicateName</c> before the existence/parse/type loop ever looked
+    /// at the OTHER ids, and the CLI ignored that kind entirely — so
+    /// `--dry-run` fell straight through to printing "would record" for
+    /// every id, including a genuinely unknown one, and exited 0. This is
+    /// the exact regression class <see cref="Verify_dry_run_still_fails_on_an_unknown_id"/>
+    /// exists to guard, in the one variant it does not cover (no duplicate).
+    /// `metrics/dau` and `metrics//dau` resolve to the SAME file (empty path
+    /// segments are dropped by <c>ConceptId.Parse</c>), so this is refused as
+    /// a duplicate before <c>metrics/nope</c>'s absence is ever reached — the
+    /// point is that it refuses and prints nothing, not which message wins.
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_still_fails_when_a_duplicate_hides_an_unknown_id()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "metrics/nope", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: concept \"metrics//dau\" is named more than once\n", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Post-review regression (IMPORTANT 2): <c>CheckVerificationTargets</c>'s
+    /// <c>File.ReadAllBytes</c> used to sit outside any exception filter that
+    /// covered <c>IOException</c>/<c>UnauthorizedAccessException</c>, and
+    /// <c>OkfCli.Run</c> catches only <c>CliOperationException</c> and
+    /// <c>OkfException</c> — so a concept file held open exclusively by
+    /// another process crashed the whole CLI with an unhandled
+    /// <c>System.IO.IOException</c> and a stack trace, where <c>Bundle.Load</c>
+    /// (used by every other bundle verb) has always wrapped the same two
+    /// exception types into a clean <c>error:</c> line. Skipped where the
+    /// platform/filesystem does not actually enforce <c>FileShare.None</c>
+    /// against a second reader, the same probe-before-asserting shape
+    /// <see cref="Verify_prints_the_records_that_landed_before_a_later_write_failure"/>
+    /// uses for its own platform-dependent lock.
+    /// </summary>
+    [SkippableFact]
+    public void Verify_reports_a_locked_concept_file_cleanly_instead_of_crashing()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        var dauPath = Path.Combine(bundle, "metrics", "dau.md");
+
+        using var exclusive = new FileStream(dauPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        try
+        {
+            using var probe = new FileStream(dauPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            throw new SkipException("exclusive file locks are not enforced on this platform/filesystem");
+        }
+        catch (IOException)
+        {
+            // Expected: a second reader really is denied here, continue.
+        }
+
+        var r = Run("verify", bundle, "metrics/dau", "--by", "human:ada");
+
+        Assert.Equal(1, r.Code);
+        Assert.StartsWith("error: concept \"metrics/dau\" could not be read:", r.Err);
+        Assert.DoesNotContain("Unhandled exception", r.Err);
+        Assert.DoesNotContain("   at ", r.Err);
+        Assert.Equal("", r.Out);
+    }
+
+    /// <summary>
+    /// Minor (post-review): an id differing only in case from the real
+    /// on-disk file must still be "unknown", exactly like before this task's
+    /// refactor — <c>bundle.Get</c> compares <c>ConceptId</c>s ordinally, and
+    /// <c>Bundle.Load</c> builds them from the real directory-listing casing,
+    /// so <c>METRICS/DAU</c> was never an alias for an on-disk
+    /// <c>metrics/dau.md</c>. Without <c>ExistsWithExactCase</c>,
+    /// <c>File.Exists</c> alone answers case-insensitively on Windows/macOS
+    /// and would accept it. Passes identically on a case-sensitive
+    /// filesystem too (there, <c>File.Exists</c> itself already says no).
+    /// </summary>
+    [Fact]
+    public void Verify_dry_run_rejects_a_case_variant_of_an_existing_concept_id()
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+
+        var r = Run("verify", bundle, "METRICS/DAU", "--by", "human:ada", "--dry-run");
+
+        Assert.Equal(1, r.Code);
+        Assert.Equal("error: unknown concept \"METRICS/DAU\"\n", r.Err);
+        Assert.Equal("", r.Out);
     }
 
     /// <summary>
@@ -1456,12 +1791,18 @@ public class CliTests
     /// process died with a stack trace. The emitter now raises an
     /// <c>OkfException</c> and <c>Run</c> catches that base type, which is a
     /// strict improvement for all nine verbs — no golden pinned a crash.
+    ///
+    /// The deep nesting must live IN <c>verified</c> itself: since C7
+    /// (<c>FrontmatterBlockEdit</c>), <c>RecordVerifications</c> re-emits only
+    /// the <c>verified</c> block, so nesting depth anywhere else in the
+    /// frontmatter is carried through as untouched raw text and never reaches
+    /// <c>YamlEmitter</c> at all.
     /// </summary>
     [Fact]
     public void A_document_that_cannot_be_re_emitted_exits_cleanly_rather_than_crashing()
     {
         using var tmp = new TempDir();
-        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text(key: "verified"));
 
         var r = Run("verify", tmp.Path, "metrics/deep", "--by", "human:ada");
 
@@ -1469,18 +1810,37 @@ public class CliTests
         Assert.StartsWith("error: ", r.Err);
         Assert.Contains("nesting depth limit exceeded", r.Err);
         Assert.DoesNotContain("   at ", r.Err);
+        // This is the test that actually reaches CmdVerify's
+        // outcome.Message.Replace("Error: ", …) call: deep nesting is not one
+        // of CheckVerificationTargets's checked kinds, so this failure surfaces
+        // only from the real write attempt inside RecordVerifications, whose
+        // own message is prefixed "Error: ". StartsWith("error: ") alone would
+        // still pass "error: Error: nesting depth limit exceeded…" if that
+        // Replace were ever dropped; this pins the prefix is stripped, not
+        // just present.
+        Assert.DoesNotContain("Error:", r.Err);
     }
 
     /// <summary>
-    /// The one path where the writer's own message reaches stderr: two
-    /// spellings of one concept ("metrics/dau" and "metrics//dau") differ as
-    /// strings, so the CLI's own duplicate check passes them, and both resolve
-    /// to the same file, so the writer's resolved-path check refuses the
-    /// batch. <c>CmdVerify</c> strips the writer's <c>Error: </c> prefix
-    /// before rethrowing, because the CLI adds its own <c>error: </c> —
-    /// dropping that <c>Replace</c> ships <c>error: Error: …</c>, and no test
-    /// asserted the stderr of a failed <c>okf verify</c> at all until this
-    /// one.
+    /// Two spellings of one concept ("metrics/dau" and "metrics//dau") differ
+    /// as strings, so <c>CmdVerify</c>'s own raw-string duplicate check passes
+    /// them, and both resolve to the same file, so
+    /// <c>writer.CheckVerificationTargets</c>'s resolved-path check refuses
+    /// the batch — with the same <c>DuplicateName</c> wording the raw-string
+    /// check above produces (no trailing period, the CLI's house style: a
+    /// caller must not be able to tell the two checks apart by a stray
+    /// period), formatted directly by <c>CmdVerify</c>'s own
+    /// <c>switch</c> over <see cref="OKF4net.VerificationTargetProblemKind"/>,
+    /// never through <c>RecordVerifications</c> or its
+    /// <c>outcome.Message.Replace("Error: ", …)</c> call — this case is
+    /// caught by the pre-check before the writer ever attempts a write. This
+    /// pins that a same-file duplicate refuses the whole batch (nothing
+    /// written) with exactly one <c>error: </c> prefix, whichever of the two
+    /// checks (the CLI's raw-string one or the writer's resolved-path one)
+    /// catches it. The doubled-prefix case this test's name still refers to —
+    /// a failure that DOES reach <c>RecordVerifications</c>'s own write
+    /// attempt and that <c>Replace</c> call — is guarded instead by
+    /// <see cref="A_document_that_cannot_be_re_emitted_exits_cleanly_rather_than_crashing"/>.
     /// </summary>
     [Fact]
     public void Verify_reports_a_writer_failure_without_doubling_the_error_prefix()
@@ -1492,7 +1852,7 @@ public class CliTests
         var r = Run("verify", bundle, "metrics/dau", "metrics//dau", "--by", "human:ada");
 
         Assert.Equal(1, r.Code);
-        Assert.Equal("error: concept 'metrics//dau' is named more than once.\n", r.Err);
+        Assert.Equal("error: concept \"metrics//dau\" is named more than once\n", r.Err);
         Assert.Equal(string.Empty, r.Out);
         Assert.Equal(before, File.ReadAllText(Path.Combine(bundle, "metrics", "dau.md")));
     }
@@ -1541,6 +1901,61 @@ public class CliTests
 
         Assert.Equal(0, r.Code);
         Assert.Contains("title: Users", r.Out);
+    }
+
+    /// <summary>
+    /// H3 review I1 (§4): a closing fence typed with a leading space, followed later by
+    /// a column-0 <c>---</c> thematic break in the body. The frontmatter then runs to
+    /// that break. One shape used to validate "conformant" with the heading silently
+    /// read as a YAML comment and <c>title</c> = <c>"T ---"</c>; the other failed on a
+    /// body line. Both now name the indented fence. The "line 3" prefix counts from the
+    /// first frontmatter line, like every YAML error (golden-locked). The message also
+    /// gives the file line, 4.
+    /// </summary>
+    [Theory]
+    [InlineData("---\ntype: Metric\ntitle: T\n ---\n\n# Heading\n\n---\n\n## Section\ntext\n")]
+    [InlineData("---\ntype: Metric\ntitle: T\n ---\n\n# Heading\n\nSome text.\n\n---\n\nMore.\n")]
+    public void Validate_names_an_indented_closing_fence(string content)
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        tmp.Write("metrics/x.md", content);
+
+        var r = Run("validate", bundle);
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains(
+            "x.md: unparseable concept document: Invalid YAML in frontmatter: YAML error at line 3: "
+            + "indented frontmatter fence: a `---` line must start at column 0 (§4) (file line 4)\n",
+            r.Out,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// H3 review I1 (§4): an opening fence typed with a leading space (or behind a
+    /// byte-order mark) means the file has no frontmatter. The bare "missing
+    /// required frontmatter field `type`" error stays, since it is true, and a warning
+    /// now names the cause.
+    /// </summary>
+    [Theory]
+    [InlineData(" ---\ntype: Metric\ntitle: T\n---\n\nbody\n", "is not at column 0")]
+    [InlineData("\t---\ntype: Metric\ntitle: T\n---\n\nbody\n", "is not at column 0")]
+    [InlineData("\uFEFF---\ntype: Metric\ntitle: T\n---\n\nbody\n", "starts with a byte-order mark")]
+    [InlineData("\uFEFF  ---\ntype: Metric\ntitle: T\n---\n\nbody\n", "starts with a byte-order mark and is not at column 0")]
+    public void Validate_hints_at_a_first_line_fence_that_is_not_at_column_0(string content, string cause)
+    {
+        using var tmp = new TempDir();
+        var bundle = NewBundleWithTwoConcepts(tmp);
+        tmp.Write("metrics/x.md", content);
+
+        var r = Run("validate", bundle);
+
+        Assert.Equal(1, r.Code);
+        Assert.Contains("x.md: missing required frontmatter field `type`", r.Out, StringComparison.Ordinal);
+        var expectedTail = "x.md: line 1 looks like a frontmatter fence but " + cause + ", so the file has no frontmatter (§4)";
+        Assert.Single(
+            r.Out.Split('\n'),
+            l => l.StartsWith("[warning] ", StringComparison.Ordinal) && l.EndsWith(expectedTail, StringComparison.Ordinal));
     }
 
     /// <summary>A reader that fails the test if the CLI reads from it at all.</summary>

@@ -27,6 +27,22 @@ namespace OKF4net.Internal;
 /// <c>UnicodeCaseFold.IsCaseIgnorable</c>) rather than a full derived-property
 /// table.
 ///
+/// It ALSO escapes U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR
+/// (General Categories Zl and Zp, whose only members these two are). They are
+/// not <c>Cc</c>, so the control-character arm never saw them, and every
+/// message built here is a LINE in someone's output: an <c>okf verify</c>
+/// refusal, a validator diagnostic, a tool result an agent reads. A markdown
+/// or JavaScript line splitter downstream treats both as terminators, so a
+/// concept id of <c>a</c> + U+2028 + <c>recorded x  human:ceo  …</c> quoted
+/// itself into a second, forged <c>recorded</c> line in a refusal that wrote
+/// nothing (executed). Quoting a value for a human to READ and leaving in the
+/// two characters that end the line it is read on are not compatible: this is
+/// the same rule <c>OkfBundleTools.OneLine</c> states, applied at the helper
+/// every such message already goes through, rather than folded one sink at a
+/// time. <c>LineSafeText.ContainsControlCharacter</c> has always counted these
+/// two as line-breaking; this is what closes the disagreement between the two
+/// helpers.
+///
 /// Iterates by <see cref="Rune"/> (not <c>char</c>) so a supplementary-plane
 /// code point is classified and escaped as one unit (e.g. <c>\u{1f600}</c>,
 /// never a broken-apart UTF-16 surrogate pair): each unit is a full Unicode
@@ -72,7 +88,7 @@ internal static class DebugQuote
                 return;
         }
 
-        if (IsControl(rune) || IsGraphemeExtendApprox(rune))
+        if (IsControl(rune) || IsLineBreaking(rune) || IsGraphemeExtendApprox(rune))
         {
             sb.Append("\\u{").Append(rune.Value.ToString("x")).Append('}');
         }
@@ -83,6 +99,22 @@ internal static class DebugQuote
     }
 
     private static bool IsControl(Rune rune) => Rune.GetUnicodeCategory(rune) == UnicodeCategory.Control;
+
+    /// <summary>
+    /// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, the only members
+    /// of General Categories Zl and Zp -- named by category rather than by
+    /// their two code points so no literal, invisible separator has to appear
+    /// in this source file to express the rule. They are NOT
+    /// <see cref="UnicodeCategory.Control"/>, which is exactly why they used to
+    /// pass through a helper whose whole job is to make a value safe to read on
+    /// one line; see the type doc comment.
+    ///
+    /// <para>Deliberately NOT widened to every <c>Zs</c> space separator: an
+    /// ordinary space, or a non-breaking one, does not end a line, and escaping
+    /// it would disfigure every quoted multi-word value for nothing.</para>
+    /// </summary>
+    private static bool IsLineBreaking(Rune rune) =>
+        Rune.GetUnicodeCategory(rune) is UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator;
 
     /// <summary>
     /// Approximates Unicode's <c>Grapheme_Extend</c> derived property as

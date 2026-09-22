@@ -17,6 +17,14 @@ public sealed class YamlParseException : OkfException
         Line = line;
     }
 
+    /// <summary>
+    /// Whether this is the indented-frontmatter-fence error (§4), whose purpose is to
+    /// point at the mistyped line. <see cref="OkfDocument.Parse"/> appends that line's
+    /// file position to this message only; every other YAML error keeps its
+    /// golden-locked format.
+    /// </summary>
+    internal bool IsIndentedFence { get; init; }
+
     private static string FormatMessage(int line, string message) =>
         line > 0 ? $"YAML error at line {line}: {message}" : $"YAML error: {message}";
 }

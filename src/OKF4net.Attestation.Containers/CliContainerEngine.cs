@@ -53,12 +53,30 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             args.Add(tmpfs);
         }
 
+        if (spec.User is { } user)
+        {
+            args.Add("--user");
+            args.Add(user);
+        }
+
+        if (spec.DropAllCapabilities)
+        {
+            args.Add("--cap-drop");
+            args.Add("ALL");
+        }
+
+        if (spec.NoNewPrivileges)
+        {
+            args.Add("--security-opt");
+            args.Add("no-new-privileges");
+        }
+
         // A ceiling is either absent (null -- the flag is omitted and the engine's own
         // default applies) or a real ceiling. It is never zero or negative, because
         // docker and podman read those as UNLIMITED: emitting `--memory 0` would
         // remove the ceiling while looking like it set one.
         //
-        // ContainerRuntimeProfile already rejects such a value in its init accessors,
+        // ContainerIsolation already rejects such a value in its init accessors,
         // but ContainerRunSpec is a public record a host can build by hand and pass
         // straight to this engine, so the guarantee cannot live only up there.
         if (spec.MemoryBytes is { } memory)
@@ -131,6 +149,12 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             // JSON-escaping, a non-ASCII character silently mistranscoded on
             // the way in would mean the container runs a DIFFERENT program
             // than the one actually sanctioned. A BOM would corrupt it too.
+            //
+            // The output encodings below only configure the StreamReaders Process
+            // builds, and those readers are never read from: RunAsync reads raw bytes
+            // off their BaseStream and ReadBoundedAsync decodes them itself (strictly
+            // for stdout). They stay explicit so Process never consults the console
+            // codepage to build readers nothing uses.
             StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
@@ -165,8 +189,14 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         var stdinTask = WriteStdinAsync(process.StandardInput, spec.Stdin);
-        var stdoutTask = ReadBoundedAsync(process.StandardOutput, MaxOutputChars);
-        var stderrTask = ReadBoundedAsync(process.StandardError, MaxOutputChars);
+        // stdout is the receipt an attester authenticates (§10.5), so it is decoded
+        // strictly: a byte that is not valid UTF-8 fails the stage below rather than
+        // being replaced with U+FFFD, which would hand the attester text no container
+        // wrote. stderr keeps the lenient decoder on purpose: it is host-side
+        // diagnostics, never authenticated, and a strict decoder there would hide the
+        // very traceback a host needs to see why a run failed.
+        var stdoutTask = ReadBoundedAsync(process.StandardOutput.BaseStream, StrictUtf8, MaxOutputChars);
+        var stderrTask = ReadBoundedAsync(process.StandardError.BaseStream, LenientUtf8, MaxOutputChars);
 
         try
         {
@@ -240,101 +270,188 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
                 stderr.Text);
         }
 
+        if (stdout.InvalidBytes)
+        {
+            // Reported after exit, like the ceiling: the reader kept draining past the
+            // bad bytes so the child could finish. stdout.Text holds only what was
+            // decoded from reads completed before the one that contained them --
+            // possibly nothing, since how the pipe chunks its reads is not ours to
+            // choose -- and goes to the host-side Stdout property, never into the
+            // message. The message carries only the exit code, an int, like the
+            // ceiling's.
+            throw new ContainerExecutionException(
+                $"container stdout was not valid UTF-8 (exit code {process.ExitCode})",
+                stdout.Text,
+                stderr.Text);
+        }
+
         return new ContainerRunResult(process.ExitCode, stdout.Text, stderr.Text);
     }
 
     /// <summary>
-    /// How long one <c>kill</c> is given before the engine is treated as
-    /// unresponsive. Generous for a healthy engine, whose <c>kill</c> returns in
-    /// well under a second; short enough that a daemon which has gone away does not
-    /// turn the timeout <see cref="RunAsync"/> promised into a hang.
+    /// The whole teardown budget for <see cref="KillContainerAsync"/>: both attempts
+    /// AND the delay between them together, not a per-attempt bound. A slow but
+    /// responsive engine (a few hundred ms per <c>kill</c>) finishes well inside it;
+    /// an engine whose daemon has gone away and never answers is cut off here rather
+    /// than being allowed to turn the timeout <see cref="RunAsync"/> promised into a
+    /// multi-attempt hang (a Medium external-audit finding: a 750 ms-per-call `kill`
+    /// previously stretched a 30 ms <see cref="ContainerRunSpec.Timeout"/> to ~1.74 s,
+    /// and the old worst case -- two 5 s per-attempt bounds plus the delay -- was
+    /// closer to 10 s). This is this host's own contract, not something the OKF spec
+    /// requires: <see cref="RunAsync"/> promises <see cref="ContainerRunSpec.Timeout"/>
+    /// bounds the whole run, and teardown after that timeout fires is part of what the
+    /// caller is still waiting on.
     /// </summary>
-    private static readonly TimeSpan KillTimeout = TimeSpan.FromSeconds(5);
+    private const int TeardownBudgetSeconds = 3;
+
+    /// <summary>Default value of <see cref="TeardownBudget"/>; see that property.</summary>
+    internal static readonly TimeSpan DefaultTeardownBudget = TimeSpan.FromSeconds(TeardownBudgetSeconds);
 
     /// <summary>
-    /// Retries <c>binaryName kill</c> once after a short
-    /// delay, best-effort: a container whose creation was still in flight
-    /// when the first attempt ran reports "no such container" and is caught
-    /// by the retry once it actually starts. Each attempt is bounded by
-    /// <see cref="KillTimeout"/>, and an attempt that hits that bound is not
-    /// retried -- an engine that did not answer once will not answer a second
-    /// time, and the caller is already past its deadline. Never throws -- a
-    /// failure here only means <see cref="RunAsync"/> also calls
-    /// <see cref="Process.Kill(bool)"/> on its own local process, which is the
-    /// other half of teardown.
+    /// The whole teardown budget for <see cref="KillContainerAsync"/> -- see
+    /// <see cref="DefaultTeardownBudget"/> for what it covers and why 3 s. Internal and
+    /// settable only so tests can shrink it: a real caller always gets the 3 s default,
+    /// but a test that wants to discriminate this budget's behaviour from the old
+    /// unbounded-per-attempt one on a loaded CI runner needs a much smaller number to
+    /// get a comfortable timing margin either side of the assertion.
+    /// </summary>
+    internal TimeSpan TeardownBudget { get; init; } = DefaultTeardownBudget;
+
+    /// <summary>
+    /// How much of <see cref="TeardownBudget"/> must remain before the retry in
+    /// <see cref="KillContainerAsync"/> is attempted at all -- including the delay
+    /// that precedes it. Below this, the caller is already close enough to its
+    /// deadline that starting a second attempt (which cannot itself be bounded by
+    /// less time than it would need to even report failure cleanly) is not worth it.
+    /// </summary>
+    private static readonly TimeSpan RetryThreshold = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Delay between the two <c>kill</c> attempts; counts against <see cref="TeardownBudget"/>.</summary>
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// Retries <c>binaryName kill</c> once after a short delay, best-effort: a
+    /// container whose creation was still in flight when the first attempt ran
+    /// reports "no such container" and is caught by the retry once it actually
+    /// starts. Unlike the first version, no single attempt gets its own fixed bound --
+    /// one <see cref="TeardownBudget"/> deadline, computed once here, covers both
+    /// attempts and the delay between them, so an unresponsive engine cannot make
+    /// teardown outlive the timeout <see cref="RunAsync"/> promised no matter how the
+    /// budget is split between them. An attempt that hits the remaining budget is not
+    /// retried, and the retry itself only runs when at least <see cref="RetryThreshold"/>
+    /// of the budget is still left (delay included) -- an engine that did not answer
+    /// once will not answer a second time, and starting one is not worth eating what
+    /// little budget remains. Never throws -- a failure here only means
+    /// <see cref="RunAsync"/> also calls <see cref="Process.Kill(bool)"/> on its own
+    /// local process, which is the other half of teardown.
     /// </summary>
     private async Task KillContainerAsync(string containerName)
     {
+        var elapsed = Stopwatch.StartNew();
+        TimeSpan Remaining()
+        {
+            var left = TeardownBudget - elapsed.Elapsed;
+            return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+        }
+
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            using var kill = new Process
+            var bound = Remaining();
+            if (bound == TimeSpan.Zero)
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = binaryName,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                    StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                },
-            };
-            kill.StartInfo.ArgumentList.Add("kill");
-            kill.StartInfo.ArgumentList.Add(containerName);
-
-            try
-            {
-                kill.Start();
-
-                // Drain both redirected streams before waiting. A child whose pipe
-                // buffer fills blocks on the write and never exits, so a `kill` that
-                // printed enough (an engine that is verbose about an unknown
-                // container, say) would deadlock the teardown it is part of. Reading
-                // to end also means the `catch` below sees a real failure rather than
-                // a hang.
-                var drainOut = kill.StandardOutput.ReadToEndAsync();
-                var drainErr = kill.StandardError.ReadToEndAsync();
-                using var bound = new CancellationTokenSource(KillTimeout);
-                try
-                {
-                    await kill.WaitForExitAsync(bound.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // The engine itself is not answering. Kill this child (and
-                    // whatever it spawned) so it cannot outlive the run, then give up:
-                    // the retry below exists for a container that was not there YET,
-                    // not for an engine that will not talk.
-                    try
-                    {
-                        kill.Kill(entireProcessTree: true);
-                    }
-                    catch (Exception)
-                    {
-                    }
-
-                    return;
-                }
-
-                await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
-
-                if (kill.ExitCode == 0)
-                {
-                    return;
-                }
-            }
-            catch (Exception)
-            {
-                // Best-effort teardown; Process.Kill on the local process
-                // handles the case where the engine binary itself is gone.
+                return;
             }
 
-            // Back off only when another attempt follows. Sleeping after the last one
-            // delayed the caller's OperationCanceledException by 250 ms for nothing.
+            if (await TryKillOnceAsync(containerName, bound).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            // Back off only when another attempt follows, and only when enough
+            // budget remains to make it worthwhile.
             if (attempt < 1)
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+                var remaining = Remaining();
+                if (remaining < RetryThreshold)
+                {
+                    return;
+                }
+
+                var delay = RetryDelay < remaining ? RetryDelay : remaining;
+                if (delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(delay).ConfigureAwait(false);
+                }
             }
+        }
+    }
+
+    /// <summary>
+    /// Runs one <c>binaryName kill &lt;containerName&gt;</c>, bounded by <paramref name="bound"/>
+    /// (a slice of <see cref="KillContainerAsync"/>'s overall <see cref="TeardownBudget"/>,
+    /// never negative -- the caller clamps). Returns <c>true</c> only on a clean exit 0;
+    /// a non-zero exit, an exception starting or running the process, or hitting
+    /// <paramref name="bound"/> all come back <c>false</c> so the caller can decide
+    /// whether to retry.
+    /// </summary>
+    private async Task<bool> TryKillOnceAsync(string containerName, TimeSpan bound)
+    {
+        using var kill = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = binaryName,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            },
+        };
+        kill.StartInfo.ArgumentList.Add("kill");
+        kill.StartInfo.ArgumentList.Add(containerName);
+
+        try
+        {
+            kill.Start();
+
+            // Drain both redirected streams before waiting. A child whose pipe
+            // buffer fills blocks on the write and never exits, so a `kill` that
+            // printed enough (an engine that is verbose about an unknown
+            // container, say) would deadlock the teardown it is part of. Reading
+            // to end also means the `catch` below sees a real failure rather than
+            // a hang.
+            var drainOut = kill.StandardOutput.ReadToEndAsync();
+            var drainErr = kill.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(bound);
+            try
+            {
+                await kill.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The engine itself is not answering within its slice of the
+                // budget. Kill this child (and whatever it spawned) so it cannot
+                // outlive the run.
+                try
+                {
+                    kill.Kill(entireProcessTree: true);
+                }
+                catch (Exception)
+                {
+                }
+
+                return false;
+            }
+
+            await Task.WhenAll(drainOut, drainErr).ConfigureAwait(false);
+            return kill.ExitCode == 0;
+        }
+        catch (Exception)
+        {
+            // Best-effort teardown; Process.Kill on the local process
+            // handles the case where the engine binary itself is gone.
+            return false;
         }
     }
 
@@ -373,39 +490,115 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
         }
     }
 
+    /// <summary>UTF-8 that throws on an invalid sequence; stdout's decoder.</summary>
+    internal static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>UTF-8 that replaces an invalid sequence with U+FFFD; stderr's decoder.</summary>
+    internal static readonly UTF8Encoding LenientUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+
+    /// <summary>How many bytes <see cref="ReadBoundedAsync"/> reads from its stream at a time.</summary>
+    internal const int ReadBufferBytes = 8192;
+
     /// <summary>
-    /// Drains <paramref name="reader"/> to its end regardless of
-    /// <paramref name="maxChars"/>, so the child's pipe never backs up and
-    /// blocks it — but only the first <paramref name="maxChars"/> characters
-    /// are kept, and <see cref="BoundedRead.Truncated"/> says whether anything was
-    /// dropped, so <see cref="RunAsync"/> can fail the stage instead of passing a
-    /// prefix off as the whole. Runs concurrently with the other stream and with the stdin
-    /// write in <see cref="RunAsync"/>, which is what actually avoids the
-    /// classic redirected-pipe deadlock.
+    /// Drains <paramref name="stream"/> to its end regardless of
+    /// <paramref name="maxChars"/> or of what it contains, so the child's pipe never
+    /// backs up and blocks it — but only the first <paramref name="maxChars"/>
+    /// characters are kept, and <see cref="BoundedRead.Truncated"/> says whether
+    /// anything was dropped, so <see cref="RunAsync"/> can fail the stage instead of
+    /// passing a prefix off as the whole. Runs concurrently with the other stream and
+    /// with the stdin write in <see cref="RunAsync"/>, which is what actually avoids
+    /// the classic redirected-pipe deadlock.
+    /// <para>
+    /// Bytes are decoded with one <see cref="Decoder"/> for the whole stream, which
+    /// carries a multi-byte sequence split across two reads over to the next call.
+    /// When <paramref name="encoding"/> throws on invalid bytes, the first
+    /// <see cref="DecoderFallbackException"/> sets <see cref="BoundedRead.InvalidBytes"/>
+    /// and stops decoding — a decoder is not reused after it throws — but not reading:
+    /// the rest of the stream is read and discarded, exactly as after truncation.
+    /// The decoder is flushed at end of stream, so a sequence cut off by the end is
+    /// invalid too. <see cref="BoundedRead.Text"/> then holds only what was decoded
+    /// from reads completed <i>before</i> the read that contained the invalid bytes: a
+    /// throwing <c>GetChars</c> yields nothing for its buffer, so valid bytes ahead of
+    /// the bad ones in that same read are lost with them. How much survives — and so
+    /// whether <see cref="BoundedRead.Truncated"/> was reached first — depends on how
+    /// the pipe chunked its reads, and may be nothing: diagnostics only, never a
+    /// receipt.
+    /// </para>
+    /// <para>
+    /// One leading UTF-8 byte-order mark is skipped, as the <see cref="StreamReader"/>
+    /// <see cref="Process"/> hands out did before this method read raw bytes (a
+    /// receipt starting with one parsed then and must still parse). Only UTF-8's:
+    /// that reader also switched to UTF-16 or UTF-32 on their marks, which here are
+    /// simply bytes — invalid UTF-8 for the strict decoder.
+    /// </para>
     /// </summary>
-    internal static async Task<BoundedRead> ReadBoundedAsync(StreamReader reader, int maxChars)
+    internal static async Task<BoundedRead> ReadBoundedAsync(Stream stream, UTF8Encoding encoding, int maxChars)
     {
-        var buffer = new char[8192];
+        var decoder = encoding.GetDecoder();
+        var bytes = new byte[ReadBufferBytes];
+        var chars = new char[encoding.GetMaxCharCount(ReadBufferBytes)];
         var sb = new StringBuilder();
         var total = 0;
         var truncated = false;
-        int read;
-        while ((read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+        var invalid = false;
+        var atStart = true;
+
+        void Keep(int decoded)
         {
-            var toKeep = Math.Max(0, Math.Min(read, maxChars - total));
+            // The encoding is UTF-8, so a U+FEFF as the very first character can
+            // only have come from the bytes EF BB BF at the start of the stream.
+            var start = 0;
+            if (atStart && decoded > 0)
+            {
+                atStart = false;
+                start = chars[0] == '\uFEFF' ? 1 : 0;
+            }
+
+            var available = decoded - start;
+            var toKeep = Math.Max(0, Math.Min(available, maxChars - total));
             if (toKeep > 0)
             {
-                sb.Append(buffer, 0, toKeep);
+                sb.Append(chars, start, toKeep);
                 total += toKeep;
             }
 
-            if (toKeep < read)
+            if (toKeep < available)
             {
                 truncated = true;
             }
         }
 
-        return new BoundedRead(sb.ToString(), truncated);
+        int read;
+        while ((read = await stream.ReadAsync(bytes.AsMemory()).ConfigureAwait(false)) > 0)
+        {
+            if (invalid)
+            {
+                continue;
+            }
+
+            try
+            {
+                Keep(decoder.GetChars(bytes, 0, read, chars, 0, flush: false));
+            }
+            catch (DecoderFallbackException)
+            {
+                invalid = true;
+            }
+        }
+
+        if (!invalid)
+        {
+            try
+            {
+                Keep(decoder.GetChars(bytes, 0, 0, chars, 0, flush: true));
+            }
+            catch (DecoderFallbackException)
+            {
+                invalid = true;
+            }
+        }
+
+        return new BoundedRead(sb.ToString(), truncated, invalid);
     }
 
     private static async Task<string> SafeAwaitAsync(Task<BoundedRead> task)
@@ -421,5 +614,9 @@ public sealed class CliContainerEngine(string binaryName = "docker") : IContaine
     }
 }
 
-/// <summary>What <see cref="CliContainerEngine"/>'s bounded stream reader kept, and whether it had to drop anything to stay within its cap.</summary>
-internal readonly record struct BoundedRead(string Text, bool Truncated);
+/// <summary>
+/// What <see cref="CliContainerEngine"/>'s bounded stream reader kept, whether it had to
+/// drop anything to stay within its cap, and whether its (strict) decoder met bytes that
+/// were not valid in its encoding.
+/// </summary>
+internal readonly record struct BoundedRead(string Text, bool Truncated, bool InvalidBytes);

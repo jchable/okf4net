@@ -33,12 +33,27 @@ internal static class DeepYamlDocument
 {
     /// <summary>
     /// A §11-conformant document (non-empty <c>type</c>, so it is stampable)
-    /// whose <c>deep</c> key nests <paramref name="blockLevels"/> block
-    /// mappings and then <paramref name="flowLevels"/> flow mappings.
+    /// whose <paramref name="key"/> key nests <paramref name="blockLevels"/>
+    /// block mappings and then <paramref name="flowLevels"/> flow mappings.
     /// </summary>
-    internal static string Text(int blockLevels = 450, int flowLevels = 600)
+    /// <param name="key">
+    /// The frontmatter key to nest under. Defaults to <c>deep</c>, an
+    /// otherwise-inert key. Pass <c>"verified"</c> for a caller exercising
+    /// <c>BundleConceptWriter.RecordVerifications</c>: since C7
+    /// (<c>FrontmatterBlockEdit</c>), that method's surgical edit only ever
+    /// re-emits the <c>verified</c> block through <c>YamlEmitter</c> — every
+    /// OTHER key's value, however deep, is carried as untouched raw text and
+    /// never reaches the emitter at all, so nesting depth under <c>deep</c>
+    /// (or any key but <c>verified</c>) no longer reaches the emitter's guard
+    /// through that path. Nesting it under <c>verified</c> instead keeps this
+    /// fixture meaningful there: <c>UpsertStamp</c> preserves a pre-existing,
+    /// non-matching <c>verified</c> value (or, for a bare mapping, wraps it
+    /// whole) rather than discarding it, so the deep structure survives into
+    /// the sequence that IS re-emitted.
+    /// </param>
+    internal static string Text(int blockLevels = 450, int flowLevels = 600, string key = "deep")
     {
-        var sb = new StringBuilder("---\ntype: Metric\ntitle: Deep\ndeep:\n");
+        var sb = new StringBuilder("---\ntype: Metric\ntitle: Deep\n").Append(key).Append(":\n");
 
         // blockLevels - 1 "a:" lines, each one indent step deeper, then a
         // final line carrying the flow value on the same line as its key --

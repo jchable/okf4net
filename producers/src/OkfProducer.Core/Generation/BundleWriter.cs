@@ -39,6 +39,20 @@ public sealed class BundleWriter : IBundleWriter
         ArgumentNullException.ThrowIfNull(concepts);
         ArgumentException.ThrowIfNullOrEmpty(repoPath);
 
+        // Normalised ONCE, here, at this method's own entry -- before a trailing directory separator
+        // (`--out dir/`, as shell completion writes one) can reach any downstream path comparison or
+        // composition. This is the fix for the finding the three per-site trims elsewhere in this file
+        // did not close: `IndexGenerator.RegenerateIndexes` below receives this same `outPath` local,
+        // and with an untrimmed trailing-slash value its own `Path.GetDirectoryName(Path.GetFullPath(...))`
+        // walk (src/OKF4net/IndexGenerator.cs, not touched here -- see its own tracked item) stops one
+        // level short of the bundle root, so the root `index.md` was silently never (re)written. Every
+        // other use of `outPath`/`repoPath` below -- messages included -- now also reads this
+        // normalised form, which changes what a message displays (an absolute, separator-free path)
+        // but not what it means. `Path.TrimEndingDirectorySeparator` leaves a bare drive or filesystem
+        // root (`C:\`, `/`) alone by design, so this is safe unconditionally.
+        outPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(outPath));
+        repoPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repoPath));
+
         // The refusal is checked here, before a byte of work is done, so an operator who pointed --out
         // at the repository is told immediately. The DELETE it guards is not here -- see the Reset
         // block inside the staging try below, and IBundleWriter's transactional guarantee.
@@ -278,14 +292,15 @@ public sealed class BundleWriter : IBundleWriter
         // inside the bundle and writes outside it" -- and that claim was false in every clause. Read
         // src/OKF4net/IndexGenerator.cs before restoring any version of it:
         //
-        //   * the traversal is CollectMarkdown over Directory.GetFileSystemEntries (:427), not
+        //   * the traversal is CollectMarkdown over Directory.GetFileSystemEntries (:437), not
         //     Directory.EnumerateDirectories, and it tests ReparsePoints.IsReparsePoint BEFORE it
-        //     recurses (:437), so nothing under a linked directory is ever collected;
-        //   * the per-directory child listing applies the same skip (:219), so a linked subdirectory
+        //     recurses (:447), so nothing under a linked directory is ever collected;
+        //   * the per-directory child listing applies the same skip (:226), so a linked subdirectory
         //     contributes no index entry either;
-        //   * immediately before each write there is an ancestor re-check (:259) AND an
-        //     IsReparsePoint check on the index.md file node itself (:280), the latter added -- per
-        //     its own comment -- to close exactly this class;
+        //   * immediately before each write there is an ancestor re-check (:266) AND a check on the
+        //     index.md file node itself (:290), the latter added -- per its own comment -- to close
+        //     exactly this class; both late checks use the strict IsReparsePointOrUninspectable, so
+        //     an entry whose link status cannot be read is skipped too;
         //   * ReparsePoints.IsReparsePoint answers for Windows junctions and Unix symlinks alike.
         //
         // So this is the most heavily gated of the writes reachable from here, not the ungated one.
@@ -674,7 +689,12 @@ public sealed class BundleWriter : IBundleWriter
     {
         try
         {
-            var root = Path.GetFullPath(repoPath);
+            // Trimmed for the same reason `BundlePaths.ResolveRoot` is: `Path.GetFullPath` preserves a
+            // trailing separator on `--repo dir/`, so `root + DirectorySeparatorChar` below would compare
+            // against a doubled separator no real candidate path can start with -- every file would read
+            // as escaping the repository, the conservative "still exists" branch would fire unconditionally,
+            // and a deleted file's concept would never be eligible for pruning.
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repoPath));
             var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
             return !candidate.StartsWith(root + Path.DirectorySeparatorChar, PathComparison) || File.Exists(candidate);
         }
@@ -1279,10 +1299,20 @@ public sealed class BundleWriter : IBundleWriter
     /// Creates the staging directory beside <paramref name="outPath"/>. The name carries a GUID rather
     /// than being derived from the bundle: it is transient and never reaches the output, so it needs
     /// uniqueness (two runs against one bundle must not share it), not determinism.
+    ///
+    /// <para><c>internal</c> rather than <c>private</c> so <c>BundleWriterTests</c> can assert directly
+    /// on where a trailing separator on <paramref name="outPath"/> lands the staging directory --
+    /// <c>Write</c>'s own <c>finally</c> always deletes it before returning, so nothing that only calls
+    /// <c>Write</c> can observe its transient location.</para>
     /// </summary>
-    private static string CreateStagingDirectory(string outPath)
+    internal static string CreateStagingDirectory(string outPath)
     {
-        var parent = Path.GetDirectoryName(Path.GetFullPath(outPath));
+        // Trimmed before GetDirectoryName, not after: `Path.GetDirectoryName("bundle/")` returns
+        // `"bundle"` itself (the trailing separator makes it look like there is an empty final
+        // component), not `"bundle"`'s parent -- so with `--out bundle/` the untrimmed call put the
+        // staging directory INSIDE the bundle it is meant to sit beside, defeating the "never inside
+        // it" guarantee documented on `StagingPrefix` above.
+        var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(outPath)));
         var staging = Path.Combine(
             string.IsNullOrEmpty(parent) ? Path.GetTempPath() : parent,
             StagingPrefix + Guid.NewGuid().ToString("N"));

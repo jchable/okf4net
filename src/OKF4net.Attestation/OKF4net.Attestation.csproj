@@ -38,6 +38,12 @@
     <!-- Lets the test project exercise internal members directly, without
          inflating the public API surface. -->
     <InternalsVisibleTo Include="OKF4net.Tests" />
+    <!-- The strict JSON value normaliser (Internal/StrictJsonValues.cs) is shared by
+         the container runtime (receipts, verdicts) and the agent tools (parameter
+         values), so the number and duplicate-property rules live once without
+         becoming public API. -->
+    <InternalsVisibleTo Include="OKF4net.Attestation.Containers" />
+    <InternalsVisibleTo Include="OKF4net.Agents" />
   </ItemGroup>
 
 </Project>

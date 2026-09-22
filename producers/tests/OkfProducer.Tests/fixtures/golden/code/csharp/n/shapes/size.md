@@ -2,7 +2,7 @@
 type: C# Type
 title: Shapes.Size
 description: A positional record, whose header carries no body at all.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L33
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L34
 tags:
   - csharp
   - type
@@ -18,4 +18,4 @@ A positional record, whose header carries no body at all.
 
 ## Signatures
 
-- `public record Size(int Width, int Height)` — `src/Shapes.cs#L33`
+- `public record Size(int Width, int Height)` — `src/Shapes.cs#L34`

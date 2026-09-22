@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text.Json;
+using OKF4net.Attestation;
 using OKF4net.Attestation.Containers.Internal;
 
 namespace OKF4net.Attestation.Containers;
@@ -67,16 +68,24 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
                            check=True, stdout=subprocess.DEVNULL)
             sys.path.insert(0, pkgs)
             import pg8000.native
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, unquote
         envelope = json.load(sys.stdin)
         sql = envelope['sql']
         values = envelope.get('values') or {}
         u = urlparse(os.environ['OKF_CONN'])
-        conn = pg8000.native.Connection(user=u.username, password=u.password, host=u.hostname, port=u.port or 5432, database=u.path.lstrip('/'))
+        # urlparse hands userinfo back still percent-encoded; libpq decodes it,
+        # so a password spelled `p%40ss` (the only way to write `p@ss` in a URL)
+        # must be decoded here or it never authenticates.
+        conn = pg8000.native.Connection(
+            user=unquote(u.username or ''), password=unquote(u.password or ''),
+            host=u.hostname, port=u.port or 5432, database=unquote(u.path.lstrip('/')))
         try:
             rows = conn.run(sql, **values)
+            # A statement with no result set (DDL, INSERT without RETURNING)
+            # returns None, and iterating it raised AFTER the statement had
+            # already run -- a side-effecting run reported as a failure.
             cols = [c['name'] for c in conn.columns] if conn.columns else []
-            result = [dict(zip(cols, row)) for row in rows]
+            result = [dict(zip(cols, row)) for row in (rows or [])]
             # default=str: Postgres returns plenty of types json.dumps cannot encode --
             # NUMERIC as Decimal, DATE/TIMESTAMP as date/datetime, UUID, BYTEA as bytes.
             # Without it the dump raises TypeError AFTER the query has already run
@@ -128,29 +137,16 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
         {
             if (bound.Values.ContainsKey(reserved))
             {
-                throw new ArgumentException(
+                throw new AttestationDiagnosticException(
                     $"parameter '{reserved}' collides with a reserved keyword argument of the SQL driver; rename it in the concept's `parameters`.");
             }
         }
 
         var envelope = JsonSerializer.Serialize(new { sql = bound.BoundText ?? "", values = bound.Values });
 
-        var spec = new ContainerRunSpec(
-            Image: profile.Image,
-            Command: ["python3", "-c", Wrapper],
-            Stdin: envelope,
-            // TMPDIR -> the first tmpfs mount, which is where the wrapper's fallback
-            // install goes (see the comment above its pip call).
-            Environment: ScratchDirectory.Apply(profile.Environment, profile.TmpfsMounts),
-            NetworkMode: profile.NetworkMode,
-            MemoryBytes: profile.MemoryBytes,
-            Cpus: profile.Cpus,
-            PidsLimit: profile.PidsLimit,
-            Timeout: profile.Timeout)
-        {
-            ReadOnlyRootFilesystem = profile.ReadOnlyRootFilesystem,
-            TmpfsMounts = profile.TmpfsMounts,
-        };
+        // ToRunSpec points TMPDIR at the first tmpfs mount, which is where the wrapper's
+        // fallback install goes (see the comment above its pip call).
+        var spec = profile.Isolation.ToRunSpec(profile.Image, ["python3", "-c", Wrapper], envelope, profile.Environment, profile.NetworkMode);
 
         var result = await engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
         return ReceiptParsing.Parse(result, "SQL wrapper");

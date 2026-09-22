@@ -77,4 +77,20 @@ public class StalePolicyTests
         Assert.True(StalePolicy.Strict.Admits(bad, WellPastStale));
         Assert.True(StalePolicy.Tolerate(0).Admits(bad, WellPastStale));
     }
+
+    /// <summary>
+    /// §5.5's <c>IsStale</c> is <c>now &gt;= stale_after</c>, so the grace
+    /// window's far edge must be exclusive too: with zero grace days,
+    /// <see cref="StalePolicy.Tolerate"/> must agree with
+    /// <see cref="StalePolicy.Strict"/> at the exact instant, not admit one
+    /// instant more than Strict does.
+    /// </summary>
+    [Fact]
+    public void Tolerate_zero_agrees_with_Strict_at_the_exact_instant()
+    {
+        var lc = Lifecycle.From(null, "2026-06-30T00:00:00Z");
+        var at = new DateTimeOffset(2026, 6, 30, 0, 0, 0, TimeSpan.Zero);
+        Assert.Equal(StalePolicy.Strict.Admits(lc, at), StalePolicy.Tolerate(0).Admits(lc, at));
+        Assert.False(StalePolicy.Tolerate(0).Admits(lc, at));
+    }
 }

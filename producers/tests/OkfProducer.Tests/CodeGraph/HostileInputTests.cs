@@ -4,6 +4,7 @@ using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Scanning;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.CodeGraph;
 
@@ -966,6 +967,72 @@ public class HostileInputTests : IDisposable
             // swallows, leaking this whole temp directory. Unlinking the junction itself first (never
             // recursive -- that would follow it into the target) avoids the leak entirely.
             Directory.Delete(loop, recursive: false);
+        }
+    }
+
+    // E5: one inaccessible directory degrades the run instead of emptying the whole file list. Before
+    // this fix, Directory.EnumerateFiles(..., SearchOption.AllDirectories) threw UnauthorizedAccessException
+    // as soon as it reached the locked subdirectory, the outer catch discarded the file list built so
+    // far, and CodeGraphBuilder returned zero symbols even though src/ok.cs was perfectly readable --
+    // indistinguishable, under Task 11's pruning gate, from a legitimately empty repository.
+
+    [DenyAceFact]
+    public void An_inaccessible_subdirectory_no_longer_empties_the_whole_file_list()
+    {
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-inaccessible-").FullName;
+        var locked = Path.Combine(repoPath, "locked");
+        Directory.CreateDirectory(locked);
+        try
+        {
+            File.WriteAllText(Path.Combine(repoPath, "ok.cs"), "namespace N { public class T {} }");
+            File.WriteAllText(Path.Combine(locked, "Hidden.cs"), "namespace N { public class Hidden {} }");
+
+            using (DenyAce.Deny(locked, isDirectory: true))
+            {
+                var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+                var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+
+                var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+                Assert.Contains(graph.Symbols, s => s.Container == "N" && s.Name == "T");
+                Assert.False(graph.Status.TraversalComplete);
+                Assert.Equal(["locked"], graph.Status.InaccessibleDirectories);
+                Assert.Contains(graph.Status.Skipped, s => s.Path == "ok.cs" && s.Status == FileStatus.Extracted);
+            }
+        }
+        finally
+        {
+            Directory.Delete(repoPath, recursive: true);
+        }
+    }
+
+    [UnixPermissionFact]
+    public void An_inaccessible_subdirectory_no_longer_empties_the_whole_file_list_posix()
+    {
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-inaccessible-posix-").FullName;
+        var locked = Path.Combine(repoPath, "locked");
+        Directory.CreateDirectory(locked);
+        try
+        {
+            File.WriteAllText(Path.Combine(repoPath, "ok.cs"), "namespace N { public class T {} }");
+            File.WriteAllText(Path.Combine(locked, "Hidden.cs"), "namespace N { public class Hidden {} }");
+
+            using (UnixPermission.DenyAll(locked))
+            {
+                var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+                var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+
+                var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+                Assert.Contains(graph.Symbols, s => s.Container == "N" && s.Name == "T");
+                Assert.False(graph.Status.TraversalComplete);
+                Assert.Equal(["locked"], graph.Status.InaccessibleDirectories);
+                Assert.Contains(graph.Status.Skipped, s => s.Path == "ok.cs" && s.Status == FileStatus.Extracted);
+            }
+        }
+        finally
+        {
+            Directory.Delete(repoPath, recursive: true);
         }
     }
 

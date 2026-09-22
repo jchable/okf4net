@@ -64,14 +64,14 @@ public class ScriptComputationExecutorTests
     /// <summary>
     /// A sanctioned script's own temp files follow <c>TMPDIR</c>, so it has to point at
     /// the scratch the host mounted — a script using <c>tempfile</c> under
-    /// <c>TmpfsMounts = ["/scratch"]</c> would otherwise hit a read-only <c>/tmp</c>.
+    /// <c>Isolation.TmpfsMounts = ["/scratch"]</c> would otherwise hit a read-only <c>/tmp</c>.
     /// Setting it must not cost the script its parameters.
     /// </summary>
     [Fact]
     public async Task Points_TMPDIR_at_the_first_configured_mount_alongside_the_params()
     {
         var engine = new FakeContainerEngine();
-        var executor = new ScriptComputationExecutor(engine, Profile with { TmpfsMounts = ["/scratch"] });
+        var executor = new ScriptComputationExecutor(engine, Profile with { Isolation = Profile.Isolation with { TmpfsMounts = ["/scratch"] } });
         await executor.ExecuteAsync(new BoundComputation("python", "print()", null, new Dictionary<string, object?> { ["n"] = 1 }), Contract);
 
         Assert.Equal(["/scratch"], engine.LastSpec!.TmpfsMounts);
@@ -89,7 +89,7 @@ public class ScriptComputationExecutorTests
         var engine = new FakeContainerEngine();
         var profile = Profile with
         {
-            TmpfsMounts = ["/scratch", "/work"],
+            Isolation = Profile.Isolation with { TmpfsMounts = ["/scratch", "/work"] },
             Environment = new Dictionary<string, string> { ["TMPDIR"] = "/work", ["OKF_PARAMS_JSON"] = "forged" },
         };
         await new ScriptComputationExecutor(engine, profile)
@@ -107,7 +107,7 @@ public class ScriptComputationExecutorTests
     public async Task No_tmpfs_mount_sets_no_TMPDIR()
     {
         var engine = new FakeContainerEngine();
-        await new ScriptComputationExecutor(engine, Profile with { TmpfsMounts = [] })
+        await new ScriptComputationExecutor(engine, Profile with { Isolation = Profile.Isolation with { TmpfsMounts = [] } })
             .ExecuteAsync(new BoundComputation("python", "print()", null, new Dictionary<string, object?>()), Contract);
 
         Assert.True(engine.LastSpec!.ReadOnlyRootFilesystem);

@@ -309,4 +309,145 @@ public class OkfValidateChangesTests
         Assert.True(i0615 < i0601, "2026-06-15 must render before 2026-06-01 (descending order).");
         Assert.True(i0601 < i0528, "2026-06-01 must render before 2026-05-28 (descending order).");
     }
+
+    /// <summary>
+    /// The READ side of the same boundary. <c>okf_append_log</c> now refuses a
+    /// control character or a bidi control at the write, but a <c>log.md</c>
+    /// written by an older build, by another producer or by hand still carries
+    /// whatever it carries -- and <c>okf_changes_since</c> passed it straight
+    /// through to the model and to whatever renders the tool result.
+    ///
+    /// There is nothing to refuse on a read (the file exists, and the entries
+    /// are a human's words), so the rendering ESCAPES instead: each offending
+    /// character is replaced by its own <c>&lt;U+XXXX&gt;</c> name. That keeps
+    /// the line honest -- every word a human wrote survives, nothing is
+    /// silently dropped -- while nothing left in it can reorder the display or
+    /// drive a terminal. It is also the form a reader can act on: seeing
+    /// <c>&lt;U+202E&gt;</c> in an audit trail tells them exactly what is in
+    /// the file and that someone put it there.
+    ///
+    /// Numeric constants, not literals, for every payload.
+    ///
+    /// Post-audit re-review, Minor 4: also plants a KIND-LESS entry (no
+    /// <c>**Kind**:</c>) so <c>AppendLogDay</c>'s other branch
+    /// (<c>entry.Kind is null</c>) is exercised too -- previously only the
+    /// <c>Kind</c>-bearing branch was pinned, so reverting the kind-less
+    /// branch alone back to the un-escaping <c>OneLine</c> left this test
+    /// green.
+    /// </summary>
+    [Fact]
+    public void ChangesSince_escapes_control_and_bidi_characters_a_log_already_carries()
+    {
+        var esc = (char)0x001B;
+        var rlo = (char)0x202E;
+        var isolate = (char)0x2067;
+        var vtab = (char)0x000B;
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tmp.Write(
+            "log.md",
+            "# Directory Update Log\n\n## 2026-06-15\n"
+            + "* **Upd" + esc + "[2Kate**: real" + rlo + "text" + isolate + " and" + vtab + "more.\n"
+            + "* plain" + esc + "entry" + rlo + "text.\n");
+        tools.InvalidateBundle();
+
+        var result = tools.ChangesSince("2020-01-01");
+
+        // Nothing that reorders the display or drives a terminal survives.
+        Assert.DoesNotContain(esc.ToString(), result, StringComparison.Ordinal);
+        Assert.DoesNotContain(rlo.ToString(), result, StringComparison.Ordinal);
+        Assert.DoesNotContain(isolate.ToString(), result, StringComparison.Ordinal);
+        Assert.DoesNotContain(vtab.ToString(), result, StringComparison.Ordinal);
+        // Each one is NAMED rather than dropped: the whole entry, both fields,
+        // reads back with every human-written word intact.
+        Assert.Contains(
+            "- **Upd<U+001B>[2Kate**: real<U+202E>text<U+2067> and<U+000B>more.",
+            result,
+            StringComparison.Ordinal);
+        // The kind-less branch (no "**Kind**:") gets the same treatment.
+        Assert.Contains(
+            "- plain<U+001B>entry<U+202E>text.",
+            result,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// And the escaping must not touch anything else: accents, CJK, a non-BMP
+    /// emoji (a surrogate pair), right-to-left TEXT and a tab all read back
+    /// verbatim. A tab is deliberately exempt on this side too, matching the
+    /// write (see <c>OkfWriteToolsTests.AppendLog_accepts_a_tab_and_writes_it_verbatim</c>).
+    /// </summary>
+    [Fact]
+    public void ChangesSince_leaves_ordinary_content_including_rtl_and_a_tab_untouched()
+    {
+        var tab = (char)0x0009;
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var text = "日本語 " + char.ConvertFromUtf32(0x1F680) + " تحديث" + tab + "עדכון (fusée).";
+        tmp.Write("log.md", "# Directory Update Log\n\n## 2026-06-15\n* **Mise à jour**: " + text + "\n");
+        tools.InvalidateBundle();
+
+        var result = tools.ChangesSince("2020-01-01");
+
+        Assert.Contains("- **Mise à jour**: " + text, result, StringComparison.Ordinal);
+        Assert.DoesNotContain("<U+", result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Post-audit re-review, Important 1: the per-log <c>## {path}</c> heading
+    /// rendered the log file's RELATIVE PATH through <c>OneLine</c> alone —
+    /// two lines away from the <c>OneLineLogText</c> escaper the bidi/tab/
+    /// read-escape commit introduced for entry content — so a subdirectory
+    /// name carrying a bidi control (accepted by NTFS with no privilege
+    /// needed) reached the model, and a terminal or markdown viewer, raw. An
+    /// unterminated override reverses the remainder of the rendered line, so
+    /// the path a human is shown is not the path on disk: the same forgery
+    /// <c>okf_append_log</c>'s write guard exists to prevent, reached through
+    /// a sibling line instead of the guarded field.
+    ///
+    /// A path is not log entry text, but it is text this library did not
+    /// write — a caller, another producer or the filesystem can name a
+    /// directory however it likes — which is exactly the class
+    /// <c>OneLineLogText</c> exists to make inert (fold soft separators,
+    /// name every remaining control/bidi character visibly, touch nothing
+    /// else). That is why the fix reuses it rather than adding a third
+    /// escaper: this line needs precisely the same property the entry lines
+    /// already have, no more and no less.
+    /// </summary>
+    [Fact]
+    public void ChangesSince_escapes_a_bidi_control_in_the_logs_relative_path()
+    {
+        var rlo = (char)0x202E;
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tmp.Write("sub" + rlo + "dir/log.md", "# Directory Update Log\n\n## 2026-06-15\n* **Update**: entry.\n");
+        tools.InvalidateBundle();
+
+        var result = tools.ChangesSince("2020-01-01");
+
+        Assert.DoesNotContain(rlo.ToString(), result, StringComparison.Ordinal);
+        Assert.Contains("## sub<U+202E>dir/log.md", result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Same Important-1 gap, the sibling sink: the <c>&gt; Skipped {path}</c>
+    /// note printed when a log file fails to decode also rendered the
+    /// relative path through <c>OneLine</c> alone.
+    /// </summary>
+    [Fact]
+    public void ChangesSince_escapes_a_bidi_control_in_a_skipped_logs_relative_path()
+    {
+        var rlo = (char)0x202E;
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var badDir = Path.Combine(tmp.Path, "sub" + rlo + "dir");
+        Directory.CreateDirectory(badDir);
+        File.WriteAllBytes(Path.Combine(badDir, "log.md"), [0x23, 0x20, 0xFF, 0xFE, 0x0A]);
+        tools.InvalidateBundle();
+
+        var result = tools.ChangesSince("2020-01-01");
+
+        Assert.DoesNotContain(rlo.ToString(), result, StringComparison.Ordinal);
+        Assert.Contains("Skipped sub<U+202E>dir/log.md", result, StringComparison.Ordinal);
+    }
 }

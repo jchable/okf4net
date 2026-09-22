@@ -73,7 +73,7 @@ public static class YamlEmitter
         var pad = new string(' ', indent);
         foreach (var (key, value) in map.Entries)
         {
-            var keyText = EmitScalar(key);
+            var keyText = EmitKey(key);
             switch (value)
             {
                 case YamlMapping m when !m.IsEmpty:
@@ -310,6 +310,38 @@ public static class YamlEmitter
 
     /// <summary>Emits a string as a plain scalar when safe, otherwise double-quoted.</summary>
     private static string EmitString(string s) => IsSafePlain(s) ? s : DoubleQuote(s);
+
+    /// <summary>
+    /// Emits a mapping key. A non-string key, and a string key that
+    /// <see cref="IsSafePlain"/> rejects, come out exactly as the same value would.
+    /// A string key that <see cref="IsSafePlain"/> accepts is still written
+    /// double-quoted, with the same escapes as a quoted value, when the parser
+    /// would not split the line <c>key: value</c> at that key's own colon
+    /// (<see cref="YamlParser.SplitsAtKeyEnd"/>). The parser's own split decides,
+    /// so the rule cannot drift from it. For a string <see cref="IsSafePlain"/>
+    /// accepts, that happens in exactly two cases, each one a state of the
+    /// split's left-to-right scan in which a <c>:</c> does not end the key:
+    /// <list type="bullet">
+    /// <item>a quote left open: a <c>'</c> or <c>"</c> with no closing quote later
+    /// in the key. The scan reads text after a quote as a quoted scalar, anywhere
+    /// in the line; inside <c>'</c> a doubled <c>''</c> does not close it, and
+    /// inside <c>"</c> a <c>\</c> skips the next character.</item>
+    /// <item>a flow level left open: outside quotes, a <c>[</c> or <c>{</c> not
+    /// balanced by a later <c>]</c> or <c>}</c>. The scan counts <c>[</c>/<c>{</c>
+    /// up and <c>]</c>/<c>}</c> down (either closer closes either opener; one with
+    /// no level open is ignored), and splits only at level zero.</item>
+    /// </list>
+    /// The split's other outcomes cannot happen to such a key: <see cref="IsSafePlain"/>
+    /// already rejects a <c>:</c> followed by a space or ending the string (an
+    /// earlier split), a <c>#</c> after a space and any tab (a comment, which
+    /// ends the scan), and leading or trailing whitespace (which the split trims
+    /// off the key). Keys whose quotes and brackets all close stay plain
+    /// (<c>a[b]</c>, <c>a"b"c</c>), as do ordinary keys.
+    /// </summary>
+    private static string EmitKey(YamlValue key) =>
+        key is YamlString { Value: var s } && IsSafePlain(s) && !YamlParser.SplitsAtKeyEnd(s)
+            ? DoubleQuote(s)
+            : EmitScalar(key);
 
     private static readonly char[] Indicators =
     [

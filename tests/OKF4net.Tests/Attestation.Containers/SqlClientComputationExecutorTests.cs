@@ -98,7 +98,7 @@ public class SqlClientComputationExecutorTests
         var executor = new SqlClientComputationExecutor(engine, Profile);
         var bound = new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?> { [name] = "x" });
 
-        var ex = await Assert.ThrowsAsync<ArgumentException>(
+        var ex = await Assert.ThrowsAsync<AttestationDiagnosticException>(
             async () => await executor.ExecuteAsync(bound, Contract));
 
         Assert.Contains(name, ex.Message, StringComparison.Ordinal);
@@ -131,16 +131,30 @@ public class SqlClientComputationExecutorTests
     }
 
     /// <summary>
+    /// A SOURCE-TEXT SMOKE CHECK, not proof: xunit runs on .NET and cannot execute the
+    /// Python in <see cref="SqlClientComputationExecutor.Wrapper"/>. Its executable
+    /// guard is
+    /// <c>ContainerIntegrationTests.SqlClient_wrapper_decodes_userinfo_and_survives_a_statement_without_rows</c>,
+    /// run against real Docker + Postgres.
+    /// </summary>
+    [Fact]
+    public void Wrapper_decodes_userinfo_and_tolerates_a_rowless_statement_SMOKE_CHECK()
+    {
+        Assert.Contains("unquote(u.password", SqlClientComputationExecutor.Wrapper, StringComparison.Ordinal);
+        Assert.Contains("(rows or [])", SqlClientComputationExecutor.Wrapper, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The wrapper's fallback install goes where <c>TMPDIR</c> points, and pip's own
     /// working files do too, so it has to name the host's first mount. Under
-    /// <c>TmpfsMounts = ["/scratch"]</c> the install otherwise failed on a read-only
+    /// <c>Isolation.TmpfsMounts = ["/scratch"]</c> the install otherwise failed on a read-only
     /// <c>/tmp</c> before any SQL ran. The connection string must survive alongside it.
     /// </summary>
     [Fact]
     public async Task Points_TMPDIR_at_the_first_configured_mount_alongside_the_connection_string()
     {
         var engine = new FakeContainerEngine();
-        var executor = new SqlClientComputationExecutor(engine, Profile with { TmpfsMounts = ["/scratch"] });
+        var executor = new SqlClientComputationExecutor(engine, Profile with { Isolation = Profile.Isolation with { TmpfsMounts = ["/scratch"] } });
         await executor.ExecuteAsync(new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?>()), Contract);
 
         Assert.Equal(["/scratch"], engine.LastSpec!.TmpfsMounts);

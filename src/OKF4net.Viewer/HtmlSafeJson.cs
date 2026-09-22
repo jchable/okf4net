@@ -103,5 +103,9 @@ internal static class HtmlSafeJson
     }
 
     private static void AppendUnicodeEscape(StringBuilder sb, char c)
-        => sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+    {
+        Span<char> hex = stackalloc char[4];
+        ((int)c).TryFormat(hex, out _, "x4", CultureInfo.InvariantCulture);
+        sb.Append("\\u").Append(hex);
+    }
 }

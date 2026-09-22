@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net.Agents;
+using OKF4net.Attestation;
 
 namespace OKF4net.Tests.Agents;
 
@@ -18,6 +19,26 @@ public class OkfWriteToolsTests
         + "title: Refunds\n"
         + "description: One row per refund.\n"
         + "timestamp: 2026-07-22T00:00:00Z\n";
+
+    /// <summary>
+    /// U+2028 LINE SEPARATOR, written as a numeric constant on purpose: a
+    /// literal one in source is invisible in every editor and diff that would
+    /// have to review the payload, exactly as
+    /// <c>Internal/LineSafeText.cs</c> says of its own two. Same convention
+    /// (and same reason) as <see cref="OkfComputationToolsTests"/>'s copy.
+    /// </summary>
+    private const char LineSeparator = (char)0x2028;
+
+    /// <summary>
+    /// Every terminator <c>OkfBundleTools.OneLine</c> folds, beyond <c>\r</c>.
+    /// Splitting an assertion's input on all of them is what makes "one line"
+    /// mean what it says: an LF-only split cannot see a forged line that a
+    /// markdown or JavaScript splitter downstream would. U+000B (VT) is
+    /// deliberately absent -- <c>ReplaceLineEndings</c> does not fold it, and
+    /// no such splitter treats it as a break.
+    /// </summary>
+    private static readonly char[] EveryLineTerminator =
+        ['\n', '\r', LineSeparator, (char)0x2029, (char)0x0085, (char)0x000C];
 
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
 
@@ -557,6 +578,236 @@ public class OkfWriteToolsTests
         Assert.Equal(before, File.ReadAllText(logPath));
     }
 
+    /// <summary>
+    /// The four separators <c>GuardLogField</c> deliberately does NOT reject
+    /// are folded to a space before they reach <c>log.md</c>, and the echoed
+    /// success message names what was written rather than the raw argument.
+    ///
+    /// U+000C, U+0085, U+2028 and U+2029 cannot forge history on re-read --
+    /// <c>ChangeLog.Parse</c> splits on LF only -- but they DO split a
+    /// downstream markdown or JavaScript renderer of the same file, and until
+    /// this fix they were persisted verbatim into the user's repository, where
+    /// every other consumer inherits them. The assertion is on the FILE, not
+    /// on a rendering of it: this is the one sink in this area where the
+    /// defect was persistent rather than per-render.
+    /// </summary>
+    [Theory]
+    [InlineData(0x000C)]
+    [InlineData(0x0085)]
+    [InlineData(0x2028)]
+    [InlineData(0x2029)]
+    public void AppendLog_folds_a_soft_separator_instead_of_persisting_it(int separator)
+    {
+        var sep = (char)separator;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog("Upd" + sep + "- **Forged**: kind", "real" + sep + "- **Update**: FORGED");
+
+        Assert.StartsWith("Appended", result);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        // Gone from the FILE, not merely from a rendering of it.
+        Assert.DoesNotContain(sep.ToString(), onDisk, StringComparison.Ordinal);
+        Assert.Contains("* **Upd - **Forged**: kind**: real - **Update**: FORGED", onDisk, StringComparison.Ordinal);
+        // One bullet, under a split that honours the separator as well as LF.
+        Assert.Single(onDisk.Split(EveryLineTerminator), l => l.StartsWith("* ", StringComparison.Ordinal));
+        // And the echo names what was written, not the raw argument.
+        Assert.DoesNotContain(sep.ToString(), result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The other half of the asymmetry that fold creates, pinned so it cannot
+    /// be "simplified" into folding all six: <c>\n</c> and <c>\r</c> stay
+    /// REFUSED, and no <c>log.md</c> is created at all. Those two are what
+    /// <c>ChangeLog.Parse</c> splits on, so a caller who sent one would
+    /// otherwise believe a forged-looking entry was recorded as written; it
+    /// must learn the write did not happen.
+    /// </summary>
+    [Theory]
+    [InlineData('\n')]
+    [InlineData('\r')]
+    public void AppendLog_still_refuses_a_hard_line_break_rather_than_folding_it(char separator)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog("Upd" + separator + "## 2099-01-01", "real" + separator + "* **Forged**: not real.");
+
+        Assert.StartsWith("Error", result);
+        Assert.False(File.Exists(Path.Combine(tmp.Path, "log.md")), "log.md must not be created by a refused append");
+    }
+
+    /// <summary>
+    /// The third treatment, and the boundary between all three: a control
+    /// character (TAB excepted) or ANY bidirectional control character is
+    /// REFUSED outright -- neither written nor echoed.
+    ///
+    /// <c>\n</c>/<c>\r</c> are refused because they split <c>log.md</c> on
+    /// re-read (§9); U+000C/U+0085/U+2028/U+2029 are folded because they split
+    /// only a downstream renderer and most callers cannot see them; the
+    /// characters below are refused because none has a legitimate use in a log
+    /// entry and each forges what a HUMAN reading the audit trail sees --
+    /// <c>ESC[2K ESC[1A</c> rewrites the terminal line <c>cat log.md</c> just
+    /// printed, backspace erases it, and every bidi control reorders the
+    /// stored text on display. Folding them to a space would silently rewrite
+    /// the caller's words; persisting them writes a rendering attack into the
+    /// user's own repository.
+    ///
+    /// The bidi set is the whole class, not just the two overrides: an
+    /// embedding (U+202B) or an isolate (U+2067) reorders a rendered line as
+    /// effectively as U+202E, and the marks reorder a neutral run. Ordinary
+    /// right-to-left TEXT needs none of them -- pinned by
+    /// <see cref="AppendLog_still_accepts_ordinary_right_to_left_text"/>.
+    ///
+    /// Numeric constants, not literals: every payload here is invisible in
+    /// every editor and diff that would have to review it -- the convention
+    /// <c>Internal/LineSafeText.cs</c> sets.
+    /// </summary>
+    [Theory]
+    [InlineData(0x001B)] // ESC -- forges appearance in a terminal
+    [InlineData(0x0008)] // BACKSPACE -- erases what was already printed
+    [InlineData(0x0007)] // BEL
+    [InlineData(0x000B)] // VERTICAL TAB -- a control ReplaceLineEndings does NOT fold
+    [InlineData(0x007F)] // DELETE
+    [InlineData(0x061C)] // ARABIC LETTER MARK
+    [InlineData(0x200E)] // LEFT-TO-RIGHT MARK
+    [InlineData(0x200F)] // RIGHT-TO-LEFT MARK
+    [InlineData(0x202A)] // LEFT-TO-RIGHT EMBEDDING
+    [InlineData(0x202B)] // RIGHT-TO-LEFT EMBEDDING
+    [InlineData(0x202C)] // POP DIRECTIONAL FORMATTING
+    [InlineData(0x202D)] // LEFT-TO-RIGHT OVERRIDE
+    [InlineData(0x202E)] // RIGHT-TO-LEFT OVERRIDE
+    [InlineData(0x2066)] // LEFT-TO-RIGHT ISOLATE
+    [InlineData(0x2067)] // RIGHT-TO-LEFT ISOLATE
+    [InlineData(0x2068)] // FIRST STRONG ISOLATE
+    [InlineData(0x2069)] // POP DIRECTIONAL ISOLATE
+    public void AppendLog_refuses_a_control_character_or_a_bidi_control(int codePoint)
+    {
+        var c = (char)codePoint;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+        var logPath = Path.Combine(tmp.Path, "log.md");
+
+        var kindRefusal = tools.AppendLog("Upd" + c + "ate", "an ordinary entry");
+
+        Assert.StartsWith("Error: invalid kind", kindRefusal);
+        // The refusal must not echo the payload back either: this string is
+        // itself a tool result something may render.
+        Assert.DoesNotContain(c.ToString(), kindRefusal, StringComparison.Ordinal);
+        Assert.False(File.Exists(logPath), "log.md must not be created by a refused append");
+
+        var textRefusal = tools.AppendLog("Update", "real" + c + "text");
+
+        Assert.StartsWith("Error: invalid text", textRefusal);
+        Assert.DoesNotContain(c.ToString(), textRefusal, StringComparison.Ordinal);
+        Assert.False(File.Exists(logPath), "log.md must not be created by a refused append");
+    }
+
+    /// <summary>
+    /// The other side of that boundary: refusing control characters must not
+    /// cost an entry the ordinary non-ASCII it legitimately carries. Accents,
+    /// CJK and a non-BMP emoji (a surrogate PAIR, which a char-by-char guard
+    /// could misread) all reach both the file and the echo unchanged.
+    /// </summary>
+    [Fact]
+    public void AppendLog_still_accepts_accents_cjk_and_a_non_bmp_emoji()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+        const string Kind = "Mise à jour";
+        var text = "Ajout du concept 日本語 " + char.ConvertFromUtf32(0x1F680) + " (fusée).";
+
+        var result = tools.AppendLog(Kind, text);
+
+        Assert.StartsWith("Appended", result);
+        Assert.Contains(Kind, result, StringComparison.Ordinal);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        Assert.Contains("* **" + Kind + "**: " + text, onDisk, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Refusing the twelve bidi CONTROL characters must not refuse
+    /// right-to-left TEXT, which is what a reader would actually write: Arabic
+    /// and Hebrew letters carry their own strong direction and need no
+    /// formatting character at all. This is the assertion that keeps the guard
+    /// from being "widened" into a ban on RTL script.
+    /// </summary>
+    [Fact]
+    public void AppendLog_still_accepts_ordinary_right_to_left_text()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+        const string Kind = "تحديث";
+        const string Text = "עדכון של מדד يومي.";
+
+        var result = tools.AppendLog(Kind, Text);
+
+        Assert.StartsWith("Appended", result);
+        Assert.Contains(Kind, result, StringComparison.Ordinal);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        Assert.Contains("* **" + Kind + "**: " + Text, onDisk, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// TAB is the one control character a log entry may carry, and it is kept
+    /// VERBATIM rather than folded to a space.
+    ///
+    /// It is a control character, so reusing the shared predicate refused it
+    /// -- a side effect of that reuse, not a decision anyone took. The
+    /// decision is: accept it. Kept as-is rather than folded because this
+    /// write only rewrites a caller's words when the character would
+    /// otherwise break structure, and a tab cannot: <c>ChangeLog.Parse</c>
+    /// splits on LF, a tab is not a line terminator, and it can never reach
+    /// the START of a line (the writer always emits <c>* </c> or <c>* **</c>
+    /// first), which is the only position where markdown would read it as an
+    /// indented code block. The read side leaves it alone for the same reason.
+    /// </summary>
+    [Fact]
+    public void AppendLog_accepts_a_tab_and_writes_it_verbatim()
+    {
+        var tab = (char)0x0009;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog("Upd" + tab + "ate", "real" + tab + "text");
+
+        Assert.StartsWith("Appended", result);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        // Not folded to a space: the tab is still there, in both fields.
+        Assert.Contains("* **Upd" + tab + "ate**: real" + tab + "text", onDisk, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Post-audit re-review, Minor 3: "verbatim" above is exact only for an
+    /// INTERIOR tab. <c>FoldLogField</c> is <c>value.Trim().ReplaceLineEndings(" ")</c>,
+    /// and <c>Trim()</c> runs first, so a tab at either edge of a field is
+    /// gone before the guard or the writer ever sees it — the same trimming
+    /// an ordinary leading/trailing space has always had. Benign (whitespace
+    /// only), but worth pinning so the doc comments' now-qualified claim
+    /// stays true.
+    /// </summary>
+    [Fact]
+    public void AppendLog_trims_a_leading_and_trailing_tab_like_a_leading_and_trailing_space()
+    {
+        var tab = (char)0x0009;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog(tab + "Update" + tab, tab + "real text" + tab);
+
+        Assert.StartsWith("Appended", result);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        Assert.Contains("* **Update**: real text", onDisk, StringComparison.Ordinal);
+        Assert.DoesNotContain(tab.ToString(), onDisk, StringComparison.Ordinal);
+    }
+
     // log.md always lives directly at BundleRoot, so HasReparsePointAncestor
     // gives no protection here (its walk starts at BundleRoot itself and
     // stops immediately). The real risk is log.md ITSELF being a planted
@@ -679,6 +930,29 @@ public class OkfWriteToolsTests
         Assert.Contains("index.md", result);
     }
 
+    /// <summary>
+    /// The verb's own bullet list is a line-structured sink of exactly the
+    /// same shape as <c>AppendLogFileChanges</c>'s <c>## {rel}</c> and
+    /// <c>&gt; Skipped {rel}</c>: <c>rel</c> is a <c>Path.GetRelativePath</c>
+    /// over a bundle path, and a directory name may carry a soft line
+    /// terminator (NTFS and POSIX both accept U+2028 in a name). One index
+    /// file must stay one <c>- </c> line under a split that honours those
+    /// terminators, not just under an LF split.
+    /// </summary>
+    [Fact]
+    public void RegenerateIndexes_bullet_cannot_be_forged_by_a_directory_name()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("sub" + LineSeparator + "- index.md" + LineSeparator + "dir/rev.md", "---\ntype: Metric\n---\n\nbody\n");
+        tmp.Write("top.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.RegenerateIndexes();
+
+        Assert.Contains("Regenerated 2 index file(s):", result, StringComparison.Ordinal);
+        Assert.Equal(2, result.Split(EveryLineTerminator).Count(l => l.StartsWith("- ", StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void RegenerateIndexes_invalidates_cache()
     {
@@ -692,5 +966,109 @@ public class OkfWriteToolsTests
         // unaffected -- this asserts the call succeeds and a subsequent
         // GetBundle() still reflects a clean reload.
         Assert.Equal(4, tools.GetBundle().Count);
+    }
+
+    /// <summary>
+    /// The PR #108 defect reached through a third tool. <c>okf_write_concept</c>
+    /// is a pure delegate onto <c>BundleConceptWriter.WriteConcept</c>, whose
+    /// invalid-id refusal is <c>ValidateConceptTarget</c>'s
+    /// <c>DebugQuote</c>-quoted sentence — the SAME message
+    /// <c>okf_verify</c> and the <c>okf verify</c> CLI verb render.
+    /// <c>DebugQuote</c> escaped every Cc control but not U+2028/U+2029, which
+    /// are Zl/Zp, so a soft separator in the id forged a second line in a
+    /// refusal that wrote nothing. Fixed in <c>DebugQuote</c> itself rather
+    /// than folded at each of the three renderers, which is why the assertion
+    /// here is on the ESCAPE and not on a fold.
+    ///
+    /// <para>Nothing is written either way: the id never resolves to a path.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(0x2028, "2028")]
+    [InlineData(0x2029, "2029")]
+    public void WriteConcept_escapes_a_soft_line_separator_in_an_invalid_id(int separator, string hex)
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var forged = "tables/x" + (char)separator + "Written tables/payroll (created).";
+
+        var result = tools.WriteConcept(forged, ValidFrontmatter, "body\n");
+
+        Assert.Equal(
+            "Error: invalid concept id \"tables/x\\u{" + hex + "}Written tables/payroll (created).\". "
+            + "Concept ids are '/'-separated segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.",
+            result);
+        Assert.DoesNotContain(
+            result.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith("Written ", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// <c>RunTool</c> is the catch-all every bundle-loading tool returns
+    /// through, and it rendered the exception's message raw. That message is
+    /// not library boilerplate: <c>BundleLoadException</c> interpolates the
+    /// bundle ROOT into <c>bundle root is not a directory: {root}</c>, and a
+    /// directory name may carry U+2028 on NTFS and POSIX alike with no
+    /// privilege needed — so the one-line <c>Error:</c> report became two.
+    ///
+    /// <para>Reached by deleting the root after construction: the constructor
+    /// requires it to exist and the tool reloads lazily, which is a real
+    /// situation and not only a contrived one.</para>
+    /// </summary>
+    /// <summary>
+    /// The forged payload is a plain <c>FORGED…</c> marker rather than a
+    /// convincing <c>- displayable: yes</c> or <c>Written …</c> line, because
+    /// this one has to survive being a real DIRECTORY NAME: Windows forbids
+    /// <c>:</c> outright and treats <c>/</c> as a separator, so a lifelike
+    /// payload either fails to create or silently becomes two nested
+    /// directories. U+2028 itself is legal in a name on NTFS and POSIX alike,
+    /// which is the property that matters. The load-bearing assertion is
+    /// <see cref="Assert.Single{T}(System.Collections.Generic.IEnumerable{T})"/>
+    /// over the split: the whole result is ONE line, whatever the attacker
+    /// would have put on the second.
+    /// </summary>
+    private const string ForgedNameMarker = "FORGED-second-line";
+
+    [Fact]
+    public void A_bundle_load_failure_cannot_forge_a_line_through_the_catch_all()
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "b" + LineSeparator + ForgedNameMarker);
+        Directory.CreateDirectory(root);
+        var tools = new OkfBundleTools(root);
+        Directory.Delete(root);
+
+        var result = tools.Search("anything");
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            result.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith(ForgedNameMarker, StringComparison.Ordinal));
+        Assert.Single(result.Split(EveryLineTerminator));
+    }
+
+    /// <summary>
+    /// <c>RunComputationAsync</c> does not go through <c>RunTool</c> — it is
+    /// async and owns its own cancellation arms — so it carries a SECOND copy
+    /// of that catch-all, which needed the same fold. <c>GetBundle()</c> is
+    /// called inside its <c>try</c>, so the same deleted-root route reaches it.
+    /// </summary>
+    [Fact]
+    public async Task A_bundle_load_failure_cannot_forge_a_line_through_the_async_catch_all()
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "b" + LineSeparator + ForgedNameMarker);
+        Directory.CreateDirectory(root);
+        var tools = new OkfBundleTools(
+            root,
+            new AttestationOrchestrator(new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>())));
+        Directory.Delete(root);
+
+        var result = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            result.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith(ForgedNameMarker, StringComparison.Ordinal));
+        Assert.Single(result.Split(EveryLineTerminator));
     }
 }

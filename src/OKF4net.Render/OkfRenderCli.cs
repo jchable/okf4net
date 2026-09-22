@@ -17,19 +17,24 @@ namespace OKF4net.Render;
 /// pattern this follows: a leaf executable owns the dependencies its one job
 /// needs, rather than pushing them into the shared core.
 ///
-/// One command needs a fraction of <c>OkfCli</c>'s generic multi-verb argument
-/// machinery (<c>VerbSpec</c>, per-verb flag allowlists, a dispatch table), so
-/// this is a small hand-rolled scanner over exactly this command's grammar
-/// rather than a port of that machinery. User-visible behaviour — error text
-/// shape, exit codes, the <c>error: </c> prefix, the bare-invocation usage
-/// block, the <c>--out</c> containment refusal — mirrors what <c>OkfCli</c>
-/// does for its own verbs, with wording rewritten to name this tool and its
-/// one command rather than the <c>render</c> verb it used to be (that verb no
-/// longer exists in any binary, so no message here may name it). The two
-/// pieces that are genuinely identical to <c>OkfCli</c>'s -- not merely
-/// similar in shape -- live in <see cref="CliArgScanning"/> instead of being
-/// forked here: the valued-flag/separator scanning rule, and the
-/// <see cref="ArgumentException"/> <c>ParamName</c>-suffix strip.
+/// One command needs a fraction of <c>OkfCli</c>'s generic multi-verb
+/// dispatch machinery (<c>VerbSpec</c>, per-verb flag allowlists, a dispatch
+/// table keyed by verb name), so this tool has no verb table of its own — it
+/// calls <see cref="OKF4net.Internal.CliArgs"/> directly with this command's
+/// one-shot grammar rather than porting that dispatch machinery for a single
+/// command. The scanning itself is NOT a second hand-rolled copy: it used to
+/// be, and the two copies drifted (a lone <c>-</c> was rejected here as
+/// <c>unknown option: -</c> while <c>okf</c> took it as a positional; a
+/// repeated <c>--out</c> was first-wins here while <c>okf</c> refuses a
+/// repeated valued flag) until both were moved onto the one shared
+/// <see cref="OKF4net.Internal.CliArgs"/> scanner. User-visible behaviour —
+/// error text shape, exit codes, the <c>error: </c> prefix, the
+/// bare-invocation usage block, the <c>--out</c> containment refusal —
+/// mirrors what <c>OkfCli</c> does for its own verbs, with wording rewritten
+/// to name this tool and its one command rather than the <c>render</c> verb
+/// it used to be (that verb no longer exists in any binary, so no message
+/// here may name it). The <see cref="ArgumentException"/> <c>ParamName</c>-
+/// suffix strip is likewise shared, from <see cref="CliArgScanning"/>.
 ///
 /// <see cref="Run"/> is the sole public entry point so tests can drive the
 /// tool in-process (capturing stdout/stderr) without spawning a subprocess;
@@ -67,7 +72,11 @@ public static class OkfRenderCli
     /// <summary>
     /// Internal control-flow signal for a failure: caught once at the top of
     /// <see cref="Run"/> and rendered as <c>error: {msg}</c> on stderr with
-    /// exit code 1. Never escapes this file.
+    /// exit code 1. Never escapes this file. Distinct from
+    /// <see cref="CliArgumentException"/> (the shared scanner's own error
+    /// type, caught alongside this one in <see cref="Run"/>): this one is
+    /// for the render-specific failures raised after scanning (missing
+    /// <c>--out</c>, a bad bundle, a write failure).
     /// </summary>
     private sealed class CliOperationException(string message) : Exception(message);
 
@@ -94,7 +103,16 @@ public static class OkfRenderCli
 
         try
         {
-            var parsed = Scan(args);
+            // Shares okf's CliArgs scanner (OKF4net.Internal) rather than a
+            // second hand-rolled copy of the same rules: the two had already
+            // drifted once (a lone "-" was rejected here as "unknown option: -"
+            // while okf took it as a positional; a repeated "--out" was
+            // first-wins here while okf refuses a repeated valued flag since
+            // its own C2 fix). "-V"/"--version" go in the valueless-flag list,
+            // not the help-flag list: they must be reachable through
+            // CliArgs.Has, not fold into WantsHelp, so this method's
+            // help/version handling stays exactly as before.
+            var parsed = CliArgs.Scan(args, ["--out"], ["-V", "--version"], variadic: false, helpFlags: ["-h", "--help"]);
 
             if (parsed.WantsHelp)
             {
@@ -103,7 +121,7 @@ public static class OkfRenderCli
                 return 0;
             }
 
-            if (parsed.WantsVersion)
+            if (parsed.Has("-V") || parsed.Has("--version"))
             {
                 stdout.Write($"okf-render {CliVersion} (OKF spec v{OkfSpec.Version})\n");
                 return 0;
@@ -116,101 +134,11 @@ public static class OkfRenderCli
             stderr.Write($"error: {e.Message}\n");
             return 1;
         }
-    }
-
-    /// <summary>One scan's result: the flags and single positional this command's grammar defines.</summary>
-    private sealed class ParsedArgs
-    {
-        internal bool WantsHelp;
-        internal bool WantsVersion;
-
-        /// <summary>Whether <c>--out</c> was given at all, distinct from whether it carried a value.</summary>
-        internal bool OutDirSeen;
-
-        internal string? OutDir;
-        internal string? Bundle;
-    }
-
-    /// <summary>
-    /// Scans <paramref name="args"/> against this command's one-shot grammar:
-    /// a single <c>&lt;bundle&gt;</c> positional, a valued <c>--out</c>, and
-    /// the universal <c>-h</c>/<c>--help</c>/<c>-V</c>/<c>--version</c> flags.
-    /// Everything else starting with <c>-</c> is an unknown option; a second
-    /// positional is an unexpected argument; nothing after a <c>--</c>
-    /// separator is ever read as a flag (so a bundle path beginning with
-    /// <c>-</c> still works).
-    ///
-    /// The whole array is scanned before <see cref="Run"/> looks at
-    /// <see cref="ParsedArgs.WantsHelp"/>/<see cref="ParsedArgs.WantsVersion"/>,
-    /// so an unknown option anywhere in the arguments is reported even when
-    /// <c>--help</c> appears earlier in the same invocation -- the same
-    /// scan-fully-then-dispatch order <c>okf</c> uses.
-    /// </summary>
-    private static ParsedArgs Scan(string[] args)
-    {
-        var parsed = new ParsedArgs();
-        var afterSeparator = false;
-
-        for (var i = 0; i < args.Length; i++)
+        catch (CliArgumentException e)
         {
-            var token = args[i];
-
-            if (!afterSeparator && token == "--")
-            {
-                afterSeparator = true;
-                continue;
-            }
-
-            if (!afterSeparator)
-            {
-                switch (token)
-                {
-                    case "-h" or "--help":
-                        parsed.WantsHelp = true;
-                        continue;
-                    case "-V" or "--version":
-                        parsed.WantsVersion = true;
-                        continue;
-                    case "--out":
-                        {
-                            var hasValue = CliArgScanning.HasFollowingValue(args, i);
-
-                            // First occurrence wins, but a later one still
-                            // consumes its own value so that value can never be
-                            // misread as the bundle positional.
-                            if (!parsed.OutDirSeen)
-                            {
-                                parsed.OutDirSeen = true;
-                                parsed.OutDir = hasValue ? args[i + 1] : null;
-                            }
-
-                            if (hasValue)
-                            {
-                                i++;
-                            }
-
-                            continue;
-                        }
-
-                    default:
-                        if (token.StartsWith('-'))
-                        {
-                            throw new CliOperationException($"unknown option: {token}");
-                        }
-
-                        break;
-                }
-            }
-
-            if (parsed.Bundle is not null)
-            {
-                throw new CliOperationException($"unexpected argument: {token}");
-            }
-
-            parsed.Bundle = token;
+            stderr.Write($"error: {e.Message}\n");
+            return 1;
         }
-
-        return parsed;
     }
 
     /// <summary>
@@ -218,45 +146,38 @@ public static class OkfRenderCli
     /// <c>--out</c>. Argument-shape errors are checked in a fixed order so
     /// the reported message is deterministic regardless of what else is
     /// missing:
-    ///   1. "--out" present but unvalued          -> "--out requires a value"
-    ///   2. bundle positional missing              -> "missing &lt;bundle&gt;"
+    ///   1. "--out" present but unvalued          -> "--out requires a value" (<see cref="CliArgs.Value"/>)
+    ///   2. bundle positional missing              -> "missing &lt;bundle&gt;" (<see cref="CliArgs.Positional"/>)
     ///   3. "--out" absent entirely                -> "missing --out &lt;dir&gt;"
     /// e.g. "okf-render b --out" reports (1) even though the bundle is
     /// present, and "okf-render b" reports (3) rather than passing an empty
     /// output directory through. A fully bare invocation is handled earlier,
     /// in <see cref="Run"/>, before this method is ever reached.
     /// </summary>
-    private static int RunRender(ParsedArgs parsed, TextWriter stdout)
+    private static int RunRender(CliArgs parsed, TextWriter stdout)
     {
-        if (parsed.OutDirSeen && parsed.OutDir is null)
-        {
-            throw new CliOperationException("--out requires a value");
-        }
+        var outDir = parsed.Value("--out");
+        var bundlePath = parsed.Positional("<bundle>");
 
-        if (parsed.Bundle is null)
-        {
-            throw new CliOperationException("missing <bundle>");
-        }
-
-        if (parsed.OutDir is null)
+        if (outDir is null)
         {
             throw new CliOperationException("missing --out <dir>");
         }
 
-        var bundle = Load(parsed.Bundle);
+        var bundle = Load(bundlePath);
         var site = SiteModel.Build(bundle);
 
         IReadOnlyList<string> written;
         try
         {
-            written = HtmlWriter.Write(site, parsed.OutDir);
+            written = HtmlWriter.Write(site, outDir);
         }
         catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
         {
             throw new CliOperationException(CliArgScanning.UserMessage(e));
         }
 
-        stdout.Write($"wrote {written.Count} files to {parsed.OutDir}\n");
+        stdout.Write($"wrote {written.Count} files to {outDir}\n");
         return 0;
     }
 

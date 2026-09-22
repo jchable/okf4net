@@ -22,6 +22,8 @@ namespace OKF4net.Tests.Attestation.Containers;
 /// The SqlClient case needs a reachable Postgres instance. Start one first:
 /// <c>docker run --rm -d --name okf-demo-pg -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo -p 5544:5432 postgres:16-alpine</c>,
 /// then seed it: <c>docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE users(id int, active boolean); INSERT INTO users VALUES (1,true),(2,true),(3,false);"</c>,
+/// plus the extra table <c>SqlClient_runtime_returns_a_receipt_for_non_json_native_column_types</c>
+/// needs: <c>docker exec -i okf-demo-pg psql -U postgres -d demo -c "CREATE TABLE typed(amount numeric(12,2), booked date, ref uuid, blob bytea); INSERT INTO typed VALUES (1234.56, '2026-09-11', '00000000-0000-0000-0000-000000000001', '\\x4f4b46');"</c>,
 /// and set <c>OKF_DEMO_PG_CONN=postgresql://postgres:demo@host.docker.internal:5544/demo</c>
 /// before running these tests -- <c>host.docker.internal</c>, not
 /// <c>localhost</c>: the connection string is read by the .NET test process
@@ -55,8 +57,9 @@ public class ContainerIntegrationTests
 
     /// <summary>
     /// The failure message for an outcome that should have been displayable. Its
-    /// <c>Reasons</c> name only the exception type, by design (they reach the model); the
-    /// exception on <c>Error</c> carries the container's stderr, which is what says why.
+    /// <c>Reasons</c> carry at most the exception's library-authored message, by design
+    /// (they reach the model); the exception on <c>Error</c> carries the container's
+    /// stderr, which is what says why.
     /// </summary>
     private static string Why(AttestationOutcome outcome) =>
         string.Join("; ", outcome.Reasons) + (outcome.Error is null ? "" : "\n" + outcome.Error);
@@ -94,8 +97,17 @@ public class ContainerIntegrationTests
     ///
     /// Two halves, and both are needed: a write OUTSIDE the tmpfs must fail, and a
     /// write INSIDE it must succeed. The first alone would also pass if the image
-    /// simply had no <c>/root</c>; the second alone would pass with no hardening at
-    /// all. Together they pin exactly the boundary the profile draws.
+    /// simply had no writable directory at all; the second alone would pass with no
+    /// hardening at all. Together they pin exactly the boundary the profile draws.
+    ///
+    /// The outside probe targets <c>/var/tmp</c>, not <c>/root</c>: the profile now
+    /// also runs as uid 65534 by default (see <see cref="ContainerIsolation.User"/>),
+    /// and <c>/root</c> is <c>0700</c> root-owned, so a non-root writer is refused by
+    /// ordinary Unix permissions (<c>PermissionError</c>) before the read-only mount
+    /// is ever consulted -- which would prove the wrong thing here. <c>/var/tmp</c> is
+    /// world-writable (<c>1777</c>) on this image, so ordinary permissions let the
+    /// write through and it is the read-only root itself that then refuses it with a
+    /// bare <c>OSError</c> (no more specific subclass -- Python has none for EROFS).
     /// </summary>
     [SkippableFact]
     public async Task Read_only_root_blocks_a_write_outside_the_tmpfs_and_allows_one_inside()
@@ -107,8 +119,8 @@ public class ContainerIntegrationTests
 
         // Sanity: the profile is hardened by default. If this ever flips, the rest of
         // this test would quietly stop testing anything.
-        Assert.True(profile.ReadOnlyRootFilesystem);
-        Assert.Contains("/tmp", profile.TmpfsMounts);
+        Assert.True(profile.Isolation.ReadOnlyRootFilesystem);
+        Assert.Contains("/tmp", profile.Isolation.TmpfsMounts);
 
         var executor = new ScriptComputationExecutor(engine, profile);
         var contract = new AttestedComputationContract("python", [], null, null, null);
@@ -117,7 +129,7 @@ public class ContainerIntegrationTests
             import json
             outside = None
             try:
-                open('/root/okf-probe', 'w').write('x')
+                open('/var/tmp/okf-probe', 'w').write('x')
                 outside = 'written'
             except OSError as e:
                 outside = type(e).__name__
@@ -133,7 +145,7 @@ public class ContainerIntegrationTests
     }
 
     /// <summary>
-    /// <c>TmpfsMounts</c> is documented as configurable, and for a long time was only
+    /// <c>Isolation.TmpfsMounts</c> is documented as configurable, and for a long time was only
     /// half so: the engine mounted whatever the host named, while the Python inside the
     /// containers kept writing to <c>/tmp</c>. With <c>["/scratch"]</c> under the default
     /// read-only root, <c>/tmp</c> is read-only and the attester bootstrap's
@@ -182,10 +194,10 @@ public class ContainerIntegrationTests
         var bundle = Bundle.Load(tmp.Path);
 
         var engine = new CliContainerEngine();
-        var profile = new ContainerRuntimeProfile { Image = "python:3.12-slim", Kind = ContainerRuntimeKind.Script, TmpfsMounts = ["/scratch"] };
-        var attesterOptions = new ContainerAttesterOptions { TmpfsMounts = ["/scratch"] };
-        Assert.True(profile.ReadOnlyRootFilesystem);
-        Assert.True(attesterOptions.ReadOnlyRootFilesystem);
+        var profile = new ContainerRuntimeProfile { Image = "python:3.12-slim", Kind = ContainerRuntimeKind.Script, Isolation = new ContainerIsolation { TmpfsMounts = ["/scratch"] } };
+        var attesterOptions = new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch"] } };
+        Assert.True(profile.Isolation.ReadOnlyRootFilesystem);
+        Assert.True(attesterOptions.Isolation.ReadOnlyRootFilesystem);
 
         var registry = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
@@ -202,7 +214,7 @@ public class ContainerIntegrationTests
     /// The same defect on the SqlClient path, where it was worse than the attester
     /// review first said: the wrapper's fallback install hardcoded
     /// <c>--target /tmp/okf-pkgs</c>, and pip also unpacks and builds in the temp
-    /// directory, so under <c>TmpfsMounts = ["/scratch"]</c> the driver install failed
+    /// directory, so under <c>Isolation.TmpfsMounts = ["/scratch"]</c> the driver install failed
     /// before any SQL ran. A bare <c>python:3.12-slim</c> image, so the install path is
     /// the one exercised, against the real Postgres fixture.
     /// </summary>
@@ -230,13 +242,13 @@ public class ContainerIntegrationTests
             Image = "python:3.12-slim",
             Kind = ContainerRuntimeKind.SqlClient,
             Environment = new Dictionary<string, string> { ["OKF_CONN"] = conn! },
-            TmpfsMounts = ["/scratch"],
+            Isolation = new ContainerIsolation { TmpfsMounts = ["/scratch"] },
         };
-        Assert.True(profile.ReadOnlyRootFilesystem);
+        Assert.True(profile.Isolation.ReadOnlyRootFilesystem);
 
         var registry = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>
         {
-            ["postgres"] = new ContainerAttestationRuntime(engine, profile, new ContainerAttesterOptions { TmpfsMounts = ["/scratch"] }),
+            ["postgres"] = new ContainerAttestationRuntime(engine, profile, new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch"] } }),
         });
         var outcome = await new AttestationOrchestrator(registry).RunAsync(bundle, ConceptId.Parse("c/count"), new Dictionary<string, object?>());
 
@@ -669,6 +681,37 @@ public class ContainerIntegrationTests
         Assert.Contains("1234.56", System.Text.Json.JsonSerializer.Serialize(rows));
     }
 
+    /// <summary>
+    /// libpq spells a password containing `@` as `%40`; the wrapper must
+    /// percent-decode userinfo or that password never authenticates. And a
+    /// sanctioned statement that returns no rows (`CREATE TEMP TABLE …`) must
+    /// yield an empty `result`, not a TypeError after the statement already ran.
+    /// </summary>
+    [SkippableFact]
+    public async Task SqlClient_wrapper_decodes_userinfo_and_survives_a_statement_without_rows()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+        var conn = Environment.GetEnvironmentVariable("OKF_DEMO_PG_CONN");
+        Skip.If(string.IsNullOrEmpty(conn), "OKF_DEMO_PG_CONN is not set");
+
+        // Same credentials, password spelled percent-encoded ("demo" -> "d%65mo").
+        var encoded = conn!.Replace("postgres:demo@", "postgres:d%65mo@", StringComparison.Ordinal);
+        var profile = new ContainerRuntimeProfile
+        {
+            Image = "python:3.12-slim",
+            Kind = ContainerRuntimeKind.SqlClient,
+            Environment = new Dictionary<string, string> { ["OKF_CONN"] = encoded },
+        };
+        var executor = new SqlClientComputationExecutor(new CliContainerEngine(), profile);
+        var bound = new BoundComputation("postgres", "CREATE TEMP TABLE okf_probe(id int)", null, new Dictionary<string, object?>());
+        var contract = new AttestedComputationContract(Runtime: "postgres", Parameters: [], ComputationPath: null, Executor: new Executor(null, ["executed_sql", "result"]), Attester: null);
+
+        var receipt = await executor.ExecuteAsync(bound, contract);
+
+        Assert.Equal("CREATE TEMP TABLE okf_probe(id int)", receipt.Fields["executed_sql"]);
+        Assert.Empty(Assert.IsType<List<object?>>(receipt.Fields["result"]));
+    }
+
     [SkippableFact]
     public async Task Cancellation_kills_the_container_and_propagates_as_OperationCanceledException()
     {
@@ -773,6 +816,36 @@ public class ContainerIntegrationTests
     }
 
     /// <summary>
+    /// A container's stdout is the receipt an attester authenticates, so the engine
+    /// must not rewrite it. The first version decoded it with a replacement fallback:
+    /// a container writing the bytes <c>{"x":"\xff"}</c> came back as the text
+    /// <c>{"x":"\uFFFD"}</c> and a zero exit code, a receipt nobody's script produced.
+    /// Invalid UTF-8 is a stage failure instead. The unit-level half, including the
+    /// pipe being drained past the bad byte, is
+    /// <c>CliContainerEngineRunTests.Invalid_utf8_is_reported_and_the_rest_of_the_stream_is_still_drained</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_container_whose_stdout_is_not_valid_utf8_fails_the_stage()
+    {
+        Skip.IfNot(DockerAvailable(), "docker is not on PATH");
+
+        var engine = new CliContainerEngine();
+        var spec = new ContainerRunSpec(
+            Image: "python:3.12-slim",
+            Command: ["python3", "-c", "import sys; sys.stdout.buffer.write(b'{\"x\":\"\\xff\"}')"],
+            Stdin: null,
+            Environment: new Dictionary<string, string>(),
+            NetworkMode: "none",
+            MemoryBytes: 128 * 1024 * 1024,
+            Cpus: 0.5,
+            PidsLimit: 16,
+            Timeout: TimeSpan.FromSeconds(60));
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(async () => await engine.RunAsync(spec));
+        Assert.Equal("container stdout was not valid UTF-8 (exit code 0)", ex.Message);
+    }
+
+    /// <summary>
     /// The executable guard behind SqlClientComputationExecutorTests' source-text smoke
     /// check. Builds a throwaway image with pg8000 vendored in, then runs the SqlClient
     /// wrapper on it with <c>--network none</c> and a connection string nothing can
@@ -797,7 +870,7 @@ public class ContainerIntegrationTests
             Kind = ContainerRuntimeKind.SqlClient,
             NetworkMode = "none",
             Environment = new Dictionary<string, string> { ["OKF_CONN"] = "postgresql://u:p@127.0.0.1:1/nowhere" },
-            Timeout = TimeSpan.FromSeconds(60),
+            Isolation = new() { Timeout = TimeSpan.FromSeconds(60) },
         };
         var executor = new SqlClientComputationExecutor(engine, profile);
         var bound = new BoundComputation("postgres", "SELECT 1", null, new Dictionary<string, object?>());

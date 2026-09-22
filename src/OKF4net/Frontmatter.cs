@@ -22,6 +22,40 @@ public sealed class Frontmatter : IEquatable<Frontmatter>
     /// </summary>
     public static readonly string[] RequiredKeys = ["type", "title", "description"];
 
+    /// <summary>The §4.1 recommended keys a well-formed concept is expected to carry, before <see cref="RecommendedFieldsFor"/>'s per-document carve-out.</summary>
+    public static readonly string[] RecommendedFields = ["title", "description", "resource", "tags"];
+
+    /// <summary>
+    /// The §4.1 recommended keys <paramref name="frontmatter"/> is expected to
+    /// carry: <see cref="RecommendedFields"/>, minus <c>resource</c> for an
+    /// Attested Computation that declares no <c>resource</c> key at all.
+    ///
+    /// §4.1 recommends <c>resource</c> but qualifies it in the same breath:
+    /// "Absent for concepts that describe abstract ideas rather than physical
+    /// resources." A §10 Attested Computation is the one concept the spec both
+    /// names normatively (§10.1) and shows without a <c>resource</c> in every
+    /// example it gives (§10.2, Appendix A), so warning there would call a
+    /// well-formed concept deficient. Keyed on that type alone: §4.1 leaves the
+    /// type vocabulary open (S4.1-2), so nothing syntactic decides "abstract"
+    /// in general -- see S4.1-8.
+    ///
+    /// Keyed on the key being genuinely ABSENT, and deliberately read via
+    /// <see cref="Get"/> rather than a value check, so the exemption covers
+    /// only the form §4.1 licenses. A declared <c>resource</c> whose value is
+    /// unusable (<c>resource: ""</c>, <c>resource:</c>, <c>resource: null</c>,
+    /// <c>resource: []</c>, <c>resource: {}</c>, and -- since
+    /// <see cref="YamlValue.IsEmptyValue"/> is a falsiness test, not an emptiness
+    /// test -- <c>resource: false</c>, <c>resource: 0</c>) is a malformed value,
+    /// not a statement of abstractness, and keeps warning exactly as it does for
+    /// title/description/tags: the carve-out moves one axis only (key
+    /// presence) and never suppresses the value check.
+    /// </summary>
+    /// <param name="frontmatter">The document's frontmatter.</param>
+    public static IReadOnlyList<string> RecommendedFieldsFor(Frontmatter frontmatter) =>
+        frontmatter.IsAttestedComputation && frontmatter.Get("resource") is null
+            ? RecommendedFields.Where(f => f != "resource").ToArray()
+            : RecommendedFields;
+
     /// <summary>Well-known OKF fields excluded from <see cref="ExtensionKeys"/>.</summary>
     private static readonly string[] KnownKeys =
     [

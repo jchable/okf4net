@@ -227,4 +227,61 @@ public class MemoryServiceCollectionExtensionsTests
         Assert.True(tenantWrite.Written);
         Assert.True(File.Exists(MemPath(Path.Combine(root.Path, "mem", "tenant"), MemoryTier.Tenant, new KnowledgeAccessScope(tenantId: "acme"), "2026-07-27.md")));
     }
+
+
+    /// <summary>
+    /// H1 fix round, decision (b): a user-tier memory source whose path crosses "x/y", a
+    /// junction to a directory OUTSIDE the catalog root whose attributes cannot be read ("x"
+    /// denies listing). <c>AddMemory</c> takes the tier root from
+    /// <see cref="CatalogPathResolver.TryResolve"/>, and <see cref="FileMemoryStore"/>'s own walk
+    /// stops at that root, so the resolver's walk is the only guard. On 7ee7287 its lenient walk
+    /// approved the root: the write landed outside the catalog root, and DeleteScopeAsync
+    /// recursively deleted a directory there. The strict walk refuses the source, which the
+    /// catalog surfaces fail-fast as a <see cref="CatalogException"/> when the store is
+    /// resolved, so there is no store to write or delete through. The lenient build did not
+    /// throw; the write and delete then ran, and the asserts after them fail.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_memory_source_reached_through_an_uninspectable_junction_is_neither_written_nor_deleted()
+    {
+        using var root = new TempDir();
+        Directory.CreateDirectory(Path.Combine(root.Path, "x"));
+        root.Write("catalog.json", """
+            {
+              "version": 1,
+              "sources": [
+                { "id": "user-mem", "path": "./x/y/mem", "role": "memory", "tier": "user" }
+              ]
+            }
+            """);
+        var scope = new KnowledgeAccessScope(userId: "alice");
+        using var external = new TempDir();
+        var keep = external.Write(Path.Combine([.. MemoryPath.For(MemoryTier.User, scope).Split('/').Prepend("mem"), "keep.md"]), "must survive\n");
+        using var junction = root.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var services = new ServiceCollection();
+        services.AddKnowledge(o => o.AddCatalogFile(Path.Combine(root.Path, "catalog.json")));
+        services.AddMemory();
+        using var sp = services.BuildServiceProvider();
+        IMemoryStore? store = null;
+        var error = Record.Exception(() => store = sp.GetRequiredService<IMemoryStore>());
+        if (error is null)
+        {
+            var write = await store!.WriteAsync(
+                scope,
+                new MemoryEntry("2026-07-27", "type: AgentMemory\ntitle: t\ndescription: d\ntimestamp: 2026-07-27T00:00:00Z\n", "## s\n\nhello\n"),
+                MemoryTier.User);
+            var outsideAfterWrite = Directory.EnumerateFiles(external.Path, "*", SearchOption.AllDirectories).ToList();
+            var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+            Assert.False(write.Written);
+            Assert.Equal([keep], outsideAfterWrite);
+            Assert.Equal(0, delete.TiersDeleted);
+        }
+
+        var catalogError = Assert.IsType<CatalogException>(error);
+        Assert.Contains("or an entry that could not be inspected", catalogError.Message, StringComparison.Ordinal);
+        Assert.Equal([keep], Directory.EnumerateFiles(external.Path, "*", SearchOption.AllDirectories));
+    }
 }

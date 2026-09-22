@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using OkfProducer.Core.CodeGraph;
+using OkfProducer.Core.Generation;
 
 namespace OkfProducer.CodeGraph.Roslyn;
 
@@ -70,7 +71,8 @@ public sealed class UnknownLanguageVersionException : InvalidOperationException
 /// <c>FileStatus.SkippedTooLarge</c> that reaches <c>RunStatus</c> and makes the run partial; this
 /// gate returns nothing at all. For a file the scanner also walked the two coincide, because the
 /// extractor refuses the same file and counts it. For a <c>Compile</c> item the scanner never saw --
-/// a linked out-of-repository source, a generated file under <c>obj/</c> -- nothing counts it: the
+/// a linked out-of-repository source, an SDK-generated file in the query's
+/// <see cref="MsBuildQueryScratch"/> -- nothing counts it: the
 /// item is dropped here and surfaces, if at all, as an unrelated
 /// <c>"N compilation error(s): CS0246 ..."</c> on this project with no hint that the size cap caused
 /// it. Reporting it needs a channel from here to <c>RoslynProjectReport</c>, which is
@@ -262,13 +264,117 @@ public static class CompilationFactory
 
         unusableReferences = unusable;
 
-        return CSharpCompilation.Create(
-            inputs.AssemblyName,
-            trees,
-            references,
-            new CSharpCompilationOptions(OutputKindFor(inputs.OutputType))
-                .WithNullableContextOptions(inputs.Nullable ? NullableContextOptions.Enable : NullableContextOptions.Disable)
-                .WithAllowUnsafe(inputs.AllowUnsafe));
+        var options = new CSharpCompilationOptions(OutputKindFor(inputs.OutputType))
+            .WithNullableContextOptions(inputs.Nullable ? NullableContextOptions.Enable : NullableContextOptions.Disable)
+            .WithAllowUnsafe(inputs.AllowUnsafe);
+
+        if (inputs.SignAssembly && inputs.KeyFile is not null
+            && UsableKeyFileOrNull(inputs.KeyFile, gate.RepositoryRoot) is { } usableKeyFile)
+        {
+            options = options.WithCryptoKeyFile(usableKeyFile).WithPublicSign(true);
+        }
+
+        return CSharpCompilation.Create(inputs.AssemblyName, trees, references, options);
+    }
+
+    /// <summary>
+    /// The safe, Roslyn-ready form of <paramref name="keyFile"/> for this analysis-only compilation to
+    /// read as a strong-name key, or <see langword="null"/> when it must not be used at all (E7,
+    /// finding: signed <c>InternalsVisibleTo</c> refused -- CS0281 -- because nothing here ever told
+    /// Roslyn a key at all).
+    ///
+    /// <para>
+    /// <b>Always public-sign, never delay-sign or fully sign.</b> This compilation is never emitted --
+    /// no <c>.dll</c> written to disk, no <c>bin/</c> output -- so the only thing a key affects here is
+    /// the assembly's public key, which is exactly what a friend assembly's <c>InternalsVisibleTo</c>
+    /// match is checked against. Measured against Roslyn 5.3.0 (pre-flight, 2026-09-15):
+    /// <c>WithCryptoKeyFile(snk).WithPublicSign(true)</c> resolves the friend access with no other
+    /// option needed -- no <c>StrongNameProvider</c>, and it works the same whether the key file holds
+    /// a full key pair, a public-key-only <c>.snk</c>, or a delay-sign key. <c>WithCryptoKeyFile(snk)</c>
+    /// ALONE (no public sign, no provider) instead adds CS7027 ("assembly signing not supported") on
+    /// top of the CS0281 it was meant to fix -- the exact trap this method exists to not fall into. So
+    /// the project's own <c>DelaySign</c>/<c>PublicSign</c> properties are never read: whatever they say,
+    /// this method always asks for public signing, which is why <see cref="ProjectInputs"/> carries no
+    /// field for either.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>A key file that is missing, outside the repository root, or behind a reparse point is not
+    /// used -- the compilation stays unsigned, exactly as it was before E7.</b> A repository commonly
+    /// gitignores its private <c>.snk</c>, so handing Roslyn a path that is not there would trade
+    /// today's partial success (name-matching baseline, CS0281 on the friend call) for CS7027 on the
+    /// whole project. And the key path is repository-controlled data (an MSBuild property a
+    /// <c>Directory.Build.props</c> can set to anything), so this producer must not follow it outside
+    /// the tree it was asked to scan, or through a link planted to point somewhere it should not read --
+    /// the same hazard <see cref="TryParse"/> already refuses for <c>Compile</c> items, reused here via
+    /// <c>BundlePaths.IsAtOrUnderRoot</c> and <c>BundlePaths.HasLinkAncestorUnderRoot</c> rather than
+    /// forked (E11 moved both into <c>OkfProducer.Core</c>, so the tree-sitter engine walks with the very
+    /// same code).
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Normalised once, then reused for every check AND for the eventual <c>WithCryptoKeyFile</c>
+    /// call -- E7 fix round 1, Important finding.</b> A key path with a trailing directory separator (a
+    /// project authoring <c>&lt;KeyOriginatorFile&gt;App.snk\&lt;/KeyOriginatorFile&gt;</c> -- ordinary,
+    /// valid XML) made <c>FileInfo(path).Exists</c> report <see langword="true"/> for a path that names
+    /// a real file, because that check is lenient about a trailing separator where Roslyn's own file
+    /// open is not: measured, <c>WithCryptoKeyFile(path).WithPublicSign(true)</c> against that exact
+    /// string still failed with CS7027 ("invalid directory name") plus CS8102, on top of the very CS0281
+    /// this method exists to fix -- contradicting the guarantee the paragraph above states. Trimming the
+    /// trailing separator(s) here, once, before the existence/containment/reparse checks, and returning
+    /// that SAME trimmed string for <see cref="Create"/> to hand to <c>WithCryptoKeyFile</c> closes the
+    /// gap by construction: whatever string reaches Roslyn has already passed every check against the
+    /// identical bytes, so no check can pass on one spelling while Roslyn rejects another.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Out of scope, deliberately (brief requirement 5).</b> <c>AssemblyKeyContainerName</c> (a
+    /// legacy CSP key-container name, resolved against a machine-level key store) is never queried by
+    /// <see cref="MsBuildProjectQuery"/> and has no field on <see cref="ProjectInputs"/>, so a project
+    /// that sets only that property -- no <c>KeyOriginatorFile</c>/<c>AssemblyOriginatorKeyFile</c> --
+    /// compiles unsigned here, identically to a project with no signing intent at all: this producer has
+    /// no business reading a machine-level CSP store for an analysis-only compilation it never emits. A
+    /// source-level <c>[assembly: AssemblyKeyFile(...)]</c>/<c>[assembly: AssemblyKeyName(...)]</c>
+    /// attribute is likewise never inspected: this class parses <c>Compile</c> items into syntax trees
+    /// and never evaluates assembly-level attributes before building <see cref="CSharpCompilationOptions"/>,
+    /// and even the real <c>csc</c> lets an explicit <c>/keyfile</c> (what <c>WithCryptoKeyFile</c> is)
+    /// win over that attribute -- so the MSBuild-property route this class already takes is the correct
+    /// source of truth either way.
+    /// </para>
+    /// </summary>
+    private static string? UsableKeyFileOrNull(string keyFile, string? repositoryRoot)
+    {
+        var normalized = keyFile.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        FileInfo file;
+        try
+        {
+            file = new FileInfo(normalized);
+        }
+        catch (Exception e) when (e is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            // Same shape hazard FullPath already guards on the read side: a value MSBuild printed is
+            // not a path anything validated. MsBuildProjectQuery.ReadKeyFile refuses this project's
+            // whole query for a malformed KeyOriginatorFile/AssemblyOriginatorKeyFile before this method
+            // is ever reached in production, so this catch is reachable only from a hand-built
+            // ProjectInputs (a test) -- kept anyway, because "unsigned" is the correct degrade for any
+            // KeyFile this method cannot even name, not a crash. (A string of nothing but separators
+            // trims to empty, and `new FileInfo("")` throws ArgumentException, landing here too -- no
+            // separate empty-string check needed.)
+            return null;
+        }
+
+        if (!file.Exists)
+        {
+            return null;
+        }
+
+        if (repositoryRoot is not null && !BundlePaths.IsAtOrUnderRoot(repositoryRoot, file.FullName))
+        {
+            return null;
+        }
+
+        return BundlePaths.HasLinkAncestorUnderRoot(repositoryRoot, file.FullName) ? null : file.FullName;
     }
 
     /// <summary>
@@ -377,7 +483,7 @@ public static class CompilationFactory
         try
         {
             var file = new FileInfo(path);
-            if (!file.Exists || file.Length > gate.MaxFileBytes || IsBehindReparsePoint(file, gate.RepositoryRoot))
+            if (!file.Exists || file.Length > gate.MaxFileBytes || BundlePaths.HasLinkAncestorUnderRoot(gate.RepositoryRoot, file.FullName))
             {
                 return null;
             }
@@ -414,100 +520,6 @@ public static class CompilationFactory
         }
 
         return CSharpSyntaxTree.ParseText(SourceText.From(text), parseOptions, path);
-    }
-
-    /// <summary>
-    /// Whether <paramref name="file"/> is a link, or sits under a directory that is one, walking up no
-    /// further than <paramref name="repositoryRoot"/>.
-    ///
-    /// <para>
-    /// <b>The bound is a counted depth, not a string match, and that is the whole point.</b> The first
-    /// version of this walk terminated only on <c>Path.GetDirectoryName</c> returning null or on the
-    /// current directory comparing equal to the root -- so for a <c>Compile</c> item from outside the
-    /// repository (<c>&lt;Compile Include="..\..\Shared\X.cs"/&gt;</c>, ordinary in real solutions) the
-    /// root was never met and <i>every</i> ancestor up to the filesystem root was probed. That is the
-    /// opposite of what this doc claimed, and on macOS or Linux, where a shared tree commonly sits
-    /// under a symlinked ancestor (<c>/tmp</c> -&gt; <c>/private/tmp</c>), it dropped every such item.
-    /// A case-mismatched root on a case-insensitive filesystem degraded into the same walk.
-    /// </para>
-    ///
-    /// <para>
-    /// Counting instead makes over-walking structurally impossible, which is exactly how
-    /// <c>TreeSitterExtractor.IsUnderReparsePoint</c> is bounded: as many levels as the file's
-    /// repository-relative path has directory segments, and no more. A junction above the repository
-    /// is the operator's own checkout layout, not something the scanned repository chose.
-    /// <see cref="Path.GetRelativePath(string, string)"/> also settles the casing question on the
-    /// platform's own terms rather than by picking a <see cref="StringComparison"/> here (measured on
-    /// this host: <c>GetRelativePath(@"C:\REPO", @"C:\repo\a\x.cs")</c> is <c>a\x.cs</c>).
-    /// </para>
-    ///
-    /// <para>
-    /// A file outside the root keeps only the check on the file itself: there is no bound to walk
-    /// within, and walking anyway is the bug above.
-    /// </para>
-    /// </summary>
-    private static bool IsBehindReparsePoint(FileInfo file, string? repositoryRoot)
-    {
-        // MEASURED, contrary to what wave 2b round 1 recorded here. That note said a junction or a
-        // symbolic link needs privileges the test run does not have; it does not -- a directory
-        // junction needs no elevation on Windows. RoslynResolverTests' two DirectoryLinkFact tests now
-        // execute both halves of this method against a real link: the in-repository one reaches the
-        // walk's return-true below, and the out-of-repository one proves the walk does not run at all.
-        // What is still NOT executed is this first branch, a Compile item that is ITSELF a link
-        // (rather than sitting under one), which no fixture builds.
-        if (file.LinkTarget is not null)
-        {
-            return true;
-        }
-
-        if (repositoryRoot is null)
-        {
-            return false;
-        }
-
-        var depth = DepthUnderRoot(file.FullName, repositoryRoot);
-        var directory = file.DirectoryName;
-
-        for (var i = 0; i < depth && directory is not null; i++)
-        {
-            if (new DirectoryInfo(directory).LinkTarget is not null)
-            {
-                return true;
-            }
-
-            directory = Path.GetDirectoryName(directory);
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// How many directory levels separate <paramref name="fullPath"/> from
-    /// <paramref name="repositoryRoot"/>, or <c>0</c> when the file is not under that root at all --
-    /// a different drive, or a path that climbs out of it.
-    /// </summary>
-    private static int DepthUnderRoot(string fullPath, string repositoryRoot)
-    {
-        string relative;
-        try
-        {
-            relative = Path.GetRelativePath(Path.GetFullPath(repositoryRoot), fullPath);
-        }
-        catch (ArgumentException)
-        {
-            return 0;
-        }
-
-        // A rooted answer means the two share no root (another drive on Windows); a leading `..`
-        // SEGMENT means the file climbs out of the repository. `..foo` is a directory name, not a
-        // climb, so the segment is matched rather than the prefix.
-        if (Path.IsPathRooted(relative))
-        {
-            return 0;
-        }
-
-        var segments = relative.Split(['/', '\\']);
-        return segments[0] == ".." ? 0 : segments.Length - 1;
     }
 
     private static OutputKind OutputKindFor(string outputType) =>

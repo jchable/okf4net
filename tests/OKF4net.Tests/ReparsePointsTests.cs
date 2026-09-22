@@ -164,4 +164,236 @@ public class ReparsePointsTests
 
         Assert.True(ReparsePoints.HasReparsePointAncestor(caseVariantRoot, nested));
     }
+
+    /// <summary>
+    /// Moved here from <c>OKF4net.Viewer</c>'s <c>HtmlWriter</c> (Task D3),
+    /// which owned <see cref="ReparsePoints.ResolveThroughReparsePoints"/> as
+    /// a private copy previously exercised only indirectly, through
+    /// <c>HtmlWriterTests.Write_refuses_an_out_dir_that_is_a_junction_resolving_inside_the_bundle</c>.
+    /// The common case -- no reparse point anywhere in the ancestry -- needs
+    /// no filesystem privilege to exercise, so it runs unconditionally.
+    /// </summary>
+    /// <remarks>
+    /// <c>TempDir</c>'s own root is not guaranteed link-free: on macOS
+    /// <c>/var</c> is itself a symlink to <c>/private/var</c>, and the default
+    /// temp directory lives under it, so a raw <c>tmp.Path</c>-based path
+    /// genuinely DOES have a reparse-point ancestor there -- resolving it is
+    /// then correct behavior, not a bug, and asserting the raw path comes
+    /// back unchanged would fail for the right reasons on that platform. The
+    /// root is therefore resolved once, the same way the method under test
+    /// would resolve it, and the expectation is built from that already-
+    /// resolved root. This keeps the assertion meaningful everywhere: the
+    /// claim under test is that resolving a path whose ancestry contains no
+    /// (further) reparse point is a no-op, which still fails if the method
+    /// starts mangling paths it should leave alone.
+    /// </remarks>
+    [Fact]
+    public void ResolveThroughReparsePoints_returns_the_path_unchanged_when_no_ancestor_is_a_reparse_point()
+    {
+        using var tmp = new TempDir();
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(tmp.Path, out var resolvedRoot));
+
+        var path = Path.Combine(resolvedRoot, "a", "b.txt");
+
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(path, out var resolved));
+
+        Assert.Equal(path, resolved);
+    }
+
+    /// <summary>
+    /// The reparse-point case: a path reached only through a junction
+    /// resolves to the junction's real target, with the trailing segments
+    /// past the junction re-attached.
+    /// </summary>
+    [SkippableFact]
+    public void ResolveThroughReparsePoints_follows_a_junction_and_reattaches_the_trailing_segments()
+    {
+        using var linkHost = new TempDir();
+        using var target = new TempDir();
+
+        Skip.IfNot(linkHost.TryCreateJunctionToExternalDir("link", target.Path), "no junction/symlink privilege on this machine");
+
+        var path = Path.Combine(linkHost.Path, "link", "nested", "file.txt");
+
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(path, out var resolved));
+
+        Assert.Equal(Path.Combine(target.Path, "nested", "file.txt"), resolved);
+    }
+
+    // ----------------------------------------------------------------
+    // Task H1: the strict predicate for guards. A guard fails closed on an
+    // entry whose link status cannot be inspected; a walk (the lenient
+    // IsReparsePoint) fails open. Both must answer "not a link" for an entry
+    // that does not exist, or no guard could allow a new file.
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public void Strict_predicate_is_false_for_a_missing_leaf()
+    {
+        using var tmp = new TempDir();
+        var path = Path.Combine(tmp.Path, "not-yet.md");
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(path));
+        Assert.False(ReparsePoints.IsReparsePoint(path));
+    }
+
+    [Fact]
+    public void Strict_predicate_is_false_for_a_missing_parent()
+    {
+        using var tmp = new TempDir();
+        var path = Path.Combine(tmp.Path, "no-such-dir", "deeper", "not-yet.md");
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(path));
+        Assert.False(ReparsePoints.IsReparsePoint(path));
+    }
+
+    [Fact]
+    public void Strict_predicate_is_false_below_a_parent_that_is_a_regular_file()
+    {
+        // Measured: DirectoryNotFoundException on Windows and Linux alike, so
+        // a guard reports the write's own failure, not a refusal.
+        using var tmp = new TempDir();
+        var file = tmp.Write("plain.md", "x");
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(Path.Combine(file, "child")));
+    }
+
+    [Fact]
+    public void Strict_predicate_is_false_for_a_plain_file_and_a_plain_directory()
+    {
+        using var tmp = new TempDir();
+        var file = tmp.Write(Path.Combine("dir", "plain.md"), "x");
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(file));
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(Path.GetDirectoryName(file)!));
+    }
+
+    [SkippableFact]
+    public void Strict_predicate_is_true_for_a_junction_or_symlink()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        Skip.IfNot(tmp.TryCreateJunctionToExternalDir("link", external.Path), "no junction/symlink privilege on this machine");
+
+        var link = Path.Combine(tmp.Path, "link");
+
+        try
+        {
+            Assert.True(ReparsePoints.IsReparsePointOrUninspectable(link));
+            Assert.True(ReparsePoints.IsReparsePoint(link));
+        }
+        finally
+        {
+            // Removed explicitly: TempDir.Dispose's recursive delete does not
+            // reliably remove a junction on Windows, and would leave the temp
+            // directory behind.
+            Directory.Delete(link);
+        }
+    }
+
+    [SkippableFact]
+    public void Strict_predicate_is_true_for_an_entry_whose_attributes_cannot_be_read_where_the_lenient_one_is_false()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        Assert.True(ReparsePoints.IsReparsePointOrUninspectable(junction!.LinkPath));
+        Assert.False(ReparsePoints.IsReparsePoint(junction.LinkPath));
+    }
+
+    [SkippableFact]
+    public void Strict_ancestor_walk_refuses_an_uninspectable_ancestor_but_not_the_missing_entries_below_it()
+    {
+        // "x/y" cannot be inspected; "z" and "file.md" below it do not exist.
+        // The strict walk passes the two missing entries and stops at "x/y";
+        // the lenient walk passes all of them.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var path = Path.Combine(junction!.LinkPath, "z", "file.md");
+
+        Assert.True(ReparsePoints.HasReparsePointOrUninspectableAncestor(tmp.Path, path));
+        Assert.True(ReparsePoints.HasReparsePointOrUninspectableAncestor(tmp.Path, path, StringComparison.Ordinal));
+        Assert.False(ReparsePoints.HasReparsePointAncestor(tmp.Path, path));
+    }
+
+    [Fact]
+    public void Strict_ancestor_walk_allows_a_path_of_missing_directories_under_a_plain_root()
+    {
+        using var tmp = new TempDir();
+        var path = Path.Combine(tmp.Path, "brand", "new", "deep", "file.md");
+
+        Assert.False(ReparsePoints.HasReparsePointOrUninspectableAncestor(tmp.Path, path));
+    }
+
+    [SkippableFact]
+    public void TryResolveThroughReparsePoints_fails_when_an_entry_on_the_path_cannot_be_inspected()
+    {
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var path = Path.Combine(junction!.LinkPath, "site");
+
+        Assert.False(ReparsePoints.TryResolveThroughReparsePoints(path, out var resolved));
+        Assert.Equal(path, resolved);
+    }
+
+    [SkippableFact]
+    public void TryResolveThroughReparsePoints_fails_rather_than_throws_when_a_link_target_cannot_be_read()
+    {
+        // H1 fix round (M2): the junction's attributes are readable (its parent
+        // is listable), so it is classified as a reparse point, but
+        // Directory.ResolveLinkTarget on it throws UnauthorizedAccessException.
+        // A Try method must answer false, not throw.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path, denyParentListing: false);
+        Skip.If(junction is null, "needs Windows (a junction plus a deny ACE)");
+        var path = Path.Combine(junction!.LinkPath, "site");
+
+        Assert.False(ReparsePoints.TryResolveThroughReparsePoints(path, out var resolved));
+        Assert.Equal(path, resolved);
+    }
+
+    [SkippableFact]
+    public void Strict_predicate_is_false_for_a_share_that_does_not_exist()
+    {
+        // H1 fix round (I1): Windows reports a missing share as a plain
+        // IOException (ERROR_BAD_NET_NAME / ERROR_BAD_NETPATH), not a
+        // not-found type. It is absence, not an entry anyone could redirect.
+        //
+        // The case is probed first: only a host that really answers with one
+        // of those codes produces it, and another host skips (naming what it
+        // answered) instead of failing on its network setup. Once the case is
+        // produced, a wrong mapping fails.
+        Skip.IfNot(OperatingSystem.IsWindows(), "a UNC share path is Windows-only");
+        Assert.StartsWith(new string(Path.DirectorySeparatorChar, 2), AbsentPaths.MissingShareSite, StringComparison.Ordinal); // a UNC path, never a drive-rooted one
+        Skip.IfNot(
+            AbsentPaths.HostReportsAbsenceAsPlainIOException(AbsentPaths.MissingShareSite, out var observed),
+            $"this host answers a missing share with {observed}, not ERROR_BAD_NET_NAME/ERROR_BAD_NETPATH on a plain IOException");
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(AbsentPaths.MissingShareSite));
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(AbsentPaths.MissingShareSite, out var resolved));
+        Assert.Equal(AbsentPaths.MissingShareSite, resolved);
+    }
+
+    [SkippableFact]
+    public void Strict_predicate_is_false_for_a_drive_that_holds_no_volume()
+    {
+        // H1 fix round (I1): an empty card reader or optical drive answers
+        // ERROR_NOT_READY, a plain IOException. Absence, not uninspectable.
+        // Probed first, like the share test above.
+        var site = AbsentPaths.SiteOnADriveWithNoVolume();
+        Skip.If(site is null, "no drive without a volume on this machine");
+        Skip.IfNot(
+            AbsentPaths.HostReportsAbsenceAsPlainIOException(site!, out var observed),
+            $"this host answers the empty drive {site} with {observed}, not ERROR_NOT_READY on a plain IOException");
+
+        Assert.False(ReparsePoints.IsReparsePointOrUninspectable(site!));
+        Assert.True(ReparsePoints.TryResolveThroughReparsePoints(site!, out _));
+    }
 }

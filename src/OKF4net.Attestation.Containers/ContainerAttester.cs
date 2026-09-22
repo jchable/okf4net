@@ -23,29 +23,32 @@ public sealed class ContainerAttester : IAttester
     /// <summary>
     /// Creates an attester that runs on <paramref name="options"/>' image. Throws
     /// <see cref="ArgumentException"/> when <paramref name="options"/> mounts the root
-    /// filesystem read-only and leaves the bootstrap nowhere to write: either with no
-    /// <see cref="ContainerAttesterOptions.TmpfsMounts"/> at all, or with a <c>TMPDIR</c>
-    /// in <see cref="ContainerAttesterOptions.Environment"/> from which none of the
-    /// directories Python's <c>tempfile</c> goes on to try (<c>TEMP</c>, <c>TMP</c>,
-    /// <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c>) is one of those mounts or
-    /// <c>/dev/shm</c> — a host-set <c>TMPDIR</c> wins over the derived one, and
-    /// <c>tempfile</c> never creates it. A mount with the <c>ro</c> option does not count,
-    /// derived <c>TMPDIR</c> included. <see cref="ContainerAttesterOptions.Environment"/> is
-    /// copied here, so changing the dictionary afterwards changes nothing. The bootstrap writes the attester module to a
-    /// temp file on every run, so either configuration could never attest anything — and
-    /// would only say so at run time, as a Python traceback, after the computation had
-    /// already been executed. The check is built to reject only what is sure to fail on
-    /// docker with an image that sets no <c>WORKDIR</c>; what it cannot see is listed in
-    /// the project README.
+    /// filesystem read-only (<see cref="ContainerIsolation.ReadOnlyRootFilesystem"/> on
+    /// <see cref="ContainerAttesterOptions.Isolation"/>) and leaves the bootstrap nowhere
+    /// to write: either with no <see cref="ContainerIsolation.TmpfsMounts"/> at all, or
+    /// with a <c>TMPDIR</c> in <see cref="ContainerAttesterOptions.Environment"/> from
+    /// which none of the directories Python's <c>tempfile</c> goes on to try
+    /// (<c>TEMP</c>, <c>TMP</c>, <c>/tmp</c>, <c>/var/tmp</c>, <c>/usr/tmp</c>) is one of
+    /// those mounts or <c>/dev/shm</c> — a host-set <c>TMPDIR</c> wins over the derived
+    /// one, and <c>tempfile</c> never creates it. A mount with the <c>ro</c> option does
+    /// not count, derived <c>TMPDIR</c> included.
+    /// <see cref="ContainerAttesterOptions.Environment"/> is copied here, so changing the
+    /// dictionary afterwards changes nothing. The bootstrap writes the attester module to
+    /// a temp file on every run, so either configuration could never attest anything —
+    /// and would only say so at run time, as a Python traceback, after the computation
+    /// had already been executed. The check is built to reject only what is sure to fail
+    /// on docker with an image that sets no <c>WORKDIR</c>; what it cannot see is listed
+    /// in the project README.
     /// </summary>
     public ContainerAttester(IContainerEngine engine, ContainerAttesterOptions options)
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(options);
-        if (options.ReadOnlyRootFilesystem && options.TmpfsMounts.Count == 0)
+        var isolation = options.Isolation;
+        if (isolation.ReadOnlyRootFilesystem && isolation.TmpfsMounts.Count == 0)
         {
             throw new ArgumentException(
-                "ContainerAttesterOptions mounts the root filesystem read-only with no TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; add a tmpfs mount (e.g. \"/tmp\") or set ReadOnlyRootFilesystem = false.",
+                "ContainerAttesterOptions mounts the root filesystem read-only with no Isolation.TmpfsMounts, so the attester bootstrap has nowhere to write the module it imports; add a tmpfs mount (e.g. \"/tmp\") or set Isolation.ReadOnlyRootFilesystem = false.",
                 nameof(options));
         }
 
@@ -54,12 +57,13 @@ public sealed class ContainerAttester : IAttester
         options = options with { Environment = new Dictionary<string, string>(options.Environment) };
 
         // Checked on the environment the container will get (TMPDIR derived from the
-        // first mount unless the host set one), which is also what the message names.
-        var environment = ScratchDirectory.Apply(options.Environment, options.TmpfsMounts);
-        if (options.ReadOnlyRootFilesystem && !ScratchDirectory.ReachesWritableDirectory(environment, options.TmpfsMounts))
+        // first mount unless the host set one — what Isolation.ToRunSpec applies), which
+        // is also what the message names.
+        var environment = ScratchDirectory.Apply(options.Environment, isolation.TmpfsMounts);
+        if (isolation.ReadOnlyRootFilesystem && !ScratchDirectory.ReachesWritableDirectory(environment, isolation.TmpfsMounts))
         {
             throw new ArgumentException(
-                $"ContainerAttesterOptions mounts the root filesystem read-only with TMPDIR '{environment[ScratchDirectory.VariableName]}', and none of the directories Python's tempfile would try (TMPDIR, TEMP, TMP, /tmp, /var/tmp, /usr/tmp) is one of its writable TmpfsMounts or /dev/shm, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the path of a TmpfsMounts entry that is not mounted ':ro'.",
+                $"ContainerAttesterOptions mounts the root filesystem read-only with TMPDIR '{environment[ScratchDirectory.VariableName]}', and none of the directories Python's tempfile would try (TMPDIR, TEMP, TMP, /tmp, /var/tmp, /usr/tmp) is one of its writable Isolation.TmpfsMounts or /dev/shm, so the attester bootstrap has nowhere to write the module it imports; set TMPDIR to the path of an Isolation.TmpfsMounts entry that is not mounted ':ro'.",
                 nameof(options));
         }
 
@@ -70,9 +74,9 @@ public sealed class ContainerAttester : IAttester
     /// <summary>
     /// Reads the JSON envelope from stdin, writes <c>attester_source</c> to a
     /// temp file inside the container — in <c>TMPDIR</c>, which
-    /// <see cref="AttestAsync"/> points at the first configured tmpfs mount, so a
-    /// read-only root with <c>/scratch</c> mounted instead of <c>/tmp</c> works;
-    /// this text never names a directory itself — imports it, and calls
+    /// <see cref="ContainerIsolation.ToRunSpec"/> points at the first configured tmpfs
+    /// mount, so a read-only root with <c>/scratch</c> mounted instead of <c>/tmp</c>
+    /// works; this text never names a directory itself — imports it, and calls
     /// <c>attest(**kwargs)</c>. Redirects stdout to a buffer for the whole
     /// import+call so a stray <c>print()</c> inside the bundle's own module
     /// can never corrupt the one JSON line this prints at the very end (the
@@ -119,48 +123,24 @@ public sealed class ContainerAttester : IAttester
             },
         });
 
-        var spec = new ContainerRunSpec(
-            Image: _options.Image,
-            Command: ["python3", "-c", Bootstrap],
-            Stdin: envelope,
-            // TMPDIR -> the first tmpfs mount. NamedTemporaryFile writes wherever it
-            // points; left unset that is /tmp, which is read-only whenever the host
-            // mounted its scratch somewhere else.
-            Environment: ScratchDirectory.Apply(_options.Environment, _options.TmpfsMounts),
-            NetworkMode: "none",
-            MemoryBytes: _options.MemoryBytes,
-            Cpus: _options.Cpus,
-            PidsLimit: _options.PidsLimit,
-            Timeout: _options.Timeout)
-        {
-            ReadOnlyRootFilesystem = _options.ReadOnlyRootFilesystem,
-            TmpfsMounts = _options.TmpfsMounts,
-        };
+        // TMPDIR -> the first tmpfs mount, applied by ToRunSpec. NamedTemporaryFile writes
+        // wherever it points; left unset that is /tmp, which is read-only whenever the
+        // host mounted its scratch somewhere else.
+        var spec = _options.Isolation.ToRunSpec(_options.Image, ["python3", "-c", Bootstrap], envelope, _options.Environment, "none");
 
         var result = await _engine.RunAsync(spec, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new ContainerExecutionException($"attester exited with code {result.ExitCode}", result.Stdout, result.Stderr);
-        }
+        using var document = ReceiptParsing.ParseJson(result, "attester");
 
-        JsonElement verdict;
-        try
-        {
-            verdict = JsonSerializer.Deserialize<JsonElement>(result.Stdout);
-        }
-        catch (JsonException e)
-        {
-            throw new ContainerExecutionException($"attester stdout was not valid JSON: {e.Message}", result.Stdout, result.Stderr);
-        }
+        // The whole verdict document, not only the two fields read, is held to the
+        // receipt's strict contract (no duplicate property, every number exact): one
+        // parsing contract for all container JSON. A non-object still reads as a
+        // failing verdict, as before.
+        var verdict = JsonValues.Normalize(document.RootElement, result, "attester") as Dictionary<string, object?>;
 
-        var passed = verdict.ValueKind == JsonValueKind.Object
-            && verdict.TryGetProperty("ok", out var okProp)
-            && okProp.ValueKind == JsonValueKind.True;
-        var detail = verdict.ValueKind == JsonValueKind.Object
-            && verdict.TryGetProperty("reason", out var reasonProp)
-            && reasonProp.ValueKind == JsonValueKind.String
-                ? reasonProp.GetString()
-                : null;
+        var passed = verdict is not null && verdict.TryGetValue("ok", out var ok) && ok is true;
+        var detail = verdict is not null && verdict.TryGetValue("reason", out var reason) && reason is string text
+            ? text
+            : null;
         return new AttestationVerdict(passed, detail);
     }
 }

@@ -255,6 +255,51 @@ public class ConceptGeneratorTests
     }
 
     [Fact]
+    public void A_package_name_that_is_a_windows_reserved_device_name_is_suffixed()
+    {
+        // E9 (finding, low, Windows Server kernels): a NuGet PackageId "Aux.Core" slugifies to
+        // "aux.core", whose base name (before the first ".") is the reserved device "aux" -- as
+        // unwritable as a bare "aux.md" on Windows 10/Server. Package/doc ids never go through
+        // CodeConceptIds.Compose (only code ids do), so ConceptIdRegistry.Register carries the same
+        // check, with the same "_" suffix convention as the code-id family.
+        //
+        // Fix round 1 (C1): the suffix lands right after the base name, not at the end of the
+        // slug -- "aux_.core", never "aux.core_" (whose base name is still exactly "aux" and is
+        // itself still reserved, as the round-1 review demonstrated by running this same
+        // predicate on that string).
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Aux.Core.csproj", "Aux.Core", null)],
+            []);
+
+        var concepts = new ConceptGenerator().Generate(snapshot);
+
+        var packageId = Assert.Single(concepts, c => c.Id.Segments[0] == "packages").Id;
+        Assert.Equal("packages/aux_.core", packageId.ToString());
+        foreach (var segment in packageId.ToString().Split('/'))
+        {
+            Assert.False(CodeConceptIds.IsWindowsDeviceName(segment), $"segment {segment} in id {packageId}");
+        }
+    }
+
+    [Fact]
+    public void Regenerating_a_windows_device_named_package_does_not_double_suffix()
+    {
+        // Round-1's "aux__.core" regression class, exercised through the full generator rather
+        // than the helper directly: two independent runs over the same raw PackageManifest.Name
+        // must land on the same, once-suffixed id -- ConceptGenerator always derives the slug
+        // fresh from that original name, never from a previous run's already-suffixed id string.
+        var snapshot = new RepositorySnapshot("/repo", "my-repo",
+            [new PackageManifest("nuget", "Aux.Core.csproj", "Aux.Core", null)],
+            []);
+
+        var first = new ConceptGenerator().Generate(snapshot);
+        var second = new ConceptGenerator().Generate(snapshot);
+
+        Assert.Contains(first, c => c.Id.ToString() == "packages/aux_.core");
+        Assert.Contains(second, c => c.Id.ToString() == "packages/aux_.core");
+    }
+
+    [Fact]
     public void A_nuget_description_never_manufactures_a_bundle_link()
     {
         // A `.csproj` <Description> is written by a human -- for NuGet, not for this bundle. Nobody

@@ -150,7 +150,7 @@ public static class OkfgenCli
                 + "partial: the concepts that file owned are then never pruned, because this run cannot vouch for "
                 + "their absence. The Roslyn stage applies the same cap to the Compile items MSBuild reports, but "
                 + "drops an over-cap item silently: for a file the scan also walked the counted skip covers it; "
-                + "for one it did not (a linked out-of-repository source, a generated file under obj/) nothing "
+                + "for one it did not (a linked out-of-repository source, an SDK-generated file in the query scratch) nothing "
                 + "names the dropped file. What the drop costs is not stated here because it varies -- any "
                 + "consequence this run can see is reported by its per-project notes instead.",
             DefaultValueFactory = _ => ExtractionLimits.Default.MaxFileBytes,

@@ -425,4 +425,51 @@ public class FileMemoryStoreTests
         var listedAsB = await store.EnumerateAsync(b);
         Assert.Empty(listedAsB);
     }
+
+    [SkippableFact]
+    public async Task Write_refuses_a_scope_directory_reached_through_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1: the user tier's "memory-user" directory is a junction to
+        // `external` whose attributes the current user cannot read (deny
+        // ReadAttributes on it, deny listing on the tier root). Writes go
+        // through BundleConceptWriter's guards, which on the lenient
+        // predicate answered "not a link" and wrote the day's memory file
+        // under `external`.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        using var junction = tmp.TryCreateUninspectableJunction("memory-user", external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var store = UserStore(tmp);
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+
+        var write = await store.WriteAsync(scope, Entry("secret"), MemoryTier.User);
+
+        Assert.False(write.Written);
+        Assert.Contains("resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle", write.Error);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+    }
+
+    [SkippableFact]
+    public async Task DeleteScope_refuses_a_scope_directory_reached_through_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1, IsReparseEscaped's side: the scope's subtree exists under
+        // `external`, reached only through an uninspectable "memory-user"
+        // junction. The lenient walk answered "no link", and DeleteScope
+        // recursively deleted a directory outside the tier root.
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var scope = new KnowledgeAccessScope(tenantId: "acme", userId: "alice");
+        var outsideFile = Path.Combine([external.Path, .. MemoryPath.For(MemoryTier.User, scope).Split('/').Skip(1), "2026-07-27.md"]);
+        Directory.CreateDirectory(Path.GetDirectoryName(outsideFile)!);
+        File.WriteAllText(outsideFile, "must survive");
+        using var junction = tmp.TryCreateUninspectableJunction("memory-user", external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+        var store = UserStore(tmp);
+
+        var delete = await store.DeleteScopeAsync(scope, MemoryTier.User);
+
+        Assert.Equal(0, delete.TiersDeleted);
+        Assert.Equal("Memory tier 'User' path is a reparse point or could not be inspected; refusing to delete.", delete.Error);
+        Assert.True(File.Exists(outsideFile));
+    }
 }

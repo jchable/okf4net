@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using OKF4net.Internal;
+
 namespace OKF4net;
 
 /// <summary>A concept matched by <see cref="ConceptSearch"/>, with its score.</summary>
@@ -68,7 +70,7 @@ public static class ConceptSearch
             return null;
         }
 
-        foreach (var rawLine in body.Split('\n'))
+        foreach (var rawLine in LfLines.Split(body))
         {
             var line = rawLine.Trim();
             if (line.Length == 0)

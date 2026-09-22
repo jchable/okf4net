@@ -105,13 +105,20 @@ internal static class OkfTimestamp
         @"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.,][0-9]+)?)?(Z|[+-][0-9]{2}(:[0-9]{2})?)$",
         RegexOptions.Compiled);
 
+    /// <summary>The exact shape <see cref="FormatUtc"/> writes; the writer and the CLI check `--at` against this and nothing else.</summary>
+    internal const string EmittedUtcFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+
     /// <summary>
     /// Formats <paramref name="utc"/> as <c>yyyy-MM-ddTHH:mm:ssZ</c> under the
     /// invariant culture. The caller is responsible for passing a UTC instant;
     /// the trailing <c>Z</c> is a literal designator, not a computed offset.
     /// </summary>
     internal static string FormatUtc(DateTime utc) =>
-        utc.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture) + "Z";
+        utc.ToString(EmittedUtcFormat, CultureInfo.InvariantCulture);
+
+    /// <summary>Whether <paramref name="raw"/> is spelled exactly as <see cref="FormatUtc"/> spells a stamp.</summary>
+    internal static bool IsEmittedUtcForm(string raw) =>
+        DateTime.TryParseExact(raw, EmittedUtcFormat, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out _);
 
     /// <summary>
     /// Classifies a §5 timestamp and, whenever it is readable at all, yields its
@@ -131,7 +138,8 @@ internal static class OkfTimestamp
         // runs against the raw text, not the parsed value — DateTimeOffset does
         // not remember whether its source used "Z" or "z", "+02:00" or "+0200".
         if (HasExplicitOffset(raw)
-            && DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var withOffset))
+            && DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var withOffset)
+            && CarriesADate(raw))
         {
             instant = withOffset.ToUniversalTime();
             return IsConformantSpelling(raw) ? TimestampForm.Conformant : TimestampForm.NonIso8601;
@@ -221,6 +229,23 @@ internal static class OkfTimestamp
     /// </summary>
     private static bool IsNegativeZeroOffset(ReadOnlySpan<char> s) =>
         s.EndsWith("-00:00", StringComparison.Ordinal) || s.EndsWith("-00", StringComparison.Ordinal);
+
+    /// <summary>
+    /// §5 requires a full <c>YYYY-MM-DDThh:mm[...]</c> datetime, so a
+    /// time-only value (<c>10:00Z</c>) is not a §5 timestamp under any
+    /// spelling — but <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
+    /// fills a missing date with the machine's wall-clock date, so `10:00Z`
+    /// read as "today at 10:00" — a staleness that flipped within the day,
+    /// per machine, ignoring --as-of. DateTimeOffset does not support
+    /// NoCurrentDateDefault, so the date's presence is probed through DateTime,
+    /// where it does: a value with no date lands on year 1. That coincides
+    /// with <c>NoCurrentDateDefault</c>'s own year-1 sentinel, so a literal
+    /// <c>0001-01-01T00:00:00Z</c> would misclassify as date-less too — not a
+    /// spelling any real <c>stale_after</c> or <c>generated.at</c> uses.
+    /// </summary>
+    private static bool CarriesADate(string raw) =>
+        DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.NoCurrentDateDefault | DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var probe)
+        && probe.Year > 1;
 
     /// <summary>
     /// Whether the raw value carries an explicit zone designator at all: a

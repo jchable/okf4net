@@ -56,8 +56,24 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--include-internal` | off | Emit `internal` declarations, not only public ones. The filter is on **effective** visibility, so a `public` member of an `internal` type is capped at internal and stays out by default — it used to be emitted, and tagged `public`, a visibility C# does not give it. |
 | `--no-code` | off | Skip the code-graph stage entirely: `overview`, `packages/` and `docs/` only. |
 | `--no-msbuild` | off | Do not run `dotnet msbuild` on the scanned repository, and skip the Roslyn resolver built on it. Costs **two** things: call links then come from name matching alone, so an ambiguous name is left unlinked instead of resolved exactly; and the run has no source-ownership map, so **no `packages` → namespace containment link is emitted at all** — under `--update` that overwrites the ones a previous run wrote. **Read the section below before deciding you do not need this.** |
-| `--roslyn-timeout <seconds>` | *none* | Wall-clock budget for the whole Roslyn stage — the `dotnet msbuild` queries and the compilations after them. **Absent means unbounded**, which is the default and is deliberate: each query is capped at two minutes on its own, but nothing caps their sum, so a large repository runs for as long as it runs, and a budget would make the emitted bundle a function of how fast this machine is (§6.2 pins determinism at a fixed extractor version, not a fixed CPU). If the budget runs out the stage is abandoned **whole**, never truncated — you get the same uniformly name-matched bundle `--no-msbuild` produces, with a note naming the same two losses, rather than one whose exact and name-matched links are divided by machine speed with nothing recording where the line fell. |
-| `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. The tree-sitter engine skips a larger one *and counts it*, which makes the run partial: the concepts it owned are then not pruned. The Roslyn engine applies the same cap to the `Compile` items MSBuild reports, but drops an over-cap item **silently** — for a file the scan also walked the counted skip covers it, and for one it did not (a linked out-of-repository source, a generated file under `obj/`) nothing reports it: the project simply fails to compile and is named as such. |
+| `--roslyn-timeout <seconds>` | *none* | Wall-clock budget for the whole Roslyn stage — the `dotnet msbuild` queries and the compilations after them. **Absent means unbounded**, which is the default and is deliberate: each query is capped at two minutes on its own, but nothing caps their sum, so a large repository runs for as long as it runs, and a budget would make the emitted bundle a function of how fast this machine is (§6.2 pins determinism at a fixed extractor version, not a fixed CPU). If the budget runs out the stage is abandoned **whole**, never truncated — you get the same uniformly name-matched bundle `--no-msbuild` produces, with a note naming the same two losses, rather than one whose exact and name-matched links are divided by machine speed with nothing recording where the line fell. The budget is consulted between individual project queries and between compilations, never only once at the top of a stage — the finest thing it can interrupt is the gap between two projects, since one `dotnet msbuild` invocation has its own two-minute cap and is not interruptible by this. |
+| `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. The tree-sitter engine skips a larger one *and counts it*, which makes the run partial: the concepts it owned are then not pruned. The Roslyn engine applies the same cap to the `Compile` items MSBuild reports, but drops an over-cap item **silently** — for a file the scan also walked the counted skip covers it, and for one it did not (a linked out-of-repository source, an SDK-generated file in the query's scratch directory) nothing reports it: the project simply fails to compile and is named as such. |
+
+### Known limitation: `dotnet exec <dll>` can silently degrade an SDK-8-pinned sub-project
+
+Use `dotnet run --project producers/src/OkfProducer.Cli -- generate …` (above) or the packaged
+native executable (see "Packaging" below) to run `okfgen`. Invoking the already-built
+`OkfProducer.Cli.dll` directly via `dotnet exec OkfProducer.Cli.dll generate …` is **not**
+confirmed equivalent: measured against a scanned repository whose sub-project pins SDK 8 via
+`global.json`, with a real SDK 8 installed, the `dotnet exec` invocation degraded that
+sub-project silently — the run still exited `0` and wrote a bundle, with only
+`note: <project>.csproj: not compiled (MsBuildQueryFailed) ... A compatible .NET SDK was not
+found. Requested SDK version: 8.0.100` marking it, a line easy to miss in a CI log. The same
+reproduction against `dotnet run --project`, the native apphost (`OkfProducer.Cli.exe`), and
+the native apphost run from inside an MSBuild `<Exec>` target were all confirmed clean. Every
+`DOTNET_*`/`MSBuild*` environment variable and `PATH` were confirmed identical between the clean
+and the degraded run — the cause is not one of those, and it has not been root-caused further.
+See `ROADMAP.md` for the open investigation.
 
 ### Generating from a repository runs that repository's build logic
 
@@ -81,6 +97,46 @@ query into `-t:Build`, or add any other switch. Two things were measured to stil
 explicit command-line switch wins on conflict, so the producer's own `-nodeReuse:false`
 cannot be flipped from the rsp; and the mitigation above is unchanged, because it never
 rested on which targets were asked for.
+
+**What a run writes into the scanned repository: no file.** Running its build logic and
+writing its build output are two different things, and until E13 `okfgen` did both.
+`-t:ResolveReferences` depends on `ResolveProjectReferences`, and outside Visual Studio
+`BuildProjectReferences` defaults to `true`, so the query *built every referenced project* —
+measured on SDK 10.0.204, one resolver stage over a restored, never-built three-project chain
+wrote 39 files into the tree (`bin/`, both referenced projects' whole `obj/Debug/<tfm>/`,
+`ref/` and `refint/` assemblies). The query now passes `-p:BuildProjectReferences=false`, and
+the files MSBuild still generates for the queried project itself — `*.GlobalUsings.g.cs` and
+`*.AssemblyInfo.cs`, which are `Compile` items Roslyn has to read, so there is no switch that
+yields the item without the file — are redirected into an `okfgen-msbuild-*` directory under
+the system temp directory, deleted when the Roslyn stage ends. The path is escaped the way
+MSBuild expects (`%XX`), so a temp directory holding `%` or `;` works rather than sending the
+files somewhere else.
+
+What the query *does* still create in the scanned repository is directories: an **empty**
+`bin/<Configuration>/<TFM>/` for each never-built project, made by `PrepareForBuild`'s
+`<MakeDir Directories="$(OutDir);…">`. Nothing is written into them. They are left on purpose:
+redirecting `OutDir` as well removes them, but a `-p:` switch reaches the referenced projects
+too, and measured, it moves their reference path from `lib/bin/Debug/net10.0/Lib.dll` into the
+scratch — the assembly the Roslyn stage falls back to on a built tree. An already-built tree
+gains nothing at all.
+
+A run killed before the stage ends (Ctrl+C, a crash) leaves its `okfgen-msbuild-*` directory
+behind. The next run that reaches the Roslyn stage deletes this producer's own leftovers once
+they are a day old — only directories named exactly as it names them, never through a link —
+so they do not accumulate. Two things none of this promises. It does not stop the *repository's
+own* MSBuild logic from writing wherever it likes while it is evaluated — that is the paragraph
+above, and it is not something a switch can bound. And it says nothing about `--out`: the bundle
+directory is written to, deliberately, and pointing it inside the scanned repository is your
+choice.
+
+One consequence, on a repository that was **restored but never built**. The Roslyn stage
+substitutes a from-source compilation for every project reference it can compile, and falls
+back to the referenced project's `bin/` assembly for one it cannot (a project using Roslyn
+source generators is the common case — see the limitation above). That assembly used to exist
+because the query had just built it; now it does not, so the *dependent* project is reported
+`ReferencesUnresolved` and its own calls fall back to name matching as well — and its note names
+the project and says to build the repository once and re-run. On an already-built tree nothing
+changes.
 
 `--no-msbuild` is the way out. It skips the whole stage: **no `dotnet msbuild` is spawned and
 no MSBuild logic from the scanned tree is evaluated**, and calls are resolved by the
@@ -161,6 +217,16 @@ from the bundle — the report names it under the line, capped at ten with a rem
 count. A partially extracted file is not named: it *was* read, and on a real repository
 there are hundreds of them.
 
+**A directory the walk could not list at all is named the same way, but it is not a
+"visited" file.** One inaccessible subdirectory (a permission-denying ACL, most
+concretely) no longer empties the whole file list the way an unreadable repository root or
+a circular junction does — every other file the walk finds is still visited and reported,
+and the directory itself is named under the line (`- locked/: skipped, directory not
+readable`), sharing the same ten-entry cap as the per-file causes above. It does not,
+however, add to the "N source file(s) visited" count: that count is a statement about files
+this run actually *attempted*, and a directory it could not even list was never one of
+those — counting it there would overstate how much of the repository this run touched.
+
 **What the line still cannot tell you.** It states what the run *visited* and how it
 *resolved* — never what it chose not to *emit*. A file read in full, extracted cleanly and
 covered by the exact resolver still contributes no concept for its indexers, its
@@ -173,8 +239,9 @@ a number would be the very defect this line exists to end.
 
 **It is unconditional within a stated bound, and the bound is not "every run".** A run that
 throws *before* generation prints `error:` and exits 1 having reported nothing — reachable,
-not theoretical: a circular junction in a repository with no root `*.sln` makes the
-scanner's own recursive `.csproj` walk throw. What holds is: **every run that reaches the
+not theoretical: the scanner skips a link and a subdirectory or manifest it cannot read, but
+not the repository root itself — a `--repo` that exists yet cannot be listed still makes its
+recursive `.sln`/`.csproj` walk throw. What holds is: **every run that reaches the
 generation stage, and therefore every run that exits 0**. The report is emitted before the
 write, so even a run whose write failed has said what its analysis found.
 

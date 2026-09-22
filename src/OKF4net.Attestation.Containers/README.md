@@ -82,37 +82,53 @@ Python-capable: the wrapper is `python3`.)
 ## What the host controls
 
 `ContainerRuntimeProfile` carries the image, the interpreter, the environment,
-the `--network` mode, and four per-run ceilings (`--memory`, `--cpus`,
-`--pids-limit`, wall clock). A non-positive ceiling is **rejected**, because to
-docker and podman zero there means *unlimited* — a value that removes the
-ceiling it appears to set.
+and the `--network` mode. Everything about how hardened the container itself
+is lives on one shared `ContainerIsolation` record (`profile.Isolation` /
+`ContainerAttesterOptions.Isolation`), so a hardening decision reaches the
+script executor, the SQL executor and the attester at once instead of landing
+on two of the three and missing the third:
 
-Network access defaults closed for `Script` and open for `SqlClient` (which
-must reach a database, and a package index unless its image vendors the driver),
-and either can be overridden — including back to the engine's default, with an
-explicit `null`.
+- **`Isolation.User`** — passed as `--user`; defaults to `65534:65534` (`nobody` on every
+  mainstream image), so bundle-authored code never runs as the image's default
+  user (root, on most images). A host whose image insists on its own user sets
+  this to `null`, knowingly.
+- **`Isolation.DropAllCapabilities`** — `--cap-drop ALL` when true (default).
+- **`Isolation.NoNewPrivileges`** — `--security-opt no-new-privileges` when true (default).
+- **`Isolation.ReadOnlyRootFilesystem`** / **`Isolation.TmpfsMounts`** — see below.
+- **The four per-run ceilings** (`Isolation.MemoryBytes`/`--memory`,
+  `Isolation.Cpus`/`--cpus`, `Isolation.PidsLimit`/`--pids-limit`,
+  `Isolation.Timeout`, wall clock). A non-positive ceiling is
+  **rejected**, because to docker and podman zero there means *unlimited* — a
+  value that removes the ceiling it appears to set.
 
 The root filesystem is mounted **read-only** by default, with `/tmp` as a
 memory-backed `tmpfs` that dies with the container. That is not a hole in the
 hardening: it is the one writable path the stages genuinely need — the attester
 bootstrap writes the bundle's module there before importing it, and the SQL
 wrapper installs its driver there — named explicitly instead of leaving the
-whole image writable. Both `ReadOnlyRootFilesystem` and `TmpfsMounts` are on the
-profile (and on `ContainerAttesterOptions`) if a host needs different paths.
+whole image writable. Both `Isolation.ReadOnlyRootFilesystem` and
+`Isolation.TmpfsMounts` can be changed, on the profile and on
+`ContainerAttesterOptions`, if a host needs different paths.
 
-A different path is honoured, not just mounted: the **first** `TmpfsMounts`
-entry is passed into every container as **`TMPDIR`**, and nothing inside the
-containers names `/tmp` itself — the attester bootstrap's temp module, pip's
-own working files and the SQL wrapper's `--target` all follow `TMPDIR`. So
-`TmpfsMounts = ["/scratch"]` works with `/tmp` left read-only. A `TMPDIR` the
+A different path is honoured, not just mounted: the **first**
+`Isolation.TmpfsMounts` entry is passed into every container as **`TMPDIR`**,
+and nothing inside the containers names `/tmp` itself — the attester
+bootstrap's temp module, pip's own working files and the SQL wrapper's
+`--target` all follow `TMPDIR`. So `Isolation.TmpfsMounts = ["/scratch"]` works
+with `/tmp` left read-only. A `TMPDIR` the
 host sets in `Environment` wins over the derived one — so under a read-only root
 it must lead to one of the mounts: `tempfile` (which pip goes through too) never
 creates it, and skips on through `TEMP`, `TMP`, `/tmp`, `/var/tmp` and
 `/usr/tmp`, which are read-only unless mounted. Each entry must be an
 absolute container path, optionally with engine options (`/scratch:size=64m`);
-anything else is rejected when the profile is built.
+anything else is rejected when the `ContainerIsolation` is built.
 
-An empty `TmpfsMounts` under a read-only root is allowed on a
+On `ContainerAttesterOptions`, change these with
+`new ContainerAttesterOptions().Isolation with { ... }` rather than a fresh
+`new ContainerIsolation { ... }`: the latter starts from the profile-sized
+ceilings and silently drops the attester's smaller ones.
+
+An empty `Isolation.TmpfsMounts` under a read-only root is allowed on a
 `ContainerRuntimeProfile` — a script that writes nothing, or a `SqlClient` image
 with the driver vendored in, needs no scratch, and that is the tightest
 configuration available (a bare Python `SqlClient` image then has nowhere to
@@ -129,6 +145,12 @@ image's own `ENV`, and podman, whose default `--read-only-tmpfs` also makes
 `/run`, `/tmp` and `/var/tmp` writable (podman is not exercised by this
 project's tests). In each case, point `TMPDIR` at a mount. The profile does not
 check its own `TMPDIR` the same way, for the same reason it allows no mount.
+
+Network access is the one isolation setting that stays on the profile rather
+than `ContainerIsolation`, because it defaults *by kind*: closed for `Script`
+and open for `SqlClient` (which must reach a database, and a package index
+unless its image vendors the driver). Either can be overridden — including
+back to the engine's default, with an explicit `null`.
 
 ## Limitations in this version
 
@@ -149,3 +171,9 @@ check its own `TMPDIR` the same way, for the same reason it allows no mount.
   that the database ran it. Real provenance needs a receipt field the engine
   itself produces, such as a BigQuery `job_id` resolved against the job's own
   recorded SQL.
+- **`--user` is a uid, not a sandbox.** Non-root plus `--cap-drop ALL` and
+  `no-new-privileges` removes the ordinary escalation paths; it does not add
+  user namespaces, seccomp/AppArmor profiles beyond the engine's defaults, or
+  gVisor/Kata-class isolation. An image whose entrypoint requires root will
+  fail under the default profile — set `Isolation = new() { User = null }` to
+  keep the image's user, knowingly.

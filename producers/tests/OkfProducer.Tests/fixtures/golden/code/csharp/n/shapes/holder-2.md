@@ -2,7 +2,7 @@
 type: C# Type
 title: Shapes.Holder`2
 description: Arity two.
-resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L103-L104
+resource: https://example.com/acme/fixture/blob/main/src/Shapes.cs#L104-L105
 tags:
   - csharp
   - type
@@ -18,7 +18,7 @@ Arity two.
 
 ## Signatures
 
-- `public class Holder<TKey, TValue>` — `src/Shapes.cs#L103-L104`
+- `public class Holder<TKey, TValue>` — `src/Shapes.cs#L104-L105`
 
 ## Contains
 

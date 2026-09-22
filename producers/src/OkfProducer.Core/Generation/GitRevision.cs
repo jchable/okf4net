@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -34,6 +33,115 @@ public static class GitRevision
 {
     /// <summary>How long one <c>git</c> invocation may take before it is abandoned and the outside-git fallback applies.</summary>
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The absolute path of <c>git</c> found on <c>PATH</c>, or <see langword="null"/> when it is not
+    /// there.
+    ///
+    /// <para><b>Why this exists at all, rather than handing <c>"git"</c> straight to
+    /// <see cref="ProcessStartInfo"/>.</b> A bare executable name lets Windows' <c>CreateProcess</c>
+    /// search the application directory and the <b>current directory</b> before it ever looks at
+    /// <c>PATH</c>. This producer's whole premise is that it only reads a scanned repository, never
+    /// executes anything from it -- <c>--no-msbuild</c> exists to say so explicitly -- so a
+    /// <c>git.exe</c> committed inside the repository being scanned would run with the operator's own
+    /// privileges the moment <c>okfgen</c> was launched from inside that checkout, silently, under
+    /// every flag combination including <c>--no-msbuild</c>. Resolving here, against <c>PATH</c> only,
+    /// closes that: the current directory is never consulted, whatever it happens to be.</para>
+    ///
+    /// <para><b>The candidate names, on Windows, come from <c>PATHEXT</c>.</b> Hard-coding
+    /// <c>git.exe</c>/<c>git.cmd</c> would silently miss a <c>git.bat</c> or a <c>git.com</c> shim, and
+    /// would order a <c>.cmd</c> ahead of an <c>.exe</c> even when the operator's own <c>PATHEXT</c>
+    /// says the reverse -- both wrong in the same direction <c>CreateProcess</c> itself is not. Falls
+    /// back to <c>.COM;.EXE;.BAT;.CMD</c>, <c>PATHEXT</c>'s own documented default, when the
+    /// environment variable is unset.</para>
+    ///
+    /// <para><b>A relative <c>PATH</c> entry is skipped, not resolved.</b> An empty entry (<c>"a;;b"</c>,
+    /// which Windows and most shells read as "the current directory") and a literal <c>.</c> or other
+    /// relative segment are both left out rather than combined against
+    /// <see cref="Environment.CurrentDirectory"/> -- resolving either would still end up asking the
+    /// current directory, which is exactly the hole this method exists to close, just one indirection
+    /// later. This test is <see cref="Path.IsPathFullyQualified(string)"/>, not
+    /// <see cref="Path.IsPathRooted(string)"/>: <c>IsPathRooted</c> is <see langword="true"/> for a
+    /// Windows <b>drive-relative</b> path too (<c>E:tools</c>, or a bare <c>E:.</c>/<c>E:</c>), and
+    /// <see cref="Path.Combine(string, string)"/> then resolving that against
+    /// <see cref="Environment.CurrentDirectory"/> reopens the exact hole this method exists to close,
+    /// one drive letter removed -- measured: with <c>PATH=E:tools</c>, the current directory holding a
+    /// stand-in <c>git.exe</c> under <c>tools\</c>, the old check resolved it. <c>IsPathFullyQualified</c>
+    /// rejects all three drive-relative shapes while still accepting an ordinary rooted path and a UNC
+    /// one (<c>\\server\share</c>, <c>\\?\...</c>).</para>
+    ///
+    /// <para><b>On Unix, a hit still has to be executable.</b> <see cref="File.Exists(string)"/> says
+    /// nothing about the execute bit, so a non-executable file named <c>git</c> earlier on <c>PATH</c>
+    /// (a stray text file, a checked-out doc) would otherwise shadow the real binary here exactly as it
+    /// would for an interactive shell's own PATH search -- which is why <c>PATH</c> resolution the
+    /// world over requires it. Checked with <see cref="File.GetUnixFileMode(string)"/> rather than left
+    /// to <see cref="Process.Start(ProcessStartInfo)"/> to enforce implicitly: a mismatch there fails
+    /// the whole launch instead of continuing to the next <c>PATH</c> entry the way a real PATH search
+    /// would.</para>
+    ///
+    /// <para><b>Adjacent, not closed here.</b> <c>MsBuildProjectQuery</c>
+    /// (<c>OkfProducer.CodeGraph.Roslyn</c>) starts a bare <c>dotnet</c> the same unguarded way this
+    /// method exists to stop <c>git</c> from being started -- left alone because it only runs without
+    /// <c>--no-msbuild</c>, where MSBuild project evaluation already executes arbitrary code from the
+    /// scanned repository (see <c>GenerateRun</c>'s remarks), so resolving <c>dotnet</c> off <c>PATH</c>
+    /// there would not remove an execution surface, only rename it.</para>
+    /// </summary>
+    internal static string? ResolveGitExecutable()
+    {
+        IEnumerable<string> names;
+        if (OperatingSystem.IsWindows())
+        {
+            // Trimmed and filtered: an untrimmed entry (" .EXE " -- a stray space is easy to leave in a
+            // hand-edited PATHEXT) would never equal any real extension and silently drop git.exe from
+            // the candidate set, and an entry that is not a dot followed by at least one character (a
+            // bare ".", or one with nothing after the dot) would build a candidate name with no real
+            // extension at all -- itself a launchable file if one existed with that literal name.
+            var defaultExtensions = new[] { ".COM", ".EXE", ".BAT", ".CMD" };
+            var filtered = Environment.GetEnvironmentVariable("PATHEXT") is { Length: > 0 } pathext
+                ? pathext.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(ext => ext.Trim())
+                    .Where(ext => ext.Length > 1 && ext[0] == '.')
+                    .ToArray()
+                : defaultExtensions;
+
+            // Falls back to the same default when a set PATHEXT filters down to nothing (e.g.
+            // `PATHEXT=EXE`, missing every leading dot) rather than searching PATH with an empty
+            // candidate list and finding git unconditionally absent.
+            var extensions = filtered.Length > 0 ? filtered : defaultExtensions;
+            names = extensions.Select(ext => "git" + ext);
+        }
+        else
+        {
+            names = ["git"];
+        }
+
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!Path.IsPathFullyQualified(directory))
+            {
+                continue;
+            }
+
+            foreach (var name in names)
+            {
+                var candidate = Path.Combine(directory, name);
+                if (!File.Exists(candidate))
+                {
+                    continue;
+                }
+
+                if (!OperatingSystem.IsWindows() && (File.GetUnixFileMode(candidate) & UnixFileMode.UserExecute) == 0)
+                {
+                    continue;
+                }
+
+                return Path.GetFullPath(candidate);
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// The HEAD commit's <i>committer</i> date, normalized to UTC and formatted as the §5-conformant
@@ -120,7 +228,8 @@ public static class GitRevision
     /// <summary>
     /// Runs <c>git &lt;arguments&gt;</c> in <paramref name="repoRoot"/> and returns its trimmed stdout,
     /// or <see langword="null"/> on any failure whatsoever -- no directory, no <c>git</c> binary, a
-    /// non-zero exit (not a repository, no commits yet, a detached worktree with no HEAD), or a timeout.
+    /// non-zero exit (not a repository, no commits yet, a detached worktree with no HEAD), a timeout, a
+    /// pipe that failed while being read, or an answer longer than <see cref="MaxOutputChars"/>.
     /// Every one of those collapses to the single "outside a git repository" fallback callers use; a
     /// caller that needs to tell them apart has no use for this type today.
     /// </summary>
@@ -135,77 +244,38 @@ public static class GitRevision
             return null;
         }
 
-        var startInfo = new ProcessStartInfo("git")
+        // Resolved against PATH explicitly rather than handed the bare name "git" -- see
+        // ResolveGitExecutable's own doc for why: a bare name lets Windows search the current
+        // directory before PATH, and this run's current directory is the operator's, not this
+        // method's business to trust. `git` simply not being on PATH folds into the same
+        // "outside a git repository" fallback as every other failure below.
+        if (ResolveGitExecutable() is not { } gitExecutable)
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = repoRoot,
-        };
-
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        Process process;
-        try
-        {
-            process = Process.Start(startInfo)
-                ?? throw new Win32Exception();
-        }
-        catch (Win32Exception)
-        {
-            // `git` is not on PATH at all -- folded into the same fallback as "not a repository" rather
-            // than a distinct failure mode, since both leave this run with nothing to stamp.
             return null;
         }
 
-        using (process)
-        {
-            using var cts = new CancellationTokenSource(Timeout);
+        // The absolute path, never the bare name, goes to the runner: BoundedProcess hands its
+        // executable to ProcessStartInfo unresolved, so the resolution above is what keeps the current
+        // directory out of the search. The runner owns the rest of what used to be spelled out here --
+        // stdin redirected and closed at once (a child blocked reading a live console would otherwise
+        // hang until Timeout), both streams drained concurrently and capped, the deadline enforced on
+        // the reads as well as the exit, and the tree killed on a timeout -- see its own summary.
+        var result = BoundedProcess.Run(gitExecutable, arguments, repoRoot, Timeout, MaxOutputChars, MaxOutputChars);
 
-            // Both streams drained concurrently, never one ReadToEnd() after the other: a filled pipe
-            // buffer on either side would otherwise deadlock a process that is blocked writing to it.
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
-            var exitTask = process.WaitForExitAsync(cts.Token);
-
-            string stdout;
-            try
-            {
-                // Bounded TWICE, deliberately. `cts` is the fast path and works in the ordinary case,
-                // but cancelling a synchronous pipe read is not guaranteed to interrupt it -- the same
-                // gap `MsBuildProjectQuery` (OkfProducer.CodeGraph.Roslyn) closed for the same reason.
-                // `WaitAsync(Timeout)` throws once the timeout elapses regardless of whether the
-                // awaited tasks ever observe their own cancellation, so this call returns on time
-                // either way; a read left stuck is abandoned to complete on its own once TryKill below
-                // closes the pipe, but nothing here blocks on it any longer.
-                Task.WhenAll(exitTask, stdoutTask, stderrTask).WaitAsync(Timeout).GetAwaiter().GetResult();
-                stdout = stdoutTask.Result;
-            }
-            catch (Exception e) when (e is OperationCanceledException or TimeoutException)
-            {
-                TryKill(process);
-                return null;
-            }
-
-            return process.ExitCode == 0 ? stdout.Trim() : null;
-        }
+        // Every other outcome folds into the one "outside a git repository" fallback: NotStarted is a
+        // resolved executable that still could not be launched (permissions, an antivirus block, a
+        // corrupt binary), TimedOut and Faulted leave nothing trustworthy to stamp, and an answer that
+        // overflowed MaxOutputChars was truncated, which for a sha or a branch name is simply wrong.
+        return result is { Outcome: BoundedOutcome.Completed, ExitCode: 0, StdoutOverflowed: false }
+            ? result.Stdout.Trim()
+            : null;
     }
 
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-            // Already exited between the timeout and here; nothing to kill.
-        }
-        catch (Win32Exception)
-        {
-            // Access denied killing the tree; left to the OS rather than failing the run twice.
-        }
-    }
+    /// <summary>
+    /// How much of one <c>git</c> answer is kept. Every subcommand this type runs prints one short line
+    /// -- a 40- or 64-character sha, an ISO-8601 date, a branch name -- so 64&nbsp;KiB is far past any
+    /// legitimate answer; it exists so no answer can be unbounded, and an answer that reaches it is
+    /// refused rather than truncated.
+    /// </summary>
+    private const int MaxOutputChars = 64 * 1024;
 }

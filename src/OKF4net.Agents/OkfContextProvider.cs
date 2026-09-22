@@ -6,6 +6,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Catalog;
 using OKF4net.Internal;
+using OKF4net.Yaml;
 
 namespace OKF4net.Agents;
 
@@ -643,7 +644,7 @@ public sealed class OkfContextProvider : AIContextProvider
             return (content, false, lineCount);
         }
 
-        var lines = content.Split('\n');
+        var lines = LfLines.Split(content);
         var sb = new StringBuilder();
         var kept = 0;
 
@@ -770,22 +771,47 @@ public sealed class OkfContextProvider : AIContextProvider
     /// <c>timestamp</c> these paths used to write. The provider is a producer,
     /// and a <c>timestamp</c> here made every captured concept trip
     /// <c>BundleValidator</c>'s <c>LegacyTimestamp</c> warning the moment the
-    /// memory bundle was validated. The actor mirrors
-    /// <c>BundleConceptWriter.ProducerActor</c>'s format.
+    /// memory bundle was validated. The actor is
+    /// <c>BundleConceptWriter.DefaultProducerActor</c> itself, not a
+    /// re-spelling of it — one actor string, not two copies that could drift.
     ///
     /// This is the ONLY place the stamp can come from on these paths: both
     /// write through <c>AppendToConceptAtomic</c>, which reaches
     /// <c>BuildValidatedContent</c>'s string overload directly and so never
     /// runs the writer's <c>MaybeStampGenerated</c> — turning on
     /// <c>AutoStampGenerated</c> would not stamp these concepts.
+    ///
+    /// Every scalar here is built as a <see cref="YamlValue"/> and emitted
+    /// through <see cref="YamlEmitter.Emit"/> rather than hand-concatenated
+    /// into YAML text, so a <paramref name="dateStr"/> containing YAML-special
+    /// characters (<c>: </c>, a leading <c>#</c>, a <c>"</c>, ...) is quoted
+    /// correctly instead of corrupting the frontmatter. <c>internal</c> (not
+    /// <see langword="private"/>) so the unit test that exercises this
+    /// directly with a hostile <paramref name="dateStr"/> can call it —
+    /// <c>OKF4net.Agents</c> grants <c>OKF4net.Tests</c>
+    /// <c>InternalsVisibleTo</c>. In production, <paramref name="dateStr"/> is
+    /// always <c>now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)</c>
+    /// (see the sole caller below), so this quoting path is never actually
+    /// reached through a real capture.
     /// </summary>
-    private static string MemoryFrontmatter(string dateStr, DateTime now) =>
-        "type: AgentMemory\n"
-        + $"title: Agent memory {dateStr}\n"
-        + $"description: Captured user/agent exchanges for {dateStr}.\n"
-        + "generated:\n"
-        + $"  by: okf4net/{OkfSpec.Version}\n"
-        + $"  at: {OkfTimestamp.FormatUtc(now)}\n";
+    internal static string MemoryFrontmatter(string dateStr, DateTime now)
+    {
+        var generated = new YamlMapping();
+        generated.Insert("by", new YamlString(BundleConceptWriter.DefaultProducerActor));
+        generated.Insert("at", new YamlString(OkfTimestamp.FormatUtc(now)));
+
+        var map = new YamlMapping();
+        map.Insert("type", new YamlString("AgentMemory"));
+        map.Insert("title", new YamlString($"Agent memory {dateStr}"));
+        map.Insert("description", new YamlString($"Captured user/agent exchanges for {dateStr}."));
+        map.Insert("generated", generated);
+
+        // AppendToConceptAtomic takes the frontmatter YAML alone (no fences,
+        // no body), so emit the mapping through the same emitter Serialize
+        // uses -- every scalar above goes through YamlEmitter's quoting
+        // instead of being hand-concatenated into the YAML text.
+        return YamlEmitter.Emit(map);
+    }
 
     /// <summary>
     /// Decides which scope a capture belongs to (arbitration B), or returns

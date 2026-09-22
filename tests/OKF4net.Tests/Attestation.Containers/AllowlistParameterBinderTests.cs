@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using OKF4net;
+using OKF4net.Attestation;
 using OKF4net.Attestation.Containers;
 using Xunit;
 
@@ -39,7 +40,7 @@ public class AllowlistParameterBinderTests
     public async Task Rejects_a_declared_value_of_the_wrong_CLR_type()
     {
         var binder = new AllowlistParameterBinder();
-        await Assert.ThrowsAsync<ArgumentException>(
+        await Assert.ThrowsAsync<AttestationDiagnosticException>(
             async () => await binder.BindAsync(Contract, Computation, new Dictionary<string, object?> { ["name"] = 42 }));
     }
 
@@ -85,5 +86,21 @@ public class AllowlistParameterBinderTests
         // And the value did travel -- separately, for the driver to bind. A binder
         // that dropped values entirely would also satisfy the assertion above.
         Assert.Equal(value, bound.Values[parameter]);
+    }
+
+    /// <summary>
+    /// The tool path normalizes JsonElements before the orchestrator; this
+    /// pins that the binder's CLR checks and that normalization agree, so a
+    /// JSON `2026` for an `integer` parameter is accepted end to end.
+    /// </summary>
+    [Fact]
+    public async Task Accepts_the_long_the_tool_path_produces_for_a_json_integer()
+    {
+        var contract = new AttestedComputationContract(
+            Runtime: "python",
+            Parameters: [new ComputationParameter("year", "integer", Required: true)],
+            ComputationPath: null, Executor: null, Attester: null);
+        var bound = await new AllowlistParameterBinder().BindAsync(contract, Computation, new Dictionary<string, object?> { ["year"] = 2026L });
+        Assert.Equal(2026L, bound.Values["year"]);
     }
 }

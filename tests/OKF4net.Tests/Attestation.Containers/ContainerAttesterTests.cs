@@ -56,6 +56,33 @@ public class ContainerAttesterTests
         Assert.False(verdict.Passed);
     }
 
+    /// <summary>
+    /// The verdict is container JSON too, under the receipt's strict contract: a
+    /// duplicated <c>ok</c> was resolved by whichever occurrence
+    /// <c>TryGetProperty</c> found, so <c>{"ok": false, "ok": true}</c> could read as
+    /// a pass while another reader of the same output saw a failure; and the number
+    /// rule covers every number anywhere in the document, not only the fields read.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"ok": false, "ok": true}""", "attester stdout had a duplicate JSON property")]
+    [InlineData("""{"ok": true, "detail": {"k": 1, "k": 2}}""", "attester stdout had a duplicate JSON property")]
+    [InlineData("""{"ok": true, "score": 1e400}""", "attester stdout had a number that cannot be represented exactly")]
+    [InlineData("""{"ok": true, "rows": [9223372036854775808]}""", "attester stdout had a number that cannot be represented exactly")]
+    // The parser rejects the duplicate before any value is read: were only the
+    // normaliser's walk to catch it, the inexact number ahead of it would be the
+    // first failure reported. Red if AllowDuplicateProperties = false is dropped.
+    [InlineData("""{"score": 1e400, "ok": true, "ok": false}""", "attester stdout had a duplicate JSON property")]
+    public async Task A_verdict_that_breaks_the_strict_JSON_contract_fails_the_stage(string stdout, string message)
+    {
+        var engine = new FakeContainerEngine { Respond = _ => new ContainerRunResult(0, stdout, "") };
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions());
+
+        var ex = await Assert.ThrowsAsync<ContainerExecutionException>(
+            async () => await attester.AttestAsync(Context("def attest(**_):\n    return {}\n", new Receipt(new Dictionary<string, object?>()))));
+
+        Assert.Equal(message, ex.Message);
+    }
+
     [Fact]
     public async Task Throws_when_the_concept_has_no_resolvable_attester_source()
     {
@@ -124,7 +151,7 @@ public class ContainerAttesterTests
     }
 
     /// <summary>
-    /// The defect this pins: <c>TmpfsMounts</c> was documented as configurable, but the
+    /// The defect this pins: <c>Isolation.TmpfsMounts</c> was documented as configurable, but the
     /// bootstrap's <c>NamedTemporaryFile</c> wrote to <c>/tmp</c> whatever was mounted, so
     /// <c>["/scratch"]</c> under a read-only root failed every attestation. The first
     /// mount is the scratch directory; the rest are mounted and left alone. The
@@ -135,7 +162,7 @@ public class ContainerAttesterTests
     public async Task Points_TMPDIR_at_the_first_configured_mount_not_at_tmp()
     {
         var engine = new FakeContainerEngine();
-        var options = new ContainerAttesterOptions { TmpfsMounts = ["/scratch", "/var/tmp"] };
+        var options = new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch", "/var/tmp"] } };
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
 
         Assert.True(engine.LastSpec!.ReadOnlyRootFilesystem);
@@ -152,7 +179,7 @@ public class ContainerAttesterTests
     public async Task TMPDIR_is_the_mount_path_without_its_engine_options()
     {
         var engine = new FakeContainerEngine();
-        var options = new ContainerAttesterOptions { TmpfsMounts = ["/scratch:size=64m,mode=1777"] };
+        var options = new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch:size=64m,mode=1777"] } };
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
 
         Assert.Equal(["/scratch:size=64m,mode=1777"], engine.LastSpec!.TmpfsMounts);
@@ -166,7 +193,7 @@ public class ContainerAttesterTests
         var engine = new FakeContainerEngine();
         var options = new ContainerAttesterOptions
         {
-            TmpfsMounts = ["/scratch", "/work"],
+            Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch", "/work"] },
             Environment = new Dictionary<string, string> { ["TMPDIR"] = "/work" },
         };
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
@@ -185,7 +212,7 @@ public class ContainerAttesterTests
     {
         var engine = new FakeContainerEngine();
         var ex = Assert.Throws<ArgumentException>(
-            () => new ContainerAttester(engine, new ContainerAttesterOptions { TmpfsMounts = [] }));
+            () => new ContainerAttester(engine, new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = [] } }));
 
         Assert.Equal("options", ex.ParamName);
         Assert.Contains("TmpfsMounts", ex.Message, StringComparison.Ordinal);
@@ -199,7 +226,7 @@ public class ContainerAttesterTests
     /// working directory. Under a read-only root with only <c>/scratch</c> mounted, every
     /// one of those is read-only — "No usable temporary directory", verified against real
     /// Docker on <c>python:3.12-slim</c> for each case below. Rejected when the attester
-    /// is built, for the same reason an empty <c>TmpfsMounts</c> is. An empty value is
+    /// is built, for the same reason an empty <c>Isolation.TmpfsMounts</c> is. An empty value is
     /// skipped by <c>tempfile</c>, a subdirectory of a mount does not exist in a fresh
     /// tmpfs, and <c>/run</c> is not writable under docker's <c>--read-only</c>.
     /// </summary>
@@ -216,7 +243,7 @@ public class ContainerAttesterTests
         var engine = new FakeContainerEngine();
         var options = new ContainerAttesterOptions
         {
-            TmpfsMounts = mounts,
+            Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = mounts },
             Environment = new Dictionary<string, string> { ["TMPDIR"] = tmpdir },
         };
         var ex = Assert.Throws<ArgumentException>(() => new ContainerAttester(engine, options));
@@ -252,7 +279,7 @@ public class ContainerAttesterTests
         var engine = new FakeContainerEngine();
         var options = new ContainerAttesterOptions
         {
-            TmpfsMounts = mounts,
+            Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = mounts },
             Environment = new Dictionary<string, string> { ["TMPDIR"] = tmpdir },
         };
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
@@ -269,7 +296,7 @@ public class ContainerAttesterTests
     public void A_derived_TMPDIR_on_a_read_only_tmpfs_mount_is_rejected_when_the_attester_is_built()
     {
         var ex = Assert.Throws<ArgumentException>(
-            () => new ContainerAttester(new FakeContainerEngine(), new ContainerAttesterOptions { TmpfsMounts = ["/scratch:ro"] }));
+            () => new ContainerAttester(new FakeContainerEngine(), new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch:ro"] } }));
 
         Assert.Contains("TMPDIR '/scratch'", ex.Message, StringComparison.Ordinal);
     }
@@ -283,7 +310,7 @@ public class ContainerAttesterTests
     {
         var engine = new FakeContainerEngine();
         var environment = new Dictionary<string, string> { ["TMPDIR"] = "/scratch" };
-        var attester = new ContainerAttester(engine, new ContainerAttesterOptions { TmpfsMounts = ["/scratch"], Environment = environment });
+        var attester = new ContainerAttester(engine, new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch"] }, Environment = environment });
 
         environment["TMPDIR"] = "/work";
         await attester.AttestAsync(Context(PassingAttester, EmptyReceipt));
@@ -297,7 +324,7 @@ public class ContainerAttesterTests
     {
         var options = new ContainerAttesterOptions
         {
-            TmpfsMounts = ["/scratch"],
+            Isolation = new ContainerAttesterOptions().Isolation with { TmpfsMounts = ["/scratch"] },
             Environment = new Dictionary<string, string> { ["TMPDIR"] = "/work", ["TEMP"] = "/scratch" },
         };
 
@@ -311,8 +338,7 @@ public class ContainerAttesterTests
         var engine = new FakeContainerEngine();
         var options = new ContainerAttesterOptions
         {
-            ReadOnlyRootFilesystem = false,
-            TmpfsMounts = ["/scratch"],
+            Isolation = new ContainerAttesterOptions().Isolation with { ReadOnlyRootFilesystem = false, TmpfsMounts = ["/scratch"] },
             Environment = new Dictionary<string, string> { ["TMPDIR"] = "/work" },
         };
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
@@ -329,7 +355,7 @@ public class ContainerAttesterTests
     public async Task No_tmpfs_mount_is_allowed_when_the_root_is_writable_and_sets_no_TMPDIR()
     {
         var engine = new FakeContainerEngine();
-        var options = new ContainerAttesterOptions { ReadOnlyRootFilesystem = false, TmpfsMounts = [] };
+        var options = new ContainerAttesterOptions { Isolation = new ContainerAttesterOptions().Isolation with { ReadOnlyRootFilesystem = false, TmpfsMounts = [] } };
         await new ContainerAttester(engine, options).AttestAsync(Context(PassingAttester, EmptyReceipt));
 
         Assert.False(engine.LastSpec!.Environment.ContainsKey("TMPDIR"));

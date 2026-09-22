@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 namespace N;
 
 /// <summary>Keeps the scanners one run knows about.</summary>

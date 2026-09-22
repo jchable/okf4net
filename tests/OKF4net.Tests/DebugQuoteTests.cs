@@ -34,7 +34,13 @@ public class DebugQuoteTests
     public void Other_control_characters_are_escaped_numerically()
     {
         // U+0001 (SOH) has no named escape form; it renders as \u{1}.
-        var input = "a" + "" + "b";
+        //
+        // Written as a numeric constant. It was a LITERAL U+0001 byte in this
+        // source file until now -- invisible in every editor and diff that
+        // would have to review it, which is exactly the hygiene rule the rest
+        // of this area follows (see Internal/LineSafeText.cs on its own two).
+        // Behaviour is identical; only the spelling changed.
+        var input = "a" + (char)0x0001 + "b";
         Assert.Equal("\"a\\u{1}b\"", DebugQuote.Quote(input));
     }
 
@@ -50,6 +56,38 @@ public class DebugQuoteTests
         // previous private DebugQuote copies missed.
         var input = "e" + "́";
         Assert.Equal("\"e\\u{301}\"", DebugQuote.Quote(input));
+    }
+
+    /// <summary>
+    /// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are General
+    /// Categories Zl and Zp, not <c>Cc</c>, so the control arm never saw them
+    /// and they were emitted literally. Every message built through this helper
+    /// is a LINE in someone's output, and a markdown or JavaScript splitter
+    /// downstream ends a line on either — so quoting a value for a human to
+    /// read while leaving in the character that ends the line they read it on
+    /// was not really quoting it.
+    ///
+    /// <para>Written as numeric constants: a literal separator in source is
+    /// invisible in every editor and diff that would have to review it, the
+    /// same reason <c>Internal/LineSafeText.cs</c> spells its two that way.</para>
+    /// </summary>
+    [Fact]
+    public void Line_and_paragraph_separators_are_escaped_numerically()
+    {
+        Assert.Equal("\"a\\u{2028}b\"", DebugQuote.Quote("a" + (char)0x2028 + "b"));
+        Assert.Equal("\"a\\u{2029}b\"", DebugQuote.Quote("a" + (char)0x2029 + "b"));
+    }
+
+    /// <summary>
+    /// The deliberate limit of the arm above: Zl/Zp, not every Zs. An ordinary
+    /// space and a NO-BREAK SPACE (U+00A0, Zs) do not end a line, and escaping
+    /// them would disfigure every quoted multi-word value for nothing.
+    /// </summary>
+    [Fact]
+    public void Space_separators_are_not_escaped()
+    {
+        Assert.Equal("\"a b\"", DebugQuote.Quote("a b"));
+        Assert.Equal("\"a" + (char)0x00A0 + "b\"", DebugQuote.Quote("a" + (char)0x00A0 + "b"));
     }
 
     [Fact]

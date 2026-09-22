@@ -56,4 +56,24 @@ public sealed record ProjectInputs(
     bool Nullable,
     bool AllowUnsafe,
     string OutputType,
-    string TargetFramework);
+    string TargetFramework)
+{
+    /// <summary>
+    /// The project's <c>SignAssembly</c> property. <c>init</c>-only properties rather than two more
+    /// positional parameters (E7): the callers that already construct a <see cref="ProjectInputs"/>
+    /// positionally or with named arguments -- <c>FakeInputs</c> in <c>RoslynResolverTests</c> among
+    /// them -- stay valid unchanged, and defaults to <see langword="false"/> for every one of them,
+    /// which is the correct "not signed" answer for a fixture that never mentions signing at all.
+    /// </summary>
+    public bool SignAssembly { get; init; }
+
+    /// <summary>
+    /// The project's strong-name key file, as an absolute path, or <see langword="null"/> when
+    /// <see cref="SignAssembly"/> is <see langword="false"/> or no <c>KeyOriginatorFile</c>/
+    /// <c>AssemblyOriginatorKeyFile</c> property was set. <see cref="MsBuildProjectQuery.ReadInputs"/>
+    /// only resolves this path; whether it exists, sits inside the repository, and is not reached
+    /// through a reparse point is <see cref="CompilationFactory"/>'s decision to make, since only it
+    /// holds a repository root to check containment against.
+    /// </summary>
+    public string? KeyFile { get; init; }
+}

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Concurrent;
-using System.Globalization;
 using OKF4net.Internal;
 using OKF4net.Yaml;
 
@@ -49,6 +48,77 @@ public readonly record struct VerificationRecord(string ConceptId, string At, st
 /// <param name="Message">A confirmation, or what went wrong and how far it got.</param>
 /// <param name="Records">One entry per concept actually stamped, in the order given.</param>
 public readonly record struct VerificationOutcome(bool Recorded, string Message, IReadOnlyList<VerificationRecord> Records);
+
+/// <summary>
+/// What is wrong with one id passed to <see cref="BundleConceptWriter.CheckVerificationTargets"/>.
+/// </summary>
+internal enum VerificationTargetProblemKind
+{
+    /// <summary><see cref="ConceptId.TryParse(string, out ConceptId?)"/> rejects it, it resolves outside the
+    /// bundle root, it is the reserved <c>index</c>/<c>log</c> name, or it resolves through/to a reparse
+    /// point -- see <see cref="BundleConceptWriter"/>'s private <c>ValidateConceptTarget</c>.</summary>
+    InvalidId,
+
+    /// <summary>The id resolves to a well-formed path, but no file exists there with that EXACT
+    /// case for every segment — an id differing only in case from the real on-disk entry (e.g.
+    /// <c>METRICS/DAU</c> naming an on-disk <c>metrics/dau.md</c>) is, correctly, a DIFFERENT,
+    /// nonexistent concept id, matching what <c>bundle.Get</c> (ordinal <see cref="ConceptId"/>
+    /// equality against ids <see cref="Bundle.Load(string)"/> builds from the real directory
+    /// listing) has always answered — not a case-insensitive alias for it.</summary>
+    NotFound,
+
+    /// <summary>The file exists (with the right case) but its content is not a well-formed OKF
+    /// document (<see cref="DocumentParseException"/> or a strict-UTF-8 decode failure).</summary>
+    ParseFailure,
+
+    /// <summary>The file exists but could not be read — an <see cref="IOException"/> (e.g. held
+    /// open exclusively by another process) or <see cref="UnauthorizedAccessException"/>.</summary>
+    Unreadable,
+
+    /// <summary>The document parses but has no non-empty <c>type</c> — §11's floor.</summary>
+    NotConformant,
+
+    /// <summary>Two or more ids in the batch resolve to the same file.</summary>
+    DuplicateName,
+}
+
+/// <summary>
+/// One offending id found by <see cref="BundleConceptWriter.CheckVerificationTargets"/>, carrying
+/// enough for a caller to phrase its own message — see that method's remarks for why this returns
+/// only the FIRST offender rather than every problem in the batch.
+/// </summary>
+/// <param name="Kind">What is wrong with <paramref name="ConceptId"/>.</param>
+/// <param name="ConceptId">The offending id, exactly as given by the caller (not normalized).</param>
+/// <param name="Detail">
+/// The specific reason, for kinds whose wording varies by cause: <c>BundleConceptWriter</c>'s
+/// private <c>ValidateConceptTarget</c>'s own message for <see cref="VerificationTargetProblemKind.InvalidId"/>, or the underlying
+/// exception's message for <see cref="VerificationTargetProblemKind.ParseFailure"/> and
+/// <see cref="VerificationTargetProblemKind.Unreadable"/>. Captured once, here, rather than
+/// re-derived by a renderer — re-running a disk check a second time to recover a string it already
+/// had is both wasted I/O and, for a reparse-point check, a second window for the answer to change
+/// underneath it. <see langword="null"/> for every other kind.
+/// </param>
+internal readonly record struct VerificationTargetProblem(VerificationTargetProblemKind Kind, string ConceptId, string? Detail = null)
+{
+    /// <summary>
+    /// <see cref="Detail"/> terminated by EXACTLY ONE period — the single rule
+    /// for the two renderers whose house style is a period-ended sentence
+    /// (<see cref="BundleConceptWriter"/>'s own <c>FormatVerificationTargetProblem</c>
+    /// and the <c>okf_verify</c> tool; the <c>okf verify</c> CLI verb terminates
+    /// nothing and interpolates <see cref="Detail"/> directly).
+    ///
+    /// Neither "always append" nor "never append" is right, which is why this
+    /// exists rather than a literal <c>.</c> at each call site: an
+    /// <see cref="IOException"/>'s message always ends in a period already, so
+    /// appending one produced a doubled <c>..</c> on every unreadable-concept
+    /// refusal, while a library-authored parser message (<c>"… are not
+    /// supported by the OKF YAML subset"</c>) never ends in one and needs it.
+    /// </summary>
+    internal string DetailAsSentence() =>
+        Detail is null or "" ? string.Empty
+        : Detail.EndsWith('.') ? Detail
+        : Detail + ".";
+}
 
 /// <summary>
 /// The core, thread-safe write primitive for OKF bundles: producer-validated,
@@ -138,8 +208,19 @@ public sealed class BundleConceptWriter
     /// </summary>
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
 
+    /// <summary>
+    /// The §7 actor spelling this library uses when it stamps
+    /// <c>generated.by</c> itself: <c>"okf4net/" + OkfSpec.Version</c>. The
+    /// single source of that spelling — <see cref="ProducerActor"/> defaults
+    /// to it, and <c>OKF4net.Agents</c>' <c>OkfContextProvider.MemoryFrontmatter</c>
+    /// reads it directly rather than re-spelling <c>"okf4net/" + OkfSpec.Version</c>
+    /// a second time on a path that never goes through <see cref="ProducerActor"/>
+    /// itself (see that method's remarks).
+    /// </summary>
+    internal static string DefaultProducerActor => "okf4net/" + OkfSpec.Version;
+
     /// <summary>The §7 actor recorded as <c>generated.by</c> when auto-stamping.</summary>
-    internal string ProducerActor { get; set; } = "okf4net/" + OkfSpec.Version;
+    internal string ProducerActor { get; set; } = DefaultProducerActor;
 
     /// <summary>Creates a writer rooted at <paramref name="bundleRoot"/>.</summary>
     /// <param name="bundleRoot">The bundle's root directory.</param>
@@ -507,8 +588,23 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Records a review of every concept in <paramref name="conceptIds"/>:
     /// adds — or replaces, at its position — the <c>{ by, at }</c> entry of
-    /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list,
-    /// preserving every other frontmatter key and the body.
+    /// <paramref name="by"/> in each concept's §5.2 <c>verified</c> list.
+    ///
+    /// <b>Byte-preservation guarantee.</b> Every other frontmatter key and the
+    /// body are preserved byte for byte: the <c>verified:</c> block is edited
+    /// IN PLACE in the raw text (<see cref="FrontmatterBlockEdit"/>), never by
+    /// re-emitting the whole document, so CRLF line endings, YAML comments,
+    /// and flow/folded scalar spellings elsewhere all survive untouched — a
+    /// property this method's own re-parse-and-compare check enforces (full
+    /// structural <see cref="OkfDocument.Equals(OkfDocument?)"/> against the
+    /// intended result, not merely a stamp count), refusing the write rather
+    /// than risk a silently wrong file if the edit ever disagrees. The ONE
+    /// exception: a column-0 comment sitting INSIDE the <c>verified:</c>
+    /// block (between the <c>verified:</c> line and the next top-level key),
+    /// and any blank line immediately before it there, is replaced along with
+    /// the block — there is no way to know which of the stamp's lines such a
+    /// comment was meant to annotate, so it cannot be preserved separately
+    /// from the value it comments on.
     ///
     /// Fully validated before the first write: every concept id is resolved
     /// to a target path before the bundle lock is taken (like
@@ -611,12 +707,7 @@ public sealed class BundleConceptWriter
             return Failed("Error: a timestamp must not contain control characters.");
         }
 
-        if (!DateTime.TryParseExact(
-                stampedAt,
-                "yyyy-MM-dd'T'HH:mm:ss'Z'",
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                out _))
+        if (!OkfTimestamp.IsEmittedUtcForm(stampedAt))
         {
             return Failed($"Error: '{stampedAt}' is not a UTC timestamp of the form yyyy-MM-ddTHH:mm:ssZ.");
         }
@@ -624,6 +715,45 @@ public sealed class BundleConceptWriter
         var records = new List<VerificationRecord>(conceptIds.Count);
         var message = RunTool(() =>
         {
+            // Checked FIRST for five of its six kinds, so THIS method's own
+            // refusal names the offender: before this call existed, an
+            // unparseable concept escaped as an unattributed, generic
+            // "Error: {yaml/parse message}" naming no concept at all -- the
+            // exact gap the CLI verb and the okf_verify tool each worked
+            // around with their own duplicate pre-loop.
+            //
+            // NotConformant is deliberately EXCLUDED here (left to fall
+            // through to the unchanged prepare loop below, where
+            // ValidateConformance already runs): a concept missing `type`
+            // can ALSO be one of the hostile shapes below it -- a corrupted
+            // round-trip, an unemittable deep nesting -- and those failures
+            // are strictly MORE specific and were surfacing first long before
+            // this method existed. (A third shape, an indented `---` inside a
+            // block scalar misread as the closing fence (finding #C7-A), no
+            // longer exists: OkfDocument.IsFenceLine accepts only a column-0
+            // fence, §4.) Short-circuiting on NotConformant here would let
+            // §11's generic message pre-empt a specific, better diagnostic. Bailing out here for the
+            // OTHER five kinds carries no such risk FOR THE SAME ID: an
+            // invalid id, a missing file, an unreadable file, an unparseable
+            // document or a resolved-path duplicate are all structurally
+            // prior to any edit attempt in the unchanged loop below too, so
+            // moving THAT id's detection earlier changes nothing about what
+            // would eventually have been reported for it. This does NOT hold
+            // ACROSS ids in a batch with more than one problem: e.g. a batch
+            // `[concept-with-a-NaN-float, metrics/nope]` used to refuse on
+            // index 0 (the NaN concept, reached first by the old sequential
+            // per-index loop below); bailing out here on CheckVerificationTargets's
+            // own id-validity/existence/duplicate scan instead reports index
+            // 1 (`metrics/nope`, "does not exist") first, since that scan
+            // runs its OWN passes over every id before this method's prepare
+            // loop ever starts. Both are correct refusals of the same batch;
+            // which one is named first can move.
+            var targetProblem = CheckVerificationTargets(conceptIds);
+            if (targetProblem is { Kind: not VerificationTargetProblemKind.NotConformant } problem)
+            {
+                return FormatVerificationTargetProblem(problem);
+            }
+
             // Resolved outside the lock, like AppendToConceptAtomic does.
             var targets = new List<ConceptTarget>(conceptIds.Count);
             foreach (var conceptId in conceptIds)
@@ -637,35 +767,15 @@ public sealed class BundleConceptWriter
                 targets.Add(target);
             }
 
-            // Duplicates are refused, not silently collapsed: preparing the same
-            // file twice would build both versions from the same original
-            // content and write it twice, reporting two records for the single
-            // stamp that survives — a result that reads like two reviews.
-            //
-            // Checked on the RESOLVED target path, not the raw id string that
-            // was passed in, and case-INSENSITIVELY. Note this is NOT the
-            // "Windows/macOS are case-insensitive" heuristic Bundle.cs
-            // explicitly rejects (see Bundle.PathComparison): case-sensitivity
-            // is a property of the volume, not the OS, so no OS test could
-            // decide this correctly either way. The comparison is deliberately
-            // pessimistic instead — a batch is refused whenever two ids COULD
-            // name one file — because the cost of the two errors is not
-            // symmetric: collapsing two spellings on a case-insensitive volume
-            // silently double-reports a single stamp, while the residual here
-            // is that on a case-SENSITIVE volume genuinely holding both
-            // metrics/dau.md and metrics/DAU.md, a batch naming both is
-            // refused and must be run as two. Stated rather than reasoned
-            // away: that refusal is real, and this is the same call the
-            // BundleLocks registry above makes for the same class of bug.
-            var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (var i = 0; i < targets.Count; i++)
-            {
-                if (!seenPaths.Add(targets[i].TargetPath))
-                {
-                    return $"Error: concept '{conceptIds[i]}' is named more than once.";
-                }
-            }
-
+            // No duplicate-by-path check here any more (a prior review round
+            // singled this exact loop out as dead code once the early
+            // CheckVerificationTargets call above ran first): that call
+            // applies the identical resolved-path, case-insensitive rule to
+            // every id in the batch before this line is ever reached, so a
+            // batch containing any duplicate already returned via
+            // FormatVerificationTargetProblem above. See
+            // CheckVerificationTargets's own duplicate-check block for the
+            // rule's rationale (moved there from this comment).
             lock (_bundleLock)
             {
                 // PREPARE every concept — read, parse, upsert the stamp, and
@@ -679,19 +789,106 @@ public sealed class BundleConceptWriter
                     var target = targets[i];
                     if (!File.Exists(target.TargetPath))
                     {
-                        return $"Error: concept '{conceptIds[i]}' does not exist.";
+                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])} does not exist.";
                     }
 
                     var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
                     var document = OkfDocument.Parse(text);
                     var map = document.Frontmatter.AsMapping();
 
-                    map.Insert("verified", UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt));
+                    var upserted = UpsertStamp(map.Get("verified"), by, stampedAt, out var replacedAt);
 
-                    // Throws DocumentValidationException on a failed §11 check,
-                    // caught by RunTool -- nothing in `prepared` so far has been
-                    // written, so the whole batch is rejected cleanly.
-                    var content = BuildConformantContent(map, document.Body);
+                    // LOAD-BEARING, not just "kept for replacedAt" (replacedAt
+                    // is UpsertStamp's own out-parameter, unaffected by this
+                    // call): `map` is the LIVE mapping `document.Frontmatter`
+                    // wraps (Frontmatter.AsMapping returns the instance
+                    // itself, no defensive copy -- see its own doc comment),
+                    // so this mutates `document` in place into exactly the
+                    // structure the edit below is SUPPOSED to produce. The
+                    // equality check further down compares the edit's actual
+                    // re-parsed result against THIS object -- without this
+                    // call, `document` would still hold the OLD `verified`
+                    // value and the equality check would fail on every
+                    // legitimate stamp.
+                    map.Insert("verified", upserted);
+
+                    // Surgical, not a re-emit: only the `verified:` block is
+                    // touched in the RAW text, so every other frontmatter key
+                    // -- comments, CRLF endings, folded/flow scalar spellings,
+                    // key order -- survives byte for byte. This is what
+                    // RecordVerifications's own doc comment already promises
+                    // ("preserving every other frontmatter key and the body")
+                    // and a full-frontmatter re-emit through YamlEmitter did
+                    // not deliver: YamlEmitter normalizes CRLF to LF, drops
+                    // comments, and reflows folded/flow scalars (see
+                    // FrontmatterBlockEdit's own doc comment). Deliberately
+                    // does NOT go through MaybeStampGenerated: this path
+                    // stamps `verified` only, never `generated`.
+                    var one = new YamlMapping();
+                    one.Insert("verified", upserted);
+                    var stampBlock = YamlEmitter.Emit(one);
+                    var content = FrontmatterBlockEdit.ReplaceTopLevelKey(text, "verified", stampBlock);
+
+                    // The edit is textual (FrontmatterBlockEdit does not
+                    // itself validate YAML), so re-parsing and checking FULL
+                    // STRUCTURAL EQUALITY against `document` -- which already
+                    // holds the exact intended result, per the load-bearing
+                    // `map.Insert` above -- is the proof that nothing else
+                    // moved: same frontmatter (key set, order, and every
+                    // OTHER value) and the same body, ordinally
+                    // (OkfDocument.Equals). A weaker check (e.g. only
+                    // counting `verified` entries) can pass on a genuinely
+                    // corrupted edit -- a mis-located key spelling that
+                    // inserted a shadowed duplicate elsewhere still re-parses
+                    // to the same COUNT while leaving a stale value in the
+                    // file (finding #C7-1). ValidateConformance (§11) runs
+                    // first since equality alone would not refuse a document
+                    // that was already missing `type` before this edit ran.
+                    var reparsed = OkfDocument.Parse(content);
+
+                    // Attributed here, at the SAME point this check has
+                    // always run (deliberately not moved earlier -- see the
+                    // early CheckVerificationTargets call above, which
+                    // excludes NotConformant for exactly this reason): a
+                    // bare DocumentValidationException naming no concept at
+                    // all is what CmdVerify and okf_verify used to work
+                    // around with a pre-loop of their own.
+                    try
+                    {
+                        reparsed.ValidateConformance();
+                    }
+                    catch (DocumentValidationException)
+                    {
+                        return FormatVerificationTargetProblem(
+                            new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptIds[i]));
+                    }
+
+                    if (!reparsed.Equals(document))
+                    {
+                        // Diagnosable, not just "no": a bare "could not be
+                        // edited in place" gives a reader no way to tell a
+                        // real corruption apart from the one KNOWN false
+                        // positive this check has -- a NaN float anywhere in
+                        // the frontmatter never compares equal to itself
+                        // (YamlValue's float equality is IEEE-754 `==`), so a
+                        // concept with, say, `threshold: .nan` fails this
+                        // check on every verify, even a perfectly clean edit.
+                        // Not fixed here (changing YamlValue's equality is out
+                        // of scope for this method); named explicitly instead,
+                        // alongside the other diagnosable cases below. The
+                        // body case is checked first since this edit never
+                        // touches the body on purpose, so a body difference
+                        // is worth calling out distinctly from any
+                        // frontmatter-shaped explanation.
+                        var detail = !string.Equals(reparsed.Body, document.Body, StringComparison.Ordinal)
+                            ? "the body changed, which this edit never does on purpose"
+                            : ContainsNaN(document.Frontmatter.AsMapping())
+                                ? "the frontmatter contains a NaN value, which never compares equal to "
+                                    + "itself, so this check cannot confirm the edit either way -- inspect "
+                                    + "the file by hand"
+                                : DescribeFrontmatterDivergence(document.Frontmatter.AsMapping(), reparsed.Frontmatter.AsMapping());
+                        return $"Error: concept {DebugQuote.Quote(conceptIds[i])}: the verified block could not be edited in place ({detail}).";
+                    }
 
                     prepared.Add((target, content, conceptIds[i], replacedAt));
                 }
@@ -782,24 +979,77 @@ public sealed class BundleConceptWriter
     }
 
     /// <summary>
-    /// Serializes after §11 conformance validation only (non-empty <c>type</c>),
-    /// unlike <see cref="BuildValidatedContent(YamlValue, string)"/>'s
-    /// producer-grade check. Deliberate: recording a review is not producing
-    /// content, and refusing a reviewer because a third party omitted a
-    /// <c>description</c> would make precisely the concepts an audit surfaces
-    /// unstampable. Unlike the <see cref="YamlValue"/>-based overload above,
-    /// there is no "not a mapping" case to report here — the caller always
-    /// passes an already-typed <see cref="YamlMapping"/> — so this returns the
-    /// serialized content directly rather than an <c>(Content, Error)</c> pair
-    /// whose <c>Error</c> half could never be anything but <see langword="null"/>.
-    /// Throws <see cref="DocumentValidationException"/> on a failed conformance
-    /// check, caught by the caller's <see cref="RunTool"/> wrapper.
+    /// Whether <paramref name="value"/> contains a NaN <see cref="YamlFloat"/>
+    /// anywhere in its tree (recursing into mappings and sequences). Exists
+    /// solely to make the equality-refusal message in
+    /// <see cref="RecordVerifications"/> diagnosable: <see cref="YamlValue"/>'s
+    /// structural equality compares floats with IEEE-754 <c>==</c>, under
+    /// which NaN never equals itself, so a frontmatter containing one (e.g.
+    /// <c>threshold: .nan</c>) makes <c>reparsed.Equals(document)</c> return
+    /// <see langword="false"/> on every verify attempt regardless of whether
+    /// the edit itself was correct. Not a fix for that comparison (out of
+    /// scope for this method) -- just enough to tell a caller WHY the check
+    /// could not confirm the edit, instead of the generic message implying a
+    /// real corruption.
     /// </summary>
-    private static string BuildConformantContent(YamlMapping frontmatter, string body)
+    private static bool ContainsNaN(YamlValue value) => value switch
     {
-        var document = new OkfDocument(Frontmatter.FromMapping(frontmatter), body);
-        document.ValidateConformance();
-        return document.Serialize();
+        YamlFloat f => double.IsNaN(f.Value),
+        YamlMapping m => m.Entries.Any(e => ContainsNaN(e.Value)),
+        YamlSequence s => s.Items.Any(ContainsNaN),
+        _ => false,
+    };
+
+    /// <summary>
+    /// Names WHICH part of the frontmatter actually diverged, for the
+    /// equality-refusal message in <see cref="RecordVerifications"/> --
+    /// cheaply, from the two already-parsed mappings, rather than asserting a
+    /// fixed "some OTHER key changed" that is simply wrong whenever the
+    /// divergence is inside <c>verified</c> itself (the common case: an edit
+    /// that mis-located the block's own boundary re-parses to a `verified`
+    /// value that does not match the one <see cref="UpsertStamp"/> computed,
+    /// while every other key is untouched). Checks <c>verified</c> FIRST for
+    /// exactly that reason. If neither `verified` nor any single OTHER
+    /// top-level key can be pinned as the sole difference (e.g. the key SETS
+    /// themselves differ), this returns an honest, unlocated description
+    /// rather than guessing which key -- per the rule that a message should
+    /// name a cause it actually checked, not one it merely suspects.
+    /// </summary>
+    private static string DescribeFrontmatterDivergence(YamlMapping expected, YamlMapping actual)
+    {
+        var expectedVerified = expected.Get("verified");
+        var actualVerified = actual.Get("verified");
+        var verifiedMatches = expectedVerified is null
+            ? actualVerified is null
+            : expectedVerified.Equals(actualVerified);
+        if (!verifiedMatches)
+        {
+            return "the verified block itself did not round-trip";
+        }
+
+        var expectedOthers = expected.Entries.Where(NotVerified).ToList();
+        var actualOthers = actual.Entries.Where(NotVerified).ToList();
+        if (expectedOthers.Count == actualOthers.Count)
+        {
+            for (var i = 0; i < expectedOthers.Count; i++)
+            {
+                var (expectedKey, expectedValue) = expectedOthers[i];
+                var (actualKey, actualValue) = actualOthers[i];
+                if (!expectedKey.Equals(actualKey) || !expectedValue.Equals(actualValue))
+                {
+                    var name = expectedKey.AsDisplayString() ?? expectedKey.AsString() ?? "<non-string key>";
+                    return $"the frontmatter key '{name}' changed";
+                }
+            }
+        }
+
+        // verified matches and no single other key could be pinned (e.g. the
+        // key SETS differ in count/order beyond a simple positional swap) --
+        // say so honestly instead of naming a key that was never checked.
+        return "the frontmatter changed outside the verified block";
+
+        static bool NotVerified((YamlValue Key, YamlValue Value) entry) =>
+            !string.Equals(entry.Key.AsString(), "verified", StringComparison.Ordinal);
     }
 
     /// <summary>A validated concept id and the absolute path it resolves to, produced by <see cref="ValidateConceptTarget"/>.</summary>
@@ -808,8 +1058,9 @@ public sealed class BundleConceptWriter
     /// <summary>
     /// Validates <paramref name="conceptId"/> (parseable, not the reserved
     /// <c>index</c>/<c>log</c> name) and the filesystem path it resolves to
-    /// (within the bundle root; no reparse point among its parent
-    /// directories or at the target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
+    /// (within the bundle root; no reparse point, nor any entry whose link
+    /// status cannot be inspected, among its parent directories or at the
+    /// target itself) — shared by <see cref="WriteConcept(string, string, string)"/>
     /// and <see cref="AppendToConceptAtomic"/> so the two can never diverge
     /// on what counts as a valid write target. Pure: performs no I/O beyond
     /// the reparse-point/existence checks themselves, and does not touch
@@ -853,7 +1104,7 @@ public sealed class BundleConceptWriter
 
         if (!ConceptId.TryParse(conceptId, out var id))
         {
-            return $"Error: invalid concept id '{conceptId}'. Concept ids are '/'-separated "
+            return $"Error: invalid concept id {DebugQuote.Quote(conceptId)}. Concept ids are '/'-separated "
                 + "segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.";
         }
 
@@ -881,26 +1132,240 @@ public sealed class BundleConceptWriter
         // above would happily accept "tables/refunds" even if "tables" is a
         // junction pointing outside the bundle -- the OS follows it when
         // Directory.CreateDirectory/File.WriteAllText actually touch disk.
+        // The STRICT walk: a directory whose link status cannot be read is
+        // refused like a link (this is a guard, and a guard fails closed --
+        // see ReparsePoints.IsReparsePointOrUninspectable); a directory that
+        // does not exist yet is not, so new subdirectories are still allowed.
         var targetParentDir = Path.GetDirectoryName(targetPath);
-        if (!string.IsNullOrEmpty(targetParentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, targetParentDir))
+        if (!string.IsNullOrEmpty(targetParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, targetParentDir))
         {
-            return $"Error: '{id}' resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+            return $"Error: '{id}' resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
         }
 
         // Also reject the target FILE node itself being a reparse point (a
         // planted file symlink at e.g. tables/x.md pointing at an external
-        // file): HasReparsePointAncestor above only walks directory
+        // file): the ancestor walk above only covers directory
         // ANCESTORS of targetPath, it never inspects targetPath itself, so
         // an existing symlinked concept file would otherwise sail through
-        // both checks and a later read/write would follow the link.
-        if (ReparsePoints.IsReparsePoint(targetPath))
+        // both checks and a later read/write would follow the link. Strict
+        // for the same reason as the walk above.
+        if (ReparsePoints.IsReparsePointOrUninspectable(targetPath))
         {
-            return $"Error: '{id}' is a reparse point (symlink/junction), not a regular file -- refusing to overwrite it.";
+            return $"Error: '{id}' is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to overwrite it.";
         }
 
         target = new ConceptTarget(id, targetPath);
         return null;
     }
+
+    /// <summary>
+    /// Checks whether every id in <paramref name="conceptIds"/> names a valid, existing,
+    /// parseable, §11-conformant concept, with no two ids resolving to the same file — the single
+    /// governed check behind <see cref="RecordVerifications"/> (called first thing, so its own
+    /// refusal names the offender), the <c>okf verify</c> CLI verb, and the <c>okf_verify</c> tool.
+    /// Before this method existed, the CLI and the tool each re-implemented an id-validity/existence/
+    /// conformance loop of their own purely to phrase a nicer message than <see cref="RecordVerifications"/>'s
+    /// own (then-unattributed) refusal — three spellings of the same §11 floor. This is the one.
+    ///
+    /// Reads only the <c>k</c> concept files named in <paramref name="conceptIds"/> (via
+    /// <see cref="ValidateConceptTarget"/> and a direct <see cref="File.Exists(string)"/>/parse of
+    /// each target path) — never <see cref="Bundle.Load(string)"/> — so answering a k-id question
+    /// costs O(k) file reads, not a full bundle parse.
+    /// </summary>
+    /// <returns>
+    /// <see langword="null"/> if every id is a valid, existing, parseable, conformant concept with
+    /// no duplicate among the resolved paths; otherwise the FIRST offender this method finds,
+    /// checking id validity for every id first, then the duplicate-by-resolved-path rule across
+    /// every id, then existence/parse/§11 per id in <paramref name="conceptIds"/> order. For any
+    /// ONE id, this is the same order <see cref="RecordVerifications"/>'s own prepare loop checks
+    /// that id in afterwards, up through §11 conformance (the loop's own remaining checks — the
+    /// fence/NaN-float/deep-nesting refusals — start only past that point, since this method's
+    /// conformance check does not cover them). It is NOT the same ACROSS ids in a batch with more
+    /// than one problem: this method resolves validity, duplicates and existence/parse/§11 for the
+    /// WHOLE batch before the prepare loop ever starts, so a LATER id's not-found, unparseable,
+    /// unreadable, invalid-id or duplicate problem (all caught here) now wins over an EARLIER id's
+    /// fence, NaN-float or deep-nesting refusal (caught only downstream, in the prepare loop this
+    /// method now runs ahead of) — the reverse of what the old single combined per-id loop
+    /// reported. Both answers are correct refusals of the same batch; only which one is named
+    /// first can move.
+    /// </returns>
+    internal VerificationTargetProblem? CheckVerificationTargets(IReadOnlyList<string> conceptIds)
+    {
+        var targets = new List<ConceptTarget>(conceptIds.Count);
+        for (var i = 0; i < conceptIds.Count; i++)
+        {
+            var targetError = ValidateConceptTarget(conceptIds[i], out var target);
+            if (targetError is not null)
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.InvalidId, conceptIds[i], targetError);
+            }
+
+            targets.Add(target);
+        }
+
+        // Duplicates are refused, not silently collapsed: preparing the same
+        // file twice would build both versions from the same original
+        // content and write it twice, reporting two records for the single
+        // stamp that survives — a result that reads like two reviews.
+        //
+        // Checked on the RESOLVED target path, not the raw id string that was
+        // passed in, and case-INSENSITIVELY. Note this is NOT the
+        // "Windows/macOS are case-insensitive" heuristic Bundle.cs explicitly
+        // rejects (see Bundle.PathComparison): case-sensitivity is a property
+        // of the volume, not the OS, so no OS test could decide this
+        // correctly either way. The comparison is deliberately pessimistic
+        // instead — a batch is refused whenever two ids COULD name one file —
+        // because the cost of the two errors is not symmetric: collapsing two
+        // spellings on a case-insensitive volume silently double-reports a
+        // single stamp, while the residual here is that on a case-SENSITIVE
+        // volume genuinely holding both metrics/dau.md and metrics/DAU.md, a
+        // batch naming both is refused and must be run as two. Stated rather
+        // than reasoned away: that refusal is real, and this is the same call
+        // the BundleLocks registry makes for the same class of bug.
+        //
+        // Formerly duplicated inside RecordVerifications's own prepare loop;
+        // that copy is gone now that this method runs first and applies the
+        // identical rule to the whole batch before the prepare loop's targets
+        // list is even built, making the old copy unreachable dead code.
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < targets.Count; i++)
+        {
+            if (!seenPaths.Add(targets[i].TargetPath))
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.DuplicateName, conceptIds[i]);
+            }
+        }
+
+        for (var i = 0; i < targets.Count; i++)
+        {
+            var target = targets[i];
+
+            // File.Exists alone answers case-INSENSITIVELY on Windows/macOS,
+            // so an id like "METRICS/DAU" would otherwise read as "found" for
+            // an on-disk metrics/dau.md — a different, wrong answer than
+            // Bundle.Load gives: it builds each concept's id from the REAL
+            // on-disk casing its directory walk returns, and ConceptId
+            // equality is ordinal, so bundle.Get("METRICS/DAU") has always
+            // returned null (a genuinely different, nonexistent id) rather
+            // than resolving to the lowercase file. ExistsWithExactCase
+            // mirrors that by checking the real directory entries.
+            if (!File.Exists(target.TargetPath) || !ExistsWithExactCase(BundleRoot, target.Id))
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.NotFound, conceptIds[i]);
+            }
+
+            try
+            {
+                var text = OkfEncodings.Strict.GetString(File.ReadAllBytes(target.TargetPath));
+
+                // One spelling of §11 conformance (OkfDocument.ValidateConformance
+                // itself), not a second hand-rolled `Get("type")` check beside it.
+                OkfDocument.Parse(text).ValidateConformance();
+            }
+            catch (DocumentValidationException)
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.NotConformant, conceptIds[i]);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Never let an expected I/O condition (a file held open
+                // exclusively by another process, a permissions error)
+                // escape as an unhandled exception -- Bundle.Load wraps the
+                // same two exception types into BundleLoadException so
+                // `okf validate`/`info`/etc. report a clean `error:` line
+                // instead of a stack trace; this check owes verify the same.
+                return new VerificationTargetProblem(VerificationTargetProblemKind.Unreadable, conceptIds[i], ex.Message);
+            }
+            catch (Exception ex) when (ex is OkfException or System.Text.DecoderFallbackException)
+            {
+                return new VerificationTargetProblem(VerificationTargetProblemKind.ParseFailure, conceptIds[i], ex.Message);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="id"/> names a file that exists under <paramref name="bundleRoot"/>
+    /// with EXACTLY this case for every path segment — not merely a case-insensitive match, the way
+    /// <see cref="File.Exists(string)"/> answers on Windows/macOS. Walks the real directory entries
+    /// segment by segment (mirroring what <see cref="Bundle.Load(string)"/>'s own enumeration would
+    /// find: it builds each concept's <see cref="ConceptId"/> from the REAL on-disk casing the OS
+    /// returns, and <see cref="ConceptId"/> equality is ordinal) rather than trusting the
+    /// case-insensitive path <paramref name="id"/> resolves to.
+    /// </summary>
+    private static bool ExistsWithExactCase(string bundleRoot, ConceptId id)
+    {
+        var dir = bundleRoot;
+        for (var i = 0; i < id.Segments.Count; i++)
+        {
+            var isLastSegment = i == id.Segments.Count - 1;
+            var wantName = isLastSegment ? id.Segments[i] + ".md" : id.Segments[i];
+
+            string[] entries;
+            try
+            {
+                entries = isLastSegment ? Directory.GetFiles(dir) : Directory.GetDirectories(dir);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // File.Exists already answered true for the case-insensitively
+                // resolved path, so a listing failure here is an edge case
+                // (e.g. a permissions change racing this call) rather than
+                // the common case -- treated as "not found" rather than
+                // surfacing a second, differently-shaped error for what is
+                // fundamentally the same existence question.
+                return false;
+            }
+
+            var match = entries.FirstOrDefault(entry => string.Equals(Path.GetFileName(entry), wantName, StringComparison.Ordinal));
+            if (match is null)
+            {
+                return false;
+            }
+
+            dir = isLastSegment ? dir : match;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Renders a <see cref="VerificationTargetProblem"/> in the wording <see cref="RecordVerifications"/>
+    /// and the <c>okf_verify</c> tool already read for <see cref="VerificationTargetProblemKind.NotFound"/>
+    /// and <see cref="VerificationTargetProblemKind.DuplicateName"/> — an <c>Error: </c>-prefixed,
+    /// period-terminated sentence. <see cref="VerificationTargetProblemKind.NotConformant"/> is
+    /// phrased the same way for the first time HERE (it used to reach a caller only as the bare,
+    /// unattributed <see cref="DocumentValidationException"/> message); so is
+    /// <see cref="VerificationTargetProblemKind.ParseFailure"/> and
+    /// <see cref="VerificationTargetProblemKind.Unreadable"/>, both of which append
+    /// <see cref="VerificationTargetProblem.Detail"/> — the underlying exception's own message —
+    /// since a bare "could not be parsed"/"could not be read" with no cause is a worse diagnostic
+    /// than the writer already had before this method existed (the unattributed message at least
+    /// carried the parser's own detail). <see cref="VerificationTargetProblemKind.InvalidId"/>
+    /// returns <see cref="VerificationTargetProblem.Detail"/> as captured by
+    /// <see cref="CheckVerificationTargets"/> from <see cref="ValidateConceptTarget"/>'s own return
+    /// value — not re-derived here, since <see cref="ValidateConceptTarget"/> also probes the
+    /// filesystem for a reparse point, and re-running it a second time is both wasted I/O and a
+    /// second window for that answer to change underneath it.
+    /// </summary>
+    private static string FormatVerificationTargetProblem(VerificationTargetProblem problem) => problem.Kind switch
+    {
+        VerificationTargetProblemKind.InvalidId => problem.Detail!,
+        VerificationTargetProblemKind.NotFound =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+        // DetailAsSentence, not "{Detail}.": an IOException's message already
+        // ends in a period, and appending one doubled it (see that method).
+        VerificationTargetProblemKind.ParseFailure =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.DetailAsSentence()}",
+        VerificationTargetProblemKind.Unreadable =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.DetailAsSentence()}",
+        VerificationTargetProblemKind.NotConformant =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
+        VerificationTargetProblemKind.DuplicateName =>
+            $"Error: concept {DebugQuote.Quote(problem.ConceptId)} is named more than once.",
+        _ => throw new ArgumentOutOfRangeException(nameof(problem)),
+    };
 
     /// <summary>
     /// Parses <paramref name="frontmatterYaml"/> once and delegates the auto-stamp decision to
@@ -1015,10 +1480,10 @@ public sealed class BundleConceptWriter
     /// </returns>
     private string? LateReparseGuard(string subject, string? parentDir, string targetPath)
     {
-        if ((!string.IsNullOrEmpty(parentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, parentDir))
-            || ReparsePoints.IsReparsePoint(targetPath))
+        if ((!string.IsNullOrEmpty(parentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, parentDir))
+            || ReparsePoints.IsReparsePointOrUninspectable(targetPath))
         {
-            return $"Error: {subject} resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+            return $"Error: {subject} resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
         }
 
         return null;

@@ -219,6 +219,33 @@ public class RecordVerificationTests
         Assert.DoesNotContain("verified", Read(tmp, "metrics/dau.md"));
     }
 
+    /// <summary>
+    /// C13: a §11 non-conformance failing later in a batch must name the
+    /// OFFENDING concept, not the writer's old, unattributed
+    /// "Error: Missing required frontmatter keys: type" (which
+    /// <c>reparsed.ValidateConformance()</c> throws with no concept id at
+    /// all, forcing a caller bisecting a multi-id batch by hand to find which
+    /// one lacks <c>type</c>). Also proves the batch is still refused
+    /// atomically: nothing lands for the earlier, perfectly good concept.
+    /// </summary>
+    [Fact]
+    public void A_later_concept_failing_conformance_names_the_offender()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
+        tmp.Write("metrics/notype.md", "---\ntitle: No type\n---\n\nbody\n");
+        var before = Read(tmp, "metrics/dau.md");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/notype"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Equal(
+            "Error: concept \"metrics/notype\" has no `type` and is not §11-conformant.",
+            outcome.Message);
+        Assert.Empty(outcome.Records);
+        Assert.Equal(before, Read(tmp, "metrics/dau.md"));
+    }
+
     [Theory]
     [InlineData("human:", "not a well-formed")]
     [InlineData("", "not a well-formed")]
@@ -322,13 +349,22 @@ public class RecordVerificationTests
     ///
     /// The throw lands in the PREPARE loop, before any write, so batch
     /// atomicity holds: nothing is written and <c>Records</c> is empty.
+    ///
+    /// Since C7 (<see cref="FrontmatterBlockEdit"/>), this method only ever
+    /// re-emits the <c>verified</c> block itself through <c>YamlEmitter</c> —
+    /// every other key survives as untouched raw text, so the deep nesting
+    /// has to live IN the pre-existing <c>verified</c> value for this
+    /// scenario to still be reachable (<c>DeepYamlDocument.Text(key: "verified")</c>);
+    /// nesting it under an unrelated key, as this test did before C7, would
+    /// now be silently carried through untouched and never reach the emitter
+    /// at all — the surgical edit's whole point.
     /// </summary>
     [Fact]
     public void A_document_that_parses_but_cannot_be_emitted_is_reported_not_thrown()
     {
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
-        tmp.Write("metrics/deep.md", DeepYamlDocument.Text());
+        tmp.Write("metrics/deep.md", DeepYamlDocument.Text(key: "verified"));
         var before = Read(tmp, "metrics/dau.md");
 
         var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau", "metrics/deep"], "human:ada");
@@ -451,6 +487,55 @@ public class RecordVerificationTests
     }
 
     /// <summary>
+    /// The C7 fix, proven at the writer level (not just <see cref="FrontmatterBlockEditTests"/>,
+    /// which never touches <c>RecordVerifications</c> or a real bundle file):
+    /// a CRLF document with a column-0 comment, a folded <c>description: &gt;</c>
+    /// scalar, and a flow-style <c>tags: [a, b]</c> list is stamped, and the
+    /// on-disk result differs from the original by ONLY the <c>verified:</c>
+    /// lines — every CRLF ending, the comment, and the folded/flow spellings
+    /// survive. Asserted by stripping the <c>verified:</c> block out of both
+    /// texts and comparing what remains byte-for-byte, which a substring
+    /// assertion on the stamp alone would not catch (it would miss e.g. a
+    /// silently normalized CRLF elsewhere in the file).
+    /// </summary>
+    [Fact]
+    public void Only_the_verified_lines_change_on_disk_everything_else_is_byte_identical()
+    {
+        using var tmp = new TempDir();
+        const string before =
+            "---\r\n"
+            + "type: Metric\r\n"
+            + "title: Daily Active Users\r\n"
+            + "# reviewed quarterly\r\n"
+            + "description: >\r\n"
+            + "  Daily\r\n"
+            + "  active users.\r\n"
+            + "tags: [engagement, kpi]\r\n"
+            + "---\r\n"
+            + "\r\n"
+            + "# Body\r\n";
+        tmp.Write("metrics/dau.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
+        Assert.True(outcome.Recorded);
+
+        var after = Read(tmp, "metrics/dau.md");
+
+        // The stamped fields, checked structurally.
+        var stamp = Assert.Single(OkfDocument.Parse(after).Frontmatter.Verified);
+        Assert.Equal("human:ada", stamp.By!.Value.Raw);
+        Assert.Equal("2026-08-28T09:14:00Z", stamp.At);
+
+        // Every other byte, checked by removing the `verified:` lines from
+        // both texts and comparing what remains. The stamp was appended
+        // (no `verified:` key existed before), so the CRLF-joined lines
+        // added are exactly these three.
+        var verifiedBlockCrlf = "verified:\r\n  -\r\n    by: human:ada\r\n    at: 2026-08-28T09:14:00Z\r\n";
+        Assert.Contains(verifiedBlockCrlf, after);
+        Assert.Equal(before, after.Replace(verifiedBlockCrlf, string.Empty));
+    }
+
+    /// <summary>
     /// Two verifications of the same concept must not lose a stamp: the read,
     /// the transform and the write all happen inside one hold of the writer's
     /// bundle lock.
@@ -468,5 +553,397 @@ public class RecordVerificationTests
 
         var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
         Assert.Equal(2, stamps.Count);
+    }
+
+    // --- End-to-end regression coverage for the review round (#C7-1..4) ----
+    // FrontmatterBlockEditTests covers the mechanical text edit in isolation;
+    // these prove the SAME shapes through the real writer -- UpsertStamp's
+    // merge semantics, the equality-based corruption guard, and the actual
+    // file on disk -- which is the only way to see whether a "fixed" block
+    // edit still adds up to a correct end-to-end stamp.
+
+    /// <summary>
+    /// Finding #C7-3: a document that is otherwise all-LF but has ONE CRLF
+    /// line in the BODY must keep that one CRLF exactly where it was --
+    /// compared as bytes, since <c>OkfDocument.Parse</c> strips '\r' on read
+    /// and could never see a regression here.
+    /// </summary>
+    [Fact]
+    public void A_single_CRLF_body_line_in_an_LF_document_is_not_normalized()
+    {
+        using var tmp = new TempDir();
+        const string before = "---\ntype: Metric\ntitle: Daily Active Users\n---\n\nbody line1\r\nline2\n";
+        tmp.Write("metrics/dau.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal(
+            "---\ntype: Metric\ntitle: Daily Active Users\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n---\n\nbody line1\r\nline2\n",
+            Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-3, the other direction: a document that is otherwise
+    /// all-LF but has ONE CRLF frontmatter line (not the one being edited)
+    /// must keep it, compared as bytes.
+    /// </summary>
+    [Fact]
+    public void A_single_CRLF_frontmatter_line_in_an_LF_document_is_not_normalized()
+    {
+        using var tmp = new TempDir();
+        const string before = "---\ntype: Metric\ntitle: Daily Active Users\r\n---\n\nbody\n";
+        tmp.Write("metrics/dau.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/dau"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal(
+            "---\ntype: Metric\ntitle: Daily Active Users\r\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n---\n\nbody\n",
+            Read(tmp, "metrics/dau.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-2 / #C7-A, revisited by H3 (§4): a <c>---</c> line indented
+    /// inside a <c>verified: |</c> block scalar used to be taken by
+    /// <see cref="OkfDocument.Parse"/> as the closing fence, and the edit refused
+    /// to work against that misread boundary. An indented <c>---</c> is block
+    /// content now: the frontmatter is <c>type</c>, a (malformed, scalar)
+    /// <c>verified</c> and <c>title</c>, with the real fence after <c>title</c>.
+    /// The malformed scalar is replaced by a one-entry sequence, which is
+    /// <c>UpsertStamp</c>'s documented handling of a non-sequence <c>verified</c>,
+    /// and every other byte is kept.
+    /// </summary>
+    [Fact]
+    public void A_dash_line_inside_a_verified_block_scalar_is_content_and_the_scalar_is_replaced()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/x.md", "---\ntype: M\nverified: |\n  ---\ntitle: T\n---\nBody\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\nBody\n",
+            Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-1, end to end: a space-before-the-colon spelling of the
+    /// key must be REPLACED in place (merging the existing <c>human:ada</c>
+    /// stamp), not left stale with a shadowed duplicate inserted before the
+    /// fence -- the exact "reports success while writing a stale, duplicated
+    /// key" failure mode the finding is named for.
+    /// </summary>
+    [Fact]
+    public void A_space_before_the_colon_key_is_replaced_not_duplicated_end_to_end()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/x.md",
+            "---\ntype: M\nverified : [{by: human:ada, at: 2025-01-01T00:00:00Z}]\ntitle: T\n---\nbody\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Equal("2025-01-01T00:00:00Z", outcome.Records.Single().ReplacedAt);
+        var after = Read(tmp, "metrics/x.md");
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\nbody\n",
+            after);
+        // Belt and braces on the exact corruption the finding described: only
+        // ONE `verified` stamp on disk, not a shadowed duplicate.
+        Assert.Single(OkfDocument.Parse(after).Frontmatter.Verified);
+    }
+
+    /// <summary>
+    /// Finding #C7-2 / #C7-A, revisited by H3 (§4): an indented <c>---</c> is no
+    /// longer a fence. Outside block-scalar content it is a parse error naming the
+    /// mistyped fence (H3 review I1), so the concept is refused as unparseable
+    /// before any edit, and the file is untouched. Before H3 the line was taken as
+    /// the closing fence and the edit refused it as indented.
+    /// </summary>
+    [Fact]
+    public void A_dash_line_indented_inside_a_verified_sequence_is_refused_as_unparseable()
+    {
+        using var tmp = new TempDir();
+        const string before = "---\ntype: M\nverified:\n  - {by: human:ada, at: 2025-01-01T00:00:00Z}\n  ---\ntags: [x]\n---\nBody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("could not be parsed", outcome.Message);
+        Assert.Contains("YAML error at line 4: indented frontmatter fence", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Finding #C7-A's "x04" shape, revisited by H3 (§4). Before H3,
+    /// <see cref="OkfDocument.Parse"/> took the indented <c>---</c> inside
+    /// <c>description: |</c> as the closing fence, which pushed the genuine
+    /// <c>verified: [bob]</c> entry into the body where no edit could see it; the
+    /// edit refused rather than orphan bob's stamp. An indented <c>---</c> is block
+    /// content now, so bob's entry is part of the frontmatter and the stamp merges
+    /// into it: bob is kept, ada is appended, and <c>description</c> keeps its
+    /// <c>---</c> line. The fixture gained <c>type: M</c> so the concept is
+    /// §11-conformant and the merge can be observed (without it, the concept is now
+    /// refused as having no <c>type</c>, which proves nothing about the fence).
+    /// </summary>
+    [Fact]
+    public void A_verified_entry_after_a_dash_line_in_a_block_scalar_is_merged_not_orphaned()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/x04.md",
+            "---\ntype: M\ndescription: |\n  Intro\n  ---\n  Details\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\ntitle: T\n---\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x04"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        var after = Read(tmp, "metrics/x04.md");
+        Assert.Equal(
+            "---\ntype: M\ndescription: |\n  Intro\n  ---\n  Details\nverified:\n  -\n    by: human:bob\n    at: 2025-01-01T00:00:00Z\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\n",
+            after);
+        var reparsed = OkfDocument.Parse(after);
+        Assert.Equal("Intro\n---\nDetails\n", reparsed.Frontmatter.Description);
+        Assert.Equal(2, reparsed.Frontmatter.Verified.Count);
+    }
+
+    /// <summary>
+    /// H3 review I1: the parser and <c>FrontmatterBlockEdit</c> still agree once an
+    /// indented <c>---</c> outside block content is a parse error. With the line inside
+    /// a block scalar, before or after <c>verified</c>, under each accepted closing
+    /// fence and line ending, the stamp lands. Only <c>verified</c> changes, and the
+    /// block keeps its <c>---</c>. With the line outside block content, the concept is
+    /// refused before any edit and the file is untouched.
+    /// </summary>
+    [Theory]
+    [InlineData("---\ntype: M\ndescription: |\n  one\n  ---\n  two\nverified:\n- {by: human:bob, at: 2025-01-01T00:00:00Z}\n---\nbody\n", true)]
+    [InlineData("---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\ndescription: >\n  one\n  ---\n---\t\nbody\n", true)]
+    [InlineData("---\r\ntype: M\r\ndescription: |\r\n  one\r\n  ---\r\nverified: [{by: human:bob, at: 2025-01-01T00:00:00Z}]\r\n---  \r\nbody\r\n", true)]
+    [InlineData("---\ntype: M\ndescription: one\n  ---\nverified: [{by: human:bob, at: 2025-01-01T00:00:00Z}]\n---\nbody\n", false)]
+    [InlineData("---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\n ---\n\n# Heading\n\n---\nbody\n", false)]
+    public void Parser_and_block_edit_agree_on_indented_dash_lines(string before, bool stampable)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        var after = Read(tmp, "metrics/x.md");
+        if (!stampable)
+        {
+            Assert.False(outcome.Recorded);
+            Assert.Contains("indented frontmatter fence", outcome.Message);
+            Assert.Equal(before, after);
+            return;
+        }
+
+        Assert.True(outcome.Recorded, outcome.Message);
+        var original = OkfDocument.Parse(before);
+        var reparsed = OkfDocument.Parse(after);
+        Assert.Equal(original.Body, reparsed.Body);
+        Assert.Equal(original.Frontmatter.Description, reparsed.Frontmatter.Description);
+        Assert.Contains("---", reparsed.Frontmatter.Description);
+        Assert.Equal(new[] { "human:bob", "human:ada" }, reparsed.Frontmatter.Verified.Select(v => v.By!.Value.Raw).ToArray());
+        Assert.Equal(original.Frontmatter.AsMapping().Keys, reparsed.Frontmatter.AsMapping().Keys);
+    }
+
+    /// <summary>
+    /// Finding #C7-4: YAML's indentless block-sequence form must be absorbed
+    /// into the block, not mistaken for the next top-level key -- proven
+    /// end-to-end (a merge that both keeps the untouched <c>process:nightly</c>-
+    /// style entry AND appends the new one, through a real write).
+    /// </summary>
+    [Fact]
+    public void An_indentless_sequence_is_stampable_end_to_end()
+    {
+        using var tmp = new TempDir();
+        tmp.Write(
+            "metrics/x.md",
+            "---\ntype: M\nverified:\n- by: human:bob\n  at: 2025-01-01T00:00:00Z\ntitle: T\n---\nbody\n");
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        Assert.Null(outcome.Records.Single().ReplacedAt);
+        Assert.Equal(
+            "---\ntype: M\nverified:\n  -\n    by: human:bob\n    at: 2025-01-01T00:00:00Z\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\ntitle: T\n---\nbody\n",
+            Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Minor finding #9: a pathologically deep value under an UNRELATED key
+    /// (the same shape <see cref="DeepYamlDocument"/> uses to make
+    /// <c>YamlEmitter</c> throw when the WHOLE frontmatter is re-emitted) is
+    /// now stampable at all -- <c>RecordVerifications</c> never hands it to
+    /// the emitter -- and survives completely byte-identical.
+    /// </summary>
+    [Fact]
+    public void A_deep_value_under_an_unrelated_key_is_stampable_and_survives_byte_identical()
+    {
+        using var tmp = new TempDir();
+        var before = DeepYamlDocument.Text(key: "deep");
+        tmp.Write("metrics/deep.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/deep"], "human:ada");
+
+        Assert.True(outcome.Recorded);
+        var insertPoint = before.LastIndexOf("---\n\nbody\n", StringComparison.Ordinal);
+        Assert.True(insertPoint > 0);
+        Assert.Equal(
+            before[..insertPoint] + "verified:\n  -\n    by: human:ada\n    at: 2026-08-28T09:14:00Z\n---\n\nbody\n",
+            Read(tmp, "metrics/deep.md"));
+    }
+
+    /// <summary>
+    /// A clean refusal with NOTHING WRITTEN for a hostile shape (round-2
+    /// review's "k16"): a NO-BREAK SPACE (U+00A0) sitting on its own line
+    /// between two <c>verified</c> sequence entries. The real YAML parser's
+    /// blank-line check (<c>string.TrimStart()</c>) treats U+00A0 as
+    /// whitespace and skips it, so the document parses fine and both stamps
+    /// are visible to <c>UpsertStamp</c>; but <c>FrontmatterBlockEdit</c>'s
+    /// own continuation scan only recognizes ASCII space/tab as a
+    /// blank-line stand-in, so it stops absorbing lines at the NBSP line --
+    /// excluding the SECOND sequence entry from the replaced range while the
+    /// emitted replacement (built from the correctly-merged, fully-parsed
+    /// value) still includes it.
+    ///
+    /// <b>This test does NOT, by itself, prove the check discriminates from
+    /// a weaker one.</b> A round-3 review found that for THIS shape, the OLD
+    /// stamp-COUNT check (<c>Verified.Count != upserted.Count</c>) refuses
+    /// too, by coincidence: the re-parsed file ends up with 4 `verified`
+    /// entries against 3 expected, so a bare count comparison catches it
+    /// just as well as full equality -- reverting to the count check would
+    /// leave this test green. <see cref="A_stray_indented_line_inside_a_verified_entry_is_refused_a_count_check_would_miss"/>
+    /// is the one that actually discriminates (verified by temporarily
+    /// weakening the check and confirming THAT test goes red while this one
+    /// and the form-feed test below stay green -- see the C7 fix report,
+    /// round 3). This test still earns its place: it is an independent,
+    /// hostile input that must never corrupt the file, and every refusal
+    /// path deserves its own "nothing written" proof regardless of which
+    /// internal check caught it.
+    /// </summary>
+    [Fact]
+    public void A_no_break_space_line_inside_the_verified_sequence_is_refused_not_corrupted()
+    {
+        using var tmp = new TempDir();
+        var nbsp = char.ConvertFromUtf32(0x00A0);
+        var before = "---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\n" + nbsp
+            + "\n  - {by: human:carol, at: 2025-02-02T00:00:00Z}\ntitle: T\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("could not be edited in place", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Same failure mode as the NBSP test above, with a FORM FEED (U+000C)
+    /// line instead (round-2 review's "x09") -- a second, independently
+    /// constructed shape hitting the same gap between the real parser's
+    /// blank-line predicate and this editor's ASCII-only one. Same caveat as
+    /// the NBSP test: a bare stamp-count check would ALSO refuse this exact
+    /// shape (it too re-parses to 4 entries against 3 expected), so this
+    /// test does not by itself discriminate full equality from a count
+    /// comparison -- <see cref="A_stray_indented_line_inside_a_verified_entry_is_refused_a_count_check_would_miss"/>
+    /// is the one proven (by deliberately weakening the check) to need full
+    /// equality. Kept for the same reason: an independent hostile input that
+    /// must end in a clean refusal, whichever check catches it.
+    /// </summary>
+    [Fact]
+    public void A_form_feed_line_inside_the_verified_sequence_is_refused_not_corrupted()
+    {
+        using var tmp = new TempDir();
+        var formFeed = char.ConvertFromUtf32(0x000C);
+        var before = "---\ntype: M\nverified:\n  - {by: human:bob, at: 2025-01-01T00:00:00Z}\n" + formFeed
+            + "\n  - {by: human:carol, at: 2025-02-02T00:00:00Z}\ntitle: T\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("could not be edited in place", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Minor finding (round 2): a NaN float ANYWHERE in the frontmatter (§4.1
+    /// places no constraint against one) makes <c>YamlValue</c>'s structural
+    /// equality -- which compares floats with IEEE-754 <c>==</c>, under which
+    /// NaN never equals itself -- return false on every verify attempt for
+    /// that concept, even a perfectly correct edit. Not fixed (changing
+    /// <c>YamlValue.Equals</c> is out of scope here): the refusal message
+    /// must at least name the real cause instead of implying real corruption.
+    /// Still a clean refusal with nothing written -- a false positive on
+    /// "could this be verified", not a false negative on corruption.
+    /// </summary>
+    [Fact]
+    public void A_NaN_float_elsewhere_in_the_frontmatter_is_refused_with_a_diagnosable_message()
+    {
+        using var tmp = new TempDir();
+        const string before = "---\ntype: M\nthreshold: .nan\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        Assert.Contains("NaN", outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
+    }
+
+    /// <summary>
+    /// Round-3 finding, the test that actually pins full structural equality
+    /// against the OLD stamp-count check: <c>verified:\n  - by: human:bob\n</c>
+    /// then a lone NO-BREAK-SPACE line, then an indented continuation
+    /// <c>    note: x</c>, then <c>title: T</c>. The real parser folds
+    /// <c>note: x</c> into `bob`'s own sequence-item mapping (the NBSP line
+    /// is skipped as blank, so `note` sits at the same indent as `by` and
+    /// joins it) -- so the ORIGINAL document's `verified` is
+    /// <c>[{by: bob, note: x}]</c>, and <c>UpsertStamp</c> appends a clean
+    /// <c>{by: ada, at: …}</c>, giving an EXPECTED, two-entry
+    /// <c>[{by: bob, note: x}, {by: ada, at: …}]</c>.
+    /// <c>FrontmatterBlockEdit</c>'s own continuation scan, though, stops
+    /// absorbing at the NBSP line (ASCII-only blank check), so the emitted
+    /// replacement (which correctly re-includes bob's `note: x`, since
+    /// <c>UpsertStamp</c> read it off the real parse) is followed by the
+    /// SAME, now-orphaned <c>note: x</c> line surviving untouched in the
+    /// text -- which the real parser then folds into `ada`'s item instead
+    /// (nothing stops it: `note: x` sits at ada's own indent too), giving a
+    /// RE-PARSED <c>[{by: bob, note: x}, {by: ada, at: …, note: x}]</c>.
+    ///
+    /// The item COUNT is identical (2 == 2) -- the OLD stamp-count check
+    /// (<c>Verified.Count != upserted.Count</c>, the one finding #C7-1
+    /// exploited) would see nothing wrong and report success with `note: x`
+    /// silently duplicated onto `ada`'s stamp. Only comparing the actual
+    /// VALUES (full <see cref="OkfDocument.Equals(OkfDocument?)"/>) sees
+    /// `ada`'s extra key and refuses. Proven, not asserted: see the C7 fix
+    /// report's round-3 section for the RED output from temporarily
+    /// reverting the check to the count comparison and running this exact
+    /// test.
+    /// </summary>
+    [Fact]
+    public void A_stray_indented_line_inside_a_verified_entry_is_refused_a_count_check_would_miss()
+    {
+        using var tmp = new TempDir();
+        var nbsp = char.ConvertFromUtf32(0x00A0);
+        const string note = "    note: x\n";
+        var before = "---\ntype: M\nverified:\n  - by: human:bob\n" + nbsp + "\n" + note + "title: T\n---\nbody\n";
+        tmp.Write("metrics/x.md", before);
+
+        var outcome = WriterOver(tmp).RecordVerifications(["metrics/x"], "human:ada");
+
+        Assert.False(outcome.Recorded);
+        // The corrected, LOCATED message (round 3, item 2): the divergence
+        // is genuinely INSIDE the verified block, not "some other key" --
+        // asserted exactly, not just contains(), since a wrong-but-plausible
+        // message is exactly what item 2 exists to catch.
+        Assert.Equal(
+            "Error: concept \"metrics/x\": the verified block could not be edited in place (the verified block itself did not round-trip).",
+            outcome.Message);
+        Assert.Equal(before, Read(tmp, "metrics/x.md"));
     }
 }

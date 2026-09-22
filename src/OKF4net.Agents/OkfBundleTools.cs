@@ -2,7 +2,9 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
+using OKF4net.Agents.Internal;
 using OKF4net.Attestation;
 using OKF4net.Internal;
 using OKF4net.Yaml;
@@ -289,7 +291,9 @@ public sealed class OkfBundleTools
             // The async form: AIFunctionFactory binds its CancellationToken from the
             // invocation and leaves it out of the JSON schema, so the model sees the
             // same two parameters while the host gains a way to stop a wedged run.
-            tools.Add(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation"));
+            // Wrapped so a duplicate top-level parameter name in the model's JSON is an
+            // error rather than last-wins; the schema the model sees is unchanged.
+            tools.Add(new TopLevelDuplicateParameterGuard(AIFunctionFactory.Create(RunComputationAsync, "okf_run_computation")));
         }
 
         return mode switch
@@ -329,7 +333,7 @@ public sealed class OkfBundleTools
             }
 
             var sb = new StringBuilder();
-            sb.Append("# ").Append(concept.Document.Frontmatter.Title ?? concept.Id.ToString()).Append('\n').Append('\n');
+            sb.Append("# ").Append(DisplayTitle(concept, concept.Id.ToString())).Append('\n').Append('\n');
 
             var fm = concept.Document.Frontmatter;
             var lc = fm.Lifecycle;
@@ -337,8 +341,8 @@ public sealed class OkfBundleTools
             var stale = lc.IsStale(Now);
             if (lc.Status != ConceptStatus.Stable || trust != TrustTier.Unverified || stale)
             {
-                sb.Append("> status: ").Append(StatusLabel(lc.Status))
-                  .Append(" | trust: ").Append(TrustLabel(trust))
+                sb.Append("> status: ").Append(AuditVocabulary.Name(lc.Status))
+                  .Append(" | trust: ").Append(AuditVocabulary.Name(trust))
                   .Append(" | stale: ").Append(stale ? "yes" : "no")
                   .Append("\n\n");
             }
@@ -389,17 +393,25 @@ public sealed class OkfBundleTools
 
             if (segments.Any(s => s == "..") || Path.IsPathRooted(relPath))
             {
-                return $"Error: invalid path '{path}' — '..' segments and absolute paths are not allowed.";
+                // Folded: `path` is the tool's own argument, which the guard
+                // above rejects for shape, not for line terminators. See OneLine.
+                return $"Error: invalid path '{OneLine(path ?? string.Empty)}' — '..' segments and absolute paths are not allowed.";
             }
 
             var bundle = GetBundle();
             var fullDir = segments.Length == 0 ? bundle.Root : Path.Combine([bundle.Root, .. segments]);
 
+            // Strict ancestor walk: Browse reads through fullDir, so a directory
+            // whose link status cannot be read is refused like a link (a guard
+            // fails closed -- see ReparsePoints.IsReparsePointOrUninspectable).
             if (!ReparsePoints.IsWithinBundleRoot(bundle.Root, fullDir)
                 || !Directory.Exists(fullDir)
-                || ReparsePoints.HasReparsePointAncestor(bundle.Root, fullDir))
+                || ReparsePoints.HasReparsePointOrUninspectableAncestor(bundle.Root, fullDir))
             {
-                return $"Error: path '{path}' not found in the bundle. Use okf_browse to list available directories.";
+                // Folded, same reason as the invalid-path line above: this is
+                // the one Browse message an arbitrary string reaches, since
+                // any path that does not resolve lands here. See OneLine.
+                return $"Error: path '{OneLine(path ?? string.Empty)}' not found in the bundle. Use okf_browse to list available directories.";
             }
 
             var indexPath = Path.Combine(fullDir, IndexFilename);
@@ -498,9 +510,12 @@ public sealed class OkfBundleTools
 
             if (scored.Count == 0)
             {
+                // Folded, like the results header: this line is a tool result
+                // of its own, and `query`/`tag` being the caller's arguments
+                // says nothing about what they carry (see OneLine).
                 return effectiveTag is null
-                    ? $"No results for query '{query}'."
-                    : $"No results for query '{query}' with tag '{effectiveTag}'.";
+                    ? $"No results for query '{OneLine(query)}'."
+                    : $"No results for query '{OneLine(query)}' with tag '{OneLine(effectiveTag)}'.";
             }
 
             return FormatSearchResults(query, effectiveTag, scored, Now);
@@ -572,10 +587,16 @@ public sealed class OkfBundleTools
             parsedStatus = value;
         }
 
+        // Same treatment as status/trust: a model copying a label from prose
+        // brings whitespace, and AuditQuery's match is
+        // string.Equals(..., Ordinal), so an untrimmed value would silently
+        // select nothing.
+        var trimmedType = string.IsNullOrWhiteSpace(type) ? null : type.Trim();
+
         // The CLI's rule, restated: with no filter flag it reports the stale
         // worklist; the moment one is given, staleness stops being implied.
         // An explicit `stale` always wins over that default.
-        var otherFilterGiven = tiers is not null || parsedStatus is not null || !string.IsNullOrWhiteSpace(type);
+        var otherFilterGiven = tiers is not null || parsedStatus is not null || trimmedType is not null;
         var staleOnly = stale ?? !otherFilterGiven;
 
         // Everything that can touch the filesystem goes through RunTool, the
@@ -589,7 +610,7 @@ public sealed class OkfBundleTools
         {
             var report = ConceptAudit.Run(
                 GetBundle(),
-                new AuditQuery(staleOnly, tiers, parsedStatus, type),
+                new AuditQuery(staleOnly, tiers, parsedStatus, trimmedType),
 
                 // Pinned to Now -- the same UtcNow seam ReadConcept and
                 // Search use -- so the tool's output never depends on the day
@@ -661,46 +682,92 @@ public sealed class OkfBundleTools
 
         return RunTool(() =>
         {
-            // Pre-resolved like the CLI (OkfCli.cs's CmdVerify). The writer
-            // already refuses the whole batch atomically on its own if any id
-            // is unknown or non-conformant — RecordVerifications resolves,
-            // reads, parses and validates every concept before writing any —
-            // so this loop is not what stops a half-stamped batch. What it
-            // buys is message quality: naming the offender directly ("concept
-            // 'x' does not exist" / "concept 'x' has no `type`...") instead of
-            // the writer's unattributed "Missing required frontmatter keys:
-            // type", which would leave an agent bisecting an eight-id batch by
-            // hand to find which one lacks `type`.
-            var bundle = GetBundle();
-            foreach (var id in ids)
+            // The single governed §11 floor (BundleConceptWriter.CheckVerificationTargets,
+            // also called first thing inside RecordVerifications itself, same
+            // as the CLI's CmdVerify) — this call is not what stops a
+            // half-stamped batch (the real write below refuses the whole
+            // batch atomically on its own). What it buys is message quality:
+            // naming the offender directly ("concept \"x\" does not exist" /
+            // "concept \"x\" has no `type`...") instead of the writer's own
+            // message shape, and it reads the k named files directly rather
+            // than going through the tool's cached bundle (unaffected by
+            // whether that cache is stale).
+            var targetProblem = _writer.CheckVerificationTargets(ids);
+            if (targetProblem is { } problem)
             {
-                if (!ConceptId.TryParse(id, out var parsedId) || bundle.Get(parsedId!) is not { } concept)
+                return problem.Kind switch
                 {
-                    return $"Error: concept '{id}' does not exist.";
-                }
-
-                if (concept.Document.Frontmatter.Get("type") is not { IsEmptyValue: false })
-                {
-                    return $"Error: concept '{id}' has no `type` and is not §11-conformant.";
-                }
+                    VerificationTargetProblemKind.NotConformant =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} has no `type` and is not §11-conformant.",
+                    VerificationTargetProblemKind.DuplicateName =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} is named more than once.",
+                    // The file exists and names its own parse error: falling
+                    // through to "does not exist" (which this did until now)
+                    // told the model to go and create a concept that is
+                    // already there. The detail is the parser's own message
+                    // -- library-authored, never bundle text. Rendered through
+                    // DetailAsSentence, not "{Detail}.", which doubled the
+                    // period on every unreadable-concept refusal.
+                    VerificationTargetProblemKind.ParseFailure =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be parsed as a valid OKF document: {problem.DetailAsSentence()}",
+                    VerificationTargetProblemKind.Unreadable =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} could not be read: {problem.DetailAsSentence()}",
+                    // Already a complete "Error: "-prefixed sentence naming the
+                    // id (ValidateConceptTarget's own return value, captured
+                    // once by CheckVerificationTargets), so it is returned
+                    // as-is -- the same arm FormatVerificationTargetProblem has.
+                    //
+                    // This is the ONE arm whose message embeds an id that
+                    // ConceptId's ASCII-only grammar has NOT vetted (it is the
+                    // arm for an id that failed to PARSE), and it briefly
+                    // carried a local OneLine because DebugQuote.Quote escaped
+                    // Cc controls but not U+2028/U+2029 (Zl/Zp), so a soft
+                    // terminator in a caller's id forged a line here. The fold
+                    // is gone because the hole is: DebugQuote now escapes those
+                    // two as well, which fixes the same message reached through
+                    // okf_write_concept and through the CLI, not just this arm.
+                    // Everything in this Detail is DebugQuote output plus fixed
+                    // literals, so nothing here can start a line. Pinned by
+                    // Verify_refuses_an_unparseable_id_without_forging_a_line,
+                    // which now guards the shared helper through this tool.
+                    VerificationTargetProblemKind.InvalidId => problem.Detail!,
+                    VerificationTargetProblemKind.NotFound =>
+                        $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
+                    // Deliberately NOT "does not exist": a kind added to the
+                    // enum later must not be misdiagnosed as a missing file,
+                    // which is exactly what happened to ParseFailure and
+                    // InvalidId while this switch ended at a catch-all arm.
+                    _ => $"Error: concept {DebugQuote.Quote(problem.ConceptId)} cannot be verified.",
+                };
             }
 
             // One batch call — the validation guarantee comes from the writer, so the
-            // pre-resolution above is only there to give a nicer message.
+            // pre-check above is only there to give a nicer message.
             // `at` is passed through untouched, null included: the writer owns
             // the clock seam and reports the timestamp it used, so the tool
             // never dates anything itself.
             var outcome = _writer.RecordVerifications(ids, by, at);
 
-            // The same line shape as the CLI verb, deliberately re-implemented
-            // rather than shared: the CLI's bytes are golden-locked and must not
-            // move because an agent-facing string was tuned. The tool's tests
-            // assert this exact shape so the two cannot drift unnoticed.
+            // `by` and `record.ConceptId` are NOT folded on their way into
+            // these lines, and neither exemption rests on provenance (see
+            // OneLine). `by` was REFUSED above by
+            // LineSafeText.ContainsControlCharacter, which covers every C0/C1
+            // control plus U+2028/U+2029 -- a strictly stronger outcome than
+            // folding, and the one the write gate applies too. `record.ConceptId`
+            // exists only for ids that CheckVerificationTargets accepted and
+            // RecordVerifications then wrote, so it has passed ConceptId's
+            // ASCII-only segment charset. AuditText itself is shared with the
+            // golden-locked CLI verb and must not move.
+            //
+            // The same line shape as the CLI verb, via the shared AuditText:
+            // the CLI's bytes are golden-locked, so the wording must not move
+            // because an agent-facing string was tuned. The tool's tests
+            // still assert this exact shape so a change here cannot drift
+            // unnoticed.
             var lines = new StringBuilder();
             foreach (var record in outcome.Records)
             {
-                var replaces = record.ReplacedAt is { } previous ? $"  (replaces {previous})" : string.Empty;
-                lines.Append($"recorded {record.ConceptId}  {by}  {record.At}{replaces}").Append('\n');
+                lines.Append(AuditText.FormatVerificationRecord(record, by)).Append('\n');
             }
 
             // A rejected batch has no records and yields the message alone; a
@@ -781,13 +848,62 @@ public sealed class OkfBundleTools
     /// Validates one <see cref="AppendLog"/> argument, returning the rejection
     /// message or <see langword="null"/> when it is acceptable.
     ///
-    /// Both of that method's arguments get the identical three checks, so they
-    /// share one validator rather than two copies that could drift. The
-    /// line-break rejection is the load-bearing one: a newline lets an entry
-    /// forge a fabricated <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet
-    /// that a later <c>ChangeLog.Parse</c> would read back as genuine
-    /// audit-trail history. Rejected outright rather than stripped, so the
-    /// caller learns the write did not happen.
+    /// Both of that method's arguments get the identical checks, so they share
+    /// one validator rather than two copies that could drift.
+    ///
+    /// <para><b>Three treatments, one boundary.</b> A caller-supplied field is
+    /// written into the user's repository AND echoed into a tool result, so
+    /// every character that survives does so for a stated reason:</para>
+    ///
+    /// <list type="bullet">
+    /// <item><c>\n</c> and <c>\r</c> — <b>REJECTED</b>. They split
+    /// <c>log.md</c> on re-read: a newline lets an entry forge a fabricated
+    /// <c>## &lt;date&gt;</c> heading or <c>* entry</c> bullet that a later
+    /// <c>ChangeLog.Parse</c> reads back as genuine audit-trail history (§9).
+    /// Rejected rather than stripped, so the caller learns the write did not
+    /// happen.</item>
+    /// <item>U+000C, U+0085, U+2028 and U+2029 — <b>FOLDED</b> to a space at
+    /// the write (<see cref="FoldLogField"/>), not rejected. They cannot forge
+    /// a §9 line, they only split a downstream renderer, and most callers
+    /// cannot see them, so failing a call over one would cost more than it
+    /// buys.</item>
+    /// <item>Every other control character — <b>REJECTED</b>: ESC, backspace,
+    /// BEL, VT, DEL and the rest of C0/C1. None has a legitimate use in a log
+    /// entry, and each forges what a HUMAN reading the audit trail sees rather
+    /// than what it says: <c>ESC[2K ESC[1A</c> rewrites the terminal line
+    /// <c>cat log.md</c> just printed, backspace erases it. Folding them would
+    /// silently rewrite the caller's words, and persisting them writes a
+    /// rendering attack into the repository.</item>
+    /// <item>Every bidirectional CONTROL character — <b>REJECTED</b>: U+061C,
+    /// U+200E, U+200F, U+202A–U+202E and U+2066–U+2069
+    /// (<see cref="IsBidiControl"/>). Each reorders the text a reader is shown
+    /// without changing the bytes stored, so the <c>log.md</c> a human reads
+    /// and the <c>log.md</c> a tool reads disagree. Ordinary right-to-left
+    /// TEXT is NOT affected: Arabic and Hebrew letters carry their own strong
+    /// direction and need none of these.</item>
+    /// <item><c>\t</c> — <b>ACCEPTED, verbatim in the interior of the field.</b>
+    /// The one control character a log message may legitimately carry. Not
+    /// folded to a space the way the four soft separators are: this guard
+    /// rewrites a caller's words only when the character would otherwise
+    /// break structure, and an interior tab cannot — <c>ChangeLog.Parse</c>
+    /// splits on LF, a tab is not a terminator, and it can never reach the
+    /// START of a line (the renderer always emits <c>* </c> first), the only
+    /// position where markdown would read it as an indented code block. A
+    /// LEADING or TRAILING tab does not survive, though: <see cref="FoldLogField"/>
+    /// trims the field before this guard or the writer ever sees it, exactly
+    /// as it has always trimmed a leading/trailing space — so <c>"\tUpdate\t"</c>
+    /// is written (and echoed) as <c>Update</c>, not <c>&lt;TAB&gt;Update&lt;TAB&gt;</c>.</item>
+    /// </list>
+    ///
+    /// <para>The control-character half reuses
+    /// <see cref="LineSafeText.ContainsControlCharacter"/> — the repo's shared
+    /// predicate, already used at <c>okf_verify</c>'s <c>by</c> — rather than a
+    /// second character list here, which is exactly the drift that predicate's
+    /// own doc comment exists to prevent. Two adjustments are made to the value
+    /// it sees, not to the predicate: it runs over the FOLDED text (by then the
+    /// four soft separators are spaces, and the predicate would otherwise
+    /// refuse U+2028/U+2029 and undo the fold), and over a probe in which tabs
+    /// are spaces (the exemption above). The value WRITTEN keeps its tabs.</para>
     /// </summary>
     /// <param name="value">The argument's value.</param>
     /// <param name="fieldName">The argument's name, as it appears in the message.</param>
@@ -809,8 +925,110 @@ public sealed class OkfBundleTools
                 + "forge fake '## date' or '* entry' lines in log.md).";
         }
 
+        var folded = FoldLogField(value);
+        var probe = folded.Replace('\t', ' ');
+
+        if (LineSafeText.ContainsControlCharacter(probe))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a control character other than a "
+                + "tab (ESC, backspace and BEL forge what a human reading log.md sees).";
+        }
+
+        if (ContainsBidiControl(folded))
+        {
+            return $"Error: invalid {fieldName} — it must not contain a bidirectional control character "
+                + "(U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069 reorder the stored text on "
+                + "display; ordinary right-to-left text needs none of them).";
+        }
+
         return null;
     }
+
+    /// <summary>
+    /// True when the value carries any Unicode bidirectional CONTROL
+    /// character — see <see cref="IsBidiControl"/> for the list and for why
+    /// the whole class is refused rather than the two overrides alone.
+    ///
+    /// Local to this tool rather than added to
+    /// <see cref="LineSafeText.ContainsControlCharacter"/>: none of these code
+    /// points is a <see cref="char.IsControl(char)"/> character, so putting
+    /// them there would widen the shared cross-assembly predicate that also
+    /// gates §7 actors and <c>at</c> timestamps — a decision for those call
+    /// sites, not one this tool may take on their behalf.
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    private static bool ContainsBidiControl(string value)
+    {
+        foreach (var c in value)
+        {
+            if (IsBidiControl(c))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The twelve Unicode bidirectional control characters: the marks U+061C
+    /// (ALM), U+200E (LRM) and U+200F (RLM); the embeddings and overrides
+    /// U+202A (LRE), U+202B (RLE), U+202C (PDF), U+202D (LRO) and U+202E
+    /// (RLO); and the isolates U+2066 (LRI), U+2067 (RLI), U+2068 (FSI) and
+    /// U+2069 (PDI).
+    ///
+    /// <para>The WHOLE class, not just the two overrides: an embedding or an
+    /// isolate reorders a rendered line as effectively as U+202E, a
+    /// terminator can unbalance one an author opened, and a mark reorders a
+    /// neutral run. A rule that stopped at "override" would refuse
+    /// <c>RLO</c> and pass <c>RLE</c>, which is not a distinction any reader
+    /// of a rendered <c>log.md</c> can see.</para>
+    ///
+    /// <para><b>One list, two call sites</b> — <see cref="ContainsBidiControl"/>
+    /// (the write guard) and <see cref="NeedsVisibleEscape"/> (the read
+    /// rendering). They must agree: a character the write refuses is exactly a
+    /// character the read has to make visible when an older build, another
+    /// producer or a human already put it in the file.</para>
+    /// </summary>
+    /// <param name="c">The character to classify.</param>
+    private static bool IsBidiControl(char c) =>
+        // Numeric constants on purpose: every one of these is invisible in
+        // source, in a diff and in a review (the convention
+        // Internal/LineSafeText.cs sets).
+        c is (char)0x061C or (char)0x200E or (char)0x200F
+            or (char)0x202A or (char)0x202B or (char)0x202C or (char)0x202D or (char)0x202E
+            or (char)0x2066 or (char)0x2067 or (char)0x2068 or (char)0x2069;
+
+    /// <summary>
+    /// The four separators <see cref="GuardLogField"/> deliberately does NOT
+    /// reject, folded to a single space before the value is written. Leading
+    /// and trailing whitespace, tabs included, is removed first by the
+    /// <see cref="string.Trim()"/> this method also does — the same trimming
+    /// an ordinary leading/trailing space has always had, and the reason a
+    /// tab is "verbatim" only in the interior of a field (see the <c>\t</c>
+    /// item on <see cref="GuardLogField"/>).
+    ///
+    /// <para><b>Why the asymmetry.</b> <c>\n</c> and <c>\r</c> are REFUSED
+    /// (<see cref="GuardLogField"/>): <c>ChangeLog.Parse</c> is LF-line-based,
+    /// so those two are the characters that would make a later read back a
+    /// forged <c>## date</c> heading or <c>* entry</c> bullet as genuine
+    /// audit-trail history (§9), and a caller who sent one needs to learn the
+    /// write did not happen. U+000C, U+0085, U+2028 and U+2029 cannot do that —
+    /// the §9 parser does not split on them — but they DO split a downstream
+    /// markdown or JavaScript renderer of the same file, and they were
+    /// persisted verbatim into the user's repository, where every other
+    /// consumer inherits them. Refusing them too would fail a call over a
+    /// character most callers cannot see, so they are folded and the call
+    /// succeeds. Same rule as the read side (<see cref="OneLine"/>): nothing
+    /// downstream can start a new line.</para>
+    ///
+    /// <para><see cref="string.ReplaceLineEndings(string)"/> rather than a
+    /// hand-rolled set: it is the same helper the rendering side uses, and by
+    /// the time this runs <see cref="GuardLogField"/> has already refused the
+    /// only two terminators it folds that we do not want folded silently.</para>
+    /// </summary>
+    /// <param name="value">The guarded argument's value.</param>
+    private static string FoldLogField(string value) => value.Trim().ReplaceLineEndings(" ");
 
     /// <summary>
     /// Appends one entry to the bundle root's <c>log.md</c> under today's
@@ -825,9 +1043,11 @@ public sealed class OkfBundleTools
     /// uses, then re-rendered through <see cref="ChangeLog.ToMarkdown"/> — the
     /// strict §9 model — so any non-conforming prose or comments in a
     /// hand-authored <c>log.md</c> are not preserved. Never throws for
-    /// expected errors (a null/blank/embedded-null <paramref name="kind"/> or
-    /// <paramref name="text"/>, or a <c>log.md</c> that fails strict UTF-8
-    /// decoding) — those are reported as a plain-text message instead.
+    /// expected errors (a <paramref name="kind"/> or <paramref name="text"/>
+    /// that <see cref="GuardLogField"/> refuses — empty, or carrying a line
+    /// break, a control character or a bidirectional control character — or a
+    /// <c>log.md</c> that fails strict UTF-8 decoding) — those are reported as
+    /// a plain-text message instead.
     /// </summary>
     /// <param name="kind">Entry kind, e.g. <c>Update</c> or <c>Creation</c>.</param>
     /// <param name="text">The entry text.</param>
@@ -856,18 +1076,21 @@ public sealed class OkfBundleTools
             // follow it, so without this check AppendLog would silently
             // overwrite whatever external file it points at. log.md always
             // lives directly at BundleRoot, so its only directory ancestor is
-            // BundleRoot itself -- HasReparsePointAncestor's walk stops there
+            // BundleRoot itself -- the ancestor walk stops there
             // immediately without checking anything, which is why the file
             // node itself (not its ancestor chain) is the check that matters
             // here; both are included for the same defense-in-depth shape as
-            // WriteConcept's guard.
-            if (ReparsePoints.IsReparsePoint(logPath) || ReparsePoints.HasReparsePointAncestor(BundleRoot, BundleRoot))
+            // WriteConcept's guard. Both strict: a log.md whose link status
+            // cannot be read is refused like a link (a guard fails closed --
+            // see ReparsePoints.IsReparsePointOrUninspectable).
+            if (ReparsePoints.IsReparsePointOrUninspectable(logPath) || ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, BundleRoot))
             {
-                return "Error: log.md is a reparse point (symlink/junction), not a regular file -- refusing to write through it.";
+                return "Error: log.md is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to write through it.";
             }
 
             var today = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var entry = new LogEntry(kind.Trim(), text.Trim());
+            var foldedKind = FoldLogField(kind);
+            var entry = new LogEntry(foldedKind, FoldLogField(text));
 
             // Serialized under _bundleLock (shared with WriteConcept and
             // RegenerateIndexes): without it, two concurrent AppendLog calls
@@ -916,17 +1139,20 @@ public sealed class OkfBundleTools
                 // itself having been replaced with a reparse point in this
                 // narrow window.
                 var logParentDir = Path.GetDirectoryName(logPath);
-                if ((!string.IsNullOrEmpty(logParentDir) && ReparsePoints.HasReparsePointAncestor(BundleRoot, logParentDir))
-                    || ReparsePoints.IsReparsePoint(logPath))
+                if ((!string.IsNullOrEmpty(logParentDir) && ReparsePoints.HasReparsePointOrUninspectableAncestor(BundleRoot, logParentDir))
+                    || ReparsePoints.IsReparsePointOrUninspectable(logPath))
                 {
-                    return "Error: log.md resolves through a reparse point (symlink/junction) inside the bundle, which is not allowed.";
+                    return "Error: log.md resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.";
                 }
 
                 File.WriteAllText(logPath, new ChangeLog(changeLog.Title, days).ToMarkdown(), OkfEncodings.NoBom);
                 _bundle = null;
             }
 
-            return $"Appended a '{kind}' entry under {today} in log.md.";
+            // The FOLDED kind, not the raw argument: this message is itself a
+            // line-structured tool result, and echoing the argument verbatim
+            // would put back the separator the write just removed.
+            return $"Appended a '{foldedKind}' entry under {today} in log.md.";
         });
     }
 
@@ -964,7 +1190,11 @@ public sealed class OkfBundleTools
             sb.Append("Regenerated ").Append(relative.Count).Append(" index file(s):").Append('\n');
             foreach (var rel in relative)
             {
-                sb.Append("- ").Append(rel).Append('\n');
+                // Same sink shape as AppendLogFileChanges's "## {rel}" and
+                // "> Skipped {rel}": `rel` is a Path.GetRelativePath over a
+                // bundle path (just above), and a directory name may carry a
+                // line terminator. One index file, one "- " line.
+                sb.Append("- ").Append(OneLine(rel)).Append('\n');
             }
 
             return sb.ToString();
@@ -990,7 +1220,12 @@ public sealed class OkfBundleTools
             var sb = new StringBuilder();
             foreach (var diagnostic in report.Diagnostics)
             {
-                sb.Append(diagnostic).Append('\n');
+                // One diagnostic, one line -- and a diagnostic message can
+                // embed frontmatter (a resource path, a `type`), so the fold
+                // is what makes that true. The CLI's own validate output is
+                // golden-locked and is rendered elsewhere; this is the tool's
+                // renderer only.
+                sb.Append(OneLine(diagnostic.ToString())).Append('\n');
             }
 
             var errors = report.ErrorCount;
@@ -1043,6 +1278,13 @@ public sealed class OkfBundleTools
             return "Error: invalid date — it must not contain a null character.";
         }
 
+        // Not folded below, and the reason is a GRAMMAR, not provenance (see
+        // OneLine): ChangeLog.IsIsoDate accepts exactly ten characters, all of
+        // them ASCII digits but for the two '-' it requires at index 4 and 7.
+        // A value that reaches the "# Changes since {date}" heading or the
+        // "No changes since {date}." line has therefore been proved to carry
+        // no terminator at all. If that predicate is ever loosened, these two
+        // sinks need OneLine.
         var date = sinceDate.Trim();
         if (!ChangeLog.IsIsoDate(date))
         {
@@ -1109,7 +1351,19 @@ public sealed class OkfBundleTools
             var fm = concept.Document.Frontmatter;
             if (!fm.IsAttestedComputation)
             {
-                return $"Concept '{conceptId}' is not an Attested Computation (type: {fm.Type ?? "(none)"}).";
+                // OneLine on both. `type` is frontmatter, so it can be a block
+                // scalar. `conceptId` is folded too, and the fold is honest
+                // about being belt-and-braces: reaching this line means
+                // ConceptId.TryParse ACCEPTED the id, and ConceptId's segment
+                // charset is ASCII letters/digits/_/./- only, so no terminator
+                // can be here today and no test can make this fold matter.
+                // It is written anyway because the comment it replaces claimed
+                // the wrong guarantee -- "the caller's own argument, already
+                // rejected upstream if it carries a control character", when
+                // GuardConceptId rejects only a NUL -- and because ConceptId's
+                // own remarks point at an open upstream question about relaxing
+                // that ASCII-only rule. This line must not depend on the answer.
+                return $"Concept '{OneLine(conceptId)}' is not an Attested Computation (type: {OneLine(fm.Type ?? "(none)")}).";
             }
 
             var sb = new StringBuilder();
@@ -1124,7 +1378,11 @@ public sealed class OkfBundleTools
                     if (!bundle.TryResolveResource(concept, file.Path!, out var absolutePath, out var status)
                         || status != ResourceResolutionStatus.Resolved)
                     {
-                        sb.Append("Error: computation file '").Append(file.Path).Append("' could not be resolved (").Append(status).Append(").\n");
+                        // OneLine on file.Path here and on the two lines below:
+                        // it is the frontmatter `computation` field, so a block
+                        // scalar can put a line break in the middle of an
+                        // "Error: "/"File: " line. `status` is an enum.
+                        sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be resolved (").Append(status).Append(").\n");
                         break;
                     }
 
@@ -1140,11 +1398,11 @@ public sealed class OkfBundleTools
                     }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or DecoderFallbackException)
                     {
-                        sb.Append("Error: computation file '").Append(file.Path).Append("' could not be read: ").Append(e.Message).Append('\n');
+                        sb.Append("Error: computation file '").Append(OneLine(file.Path!)).Append("' could not be read: ").Append(OneLine(e.Message)).Append('\n');
                         break;
                     }
 
-                    sb.Append("File: ").Append(file.Path).Append('\n').Append('\n');
+                    sb.Append("File: ").Append(OneLine(file.Path!)).Append('\n').Append('\n');
                     sb.Append("```\n").Append(text.TrimEnd('\n')).Append('\n').Append("```\n");
                     break;
 
@@ -1267,8 +1525,23 @@ public sealed class OkfBundleTools
         }
 
         // See RunComputation's remarks: an AIFunction-bound call can pass null
-        // despite the non-nullable static type.
-        parameterValues ??= new Dictionary<string, object?>();
+        // despite the non-nullable static type. And what it does pass is a
+        // dictionary of JsonElements, never native values -- normalized here,
+        // once, for every binder (see ParameterValues). A value that breaks the
+        // strict JSON contract (an inexact number, a nested duplicate property)
+        // is the tool's error text, never a throw toward the model.
+        if (!ParameterValues.TryNormalize(parameterValues ?? new Dictionary<string, object?>(), out var normalizedValues, out var valuesError))
+        {
+            // Not folded, and checked rather than assumed: `valuesError` is one
+            // of three FIXED string literals in ParameterValues.TryNormalize,
+            // with nothing interpolated into any of them -- not the offending
+            // key, not the value. A fold here would be provably a no-op. If
+            // that method ever starts naming the property it rejected, this
+            // line needs OneLine like every other.
+            return $"Error: {valuesError}";
+        }
+
+        parameterValues = normalizedValues;
 
         // Arming the timeout is validated rather than left to
         // CancellationTokenSource's own throw: it happens outside the try
@@ -1324,9 +1597,13 @@ public sealed class OkfBundleTools
         {
             return $"displayable: no\n\nReasons:\n- the computation timed out after {ComputationTimeout.TotalSeconds:0.###}s\n";
         }
+        // This method does not go through RunTool (it is async and owns its own
+        // cancellation arms), so it carries RunTool's catch-all verbatim --
+        // the fold included. See RunTool for why an exception message is not
+        // library-authored text: `GetBundle()` is called inside this very try.
         catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            return $"Error: {ex.Message}";
+            return $"Error: {OneLine(ex.Message)}";
         }
     }
 
@@ -1349,7 +1626,16 @@ public sealed class OkfBundleTools
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            notes.Append("> Skipped ").Append(rel).Append(" (could not be read: ")
+            // `rel` is a path on disk, not text this process wrote: a POSIX
+            // filename may hold a line terminator, and (as of the post-audit
+            // re-review's Important 1) any of the other filesystems here
+            // accepts a bidi control in a directory name too, with no
+            // privilege needed. It goes through `OneLineLogText`, not
+            // `OneLine` alone, for the same reason entry text does — folding
+            // the four soft separators answers "nothing downstream can start
+            // a new line", not "nothing can reorder what a human is shown".
+            // `SkipReason` is a fixed library word.
+            notes.Append("> Skipped ").Append(OneLineLogText(rel)).Append(" (could not be read: ")
                 .Append(SkipReason(ex)).Append(").").Append('\n').Append('\n');
             return false;
         }
@@ -1364,7 +1650,7 @@ public sealed class OkfBundleTools
             return false;
         }
 
-        changes.Append("## ").Append(rel).Append('\n');
+        changes.Append("## ").Append(OneLineLogText(rel)).Append('\n');
         foreach (var day in matchingDays)
         {
             AppendLogDay(changes, day);
@@ -1374,7 +1660,37 @@ public sealed class OkfBundleTools
         return true;
     }
 
-    /// <summary>Appends one <c>### {date}</c> section and its bulleted entries (bold <c>Kind</c> when present) to <paramref name="sb"/>.</summary>
+    /// <summary>
+    /// Appends one <c>### {date}</c> section and its bulleted entries (bold
+    /// <c>Kind</c> when present) to <paramref name="sb"/>.
+    ///
+    /// <para><b>The entries are folded even though a <c>\n</c> cannot reach
+    /// them.</b> <see cref="ChangeLog.Parse"/> is LF-line-based, so a literal
+    /// newline never survives into <c>Kind</c> or <c>Text</c> — which is
+    /// exactly why this sink went unnoticed. The SOFT terminators do survive:
+    /// U+2028, U+2029, U+0085 and U+000C are ordinary characters to an
+    /// LF-based parser and line breaks to the markdown and JavaScript
+    /// splitters downstream, and a <c>log.md</c> bullet carrying one printed a
+    /// second, forged <c>- **Update**: …</c> bullet (measured). That is the
+    /// whole reason <see cref="OneLine"/> is
+    /// <see cref="string.ReplaceLineEndings(string)"/> rather than a
+    /// <c>\r</c>/<c>\n</c> pass, so the rule applies here like everywhere else
+    /// — "a literal newline cannot get in" is not the test; "nothing
+    /// downstream can start a new line" is.</para>
+    ///
+    /// <para>Folding is not the whole job, though. It answers "nothing
+    /// downstream can start a new line"; it says nothing about ESC, backspace
+    /// or a bidi control, which a <c>log.md</c> written by an older build, by
+    /// another producer or by hand may carry and which forge what a HUMAN
+    /// reading this report sees. Both fields therefore go through
+    /// <see cref="OneLineLogText"/>, which folds AND names each such character
+    /// visibly as <c>&lt;U+XXXX&gt;</c> — see that method for why a read
+    /// escapes where the write (<see cref="GuardLogField"/>) refuses.</para>
+    ///
+    /// <para><c>day.Date</c> needs neither: only dates matching
+    /// <see cref="ChangeLog.IsIsoDate"/> reach here, and that grammar admits
+    /// digits and hyphens only.</para>
+    /// </summary>
     private static void AppendLogDay(StringBuilder sb, LogDay day)
     {
         sb.Append("### ").Append(day.Date).Append('\n');
@@ -1382,11 +1698,11 @@ public sealed class OkfBundleTools
         {
             if (entry.Kind is not null)
             {
-                sb.Append("- **").Append(entry.Kind).Append("**: ").Append(entry.Text).Append('\n');
+                sb.Append("- **").Append(OneLineLogText(entry.Kind)).Append("**: ").Append(OneLineLogText(entry.Text)).Append('\n');
             }
             else
             {
-                sb.Append("- ").Append(entry.Text).Append('\n');
+                sb.Append("- ").Append(OneLineLogText(entry.Text)).Append('\n');
             }
         }
     }
@@ -1420,10 +1736,15 @@ public sealed class OkfBundleTools
         var shown = ConceptSearch.TopDiversified(scored, MaxResults);
 
         var sb = new StringBuilder();
-        sb.Append("# Search: \"").Append(query).Append('"');
+
+        // `query` and `tag` are the tool's own arguments and are folded anyway:
+        // an external audit of PR #108 called okf_search with a query carrying
+        // an LF and got a forged `## FORGED` heading out of this very line. See
+        // OneLine for why provenance is not the boundary.
+        sb.Append("# Search: \"").Append(OneLine(query)).Append('"');
         if (tag is not null)
         {
-            sb.Append(" (tag: ").Append(tag).Append(')');
+            sb.Append(" (tag: ").Append(OneLine(tag)).Append(')');
         }
 
         sb.Append('\n').Append('\n');
@@ -1431,7 +1752,12 @@ public sealed class OkfBundleTools
 
         foreach (var (concept, score) in shown)
         {
-            var title = concept.Document.Frontmatter.Title ?? concept.Id.ToString();
+            // DisplayTitle folds it: `title` comes from frontmatter, where a
+            // `|` block scalar carries line breaks perfectly legally, and one
+            // result is one "* " line here. (The excerpt below needs no such
+            // call -- ConceptSearch.Excerpt returns a single split line by
+            // construction.)
+            var title = DisplayTitle(concept, concept.Id.ToString());
             var lc = concept.Document.Frontmatter.Lifecycle;
             sb.Append("* ").Append(concept.Id).Append(" — ").Append(title).Append(" (").Append(score).Append(')');
             if (lc.Status == ConceptStatus.Deprecated)
@@ -1475,27 +1801,14 @@ public sealed class OkfBundleTools
     private static string RenderAudit(AuditReport report, bool staleOnly)
     {
         const int MaxResults = 20;
-        var sb = new StringBuilder();
+        var sw = new StringWriter();
 
-        sb.Append("as of:      ").Append(report.AsOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append('\n');
-        sb.Append("concepts:   ").Append(report.ConceptCount).Append('\n');
-
-        // Same rule as the CLI renderer: labels from AuditVocabulary, never
-        // literals. The two renderers are separate on purpose (the CLI's bytes
-        // are golden-locked), but they must not spell the vocabulary twice.
-        sb.Append("\ntrust:\n");
-        foreach (var tier in AuditVocabulary.TrustTiersInOrder.Reverse())
-        {
-            sb.Append($"  {report.TrustCounts[tier],4}  {AuditVocabulary.Name(tier)}\n");
-        }
-
-        sb.Append("\nstatus:\n");
-        foreach (var status in AuditVocabulary.StatusesInOrder)
-        {
-            sb.Append($"  {report.StatusCounts[status],4}  {AuditVocabulary.Name(status)}\n");
-        }
-
-        sb.Append($"\nstale:      {report.StaleCount} of {report.ConceptCount} past stale_after\n");
+        // Same summary bytes as the CLI renderer, via the shared AuditText --
+        // the two renderers stay separate on purpose (the CLI's bytes are
+        // golden-locked), but the vocabulary/summary text is not spelled
+        // twice.
+        AuditText.WriteSummary(sw, report);
+        var sb = sw.GetStringBuilder();
 
         var heading = staleOnly ? "needs attention" : "selected";
 
@@ -1508,14 +1821,7 @@ public sealed class OkfBundleTools
         sb.Append($"\n{heading} ({report.Findings.Count}):\n");
         foreach (var finding in report.Findings.Take(MaxResults))
         {
-            var freshness = AuditVocabulary.Freshness(finding.Lifecycle, finding.IsStale);
-
-            sb.Append("  ")
-              .Append(finding.Id)
-              .Append("  ").Append(freshness)
-              .Append("  ").Append(AuditVocabulary.Name(finding.Trust))
-              .Append("  ").Append(AuditVocabulary.Name(finding.Lifecycle.Status))
-              .Append('\n');
+            sb.Append("  ").Append(AuditText.FormatFinding(finding)).Append('\n');
         }
 
         if (report.Findings.Count > MaxResults)
@@ -1554,7 +1860,12 @@ public sealed class OkfBundleTools
         }
 
         var sb = new StringBuilder();
-        sb.Append("# ").Append(segments.Count == 0 ? "(bundle root)" : relPath).Append('\n').Append('\n');
+
+        // `relPath` is Browse's own `path` argument, trimmed. Reaching here
+        // means the directory exists, and a POSIX directory name may hold a
+        // line terminator -- so the H1 this method promises is folded like
+        // every other interpolated value. See OneLine.
+        sb.Append("# ").Append(segments.Count == 0 ? "(bundle root)" : OneLine(relPath)).Append('\n').Append('\n');
 
         if (subdirectories.Count == 0 && concepts.Count == 0)
         {
@@ -1572,7 +1883,11 @@ public sealed class OkfBundleTools
         {
             var lines = concepts
                 .OrderBy(c => c.Id)
-                .Select(c => $"{c.Id} — {c.Document.Frontmatter.Title ?? c.Id.Name}");
+                // The id is already printed beside it here, so the fallback is
+                // the last segment rather than the whole id. AppendSection
+                // folds its bullets too; going through DisplayTitle keeps the
+                // derivation itself in one place.
+                .Select(c => $"{c.Id} — {DisplayTitle(c, c.Id.Name)}");
             AppendSection(sb, "Concepts", lines);
         }
 
@@ -1624,7 +1939,152 @@ public sealed class OkfBundleTools
     private static IEnumerable<string> FormatBacklinks(IEnumerable<ConceptId> backlinks) =>
         backlinks.Select(source => source.ToString());
 
-    /// <summary>Appends a markdown <c>## </c>-heading section, one bullet per line, or <see cref="NoneLine"/> if empty.</summary>
+    /// <summary>
+    /// <b>The one rule for EVERY value a line-oriented tool result
+    /// interpolates, whatever its provenance:</b> every line terminator
+    /// collapses to a single space, so the value occupies exactly the one line
+    /// the renderer gave it and cannot forge a second.
+    ///
+    /// <para><b>Provenance is not the boundary.</b> That sentence used to read
+    /// "untrusted text", and it carried a deliberate exemption with it: an
+    /// earlier re-review folded bundle, container and warehouse text but left a
+    /// tool's OWN arguments (<c>query</c>, <c>tag</c>, <c>path</c>,
+    /// <c>conceptId</c>) raw, as "caller-supplied, not bundle text". That
+    /// reasoning is wrong. The caller is the model, and a model's argument
+    /// routinely carries text it read a moment earlier — out of a bundle, off a
+    /// web page, out of another tool's result — so "caller-supplied" says
+    /// nothing at all about whether the text is hostile. An external audit of
+    /// PR #108 demonstrated it: <c>okf_search</c> called with
+    /// <c>revenue</c> + LF + <c>## FORGED</c> printed <c># Search: "revenue</c>
+    /// and then a forged <c>## FORGED</c> heading, in the tool's own result
+    /// header. The test is therefore never "who supplied this value"; it is
+    /// "does this renderer promise that this value occupies one line". Where a
+    /// value IS left raw, the justification must name a grammar that has
+    /// already been validated (<see cref="ChangeLog.IsIsoDate"/> for
+    /// <see cref="ChangesSince"/>'s date) or a refusal that has already run
+    /// (<see cref="LineSafeText.ContainsControlCharacter"/> for
+    /// <see cref="Verify"/>'s actor) — never where the value came from.</para>
+    ///
+    /// <para><see cref="string.ReplaceLineEndings(string)"/> and not a hand-rolled
+    /// <c>\r</c>/<c>\n</c> pass: it also folds <c>FF</c>, <c>NEL</c> (U+0085)
+    /// and <c>LS</c>/<c>PS</c> (U+2028/U+2029), which a markdown or JavaScript
+    /// line splitter downstream may well treat as terminators even though
+    /// <see cref="char.IsControl(char)"/> does not classify the last two.
+    /// It is the same neutralisation the orchestrator's <c>RunStageAsync</c>
+    /// and <see cref="FormatOutcome"/>'s <c>Error:</c> line already applied,
+    /// promoted here so the remaining sinks cannot keep diverging one at a
+    /// time (they did: the verdict detail, the reason lines, the receipt keys
+    /// and the receipt string values were each left raw by a change that fixed
+    /// one of the others).</para>
+    ///
+    /// <para><b>What it is not.</b> Nothing else is escaped: a value keeps its
+    /// <c>-</c>, <c>#</c> and backticks, because the alternative — escaping
+    /// markdown — would hide the data the model is meant to read, and forging
+    /// a BULLET or a HEADING is what needs a line break of its own to begin
+    /// with. Collections already arrive as JSON (which escapes its own line
+    /// endings), so they pass through this unchanged.</para>
+    /// </summary>
+    /// <param name="value">Any value about to be interpolated into a line this library promises to keep whole: bundle text, a receipt field, an attester's detail — or one of the tool's own arguments.</param>
+    private static string OneLine(string value) => value.ReplaceLineEndings(" ");
+
+    /// <summary>
+    /// <see cref="OneLine"/>, plus every REMAINING control character and every
+    /// bidi control rendered visibly as <c>&lt;U+XXXX&gt;</c>: the read-side
+    /// counterpart of <see cref="GuardLogField"/>, for <c>log.md</c> text this
+    /// process did not write.
+    ///
+    /// <para><b>Why escape rather than strip, fold or refuse.</b> A read has
+    /// nothing to refuse — the file exists, and its entries are a human's
+    /// words. Stripping or folding would silently delete what someone wrote,
+    /// which an audit trail's own reader must never do. Naming each character
+    /// instead keeps every word intact, makes the line inert (nothing left can
+    /// reorder the display or drive a terminal), and is the form a reader can
+    /// ACT on: <c>&lt;U+202E&gt;</c> in a rendered entry says exactly what is
+    /// in the file and that someone put it there, where a dropped character
+    /// would have said nothing at all.</para>
+    ///
+    /// <para>TAB is exempt on both sides (see <see cref="GuardLogField"/>):
+    /// the write accepts it verbatim, so the read must not disfigure it.
+    /// U+000C/U+0085/U+2028/U+2029 never reach the escaper as themselves —
+    /// <see cref="OneLine"/> has already folded them to spaces, which is the
+    /// established rule for this sink; everything the fold leaves behind is a
+    /// character that has no business in a rendered line at all.</para>
+    ///
+    /// <para>Scoped to the <c>log.md</c> readers this round — which, as of
+    /// the post-audit re-review's Important 1, includes the relative path
+    /// <see cref="AppendLogFileChanges"/> prints in its own <c>## {path}</c>
+    /// heading and <c>&gt; Skipped {path}</c> note: a path is text this
+    /// library did not write either, so it needs the same treatment as entry
+    /// content, not a new escaper. The same exposure still exists wherever
+    /// <see cref="OneLine"/> ALONE renders text this library did not write
+    /// (concept bodies, titles, receipt values, and other paths such as
+    /// <see cref="GetComputation"/>'s computation-file path) — folding a line
+    /// terminator was never a claim about ESC. Widening it further is a
+    /// separate decision, not an oversight here.</para>
+    /// </summary>
+    /// <param name="value">Text read back out of a <c>log.md</c>.</param>
+    private static string OneLineLogText(string value)
+    {
+        var folded = OneLine(value);
+        if (!folded.Any(NeedsVisibleEscape))
+        {
+            return folded;
+        }
+
+        var sb = new StringBuilder(folded.Length + 8);
+        foreach (var c in folded)
+        {
+            if (NeedsVisibleEscape(c))
+            {
+                sb.Append("<U+").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)).Append('>');
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The read-side twin of <see cref="GuardLogField"/>'s two rejections: a
+    /// control character or a bidi control, TAB excepted exactly as the write
+    /// excepts it. <see cref="IsBidiControl"/> is the same single list both
+    /// sides read, so the two cannot drift.
+    /// </summary>
+    /// <param name="c">The character to classify.</param>
+    private static bool NeedsVisibleEscape(char c) =>
+        c != '\t' && (char.IsControl(c) || IsBidiControl(c));
+
+    /// <summary>
+    /// A concept's display title — its frontmatter <c>title</c>, or
+    /// <paramref name="fallback"/> (always derived from the already-validated
+    /// <see cref="ConceptId"/>) when it has none — folded by
+    /// <see cref="OneLine"/>.
+    ///
+    /// <para><b>One call site for the one frontmatter field three different
+    /// renderers print into a line of their own structure</b>: this method's
+    /// <c>okf_read_concept</c> H1, <see cref="FormatSearchResults"/>'s
+    /// <c>* </c> lines and <see cref="BuildLevelListing"/>'s concept list. Two
+    /// of the three folded it and the H1 did not, and a <c>title: |</c> block
+    /// scalar there printed a complete, forged <c>## Backlinks</c> section —
+    /// with a bullet — ABOVE the real one, in the same result. Three copies of
+    /// one derivation is what let that happen, so there is now one.</para>
+    /// </summary>
+    /// <param name="concept">The concept whose title is being rendered.</param>
+    /// <param name="fallback">What to print when the concept declares no <c>title</c>.</param>
+    private static string DisplayTitle(Concept concept, string fallback) =>
+        OneLine(concept.Document.Frontmatter.Title ?? fallback);
+
+    /// <summary>
+    /// Appends a markdown <c>## </c>-heading section, one bullet per line, or
+    /// <see cref="NoneLine"/> if empty. Every bullet goes through
+    /// <see cref="OneLine"/>: the bullets carry bundle text (a concept title,
+    /// a raw link target) and orchestrator <c>Reasons</c> (which embed an
+    /// attester's verdict detail), and "one bullet per line" is a promise this
+    /// method makes, so it is this method that keeps it.
+    /// </summary>
     private static void AppendSection(StringBuilder sb, string heading, IEnumerable<string> lines)
     {
         sb.Append("## ").Append(heading).Append('\n');
@@ -1632,7 +2092,7 @@ public sealed class OkfBundleTools
         foreach (var line in lines)
         {
             any = true;
-            sb.Append("- ").Append(line).Append('\n');
+            sb.Append("- ").Append(OneLine(line)).Append('\n');
         }
 
         if (!any)
@@ -1641,20 +2101,16 @@ public sealed class OkfBundleTools
         }
     }
 
-    private static string StatusLabel(ConceptStatus status) => status switch
-    {
-        ConceptStatus.Draft => "draft",
-        ConceptStatus.Deprecated => "deprecated",
-        _ => "stable",
-    };
-
-    private static string TrustLabel(TrustTier tier) => tier switch
-    {
-        TrustTier.HumanReviewed => "human-reviewed",
-        TrustTier.MachineConfirmed => "machine-confirmed",
-        _ => "unverified",
-    };
-
+    /// <summary>
+    /// Appends the concept's frontmatter as one <c>key: value</c> line per
+    /// entry. Both sides go through <see cref="OneLine"/>: a <c>|</c> block
+    /// scalar is perfectly legal YAML, and a line break in one of these values
+    /// printed what looked like another frontmatter ENTRY -- a bundle could
+    /// show a <c>type:</c> or <c>verified:</c> line it does not actually carry.
+    /// Folding a genuinely multi-line value (typically a <c>description</c>)
+    /// onto one line is the accepted cost, and is what a <c>&gt;</c> folded
+    /// scalar would have rendered anyway.
+    /// </summary>
     private static void AppendFrontmatterBlock(StringBuilder sb, Frontmatter frontmatter)
     {
         var map = frontmatter.AsMapping();
@@ -1665,7 +2121,7 @@ public sealed class OkfBundleTools
 
         foreach (var key in map.Keys)
         {
-            sb.Append(key).Append(": ").Append(FormatFrontmatterValue(map.Get(key))).Append('\n');
+            sb.Append(OneLine(key)).Append(": ").Append(OneLine(FormatFrontmatterValue(map.Get(key)))).Append('\n');
         }
 
         sb.Append('\n');
@@ -1680,11 +2136,21 @@ public sealed class OkfBundleTools
     /// Shared by <see cref="GetComputation"/>'s full rendering and
     /// <see cref="ReadConcept"/>'s compact enrichment, so the two summaries
     /// can never drift apart.
+    ///
+    /// <para><b>Every value here comes out of frontmatter, so every one of them
+    /// goes through <see cref="OneLine"/>.</b> Each is a §10.2 field a bundle
+    /// author writes, and YAML lets any of them be a <c>|</c> block scalar: a
+    /// newline in <c>runtime</c> or <c>attester.resource</c> forged a second
+    /// <c>- </c> line in a block whose whole job is to tell a model what will be
+    /// run and what will vouch for it. Same rule and same reason as
+    /// <see cref="FormatOutcome"/>'s — see <see cref="OneLine"/>. The literals
+    /// around them (<see cref="NoneLine"/>, <c>(inline)</c>, <c>(unnamed)</c>,
+    /// <c>[required]</c>) are this library's own and need no call.</para>
     /// </summary>
     private static void AppendContractSummary(StringBuilder sb, AttestedComputationContract contract)
     {
         sb.Append("## Contract").Append('\n');
-        sb.Append("- runtime: ").Append(contract.Runtime ?? NoneLine).Append('\n');
+        sb.Append("- runtime: ").Append(OneLine(contract.Runtime ?? NoneLine)).Append('\n');
 
         if (contract.Parameters.Count == 0)
         {
@@ -1695,10 +2161,10 @@ public sealed class OkfBundleTools
             sb.Append("- parameters:").Append('\n');
             foreach (var parameter in contract.Parameters)
             {
-                sb.Append("  - ").Append(parameter.Name.Length == 0 ? "(unnamed)" : parameter.Name);
+                sb.Append("  - ").Append(parameter.Name.Length == 0 ? "(unnamed)" : OneLine(parameter.Name));
                 if (parameter.Type is not null)
                 {
-                    sb.Append(" (").Append(parameter.Type).Append(')');
+                    sb.Append(" (").Append(OneLine(parameter.Type)).Append(')');
                 }
 
                 if (parameter.Required)
@@ -1710,14 +2176,17 @@ public sealed class OkfBundleTools
             }
         }
 
-        sb.Append("- computation: ").Append(string.IsNullOrEmpty(contract.ComputationPath) ? "(inline)" : contract.ComputationPath).Append('\n');
+        sb.Append("- computation: ").Append(string.IsNullOrEmpty(contract.ComputationPath) ? "(inline)" : OneLine(contract.ComputationPath)).Append('\n');
 
         sb.Append("- executor: ");
         if (contract.Executor is { } executor)
         {
-            sb.Append(executor.Resource ?? NoneLine)
+            // The joined list, not each item: a newline inside ONE receipt
+            // field name breaks the line just as a newline between two would,
+            // and folding after the join covers both with one call.
+            sb.Append(OneLine(executor.Resource ?? NoneLine))
               .Append(" (receipt: ")
-              .Append(executor.Receipt.Count == 0 ? NoneLine : string.Join(", ", executor.Receipt))
+              .Append(executor.Receipt.Count == 0 ? NoneLine : OneLine(string.Join(", ", executor.Receipt)))
               .Append(')');
         }
         else
@@ -1726,7 +2195,7 @@ public sealed class OkfBundleTools
         }
 
         sb.Append('\n');
-        sb.Append("- attester: ").Append(contract.Attester?.Resource ?? NoneLine).Append('\n');
+        sb.Append("- attester: ").Append(OneLine(contract.Attester?.Resource ?? NoneLine)).Append('\n');
     }
 
     /// <summary>
@@ -1737,6 +2206,15 @@ public sealed class OkfBundleTools
     /// fields, and every reason (if any) that kept the run from being
     /// displayable, plus a captured binder/executor/attester exception's
     /// message, if any.
+    ///
+    /// <para><b>Every value here that this library did not author goes through
+    /// <see cref="OneLine"/>.</b> §10.5 step 6 makes the <c>displayable</c> and
+    /// <c>verdict</c> lines the gate the model reads, and the attester's
+    /// verdict detail, the orchestrator's reason lines and the receipt's own
+    /// keys and string values are all authored outside it — by a bundle's
+    /// attester script, by a container, by a warehouse. A single line break in
+    /// any of them printed a second, forged <c>- displayable: yes</c> right
+    /// under the real <c>- displayable: no</c>.</para>
     /// </summary>
     private static string FormatOutcome(AttestationOutcome outcome)
     {
@@ -1750,7 +2228,11 @@ public sealed class OkfBundleTools
             sb.Append(verdict.Passed ? "passed" : "failed");
             if (!string.IsNullOrEmpty(verdict.Detail))
             {
-                sb.Append(" (").Append(verdict.Detail).Append(')');
+                // The attester authored this, and an attester is a script a
+                // bundle names: a newline here forged a second "- displayable:
+                // yes" line one line below the real "- displayable: no". See
+                // OneLine.
+                sb.Append(" (").Append(OneLine(verdict.Detail)).Append(')');
             }
         }
         else
@@ -1767,7 +2249,10 @@ public sealed class OkfBundleTools
             sb.Append("- receipt:").Append('\n');
             foreach (var (key, value) in receipt.Fields)
             {
-                sb.Append("  - ").Append(key).Append(": ").Append(value?.ToString() ?? NoneLine).Append('\n');
+                // Both the field NAME and its value come from whatever the
+                // executor returned -- a JSON object key can hold a newline as
+                // readily as a string value can. See OneLine.
+                sb.Append("  - ").Append(OneLine(key)).Append(": ").Append(FormatReceiptValue(value)).Append('\n');
             }
         }
         else
@@ -1783,17 +2268,56 @@ public sealed class OkfBundleTools
 
         if (outcome.Error is not null)
         {
-            // The TYPE, never the message. This exception comes from a
-            // host-plugged runtime -- code this library does not control -- and
+            // The TYPE, never the message, for a foreign exception: it comes from
+            // a host-plugged runtime -- code this library does not control -- and
             // its message can name a connection string, a query, or the row it
-            // choked on. The exception object stays on outcome.Error for the
-            // host, which is the right audience; this line crosses into the
-            // model's context, which is not.
-            sb.Append('\n').Append("Error: ").Append(outcome.Error.GetType().Name).Append('\n');
+            // choked on. An AttestationDiagnosticException's message, by
+            // contrast, was authored by an OKF4net component (see that type's
+            // remarks) and is safe to render here, same as the orchestrator
+            // already renders it into Reasons. The exception object stays on
+            // outcome.Error for the host either way.
+            //
+            // OneLine, matching the orchestrator's own RunStageAsync: this text
+            // lands in the same agent-facing markdown blob as Reasons (see this
+            // method's doc comment), and a diagnostic message CAN carry an
+            // embedded newline -- e.g. a ContainerExecutionException whose
+            // message interpolates a downstream JsonException.Message built
+            // from bundle-influenced stdout (Internal/ReceiptParsing.cs). Left
+            // unneutralized here, an untrusted newline could spoof extra "- "
+            // bullet lines or section headers in the rendered output.
+            var errorLine = outcome.Error is AttestationDiagnosticException diagnostic
+                ? $"{diagnostic.GetType().Name}: {OneLine(diagnostic.Message)}"
+                : outcome.Error.GetType().Name;
+            sb.Append('\n').Append("Error: ").Append(errorLine).Append('\n');
         }
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Renders a receipt value the way JSON renders it, not the way
+    /// <see cref="object.ToString()"/> does: a string prints as itself, a
+    /// boolean prints lowercase (<c>true</c>/<c>false</c>, not the CLR
+    /// <c>True</c>/<c>False</c>), a number prints under the invariant
+    /// culture (never the current thread's -- a French decimal comma handed
+    /// to a model reading a receipt is a value that gets re-parsed wrong),
+    /// and a list or map (what <c>ReceiptParsing</c>/<c>JsonValues.Normalize</c>
+    /// produce for a JSON array/object) prints as compact JSON, because
+    /// <c>List&lt;object&gt;</c>'s type name tells the model nothing about
+    /// the rows the computation returned. This deliberately changes how a
+    /// bool- or double-valued field printed before this method existed.
+    /// </summary>
+    private static string FormatReceiptValue(object? value) => value switch
+    {
+        null => NoneLine,
+        // OneLine: a scalar string is the one arm that carries warehouse or
+        // script text verbatim -- the JSON arm below escapes its own line
+        // endings, and no other arm can produce one.
+        string s => OneLine(s),
+        bool b => b ? "true" : "false",
+        IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
+        _ => JsonSerializer.Serialize(value),
+    };
 
     private static string StaleLabel(StaleState stale) => stale switch
     {
@@ -1818,6 +2342,16 @@ public sealed class OkfBundleTools
     /// null-character guards up front (for a precise, tool-specific message),
     /// but this catch-all is what makes every public tool method structurally
     /// unable to throw for any string input, now and for tools added later.
+    ///
+    /// <para><b>The message is folded</b> (<see cref="OneLine"/>), like every
+    /// other value a renderer here puts on a line of its own. An exception
+    /// message is not library-authored boilerplate: it routinely embeds a PATH
+    /// (<c>BundleLoadException</c>'s "bundle root is not a directory: {root}"
+    /// interpolates the root verbatim), an id, or a nested message built from
+    /// bundle content. A bundle directory whose name carries U+2028 — legal on
+    /// NTFS and POSIX alike, no privilege needed — turned this one-line
+    /// <c>Error:</c> report into two (executed). This is the last catch-all in
+    /// this file that still rendered an outside string raw.</para>
     /// </summary>
     private static string RunTool(Func<string> body)
     {
@@ -1827,12 +2361,24 @@ public sealed class OkfBundleTools
         }
         catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            return $"Error: {ex.Message}";
+            return $"Error: {OneLine(ex.Message)}";
         }
     }
 
+    /// <summary>
+    /// The shared "not found" line for <see cref="ReadConcept"/>,
+    /// <see cref="Graph"/>, <see cref="GetComputation"/> and
+    /// <see cref="RunComputationAsync"/>.
+    ///
+    /// <para><paramref name="conceptId"/> is folded. It is the caller's own
+    /// argument, and <see cref="GuardConceptId"/> rejects only a NUL — every
+    /// other terminator reaches here, on the one path an arbitrary string is
+    /// guaranteed to take (an id that does not parse is "not found"). See
+    /// <see cref="OneLine"/>.</para>
+    /// </summary>
+    /// <param name="conceptId">The id the caller asked for, as given.</param>
     private static string ConceptNotFoundMessage(string conceptId) =>
-        $"Concept '{conceptId}' not found. Use okf_browse to list available concepts.";
+        $"Concept '{OneLine(conceptId)}' not found. Use okf_browse to list available concepts.";
 
     /// <summary>
     /// The common conceptId guard shared by <see cref="ReadConcept"/>,

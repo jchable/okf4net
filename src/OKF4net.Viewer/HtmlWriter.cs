@@ -20,30 +20,98 @@ public static class HtmlWriter
     /// <param name="outDir">The output directory.</param>
     /// <exception cref="ArgumentException">
     /// <paramref name="outDir"/> resolves inside the rendered bundle, which
-    /// would pollute the bundle being viewed; or a page in
+    /// would pollute the bundle being viewed, or cannot be resolved because an
+    /// entry on its path is a link that cannot be followed or could not be
+    /// inspected; or a page in
     /// <paramref name="site"/> carries a <see cref="ViewerPage.RelativeHtmlPath"/>
     /// that resolves outside <paramref name="outDir"/> (e.g. a
-    /// <c>../</c>-escaping path on a hand-constructed <see cref="ViewerPage"/>).
+    /// <c>../</c>-escaping path on a hand-constructed <see cref="ViewerPage"/>);
+    /// or two pages carry ids whose <see cref="ViewerPage.RelativeHtmlPath"/>
+    /// differ only by case, or a page's path differs only by case from this
+    /// method's own generated <c>index.html</c> (§2's <see cref="ConceptId"/>
+    /// segments are case-sensitive, but two such colliding names would write
+    /// the same file on a case-insensitive output volume -- refused
+    /// unconditionally, even on a case-sensitive volume where both writes
+    /// would otherwise succeed, because a site that renders differently per
+    /// filesystem is not a site).
     /// </exception>
     public static IReadOnlyList<string> Write(ViewerSite site, string outDir)
     {
+        GuardNoCaseCollisions(site);
         GuardOutputDirectory(site.BundleRoot, outDir);
 
         var written = new List<string>();
         Directory.CreateDirectory(outDir);
 
-        WriteAsset(outDir, "viewer.css", ViewerAssets.Css, written);
-        WriteAsset(outDir, "viewer.js", ViewerAssets.ViewerJs, written);
-        WriteAsset(outDir, "marked.min.js", ViewerAssets.MarkedJs, written);
+        // Canonicalized once here rather than per file: every file written
+        // below shares the same root, so GuardWithinOutputDirectory no
+        // longer re-resolves it on every call. verifiedDirs is the companion
+        // cache that lets the ancestor walk itself run once per directory
+        // instead of once per file -- see GuardWithinOutputDirectory's
+        // remarks for what that trades away.
+        var root = ReparsePoints.CanonicalizeRoot(outDir);
+        var verifiedDirs = new HashSet<string>(StringComparer.Ordinal);
 
-        WriteFile(outDir, "index.html", RenderIndex(site), written);
+        WriteAsset(outDir, root, verifiedDirs, "viewer.css", ViewerAssets.Css, written);
+        WriteAsset(outDir, root, verifiedDirs, "viewer.js", ViewerAssets.ViewerJs, written);
+        WriteAsset(outDir, root, verifiedDirs, "marked.min.js", ViewerAssets.MarkedJs, written);
+
+        WriteFile(outDir, root, verifiedDirs, "index.html", RenderIndex(site), written);
 
         foreach (var page in site.Pages)
         {
-            WriteFile(outDir, page.RelativeHtmlPath, RenderPage(page), written);
+            WriteFile(outDir, root, verifiedDirs, page.RelativeHtmlPath, RenderPage(page), written);
         }
 
         return written;
+    }
+
+    /// <summary>
+    /// Rejects a site holding two pages whose <see cref="ViewerPage.RelativeHtmlPath"/>
+    /// differ only by case, or a page that collides with one of <see cref="Write"/>'s
+    /// own generated file names, before <see cref="Write"/> takes any other
+    /// action -- run first, ahead of <see cref="GuardOutputDirectory"/> and
+    /// <see cref="Directory.CreateDirectory(string)"/>, so a refused site
+    /// creates nothing on disk.
+    /// </summary>
+    /// <remarks>
+    /// Two ids that differ only by case are two concepts on a case-sensitive
+    /// bundle volume and ONE file on a case-insensitive output volume, where
+    /// the second write silently replaces the first and the index links both
+    /// entries to the survivor. Refused up front, whatever the volume: a site
+    /// that renders differently per filesystem is not a site.
+    ///
+    /// Seeded with <c>index.html</c> before any page is examined, because it
+    /// is exactly this same collision one level up: <c>Bundle</c>'s reserved-
+    /// filename check (<c>case IndexFilename:</c>) is an ordinal switch, so a
+    /// root-level <c>Index.md</c> or <c>INDEX.md</c> loads as an ordinary
+    /// concept named <c>Index</c> on a case-sensitive bundle volume, and its
+    /// page (<c>Index.html</c>) would overwrite -- or be overwritten by --
+    /// this method's own generated <c>index.html</c> on a case-insensitive
+    /// output volume. The three asset files under <c>assets/</c> are left out
+    /// of the set: every generated page path ends in <c>.html</c> and every
+    /// asset path ends in <c>.js</c> or <c>.css</c>, so no page can ever
+    /// collide with an asset under any string comparer -- adding entries that
+    /// can never fire would only pad the set without making it any more
+    /// honest.
+    /// </remarks>
+    private static void GuardNoCaseCollisions(ViewerSite site)
+    {
+        var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["index.html"] = "the generated index page",
+        };
+
+        foreach (var page in site.Pages)
+        {
+            var description = $"concept '{page.Id}'";
+            if (!seen.TryAdd(page.RelativeHtmlPath, description))
+            {
+                throw new ArgumentException(
+                    $"{seen[page.RelativeHtmlPath]} and {description} would render to the same file on a case-insensitive volume ('{page.RelativeHtmlPath}')",
+                    paramName: nameof(site));
+            }
+        }
     }
 
     /// <summary>
@@ -81,10 +149,21 @@ public static class HtmlWriter
     /// can lexically look nowhere near <paramref name="bundleRoot"/> while the
     /// OS silently redirects every write into it -- e.g. <c>mklink /J
     /// out-dir bundle\generated-site</c> followed by <c>okf-render bundle
-    /// --out out-dir</c>. <see cref="ResolveThroughReparsePoints"/> follows
-    /// that redirect and this method also checks the resolved location, so
+    /// --out out-dir</c>. <see cref="ReparsePoints.TryResolveThroughReparsePoints"/>
+    /// follows that redirect and this method also checks the resolved location, so
     /// this only ever ADDS a refusal on top of the lexical check above --
     /// never removes one -- keeping the guard at least as strict as before.
+    /// When that resolution cannot inspect an entry on <c>outDir</c>'s path,
+    /// or cannot follow a link on it (a junction whose attributes the current
+    /// user may not read is still traversed by the writes that follow), where
+    /// <c>outDir</c> lands is unknown, and this guard refuses rather than
+    /// assume the lexical path: a guard fails closed (see
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>). That refusal
+    /// has its own message, because "it is inside the bundle" would be a
+    /// diagnosis the guard never made. A path that simply does not exist --
+    /// missing directories, an empty drive, a share that is not there -- is
+    /// not uninspectable and is not refused here: the write that follows
+    /// reports its own, accurate I/O error.
     /// </remarks>
     private static void GuardOutputDirectory(string bundleRoot, string outDir)
     {
@@ -93,88 +172,34 @@ public static class HtmlWriter
 
         const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
 
-        if (ReparsePoints.IsWithin(root, target, comparison)
-            || ReparsePoints.IsWithin(root, ResolveThroughReparsePoints(target), comparison))
+        if (ReparsePoints.IsWithin(root, target, comparison))
+        {
+            throw InsideTheBundle(bundleRoot, outDir);
+        }
+
+        if (!ReparsePoints.TryResolveThroughReparsePoints(target, out var resolvedTarget))
         {
             throw new ArgumentException(
-                $"refusing to render into '{outDir}': it is inside the bundle being rendered ('{bundleRoot}')",
+                $"refusing to render into '{outDir}': cannot determine where it resolves (an entry on its path is a link that cannot be followed, or could not be inspected)",
                 nameof(outDir));
         }
-    }
 
-    /// <summary>
-    /// Resolves <paramref name="path"/> to the real location the OS would
-    /// land on once it actually touches disk, by walking upward from
-    /// <paramref name="path"/> (inclusive) for the nearest ancestor that is
-    /// itself a filesystem reparse point (symlink, junction, mount point),
-    /// resolving that ancestor to its final target via
-    /// <see cref="Directory.ResolveLinkTarget(string, bool)"/>, and
-    /// re-attaching whatever trailing path segments do not exist yet.
-    /// Returns <paramref name="path"/> unchanged if no ancestor up to the
-    /// filesystem root is a reparse point -- the common case, and the only
-    /// one <see cref="Path.GetFullPath(string)"/> alone can see.
-    /// </summary>
-    /// <remarks>
-    /// Bounded by <paramref name="path"/>'s own ancestor depth, not by
-    /// <c>bundleRoot</c>: unlike <see cref="ReparsePoints.HasReparsePointAncestor(string, string)"/>
-    /// (which walks a candidate KNOWN to be lexically nested under a root,
-    /// and can safely stop there), an <c>outDir</c> under attack here is NOT
-    /// lexically nested under the bundle root at all -- that is the whole
-    /// point of the bypass -- so there is no shorter bound to walk to than
-    /// "however deep outDir's own path is". Deliberately does not chase a
-    /// SECOND reparse point that might appear further up past the first one
-    /// resolved: any escape reachable only through a reparse point nested
-    /// INSIDE the resolved location is <see cref="GuardWithinOutputDirectory"/>'s
-    /// concern (it walks every intermediate directory between outDir and each
-    /// file actually written), not this one-shot outDir resolution's.
-    /// </remarks>
-    private static string ResolveThroughReparsePoints(string path)
-    {
-        var current = path;
-        var tail = new List<string>();
-
-        while (true)
+        if (ReparsePoints.IsWithin(root, resolvedTarget, comparison))
         {
-            if (ReparsePoints.IsReparsePoint(current))
-            {
-                var resolvedTarget = Directory.ResolveLinkTarget(current, returnFinalTarget: true);
-                if (resolvedTarget is null)
-                {
-                    // IsReparsePoint(current) just returned true, so this
-                    // should not happen -- but resolution is not this
-                    // method's only line of defense (see remarks above), so
-                    // fail safe by falling back to the lexical path rather
-                    // than throwing.
-                    return path;
-                }
-
-                var resolved = resolvedTarget.FullName;
-                for (var i = tail.Count - 1; i >= 0; i--)
-                {
-                    resolved = Path.Combine(resolved, tail[i]);
-                }
-
-                return resolved;
-            }
-
-            var parent = Path.GetDirectoryName(current);
-            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
-            {
-                return path; // Reached the filesystem root without finding a reparse point.
-            }
-
-            tail.Add(Path.GetFileName(current));
-            current = parent;
+            throw InsideTheBundle(bundleRoot, outDir);
         }
     }
 
-    private static void WriteAsset(string outDir, string name, string content, List<string> written)
-        => WriteFile(outDir, "assets/" + name, content, written);
+    private static ArgumentException InsideTheBundle(string bundleRoot, string outDir) =>
+        new($"refusing to render into '{outDir}': it is inside the bundle being rendered ('{bundleRoot}')", nameof(outDir));
 
-    private static void WriteFile(string outDir, string relativePath, string content, List<string> written)
+    private static void WriteAsset(string outDir, string root, HashSet<string> verifiedDirs, string name, string content, List<string> written)
+        => WriteFile(outDir, root, verifiedDirs, "assets/" + name, content, written);
+
+    private static void WriteFile(string outDir, string root, HashSet<string> verifiedDirs, string relativePath, string content, List<string> written)
     {
         var full = Path.Combine(outDir, relativePath.Replace('/', Path.DirectorySeparatorChar));
-        GuardWithinOutputDirectory(outDir, full, relativePath);
+        GuardWithinOutputDirectory(outDir, root, verifiedDirs, full, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
         File.WriteAllText(full, content, new UTF8Encoding(false));
         written.Add(relativePath);
@@ -219,22 +244,68 @@ public static class HtmlWriter
     /// <see cref="File.WriteAllText(string, string)"/> actually touches it,
     /// landing outside <paramref name="outDir"/> even though the computed
     /// string looked contained.
+    ///
+    /// <paramref name="root"/> is <paramref name="outDir"/> canonicalized
+    /// ONCE by the caller (<see cref="Write"/>), not re-resolved on every
+    /// call -- <see cref="ReparsePoints.CanonicalizeRoot"/> is pure string
+    /// work over an <c>outDir</c> that does not change mid-<see cref="Write"/>,
+    /// so re-deriving it per file bought nothing but cost. The per-file
+    /// checks above (<see cref="ReparsePoints.IsWithin"/>,
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable(string)"/> on
+    /// <paramref name="fullPath"/> itself) stay exactly that -- per file,
+    /// same methods, same semantics -- because a symlink planted in place of
+    /// the file being written this instant must always be caught.
+    ///
+    /// <see cref="ReparsePoints.HasReparsePointOrUninspectableAncestor(string, string, StringComparison)"/>
+    /// is the expensive part -- it stats every directory between
+    /// <paramref name="root"/> and the file -- and is genuinely redundant
+    /// across every file that lands in the same directory, so
+    /// <paramref name="verifiedDirs"/> caches it per directory: the walk runs
+    /// for a directory's first file (checked before
+    /// <see cref="Directory.CreateDirectory(string)"/> creates that
+    /// directory, same order as before) and is skipped for every later file
+    /// in the same directory within this <see cref="Write"/> call. This is
+    /// safe against a reparse point ALREADY sitting in <paramref name="outDir"/>
+    /// before rendering starts: such a directory exists at the moment its
+    /// first file is checked, so the ancestor walk
+    /// (which reads each existing entry's own attributes, not a cached
+    /// belief) sees it and this method throws before
+    /// <paramref name="verifiedDirs"/> is ever updated -- a directory is
+    /// added to the cache only after its walk returns cleanly. Both checks
+    /// use the STRICT predicates, so the same holds for a directory whose
+    /// link status cannot be read: the walk refuses it like a link, and it is
+    /// never cached as safe (a guard fails closed -- see
+    /// <see cref="ReparsePoints.IsReparsePointOrUninspectable"/>). What the
+    /// cache widens is a narrower, in-flight race: a directory verified
+    /// reparse-free for its first file is not re-verified for later files in
+    /// the same run, so an attacker able to replace a directory inside
+    /// <paramref name="outDir"/> with a junction MID-RENDER could redirect a
+    /// later write in that directory. That attacker already has write access
+    /// to <paramref name="outDir"/> itself, which sits outside this guard's
+    /// threat model -- the model here is untrusted bundle CONTENT choosing
+    /// escaping paths, and reparse points already present in
+    /// <paramref name="outDir"/> before this method ever runs, not a
+    /// concurrent actor racing this method's own writes.
     /// </remarks>
-    private static void GuardWithinOutputDirectory(string outDir, string fullPath, string relativePath)
+    private static void GuardWithinOutputDirectory(string outDir, string root, HashSet<string> verifiedDirs, string fullPath, string relativePath)
     {
-        var root = ReparsePoints.CanonicalizeRoot(outDir);
         var resolved = Path.GetFullPath(fullPath);
+        var directory = Path.GetDirectoryName(resolved)!;
 
         const StringComparison comparison = StringComparison.Ordinal;
 
-        if (!ReparsePoints.IsWithin(root, resolved, comparison)
-            || ReparsePoints.IsReparsePoint(resolved)
-            || ReparsePoints.HasReparsePointAncestor(root, resolved, comparison))
+        var escapes = !ReparsePoints.IsWithin(root, resolved, comparison)
+            || ReparsePoints.IsReparsePointOrUninspectable(resolved)
+            || (!verifiedDirs.Contains(directory) && ReparsePoints.HasReparsePointOrUninspectableAncestor(root, directory, comparison));
+
+        if (escapes)
         {
             throw new ArgumentException(
                 $"refusing to write '{relativePath}': it resolves outside the output directory ('{outDir}')",
                 paramName: "site");
         }
+
+        verifiedDirs.Add(directory);
     }
 
     /// <summary>The <c>../</c> prefix taking a page at <paramref name="relativePath"/> back to the site root.</summary>

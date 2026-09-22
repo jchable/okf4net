@@ -66,7 +66,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
             if (IsReparseEscaped(root, subDir))
             {
-                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' path is a reparse point; refusing to read."));
+                diagnostics.Add(new KnowledgeDiagnostic(KnowledgeDiagnosticCode.SourceUnavailable, $"memory:{tier}", $"Memory tier '{tier}' path is a reparse point or could not be inspected; refusing to read."));
                 continue;
             }
 
@@ -153,7 +153,7 @@ public sealed class FileMemoryStore : IMemoryStore
 
             if (IsReparseEscaped(root, subDir))
             {
-                errors.Add($"Memory tier '{currentTier}' path is a reparse point; refusing to delete.");
+                errors.Add($"Memory tier '{currentTier}' path is a reparse point or could not be inspected; refusing to delete.");
                 continue;
             }
 
@@ -235,9 +235,12 @@ public sealed class FileMemoryStore : IMemoryStore
     {
         // CanonicalizeRoot matters here: a host-configured tier root with a
         // trailing separator would otherwise defeat the ancestor walk -- see
-        // its remarks.
+        // its remarks. Strict predicates: this guards reads, enumeration and a
+        // recursive DELETE of the scope subtree, so a directory whose link
+        // status cannot be read is refused like a link (a guard fails closed --
+        // see ReparsePoints.IsReparsePointOrUninspectable).
         var fullRoot = ReparsePoints.CanonicalizeRoot(root);
         var full = Path.GetFullPath(subDir);
-        return ReparsePoints.IsReparsePoint(full) || ReparsePoints.HasReparsePointAncestor(fullRoot, full, PathComparison);
+        return ReparsePoints.IsReparsePointOrUninspectable(full) || ReparsePoints.HasReparsePointOrUninspectableAncestor(fullRoot, full, PathComparison);
     }
 }

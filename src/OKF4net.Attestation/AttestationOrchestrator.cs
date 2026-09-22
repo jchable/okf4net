@@ -48,14 +48,10 @@ public sealed class AttestationOrchestrator
     /// <para>
     /// When a host-plugged stage throws, the resulting
     /// <see cref="AttestationOutcome.Reasons"/> entry names the stage and the
-    /// exception TYPE ("executor threw: TimeoutException"), never its message.
-    /// The exception itself is on <see cref="AttestationOutcome.Error"/>, which
-    /// is where a host reads the detail. The split is deliberate: reasons are
-    /// rendered into an agent's context by <c>OkfBundleTools</c>, and the
-    /// message on an exception from code this library does not control can
-    /// carry a connection string, a query, or the data that broke it. Nothing
-    /// is lost to the host; what changes is what crosses into a model's
-    /// context.
+    /// exception TYPE ("executor threw: TimeoutException") — see
+    /// <see cref="RunStageAsync{T}"/>'s remarks for the one exception to that
+    /// rule. The exception itself is always on <see cref="AttestationOutcome.Error"/>,
+    /// which is where a host reads the full detail regardless.
     /// </para>
     ///
     /// <para>
@@ -139,9 +135,7 @@ public sealed class AttestationOrchestrator
             return Fail(missingParameters);
         }
 
-        var now = _clock.Now;
-        var stale = ComputeStale(frontmatter.Lifecycle, now);
-        var staleAdmitted = (policy ?? _defaultPolicy).Admits(frontmatter.Lifecycle, now);
+        var effectivePolicy = policy ?? _defaultPolicy;
 
         // Step 5: bind.
         //
@@ -151,59 +145,34 @@ public sealed class AttestationOrchestrator
         // ignores its token, and an already-cancelled run then executed every
         // stage and could return a DISPLAYABLE success: for §10 that means a
         // computation actually ran, possibly against a live warehouse, after
-        // the caller had withdrawn.
-        cancellationToken.ThrowIfCancellationRequested();
-
-        BoundComputation bound;
-        try
-        {
-            bound = await runtime.Binder.BindAsync(contract, resolved, parameterValues, cancellationToken).ConfigureAwait(false);
-        }
-        // Cancellation is control flow, not data: errors-as-data is the contract
-        // for FAILURES, and a cancellation the CALLER asked for is not one.
-        // Caught by a bare `catch (Exception)` it became a business outcome, so
-        // a caller that cancelled got a normal-looking result and could not
-        // tell "the stage failed" from "I asked it to stop".
+        // the caller had withdrawn. RunStageAsync also stops awaiting a stage
+        // the moment the token fires, and re-checks after it.
         //
-        // But the exception TYPE alone does not identify that: HttpClient
-        // raises TaskCanceledException on its own request timeout with nobody's
-        // token cancelled, and a host executor calling one is the ordinary
-        // case. Filtering on the type alone let that escape as a raw exception
-        // — a downstream timeout is a stage failure like any other. The token's
-        // state is what actually distinguishes the two. Same filter on all
-        // three stages below.
-        // Caller cancellation arriving WRAPPED is still cancellation, but it has
-        // to reach the caller in the shape they catch. A direct
-        // OperationCanceledException falls through both clauses uncaught, which
-        // keeps its original stack trace.
-        catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
+        // No § for this: §10 sets no time limit and no cancellation rule at
+        // all (§10.5, which numbers the steps, is explicitly informative and
+        // says nothing about withdrawing a run). This is a host-side rule this
+        // implementation adopts on its own, and it is only §10.5's step-6 gate
+        // -- "refuse to display a failing attestation" -- that makes getting it
+        // wrong visible as a displayable success.
+        var (bindOk, bound, bindReason, bindError) = await RunStageAsync(
+            "binder",
+            ct => runtime.Binder.BindAsync(contract, resolved, parameterValues, ct),
+            cancellationToken).ConfigureAwait(false);
+        if (!bindOk)
         {
-            throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
-        }
-        catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
-        {
-            return Fail([$"binder threw: {e.GetType().Name}"], stale, e);
+            var (bindStale, _) = EvaluateStaleness(frontmatter.Lifecycle, effectivePolicy);
+            return Fail([bindReason!], bindStale, bindError);
         }
 
         // Step 6: execute.
-        cancellationToken.ThrowIfCancellationRequested();
-
-        Receipt receipt;
-        try
+        var (execOk, receipt, execReason, execError) = await RunStageAsync(
+            "executor",
+            ct => runtime.Executor.ExecuteAsync(bound, contract, ct),
+            cancellationToken).ConfigureAwait(false);
+        if (!execOk)
         {
-            receipt = await runtime.Executor.ExecuteAsync(bound, contract, cancellationToken).ConfigureAwait(false);
-        }
-        // Caller cancellation arriving WRAPPED is still cancellation, but it has
-        // to reach the caller in the shape they catch. A direct
-        // OperationCanceledException falls through both clauses uncaught, which
-        // keeps its original stack trace.
-        catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
-        {
-            throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
-        }
-        catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
-        {
-            return Fail([$"executor threw: {e.GetType().Name}"], stale, e);
+            var (execStale, _) = EvaluateStaleness(frontmatter.Lifecycle, effectivePolicy);
+            return Fail([execReason!], execStale, execError);
         }
 
         // Step 7: validate the receipt shape (no declared executor.receipt fields ⇒ trivially ok).
@@ -222,13 +191,18 @@ public sealed class AttestationOrchestrator
         Exception? error = null;
         if (receiptShapeOk)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
+            // No separate ThrowIfCancellationRequested here: RunStageAsync (via
+            // AttestAsync) checks at its own entry, same as bind/execute above,
+            // which stopped needing one of their own the moment they moved onto
+            // that helper.
             var context = new AttestationContext(contract, resolved, bound, parameterValues, receipt, attesterSourceText);
             (verdict, error) = await AttestAsync(runtime, context, reasons, cancellationToken).ConfigureAwait(false);
         }
 
-        // Step 9/10: gate on staleness and aggregate the outcome.
+        // Step 9/10: gate on staleness and aggregate the outcome. The clock is read here,
+        // immediately before gating -- not once up front -- so a run whose stages took long
+        // enough to cross stale_after is judged at release time, not at run start (§5.5).
+        var (stale, staleAdmitted) = EvaluateStaleness(frontmatter.Lifecycle, effectivePolicy);
         if (!staleAdmitted)
         {
             reasons.Add("concept is stale and the gating policy does not admit it");
@@ -245,8 +219,7 @@ public sealed class AttestationOrchestrator
     /// value, because a non-passing verdict and a throwing attester contribute
     /// the same kind of entry to the same list the caller is already building.
     /// Behaviour is unchanged from when this was inline in <see cref="RunAsync"/>,
-    /// including the exact reason wording and the deliberate choice to report
-    /// the exception TYPE rather than its message.
+    /// including the exact reason wording.
     /// </summary>
     /// <param name="runtime">The resolved runtime whose attester to invoke.</param>
     /// <param name="context">The §10.5 attestation context for this run.</param>
@@ -258,29 +231,195 @@ public sealed class AttestationOrchestrator
         List<string> reasons,
         CancellationToken cancellationToken)
     {
+        var (ok, verdict, reason, error) = await RunStageAsync(
+            "attester",
+            ct => runtime.Attester.AttestAsync(context, ct),
+            cancellationToken).ConfigureAwait(false);
+        if (!ok)
+        {
+            reasons.Add(reason!);
+            return (null, error);
+        }
+
+        if (verdict is { Passed: false } failed)
+        {
+            reasons.Add(string.IsNullOrEmpty(failed.Detail) ? "attestation did not pass" : $"attestation did not pass: {failed.Detail}");
+        }
+
+        return (verdict, null);
+    }
+
+    /// <summary>
+    /// Runs one host-plugged stage under the single cancellation and
+    /// reporting policy: a caller cancellation (direct or wrapped) propagates
+    /// as an <see cref="OperationCanceledException"/> tied to the caller's
+    /// token; any other exception becomes a reason — the message included
+    /// only for an <see cref="AttestationDiagnosticException"/>, the type
+    /// alone for everything else (see that type's remarks for why).
+    ///
+    /// Cancellation is control flow, not data: errors-as-data is the contract
+    /// for FAILURES, and a cancellation the CALLER asked for is not one. A
+    /// bare `catch (Exception)` would turn it into a business outcome, so a
+    /// caller that cancelled got a normal-looking result and could not tell
+    /// "the stage failed" from "I asked it to stop".
+    ///
+    /// But the exception TYPE alone does not identify that: HttpClient raises
+    /// TaskCanceledException on its own request timeout with nobody's token
+    /// cancelled, and a host executor calling one is the ordinary case —
+    /// that is a stage failure like any other. The token's state is what
+    /// actually distinguishes the two.
+    ///
+    /// Caller cancellation arriving WRAPPED is still cancellation, but it has
+    /// to reach the caller in the shape they catch. An unwrapped
+    /// OperationCanceledException falls through both clauses uncaught — since
+    /// stages are awaited through <see cref="AwaitStageAsync{T}"/>, usually
+    /// <see cref="Task.WaitAsync(CancellationToken)"/>'s own
+    /// <see cref="TaskCanceledException"/> tied to the caller's token rather
+    /// than the stage's exception.
+    ///
+    /// <para><b>The token is enforced around the stage, not only before it.</b>
+    /// A host-side rule, carrying no § of its own — §10 sets no time limit and
+    /// no cancellation rule, and §10.5 is informative. Checking at entry alone
+    /// let a stage that ignores its token
+    /// run to completion and have its result used: a 30 ms
+    /// <c>ComputationTimeout</c> waited out a 350 ms attester and came back
+    /// <c>displayable: yes</c>, and a stage that cancelled the token and then
+    /// returned success yielded an outcome that was both cancelled and
+    /// displayable. So, when the token can be cancelled, each stage is started
+    /// on the thread pool and awaited through <see cref="AwaitStageAsync{T}"/>,
+    /// which stops waiting the moment the token fires and checks the token
+    /// again after the stage succeeds.</para>
+    ///
+    /// <para><b>Why the thread-pool hop.</b> Awaiting the stage's returned
+    /// <see cref="ValueTask{TResult}"/> is not enough: a stage that blocks its
+    /// thread BEFORE returning — a synchronous client wrapped in
+    /// <c>ValueTask.FromResult</c> — has handed back nothing to stop waiting on
+    /// until it is done, so invoked on the caller's thread it held the run for
+    /// its full duration whatever the token did. The cost is one thread-pool
+    /// hop per stage, and a blocking stage that is abandoned keeps its pool
+    /// thread until it returns. The caller's token is passed to the hop too, so
+    /// a token that fires after the entry check but before the pool picks the
+    /// work up means the stage is never invoked. A non-cancellation exception
+    /// the delegate throws synchronously faults the pool task and is rethrown
+    /// unchanged, so — the token not having fired — it is still a failure
+    /// reason. A token that can never be
+    /// cancelled invokes the stage directly: there is nothing to abandon it
+    /// for.</para>
+    ///
+    /// <para><b>The resulting routing, precisely.</b> A cancelled run never
+    /// yields a displayable outcome. Once the orchestrator has seen the token
+    /// fire while a stage is running, or after it succeeded, the run ends as a
+    /// cancellation — an <see cref="OperationCanceledException"/> to the
+    /// caller, which <c>okf_run_computation</c> renders as
+    /// <c>displayable: no … timed out</c> when it was its own
+    /// <c>ComputationTimeout</c> that fired — whatever the stage does
+    /// afterwards, a later failure included. Only a stage failure (a
+    /// non-cancellation exception) that had already completed before the
+    /// orchestrator saw the token is reported as that failure, on a
+    /// non-displayable outcome. A
+    /// token that fires only after the attester's post-stage check is too late
+    /// to withdraw the outcome: cancellation arriving after completion is not
+    /// cancellation of the run.</para>
+    ///
+    /// <para><b>Abandoning a stage does not stop its work.</b> Nothing can
+    /// force a host's code to return; the orchestrator only stops waiting for
+    /// it, and whatever that stage started keeps running until the stage ends.
+    /// A stage that honours its token ends promptly on its own: for
+    /// <c>OKF4net.Attestation.Containers</c>, the engine honours the token and
+    /// kills its container, bounded by its kill timeout — what the orchestrator
+    /// no longer waits for is that teardown, and the engine's per-run
+    /// <c>Timeout</c> is the backstop. The abandoned task is observed, so a
+    /// fault it raises later cannot surface as an unobserved task
+    /// exception.</para>
+    /// </summary>
+    /// <param name="stage">The stage's name, as it appears in a reason string ("binder threw: ...").</param>
+    /// <param name="run">The host-plugged stage to invoke.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    private static async ValueTask<(bool Ok, T Result, string? Reason, Exception? Error)> RunStageAsync<T>(
+        string stage,
+        Func<CancellationToken, ValueTask<T>> run,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            var verdict = await runtime.Attester.AttestAsync(context, cancellationToken).ConfigureAwait(false);
-            if (verdict is { Passed: false } failed)
-            {
-                reasons.Add(string.IsNullOrEmpty(failed.Detail) ? "attestation did not pass" : $"attestation did not pass: {failed.Detail}");
-            }
-
-            return (verdict, null);
+            // See the remarks: the hop (with the caller's token) is what lets a
+            // thread-blocking stage be abandoned; a non-cancellable token has
+            // nothing to abandon, and is invoked directly.
+            var result = cancellationToken.CanBeCanceled
+                ? await AwaitStageAsync(Task.Run(() => run(cancellationToken).AsTask(), cancellationToken), cancellationToken).ConfigureAwait(false)
+                : await run(cancellationToken).ConfigureAwait(false);
+            return (true, result, null, null);
         }
-        // Caller cancellation arriving WRAPPED is still cancellation, but it has
-        // to reach the caller in the shape they catch. A direct
-        // OperationCanceledException falls through both clauses uncaught, which
-        // keeps its original stack trace.
         catch (AggregateException e) when (IsCallerCancellation(e, cancellationToken))
         {
             throw new OperationCanceledException(CancelledMessage, e, cancellationToken);
         }
         catch (Exception e) when (!IsCallerCancellation(e, cancellationToken))
         {
-            reasons.Add($"attester threw: {e.GetType().Name}");
-            return (null, e);
+            var reason = e is AttestationDiagnosticException
+                ? $"{stage} threw: {e.GetType().Name}: {e.Message.ReplaceLineEndings(" ")}"
+                : $"{stage} threw: {e.GetType().Name}";
+            // default! is never read: Ok is false here, and every caller checks
+            // it before touching Result.
+            return (false, default!, reason, e);
         }
+    }
+
+    /// <summary>
+    /// Awaits a started <paramref name="stage"/>, but stops waiting — with an
+    /// <see cref="OperationCanceledException"/> — the moment
+    /// <paramref name="cancellationToken"/> fires, whether or not the stage
+    /// observes the token itself; then checks the token once more, so a stage
+    /// that completed successfully after cancellation never contributes its
+    /// result — a host-side rule with no § behind it, see
+    /// <see cref="RunStageAsync{T}"/>'s remarks.
+    ///
+    /// <para>Both steps are needed. <see cref="Task.WaitAsync(CancellationToken)"/>
+    /// alone returns a stage that is already complete even when the token is
+    /// already cancelled — it tests completion first — which is exactly the
+    /// interleaving where a stage cancels the token, returns success, and
+    /// finishes on the pool before this method is reached. A race reaches that
+    /// only occasionally from <see cref="RunAsync"/>, so this method is
+    /// <c>internal</c> for a deterministic test of the second step.</para>
+    ///
+    /// <para>An abandoned stage is observed, so a fault it raises after nobody
+    /// is awaiting it cannot surface as an unobserved task exception. A stage
+    /// that fails (a non-cancellation exception) before the token is seen is
+    /// rethrown unchanged for <see cref="RunStageAsync{T}"/> to report.</para>
+    /// </summary>
+    /// <typeparam name="T">The stage's result type.</typeparam>
+    /// <param name="stage">The started stage.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The stage's result, when the token has not fired.</returns>
+    internal static async ValueTask<T> AwaitStageAsync<T>(Task<T> stage, CancellationToken cancellationToken)
+    {
+        T result;
+        try
+        {
+            result = await stage.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The stage may still be running, and may fault after nobody is
+            // awaiting it. Observe that fault here, or it surfaces later as an
+            // unobserved task exception on a finalizer thread. Harmless when
+            // the stage itself already completed (e.g. by honouring the token):
+            // OnlyOnFaulted simply never runs.
+            _ = stage.ContinueWith(
+                static abandoned => _ = abandoned.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw;
+        }
+
+        // A stage that finished — or cancelled the token itself — after
+        // cancellation arrived must not contribute its result. The OCE this
+        // throws is the caller's, so it falls through both of RunStageAsync's
+        // catch clauses.
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
     }
 
     /// <summary>
@@ -446,6 +585,22 @@ public sealed class AttestationOrchestrator
 
     private static AttestationOutcome Fail(IReadOnlyList<string> reasons, StaleState stale = StaleState.Unknown, Exception? error = null)
         => new(false, null, null, false, stale, reasons, error);
+
+    /// <summary>
+    /// Reads <see cref="_clock"/> once and reports both the concept's <see cref="StaleState"/>
+    /// and whether <paramref name="policy"/> admits it — a single instant feeding both, per
+    /// §5.5 ("content is stale when now &gt;= stale_after"). Called at the point an outcome is
+    /// actually built (immediately before the success gate, or inside a post-stage <c>Fail</c>),
+    /// never once up front: a run whose stages take long enough to cross <c>stale_after</c>
+    /// must be judged at release time, not at the instant it started.
+    /// </summary>
+    /// <param name="lifecycle">The concept's §5 lifecycle fields.</param>
+    /// <param name="policy">The gating policy this run is evaluated under.</param>
+    private (StaleState Stale, bool Admitted) EvaluateStaleness(Lifecycle lifecycle, StalePolicy policy)
+    {
+        var now = _clock.Now;
+        return (ComputeStale(lifecycle, now), policy.Admits(lifecycle, now));
+    }
 
     private static StaleState ComputeStale(Lifecycle lifecycle, DateTimeOffset now)
     {

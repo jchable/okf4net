@@ -335,4 +335,257 @@ public class YamlParserTests
         Assert.Throws<YamlParseException>(() =>
             YamlValue.Parse("tags: [a, b]\n  extra\n"));
     }
+
+    // ---- Unsupported YAML features: rejected, not read as strings ------------
+
+    private static readonly string[] FeatureWords = ["anchor", "alias", "tag", "directive", "document marker", "indented frontmatter fence"];
+
+    /// <summary>
+    /// Each construct the README says the subset rejects. Before, most of these
+    /// parsed with the indicator kept as part of a plain string; a column-0
+    /// directive or marker line after a mapping entry failed, but with an
+    /// unrelated "expected 'key: value'" message.
+    /// </summary>
+    [Theory]
+    [InlineData("k: &a v", 1, "anchor")]
+    [InlineData("k: *a", 1, "alias")]
+    [InlineData("k: !!str v", 1, "tag")]
+    [InlineData("k: !tag v", 1, "tag")]
+    [InlineData("- &a v", 1, "anchor")]
+    [InlineData("- *a", 1, "alias")]
+    [InlineData("[*a]", 1, "alias")]
+    [InlineData("{x: *a}", 1, "alias")]
+    [InlineData("&a k: v", 1, "anchor")]
+    [InlineData("%YAML 1.2", 1, "directive")]
+    [InlineData("...", 1, "document marker")]
+    [InlineData("type: T\nk: &a\n  b: 1\n", 2, "anchor")]
+    [InlineData("type: T\nk:\n  *a\n", 3, "alias")]
+    [InlineData("type: T\nitems:\n  - x\n  - !custom y\n", 4, "tag")]
+    [InlineData("type: T\nlist:\n- *a\n", 3, "alias")]
+    [InlineData("type: T\ntags: [a, &b c]\n", 2, "anchor")]
+    [InlineData("type: T\nm: {&k x: 1}\n", 2, "anchor")]
+    [InlineData("type: T\nk: !<tag:example.com,2000:x> v\n", 2, "tag")]
+    [InlineData("type: T\nk: !!str |\n  x\n", 2, "tag")]
+    [InlineData("type: T\nk: &a # comment\n", 2, "anchor")]
+    [InlineData("type: T\nk: !\n", 2, "tag")]
+    [InlineData("type: T\nk: *\n", 2, "alias")]
+    [InlineData("- k: *a\n", 1, "alias")]
+    [InlineData("- &a k: v\n", 1, "anchor")]
+    [InlineData("&a\n", 1, "anchor")]
+    [InlineData("type: T\n%TAG ! tag:example.com,2000:\n", 2, "directive")]
+    [InlineData("type: T\n...\n", 2, "document marker")]
+    [InlineData("type: T\n...  \n", 2, "document marker")]
+    [InlineData("type: T\n... # end\n", 2, "document marker")]
+    [InlineData("type: T\n---\nk: v\n", 2, "document marker")]
+    [InlineData("type: T\ndescription: |\n  kept\n%YAML 1.2\n", 4, "directive")]
+    [InlineData("type: T\ndescription: |\n...\n", 3, "document marker")]
+    [InlineData("type: T\ndescription: >\n  x\n&a: 1\n", 4, "anchor")]
+    [InlineData("type: T\nk: [[*a]]\n", 2, "alias")]
+    [InlineData("type: T\nk: {a: 1, *b : 2}\n", 2, "alias")]
+    [InlineData("type: T\nk:\t&a\n", 2, "anchor")]
+    [InlineData("type: T\n*a: v\n", 2, "alias")]
+    [InlineData("type: T\nitems:\n  - *a: v\n", 3, "alias")]
+    [InlineData("type: T\r\nk: !!str v\r\n", 2, "tag")]
+    [InlineData("title: T\n ---\n", 2, "indented frontmatter fence")]
+    [InlineData("title: T\n  ---  \n", 2, "indented frontmatter fence")]
+    [InlineData("outer:\n  a: 1\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("tags:\n  - a\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("tags: [a,\n  ---\n  b]\n", 2, "indented frontmatter fence")]
+    [InlineData("k:\n  ---\n", 2, "indented frontmatter fence")]
+    [InlineData("k: first\n  more\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("k: \"a\"\n  ---\n", 2, "indented frontmatter fence")]
+    [InlineData("k: |\n\t---\n", 2, "indented frontmatter fence")]
+    [InlineData("title: T\n ---\n*a: b\n", 2, "indented frontmatter fence")]
+    [InlineData("title: T\n ---\n\n%YAML 1.2\n", 2, "indented frontmatter fence")]
+    [InlineData("k:\n  [a,\n  ---\n  b]\n", 3, "indented frontmatter fence")]
+    [InlineData("k:\n  {a: 1,\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("k:\n  \"abc\n  ---\n", 3, "indented frontmatter fence")]
+    [InlineData("- [a,\n  ---\n", 2, "indented frontmatter fence")]
+    public void Unsupported_feature_is_rejected_with_its_line_and_name(string src, int line, string feature)
+    {
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(src));
+        Assert.Equal(line, ex.Line);
+        Assert.Contains(feature, ex.Message, StringComparison.Ordinal);
+        foreach (var other in FeatureWords.Where(w => w != feature))
+        {
+            Assert.DoesNotContain(other, ex.Message, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// N2: <see cref="YamlValue.Parse"/> knows nothing about a file around its text, so
+    /// its indented-fence message carries no file line. Only
+    /// <see cref="OkfDocument.Parse"/> adds one.
+    /// </summary>
+    [Fact]
+    public void Direct_parse_fence_message_has_no_file_line()
+    {
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse("title: T\n ---\n"));
+        Assert.Equal("YAML error at line 2: indented frontmatter fence: a `---` line must start at column 0 (§4)", ex.Message);
+    }
+
+    /// <summary>The message names the feature; it never echoes the bundle's own text.</summary>
+    [Theory]
+    [InlineData("k: &SentinelName v")]
+    [InlineData("k: *SentinelName")]
+    [InlineData("k: !SentinelName v")]
+    [InlineData("%SentinelName")]
+    [InlineData("... SentinelName")]
+    public void Unsupported_feature_message_does_not_quote_the_input(string src)
+    {
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(src));
+        Assert.DoesNotContain("SentinelName", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Only an indicator at the start of an unquoted node is a construct. Quoted
+    /// scalars, indicators in the middle of a plain scalar, block-scalar content,
+    /// and continuation lines of a multi-line plain scalar (YAML restricts only a
+    /// plain scalar's first character) stay strings.
+    /// </summary>
+    [Theory]
+    [InlineData("k: \"*a\"", "*a")]
+    [InlineData("k: 'a&'", "a&")]
+    [InlineData("k: '&b'", "&b")]
+    [InlineData("k: \"!!str\"", "!!str")]
+    [InlineData("k: '%YAML 1.2'", "%YAML 1.2")]
+    [InlineData("k: \"...\"", "...")]
+    [InlineData("k: a & b", "a & b")]
+    [InlineData("k: x*y", "x*y")]
+    [InlineData("k: wow!", "wow!")]
+    [InlineData("k: |\n  *a\n  &b\n  !c\n", "*a\n&b\n!c\n")]
+    [InlineData("k: |\n  %YAML 1.2\n  ...\n  ---\n", "%YAML 1.2\n...\n---\n")]
+    [InlineData("k: >\n  *a\n  ...\n  %TAG\n", "*a ... %TAG\n")]
+    [InlineData("k: |\n  first\n\n  *after a blank\n", "first\n\n*after a blank\n")]
+    [InlineData("k: first\n  *second\n", "first *second")]
+    [InlineData("k: first\n  &second\n  !third\n", "first &second !third")]
+    [InlineData("k: first\n  %second\n  ...\n  --- x\n", "first %second ... --- x")]
+    [InlineData("k: 50%", "50%")]
+    [InlineData("k: %foo", "%foo")]
+    [InlineData("k: 100% done", "100% done")]
+    [InlineData("k: |\n  ---\n  x\n", "---\nx\n")]
+    [InlineData("k: >\n  a\n  ---\n", "a ---\n")]
+    [InlineData("k: \"a\" # comment", "a")]
+    [InlineData("k: 'a'   ", "a")]
+    [InlineData("k: \"a\"#comment", "a")]
+    [InlineData("k: 'it''s' # c", "it's")]
+    [InlineData("k: \"a \\\" b\" # c", "a \" b")]
+    public void Indicators_outside_node_start_stay_strings(string src, string expected)
+    {
+        var v = YamlValue.Parse(src).AsMapping()!.Get("k")!;
+        Assert.Equal(expected, v.AsString());
+    }
+
+    [Fact]
+    public void Indicators_outside_node_start_stay_strings_in_keys_sequences_and_flow()
+    {
+        var m = YamlValue.Parse("a&b: 1\n\"&a\": 2\n'*b': 3\nseq:\n  - x*y\n  - \"*a\"\n  - first\n    *cont\nflow: [x*y, \"*a\", '&b', wow!]\nmap: {\"*k\": v, a&b: c}\n").AsMapping()!;
+        Assert.Equal(1L, m.Get("a&b")!.AsInt());
+        Assert.Equal(2L, m.Get("&a")!.AsInt());
+        Assert.Equal(3L, m.Get("*b")!.AsInt());
+        Assert.Equal(new[] { "x*y", "*a", "first *cont" }, m.Get("seq")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        Assert.Equal(new[] { "x*y", "*a", "&b", "wow!" }, m.Get("flow")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        var flowMap = m.Get("map")!.AsMapping()!;
+        Assert.Equal("v", flowMap.Get("*k")!.AsString());
+        Assert.Equal("c", flowMap.Get("a&b")!.AsString());
+    }
+
+    /// <summary>
+    /// H3 review M4: a directive is a column-0 line only. A value, sequence item or
+    /// flow item that starts with <c>%</c> is a plain string. This kills the mutant that
+    /// rejects <c>%</c> at the start of a node.
+    /// </summary>
+    [Fact]
+    public void A_node_starting_with_percent_is_a_string_not_a_directive()
+    {
+        var m = YamlValue.Parse("k: %foo\nratio: 50%\nseq:\n  - %x\nseq2:\n- %y\nflow: [%a, 50%]\nmap: {%k: %v}\n").AsMapping()!;
+        Assert.Equal("%foo", m.Get("k")!.AsString());
+        Assert.Equal("50%", m.Get("ratio")!.AsString());
+        Assert.Equal(new[] { "%x" }, m.Get("seq")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        Assert.Equal(new[] { "%y" }, m.Get("seq2")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        Assert.Equal(new[] { "%a", "50%" }, m.Get("flow")!.AsSequence()!.Select(i => i.AsString()).ToArray());
+        Assert.Equal("%v", m.Get("map")!.AsMapping()!.Get("%k")!.AsString());
+    }
+
+    /// <summary>
+    /// H3 review M1: a quoted scalar followed by anything other than whitespace or a
+    /// comment used to have that trailing text silently dropped (<c>k: "a" *b</c> read
+    /// as <c>"a"</c>). It is now rejected, like trailing content after a flow
+    /// collection. Round 2 (N3) pins two more inputs that used to drop text silently:
+    /// <c>k: "a": b</c> (read as <c>{k: "a"}</c>) and a JSON-style <c>"k":v</c> with no
+    /// space after the colon (read as the scalar <c>"k"</c>, where YAML reads
+    /// <c>{k: v}</c>).
+    /// </summary>
+    [Theory]
+    [InlineData("k: \"a\" *b", 1)]
+    [InlineData("k: 'a' b", 1)]
+    [InlineData("k: \"a\"b", 1)]
+    [InlineData("k: 'it''s' x", 1)]
+    [InlineData("- \"a\" b\n", 1)]
+    [InlineData("list:\n- \"a\" b\n", 2)]
+    [InlineData("items:\n  - 'a' b\n", 2)]
+    [InlineData("\"a\" b", 1)]
+    [InlineData("type: T\n\"k\" x: v\n", 2)]
+    [InlineData("k:\n  \"a\" b\n", 2)]
+    [InlineData("k: \"a\": b", 1)]
+    [InlineData("\"k\":v", 1)]
+    [InlineData("- \"k\":v", 1)]
+    public void Content_after_a_quoted_scalar_is_rejected(string src, int line)
+    {
+        var ex = Assert.Throws<YamlParseException>(() => YamlValue.Parse(src));
+        Assert.Equal(line, ex.Line);
+        Assert.EndsWith("unexpected content after quoted scalar", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Documented gap (README "A documented YAML subset", H3 review M1). These pin
+    /// what the docs say, not a desired behaviour. Constructs the subset does not parse
+    /// as YAML structure (compact nested sequences, flow-collection keys, <c>?</c>
+    /// complex keys) are read as plain strings, so an alias inside them is not
+    /// detected. Fixing a gap means updating the README sentence with this test.
+    /// </summary>
+    [Fact]
+    public void Documented_gap_structures_the_subset_does_not_parse_hide_indicators()
+    {
+        Assert.Equal("- *a", YamlValue.Parse("- - *a").AsSequence()![0].AsString());
+        Assert.Equal("- *a", YamlValue.Parse("k: - *a").AsMapping()!.Get("k")!.AsString());
+        Assert.Equal("v", YamlValue.Parse("[*a]: v").AsMapping()!.Get("[*a]")!.AsString());
+        Assert.Equal("? *a", YamlValue.Parse("? *a").AsString());
+        Assert.Equal("b", YamlValue.Parse("k: {? *a : b}").AsMapping()!.Get("k")!.AsMapping()!.Get("? *a")!.AsString());
+    }
+
+    /// <summary>A quoted key or item followed by a colon or a comment is not trailing content.</summary>
+    [Fact]
+    public void Quoted_keys_and_items_with_comments_still_parse()
+    {
+        var m = YamlValue.Parse("\"k\": v\n'q' : w # c\nitems:\n  - \"a\" # c\n  - 'b'\n  - \"c\": 1\n").AsMapping()!;
+        Assert.Equal("v", m.Get("k")!.AsString());
+        Assert.Equal("w", m.Get("q")!.AsString());
+        var items = m.Get("items")!.AsSequence()!;
+        Assert.Equal("a", items[0].AsString());
+        Assert.Equal("b", items[1].AsString());
+        Assert.Equal(1L, items[2].AsMapping()!.Get("c")!.AsInt());
+    }
+
+    /// <summary>
+    /// The emitter's key test: the line <c>key:</c> must split at the key's own
+    /// colon and give back the key itself. An earlier split (<c>a: b</c> splits
+    /// as <c>a</c>) and a trimmed key (<c> a</c>) count as not splitting there,
+    /// even though the line is still a mapping entry.
+    /// </summary>
+    [Theory]
+    [InlineData("abc", true)]
+    [InlineData("a[b]", true)]
+    [InlineData("a\"b\"c", true)]
+    [InlineData("a[b", false)]
+    [InlineData("a{b", false)]
+    [InlineData("a\"b", false)]
+    [InlineData("a'b", false)]
+    [InlineData("a: b", false)]
+    [InlineData(" a", false)]
+    [InlineData("a ", false)]
+    public void SplitsAtKeyEnd_requires_the_split_at_the_keys_own_colon(string key, bool expected)
+    {
+        Assert.Equal(expected, YamlParser.SplitsAtKeyEnd(key));
+    }
 }

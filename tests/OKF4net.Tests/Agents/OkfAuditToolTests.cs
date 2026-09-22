@@ -205,4 +205,23 @@ public class OkfAuditToolTests
 
         Assert.Contains("a  no-stale-after  unverified  stable", text);
     }
+
+    /// <summary>
+    /// <c>type</c> must be trimmed like <c>status</c>/<c>trust</c> already are:
+    /// a model copying a label from prose brings whitespace, and
+    /// <c>AuditQuery</c>'s match is <c>string.Equals(..., Ordinal)</c>, so an
+    /// untrimmed value silently selects nothing.
+    /// </summary>
+    [Fact]
+    public void Audit_trims_the_type_filter()
+    {
+        var tools = new OkfBundleTools(Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "okf_v02"))
+        {
+            UtcNow = () => new DateTime(2026, 8, 21, 0, 0, 0, DateTimeKind.Utc),
+        };
+
+        var text = tools.Audit(type: "Metric ");
+
+        Assert.Contains("metrics/dau", text);
+    }
 }

@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Text;
+using OKF4net.Attestation;
 
 namespace OKF4net.Attestation.Containers;
 
 /// <summary>
 /// A container run failed to produce a usable result (non-zero exit,
-/// malformed JSON, missing prerequisite). The exception message and
-/// <see cref="Stdout"/>/<see cref="Stderr"/> may carry bundle-derived detail
-/// (a query, a stack trace) — safe only for host-side inspection via
-/// <c>AttestationOutcome.Error</c>, never for the model-facing <c>Reasons</c>
-/// list, which the orchestrator populates from this exception's TYPE alone.
+/// malformed JSON, missing prerequisite). The <see cref="Exception.Message"/>
+/// itself — "SQL wrapper exited with code 1", "script stdout was not a JSON
+/// object" — is authored by this library: it never interpolates a captured
+/// stream (the one parser-authored text it may carry is a
+/// <c>JsonException</c>'s message), and may be rendered by the orchestrator into
+/// <c>AttestationOutcome.Reasons</c> (see
+/// <see cref="AttestationDiagnosticException"/>). <see cref="Stdout"/> and
+/// <see cref="Stderr"/> — and therefore <see cref="ToString"/>, which appends
+/// their tails — are host-side only: they reach a host through
+/// <c>AttestationOutcome.Error</c> and never reach the model.
 /// </summary>
-public sealed class ContainerExecutionException : Exception
+public sealed class ContainerExecutionException : AttestationDiagnosticException
 {
     /// <summary>
     /// How much of each captured stream <see cref="ToString"/> keeps. The end is kept, not

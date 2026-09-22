@@ -111,14 +111,39 @@ extensive test suite, including byte-exact golden CLI comparisons.
   collects parse failures in `ParseErrors` and keeps going. Broken
   cross-links are retained as graph edges to non-existent concepts.
 - **Two levels of validation.** `OkfDocument.ValidateConformance()` enforces
-  only what §11 requires (a non-empty `type`). `OkfDocument.Validate()` matches
-  the stricter producer-side check from the reference agent (`type`, `title`,
-  `description`, `timestamp`).
+  only what §11 requires (a non-empty `type`). `OkfDocument.Validate()` is the
+  stricter producer-side check: `type`, `title` and `description`
+  (`Frontmatter.RequiredKeys`). `timestamp` is a legacy §13.1 field since the
+  v0.2 bump and is not required.
 - **A documented YAML subset.** Real OKF frontmatter is scalars, lists, and
   shallow maps. The parser handles block/flow collections, quoted/plain
-  scalars, `|`/`>` block scalars, and comments; it rejects (with a clear error)
-  the YAML features that never appear in frontmatter — anchors, tags, multiple
-  documents.
+  scalars, `|`/`>` block scalars, and comments. It rejects, with a
+  `YamlParseException` giving the line and naming the feature, the YAML features
+  that never appear in frontmatter:
+  - anchors (`&name`), aliases (`*name`) and tags (`!name`, `!!type`) at the
+    start of an unquoted node: a block key or value, a sequence item, a node on
+    its own line, or a flow item or key;
+  - directives, meaning a line starting at column 0 with `%` (`%YAML 1.2`);
+  - document markers, meaning a line starting at column 0 with `---` or `...`
+    followed by the end of the line, a space or a tab (`...`, `--- x`, `... # end`);
+  - an indented `---` line (spaces or tabs, then `---`, then optional spaces or
+    tabs) anywhere except inside `|`/`>` block-scalar content, reported as a
+    mistyped frontmatter fence. Through `OkfDocument.Parse`, that message also
+    gives the file line;
+  - text after a closing quote other than a `#` comment (`k: "a" b`).
+
+  A quoted scalar (`"*a"`), an indicator later in a plain scalar (`a & b`,
+  `50%`), a value starting with `%` (`k: %foo`), block-scalar content and a plain
+  scalar's continuation lines stay text. Constructs the subset does not parse
+  as YAML structure are read as plain strings, so an indicator inside them is not
+  detected: compact nested sequences (`- - *a`, `k: - *a`), flow-collection keys
+  (`[*a]: v`) and `?` complex keys (`? *a`, `{? *a : b}`).
+
+  The frontmatter fences themselves are `---` at column 0, optionally followed
+  by spaces or tabs (§4). An indented `---` is not a fence. On line 1 it means
+  the file has no frontmatter, which `okf validate` flags with a warning next to
+  the missing-`type` error. Inside the frontmatter it is the parse error above,
+  except as block-scalar content.
 
 ## Usage
 
@@ -239,6 +264,12 @@ verdict should pin the date rather than let the calendar move under it. Note the
 always cover the whole bundle while `findings` covers the selection: `audit` is
 a worklist, not an inventory (use `okf info --json` for that).
 
+Both commands' `--json` document carries `asOf` (the evaluation date) and
+`evaluatedAt` (the exact instant, `yyyy-MM-ddTHH:mm:ssZ`) right beside it —
+`asOf` is `evaluatedAt`'s date only, both coming from a single clock read per run, so
+an archived report can be told apart from an unpinned run down to the second,
+not just the day.
+
 `okf verify <bundle> <id>… --by <actor>` records a review (§5.2): it adds — or,
 for a repeat review from the same actor, replaces — a `{ by, at }` entry in
 each named concept's `verified` list. It is the verb that answers what
@@ -282,18 +313,20 @@ numeric offset, or fractional seconds are all rejected, not silently rounded.
 > bundle, correcting a concept) has to be able to touch `verified` too.
 > Credibility comes from *where the stamp lands*: in a diff a human reviewed,
 > under branch protection, where the reviewer sees the assertion and can
-> reject it. That argument only works if the diff is legible: like every
-> write path in this library, `verify` re-serializes the whole document in
-> canonical form (the same shape `okf fmt` produces) — a flow-style mapping
-> or an inline list expands to one entry per line, so a three-line stamp can
-> land as a much larger diff with the new `verified` entry buried inside a
-> reformat. The body is normalized too, to LF line endings, so on a bundle
-> checked out with CRLF the reformat is *the entire file* and the assertion a
-> reviewer is supposed to see is one changed line in a wall of them. Run
-> `okf fmt -w` on the bundle first, as its own reviewed commit, if you want a
-> review's diff to be the stamp and nothing else — it produces the same
-> canonical shape, so a `verify` run after it differs only by the stamp
-> lines. **Never infer
+> reject it. That argument only works if the diff is legible, which is why
+> `verify` is deliberately **not** like every other write path in this
+> library: instead of re-serializing the whole document, it edits the
+> `verified:` block **in place** in the raw text (`FrontmatterBlockEdit`) and
+> leaves every other byte untouched — CRLF line endings, YAML comments, and
+> flow-style/folded scalar spellings elsewhere (`tags: [a, b]`, `generated: {
+> by: …, at: … }`, `description: >`) survive exactly as the bundle had them.
+> The one exception is a column-0 comment sitting *inside* the `verified:`
+> block itself (between the `verified:` line and the next top-level key): it
+> is replaced along with the block it comments on, since there is no way to
+> know which of the stamp's lines it was meant to annotate. A reviewer's diff
+> for a `verify` run is therefore just the changed `verified:` lines, with no
+> `okf fmt -w` step needed first to keep the reformat from swallowing it.
+> **Never infer
 > a stamp from a PR approval** — that turns "a human
 > approved this diff" into "a human vouches for this knowledge," which are
 > different every time a PR touches a file for a reason other than reviewing

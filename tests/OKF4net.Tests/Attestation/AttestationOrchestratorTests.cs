@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using OKF4net;
@@ -164,6 +166,276 @@ public class AttestationOrchestratorTests
             async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
     }
 
+    /// <summary>
+    /// The token was checked only BEFORE each stage, so a stage that ignores
+    /// its token and is already running when cancellation arrives ran to
+    /// completion, and its result was used: a run cancelled at 30 ms waited
+    /// out the whole attester and came back with an outcome instead of a
+    /// cancellation. The orchestrator stops awaiting such a stage the moment
+    /// the token fires (§10.5).
+    ///
+    /// Two shapes: <c>async</c> awaits without the token; <c>blocking</c> blocks
+    /// its calling thread before it returns its <see cref="ValueTask{TResult}"/>
+    /// at all (a synchronous client wrapped in <c>ValueTask.FromResult</c>), so
+    /// awaiting the returned value alone could never abandon it.
+    ///
+    /// The stage would take 30 s; the bound is 5 s. The discriminator is
+    /// "returned long before the stage would have finished", deliberately far
+    /// above scheduling noise on a loaded machine — a 350 ms stage under a
+    /// 200 ms bound flaked with three test suites running concurrently. Nothing
+    /// awaits the abandoned stage.
+    /// </summary>
+    [Theory]
+    [InlineData("async")]
+    [InlineData("blocking")]
+    public async Task A_token_ignoring_stage_is_abandoned_when_the_token_fires(string shape)
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+
+        // Not disposed: the abandoned stage may still be waiting on it when the
+        // test ends, and Set() in finally is what releases it.
+        var gate = new ManualResetEventSlim(false);
+        if (shape == "async")
+        {
+            runtime.AttestFunc = async (_, _) =>
+            {
+                // Ignores its token, like a client with no cancellation support.
+                await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None);
+                return new AttestationVerdict(true, null);
+            };
+        }
+        else
+        {
+            runtime.AttestFunc = (_, _) =>
+            {
+                // Blocks its calling thread before returning anything.
+                gate.Wait(TimeSpan.FromSeconds(30));
+                return ValueTask.FromResult(new AttestationVerdict(true, null));
+            };
+        }
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));
+
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+            stopwatch.Stop();
+
+            Assert.True(stopwatch.ElapsedMilliseconds < 5_000, $"RunAsync returned after {stopwatch.ElapsedMilliseconds} ms; the token fired at 30 ms and the {shape} stage would have finished at 30 s");
+        }
+        finally
+        {
+            gate.Set();
+        }
+    }
+
+    /// <summary>
+    /// Moving each stage onto the thread pool (so a thread-blocking stage can
+    /// be abandoned) must not change how a stage that throws SYNCHRONOUSLY —
+    /// before returning any <see cref="ValueTask{TResult}"/> — is reported: a
+    /// non-cancellation exception is still a failure reason on a
+    /// non-displayable outcome, and an HttpClient-style
+    /// <see cref="TaskCanceledException"/> with the caller's token NOT
+    /// cancelled is still a stage failure, not a cancellation. The token here
+    /// is cancellable, so the stage really does take the pool hop (a
+    /// non-cancellable token is invoked directly and never reaches it).
+    /// </summary>
+    [Theory]
+    [InlineData("invalid-operation")]
+    [InlineData("task-canceled")]
+    public async Task A_synchronously_throwing_stage_under_a_cancellable_token_is_still_a_failure_reason(string kind)
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = (_, _, _) => throw (kind == "invalid-operation"
+            ? new InvalidOperationException("secret detail")
+            : new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing."));
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        var outcome = await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token);
+
+        Assert.False(outcome.Displayable);
+        var expectedType = kind == "invalid-operation" ? nameof(InvalidOperationException) : nameof(TaskCanceledException);
+        Assert.Equal([$"executor threw: {expectedType}"], outcome.Reasons);
+        Assert.Equal(expectedType, outcome.Error!.GetType().Name);
+    }
+
+    /// <summary>
+    /// A stage that cancels the caller's token and then returns SUCCESS — the
+    /// token is cancelled, yet the stage's result was used. For the attester,
+    /// the last stage, nothing checked the token afterwards, so the run came
+    /// back cancelled AND displayable. A stage completing after cancellation
+    /// never contributes a result (§10.5).
+    ///
+    /// These rows pin the observable rule end to end; they do NOT pin the
+    /// token check that follows a successful stage in
+    /// <c>AttestationOrchestrator.AwaitStageAsync</c>. Stages now run on the
+    /// thread pool, so when a stage cancels the token, <c>WaitAsync</c> almost
+    /// always throws first, and the post-stage check is reached only in the
+    /// rare interleaving where the stage finishes before <c>WaitAsync</c> is
+    /// called — deleting that check leaves these rows green.
+    /// <see cref="The_post_stage_check_rejects_a_stage_that_completed_before_the_token_was_seen"/>
+    /// is what pins it, deterministically.
+    /// <list type="bullet">
+    /// <item><c>attester</c> and <c>executor</c> fail if the orchestrator stops
+    /// enforcing the token after a stage has started (both <c>WaitAsync</c> and
+    /// the post-stage check removed). The executor's receipt omits the declared
+    /// <c>result</c> field, so attestation is skipped and no later stage-entry
+    /// check can stand in for that enforcement.</item>
+    /// <item><c>binder</c> guards nothing beyond that rule: a successful bind is
+    /// always followed by the executor's entry check, which throws first.</item>
+    /// </list>
+    /// </summary>
+    [Theory]
+    [InlineData("binder")]
+    [InlineData("executor")]
+    [InlineData("attester")]
+    public async Task A_stage_that_cancels_the_token_and_succeeds_never_yields_an_outcome(string stage)
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        using var cts = new CancellationTokenSource();
+
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        switch (stage)
+        {
+            case "binder":
+                runtime.BindFunc = (contract, computation, values, _) =>
+                {
+                    cts.Cancel();
+                    return ValueTask.FromResult(new BoundComputation(contract.Runtime ?? "fake", computation.InlineCode, null, values));
+                };
+                break;
+            case "executor":
+                runtime.ExecuteFunc = (_, _, _) =>
+                {
+                    cts.Cancel();
+                    // 'result' deliberately missing: see the summary.
+                    return ValueTask.FromResult(new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+                };
+                break;
+            default:
+                runtime.AttestFunc = (_, _) =>
+                {
+                    cts.Cancel();
+                    return ValueTask.FromResult(new AttestationVerdict(true, null));
+                };
+                break;
+        }
+
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+    }
+
+    /// <summary>
+    /// The token check AFTER a stage succeeds, pinned deterministically. A
+    /// stage that cancels the token and returns success can finish on the
+    /// thread pool before the orchestrator reaches <c>WaitAsync</c>, and
+    /// <c>WaitAsync</c> hands back an already-completed task's result even when
+    /// the token is already cancelled (it tests completion first). Without the
+    /// post-stage check, that interleaving returned the result — for the
+    /// attester, a displayable outcome after the attester itself had cancelled
+    /// the run (§10.5). From <see cref="AttestationOrchestrator.RunAsync"/> only
+    /// a race reaches it, so this drives <c>AwaitStageAsync</c> directly with
+    /// exactly that state: a completed stage and a cancelled token.
+    /// </summary>
+    [Fact]
+    public async Task The_post_stage_check_rejects_a_stage_that_completed_before_the_token_was_seen()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await AttestationOrchestrator.AwaitStageAsync(Task.FromResult(42), cts.Token));
+
+        Assert.Equal(cts.Token, ex.CancellationToken);
+    }
+
+    /// <summary>
+    /// The counterpart: a completed stage under a token that has not fired
+    /// returns its result, so the check above rejects only cancellation.
+    /// </summary>
+    [Fact]
+    public async Task A_completed_stage_under_an_unfired_token_returns_its_result()
+    {
+        using var cts = new CancellationTokenSource();
+
+        var result = await AttestationOrchestrator.AwaitStageAsync(Task.FromResult(42), cts.Token);
+
+        Assert.Equal(42, result);
+    }
+
+    /// <summary>
+    /// Abandoning a stage must not leave its eventual fault unobserved: a
+    /// stage that throws after the orchestrator stopped waiting for it would
+    /// otherwise surface later as a <see cref="TaskScheduler.UnobservedTaskException"/>,
+    /// on a finalizer thread, far from the run that caused it.
+    ///
+    /// Filtered on a marker unique to this test, so another test's unobserved
+    /// exception under xunit's parallel execution cannot make this one fail.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_stage_that_later_throws_is_observed()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);
+        var marker = $"abandoned-stage-{Guid.NewGuid():N}";
+
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = async (_, _, _) =>
+        {
+            await Task.Delay(100, CancellationToken.None);
+            throw new InvalidOperationException(marker);
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+
+        var unobserved = false;
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            if (e.Exception.Flatten().InnerExceptions.Any(inner => inner.Message == marker))
+            {
+                unobserved = true;
+            }
+        }
+
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            using (var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(20)))
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    async () => await orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token));
+            }
+
+            // Let the abandoned stage fault, then force its task's finalizer.
+            for (var i = 0; i < 5 && !unobserved; i++)
+            {
+                await Task.Delay(100);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
+        }
+
+        Assert.False(unobserved, "the abandoned stage's exception surfaced as an unobserved task exception");
+    }
+
     [Fact]
     public async Task Receipt_missing_declared_field_is_not_displayable()
     {
@@ -259,6 +531,179 @@ public class AttestationOrchestratorTests
         Assert.False(outcome.Displayable);
         Assert.True(outcome.Verdict!.Value.Passed); // attested fine; only the staleness gate blocks display
         Assert.Contains(outcome.Reasons, r => r.Contains("stale"));
+    }
+
+    /// <summary>
+    /// A test-only mutable clock. <see cref="FixedClock"/> is immutable by design (see its
+    /// own doc comment), so pinning G2's release-time staleness read needs a clock a test
+    /// can advance mid-run, e.g. from inside a stage delegate. <see cref="Now"/> is guarded by
+    /// a lock rather than a plain auto-property: <see cref="Staleness_crossed_on_the_pool_hopped_stage_is_still_caught_at_release"/>
+    /// below mutates it from a stage running on G1's <c>Task.Run</c> hop while <see cref="AttestationOrchestrator.RunAsync"/>
+    /// later reads it back from a different thread, and the lock rules out a torn or stale
+    /// read of this struct across that hop rather than relying on reasoning about
+    /// <see cref="Task"/> happens-before semantics.
+    /// </summary>
+    private sealed class SteppingClock : IOkfClock
+    {
+        private readonly object _gate = new();
+        private DateTimeOffset _now;
+
+        public SteppingClock(DateTimeOffset now) => _now = now;
+
+        public DateTimeOffset Now
+        {
+            get { lock (_gate) { return _now; } }
+            set { lock (_gate) { _now = value; } }
+        }
+    }
+
+    /// <summary>
+    /// G2 regression (§5.5): <c>RunAsync</c> used to read <c>_clock.Now</c> once before
+    /// binding and reuse that instant after every stage, so a run started one second
+    /// before <c>stale_after</c> whose stages crossed it was still released <c>Fresh</c>
+    /// and displayable. The fix re-reads the clock immediately before the gate (step 9),
+    /// so staging time that crosses <c>stale_after</c> is caught at release. The attester
+    /// — the last stage before the gate — advances the clock in place of a slow stage.
+    /// </summary>
+    [Fact]
+    public async Task Staleness_crossed_during_a_stage_is_caught_at_release_not_at_run_start()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var runtime = FakeRuntime.Passing();
+        runtime.AttestFunc = (_, _) =>
+        {
+            clock.Now = staleAfter + TimeSpan.FromSeconds(1);
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>(), policy: StalePolicy.Strict);
+
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+        Assert.False(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="Staleness_crossed_during_a_stage_is_caught_at_release_not_at_run_start"/>
+    /// that actually exercises G1's <c>Task.Run</c> hop instead of asserting cross-thread
+    /// visibility is safe by reasoning about <see cref="Task"/> semantics alone. That test (and
+    /// the other two G2 staleness tests) call <c>RunAsync</c> with the default
+    /// <c>CancellationToken.None</c>, for which <c>RunStageAsync</c>'s
+    /// <c>cancellationToken.CanBeCanceled</c> is <see langword="false"/> and every stage --
+    /// including the one that mutates the clock -- runs synchronously in-line on the calling
+    /// thread, never via <c>Task.Run</c>. Here the token comes from a live, never-cancelled
+    /// <see cref="CancellationTokenSource"/>, so <c>CanBeCanceled</c> is <see langword="true"/>
+    /// and the attester genuinely hops onto the thread pool before mutating the clock; the
+    /// assertion on <c>hopped</c> (a different managed thread id than the caller's) makes the
+    /// test fail loudly rather than silently stay on the fast path if that hop stops happening.
+    /// </summary>
+    [Fact]
+    public async Task Staleness_crossed_on_the_pool_hopped_stage_is_still_caught_at_release()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var runtime = FakeRuntime.Passing();
+        var callerThreadId = Environment.CurrentManagedThreadId;
+        var hopped = false;
+        runtime.AttestFunc = (_, _) =>
+        {
+            hopped = Environment.CurrentManagedThreadId != callerThreadId;
+            clock.Now = staleAfter + TimeSpan.FromSeconds(1);
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+        // Live and cancelable, but never cancelled: forces RunStageAsync's
+        // cancellationToken.CanBeCanceled to true so every stage takes the Task.Run hop,
+        // without the run itself ever being cancelled.
+        using var cts = new CancellationTokenSource();
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>(),
+            policy: StalePolicy.Strict, cancellationToken: cts.Token);
+
+        Assert.True(hopped, "the attester stage ran on the caller's own thread -- this test would pass even if a regression broke cross-thread visibility of the release-time clock read");
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+        Assert.False(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// Counterpart to <see cref="Staleness_crossed_during_a_stage_is_caught_at_release_not_at_run_start"/>:
+    /// a clock left before <c>stale_after</c> at release time still reports <c>Fresh</c> and
+    /// displayable, so the re-read is not itself a source of false staleness.
+    /// </summary>
+    [Fact]
+    public async Task Staleness_not_crossed_by_release_time_remains_fresh_and_displayable()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = FakeRuntime.Passing() });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>(), policy: StalePolicy.Strict);
+
+        Assert.Equal(StaleState.Fresh, outcome.Stale);
+        Assert.True(outcome.Displayable);
+    }
+
+    /// <summary>
+    /// The fix touches every <c>Fail(..., stale, ...)</c> site after a stage, not only the
+    /// success path: a stage that crosses <c>stale_after</c> and then fails must still
+    /// report <see cref="StaleState.Stale"/> on the resulting non-displayable outcome,
+    /// evaluated at the point that failure outcome is built rather than at run start.
+    /// </summary>
+    [Fact]
+    public async Task A_stage_failure_after_the_clock_crossed_stale_after_reports_stale()
+    {
+        using var tmp = new TempDir();
+        var staleAfter = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        tmp.Write("c/rev.md",
+            $"---\ntype: Attested Computation\nruntime: bigquery\nstale_after: {staleAfter:yyyy-MM-ddTHH:mm:ssZ}\n---\n# Computation\n\n```\nX\n```\n");
+        var clock = new SteppingClock(staleAfter - TimeSpan.FromSeconds(1));
+        var runtime = new FakeRuntime();
+        runtime.ExecuteFunc = (_, _, _) =>
+        {
+            clock.Now = staleAfter + TimeSpan.FromSeconds(1);
+            throw new InvalidOperationException("boom");
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: clock);
+
+        var outcome = await orch.RunAsync(Bundle.Load(tmp.Path), ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
+
+        Assert.False(outcome.Displayable);
+        Assert.Equal(StaleState.Stale, outcome.Stale);
+    }
+
+    [Fact]
+    public async Task A_diagnostic_exception_reports_its_message_a_foreign_one_only_its_type()
+    {
+        using var tmp = new TempDir();
+        var (bundle, id) = InlineComputation(tmp);   // the class's existing fixture helper (runtime "bigquery", parameter `year`)
+        var diagnostic = FakeRuntime.Passing();
+        diagnostic.ExecuteFunc = (_, _, _) => throw new AttestationDiagnosticException("receipt was not a JSON object");
+        var foreign = FakeRuntime.Passing();
+        foreign.ExecuteFunc = (_, _, _) => throw new InvalidOperationException("Host=db;Password=hunter2");
+
+        static AttestationOrchestrator Orch(FakeRuntime r) =>
+            new(new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = r }), clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var values = new Dictionary<string, object?> { ["year"] = 2026 };
+        var a = await Orch(diagnostic).RunAsync(bundle, id, values);
+        var b = await Orch(foreign).RunAsync(bundle, id, values);
+
+        Assert.Contains("executor threw: AttestationDiagnosticException: receipt was not a JSON object", a.Reasons);
+        Assert.Contains("executor threw: InvalidOperationException", b.Reasons);
+        Assert.DoesNotContain(b.Reasons, r => r.Contains("hunter2", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -597,5 +1042,79 @@ public class AttestationOrchestratorTests
 
         Assert.True(outcome.Displayable);
         Assert.Null(captured!.AttesterSourceText);
+    }
+
+    /// <summary>
+    /// H1 fix round, decision (a): the orchestrator's computation-file read re-checks the
+    /// resolved path strictly. The bundle is loaded BEFORE "x/y" becomes a junction to an
+    /// external directory whose attributes cannot be read (a fresh load could not list "x"
+    /// once it denies listing), exactly as a host holding a loaded <see cref="Bundle"/> would.
+    /// <see cref="Bundle.TryResolveResource"/> keeps the lenient predicate and answers
+    /// Resolved; the read must refuse through the orchestrator's existing "could not be read"
+    /// path, before the executor ever sees the text. On 7ee7287 it bound the outside file.
+    /// </summary>
+    [SkippableFact]
+    public async Task Computation_file_reached_through_an_uninspectable_junction_is_refused_before_binding()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: x/y/secret.sql\n" +
+            "executor: { resource: references/run.md, receipt: [job_id] }\n---\n");
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmp.Path, "x"));
+        var bundle = Bundle.Load(tmp.Path);
+        using var external = new TempDir();
+        external.Write("secret.sql", "SELECT 'OUTSIDE-THE-BUNDLE';\n");
+        using var junction = tmp.TryCreateUninspectableJunction(System.IO.Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        string? capturedText = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1" }));
+        runtime.BindFunc = (contract, computation, values, ct) =>
+        {
+            capturedText = computation.InlineCode;
+            return ValueTask.FromResult(new BoundComputation(contract.Runtime ?? "bigquery", computation.InlineCode, null, values));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var outcome = await new AttestationOrchestrator(reg).RunAsync(bundle, ConceptId.Parse("c/rev"), new Dictionary<string, object?>());
+
+        Assert.False(outcome.Displayable);
+        Assert.Null(capturedText);
+        Assert.Contains(outcome.Reasons, r => r.Contains("computation file 'x/y/secret.sql' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// H1 fix round, decision (a): the same strict re-check on the attester source read.
+    /// The attester must never be called with a script read from outside the bundle.
+    /// </summary>
+    [SkippableFact]
+    public async Task Attester_source_reached_through_an_uninspectable_junction_is_refused_without_calling_the_attester()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md",
+            "---\ntype: Attested Computation\nruntime: bigquery\n" +
+            "parameters:\n  - { name: year, type: integer, required: true }\n" +
+            "executor: { receipt: [job_id, result] }\n" +
+            "attester: { resource: x/y/att.py }\n---\n# Computation\n\n```sql\nSELECT @year\n```\n");
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmp.Path, "x"));
+        var bundle = Bundle.Load(tmp.Path);
+        using var external = new TempDir();
+        external.Write("att.py", "def attest(**_):\n    return {}  # OUTSIDE-THE-BUNDLE\n");
+        using var junction = tmp.TryCreateUninspectableJunction(System.IO.Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        AttestationContext? captured = null;
+        var runtime = FakeRuntime.Passing(receipt: new Receipt(new Dictionary<string, object?> { ["job_id"] = "j1", ["result"] = 42 }));
+        runtime.AttestFunc = (ctx, _) =>
+        {
+            captured = ctx;
+            return ValueTask.FromResult(new AttestationVerdict(true, null));
+        };
+        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
+        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
+        var outcome = await orch.RunAsync(bundle, ConceptId.Parse("c/rev"), new Dictionary<string, object?> { ["year"] = 2026 });
+
+        Assert.False(outcome.Displayable);
+        Assert.Null(captured);
+        Assert.Contains(outcome.Reasons, r => r.Contains("attester resource 'x/y/att.py' could not be read: UnauthorizedAccessException", StringComparison.Ordinal));
     }
 }

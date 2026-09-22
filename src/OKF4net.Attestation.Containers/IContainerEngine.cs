@@ -44,7 +44,7 @@ public sealed record ContainerRunSpec(
     /// filesystem is mounted read-only, so a sanctioned script cannot write anywhere
     /// the image would otherwise allow. <see langword="false"/> by default, so a spec
     /// built by hand behaves exactly as it did before this existed; the safe default
-    /// lives on <see cref="ContainerRuntimeProfile"/> instead.
+    /// lives on <see cref="ContainerIsolation"/> instead.
     /// </summary>
     public bool ReadOnlyRootFilesystem { get; init; }
 
@@ -55,11 +55,33 @@ public sealed record ContainerRunSpec(
     /// scratch some stages genuinely need — the attester bootstrap writes its module
     /// to a temp file before importing it, and the SQL wrapper installs its driver —
     /// bounded to paths the host names rather than the whole image. The engine only
-    /// mounts them; it is the stages built from a profile that point <c>TMPDIR</c> at
-    /// the first one, so a spec built by hand that wants the same must set it in
+    /// mounts them; it is <see cref="ContainerIsolation"/>, which every stage builds its
+    /// spec from, that points <c>TMPDIR</c> at the first one, so a spec built by hand
+    /// that wants the same must set it in
     /// <see cref="Environment"/> itself.
     /// </summary>
     public IReadOnlyList<string> TmpfsMounts { get; init; } = [];
+
+    /// <summary>
+    /// Passed as <c>--user</c> when non-null; <see langword="null"/> (the default)
+    /// leaves the image's own default user in place, exactly as a hand-built spec
+    /// behaved before this existed. The safe non-root default lives on
+    /// <see cref="ContainerIsolation"/>, not here.
+    /// </summary>
+    public string? User { get; init; }
+
+    /// <summary>
+    /// Passed as <c>--cap-drop ALL</c> when <see langword="true"/>. <see langword="false"/>
+    /// by default, like <see cref="ReadOnlyRootFilesystem"/>: a spec built by hand keeps
+    /// the engine's default capability set unless it opts in.
+    /// </summary>
+    public bool DropAllCapabilities { get; init; }
+
+    /// <summary>
+    /// Passed as <c>--security-opt no-new-privileges</c> when <see langword="true"/>.
+    /// <see langword="false"/> by default (see <see cref="DropAllCapabilities"/>).
+    /// </summary>
+    public bool NoNewPrivileges { get; init; }
 }
 
 /// <summary>One container run's outcome: exit code plus captured (size-bounded) stdout/stderr.</summary>

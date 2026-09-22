@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.Reflection;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OKF4net.Agents;
@@ -331,6 +332,27 @@ public class OkfContextProviderTests
         Assert.True(
             TokenEstimate.Chars(text) <= tokenBudget,
             $"assembled message estimated at {TokenEstimate.Chars(text)} tokens ({text.Length} chars) exceeds the {tokenBudget}-token budget once framing is charged");
+    }
+
+    /// <summary>
+    /// Regression test for the budget-truncation site: it used to split on a
+    /// bare <c>'\n'</c>, so a CRLF-bodied concept truncated to a small budget
+    /// kept a trailing <c>'\r'</c> on the last line. <see cref="OkfContextProvider.TruncateWholeLines"/>
+    /// is <c>private static</c>, so this reaches it directly via reflection
+    /// rather than through a full bundle/provider round-trip (see the reflection
+    /// use in <c>OkfBundleToolsTests</c> for the same pattern in this suite).
+    /// </summary>
+    [Fact]
+    public void TruncateWholeLines_strips_CR_from_a_CRLF_body_kept_line()
+    {
+        var method = typeof(OkfContextProvider).GetMethod("TruncateWholeLines", BindingFlags.NonPublic | BindingFlags.Static)!;
+        const string content = "line one\r\nline two\r\nline three";
+
+        var (kept, truncated, linesKept) = ((string Kept, bool Truncated, int LinesKept))method.Invoke(null, [content, 3])!;
+
+        Assert.True(truncated);
+        Assert.Equal(1, linesKept);
+        Assert.DoesNotContain('\r', kept);
     }
 
     [Theory]

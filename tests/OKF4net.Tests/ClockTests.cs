@@ -44,18 +44,32 @@ public class ClockTests
         Assert.Equal(new DateOnly(2026, 6, 30), clock.Today);
     }
 
+    /// <summary>
+    /// Guards against re-removing <see cref="FixedClock.Today"/>: a default
+    /// interface member is not promoted onto the implementing class's own
+    /// member list, so a concretely-typed local (as any external consumer of
+    /// this public API would hold) can only call <c>.Today</c> if
+    /// <see cref="FixedClock"/> declares it explicitly, not by relying on
+    /// <see cref="IOkfClock"/>'s default. Removing the explicit property
+    /// again would fail this test with a compile error, not just a
+    /// consumer's build.
+    /// </summary>
     [Fact]
-    public void A_clock_implementing_only_Today_still_satisfies_the_interface()
+    public void FixedClock_Today_is_reachable_on_the_concrete_type_without_an_interface_reference()
     {
-        // Guards the default interface member: an external implementer written
-        // against the pre-fix interface must keep compiling and working.
-        IOkfClock clock = new TodayOnlyClock(new DateOnly(2026, 7, 1));
-
-        Assert.Equal(new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero), clock.Now);
+        FixedClock clock = new(new DateTimeOffset(2026, 7, 1, 14, 30, 0, TimeSpan.Zero));
+        Assert.Equal(new DateOnly(2026, 7, 1), clock.Today);
     }
 
-    private sealed class TodayOnlyClock(DateOnly today) : IOkfClock
+    [Fact]
+    public void Today_is_derived_from_Now()
     {
-        public DateOnly Today { get; } = today;
+        IOkfClock clock = new NowOnlyClock(new DateTimeOffset(2026, 7, 1, 23, 30, 0, TimeSpan.Zero));
+        Assert.Equal(new DateOnly(2026, 7, 1), clock.Today);
+    }
+
+    private sealed class NowOnlyClock(DateTimeOffset now) : IOkfClock
+    {
+        public DateTimeOffset Now { get; } = now;
     }
 }

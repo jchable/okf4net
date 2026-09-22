@@ -17,11 +17,100 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
 {
     private const string FrontmatterDelim = "---";
 
+    /// <summary>
+    /// Whether <paramref name="line"/> is a frontmatter fence: it starts at
+    /// column 0 with <c>---</c>, and every character after those three is a
+    /// space or a tab (§4: "delimited by <c>---</c> on its own line"). Trailing
+    /// spaces and tabs are tolerated like Jekyll's <c>^---\s*$</c>, though more
+    /// narrowly: Ruby's <c>\s</c> also matches <c>\r</c>, <c>\f</c> and <c>\v</c>.
+    /// <paramref name="line"/> is a line as <see cref="LfLines"/> splits it, so
+    /// the <c>\r</c> of a CRLF terminator is already gone; a lone <c>\r</c>, or
+    /// any other whitespace such as NO-BREAK SPACE, makes the line not a fence.
+    ///
+    /// An INDENTED <c>---</c> is not a fence. It is ordinary frontmatter text:
+    /// the content of a block scalar (<c>description: |</c> whose body holds a
+    /// <c>---</c> line), a plain scalar's continuation, or invalid YAML. The
+    /// predicate used to compare the <c>Trim()</c>med line, which accepted such a
+    /// line as the closing fence and silently cut the frontmatter there. A
+    /// leading U+FEFF (byte-order mark) was not trimmed then and is not accepted
+    /// now: <see cref="Parse"/> reads a BOM-prefixed file as having no frontmatter.
+    ///
+    /// The single shared predicate <see cref="Parse"/> and
+    /// <see cref="OKF4net.Internal.FrontmatterBlockEdit"/> both call, so the two
+    /// cannot disagree about where the frontmatter/body boundary sits (finding
+    /// #C7-2: they used to, which silently moved body content into the edited
+    /// frontmatter).
+    /// </summary>
+    internal static bool IsFenceLine(string line)
+    {
+        if (!line.StartsWith(FrontmatterDelim, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        for (var i = FrontmatterDelim.Length; i < line.Length; i++)
+        {
+            if (line[i] is not (' ' or '\t'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>The YAML frontmatter block (empty if the file had none).</summary>
     public Frontmatter Frontmatter { get; }
 
     /// <summary>Everything after the frontmatter.</summary>
     public string Body { get; }
+
+    /// <summary>
+    /// Whether <see cref="Parse"/> found a fenced frontmatter block, even an empty
+    /// one. <see langword="false"/> for a document parsed without one (then
+    /// <see cref="Body"/> is the whole text) and for any document built by the
+    /// constructor. Not part of <see cref="Equals(OkfDocument?)"/>.
+    /// </summary>
+    internal bool HasFrontmatterBlock { get; private init; }
+
+    /// <summary>
+    /// For a document <see cref="Parse"/> read as having no frontmatter block, why
+    /// its first line looks like a fence but is not one: it would be a fence (see
+    /// <see cref="IsFenceLine"/>) once a leading U+FEFF and leading spaces or tabs
+    /// are removed. Returns <c>"is not at column 0"</c>,
+    /// <c>"starts with a byte-order mark"</c>, both joined with <c>and</c>, or
+    /// <see langword="null"/> when the first line is not such a line or the document
+    /// has a frontmatter block. Backs the §4 hint
+    /// <see cref="DiagnosticCode.FrontmatterFenceNotAtColumn0"/>.
+    /// </summary>
+    internal string? DisplacedFirstLineFenceCause()
+    {
+        if (HasFrontmatterBlock)
+        {
+            return null;
+        }
+
+        var newline = Body.IndexOf('\n');
+        var line = newline < 0 ? Body : Body[..(newline > 0 && Body[newline - 1] == '\r' ? newline - 1 : newline)];
+        var bom = line.StartsWith('\uFEFF');
+        if (bom)
+        {
+            line = line[1..];
+        }
+
+        var indented = line.Length > 0 && line[0] is ' ' or '\t';
+        if (!(bom || indented) || !IsFenceLine(line.TrimStart(' ', '\t')))
+        {
+            return null;
+        }
+
+        return (bom, indented) switch
+        {
+            (true, true) => "starts with a byte-order mark and is not at column 0",
+            (true, false) => "starts with a byte-order mark",
+            _ => "is not at column 0",
+        };
+    }
 
     /// <summary>Creates a document from frontmatter and a body.</summary>
     public OkfDocument(Frontmatter frontmatter, string body)
@@ -35,16 +124,20 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
     ///
     /// If the file does not begin with a <c>---</c> frontmatter delimiter,
     /// the entire text is treated as the body and the frontmatter is empty.
-    /// An opened-but-unclosed frontmatter block is an error.
+    /// An opened-but-unclosed frontmatter block is an error. Both delimiters
+    /// must be <c>---</c> at column 0, followed by nothing but spaces or tabs
+    /// (§4); an indented <c>---</c> neither opens nor closes the frontmatter.
     /// </summary>
     /// <exception cref="DocumentParseException">
     /// The frontmatter block is unterminated, is not a YAML mapping, or
-    /// contains invalid YAML.
+    /// contains invalid YAML, including a YAML feature outside the supported
+    /// subset (anchors, aliases, tags, directives, document markers, an indented
+    /// <c>---</c> line outside block-scalar content, text after a closing quote).
     /// </exception>
     public static OkfDocument Parse(string text)
     {
         var lines = LfLines.Split(text);
-        if (lines.Count == 0 || lines[0].Trim() != FrontmatterDelim)
+        if (lines.Count == 0 || !IsFenceLine(lines[0]))
         {
             return new OkfDocument(new Frontmatter(), text);
         }
@@ -52,7 +145,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
         var endIdx = -1;
         for (var i = 1; i < lines.Count; i++)
         {
-            if (lines[i].Trim() == FrontmatterDelim)
+            if (IsFenceLine(lines[i]))
             {
                 endIdx = i;
                 break;
@@ -72,7 +165,13 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
         }
         catch (YamlParseException e)
         {
-            throw new DocumentParseException($"Invalid YAML in frontmatter: {e.Message}");
+            // YAML error lines count from the first frontmatter line: a golden-locked
+            // format (tests/fixtures/golden/validate-reserved.out), kept byte for byte.
+            // The indented-fence error alone also names the file line. Its purpose is to
+            // point at a mistyped line, and "line N" lands one line above it in the
+            // file. The frontmatter text starts at file line 2, so the file line is N + 1.
+            var fileLine = e.IsIndentedFence ? $" (file line {e.Line + 1})" : string.Empty;
+            throw new DocumentParseException($"Invalid YAML in frontmatter: {e.Message}{fileLine}");
         }
 
         var frontmatter = value switch
@@ -88,7 +187,7 @@ public sealed class OkfDocument : IEquatable<OkfDocument>
             body = body[1..];
         }
 
-        return new OkfDocument(frontmatter, body);
+        return new OkfDocument(frontmatter, body) { HasFrontmatterBlock = true };
     }
 
     /// <summary>Like <see cref="Parse"/>, but returns <c>false</c> instead of throwing.</summary>

@@ -206,7 +206,7 @@ public sealed class ChangeLog
         if (b.StartsWith("**", StringComparison.Ordinal))
         {
             var rest = b.Substring(2);
-            var end = rest.IndexOf("**", StringComparison.Ordinal);
+            var end = ClosingBoldMarker(rest);
             if (end >= 0)
             {
                 var kind = rest.Substring(0, end).Trim();
@@ -222,5 +222,46 @@ public sealed class ChangeLog
         }
 
         return new LogEntry(null, b);
+    }
+
+    /// <summary>
+    /// The index, in <paramref name="rest"/> (a bullet body past its opening
+    /// <c>**</c>), of the <c>**</c> that CLOSES that opener — or <c>-1</c>
+    /// when none does.
+    ///
+    /// Not simply the first <c>**</c>: a kind may itself contain a bold span,
+    /// and <see cref="ToMarkdown"/> renders it verbatim between the delimiters
+    /// (<c>* **Upd - **Forged**: kind**: text</c>). Taking the first marker
+    /// read that back as kind <c>"Upd -"</c> with the rest swallowed into the
+    /// text, so an entry did not survive a round trip through this type's own
+    /// renderer. Inner markers are paired off instead, by the one flanking
+    /// rule that tells them apart: a <c>**</c> preceded by a non-space
+    /// character can close the span it is inside, and one preceded by a space
+    /// (or by nothing) can only open a new one. That is the reading a
+    /// CommonMark renderer gives the same line, so the parse agrees with what
+    /// a human sees in a rendered <c>log.md</c>.
+    ///
+    /// Deliberately <c>-1</c> for an UNBALANCED body (more openers than
+    /// closers, e.g. <c>**Kind **x**</c>): the §9 parser is permissive, so it
+    /// then keeps the whole body as plain text — exactly what it already did
+    /// for a body with no closing marker at all.
+    /// </summary>
+    /// <param name="rest">The bullet body with its opening <c>**</c> removed.</param>
+    private static int ClosingBoldMarker(string rest)
+    {
+        var depth = 1;
+        var i = 0;
+        while ((i = rest.IndexOf("**", i, StringComparison.Ordinal)) >= 0)
+        {
+            depth += i > 0 && !char.IsWhiteSpace(rest[i - 1]) ? -1 : 1;
+            if (depth == 0)
+            {
+                return i;
+            }
+
+            i += 2;
+        }
+
+        return -1;
     }
 }

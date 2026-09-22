@@ -34,8 +34,8 @@
   // merely wraps ordinary prose", so patching marked bought no security
   // property the sanitizer below lacks, while adding a real content-loss
   // bug. Sanitizing the parsed DOM does not have that failure mode: it drops
-  // only the disallowed element itself and keeps its text, see the "keep
-  // its text" comment in sanitize() below.
+  // only the disallowed element itself and unwraps its already-sanitized
+  // children in its place, see the "unwrap" comment in sanitize() below.
   //
   // So the DOM sanitizer below is the whole defense, not one layer of it:
   // allowlist which tags may exist, allowlist which attributes each
@@ -63,9 +63,9 @@
   // `if (tagName === "INPUT")` branch in sanitize(), so a future tag that
   // needs the same kind of constraint is a table entry, not new code. An
   // element whose tag is on ALLOWED_TAGS but fails the constraint here falls
-  // through to the same generic "drop element, keep text" branch as any
-  // other disallowed element -- it gets no special treatment for having
-  // almost qualified.
+  // through to the same generic "drop element, unwrap its children" branch
+  // as any other disallowed element -- it gets no special treatment for
+  // having almost qualified.
   var TAG_VALUE_CONSTRAINTS = {
     INPUT: { attr: "type", values: { checkbox: 1 } },
   };
@@ -93,18 +93,51 @@
   var URL_ATTRS = { href: 1, src: 1 };
   var SAFE_SCHEMES = { "http:": 1, "https:": 1, "mailto:": 1 };
 
-  // Tags whose element content is source, not prose: SCRIPT and STYLE are
-  // "raw text" elements per the HTML parsing spec, so `.textContent` on one
-  // returns its literal script/CSS source verbatim, unparsed. The generic
-  // disallowed-element branch below keeps `.textContent` specifically so a
-  // wrapper like `<div>` or `<details>` does not silently delete the prose
-  // it wraps -- but there is no prose inside a SCRIPT or STYLE element to
-  // preserve, only code, and dumping that code as visible page text (e.g. a
-  // raw `<script>alert(1)</script>` turning into the literal words
-  // "alert(1)" on the page) is never the right outcome. These tags are
-  // dropped with no replacement at all instead of falling into the
-  // keep-the-text branch.
-  var OPAQUE_TAGS = { SCRIPT: 1, STYLE: 1 };
+  // Tags whose element content is source, not prose, plus tags whose content
+  // must never be exposed as page text at all. SCRIPT, STYLE, IFRAME,
+  // NOEMBED, NOFRAMES, XMP and PLAINTEXT are all "raw text" elements per the
+  // HTML parsing spec (PLAINTEXT more so: once the tokenizer sees a
+  // `<plaintext>` start tag it never leaves the PLAINTEXT state again for the
+  // rest of the document, so a `<plaintext>` mid-body drops everything after
+  // it, not just its own tag -- see the CHANGELOG for this task), so
+  // `.textContent` on one of these returns its literal source verbatim,
+  // unparsed. The generic disallowed-element branch below unwraps and keeps
+  // an element's *sanitized descendant elements and text* so a wrapper like
+  // `<div>` or `<details>` does not silently delete the prose (or a link, or
+  // a table) it wraps -- but there is no prose inside any of the tags below
+  // to preserve, only source text, and exposing that source as visible page
+  // content (e.g. a raw `<script>alert(1)</script>` turning into the literal
+  // words "alert(1)" on the page, or an <iframe>'s markup leaking the same
+  // way) is never the right outcome. Killing cases for every entry above
+  // this line live in tools/viewer-security-check/run.js (deleting an entry
+  // from this table and re-running the harness must turn it red); TEMPLATE
+  // and BASE below are deliberately not accompanied by a killing case --
+  // removing either from this table does NOT turn the harness red, and that
+  // is expected, not a gap: TEMPLATE's content lives in a separate inert
+  // document fragment that `querySelectorAll` never walks into in the first
+  // place (nothing to unwrap, killed or not), and BASE has no children to
+  // unwrap either (it is a redirect vector via its own `href`, not a
+  // container). Both stay in this table as defence in depth against that
+  // reasoning changing under a future browser/jsdom behaviour, not because
+  // today's harness can distinguish "present" from "absent" for them. These
+  // tags are removed with their whole subtree in sanitize()'s first phase,
+  // before anything is unwrapped, so their content can never reach an
+  // unwrap -- including a *non-opaque* disallowed element nested inside one
+  // of them. In HTML that nesting cannot come from `<iframe><div>` (an
+  // iframe's content is raw text, so no DIV element is ever created), but
+  // foreign content does produce it: in
+  // `<svg><style><a><g>x</g></a></style></svg>` the SVG <style>'s children
+  // parse as real elements. The first phase marks <a> and <g> for unwrapping
+  // before it reaches and removes <style>; the unwrap phase walks only what
+  // is still under the root, so it never meets them. Compared via
+  // `.toUpperCase()` on `tagName`, not a bare equality/lookup on `tagName`
+  // itself: a foreign-namespace element (SVG, MathML) reports a lowercase
+  // `tagName` (e.g. `"script"`, not `"SCRIPT"`), and a `<script>` nested
+  // inside an `<svg>` is still a script.
+  var OPAQUE_TAGS = {
+    SCRIPT: 1, STYLE: 1, IFRAME: 1, NOEMBED: 1, NOFRAMES: 1,
+    XMP: 1, PLAINTEXT: 1, TEMPLATE: 1, BASE: 1,
+  };
 
   // Strips every ASCII control character and space (code points 0 to 32
   // inclusive, plus DEL, 127) wherever it appears. Built with charCodeAt
@@ -156,7 +189,10 @@
     // safe, and exactly what the link-rewiring step below expects to see
     // for in-bundle links.
     if (!scheme) { return true; }
-    return !!SAFE_SCHEMES[scheme[1].toLowerCase() + ":"];
+    // Own-property lookup, for the same reason as every other allowlist
+    // table in this file: a URL literally beginning "constructor:" or
+    // "__proto__:" must not resolve an inherited Object.prototype member.
+    return Object.prototype.hasOwnProperty.call(SAFE_SCHEMES, scheme[1].toLowerCase() + ":");
   }
 
   function sanitizeAttributes(el) {
@@ -169,8 +205,20 @@
     for (var i = 0; i < el.attributes.length; i++) { names.push(el.attributes[i].name); }
     for (var j = 0; j < names.length; j++) {
       var name = names[j].toLowerCase();
-      if (!allowed[name]) { el.removeAttribute(names[j]); continue; }
-      if (URL_ATTRS[name] && !isSafeUrl(el.getAttribute(names[j]))) {
+      // Own-property lookups, not bare `allowed[name]`/`URL_ATTRS[name]`:
+      // a bracket lookup on a plain object also resolves inherited
+      // Object.prototype members, so an attribute literally named
+      // "constructor", "__proto__", "hasOwnProperty", etc. would otherwise
+      // read back a function/object instead of undefined and pass a truthy
+      // check it never earned a table entry for.
+      if (!Object.prototype.hasOwnProperty.call(allowed, name)) {
+        el.removeAttribute(names[j]);
+        continue;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(URL_ATTRS, name) &&
+        !isSafeUrl(el.getAttribute(names[j]))
+      ) {
         el.removeAttribute(names[j]);
       }
     }
@@ -182,45 +230,60 @@
   // set for that tag; false means it must be treated exactly like a tag
   // that was never on ALLOWED_TAGS at all.
   function passesTagValueConstraint(node) {
-    var constraint = TAG_VALUE_CONSTRAINTS[node.tagName];
+    // Own-property lookups for the same reason as sanitizeAttributes above:
+    // a tag or attribute value named "constructor" (etc.) must not resolve
+    // an inherited Object.prototype member instead of "no entry here".
+    var constraint = Object.prototype.hasOwnProperty.call(TAG_VALUE_CONSTRAINTS, node.tagName)
+      ? TAG_VALUE_CONSTRAINTS[node.tagName]
+      : null;
     if (!constraint) { return true; }
     var actual = (node.getAttribute(constraint.attr) || "").toLowerCase();
-    return !!constraint.values[actual];
+    return Object.prototype.hasOwnProperty.call(constraint.values, actual);
   }
 
   function sanitize(root) {
-    // Snapshot every descendant element up front: replacing a disallowed
-    // element below mutates the tree, which would desync a live traversal.
-    // Walk the snapshot back to front rather than in document order: for any
-    // element, all of its descendants precede it in document order, so
-    // processing the array in reverse guarantees every descendant has
-    // already been resolved (dropped opaque, flattened to text, or
-    // sanitized in place) by the time an ancestor reads `.textContent` for
-    // itself below. That matters concretely for something like
-    // `<math><mtext><script>alert(1)</script></mtext></math>`: without this
-    // ordering, MATH's own `.textContent` read (while deciding what text to
-    // keep) would still see SCRIPT's raw, un-dropped source, because
-    // `.textContent` walks the live DOM directly and does not know this
-    // function has plans to remove SCRIPT later in the same pass.
+    // Phase 1 decides and cleans; phase 2 only restructures.
+    //
+    // Phase 1 walks a static snapshot of every descendant element
+    // (querySelectorAll lists them in document order) back-to-front, so
+    // every element is visited after all of its descendants. Each element is
+    // either removed outright with its whole subtree (OPAQUE_TAGS), or
+    // admitted and cleaned in place (attribute allowlist, URL check, forced
+    // `disabled`), or marked for unwrapping (every other element). The
+    // back-to-front order is load-bearing for cost: it removes every opaque
+    // subtree once, before any enclosing opaque element is removed, so no
+    // removal drags nodes an earlier removal already took and opaque
+    // removals stay within N nodes dragged in total. A front-to-back walk
+    // removes the outermost opaque element first and then each nested one
+    // again from its already-detached parent -- quadratic for nested opaque
+    // elements: run.js's unwrap-cost case with 80 nested <style>s inside
+    // <svg> measures 39.9 x N front-to-back against 1.0 x N back-to-front.
     var all = root.querySelectorAll("*");
+    var unwrapAt = [];
+    var unwrapCount = 0;
     for (var i = all.length - 1; i >= 0; i--) {
       var node = all[i];
-      if (!node.parentNode) { continue; } // already detached by a descendant/ancestor's removal
-      if (Object.prototype.hasOwnProperty.call(OPAQUE_TAGS, node.tagName)) {
+      // node.tagName.toUpperCase(), not a bare comparison: a foreign-namespace
+      // element (SVG, MathML) reports a lowercase tagName, so an SVG-nested
+      // <script> ("script") must still match the OPAQUE_TAGS entry ("SCRIPT").
+      if (Object.prototype.hasOwnProperty.call(OPAQUE_TAGS, node.tagName.toUpperCase())) {
         node.parentNode.removeChild(node);
         continue;
       }
       var admitted = Object.prototype.hasOwnProperty.call(ALLOWED_TAGS, node.tagName)
         && passesTagValueConstraint(node);
       if (!admitted) {
-        // Drop the element but keep its text so a disallowed wrapper does
-        // not silently delete surrounding prose; nothing about its markup
-        // (attributes, nested elements) survives the swap. This also covers
-        // an INPUT that failed TAG_VALUE_CONSTRAINTS (any type other than
-        // checkbox): it gets no special treatment for having almost
-        // qualified as an allowed tag.
-        var replacement = node.ownerDocument.createTextNode(node.textContent || "");
-        node.parentNode.replaceChild(replacement, node);
+        // Mark for phase 2 rather than unwrapping here: unwrapping one
+        // element at a time is what made the unwrap superlinear (see phase
+        // 2). This also covers an INPUT that failed TAG_VALUE_CONSTRAINTS
+        // (any type other than checkbox): it gets no special treatment for
+        // having almost qualified as an allowed tag. Its attributes are never
+        // cleaned, because the element itself never reaches the page. Opaque
+        // tags (SCRIPT/STYLE/IFRAME/etc.) never reach this branch at all --
+        // they were removed above, so their raw source text can never be
+        // exposed by phase 2's unwrap.
+        unwrapAt[i] = true;
+        unwrapCount++;
         continue;
       }
       sanitizeAttributes(node);
@@ -234,6 +297,137 @@
         // and a live, focusable checkbox has no legitimate use in it.
         node.setAttribute("disabled", "disabled");
       }
+    }
+    if (unwrapCount === 0) { return root; }
+
+    // Phase 2 unwraps every marked element: the element goes, its children
+    // take its place, in order. Moving a node in the DOM drags its whole
+    // subtree with it (the DOM Standard's remove and insert algorithms each
+    // visit every descendant of the node they move), so what matters is not
+    // how many moves are made but how many nodes they drag. Unwrapping
+    // marked elements one at a time drags the same nodes again and again,
+    // whatever the order: innermost-first re-moves the content below a
+    // wrapper once for every wrapper above it (D wrappers around M nodes of
+    // content: about D x M), and outermost-first moves each wrapper's
+    // children as whole subtrees, the next wrapper included (a chain of D
+    // wrappers: about D x N). Both were
+    // committed in intermediate, unreleased versions of this change; the
+    // unwrap-cost cases in tools/viewer-security-check/run.js measure the
+    // innermost-first one at 44.5 x N for 50 wrappers around 200 children,
+    // and the outermost-first one at 94.2 x N for that shape and 201.0 x N
+    // for a 200-deep chain.
+    //
+    // So phase 2 instead records, in one walk over every node still under
+    // `root`, each node's current parent and its parent-to-be (the nearest
+    // ancestor that is not being unwrapped, or `root`); then detaches every
+    // node bottom-up (last in document order first, so each node has no
+    // children left when it is removed) and re-appends every kept node
+    // top-down to its parent-to-be (first in document order first, so each
+    // node has no children yet when it is appended). Every unwrap mutation
+    // thus moves a single childless node: one removal per node and at most
+    // one insertion, so phase 2 drags at most 2 x N nodes (N = nodes under
+    // `root`). Phase 1's opaque removals do drag whole subtrees, at most N
+    // nodes more in total thanks to its back-to-front order (see above). The
+    // run.js unwrap-cost cases count exactly this -- every node dragged by
+    // every structural mutation during sanitize(), with the other generic
+    // node-moving APIs made to throw -- and assert it stays within 4 x N on
+    // four shapes (measured: 1.9, 1.0, 1.5 and 1.0 x N). The walk
+    // itself does constant work per node.
+    //
+    // The walk uses a TreeWalker rooted at `root`, so it meets exactly the
+    // nodes under `root` and nothing else. That is also what keeps this
+    // fail-closed: an element marked in phase 1 and later removed with an
+    // opaque ancestor (in HTML, `<iframe><div>` cannot produce one, an
+    // iframe's content being raw text, but foreign content can:
+    // `<svg><style><a><g>x</g></a></style></svg>`, where the SVG <style>'s
+    // children parse as elements) is simply never met, and every marked
+    // element that IS under `root` is always unwrapped, whether or not
+    // `root` itself is attached to a document. (An earlier version skipped
+    // marked elements that were not `isConnected`, which on a detached root
+    // kept every one of them, attributes uncleaned; run.js has a case.)
+    //
+    // Marks are matched to the walk by identity, merge-style, rather than
+    // with a Set or Map (this file sticks to ES5): take a second snapshot of
+    // the elements still under `root` -- a subsequence of `all`, in the same
+    // order, since phase 1 only removed subtrees -- and carry each mark over
+    // with one forward pointer into `all`; the walk then meets those same
+    // elements in that same order, so a second forward pointer tells it
+    // which node is the next element and whether it is marked. Both
+    // pointers only move forward, so the matching is linear too.
+    var live = root.querySelectorAll("*");
+    var liveUnwrap = [];
+    var fromAll = 0;
+    for (var l = 0; l < live.length; l++) {
+      while (fromAll < all.length && all[fromAll] !== live[l]) { fromAll++; }
+      if (fromAll === all.length) {
+        // Unreachable (every element under root was in the phase 1
+        // snapshot), but an element phase 1 never examined must never be
+        // rendered: abort instead.
+        throw new Error("sanitize: an element escaped phase 1");
+      }
+      liveUnwrap[l] = unwrapAt[fromAll] === true;
+      fromAll++;
+    }
+
+    var nodes = [];
+    var oldParents = [];
+    var newParents = [];
+    var keep = [];
+    // One entry per open level of the walk: the parent the nodes at that
+    // level have now, and the one they will have after unwrapping.
+    var oldParentStack = [root];
+    var newParentStack = [root];
+    var nextElement = 0;
+    var walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ALL);
+    var current = walker.firstChild();
+    while (current) {
+      var unwrap = false;
+      if (nextElement < live.length && current === live[nextElement]) {
+        unwrap = liveUnwrap[nextElement];
+        nextElement++;
+      } else if (current.nodeType === 1) {
+        // Unreachable (the walk and `live` list the same elements in the
+        // same order), but an element that is not the next `live` entry has
+        // no classification: keeping it would render it uncleaned, so abort.
+        throw new Error("sanitize: the phase 2 walk met an unclassified element");
+      }
+      var newParent = newParentStack[newParentStack.length - 1];
+      nodes.push(current);
+      oldParents.push(oldParentStack[oldParentStack.length - 1]);
+      newParents.push(newParent);
+      keep.push(!unwrap);
+      var firstChild = walker.firstChild();
+      if (firstChild) {
+        oldParentStack.push(current);
+        newParentStack.push(unwrap ? newParent : current);
+        current = firstChild;
+        continue;
+      }
+      current = null;
+      for (;;) {
+        var sibling = walker.nextSibling();
+        if (sibling) { current = sibling; break; }
+        var up = walker.parentNode();
+        if (up === null || up === root) { break; }
+        oldParentStack.pop();
+        newParentStack.pop();
+      }
+    }
+    if (nextElement !== live.length) {
+      // Unreachable for the same reason. Together with the check inside the
+      // walk, this verifies both directions: every element the walk met was
+      // the next `live` entry, and every `live` entry was met.
+      throw new Error("sanitize: the phase 2 walk missed an element");
+    }
+
+    // Parents come from the walk rather than from reading `parentNode` back
+    // off each node: when a node is detached, only nodes after it in
+    // document order have moved, so its recorded parent is still its parent.
+    for (var d = nodes.length - 1; d >= 0; d--) {
+      oldParents[d].removeChild(nodes[d]);
+    }
+    for (var n = 0; n < nodes.length; n++) {
+      if (keep[n]) { newParents[n].appendChild(nodes[n]); }
     }
     return root;
   }
@@ -250,6 +444,21 @@
   var parsed = new DOMParser().parseFromString(marked.parse(payload.body || ""), "text/html");
   var clean = sanitize(parsed.body);
 
+  // Load-bearing: the sanitized tree is moved into the live page with
+  // appendChild (live DOM nodes) and is NEVER serialized back to an HTML
+  // string and re-parsed anywhere in this file. That matters because
+  // unwrapping in sanitize() above can legally build tag shapes the HTML
+  // parser itself would never produce in one pass -- e.g. a <table> ending
+  // up as a direct child of a <p> (a parser would close the <p> first), or
+  // an <a> nested inside another <a> (the parser auto-closes an open <a>
+  // before opening a new one). Those shapes are harmless exactly because
+  // nothing downstream re-parses them: `target.innerHTML = clean.innerHTML`
+  // here, or any other round trip through a markup string, would hand such
+  // a shape back to an HTML parser, which "fixes" it by re-nesting/moving
+  // nodes according to its own tree-construction rules (the same class of
+  // mutation-XSS behaviour -- parser normalization changing the tree after
+  // an already-sanitized pass -- that motivates the mutation-XSS harness
+  // cases below in run.js) instead of preserving it as authored here.
   var target = document.getElementById("okf-body");
   target.innerHTML = "";
   while (clean.firstChild) { target.appendChild(clean.firstChild); }

@@ -80,6 +80,189 @@ public class YamlRoundtripTests
         }
     }
 
+    /// <summary>
+    /// The parser now rejects anchors, aliases, tags, directives and document
+    /// markers, so every string the emitter writes that starts with one of those
+    /// indicators must come out quoted: as a value, a sequence item, a nested
+    /// sequence item and a key.
+    /// </summary>
+    [Theory]
+    [InlineData("&a")]
+    [InlineData("*a")]
+    [InlineData("!a")]
+    [InlineData("!!str")]
+    [InlineData("!<tag:x>")]
+    [InlineData("%YAML 1.2")]
+    [InlineData("%")]
+    [InlineData("&")]
+    [InlineData("*")]
+    [InlineData("!")]
+    [InlineData("& b")]
+    [InlineData("...")]
+    [InlineData("... x")]
+    [InlineData("---")]
+    [InlineData("--- x")]
+    public void Strings_starting_with_a_rejected_indicator_roundtrip(string s)
+    {
+        var m = new YamlMapping();
+        m.Insert("k", new YamlString(s));
+        m.Insert("seq", new YamlSequence([new YamlString(s), new YamlSequence([new YamlString(s)])]));
+        m.Insert(s, new YamlString("keyed"));
+
+        var emitted = m.ToYamlString();
+        var reparsed = YamlValue.Parse(emitted).AsMapping()!;
+
+        Assert.Equal(m, reparsed);
+        Assert.Equal(s, reparsed.Get("k")!.AsString());
+        Assert.Equal("keyed", reparsed.Get(s)!.AsString());
+    }
+
+    /// <summary>
+    /// The fuzz's alphabet: YAML indicators, quotes, brackets, letters, a space,
+    /// a newline and a tab.
+    /// </summary>
+    private const string FuzzAlphabet = "&*!%@`-?:,[]{}#|>'\"abcXYZ .\n\t";
+
+    /// <summary>
+    /// 10 000 deterministic strings of length 0 to 8 over <see cref="FuzzAlphabet"/>
+    /// (seed 20260915).
+    /// </summary>
+    private static List<string> FuzzStrings()
+    {
+        var rng = new Random(20260915);
+        var strings = new List<string>(10_000);
+        for (var n = 0; n < 10_000; n++)
+        {
+            var chars = new char[rng.Next(0, 9)];
+            for (var i = 0; i < chars.Length; i++)
+            {
+                chars[i] = FuzzAlphabet[rng.Next(FuzzAlphabet.Length)];
+            }
+
+            strings.Add(new string(chars));
+        }
+
+        return strings;
+    }
+
+    private static YamlMapping MappingOf(string key, YamlValue value)
+    {
+        var m = new YamlMapping();
+        m.Insert(key, value);
+        return m;
+    }
+
+    /// <summary>Places <paramref name="s"/> in the named emitter position.</summary>
+    private static YamlValue PlaceInPosition(string position, string s) => position switch
+    {
+        "top-level key" => MappingOf(s, new YamlString("v")),
+        "nested key" => MappingOf("outer", MappingOf(s, new YamlString("v"))),
+        "sequence-item key" => MappingOf("items", new YamlSequence([MappingOf(s, new YamlString("v"))])),
+        "value" => MappingOf("k", new YamlString(s)),
+        "sequence item" => MappingOf("items", new YamlSequence([new YamlString(s)])),
+        "top-level scalar" => new YamlString(s),
+        _ => throw new ArgumentOutOfRangeException(nameof(position), position, null),
+    };
+
+    public static TheoryData<string> FuzzPositions =>
+    [
+        "top-level key", "nested key", "sequence-item key", "value", "sequence item", "top-level scalar",
+    ];
+
+    /// <summary>
+    /// Emit then parse must give back the same structure for every fuzzed string
+    /// in every position the emitter writes a scalar: a key at the top level,
+    /// nested in a mapping, and in a sequence item's mapping; a mapping value; a
+    /// sequence item; and a whole document. Keys used to be judged as if they
+    /// were values, so the key <c>a[b</c> was written plain and read back as the
+    /// top-level string <c>a[b: v</c>.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(FuzzPositions))]
+    public void Fuzzed_strings_roundtrip_in_every_scalar_position(string position)
+    {
+        var failures = new List<string>();
+        foreach (var s in FuzzStrings())
+        {
+            var value = PlaceInPosition(position, s);
+            var emitted = value.ToYamlString();
+            try
+            {
+                if (!value.Equals(YamlValue.Parse(emitted)))
+                {
+                    failures.Add($"{Show(s)} -> {Show(emitted)}: different structure");
+                }
+            }
+            catch (YamlParseException e)
+            {
+                failures.Add($"{Show(s)} -> {Show(emitted)}: {e.Message}");
+            }
+        }
+
+        Assert.True(
+            failures.Count == 0,
+            $"{failures.Count} of 10000 failed as {position}; first: {string.Join(" | ", failures.Take(5))}");
+
+        static string Show(string text) => text.Replace("\n", "\\n").Replace("\t", "\\t");
+    }
+
+    /// <summary>
+    /// A key the parser would misread comes out double-quoted in every key
+    /// position and reads back as the same key.
+    /// </summary>
+    [Theory]
+    [InlineData("a[b", "\"a[b\"")]
+    [InlineData("a{b", "\"a{b\"")]
+    [InlineData("a\"b", "\"a\\\"b\"")]
+    [InlineData("a'b", "\"a'b\"")]
+    [InlineData("[ab", "\"[ab\"")]
+    [InlineData("{ab", "\"{ab\"")]
+    [InlineData("\"ab", "\"\\\"ab\"")]
+    [InlineData("'ab", "\"'ab\"")]
+    [InlineData("a[b]]c[", "\"a[b]]c[\"")]
+    [InlineData("a[b\"]\"", "\"a[b\\\"]\\\"\"")]
+    // Inside an open `"` a backslash skips the next character: a trailing `\`
+    // would swallow the key's colon, and an escaped `\"` does not close the quote.
+    [InlineData("a\"b\\", "\"a\\\"b\\\\\"")]
+    [InlineData("a\"b\\\"", "\"a\\\"b\\\\\\\"\"")]
+    [InlineData("a\"b\\\"c", "\"a\\\"b\\\\\\\"c\"")]
+    public void Keys_the_parser_would_misread_are_quoted_and_roundtrip(string key, string quoted)
+    {
+        foreach (var position in new[] { "top-level key", "nested key", "sequence-item key" })
+        {
+            var value = PlaceInPosition(position, key);
+            var emitted = value.ToYamlString();
+            Assert.Contains(quoted + ": v\n", emitted, StringComparison.Ordinal);
+            Assert.Equal(value, YamlValue.Parse(emitted));
+        }
+    }
+
+    /// <summary>
+    /// Keys the parser already reads back intact keep their plain form, so no
+    /// golden capture moves: ordinary keys, and keys whose quotes and brackets
+    /// all close before the key ends.
+    /// </summary>
+    [Theory]
+    [InlineData("abc")]
+    [InlineData("a-b")]
+    [InlineData("a.b")]
+    [InlineData("a b")]
+    [InlineData("a]b")]
+    [InlineData("a[b]")]
+    [InlineData("a\"b\"c")]
+    [InlineData("a'b''c'")]
+    [InlineData("a\"b\\\"c\"")] // the escaped `\"` is skipped, the last `"` closes the quote
+    public void Keys_the_parser_reads_back_intact_stay_plain(string key)
+    {
+        foreach (var position in new[] { "top-level key", "nested key", "sequence-item key" })
+        {
+            var value = PlaceInPosition(position, key);
+            var emitted = value.ToYamlString();
+            Assert.EndsWith(" " + key + ": v\n", "\n " + emitted, StringComparison.Ordinal);
+            Assert.Equal(value, YamlValue.Parse(emitted));
+        }
+    }
+
     [Fact]
     public void Non_finite_and_large_floats_roundtrip()
     {

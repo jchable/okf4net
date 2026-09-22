@@ -333,4 +333,193 @@ public class OkfBundleToolsTests
         Assert.Contains("error", result, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("secret", result, StringComparison.OrdinalIgnoreCase);
     }
+
+    [SkippableFact]
+    public void Browse_rejects_a_path_crossing_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // Task H1: "x/y" is a junction to `external` whose attributes the
+        // current user cannot read (deny ReadAttributes on it, deny listing on
+        // "x"), while the OS still lets a read traverse it. The bundle is
+        // loaded (and cached) before the junction exists, because a bundle
+        // walk cannot list "x" once it denies listing. The lenient
+        // IsReparsePoint answered "not a link" and Browse returned
+        // external/z/index.md.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "# Root\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        var tools = new OkfBundleTools(tmp.Path);
+        tools.Browse();
+        using var external = new TempDir();
+        external.Write(Path.Combine("z", "index.md"), "OUTSIDE-THE-BUNDLE\n");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var result = tools.Browse("x/y/z");
+
+        Assert.Equal("Error: path 'x/y/z' not found in the bundle. Use okf_browse to list available directories.", result);
+    }
+
+    [SkippableFact]
+    public void GetComputation_refuses_a_computation_file_reached_through_a_junction_whose_link_status_cannot_be_inspected()
+    {
+        // H1 fix round, decision (a): the reviewer's P-scenario. The bundle is
+        // loaded (and cached) BEFORE the junction exists -- a fresh load could
+        // not list "x" once it denies listing -- exactly as a long-lived
+        // okf-mcp instance holds it. "x/y" then becomes a junction to
+        // `external` whose attributes cannot be read. TryResolveResource keeps
+        // the lenient predicate (okf validate must not change) and still
+        // answers Resolved; the read itself must re-check strictly and refuse
+        // through okf_get_computation's existing "could not be read" path. On
+        // 7ee7287 the tool returned the file's content from outside the bundle.
+        using var tmp = new TempDir();
+        tmp.Write("c/rev.md", "---\ntype: Attested Computation\nruntime: bigquery\ncomputation: x/y/secret.sql\n---\n");
+        Directory.CreateDirectory(Path.Combine(tmp.Path, "x"));
+        var tools = new OkfBundleTools(tmp.Path);
+        Assert.Contains("could not be resolved (Missing)", tools.GetComputation("c/rev"));
+        using var external = new TempDir();
+        external.Write("secret.sql", "SELECT 'OUTSIDE-THE-BUNDLE'\n");
+        using var junction = tmp.TryCreateUninspectableJunction(Path.Combine("x", "y"), external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var result = tools.GetComputation("c/rev");
+
+        Assert.DoesNotContain("OUTSIDE-THE-BUNDLE", result, StringComparison.Ordinal);
+        Assert.Contains("Error: computation file 'x/y/secret.sql' could not be read: ", result, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void AppendLog_refuses_a_log_file_that_is_an_uninspectable_junction()
+    {
+        // H1 fix round (M1): "log.md" is a junction named like the log, whose
+        // attributes cannot be read (the bundle root denies listing). Only the
+        // early check on log.md itself refuses it with this message. (Not an
+        // escape: without it the late strict check, or the OS refusing to write
+        // a file over a directory, still refuses.)
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path);
+        using var junction = tmp.TryCreateUninspectableJunction("log.md", external.Path);
+        Skip.If(junction is null, "needs Windows (a junction plus deny ACEs)");
+
+        var result = tools.AppendLog("Update", "entry");
+
+        Assert.Equal("Error: log.md is a reparse point (symlink/junction) or could not be inspected, not a regular file -- refusing to write through it.", result);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+    }
+
+    [SkippableFact]
+    public void AppendLog_late_guard_refuses_a_log_file_swapped_for_an_uninspectable_junction()
+    {
+        // H1 fix round (M1): nothing is at "log.md" when the early check runs;
+        // the seam then plants an uninspectable junction named like it. Only
+        // the late check on log.md itself refuses with this message. Skipped
+        // before anything runs off Windows.
+        Skip.IfNot(OperatingSystem.IsWindows(), "needs Windows (a junction plus deny ACEs)");
+        using var tmp = new TempDir();
+        using var external = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path);
+        UninspectableJunction? junction = null;
+        tools.BeforeLateReparseCheckForTest = () => junction = tmp.TryCreateUninspectableJunction("log.md", external.Path);
+
+        try
+        {
+            var result = tools.AppendLog("Update", "entry");
+
+            Skip.If(junction is null, "the junction's deny ACEs could not be set up on this machine");
+            Assert.Equal("Error: log.md resolves through a reparse point (symlink/junction), or an entry that could not be inspected, inside the bundle, which is not allowed.", result);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external.Path));
+        }
+        finally
+        {
+            junction?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// U+2028 LINE SEPARATOR, as a numeric constant: a literal one in source is
+    /// invisible in every editor and diff that would have to review the payload.
+    /// </summary>
+    private const char LineSeparator = (char)0x2028;
+
+    /// <summary>Every terminator <c>OkfBundleTools.OneLine</c> folds.</summary>
+    private static readonly char[] EveryLineTerminator =
+        ['\n', '\r', LineSeparator, (char)0x2029, (char)0x0085, (char)0x000C];
+
+    private static void AssertNoLineStartsWith(string rendered, string marker) =>
+        Assert.DoesNotContain(
+            rendered.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith(marker, StringComparison.Ordinal));
+
+    /// <summary>
+    /// <c>okf_browse</c>'s "not found" line echoes its own <c>path</c>
+    /// argument, and every path that does not resolve reaches it — so an
+    /// arbitrary string is guaranteed to be rendered there. Same class as the
+    /// <c>okf_search</c> header the PR #108 audit reproduced: an argument's
+    /// provenance is not a boundary (see <c>OkfBundleTools.OneLine</c>).
+    /// </summary>
+    [Fact]
+    public void Browse_path_cannot_forge_a_heading_in_the_not_found_message()
+    {
+        using var tmp = new TempDir();
+        var rendered = new OkfBundleTools(tmp.Path).Browse("nowhere\n## FORGED");
+
+        AssertNoLineStartsWith(rendered, "## FORGED");
+        Assert.Equal(
+            "Error: path 'nowhere ## FORGED' not found in the bundle. Use okf_browse to list available directories.",
+            rendered);
+    }
+
+    /// <summary>The same argument, through <c>okf_browse</c>'s other refusal.</summary>
+    [Fact]
+    public void Browse_path_cannot_forge_a_heading_in_the_invalid_path_message()
+    {
+        using var tmp = new TempDir();
+        var rendered = new OkfBundleTools(tmp.Path).Browse("../escape\n## FORGED");
+
+        AssertNoLineStartsWith(rendered, "## FORGED");
+        Assert.Equal(
+            "Error: invalid path '../escape ## FORGED' — '..' segments and absolute paths are not allowed.",
+            rendered);
+    }
+
+    /// <summary>
+    /// The generated level listing prints the requested path as its H1. Getting
+    /// a terminator in there needs a directory that really exists under that
+    /// name, which is why the payload is U+2028: Windows rejects C0 controls in
+    /// filenames but accepts U+2028, and U+2028 is exactly the soft terminator
+    /// an LF-based reading of "this is one line" never sees.
+    /// </summary>
+    [Fact]
+    public void Browse_path_cannot_forge_a_line_in_the_generated_listing()
+    {
+        using var tmp = new TempDir();
+        var dir = "sub" + LineSeparator + "FORGED";
+        Directory.CreateDirectory(Path.Combine(tmp.Path, dir));
+
+        var rendered = new OkfBundleTools(tmp.Path).Browse(dir);
+
+        AssertNoLineStartsWith(rendered, "FORGED");
+        Assert.StartsWith("# sub FORGED", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>ConceptNotFoundMessage</c> is shared by <c>okf_read_concept</c>,
+    /// <c>okf_graph</c>, <c>okf_get_computation</c> and
+    /// <c>okf_run_computation</c>, and it is the path an id that does not parse
+    /// always takes — so it, not the tools' happy paths, is where an arbitrary
+    /// <c>conceptId</c> gets rendered. <c>GuardConceptId</c> rejects only a NUL.
+    /// </summary>
+    [Fact]
+    public void An_unknown_concept_id_cannot_forge_a_heading_in_the_not_found_message()
+    {
+        using var tmp = new TempDir();
+        var tools = new OkfBundleTools(tmp.Path);
+        const string Expected = "Concept 'ghost ## FORGED' not found. Use okf_browse to list available concepts.";
+
+        foreach (var rendered in new[] { tools.ReadConcept("ghost\n## FORGED"), tools.Graph("ghost\n## FORGED") })
+        {
+            AssertNoLineStartsWith(rendered, "## FORGED");
+            Assert.Equal(Expected, rendered);
+        }
+    }
 }

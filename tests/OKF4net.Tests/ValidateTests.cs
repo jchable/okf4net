@@ -105,6 +105,52 @@ public class ValidateTests
         Assert.False(report.IsConformant);
     }
 
+    /// <summary>
+    /// H3 review I1 (§4): when a concept has no frontmatter block and its first line,
+    /// with a leading U+FEFF and leading spaces/tabs removed, is a fence, a warning
+    /// names the cause next to the <see cref="DiagnosticCode.MissingType"/> error.
+    /// </summary>
+    [Theory]
+    [InlineData(" ---\ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but is not at column 0, so the file has no frontmatter (§4)")]
+    [InlineData("  ---  \ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but is not at column 0, so the file has no frontmatter (§4)")]
+    [InlineData("\uFEFF---\ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but starts with a byte-order mark, so the file has no frontmatter (§4)")]
+    [InlineData("\uFEFF\t---\ntype: M\n---\nbody\n", "line 1 looks like a frontmatter fence but starts with a byte-order mark and is not at column 0, so the file has no frontmatter (§4)")]
+    [InlineData(" ---", "line 1 looks like a frontmatter fence but is not at column 0, so the file has no frontmatter (§4)")]
+    public void A_first_line_fence_off_column_0_gets_a_hint(string content, string message)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("bad.md", content);
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        var hint = Assert.Single(report.Diagnostics, d => d.Code == DiagnosticCode.FrontmatterFenceNotAtColumn0);
+        Assert.Equal(Severity.Warning, hint.Severity);
+        Assert.Equal(message, hint.Message);
+        Assert.Null(hint.Field);
+        Assert.Contains(report.Diagnostics, d => d.Code == DiagnosticCode.MissingType);
+    }
+
+    /// <summary>
+    /// No hint where line 1 is not a displaced fence: ordinary text, a real fence, an
+    /// empty frontmatter block whose BODY starts with an indented <c>---</c> (line 1 is
+    /// the real opening fence there), or a displaced line that is not exactly a fence.
+    /// </summary>
+    [Theory]
+    [InlineData("# Title\n\nbody\n")]
+    [InlineData("---\ntype: M\n---\nbody\n")]
+    [InlineData("---\n---\n ---\nbody\n")]
+    [InlineData(" ----\ntype: M\n---\nbody\n")]
+    [InlineData(" --- x\ntype: M\n---\nbody\n")]
+    [InlineData("\u00A0---\ntype: M\n---\nbody\n")]
+    [InlineData("")]
+    public void No_fence_hint_without_a_displaced_first_line_fence(string content)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("bad.md", content);
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+
+        Assert.DoesNotContain(report.Diagnostics, d => d.Code == DiagnosticCode.FrontmatterFenceNotAtColumn0);
+    }
+
     [Fact]
     public void Empty_type_string_is_an_error()
     {
@@ -211,6 +257,21 @@ public class ValidateTests
         var report = BundleValidator.Validate(bundle);
 
         Assert.Contains(report.Of(Severity.Warning), d => d.Field == "resource" && d.Code == DiagnosticCode.MissingRecommendedField);
+    }
+
+    /// <summary>
+    /// <see cref="Frontmatter.RecommendedFieldsFor"/> is the single definition
+    /// of the §4.1 carve-out the validator loop above now delegates to --
+    /// pinned directly here, independent of <c>BundleValidator</c>, so the two
+    /// stay in sync.
+    /// </summary>
+    [Fact]
+    public void RecommendedFieldsFor_omits_resource_for_an_attested_computation_without_the_key()
+    {
+        var fm = OkfDocument.Parse("---\ntype: Attested Computation\nruntime: python\n---\n").Frontmatter;
+        Assert.DoesNotContain("resource", Frontmatter.RecommendedFieldsFor(fm));
+        var withEmpty = OkfDocument.Parse("---\ntype: Attested Computation\nresource: {}\n---\n").Frontmatter;
+        Assert.Contains("resource", Frontmatter.RecommendedFieldsFor(withEmpty));
     }
 
     [Fact]
@@ -627,6 +688,107 @@ public class ValidateTests
             "---\ntype: Attested Computation\nruntime: bigquery\nexecutor: { resource: ./missing.md, receipt: [job_id] }\n---\n# Computation\n\n```\nSELECT 1\n```\n");
         var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
         Assert.Contains(report.Diagnostics, d => d.Severity == Severity.Warning && d.Message.Contains("not found") && d.Code == DiagnosticCode.FrontmatterPathMissing && d.Field == "executor.resource");
+    }
+
+    /// <summary>
+    /// The §6.2 concept-relative hint: a bare path that resolves from the
+    /// bundle root (S6.2-1) and doesn't exist there, but a file sits beside
+    /// the concept under that exact name -- the location a bare path resolved
+    /// to before this branch's bundle-root read. There is deliberately no
+    /// resolution fallback (Appendix A resolves bare paths from the root);
+    /// instead the diagnostic says where the file was found and what to write.
+    /// </summary>
+    [Fact]
+    public void A_missing_bare_path_that_exists_beside_the_concept_gets_a_concept_relative_hint()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+        Assert.Contains("a file exists at computations/query.sql; a bare path resolves from the bundle root (this implementation's reading of §6.2) — write ./query.sql for the concept-relative form", d.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The hint's first guard: a leading <c>/</c> or <c>\</c> is an explicit
+    /// statement that the path is root-relative (still
+    /// <see cref="FrontmatterResourceKind.BundleRelative"/>, per
+    /// <c>FrontmatterResourceClassifier.KindOf</c>), so suggesting the
+    /// concept-relative <c>./</c> form would contradict what was written --
+    /// even though a file happens to sit beside the concept under the bare
+    /// name. Covers both accepted root-relative spellings; the code handles
+    /// them symmetrically (<c>StartsWith('/') || StartsWith('\\')</c>).
+    /// </summary>
+    [Theory]
+    [InlineData("/query.sql")]
+    [InlineData("\\query.sql")]
+    public void A_rooted_bare_path_gets_no_concept_relative_hint_even_if_a_sibling_file_exists(string rootedRawPath)
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", $"---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: {rootedRawPath}\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+        Assert.DoesNotContain("a file exists at", d.Message);
+    }
+
+    /// <summary>
+    /// The hint's second guard, pinned at the black-box (<see cref="BundleValidator.Validate"/>)
+    /// level: an unadorned missing <c>./</c> path never gets a hint. This alone
+    /// does not prove the <see cref="FrontmatterResourceKind.ConceptRelative"/>
+    /// guard is load-bearing -- see
+    /// <see cref="ConceptRelativeHint_never_fires_for_an_already_concept_relative_path"/>
+    /// for why no <see cref="BundleValidator.Validate"/>-level test can prove
+    /// that, and for the test that actually does.
+    /// </summary>
+    [Fact]
+    public void A_missing_concept_relative_path_gets_no_hint()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: ./query.sql\n---\n");
+        tmp.Write("index.md", "---\ntype: Index\ntitle: I\ndescription: D\n---\n");
+        var report = BundleValidator.Validate(Bundle.Load(tmp.Path));
+        var d = Assert.Single(report.Diagnostics, x => x.Code == DiagnosticCode.FrontmatterPathMissing);
+        Assert.DoesNotContain("a file exists at", d.Message);
+    }
+
+    /// <summary>
+    /// The hint's second guard, genuinely pinned: <c>BundleValidator.ConceptRelativeHint</c>
+    /// is called directly with a hand-built <see cref="FrontmatterResourceKind.ConceptRelative"/>
+    /// resource whose candidate file DOES exist, bypassing <see cref="Bundle.TryResolveResource"/>
+    /// entirely.
+    ///
+    /// This is not a style choice: no test that goes through
+    /// <see cref="BundleValidator.Validate"/> can turn red by deleting the
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> guard. For that
+    /// route, the hint's candidate for a concept-relative resource is the
+    /// concept's own directory combined with the raw path -- byte-for-byte the
+    /// SAME candidate <see cref="Bundle.TryResolveResource"/> already tries for
+    /// that resource, since both use the concept's directory as the base for a
+    /// <see cref="FrontmatterResourceKind.ConceptRelative"/> path. Confirmed
+    /// empirically before writing this test: with the Kind check deleted from
+    /// <c>ConceptRelativeHint</c>, running this method's exact setup (a
+    /// concept at <c>computations/rev.md</c> with <c>computation: ./query.sql</c>
+    /// and a sibling <c>computations/query.sql</c>) through
+    /// <c>BundleValidator.Validate</c> produced zero
+    /// <see cref="DiagnosticCode.FrontmatterPathMissing"/> diagnostics -- the
+    /// sibling file resolves the reference outright
+    /// (<see cref="ResourceResolutionStatus.Resolved"/>), so
+    /// <c>ConceptRelativeHint</c> is never even reached, guard or no guard.
+    /// </summary>
+    [Fact]
+    public void ConceptRelativeHint_never_fires_for_an_already_concept_relative_path()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("computations/rev.md", "---\ntype: Attested Computation\ntitle: R\ndescription: D\nruntime: python\ncomputation: ./query.sql\n---\n");
+        tmp.Write("computations/query.sql", "SELECT 1");
+        var bundle = Bundle.Load(tmp.Path);
+        var concept = Assert.Single(bundle.Concepts);
+        var resource = new FrontmatterResource("computation", "./query.sql", FrontmatterResourceKind.ConceptRelative);
+
+        Assert.Null(BundleValidator.ConceptRelativeHint(bundle, concept, resource));
     }
 
     [Fact]

@@ -4,17 +4,18 @@ namespace OKF4net;
 /// <summary>Supplies the current date and instant, so staleness checks (§5.5) are testable and deterministic.</summary>
 public interface IOkfClock
 {
-    /// <summary>Today's date (UTC for <see cref="SystemClock"/>).</summary>
-    DateOnly Today { get; }
-
     /// <summary>
     /// The current instant, in UTC. §5 makes <c>stale_after</c> an instant, so
-    /// staleness is an instant comparison. Defaults to midnight UTC on
-    /// <see cref="Today"/> so that an implementer written before this member
-    /// existed keeps working unchanged; implementations that know the time of
-    /// day should override it.
+    /// staleness is an instant comparison — <c>Now</c>, not <c>Today</c>, is
+    /// the primitive a clock exists to supply. **Breaking (0.x):** before this
+    /// member was required, an implementer could supply only <see cref="Today"/>
+    /// and silently evaluate every §5.5 comparison at midnight UTC, with no
+    /// compile-time hint that its instant resolution was wrong.
     /// </summary>
-    DateTimeOffset Now => new(Today.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+    DateTimeOffset Now { get; }
+
+    /// <summary>Today's date, derived from <see cref="Now"/> (UTC).</summary>
+    DateOnly Today => DateOnly.FromDateTime(Now.UtcDateTime);
 }
 
 /// <summary>The real wall-clock, in UTC.</summary>
@@ -49,6 +50,6 @@ public sealed class FixedClock : IOkfClock
     /// <inheritdoc/>
     public DateTimeOffset Now { get; }
 
-    /// <inheritdoc/>
+    /// <summary>Today's date, derived from <see cref="Now"/> (UTC) -- kept semantically identical to the interface default, declared explicitly so a concretely-typed <c>FixedClock</c> local can call it directly (a default interface member is not promoted onto the implementing class's own member list).</summary>
     public DateOnly Today => DateOnly.FromDateTime(Now.UtcDateTime);
 }
