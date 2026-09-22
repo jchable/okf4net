@@ -309,4 +309,74 @@ public class OkfValidateChangesTests
         Assert.True(i0615 < i0601, "2026-06-15 must render before 2026-06-01 (descending order).");
         Assert.True(i0601 < i0528, "2026-06-01 must render before 2026-05-28 (descending order).");
     }
+
+    /// <summary>
+    /// The READ side of the same boundary. <c>okf_append_log</c> now refuses a
+    /// control character or a bidi control at the write, but a <c>log.md</c>
+    /// written by an older build, by another producer or by hand still carries
+    /// whatever it carries -- and <c>okf_changes_since</c> passed it straight
+    /// through to the model and to whatever renders the tool result.
+    ///
+    /// There is nothing to refuse on a read (the file exists, and the entries
+    /// are a human's words), so the rendering ESCAPES instead: each offending
+    /// character is replaced by its own <c>&lt;U+XXXX&gt;</c> name. That keeps
+    /// the line honest -- every word a human wrote survives, nothing is
+    /// silently dropped -- while nothing left in it can reorder the display or
+    /// drive a terminal. It is also the form a reader can act on: seeing
+    /// <c>&lt;U+202E&gt;</c> in an audit trail tells them exactly what is in
+    /// the file and that someone put it there.
+    ///
+    /// Numeric constants, not literals, for every payload.
+    /// </summary>
+    [Fact]
+    public void ChangesSince_escapes_control_and_bidi_characters_a_log_already_carries()
+    {
+        var esc = (char)0x001B;
+        var rlo = (char)0x202E;
+        var isolate = (char)0x2067;
+        var vtab = (char)0x000B;
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        tmp.Write(
+            "log.md",
+            "# Directory Update Log\n\n## 2026-06-15\n"
+            + "* **Upd" + esc + "[2Kate**: real" + rlo + "text" + isolate + " and" + vtab + "more.\n");
+        tools.InvalidateBundle();
+
+        var result = tools.ChangesSince("2020-01-01");
+
+        // Nothing that reorders the display or drives a terminal survives.
+        Assert.DoesNotContain(esc.ToString(), result, StringComparison.Ordinal);
+        Assert.DoesNotContain(rlo.ToString(), result, StringComparison.Ordinal);
+        Assert.DoesNotContain(isolate.ToString(), result, StringComparison.Ordinal);
+        Assert.DoesNotContain(vtab.ToString(), result, StringComparison.Ordinal);
+        // Each one is NAMED rather than dropped: the whole entry, both fields,
+        // reads back with every human-written word intact.
+        Assert.Contains(
+            "- **Upd<U+001B>[2Kate**: real<U+202E>text<U+2067> and<U+000B>more.",
+            result,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// And the escaping must not touch anything else: accents, CJK, a non-BMP
+    /// emoji (a surrogate pair), right-to-left TEXT and a tab all read back
+    /// verbatim. A tab is deliberately exempt on this side too, matching the
+    /// write (see <c>OkfWriteToolsTests.AppendLog_accepts_a_tab_and_writes_it_verbatim</c>).
+    /// </summary>
+    [Fact]
+    public void ChangesSince_leaves_ordinary_content_including_rtl_and_a_tab_untouched()
+    {
+        var tab = (char)0x0009;
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var text = "日本語 " + char.ConvertFromUtf32(0x1F680) + " تحديث" + tab + "עדכון (fusée).";
+        tmp.Write("log.md", "# Directory Update Log\n\n## 2026-06-15\n* **Mise à jour**: " + text + "\n");
+        tools.InvalidateBundle();
+
+        var result = tools.ChangesSince("2020-01-01");
+
+        Assert.Contains("- **Mise à jour**: " + text, result, StringComparison.Ordinal);
+        Assert.DoesNotContain("<U+", result, StringComparison.Ordinal);
+    }
 }

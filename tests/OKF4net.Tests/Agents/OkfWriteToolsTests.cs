@@ -640,29 +640,49 @@ public class OkfWriteToolsTests
 
     /// <summary>
     /// The third treatment, and the boundary between all three: a control
-    /// character or a bidirectional override is REFUSED outright -- neither
-    /// written nor echoed.
+    /// character (TAB excepted) or ANY bidirectional control character is
+    /// REFUSED outright -- neither written nor echoed.
     ///
     /// <c>\n</c>/<c>\r</c> are refused because they split <c>log.md</c> on
     /// re-read (§9); U+000C/U+0085/U+2028/U+2029 are folded because they split
-    /// only a downstream renderer and most callers cannot see them; ESC,
-    /// backspace, BEL and U+202E are refused because none has a legitimate use
-    /// in a log entry and each forges what a HUMAN reading the audit trail
-    /// sees -- <c>ESC[2K ESC[1A</c> rewrites the terminal line <c>cat log.md</c>
-    /// just printed, and U+202E reorders the stored text on display. Folding
-    /// them to a space would silently rewrite the caller's words; persisting
-    /// them writes a rendering attack into the user's own repository.
+    /// only a downstream renderer and most callers cannot see them; the
+    /// characters below are refused because none has a legitimate use in a log
+    /// entry and each forges what a HUMAN reading the audit trail sees --
+    /// <c>ESC[2K ESC[1A</c> rewrites the terminal line <c>cat log.md</c> just
+    /// printed, backspace erases it, and every bidi control reorders the
+    /// stored text on display. Folding them to a space would silently rewrite
+    /// the caller's words; persisting them writes a rendering attack into the
+    /// user's own repository.
     ///
-    /// Numeric constants, not literals: a literal ESC or U+202E in source is
-    /// invisible in every editor and diff that would have to review it -- the
-    /// convention <c>Internal/LineSafeText.cs</c> sets.
+    /// The bidi set is the whole class, not just the two overrides: an
+    /// embedding (U+202B) or an isolate (U+2067) reorders a rendered line as
+    /// effectively as U+202E, and the marks reorder a neutral run. Ordinary
+    /// right-to-left TEXT needs none of them -- pinned by
+    /// <see cref="AppendLog_still_accepts_ordinary_right_to_left_text"/>.
+    ///
+    /// Numeric constants, not literals: every payload here is invisible in
+    /// every editor and diff that would have to review it -- the convention
+    /// <c>Internal/LineSafeText.cs</c> sets.
     /// </summary>
     [Theory]
     [InlineData(0x001B)] // ESC -- forges appearance in a terminal
     [InlineData(0x0008)] // BACKSPACE -- erases what was already printed
     [InlineData(0x0007)] // BEL
-    [InlineData(0x202E)] // RIGHT-TO-LEFT OVERRIDE -- reorders the display
-    public void AppendLog_refuses_a_control_character_or_a_bidi_override(int codePoint)
+    [InlineData(0x000B)] // VERTICAL TAB -- a control ReplaceLineEndings does NOT fold
+    [InlineData(0x007F)] // DELETE
+    [InlineData(0x061C)] // ARABIC LETTER MARK
+    [InlineData(0x200E)] // LEFT-TO-RIGHT MARK
+    [InlineData(0x200F)] // RIGHT-TO-LEFT MARK
+    [InlineData(0x202A)] // LEFT-TO-RIGHT EMBEDDING
+    [InlineData(0x202B)] // RIGHT-TO-LEFT EMBEDDING
+    [InlineData(0x202C)] // POP DIRECTIONAL FORMATTING
+    [InlineData(0x202D)] // LEFT-TO-RIGHT OVERRIDE
+    [InlineData(0x202E)] // RIGHT-TO-LEFT OVERRIDE
+    [InlineData(0x2066)] // LEFT-TO-RIGHT ISOLATE
+    [InlineData(0x2067)] // RIGHT-TO-LEFT ISOLATE
+    [InlineData(0x2068)] // FIRST STRONG ISOLATE
+    [InlineData(0x2069)] // POP DIRECTIONAL ISOLATE
+    public void AppendLog_refuses_a_control_character_or_a_bidi_control(int codePoint)
     {
         var c = (char)codePoint;
         using var tmp = new TempDir();
@@ -707,6 +727,61 @@ public class OkfWriteToolsTests
         var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
         Assert.Contains("* **" + Kind + "**: " + text, onDisk, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Refusing the twelve bidi CONTROL characters must not refuse
+    /// right-to-left TEXT, which is what a reader would actually write: Arabic
+    /// and Hebrew letters carry their own strong direction and need no
+    /// formatting character at all. This is the assertion that keeps the guard
+    /// from being "widened" into a ban on RTL script.
+    /// </summary>
+    [Fact]
+    public void AppendLog_still_accepts_ordinary_right_to_left_text()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+        const string Kind = "تحديث";
+        const string Text = "עדכון של מדד يومي.";
+
+        var result = tools.AppendLog(Kind, Text);
+
+        Assert.StartsWith("Appended", result);
+        Assert.Contains(Kind, result, StringComparison.Ordinal);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        Assert.Contains("* **" + Kind + "**: " + Text, onDisk, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// TAB is the one control character a log entry may carry, and it is kept
+    /// VERBATIM rather than folded to a space.
+    ///
+    /// It is a control character, so reusing the shared predicate refused it
+    /// -- a side effect of that reuse, not a decision anyone took. The
+    /// decision is: accept it. Kept as-is rather than folded because this
+    /// write only rewrites a caller's words when the character would
+    /// otherwise break structure, and a tab cannot: <c>ChangeLog.Parse</c>
+    /// splits on LF, a tab is not a line terminator, and it can never reach
+    /// the START of a line (the writer always emits <c>* </c> or <c>* **</c>
+    /// first), which is the only position where markdown would read it as an
+    /// indented code block. The read side leaves it alone for the same reason.
+    /// </summary>
+    [Fact]
+    public void AppendLog_accepts_a_tab_and_writes_it_verbatim()
+    {
+        var tab = (char)0x0009;
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Metric\n---\n\nbody\n");
+        var tools = new OkfBundleTools(tmp.Path);
+
+        var result = tools.AppendLog("Upd" + tab + "ate", "real" + tab + "text");
+
+        Assert.StartsWith("Appended", result);
+        var onDisk = File.ReadAllText(Path.Combine(tmp.Path, "log.md"));
+        // Not folded to a space: the tab is still there, in both fields.
+        Assert.Contains("* **Upd" + tab + "ate**: real" + tab + "text", onDisk, StringComparison.Ordinal);
+    }
+
 
     // log.md always lives directly at BundleRoot, so HasReparsePointAncestor
     // gives no protection here (its walk starts at BundleRoot itself and

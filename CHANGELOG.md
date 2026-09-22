@@ -1935,27 +1935,55 @@ and this project adheres to
   failing an otherwise good call over a character most callers cannot see
   would cost more than it buys.
 - **And one character class over: `okf_append_log` now REFUSES a control
-  character or a bidirectional override in either field.** The fold above
-  settled the six *line separators*; it left open the class this repo's own
-  shared predicate names first. ESC, backspace, BEL and U+202E reached neither
-  `LineSafeText.ContainsControlCharacter` nor anything equivalent, so they were
-  written verbatim into the user's `log.md` and echoed back in the success
-  message (executed, hexdumped). `ESC[2K ESC[1A` rewrites the terminal line
-  `cat log.md` just printed and backspace erases it, while U+202E reorders the
-  stored text on display — and a `log.md` is an audit trail a HUMAN reads, so
-  what is forged is that reading. The guard now runs the shared predicate (one
-  predicate, every call site) over the FOLDED value — by then U+000C, U+0085,
-  U+2028 and U+2029 are spaces, so the decision above stands untouched — plus a
-  local check for the two bidirectional overrides U+202D/U+202E, which
+  character or a bidirectional control character in either field.** The fold
+  above settled the six *line separators*; it left open the class this repo's
+  own shared predicate names first. ESC, backspace, BEL and U+202E reached
+  neither `LineSafeText.ContainsControlCharacter` nor anything equivalent, so
+  they were written verbatim into the user's `log.md` and echoed back in the
+  success message (executed, hexdumped). `ESC[2K ESC[1A` rewrites the terminal
+  line `cat log.md` just printed and backspace erases it, while a bidi control
+  reorders the stored text on display — and a `log.md` is an audit trail a
+  HUMAN reads, so what is forged is that reading. The guard now runs the shared
+  predicate (one predicate, every call site) over the FOLDED value — by then
+  U+000C, U+0085, U+2028 and U+2029 are spaces, so the decision above stands
+  untouched — plus a local check for the **twelve** bidirectional control
+  characters (U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069), which
   `char.IsControl` does not classify and which are therefore NOT added to the
-  shared predicate that also gates §7 actors. Three treatments, one boundary:
-  `\n`/`\r` refused (they forge §9 history on re-read), those four soft
-  separators folded (they only split a downstream renderer), every other
-  control character and the two overrides refused (no legitimate use in a log
-  entry). Nothing is written and nothing is echoed on a refusal. The limit,
-  stated plainly: this closes the WRITE. A `log.md` an earlier build already
-  wrote is not cleaned retroactively, and `okf_changes_since` still echoes what
-  it finds there, folding line terminators only.
+  shared predicate that also gates §7 actors. The whole class, not just the two
+  overrides: an embedding or an isolate reorders a rendered line as effectively
+  as U+202E, and no reader of a rendered `log.md` can see that distinction.
+  Ordinary right-to-left TEXT is unaffected — Arabic and Hebrew letters carry
+  their own strong direction and need none of these (pinned by a test).
+  **TAB is accepted, verbatim**, as the one control character a log message may
+  legitimately carry: it is exempted from the check (the predicate itself is
+  untouched — it sees a probe in which tabs are spaces) and it is not folded
+  either, because the write rewrites a caller's words only when the character
+  would otherwise break structure, and a tab cannot. So: `\n`/`\r` refused
+  (they forge §9 history on re-read), the four soft separators folded (they
+  only split a downstream renderer), tab accepted as-is, every other control
+  character and every bidi control refused. Nothing is written and nothing is
+  echoed on a refusal.
+- **`okf_changes_since` now escapes what an existing `log.md` already carries,
+  instead of passing it through.** The guard above closes the WRITE; a `log.md`
+  written by an older build, by another producer or by hand still carries
+  whatever it carries, and this tool rendered its entries with a line-terminator
+  fold only — so ESC, backspace and every bidi control reached the model and
+  whatever renders the tool result. A read has nothing to refuse (the file
+  exists, and the entries are a human's words), so both fields now render each
+  such character VISIBLY as `<U+XXXX>`: every word a human wrote survives —
+  nothing is silently dropped, which an audit trail's own reader must never do
+  — while nothing left in the line can reorder a display or drive a terminal.
+  It is also the form a reader can act on: `<U+202E>` in a rendered entry says
+  exactly what is in the file and that someone put it there. TAB is exempt on
+  this side too, matching the write. The date heading needs nothing: only
+  `ChangeLog.IsIsoDate` headings are rendered, and that grammar admits digits
+  and hyphens only. Scoped to the `log.md` entry readers: the same exposure
+  remains wherever `OneLine` alone renders text this library did not write —
+  the log file's own relative PATH in `## {path}` and `> Skipped {path}`,
+  `okf_regenerate_indexes`' path bullets, `okf_read_concept`'s verbatim concept
+  BODY, frontmatter values, contract and receipt fields, and validator
+  diagnostics — which is the established echo-only posture, recorded here
+  rather than widened silently.
 - **`okf_regenerate_indexes`' own bullet list is folded too.** It rendered
   `- {relative path}` raw, and a directory name may carry a soft line
   terminator (NTFS and POSIX both accept one): a bundle with a directory named

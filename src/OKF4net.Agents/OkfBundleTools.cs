@@ -834,23 +834,38 @@ public sealed class OkfBundleTools
     /// a §9 line, they only split a downstream renderer, and most callers
     /// cannot see them, so failing a call over one would cost more than it
     /// buys.</item>
-    /// <item>Every other control character (ESC, backspace, BEL, the rest of
-    /// C0/C1) and the bidirectional overrides U+202D/U+202E —
-    /// <b>REJECTED</b>. None has a legitimate use in a log entry, and each
-    /// forges what a HUMAN reading the audit trail sees rather than what it
-    /// says: <c>ESC[2K ESC[1A</c> rewrites the terminal line <c>cat log.md</c>
-    /// just printed, backspace erases it, and U+202E reorders the stored text
-    /// on display. Folding them would silently rewrite the caller's words, and
-    /// persisting them writes a rendering attack into the repository.</item>
+    /// <item>Every other control character — <b>REJECTED</b>: ESC, backspace,
+    /// BEL, VT, DEL and the rest of C0/C1. None has a legitimate use in a log
+    /// entry, and each forges what a HUMAN reading the audit trail sees rather
+    /// than what it says: <c>ESC[2K ESC[1A</c> rewrites the terminal line
+    /// <c>cat log.md</c> just printed, backspace erases it. Folding them would
+    /// silently rewrite the caller's words, and persisting them writes a
+    /// rendering attack into the repository.</item>
+    /// <item>Every bidirectional CONTROL character — <b>REJECTED</b>: U+061C,
+    /// U+200E, U+200F, U+202A–U+202E and U+2066–U+2069
+    /// (<see cref="IsBidiControl"/>). Each reorders the text a reader is shown
+    /// without changing the bytes stored, so the <c>log.md</c> a human reads
+    /// and the <c>log.md</c> a tool reads disagree. Ordinary right-to-left
+    /// TEXT is NOT affected: Arabic and Hebrew letters carry their own strong
+    /// direction and need none of these.</item>
+    /// <item><c>\t</c> — <b>ACCEPTED, verbatim.</b> The one control character
+    /// a log message may legitimately carry. Not folded either: this guard
+    /// rewrites a caller's words only when the character would otherwise break
+    /// structure, and a tab cannot — <c>ChangeLog.Parse</c> splits on LF, a tab
+    /// is not a terminator, and it can never reach the START of a line (the
+    /// renderer always emits <c>* </c> first), the only position where
+    /// markdown would read it as an indented code block.</item>
     /// </list>
     ///
     /// <para>The control-character half reuses
     /// <see cref="LineSafeText.ContainsControlCharacter"/> — the repo's shared
     /// predicate, already used at <c>okf_verify</c>'s <c>by</c> — rather than a
     /// second character list here, which is exactly the drift that predicate's
-    /// own doc comment exists to prevent. It also matches U+2028/U+2029, so it
-    /// runs over the FOLDED value: by then those four are spaces, and only the
-    /// characters this guard means to refuse are left.</para>
+    /// own doc comment exists to prevent. Two adjustments are made to the value
+    /// it sees, not to the predicate: it runs over the FOLDED text (by then the
+    /// four soft separators are spaces, and the predicate would otherwise
+    /// refuse U+2028/U+2029 and undo the fold), and over a probe in which tabs
+    /// are spaces (the exemption above). The value WRITTEN keeps its tabs.</para>
     /// </summary>
     /// <param name="value">The argument's value.</param>
     /// <param name="fieldName">The argument's name, as it appears in the message.</param>
@@ -872,58 +887,43 @@ public sealed class OkfBundleTools
                 + "forge fake '## date' or '* entry' lines in log.md).";
         }
 
-        // Over the FOLDED value, not the raw one: ContainsControlCharacter
-        // also matches U+2028/U+2029, which the fold turns into spaces --
-        // guarding the folded text is what lets this reuse the shared
-        // predicate unchanged instead of forking a second character list.
-        // Everything left here is a character the write refuses outright.
         var folded = FoldLogField(value);
+        var probe = folded.Replace('\t', ' ');
 
-        if (LineSafeText.ContainsControlCharacter(folded))
+        if (LineSafeText.ContainsControlCharacter(probe))
         {
-            return $"Error: invalid {fieldName} — it must not contain a control character (ESC, "
-                + "backspace and BEL forge what a human reading log.md sees).";
+            return $"Error: invalid {fieldName} — it must not contain a control character other than a "
+                + "tab (ESC, backspace and BEL forge what a human reading log.md sees).";
         }
 
-        if (ContainsBidiOverride(folded))
+        if (ContainsBidiControl(folded))
         {
-            return $"Error: invalid {fieldName} — it must not contain a bidirectional override "
-                + "(U+202D/U+202E reorder the stored text on display).";
+            return $"Error: invalid {fieldName} — it must not contain a bidirectional control character "
+                + "(U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069 reorder the stored text on "
+                + "display; ordinary right-to-left text needs none of them).";
         }
 
         return null;
     }
 
     /// <summary>
-    /// True when the value carries a Unicode bidirectional OVERRIDE — U+202D
-    /// (LEFT-TO-RIGHT OVERRIDE) or U+202E (RIGHT-TO-LEFT OVERRIDE) — which
-    /// reorders the characters a reader is shown without changing the bytes
-    /// stored, so the <c>log.md</c> a human reads and the <c>log.md</c> a tool
-    /// reads disagree.
+    /// True when the value carries any Unicode bidirectional CONTROL
+    /// character — see <see cref="IsBidiControl"/> for the list and for why
+    /// the whole class is refused rather than the two overrides alone.
     ///
-    /// Local to this guard rather than added to
-    /// <see cref="LineSafeText.ContainsControlCharacter"/>: neither code point
-    /// is a <see cref="char.IsControl(char)"/> character, so putting them there
-    /// would widen the shared cross-assembly predicate that also gates §7
-    /// actors and <c>at</c> timestamps — a decision for those call sites, not
-    /// one this tool may take on their behalf.
-    ///
-    /// Deliberately the two OVERRIDES only. The neighbouring bidi formatting
-    /// characters — the embeddings U+202A/U+202B, the terminator U+202C, the
-    /// isolates U+2066–U+2069, and the marks U+200E/U+200F/U+061C — can
-    /// reorder a rendering too and are NOT rejected here: same class, but
-    /// widening the rule past "overrides" is a decision that has not been
-    /// taken. Recorded rather than assumed.
+    /// Local to this tool rather than added to
+    /// <see cref="LineSafeText.ContainsControlCharacter"/>: none of these code
+    /// points is a <see cref="char.IsControl(char)"/> character, so putting
+    /// them there would widen the shared cross-assembly predicate that also
+    /// gates §7 actors and <c>at</c> timestamps — a decision for those call
+    /// sites, not one this tool may take on their behalf.
     /// </summary>
     /// <param name="value">The guarded argument's value.</param>
-    private static bool ContainsBidiOverride(string value)
+    private static bool ContainsBidiControl(string value)
     {
         foreach (var c in value)
         {
-            // Numeric constants on purpose: a literal U+202D/U+202E in source
-            // is invisible in every editor and diff that would review this
-            // line (same convention as Internal/LineSafeText.cs).
-            if (c is (char)0x202D or (char)0x202E)
+            if (IsBidiControl(c))
             {
                 return true;
             }
@@ -931,6 +931,36 @@ public sealed class OkfBundleTools
 
         return false;
     }
+
+    /// <summary>
+    /// The twelve Unicode bidirectional control characters: the marks U+061C
+    /// (ALM), U+200E (LRM) and U+200F (RLM); the embeddings and overrides
+    /// U+202A (LRE), U+202B (RLE), U+202C (PDF), U+202D (LRO) and U+202E
+    /// (RLO); and the isolates U+2066 (LRI), U+2067 (RLI), U+2068 (FSI) and
+    /// U+2069 (PDI).
+    ///
+    /// <para>The WHOLE class, not just the two overrides: an embedding or an
+    /// isolate reorders a rendered line as effectively as U+202E, a
+    /// terminator can unbalance one an author opened, and a mark reorders a
+    /// neutral run. A rule that stopped at "override" would refuse
+    /// <c>RLO</c> and pass <c>RLE</c>, which is not a distinction any reader
+    /// of a rendered <c>log.md</c> can see.</para>
+    ///
+    /// <para><b>One list, two call sites</b> — <see cref="ContainsBidiControl"/>
+    /// (the write guard) and <see cref="NeedsVisibleEscape"/> (the read
+    /// rendering). They must agree: a character the write refuses is exactly a
+    /// character the read has to make visible when an older build, another
+    /// producer or a human already put it in the file.</para>
+    /// </summary>
+    /// <param name="c">The character to classify.</param>
+    private static bool IsBidiControl(char c) =>
+        // Numeric constants on purpose: every one of these is invisible in
+        // source, in a diff and in a review (the convention
+        // Internal/LineSafeText.cs sets).
+        c is (char)0x061C or (char)0x200E or (char)0x200F
+            or (char)0x202A or (char)0x202B or (char)0x202C or (char)0x202D or (char)0x202E
+            or (char)0x2066 or (char)0x2067 or (char)0x2068 or (char)0x2069;
+
 
     /// <summary>
     /// The four separators <see cref="GuardLogField"/> deliberately does NOT
@@ -1575,8 +1605,18 @@ public sealed class OkfBundleTools
     /// — "a literal newline cannot get in" is not the test; "nothing
     /// downstream can start a new line" is.</para>
     ///
-    /// <para><c>day.Date</c> needs no fold: only dates matching
-    /// <see cref="ChangeLog.IsIsoDate"/> reach here.</para>
+    /// <para>Folding is not the whole job, though. It answers "nothing
+    /// downstream can start a new line"; it says nothing about ESC, backspace
+    /// or a bidi control, which a <c>log.md</c> written by an older build, by
+    /// another producer or by hand may carry and which forge what a HUMAN
+    /// reading this report sees. Both fields therefore go through
+    /// <see cref="OneLineLogText"/>, which folds AND names each such character
+    /// visibly as <c>&lt;U+XXXX&gt;</c> — see that method for why a read
+    /// escapes where the write (<see cref="GuardLogField"/>) refuses.</para>
+    ///
+    /// <para><c>day.Date</c> needs neither: only dates matching
+    /// <see cref="ChangeLog.IsIsoDate"/> reach here, and that grammar admits
+    /// digits and hyphens only.</para>
     /// </summary>
     private static void AppendLogDay(StringBuilder sb, LogDay day)
     {
@@ -1585,11 +1625,11 @@ public sealed class OkfBundleTools
         {
             if (entry.Kind is not null)
             {
-                sb.Append("- **").Append(OneLine(entry.Kind)).Append("**: ").Append(OneLine(entry.Text)).Append('\n');
+                sb.Append("- **").Append(OneLineLogText(entry.Kind)).Append("**: ").Append(OneLineLogText(entry.Text)).Append('\n');
             }
             else
             {
-                sb.Append("- ").Append(OneLine(entry.Text)).Append('\n');
+                sb.Append("- ").Append(OneLineLogText(entry.Text)).Append('\n');
             }
         }
     }
@@ -1844,6 +1884,71 @@ public sealed class OkfBundleTools
     /// </summary>
     /// <param name="value">Text from outside this library: a bundle, a receipt, an attester.</param>
     private static string OneLine(string value) => value.ReplaceLineEndings(" ");
+
+    /// <summary>
+    /// <see cref="OneLine"/>, plus every REMAINING control character and every
+    /// bidi control rendered visibly as <c>&lt;U+XXXX&gt;</c>: the read-side
+    /// counterpart of <see cref="GuardLogField"/>, for <c>log.md</c> text this
+    /// process did not write.
+    ///
+    /// <para><b>Why escape rather than strip, fold or refuse.</b> A read has
+    /// nothing to refuse — the file exists, and its entries are a human's
+    /// words. Stripping or folding would silently delete what someone wrote,
+    /// which an audit trail's own reader must never do. Naming each character
+    /// instead keeps every word intact, makes the line inert (nothing left can
+    /// reorder the display or drive a terminal), and is the form a reader can
+    /// ACT on: <c>&lt;U+202E&gt;</c> in a rendered entry says exactly what is
+    /// in the file and that someone put it there, where a dropped character
+    /// would have said nothing at all.</para>
+    ///
+    /// <para>TAB is exempt on both sides (see <see cref="GuardLogField"/>):
+    /// the write accepts it verbatim, so the read must not disfigure it.
+    /// U+000C/U+0085/U+2028/U+2029 never reach the escaper as themselves —
+    /// <see cref="OneLine"/> has already folded them to spaces, which is the
+    /// established rule for this sink; everything the fold leaves behind is a
+    /// character that has no business in a rendered line at all.</para>
+    ///
+    /// <para>Scoped to the <c>log.md</c> readers this round. The same
+    /// exposure exists wherever <see cref="OneLine"/> alone renders text this
+    /// library did not write (concept bodies, titles, receipt values, and the
+    /// relative PATHS printed by this method's own callers) — folding a line
+    /// terminator was never a claim about ESC. Widening it is a separate
+    /// decision, not an oversight here.</para>
+    /// </summary>
+    /// <param name="value">Text read back out of a <c>log.md</c>.</param>
+    private static string OneLineLogText(string value)
+    {
+        var folded = OneLine(value);
+        if (!folded.Any(NeedsVisibleEscape))
+        {
+            return folded;
+        }
+
+        var sb = new StringBuilder(folded.Length + 8);
+        foreach (var c in folded)
+        {
+            if (NeedsVisibleEscape(c))
+            {
+                sb.Append("<U+").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)).Append('>');
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The read-side twin of <see cref="GuardLogField"/>'s two rejections: a
+    /// control character or a bidi control, TAB excepted exactly as the write
+    /// excepts it. <see cref="IsBidiControl"/> is the same single list both
+    /// sides read, so the two cannot drift.
+    /// </summary>
+    /// <param name="c">The character to classify.</param>
+    private static bool NeedsVisibleEscape(char c) =>
+        c != '\t' && (char.IsControl(c) || IsBidiControl(c));
 
     /// <summary>
     /// A concept's display title — its frontmatter <c>title</c>, or
