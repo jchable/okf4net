@@ -1888,12 +1888,37 @@ and this project adheres to
   heading of a generated level listing; the shared
   `Concept '…' not found.` line behind `okf_read_concept`, `okf_graph`,
   `okf_get_computation` and `okf_run_computation` (`GuardConceptId` rejects only
-  a NUL); and `okf_verify`'s refusal for an id that does not parse, whose
-  message is `DebugQuote`-quoted — which escapes every Cc control but not
-  U+2028/U+2029, since those are Zl/Zp.
+  a NUL); and `okf_verify`'s refusal for an id that does not parse (see the
+  `DebugQuote` entry below, which is where that one is actually fixed).
   Unchanged on purpose: `okf_read_concept`'s concept **body** still does not go
   through `OneLine` at all, exactly as the `okf_changes_since` entry below
   already records — this round neither widens nor narrows that residue.
+- **`DebugQuote` now escapes U+2028 and U+2029, so the invalid-id refusal
+  cannot forge a line through ANY of the three tools that render it.** The
+  helper escaped every Cc control but left the two separators alone, because
+  they are General Categories Zl and Zp — and `LineSafeText` has always counted
+  them as line-breaking, so the two helpers disagreed. Every message built
+  through `DebugQuote` is a LINE in someone's output, so an id of
+  `metrics/nope` + U+2028 + `recorded metrics/dau  human:ada  …` quoted itself
+  into a forged `recorded …` line for a run that wrote nothing (executed). The
+  same `ValidateConceptTarget` sentence is rendered by `okf_verify`, by
+  `okf_write_concept` and by the `okf verify` CLI verb, so it is fixed **in the
+  helper**, not folded at each renderer: the local fold added to `okf_verify`
+  minutes earlier is gone, and its regression test now guards the shared helper
+  through that tool. Zl/Zp only — an ordinary or non-breaking space (Zs) does
+  not end a line and is still emitted as itself. No golden moved: no fixture or
+  sample bundle contains either character.
+- **The two catch-alls in `OKF4net.Agents` fold their exception message.**
+  `RunTool` — the single "tools never throw toward the LLM" enforcement point —
+  and `RunComputationAsync`'s own copy of it both rendered `ex.Message` raw. An
+  exception message is not library boilerplate: `BundleLoadException`
+  interpolates the bundle root into `bundle root is not a directory: {root}`,
+  and a directory name may carry U+2028 on NTFS and POSIX alike with no
+  privilege needed, which turned a one-line `Error:` report into two
+  (executed). `ParameterValues.TryNormalize`'s error text is deliberately left
+  alone and now says why in a comment: all three of its messages are fixed
+  literals with nothing interpolated, so a fold there would be provably a
+  no-op.
 - **`okf_run_computation` no longer lets a bundle, a container or a warehouse
   forge a line in the outcome the model reads.** §10.5 step 6 makes
   `- displayable: …` and `- verdict: …` the gate an agent checks before showing

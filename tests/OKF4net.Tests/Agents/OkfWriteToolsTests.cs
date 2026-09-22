@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using OKF4net.Agents;
+using OKF4net.Attestation;
 
 namespace OKF4net.Tests.Agents;
 
@@ -965,5 +966,109 @@ public class OkfWriteToolsTests
         // unaffected -- this asserts the call succeeds and a subsequent
         // GetBundle() still reflects a clean reload.
         Assert.Equal(4, tools.GetBundle().Count);
+    }
+
+    /// <summary>
+    /// The PR #108 defect reached through a third tool. <c>okf_write_concept</c>
+    /// is a pure delegate onto <c>BundleConceptWriter.WriteConcept</c>, whose
+    /// invalid-id refusal is <c>ValidateConceptTarget</c>'s
+    /// <c>DebugQuote</c>-quoted sentence — the SAME message
+    /// <c>okf_verify</c> and the <c>okf verify</c> CLI verb render.
+    /// <c>DebugQuote</c> escaped every Cc control but not U+2028/U+2029, which
+    /// are Zl/Zp, so a soft separator in the id forged a second line in a
+    /// refusal that wrote nothing. Fixed in <c>DebugQuote</c> itself rather
+    /// than folded at each of the three renderers, which is why the assertion
+    /// here is on the ESCAPE and not on a fold.
+    ///
+    /// <para>Nothing is written either way: the id never resolves to a path.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(0x2028, "2028")]
+    [InlineData(0x2029, "2029")]
+    public void WriteConcept_escapes_a_soft_line_separator_in_an_invalid_id(int separator, string hex)
+    {
+        using var tmp = new TempDir();
+        var tools = NewToolsOverFixtureCopy(tmp);
+        var forged = "tables/x" + (char)separator + "Written tables/payroll (created).";
+
+        var result = tools.WriteConcept(forged, ValidFrontmatter, "body\n");
+
+        Assert.Equal(
+            "Error: invalid concept id \"tables/x\\u{" + hex + "}Written tables/payroll (created).\". "
+            + "Concept ids are '/'-separated segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.",
+            result);
+        Assert.DoesNotContain(
+            result.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith("Written ", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// <c>RunTool</c> is the catch-all every bundle-loading tool returns
+    /// through, and it rendered the exception's message raw. That message is
+    /// not library boilerplate: <c>BundleLoadException</c> interpolates the
+    /// bundle ROOT into <c>bundle root is not a directory: {root}</c>, and a
+    /// directory name may carry U+2028 on NTFS and POSIX alike with no
+    /// privilege needed — so the one-line <c>Error:</c> report became two.
+    ///
+    /// <para>Reached by deleting the root after construction: the constructor
+    /// requires it to exist and the tool reloads lazily, which is a real
+    /// situation and not only a contrived one.</para>
+    /// </summary>
+    /// <summary>
+    /// The forged payload is a plain <c>FORGED…</c> marker rather than a
+    /// convincing <c>- displayable: yes</c> or <c>Written …</c> line, because
+    /// this one has to survive being a real DIRECTORY NAME: Windows forbids
+    /// <c>:</c> outright and treats <c>/</c> as a separator, so a lifelike
+    /// payload either fails to create or silently becomes two nested
+    /// directories. U+2028 itself is legal in a name on NTFS and POSIX alike,
+    /// which is the property that matters. The load-bearing assertion is
+    /// <see cref="Assert.Single{T}(System.Collections.Generic.IEnumerable{T})"/>
+    /// over the split: the whole result is ONE line, whatever the attacker
+    /// would have put on the second.
+    /// </summary>
+    private const string ForgedNameMarker = "FORGED-second-line";
+
+    [Fact]
+    public void A_bundle_load_failure_cannot_forge_a_line_through_the_catch_all()
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "b" + LineSeparator + ForgedNameMarker);
+        Directory.CreateDirectory(root);
+        var tools = new OkfBundleTools(root);
+        Directory.Delete(root);
+
+        var result = tools.Search("anything");
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            result.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith(ForgedNameMarker, StringComparison.Ordinal));
+        Assert.Single(result.Split(EveryLineTerminator));
+    }
+
+    /// <summary>
+    /// <c>RunComputationAsync</c> does not go through <c>RunTool</c> — it is
+    /// async and owns its own cancellation arms — so it carries a SECOND copy
+    /// of that catch-all, which needed the same fold. <c>GetBundle()</c> is
+    /// called inside its <c>try</c>, so the same deleted-root route reaches it.
+    /// </summary>
+    [Fact]
+    public async Task A_bundle_load_failure_cannot_forge_a_line_through_the_async_catch_all()
+    {
+        using var tmp = new TempDir();
+        var root = Path.Combine(tmp.Path, "b" + LineSeparator + ForgedNameMarker);
+        Directory.CreateDirectory(root);
+        var tools = new OkfBundleTools(
+            root,
+            new AttestationOrchestrator(new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime>())));
+        Directory.Delete(root);
+
+        var result = await tools.RunComputationAsync("c/rev", new Dictionary<string, object?>());
+
+        Assert.StartsWith("Error: ", result, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            result.Split(EveryLineTerminator),
+            line => line.TrimStart().StartsWith(ForgedNameMarker, StringComparison.Ordinal));
+        Assert.Single(result.Split(EveryLineTerminator));
     }
 }

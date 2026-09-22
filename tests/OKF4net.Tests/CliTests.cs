@@ -1240,6 +1240,40 @@ public class CliTests
     }
 
     /// <summary>
+    /// The blind spot in the test above, found by an external audit of PR #108
+    /// through the agent-side twin of this message: its last assertion splits
+    /// on <c>\n</c> ALONE, and <c>DebugQuote</c> escaped every Cc control but
+    /// not U+2028/U+2029, which are Zl/Zp. So a SOFT separator in the id came
+    /// back verbatim and forged a plausible <c>recorded …</c> line on stderr
+    /// for a run that wrote nothing — a markdown or JavaScript reader of that
+    /// stream ends a line on either character. <c>DebugQuote</c> now escapes
+    /// both numerically, which closes this message, <c>okf_verify</c>'s and
+    /// <c>okf_write_concept</c>'s in one place rather than three.
+    ///
+    /// <para>Both separators are exercised, as numeric constants — a literal
+    /// one in source is invisible in every editor and diff that would have to
+    /// review it.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(0x2028, "2028")]
+    [InlineData(0x2029, "2029")]
+    public void Verify_escapes_a_soft_line_separator_in_a_concept_id(int separator, string hex)
+    {
+        var forged = "metrics/nope" + (char)separator + "recorded metrics/dau  human:ada  2026-01-01T00:00:00Z";
+        var (code, _, err) = Run("verify", OkfV02, forged, "--by", "human:ada");
+
+        Assert.Equal(1, code);
+        Assert.Equal(
+            "error: invalid concept id \"metrics/nope\\u{" + hex + "}recorded metrics/dau  human:ada  2026-01-01T00:00:00Z\". "
+            + "Concept ids are '/'-separated segments matching [A-Za-z0-9_][A-Za-z0-9_.-]*.\n",
+            err);
+
+        // Split on EVERY terminator, not on '\n' alone -- that is exactly the
+        // assertion the test above was missing.
+        Assert.Single(err.TrimEnd('\n').Split('\n', '\r', (char)0x2028, (char)0x2029, (char)0x0085, (char)0x000C));
+    }
+
+    /// <summary>
     /// §13.1: redirected stdin is not guaranteed free of a UTF-8 BOM (a
     /// preamble byte sequence, not a Unicode whitespace code point), and
     /// <c>Console.In</c> does not strip one on its own; <c>Trim()</c> does not

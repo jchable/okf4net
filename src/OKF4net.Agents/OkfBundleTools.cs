@@ -715,16 +715,22 @@ public sealed class OkfBundleTools
                     // Already a complete "Error: "-prefixed sentence naming the
                     // id (ValidateConceptTarget's own return value, captured
                     // once by CheckVerificationTargets), so it is returned
-                    // as-is -- the same arm FormatVerificationTargetProblem has
-                    // -- except for the fold. This is the ONE arm whose message
-                    // embeds an id that ConceptId's ASCII-only grammar has NOT
-                    // vetted (it is the arm for an id that failed to parse),
-                    // and DebugQuote.Quote escapes Cc controls but not U+2028/
-                    // U+2029, which are Zl/Zp. So a soft terminator in a
-                    // caller's id forged a line here. Folded at this renderer
-                    // rather than inside DebugQuote: that helper is shared with
-                    // the golden-locked CLI. See OneLine.
-                    VerificationTargetProblemKind.InvalidId => OneLine(problem.Detail!),
+                    // as-is -- the same arm FormatVerificationTargetProblem has.
+                    //
+                    // This is the ONE arm whose message embeds an id that
+                    // ConceptId's ASCII-only grammar has NOT vetted (it is the
+                    // arm for an id that failed to PARSE), and it briefly
+                    // carried a local OneLine because DebugQuote.Quote escaped
+                    // Cc controls but not U+2028/U+2029 (Zl/Zp), so a soft
+                    // terminator in a caller's id forged a line here. The fold
+                    // is gone because the hole is: DebugQuote now escapes those
+                    // two as well, which fixes the same message reached through
+                    // okf_write_concept and through the CLI, not just this arm.
+                    // Everything in this Detail is DebugQuote output plus fixed
+                    // literals, so nothing here can start a line. Pinned by
+                    // Verify_refuses_an_unparseable_id_without_forging_a_line,
+                    // which now guards the shared helper through this tool.
+                    VerificationTargetProblemKind.InvalidId => problem.Detail!,
                     VerificationTargetProblemKind.NotFound =>
                         $"Error: concept {DebugQuote.Quote(problem.ConceptId)} does not exist.",
                     // Deliberately NOT "does not exist": a kind added to the
@@ -1526,6 +1532,12 @@ public sealed class OkfBundleTools
         // is the tool's error text, never a throw toward the model.
         if (!ParameterValues.TryNormalize(parameterValues ?? new Dictionary<string, object?>(), out var normalizedValues, out var valuesError))
         {
+            // Not folded, and checked rather than assumed: `valuesError` is one
+            // of three FIXED string literals in ParameterValues.TryNormalize,
+            // with nothing interpolated into any of them -- not the offending
+            // key, not the value. A fold here would be provably a no-op. If
+            // that method ever starts naming the property it rejected, this
+            // line needs OneLine like every other.
             return $"Error: {valuesError}";
         }
 
@@ -1585,9 +1597,13 @@ public sealed class OkfBundleTools
         {
             return $"displayable: no\n\nReasons:\n- the computation timed out after {ComputationTimeout.TotalSeconds:0.###}s\n";
         }
+        // This method does not go through RunTool (it is async and owns its own
+        // cancellation arms), so it carries RunTool's catch-all verbatim --
+        // the fold included. See RunTool for why an exception message is not
+        // library-authored text: `GetBundle()` is called inside this very try.
         catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            return $"Error: {ex.Message}";
+            return $"Error: {OneLine(ex.Message)}";
         }
     }
 
@@ -2326,6 +2342,16 @@ public sealed class OkfBundleTools
     /// null-character guards up front (for a precise, tool-specific message),
     /// but this catch-all is what makes every public tool method structurally
     /// unable to throw for any string input, now and for tools added later.
+    ///
+    /// <para><b>The message is folded</b> (<see cref="OneLine"/>), like every
+    /// other value a renderer here puts on a line of its own. An exception
+    /// message is not library-authored boilerplate: it routinely embeds a PATH
+    /// (<c>BundleLoadException</c>'s "bundle root is not a directory: {root}"
+    /// interpolates the root verbatim), an id, or a nested message built from
+    /// bundle content. A bundle directory whose name carries U+2028 — legal on
+    /// NTFS and POSIX alike, no privilege needed — turned this one-line
+    /// <c>Error:</c> report into two (executed). This is the last catch-all in
+    /// this file that still rendered an outside string raw.</para>
     /// </summary>
     private static string RunTool(Func<string> body)
     {
@@ -2335,7 +2361,7 @@ public sealed class OkfBundleTools
         }
         catch (Exception ex) when (ex is OkfException or ArgumentException or IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
-            return $"Error: {ex.Message}";
+            return $"Error: {OneLine(ex.Message)}";
         }
     }
 
