@@ -727,17 +727,24 @@ text and [`LICENSE.GPL-3.0`](LICENSE.GPL-3.0) for the GPLv3 text it
 incorporates by reference.
 
 That applies to everything this project builds: every OKF4net library and
-binary is original work, LGPL-3.0-or-later in its entirety, with no
-third-party source code included or linked in. The packages published to
-NuGet carry that one licence, and nothing else.
+binary is original work, LGPL-3.0-or-later in its entirety. The `okf` binary
+and the packages published to NuGet — `OKF4net`, `OKF4net.Agents`,
+`OKF4net.Catalog`, `OKF4net.Catalog.Hosting`, `OKF4net.Attestation`,
+`OKF4net.Mcp` — carry that one licence and include no third-party source
+code.
 
-Two kinds of Apache-2.0 material live in this repository, both documentation
-or sample data rather than code, and neither packaged for distribution: the
-vendored [OKF specification](docs/spec/README.md) and the upstream sample
-bundles under [`bundles/`](bundles/README.md), both Copyright Google LLC. They
-are covered by [`LICENSE.Apache-2.0`](LICENSE.Apache-2.0); [`NOTICE`](NOTICE)
-has the details, along with the MIT-licensed copy of marked embedded in
-`OKF4net.Viewer`.
+The one exception anywhere in the build is `OKF4net.Viewer` (not itself
+published to NuGet): it vendors a copy of
+[marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
+rendering, embedded in that library and shipped inside the `okf-render`
+binary it backs; `okf` itself never references it. See [`NOTICE`](NOTICE)
+for the full accounting, including that vendored copy and the two kinds of
+Apache-2.0 material also in this repository — the vendored
+[OKF specification](docs/spec/README.md) and the upstream sample bundles
+under [`bundles/`](bundles/README.md), both Copyright Google LLC and
+documentation/sample data rather than code, covered by
+[`LICENSE.Apache-2.0`](LICENSE.Apache-2.0) and not packaged for
+distribution.
 
 This is an independent implementation and is not affiliated with or endorsed by
 Google.

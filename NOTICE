@@ -12,8 +12,10 @@ https://www.gnu.org/licenses/gpl-3.0.html.
 ------------------------------------------------------------------------------
 
 Every OKF4net library and binary is original work by the copyright holder
-above, licensed LGPL-3.0-or-later in its entirety. No third-party source code
-is included in, or linked into, anything this project builds. OKF4net
+above, licensed LGPL-3.0-or-later in its entirety, with one exception:
+`OKF4net.Viewer` embeds a vendored copy of marked (MIT), described in full
+further below. Apart from that one file, no third-party source code is
+included in, or linked into, anything this project builds. OKF4net
 implements the Open Knowledge Format specification (v0.2, see below); a
 specification is a description of a format, and implementing one carries no
 licence obligation from its author.
