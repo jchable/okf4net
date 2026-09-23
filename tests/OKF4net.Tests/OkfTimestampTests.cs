@@ -179,6 +179,13 @@ public class OkfTimestampTests
     [InlineData("2026-06-30T14:00:00,123Z", nameof(TimestampForm.Conformant))]
     [InlineData("2026-06-30T14:00:00+02", nameof(TimestampForm.Conformant))]
     [InlineData("2026-06-30T14:00:00-05", nameof(TimestampForm.Conformant))]
+    // Review of PR #108: the earliest representable instants. Both are
+    // ordinary four-digit §5 timestamps that the readability gate accepts,
+    // and the date-presence guard used to call them date-less because its
+    // probe landed in the same year 1 that NoCurrentDateDefault substitutes
+    // for a value with no date part at all.
+    [InlineData("0001-01-01T00:00:00Z", nameof(TimestampForm.Conformant))]
+    [InlineData("0001-01-02T01:00:00Z", nameof(TimestampForm.Conformant))]
     // Readable, offset-bearing, wrong spelling.
     // Fix round 2: the negative zero offset. ISO 8601 forbids it (2004
     // §4.2.5.2 / 2019 §4.3.13) — a zero difference from UTC takes a plus sign,
@@ -195,6 +202,15 @@ public class OkfTimestampTests
     [InlineData("2026-06-3T14:00:00Z", nameof(TimestampForm.NonIso8601))]
     [InlineData("2026-06-30T14:00:00z", nameof(TimestampForm.NonIso8601))]
     [InlineData("2026-06-30T14:00:00+0200", nameof(TimestampForm.NonIso8601))]
+    // Pinned by the review of PR #108, where it is the row that keeps the
+    // date-presence guard honest: its date part is real but is not written in
+    // any ISO 8601 shape, so it is readable-but-misspelled and must stay so.
+    // A guard that decided date-presence from the text alone would have to
+    // call this date-less and demote it to Unreadable, silently moving a
+    // value from one diagnostic to another; keeping the parse probe as the
+    // primary test is what avoids that. IsConformantSpelling stays the sole
+    // authority on spelling, here as everywhere.
+    [InlineData("06/30/2026 14:00:00Z", nameof(TimestampForm.NonIso8601))]
     // "2026-06-30T4:00:00Z" (task-1-brief.md's table) is NOT here: settled by
     // execution, not by reading, per the task brief. DateTimeOffset.TryParse
     // accepts an unpadded month/day ("2026-6-3T…") but rejects an unpadded
@@ -221,6 +237,12 @@ public class OkfTimestampTests
     [InlineData("01/02/2026", nameof(TimestampForm.Unreadable))]
     [InlineData("2026", nameof(TimestampForm.Unreadable))]
     [InlineData("July 1, 2026", nameof(TimestampForm.Unreadable))]
+    // Review of PR #108: a year-1 date is readable, a *malformed* year-1 date
+    // is not. The date-presence guard settles the year-1 case from the raw
+    // text, so this row pins that it never promotes an out-of-range component
+    // into a readable value: the readability gate turns this away first,
+    // exactly as it does for 2026-13-01 above.
+    [InlineData("0001-13-45T00:00:00Z", nameof(TimestampForm.Unreadable))]
     public void Classify_matches_the_expected_form(string raw, string expected)
     {
         Assert.Equal(Enum.Parse<TimestampForm>(expected), OkfTimestamp.Classify(raw, out _));
@@ -316,9 +338,36 @@ public class OkfTimestampTests
     [InlineData("10:00Z")]
     [InlineData("10:00+02:00")]
     [InlineData("T10:00:00Z")]
+    [InlineData("T10:00Z")]
+    // The row that decides how the date-presence guard must be written, and
+    // the one time-only spelling here that actually reaches it (the offset
+    // sign sits past the tenth character, so the cheaper zone check ahead of
+    // the guard routes it to the offset-bearing branch instead of turning it
+    // away first — verified by execution, the shorter 23:00-02:00 does not
+    // get that far). Its substituted year-1 date rolls over to 0001-01-02
+    // under the negative offset, so "the probe stayed inside year 1" is the
+    // sound negative test: "the probe landed exactly on the substituted
+    // 0001-01-01" would let this one through as a readable year-1 instant.
+    [InlineData("23:00:00.000-02:00")]
     public void A_value_without_a_date_is_unreadable_not_todays_date(string raw)
     {
         Assert.Equal(TimestampForm.Unreadable, OkfTimestamp.Classify(raw, out _));
+    }
+
+    /// <summary>
+    /// Review of PR #108: <c>0001-01-01T00:00:00Z</c> is a valid four-digit §5
+    /// timestamp, and one the readability gate parses, so it must keep its
+    /// year-1 instant rather than be discarded because year 1 is also what
+    /// <c>NoCurrentDateDefault</c> substitutes for a value with no date part.
+    /// </summary>
+    [Fact]
+    public void The_earliest_representable_instant_is_conformant_and_keeps_its_instant()
+    {
+        var form = OkfTimestamp.Classify("0001-01-01T00:00:00Z", out var instant);
+
+        Assert.Equal(TimestampForm.Conformant, form);
+        Assert.Equal(Utc(1, 1, 1), instant);
+        Assert.Equal(1, instant.Year);
     }
 
     /// <summary>

@@ -974,6 +974,26 @@ and this project adheres to
 
 ### Fixed
 
+- **A §5 timestamp dated in year 1 is no longer read as "no date at all"
+  (§5).** `0001-01-01T00:00:00Z` is an ordinary four-digit §5 timestamp and
+  parses without complaint, but the date-presence guard — the one that stops a
+  time-only `10:00Z` being silently dated "today", per machine, ignoring
+  `--as-of` — decided the question with `probe.Year > 1`, and year 1 is also
+  what `DateTimeStyles.NoCurrentDateDefault` substitutes for a value carrying
+  no date. So every instant in year 1 classified `Unreadable`: a `stale_after`
+  spelled that way was skipped by the staleness path instead of making the
+  concept stale, a `generated.at` or `verified[].at` spelled that way drew a
+  "could not be read" warning, and each was reported as unreadable while being
+  perfectly readable. The guard now answers from the probe only where the
+  probe is unambiguous (past year 1 — nothing but a real date can get there,
+  the offset moves the substituted date by at most ±14 hours) and settles the
+  year-1 case from the raw text, which §5 requires to open with a calendar
+  date: a substitution can invent a date in the parsed value but can never put
+  one into text that did not have it. Every other classification is unchanged,
+  including the readable-but-misspelled values whose date part is not written
+  ISO 8601 — now pinned by a test, since the parse probe is what keeps them
+  out of the `Unreadable` bucket. Found by review of PR #108.
+
 - **`ChangeLog.Parse` now reads back a `kind` that itself contains a bold span
   (§9).** `ToMarkdown` renders `* **{Kind}**: {Text}` and the parser took the
   FIRST closing `**`, so a kind of `Upd - **Forged**: kind` — which

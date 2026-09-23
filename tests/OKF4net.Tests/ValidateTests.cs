@@ -572,6 +572,23 @@ public class ValidateTests
     }
 
     [Fact]
+    public void A_year_one_stale_after_is_read_by_the_staleness_path_not_skipped()
+    {
+        // Review of PR #108: 0001-01-01T00:00:00Z is a valid four-digit §5
+        // timestamp. The §5 seam used to call it unreadable (year 1 doubled as
+        // the "no date part" sentinel), so lifecycle evaluation silently
+        // skipped it: no staleness verdict, and a "could not be read" warning
+        // on a value that reads perfectly well. Driven through the public
+        // surface that consumes stale_after, not through the seam alone.
+        var r = ValidateConcept(
+            "type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nstale_after: '0001-01-01T00:00:00Z'\n",
+            new FixedClock(new DateOnly(2026, 7, 27)));
+
+        Assert.Contains(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.ConceptStale && d.Field == "stale_after");
+        Assert.DoesNotContain(r.Of(Severity.Warning), d => d.Code == DiagnosticCode.StaleAfterInvalid);
+    }
+
+    [Fact]
     public void Source_without_resource_warns()
     {
         var r = ValidateConcept("type: T\ntitle: X\ndescription: D\nresource: R\ntags: [a]\nsources:\n  - title: no resource\n");

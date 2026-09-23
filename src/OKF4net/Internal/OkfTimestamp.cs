@@ -231,6 +231,22 @@ internal static class OkfTimestamp
         s.EndsWith("-00:00", StringComparison.Ordinal) || s.EndsWith("-00", StringComparison.Ordinal);
 
     /// <summary>
+    /// The lexical shape of a calendar date part at the very start of a value:
+    /// digits, <c>-</c>, digits, <c>-</c>, digits. Deliberately far looser than
+    /// <see cref="ConformantPattern"/>'s fixed-width date — it answers only
+    /// "is a date part written here at all", never "is it spelled right", which
+    /// stays <see cref="IsConformantSpelling"/>'s sole job. That is why the
+    /// components are variable-width: an unpadded <c>2026-6-3T14:00:00Z</c>
+    /// carries a date and must keep classifying
+    /// <see cref="TimestampForm.NonIso8601"/>, not become unreadable.
+    /// <c>[0-9]</c> rather than <c>\d</c> for the same reason as there:
+    /// <c>\d</c> is Unicode-aware in .NET.
+    /// </summary>
+    private static readonly Regex CalendarDatePrefixPattern = new(
+        @"^[0-9]+-[0-9]+-[0-9]+",
+        RegexOptions.Compiled);
+
+    /// <summary>
     /// §5 requires a full <c>YYYY-MM-DDThh:mm[...]</c> datetime, so a
     /// time-only value (<c>10:00Z</c>) is not a §5 timestamp under any
     /// spelling — but <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>
@@ -238,14 +254,46 @@ internal static class OkfTimestamp
     /// read as "today at 10:00" — a staleness that flipped within the day,
     /// per machine, ignoring --as-of. DateTimeOffset does not support
     /// NoCurrentDateDefault, so the date's presence is probed through DateTime,
-    /// where it does: a value with no date lands on year 1. That coincides
-    /// with <c>NoCurrentDateDefault</c>'s own year-1 sentinel, so a literal
-    /// <c>0001-01-01T00:00:00Z</c> would misclassify as date-less too — not a
-    /// spelling any real <c>stale_after</c> or <c>generated.at</c> uses.
+    /// where it does: a value with no date is dated from year 1.
+    /// <para>
+    /// The rule is therefore in two parts. A probe past year 1 <b>is</b> a
+    /// date: nothing but a real date part can get there, since the only thing
+    /// that moves the substituted date is the offset, at most ±14 hours. Year 1
+    /// is the one answer the probe cannot interpret on its own — it is both
+    /// <c>NoCurrentDateDefault</c>'s substitution and a genuine four-digit §5
+    /// timestamp (<c>0001-01-01T00:00:00Z</c>) — so that case, and only that
+    /// case, is settled by the raw text: a date is present when the value opens
+    /// with a calendar date (<see cref="CalendarDatePrefixPattern"/>).
+    /// </para>
+    /// <para>
+    /// The two halves cannot conflate, because the second reads the thing the
+    /// substitution cannot touch. A substituted date exists only in the parsed
+    /// value; it can never put a leading <c>YYYY-MM-DD</c> into text that did
+    /// not have one, so a date-less value fails the lexical clause by
+    /// construction whatever the probe returned. Conversely the probe stays the
+    /// primary test rather than the lexical clause taking over outright, so an
+    /// offset-bearing value whose date part the BCL reads but ISO 8601 does not
+    /// spell (<c>06/30/2026 14:00:00Z</c>) keeps classifying
+    /// <see cref="TimestampForm.NonIso8601"/> exactly as before, instead of
+    /// being re-judged by an ISO-shaped lexical rule that was never meant to be
+    /// the authority on spelling.
+    /// </para>
+    /// <para>
+    /// "Past year 1" and not "anything but the substituted 0001-01-01": a
+    /// negative offset rolls the substituted date over
+    /// (<c>23:00:00.000-02:00</c> — a time-only value long enough for
+    /// <see cref="HasExplicitOffset"/> to see its sign and route it here —
+    /// probes 0001-01-02), so the year is the only reliable negative. And note
+    /// what never reaches here: <c>0001-01-01T00:00:00+02:00</c> is earlier
+    /// than <see cref="DateTimeOffset.MinValue"/>, so the readability gate
+    /// ahead of this rejects it — a BCL range limit, of the same family as the
+    /// ISO 8601 spellings <c>DateTimeOffset.TryParse</c> cannot read, not a
+    /// judgement this guard makes.
+    /// </para>
     /// </summary>
     private static bool CarriesADate(string raw) =>
         DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.NoCurrentDateDefault | DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var probe)
-        && probe.Year > 1;
+        && (probe.Year > 1 || CalendarDatePrefixPattern.IsMatch(raw.AsSpan().Trim()));
 
     /// <summary>
     /// Whether the raw value carries an explicit zone designator at all: a
