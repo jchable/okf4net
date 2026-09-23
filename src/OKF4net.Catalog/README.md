@@ -264,7 +264,7 @@ instances with `==`/`Equals`.
 - No tenant-aware authorization of any kind.
 
 See [the project README](https://github.com/jchable/okf4net) for the full
-documentation, and NOTICE/LICENSE.Apache-2.0 for the attribution chain of the
-underlying OKF implementation.
+documentation, and NOTICE for the licensing of this package and of the
+material vendored in the repository it is built from.
 
 Licensed LGPL-3.0-or-later.

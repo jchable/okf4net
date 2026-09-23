@@ -1,12 +1,3 @@
-# Golden fixtures
-
-This directory contains **byte-exact reference outputs**, generated from the
-Rust implementation at commit d20343c before its removal (the CLI defined in
-its `src/bin/okf.rs`, subcommands `validate` / `info` / `graph` / `fmt` /
-`index`). They exist to prove that the OKF4net (.NET) port is observably
-identical to the Rust implementation it replaced (see Tasks 13–15 of the
-migration plan).
-
 ## Layout
 
 - `appendix_a/` — the example bundle. Reproduces the `appendix_a()` helper

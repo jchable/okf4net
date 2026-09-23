@@ -19,8 +19,8 @@ a directory of markdown files with YAML frontmatter.
 > OKF4net is an independent, zero-dependency .NET implementation of the Open
 > Knowledge Format, built from the OKF v0.2 specification. It is backed by an
 > extensive test suite, including byte-exact golden CLI comparisons (see
-> [`tests/fixtures/`](tests/fixtures/README.md)). For the full derivation and
-> attribution chain, see [`NOTICE`](NOTICE).
+> [`tests/fixtures/`](tests/fixtures/README.md)). Everything it builds is
+> LGPL-3.0-or-later; see [`NOTICE`](NOTICE).
 
 **📖 [Documentation & project site → jchable.github.io/okf4net](https://jchable.github.io/okf4net/)** —
 a guided project overview, getting-started walkthroughs, and developer docs:
@@ -759,13 +759,25 @@ later (LGPL-3.0-or-later)** — see [`LICENSE`](LICENSE) for the full LGPLv3
 text and [`LICENSE.GPL-3.0`](LICENSE.GPL-3.0) for the GPLv3 text it
 incorporates by reference.
 
-This is a derivative work: its document parser, concept-id conventions, and
-index generator derive from the Apache-2.0-licensed
-[OKF reference implementation](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-by Google LLC. Portions derived from that and prior upstream work remain
-subject to the Apache License, Version 2.0 — see
-[`LICENSE.Apache-2.0`](LICENSE.Apache-2.0). Full attribution, including the
-complete derivation chain, is in [`NOTICE`](NOTICE).
+That applies to everything this project builds: every OKF4net library and
+binary is original work, LGPL-3.0-or-later in its entirety. The `okf` binary
+and the packages published to NuGet — `OKF4net`, `OKF4net.Agents`,
+`OKF4net.Catalog`, `OKF4net.Catalog.Hosting`, `OKF4net.Attestation`,
+`OKF4net.Mcp` — carry that one licence and include no third-party source
+code.
+
+The one exception anywhere in the build is `OKF4net.Viewer` (not itself
+published to NuGet): it vendors a copy of
+[marked](https://github.com/markedjs/marked) (MIT) for client-side markdown
+rendering, embedded in that library and shipped inside the `okf-render`
+binary it backs; `okf` itself never references it. See [`NOTICE`](NOTICE)
+for the full accounting, including that vendored copy and the two kinds of
+Apache-2.0 material also in this repository — the vendored
+[OKF specification](docs/spec/README.md) and the upstream sample bundles
+under [`bundles/`](bundles/README.md), both Copyright Google LLC and
+documentation/sample data rather than code, covered by
+[`LICENSE.Apache-2.0`](LICENSE.Apache-2.0) and not packaged for
+distribution.
 
 This is an independent implementation and is not affiliated with or endorsed by
 Google.

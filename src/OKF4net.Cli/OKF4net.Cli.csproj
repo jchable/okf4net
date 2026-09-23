@@ -4,6 +4,12 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>okf</AssemblyName>
     <TargetFramework>net10.0</TargetFramework>
+    <!--
+      Not packed, so this is not packaging metadata: it is what the published
+      binary reports in its file properties, which was blank until now.
+    -->
+    <Authors>Julien CHABLE</Authors>
+    <Copyright>Copyright 2026 Julien CHABLE</Copyright>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
