@@ -118,8 +118,25 @@ export default function Spec() {
                 </>,
               ],
               [
+                <>§5.3–§5.5 trust, lifecycle, staleness</>,
+                <>
+                  <code>ConceptAudit</code>, <code>AuditQuery</code>, <code>AuditReport</code> — the corpus-level
+                  query behind <code>okf audit</code> and <code>okf_audit</code>: counts for the whole bundle, plus
+                  a filterable worklist.
+                </>,
+              ],
+              [
                 <>§6 Cross-linking and paths</>,
                 <><code>LinkScanner</code>, <code>Bundle.LinksFrom</code>/<code>Backlinks</code> — absolute or relative markdown links; broken links tolerated.</>,
+              ],
+              [
+                <>§6.2 Path-valued fields</>,
+                <>
+                  <code>OkfDocument.FrontmatterResources()</code>, <code>Bundle.TryResolveResource</code>/
+                  <code>ReadResourceText</code> — a <code>computation:</code>, <code>executor:</code> or{' '}
+                  <code>attester:</code> path, resolved from the <strong>bundle root</strong> and refused if it
+                  would leave it.
+                </>,
               ],
               [<>§7 Actor convention</>, <><code>Actor.Parse</code> — <code>human:</code>/<code>process:</code>/<code>&lt;producer&gt;/&lt;version&gt;</code>.</>],
               [<>§8 Index files</>, <><code>IndexGenerator</code> — <code>index.md</code> directory listings for progressive disclosure.</>],
@@ -130,7 +147,8 @@ export default function Spec() {
                   <code>Frontmatter.ComputationContract</code>, <code>OkfDocument.Computation()</code> — shipped in{' '}
                   <strong>0.3.1-preview.1</strong> alongside the host-plugged{' '}
                   <a href="https://www.nuget.org/packages/OKF4net.Attestation">OKF4net.Attestation</a> orchestrator
-                  (bind → execute → attest → stale-gate).
+                  (bind → execute → attest → stale-gate). The contracts it plugs now have a container-based
+                  implementation in the repository — see <Link to="/docs/agents#attestation">agents.md</Link>.
                 </>,
               ],
               [<>§11 Conformance</>, <><code>BundleValidator</code>, <code>OkfDocument.ValidateConformance()</code> — the one hard rule above.</>],

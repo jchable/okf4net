@@ -227,6 +227,17 @@ export default function Agents() {
             an outcome rather than throwing for an expected failure. See the{' '}
             <Link to="/docs/spec">spec mapping</Link> for the frontmatter contract.
           </p>
+          <p>
+            Binding, execution and attestation are <strong>host-plugged</strong>: the orchestrator resolves an{' '}
+            <code>IParameterBinder</code>/<code>IComputationExecutor</code>/<code>IAttester</code> per the concept's{' '}
+            <code>runtime</code> and supplies none of them itself. <code>OKF4net.Attestation.Containers</code>, in
+            the repository, is one such host — it runs the bundle's <strong>actual</strong> sanctioned script or
+            SQL, and its actual attester, inside a container (Docker, Podman or nerdctl), never a C#
+            re-implementation of what the bundle sanctioned. Payloads travel over stdin rather than a mounted
+            volume, and containers run as an unprivileged user with capabilities dropped. It is{' '}
+            <strong>not published on NuGet</strong> and needs a container engine on <code>PATH</code> at run time;{' '}
+            <code>samples/attestation-containers-demo/</code> is a worked end-to-end example.
+          </p>
         </Chapter>
 
         <Chapter id="use" title="Wire it up" refText="chatClient.AsAIAgent(tools: …)">
