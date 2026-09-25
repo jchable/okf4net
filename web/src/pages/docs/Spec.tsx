@@ -133,9 +133,10 @@ export default function Spec() {
                 <>§6.2 Path-valued fields</>,
                 <>
                   <code>OkfDocument.FrontmatterResources()</code>, <code>Bundle.TryResolveResource</code>/
-                  <code>ReadResourceText</code> — a <code>computation:</code>, <code>executor:</code> or{' '}
-                  <code>attester:</code> path, resolved from the <strong>bundle root</strong> and refused if it
-                  would leave it.
+                  <code>ReadResourceText</code> — the path-valued fields (<code>resource</code>, each{' '}
+                  <code>sources[i].resource</code>, and §10.2's <code>computation</code>,{' '}
+                  <code>executor.resource</code>, <code>attester.resource</code>), resolved from the{' '}
+                  <strong>bundle root</strong> and refused if they would leave it.
                 </>,
               ],
               [<>§7 Actor convention</>, <><code>Actor.Parse</code> — <code>human:</code>/<code>process:</code>/<code>&lt;producer&gt;/&lt;version&gt;</code>.</>],
