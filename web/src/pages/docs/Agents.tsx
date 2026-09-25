@@ -233,8 +233,12 @@ export default function Agents() {
             <code>runtime</code> and supplies none of them itself. <code>OKF4net.Attestation.Containers</code>, in
             the repository, is one such host — it runs the bundle's <strong>actual</strong> sanctioned script or
             SQL, and its actual attester, inside a container (Docker, Podman or nerdctl), never a C#
-            re-implementation of what the bundle sanctioned. Payloads travel over stdin rather than a mounted
-            volume, and containers run as an unprivileged user with capabilities dropped. It is{' '}
+            re-implementation of what the bundle sanctioned. No container is given a mounted volume: the code —
+            script text, SQL text, attester source — arrives on stdin, while parameter values travel separately (a
+            JSON environment variable for a script, the driver's own binding for SQL), so a sanctioned placeholder
+            reaches the receipt verbatim. Isolation is hardened <strong>by default</strong> — an unprivileged uid,
+            every capability dropped, no privilege escalation, a read-only root — and a host that needs to can relax
+            any of it through <code>ContainerIsolation</code>. It is{' '}
             <strong>not published on NuGet</strong> and needs a container engine on <code>PATH</code> at run time;{' '}
             <code>samples/attestation-containers-demo/</code> is a worked end-to-end example.
           </p>
