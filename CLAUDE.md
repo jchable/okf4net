@@ -77,9 +77,10 @@ which stays byte-exact golden captures. `samples/` holds standalone example
 projects that consume those bundles (each with its own solution/build, not
 part of `OKF4net.sln` or CI).
 
-`bundles/attestation_containers_demo/` is the one bundle here that is **not** an
-upstream copy: it is authored for `samples/attestation-containers-demo/` to run
-through `OKF4net.Attestation.Containers`, so it is free to be shaped for the
+Two bundles here are **not** upstream copies.
+`bundles/attestation_containers_demo/` is authored for
+`samples/attestation-containers-demo/` to run through
+`OKF4net.Attestation.Containers`, so it is free to be shaped for the
 demonstration (explicit `/attesters/…` root-relative paths, deliberately trivial
 computations). Read its section in `bundles/README.md` before citing it as
 evidence of anything: its SQL attester compares `receipt.executed_sql` against
@@ -87,6 +88,13 @@ the sanctioned text, and under this host that comparison **cannot fail** —
 `executed_sql` is echoed back by our own wrapper from the string we sent it. It
 demonstrates the convention an attester follows; it is not proof the database ran
 the sanctioned text.
+
+`bundles/meridian_transit/` is the other one: a self-authored bundle built the
+way `acme_retail` is, but with both of its computations **actually runnable** on
+those executors — one `postgres` SQL computation bound by the driver, one pure
+`python` one that runs with the network off. It is the fixture
+`ContainerIntegrationTests` drives, and its `references/schema.sql` is the
+bundle's own source of truth for the table that SQL reads.
 
 `producers/OkfProducer` is a standalone native OKF producer CLI (`okfgen`;
 `OkfProducer.sln`: `OkfProducer.Core` + `OkfProducer.CodeGraph.TreeSitter` +
