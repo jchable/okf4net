@@ -14,10 +14,11 @@ byte-à-byte avec lui était la garantie recherchée (Phase 1 de la migration).
 
 Ce cadrage n'est plus vrai, et il ne l'est plus qu'à moitié depuis un moment :
 
-- **Sur 23 fichiers dans `tests/fixtures/golden/`, 4 seulement sont encore des
-  captures du binaire Rust** : `info.out`, `graph.dot`, `fmt/users.md` et
-  l'arbre `index-input/` (plus `validate.exitcode`, qui contient le caractère
-  `0`). `validate.out` a été régénéré depuis le C# au bump v0.2, et
+- **Sur les 23 fichiers de `tests/fixtures/golden/`, 4 goldens seulement — soit
+  12 fichiers — sont encore des captures du binaire Rust** : `info.out`,
+  `graph.dot`, `fmt/users.md` et l'arbre `index-input/` (8 fichiers), plus
+  `validate.exitcode`, qui contient le caractère `0`. `validate.out` a été
+  régénéré depuis le C# au bump v0.2, et
   `validate-v02.*`, `validate-computation.*`, `validate-reserved.*`,
   `audit-v02.*`, `verify.*` ont été **écrits à la main contre le texte de la
   spec**, diagnostic par diagnostic.
@@ -25,9 +26,10 @@ Ce cadrage n'est plus vrai, et il ne l'est plus qu'à moitié depuis un moment :
   « une différence est un bug côté C# » n'a donc plus d'oracle : elle demande de
   ne pas toucher à des fichiers que plus rien ne peut régénérer.
 - L'autorité réelle est ailleurs. `docs/spec/SPEC.md` est vendorisée dans le
-  dépôt précisément pour que chaque citation `§` résolve localement, et 29
-  fichiers de test citent déjà un `§` (`ValidateTests` en compte 115 à lui
-  seul).
+  dépôt précisément pour que chaque citation `§` résolve localement, et 35
+  fichiers de test citent déjà un `§` (`ValidateTests` compte à lui seul 129
+  tests). Ces comptages datent du 2026-09-25 sur `dev` ; ils illustrent un
+  ordre de grandeur, ils ne sont pas un contrat.
 
 Le dépôt contient par ailleurs **déjà** un golden à la discipline inverse :
 `producers/tests/OkfProducer.Tests/fixtures/golden/` capture *notre* sortie,
@@ -86,7 +88,7 @@ captures Rust comme la norme. La nouvelle version dit :
 - la spec est l'autorité de conformité ;
 - ce dossier fige notre propre sortie, régénérable, diff relu ;
 - la généalogie Rust est une note d'histoire, pas une norme : elle explique
-  d'où viennent les octets initiaux de 4 fichiers, rien de plus.
+  d'où viennent les octets initiaux de 4 goldens, rien de plus.
 
 La règle dure de `CLAUDE.md` passe de **« ne jamais éditer un fixture »** à
 **« ne jamais régénérer sans relire le diff, et jamais pour faire passer un
@@ -94,16 +96,60 @@ test »**. La formulation doit rester aussi ferme que l'ancienne sur le point qu
 compte : un diff qu'on n'a pas voulu est un échec réel.
 
 Les autres endroits qui répètent l'ancien sens sont corrigés dans le même
-mouvement : `.github/PULL_REQUEST_TEMPLATE.md`, la page Contributing du site
-(`web/src/pages/Contributing.tsx`), et le README du golden du producteur, dont
-la phrase « la discipline ici est l'OPPOSÉ de `tests/fixtures/` » devient fausse
-— les deux dossiers appliquent désormais la même.
+mouvement : la page Contributing du site (`web/src/pages/Contributing.tsx`) —
+son bloc d'avertissement **et** son attribut `description`, qui porte la même
+affirmation et qu'un correctif du seul bloc laisserait derrière lui — et le
+README du golden du producteur, dont la phrase « la discipline ici est l'OPPOSÉ
+de `tests/fixtures/` » devient fausse : les deux dossiers appliquent désormais
+la même. `.github/PULL_REQUEST_TEMPLATE.md` n'est **pas** concerné : il dit
+seulement « including golden comparisons », ce qui reste exact.
+
+Ce qui ne change pas, et que la nouvelle rédaction doit dire explicitement,
+parce que « regénérable » invite à le croire : `tests/fixtures/** -text` dans
+`.gitattributes` et l'exclusion du dossier dans `.editorconfig` **restent**. Un
+instantané reste octet-exact — espaces de fin, saut de ligne final et fins de
+ligne LF compris. Regénérable ne veut pas dire normalisable.
 
 ### 2. Mode regénération
 
 `GoldenParityTests` gagne un mode update calqué sur celui du producteur :
-`OKF_UPDATE_GOLDEN=1` réécrit chaque fichier golden depuis la sortie réelle,
-puis **échoue** avec un message expliquant la procédure.
+`OKF_UPDATE_GOLDEN=1` réécrit chaque golden depuis la sortie réelle, puis
+**échoue** avec un message expliquant la procédure.
+
+**Un golden n'est pas toujours du stdout**, et le mode update a donc trois
+chemins de capture, pas un :
+
+- **Capture de stdout** — `validate*`, `info.out`, `graph.dot`, `fmt/users.md`,
+  `audit-v02.*`, `verify.out`.
+- **Fichier écrit dans une copie de bundle** — `verify-dau.md` : la capture lit
+  le fichier que le verbe a écrit dans le bundle temporaire, pas la sortie
+  console.
+- **Arbre de fichiers** — `index-input/` : la capture copie les `index.md`
+  produits, et la vérification de cardinalité reste une assertion du test, pas
+  un fichier.
+
+Contrainte qui vaut pour les trois : **le chemin de capture doit passer par
+exactement la même invocation que le chemin d'assertion**. Un mode update qui
+construit sa propre commande fige une sortie que le test ne produit jamais, et
+le golden devient vert sans rien garder.
+
+**Piège à traiter explicitement : la normalisation des chemins.** Quatre
+assertions remplacent `\` par `/` avant de comparer
+(`GoldenParityTests.cs:84`, `:93`, `:101`, `:156`), parce que les goldens ont
+été capturés sous Linux et que la sortie contient des chemins natifs. Si le
+mode update écrivait la sortie **normalisée**, une régression de séparateur
+sous Windows se blanchirait elle-même dans le fichier. La capture écrit donc la
+sortie **brute**, et le mode update **refuse de tourner** sur une plateforme
+dont la sortie brute diffère du golden attendu — c'est-à-dire ailleurs que sous
+Linux — plutôt que de produire un fichier subtilement faux. Le message d'échec
+le dit.
+
+Les seams temporels ne posent pas le même problème, mais il faut le vérifier
+plutôt que le supposer : les goldens porteurs d'un instant (`audit-v02.json` et
+son `evaluatedAt: 2099-06-01T00:00:00Z`, `verify-dau.md` et son `--at`) le
+tiennent d'une horloge ou d'un argument injecté par le test, pas de
+`DateTimeOffset.UtcNow`. Tant que la capture passe par la même invocation, elle
+hérite de la même horloge.
 
 L'échec est délibéré et c'est le cœur du mécanisme : en mode update, le côté
 attendu est produit par le harnais qui produit aussi le côté observé, donc la
