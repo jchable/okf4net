@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using OKF4net;
@@ -386,32 +387,19 @@ public class AttestationOrchestratorTests
     /// Filtered on a marker unique to this test, so another test's unobserved
     /// exception under xunit's parallel execution cannot make this one fail.
     ///
-    /// <para>No wall clock decides the interleaving: the stage announces that it
-    /// started and then parks on a gate, so cancellation always arrives while the
-    /// stage is in flight, and the stage faults only once this test releases it —
-    /// after the orchestrator has stopped waiting. The timer version of this test
-    /// (cancel at 20 ms, fault at 100 ms) failed on a loaded macOS CI runner where
-    /// the stage faulted first: RunAsync then reports an ordinary stage failure
-    /// instead of cancelling, and nothing is ever abandoned.</para>
+    /// <para>No wall clock decides anything. The stage is a hand-driven task, so
+    /// cancellation provably arrives while it is in flight and it faults only when
+    /// this test says so. "The abandoned task has faulted" is signalled by a
+    /// continuation on that same task: continuations run in registration order, so
+    /// once ours has run, the orchestrator's observer (registered at abandonment)
+    /// has run too. One forced finalization pass then decides — there is no
+    /// polling window. The timer version of this test (cancel at 20 ms, fault at
+    /// 100 ms) failed on a loaded macOS CI runner where the stage faulted first.</para>
     /// </summary>
     [Fact]
     public async Task An_abandoned_stage_that_later_throws_is_observed()
     {
-        using var tmp = new TempDir();
-        var (bundle, id) = InlineComputation(tmp);
         var marker = $"abandoned-stage-{Guid.NewGuid():N}";
-
-        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var runtime = new FakeRuntime();
-        runtime.ExecuteFunc = async (_, _, _) =>
-        {
-            started.SetResult();
-            await release.Task;
-            throw new InvalidOperationException(marker);
-        };
-        var reg = new AttestationRuntimeRegistry(new Dictionary<string, IAttestationRuntime> { ["bigquery"] = runtime });
-        var orch = new AttestationOrchestrator(reg, clock: new FixedClock(new DateOnly(2026, 1, 1)));
 
         var unobserved = false;
         void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
@@ -425,34 +413,42 @@ public class AttestationOrchestratorTests
         TaskScheduler.UnobservedTaskException += OnUnobserved;
         try
         {
-            using (var cts = new CancellationTokenSource())
-            {
-                var run = orch.RunAsync(bundle, id, new Dictionary<string, object?> { ["year"] = 2026 }, cancellationToken: cts.Token).AsTask();
+            await AbandonThenFaultAsync(marker);
 
-                // A broken-test guard, not a synchronisation step: either the
-                // stage starts, or this test has nothing to abandon.
-                await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
-                await cts.CancelAsync();
-                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await run);
-            }
-
-            // Nobody awaits the stage any more. Let it fault, then force its
-            // task's finalizer, which is where an unobserved fault surfaces.
-            release.SetResult();
-            for (var i = 0; i < 5 && !unobserved; i++)
-            {
-                await Task.Delay(100);
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-            }
+            // The stage task is unreachable now; a single finalization pass is
+            // where an unobserved fault would surface.
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
         }
         finally
         {
             TaskScheduler.UnobservedTaskException -= OnUnobserved;
-            release.TrySetResult();
         }
 
         Assert.False(unobserved, "the abandoned stage's exception surfaced as an unobserved task exception");
+    }
+
+    // Separate, non-inlined frame so the stage task is not kept alive by the
+    // caller's locals while it forces the finalization pass.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task AbandonThenFaultAsync(string marker)
+    {
+        var stage = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cts = new CancellationTokenSource();
+
+        var awaiting = AttestationOrchestrator.AwaitStageAsync(stage.Task, cts.Token).AsTask();
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await awaiting);
+
+        // Registered after the orchestrator's observer, on the same task.
+        var faulted = stage.Task.ContinueWith(
+            static _ => { },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        stage.SetException(new InvalidOperationException(marker));
+        await faulted.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
     [Fact]
