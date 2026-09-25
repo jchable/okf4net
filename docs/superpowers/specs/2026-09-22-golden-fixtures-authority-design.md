@@ -95,6 +95,18 @@ La règle dure de `CLAUDE.md` passe de **« ne jamais éditer un fixture »** à
 test »**. La formulation doit rester aussi ferme que l'ancienne sur le point qui
 compte : un diff qu'on n'a pas voulu est un échec réel.
 
+**Sa seconde exception survit, et c'est délibéré.** La règle actuelle a gagné le
+2026-09-12/13 une exception plus étroite, utilisée deux fois (`audit-v02.json`
+gagnant `evaluatedAt`, `verify-dau.md` après le changement de
+`RecordVerifications`) : réviser un fixture écrit à la main contre le texte OKF
+exige un **arbitrage explicite de l'utilisateur** et une **entrée datée dans le
+README** disant quoi et pourquoi. Cette exigence reste, appliquée à la famille
+dérivée de la spec définie en section 2 — un régime pour ces 6 goldens, la
+procédure en deux runs seule pour les 5 autres. Le mode update est un outil de
+capture, il n'est pas une autorisation : disposer de la commande ne remplace ni
+l'arbitrage ni l'entrée datée. Ce que la réécriture change pour ces fichiers,
+c'est la façon de produire les octets, pas la permission de le faire.
+
 Les autres endroits qui répètent l'ancien sens sont corrigés dans le même
 mouvement : la page Contributing du site (`web/src/pages/Contributing.tsx`) —
 son bloc d'avertissement **et** son attribut `description`, qui porte la même
@@ -115,6 +127,14 @@ ligne LF compris. Regénérable ne veut pas dire normalisable.
 `GoldenParityTests` gagne un mode update calqué sur celui du producteur :
 `OKF_UPDATE_GOLDEN=1` réécrit chaque golden depuis la sortie réelle, puis
 **échoue** avec un message expliquant la procédure.
+
+L'échec est délibéré et c'est le cœur du mécanisme : en mode update, le côté
+attendu est produit par le harnais qui produit aussi le côté observé, donc la
+comparaison est une tautologie — et une tautologie rapportée verte est
+exactement ainsi qu'une variable restée dans un shell désarme un golden sans
+que personne ne le voie. La procédure est donc **deux runs** : régénérer, lire
+`git diff tests/fixtures/golden`, relancer sans la variable pour vérifier
+vraiment, committer le diff avec le changement qui l'a causé.
 
 **Un golden n'est pas toujours du stdout**, et le mode update a donc trois
 chemins de capture, pas un :
@@ -151,29 +171,28 @@ tiennent d'une horloge ou d'un argument injecté par le test, pas de
 `DateTimeOffset.UtcNow`. Tant que la capture passe par la même invocation, elle
 hérite de la même horloge.
 
-L'échec est délibéré et c'est le cœur du mécanisme : en mode update, le côté
-attendu est produit par le harnais qui produit aussi le côté observé, donc la
-comparaison est une tautologie — et une tautologie rapportée verte est
-exactement ainsi qu'une variable restée dans un shell désarme un golden sans
-que personne ne le voie. La procédure est donc **deux runs** : régénérer, lire
-`git diff tests/fixtures/golden`, relancer sans la variable pour vérifier
-vraiment, committer le diff avec le changement qui l'a causé.
-
 **Les 23 fichiers ne se relisent pas de la même façon**, et le mode update doit
 le dire. Deux familles :
 
 - **Présentation** (`info.out`, `graph.dot`, `fmt/users.md`, `index-input/`,
   `validate.out`) : le diff se juge à l'œil.
-- **Dérivés de la spec** (`validate-v02.out`, `validate-computation.out`,
+- **Dérivés de la spec OKF** (`validate-v02.out`, `validate-computation.out`,
   `validate-reserved.out`, `audit-v02.out`, `audit-v02.json`, `verify.out`) :
-  écrits à la main contre le texte de la spec, diagnostic par diagnostic.
-  Régénérer l'un d'eux depuis notre propre sortie peut bénir silencieusement
-  une régression de conformité. Leur diff se relit **contre le `§`**, pas à
-  l'œil.
+  leur contenu attendu a été établi en lisant `docs/spec/SPEC.md`, diagnostic
+  par diagnostic, et non en capturant une sortie existante. Régénérer l'un
+  d'eux depuis notre propre sortie peut bénir silencieusement une régression de
+  conformité : si le validateur se met à se tromper, le golden enregistre
+  l'erreur et le test redevient vert. Leur diff se relit **contre le `§`**, pas
+  à l'œil, et ils restent soumis à l'exception de `CLAUDE.md` rappelée en
+  section 1 — **arbitrage explicite de l'utilisateur et entrée datée dans le
+  README** avant toute révision.
 
 Le mode update les couvre tous — les exclure créerait une seconde catégorie à
-maintenir — mais son message d'échec **nomme** la seconde famille et énonce
-cette consigne. Le README du dossier la répète par groupe de fichiers.
+maintenir, et la capture manuelle serait pire que la capture outillée. Mais son
+message d'échec **nomme** ces 6 fichiers et dit les deux choses qui les
+distinguent : leur diff se relit contre le texte OKF, et la commande ne vaut
+pas autorisation de les réviser. Le README du dossier répète la consigne par
+groupe de fichiers.
 
 ### 3. Combler les trous de la couche conformité
 
@@ -236,10 +255,12 @@ Deux suppressions de duplication, tout de même :
 ## Risques et limites
 
 - **Le mode update est une arme.** Il rend possible ce que la règle dure
-  interdisait, et la seule chose qui sépare une régénération légitime d'un test
-  désarmé est la relecture du diff. L'échec volontaire en mode update et le
-  message nommant les fichiers dérivés de la spec sont les deux garde-fous ;
-  ils ne remplacent pas la relecture.
+  interdisait. Pour les 5 goldens de présentation, la seule chose qui sépare une
+  régénération légitime d'un test désarmé est la relecture du diff ; l'échec
+  volontaire du mode update en est le garde-fou, et il ne remplace pas la
+  relecture. Pour les 6 goldens dérivés de la spec OKF, l'arbitrage et l'entrée
+  datée maintenus en section 1 ajoutent un second frein — humain, celui-là,
+  qu'aucune variable d'environnement ne contourne.
 - **La couche instantané ne prouve rien sur la conformité**, par construction.
   Un `okf info` parfaitement conforme à son golden peut violer la spec ; c'est
   la couche conformité qui répond de cela, et c'est pourquoi la section 3 est un
