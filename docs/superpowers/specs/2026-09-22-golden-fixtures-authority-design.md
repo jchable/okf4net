@@ -40,15 +40,17 @@ byte-à-byte avec lui était la garantie recherchée (Phase 1 de la migration).
 
 Ce cadrage n'est plus vrai, et il ne l'est plus qu'à moitié depuis un moment :
 
-- **Sur les 23 fichiers de `tests/fixtures/golden/`, 4 goldens seulement — soit
-  12 fichiers — sont encore des captures du binaire Rust** : `info.out`,
-  `graph.dot`, `fmt/users.md` et l'arbre `index-input/` (8 fichiers), plus
+- **Sur les 23 fichiers de `tests/fixtures/golden/`, 12 sont encore des
+  captures du binaire Rust** — quatre goldens, `info.out`, `graph.dot`,
+  `fmt/users.md` et l'arbre `index-input/` (8 fichiers), et un code de sortie,
   `validate.exitcode`, qui contient le caractère `0`. `validate.out` a été
   régénéré depuis le C# au bump v0.2, et `validate-v02.*`,
   `validate-computation.*`, `validate-reserved.*`, `audit-v02.*` ont été écrits
-  à la main contre le texte OKF, diagnostic par diagnostic ; `verify.*` a été
+  à la main contre le texte OKF, diagnostic par diagnostic. `verify.out` a été
   écrit contre le format de sortie décidé pour la commande, ce qui n'est pas la
-  même chose (revue).
+  même chose (revue) ; `verify-dau.md`, lui, est un document dont les entrées
+  `verified` relèvent de §5.2 — les deux fichiers d'un même test n'ont pas la
+  même nature.
 - L'oracle Rust est **abandonné par décision, pas perdu** (revue). La première
   version écrivait que plus rien ne pouvait régénérer ces octets : c'est faux,
   la source du crate est toujours dans l'historique
@@ -102,11 +104,13 @@ Trois obligations, avec des autorités distinctes et nommées comme telles :
 
 1. **Conformité** — ce que la spec impose est vérifié par des tests qui citent
    le `§`. `docs/spec/SPEC.md` est la seule autorité.
-2. **Fidélité sémantique des sorties publiques** — chaque valeur qu'une sortie
-   machine projette est assertée au moins une fois, indépendamment de tout
-   golden. Cette obligation est **née de la revue** : sans elle, la conformité
-   peut être respectée par le calcul et trahie par la projection (voir
-   section 3).
+2. **Fidélité sémantique des sorties machine** — chaque valeur qu'une sortie
+   machine projette a une assertion **discriminante** hors golden : une qui
+   distingue la valeur correcte d'une valeur plausible-mais-fausse, pas une
+   simple présence. Cette obligation est **née de la revue** : sans elle, la
+   conformité peut être respectée par le calcul et trahie par la projection
+   (voir section 3, qui fixe aussi la forme : une projection complète par
+   surface).
 3. **Instantané** — `tests/fixtures/golden/` fige la sortie de nos verbes,
    comme **notre** sortie : regénérable, avec relecture du diff. Aucune
    prétention à une référence externe.
@@ -203,12 +207,15 @@ Un même fichier relève donc des deux régimes selon le diff : réaligner une
 colonne de `okf info` n'est pas réviser un verdict, même si les deux touchent
 `info.out`.
 
-**Une propriété change de camp par rapport à la v2** : la v2 laissait au seul
-instantané « l'accolade fermante » du DOT. C'est faux — sans elle le document
-n'est plus analysable (critère 4), et aucun test direct ne la vérifie : les
-tests DOT existants contrôlent le préfixe `digraph okf {` et certaines arêtes,
-jamais la fermeture ni le document entier. La validité syntaxique d'une sortie
-machine relève du régime sémantique, et un test direct doit la couvrir.
+**Quatre propriétés changent de camp par rapport à la v2**, détaillées en
+section 3 ; la plus nette est « l'accolade fermante » du DOT, que la v2 laissait
+au seul instantané. C'est faux — sans elle le document n'est plus analysable
+(critère 4), et aucun test direct ne la vérifie : les tests DOT existants
+contrôlent le préfixe `digraph okf {` et certaines arêtes, jamais la fermeture
+ni le document entier. La validité syntaxique d'une sortie machine relève du
+régime sémantique, et un test direct doit la couvrir — **structurellement**,
+puisque Graphviz n'est pas installé en CI : le test asserte la forme complète du
+document (en-tête, chaque ligne d'arête, fermeture), il n'invoque pas `dot`.
 
 #### Un relâchement assumé, pas un effet de bord
 
@@ -395,7 +402,12 @@ quoi la première regénération capturerait une sortie datée.
 sorties sont **identiques aux goldens actuels**, codes de sortie compris —
 `appendix_a` 0 erreur / 8 avertissements / exit 0, `okf_v02` 0/3/0,
 `okf_v02_computation` 0/5/0, `okf_v02_reserved` 4/0/**1**. Le correctif ne crée
-donc aucun diff caché. Deux choses à ne pas confondre avec de la péremption : les
+donc aucun diff caché. Cette date n'est pas la seule possible : le validateur
+n'a aucun contrôle « horodatage dans le futur » relatif à `--as-of` (vérifié
+dans `Validate.cs`), donc toute date antérieure à la première péremption donne
+la même sortie — mais c'est celle-là qui a été exercée, et c'est celle-là qu'il
+faut prendre plutôt qu'une autre supposée équivalente. Deux choses à ne pas
+confondre avec de la péremption : les
 avertissements §10 sur la forme date-only de `stale_after` et de
 `sources[].last_modified` **subsistent** avec une date fixe, parce qu'ils portent
 sur la forme du champ et non sur son échéance ; et à la frontière
@@ -549,9 +561,16 @@ Deux suppressions de duplication, tout de même :
    la v2 confondait (revue) : le **verdict non conforme** sur un fichier réservé
    malformé est exigé par §11 ; sa **traduction en code de sortie `1`** est notre
    contrat de CLI, que la spec ne prescrit nulle part. La valeur à conserver est
-   la même ; l'autorité invoquée ne l'est pas. Chaque valeur devient donc une assertion explicite
-   avec sa raison ; la suggestion « `Assert.Equal(0, r.Code)` » de la première
-   version aurait rendu rouge un comportement correct.
+   la même ; l'autorité invoquée ne l'est pas. Chaque valeur devient donc une
+   assertion explicite avec sa raison ; la suggestion « `Assert.Equal(0, r.Code)` »
+   de la première version aurait rendu rouge un comportement correct.
+
+Ces deux suppressions sont des modifications de `tests/fixtures/` au sens de la
+règle de la section 1 — des éléments disparaissent (critère 2). Elles relèvent
+donc du régime sémantique, et **ce document est l'arbitrage** : chacune reçoit
+son entrée datée dans `tests/fixtures/README.md`, qui renvoie ici. Le changement
+de règle lui-même est consigné dans le `CHANGELOG.md` sous `[Unreleased]`, comme
+tout changement de contrat du dépôt.
 
 ## Risques et limites
 
