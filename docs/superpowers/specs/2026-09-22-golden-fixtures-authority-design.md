@@ -3,6 +3,20 @@
 Date : 2026-09-22
 Statut : proposé
 
+**Révision (revue de sortie, ronde 3, 2026-09-30)** : la troisième revue,
+tournée vers l'implémentabilité, conclut « prêt pour un plan d'implémentation
+après ajout de 15 décisions explicites » — des choix que le document laissait à
+l'implémenteur. Ils sont tranchés dans la nouvelle section 5. Deux constats de
+cohérence sont corrigés : l'ordre des arêtes DOT était rangé en test direct
+alors qu'une permutation préserve les cinq critères (il reste à l'instantané ;
+le déterminisme, lui, est un contrat), et la garantie du test DOT structurel est
+nommée pour ce qu'elle est — notre grammaire restreinte, pas l'acceptation par
+Graphviz. La phrase de v2 « la section 3 est un prérequis de la section 2 »,
+tombée en v3, est rétablie dans un ordre des travaux obligatoire. Précision sur
+la nature des « arbitrages » cités dans ce document : ce sont des décisions de
+l'auteur, consignées ici ; elles ne sont pas vérifiables depuis le dépôt et ne
+sont pas présentées comme une vérification technique.
+
 **Révision (revue externe, ronde 2, 2026-09-30)** : une seconde revue externe,
 menée sur la branche rebasée, ne trouve **aucun nouveau bloquant** et conclut
 « implémentable après corrections nommées ». Cinq corrections importantes sont
@@ -207,7 +221,17 @@ Un même fichier relève donc des deux régimes selon le diff : réaligner une
 colonne de `okf info` n'est pas réviser un verdict, même si les deux touchent
 `info.out`.
 
-**Quatre propriétés changent de camp par rapport à la v2**, détaillées en
+Trois cas de plus, que la ronde 3 a passés au critère et que le README doit
+reprendre comme exemples : **permuter deux lignes d'arête** du DOT sans changer
+les arêtes est de la présentation (les cinq propriétés tiennent) ; **changer
+l'ordre des propriétés** d'un objet JSON sans changer noms ni valeurs est de la
+présentation (l'objet interprété est identique — ce qui impose que la
+comparaison des projections, en section 5, soit structurelle et non textuelle) ;
+**renommer le libellé visible** `[Users](users.md)` en `[Comptes](users.md)`
+dans un index est sémantique — la cible ne bouge pas, mais le libellé est un
+fait exposé au lecteur (critère 1), et le doute se tranche de ce côté.
+
+**Trois propriétés changent de camp par rapport à la v2**, détaillées en
 section 3 ; la plus nette est « l'accolade fermante » du DOT, que la v2 laissait
 au seul instantané. C'est faux — sans elle le document n'est plus analysable
 (critère 4), et aucun test direct ne la vérifie : les tests DOT existants
@@ -246,9 +270,11 @@ reste — arbitrage plus trace datée — est celui qui gouverne déjà les fixt
 
 La page Contributing du site (`web/src/pages/Contributing.tsx`) : son bloc
 d'avertissement décrit les goldens comme des captures de l'implémentation de
-référence. Son attribut `description` dit « byte-exact golden fixtures », ce qui
-reste exact et n'a donc pas à changer — la première version lui attribuait à
-tort l'affirmation à corriger (revue).
+référence, et dit que les tests comparent « byte-for-byte » — ce qui, avec cinq
+comparaisons normalisées, demande la nuance « après normalisation des chemins »
+(ronde 3). Son attribut `description` dit « byte-exact golden fixtures », ce qui
+qualifie les fichiers conservés et reste exact — la première version lui
+attribuait à tort l'affirmation à corriger (revue).
 
 Le voisinage du golden du producteur oppose les deux disciplines en **trois**
 endroits, pas un : son README, un commentaire de `.gitattributes`, et un
@@ -487,7 +513,7 @@ octet-exacte.
 | Propriété | Nature | Où |
 |---|---|---|
 | Projection complète de `validate --json`, `info --json`, `audit --json` (dont le statut par résultat), avec leurs cas opposés | Fidélité sémantique | `CliTests` |
-| Validité syntaxique du DOT : accolade fermante, document analysable, ordre des arêtes, et rien d'émis pour un concept sans lien sortant | Contrat de sortie machine | `CliTests` |
+| Forme du DOT selon notre grammaire restreinte : en-tête, chaque ligne d'arête bien formée, accolade fermante, **ensemble** des arêtes attendu, rien d'émis pour un concept sans lien sortant, et déterminisme (deux runs identiques) — l'ordre des arêtes n'est pas asserté | Contrat de sortie machine | `CliTests` |
 | Ligne `links: N internal (M broken)` de `okf info` : les deux comptes, pas seulement le premier | Fidélité sémantique | `CliTests` |
 | Structure d'un `index.md` en sections — **sans** frontmatter, à la seule exception du `okf_version` racine que §12 autorise | **Exigé** (§8, §11) | `IndexTests` |
 | Verdict « conformant » malgré des champs optionnels absents | **Exigé** (§11) | `ValidateTests` |
@@ -503,19 +529,25 @@ octet-exacte.
 Restent **volontairement** couverts par le seul instantané, et le README les
 nomme comme tels : l'alignement des colonnes de `okf info`, son bloc `types:`,
 la deuxième ligne d'en-tête du DOT
-(`rankdir=LR; node [shape=box, fontsize=10];`) et l'indentation des arêtes.
-Vérifié : la spec ne prescrit aucun de ces deux formats — §6.1 décrit la
-sémantique des relations, pas `rankdir` ni des colonnes. Absence de format
-normatif n'est pas absence de sémantique normative, et c'est pourquoi les lignes
-« exigé » ci-dessus existent.
+(`rankdir=LR; node [shape=box, fontsize=10];`), l'indentation des arêtes et
+**l'ordre des arêtes**. Vérifié : la spec ne prescrit aucun de ces deux
+formats — §6.1 décrit la sémantique des relations, pas `rankdir` ni des
+colonnes. Absence de format normatif n'est pas absence de sémantique normative,
+et c'est pourquoi les lignes « exigé » ci-dessus existent.
 
-Quatre propriétés que la v2 rangeait ici en sortent (revue), parce qu'elles
-relèvent des critères de la section 1 : l'**accolade fermante** et l'**ordre
-global des arêtes** (validité syntaxique, relations), le fait qu'un concept sans
-lien sortant **n'émette rien** (présence et multiplicité), et la ligne
-`links: N internal (M broken)` — dont la reformulation peut faire disparaître
-l'information sur les liens cassés. Ce sont des tests directs, pas des
-instantanés.
+Sur l'ordre des arêtes, la ronde 3 a relevé une contradiction réelle : la v3
+le rangeait en test direct alors qu'une permutation préserve les cinq critères.
+Tranché : l'ordre *particulier* est de la présentation (instantané) ; le
+**déterminisme** — même bundle, même document — est un contrat, asserté par le
+test direct via deux runs. L'ordre actuel découle de `bundle.Concepts` ×
+`LinksFrom`, que `BundleTests` épingle déjà ; le test DOT n'a pas à le redire.
+
+Trois propriétés que la v2 rangeait ici en sortent (revue), parce qu'elles
+relèvent des critères de la section 1 : l'**accolade fermante** (validité
+syntaxique), le fait qu'un concept sans lien sortant **n'émette rien**
+(présence et multiplicité), et la ligne `links: N internal (M broken)` — dont
+la reformulation peut faire disparaître l'information sur les liens cassés. Ce
+sont des tests directs, pas des instantanés.
 
 #### Ce que cette section permet de promettre — et ce qu'elle ne permet pas
 
@@ -571,6 +603,152 @@ donc du régime sémantique, et **ce document est l'arbitrage** : chacune reçoi
 son entrée datée dans `tests/fixtures/README.md`, qui renvoie ici. Le changement
 de règle lui-même est consigné dans le `CHANGELOG.md` sous `[Unreleased]`, comme
 tout changement de contrat du dépôt.
+
+### 5. Décisions d'implémentation
+
+La ronde 3 a listé quinze décisions qu'un implémenteur aurait dû prendre seul.
+Elles sont tranchées ici, pour que le plan d'implémentation n'en contienne
+aucune. Ce qui reste explicitement renvoyé au plan est nommé comme tel.
+
+#### 5.1 Ce qu'est une « sortie machine »
+
+Exactement quatre surfaces : `validate --json`, `info --json`, `audit --json`,
+`graph --dot`. Les rendus texte de `validate`, `info`, `audit`, `verify` et
+`graph`, et le verbe `parse` (qui n'a pas de sortie machine), sont **hors** de
+l'obligation 2 : leurs faits sont ceux des mêmes calculs, couverts par les
+tests `§` et par les projections JSON ; leur forme relève de l'instantané. La
+seule exception est la ligne `links:` de `okf info`, listée en section 3 parce
+qu'elle porte un compte que rien d'autre en texte n'expose.
+
+#### 5.2 Contrat du mode update
+
+- **Variable** : `OKF_UPDATE_GOLDEN`. Valeur : noms exacts de méthodes de
+  `GoldenParityTests`, séparés par des virgules, sensibles à la casse, sans
+  joker. Élément vide, doublon, nom inconnu ou nom d'un test qui n'est pas un
+  test golden : **la liste entière est rejetée avant toute écriture.**
+- **Validation globale avant capture** : la liste est résolue une fois, par une
+  fixture de collection xunit construite avant le premier test — pas test par
+  test, sans quoi une faute de frappe en fin de liste laisserait les premiers
+  groupes déjà réécrits.
+- **Périmètre contre filtre** : la même fixture, à sa disposition en fin de
+  collection, compare l'ensemble nommé à l'ensemble des tests qui ont
+  effectivement capturé. Tout écart — un test nommé que `dotnet test --filter`
+  a exclu — est un échec explicite (« périmètre demandé mais non exécuté »), pas
+  un run vert. La commande recommandée dans le README passe la même liste au
+  filtre et à la variable, mais le contrôle ne repose pas sur cette discipline.
+- **Gardes conservées avant écriture** : le code de sortie attendu par le test
+  (`1` pour `validate-reserved`, `0` ailleurs), la cardinalité de l'index,
+  l'existence de chaque artefact du groupe, et un stderr vide là où le test
+  l'exige aujourd'hui. Une garde qui échoue en mode update est un **échec de
+  capture** : rien n'est écrit pour ce groupe, et le message le distingue de
+  l'échec volontaire. On ne capture jamais un message d'erreur comme référence.
+- **Atomicité par groupe** : tous les artefacts d'un test sont capturés dans un
+  répertoire temporaire, puis déplacés en une passe. Exception de la CLI,
+  fichier manquant, échec d'écriture du second artefact : rien n'est écrit pour
+  ce groupe.
+- **Deux échecs, deux messages** : « capture failure » (rien d'écrit, la cause)
+  et « update mode refuses to assert » (tout est écrit ; relire
+  `git diff tests/fixtures/golden`, relancer sans la variable).
+
+#### 5.3 Les projections complètes
+
+Une par surface, sur des entrées nommées, avec les cas opposés énumérés — pas
+« ceux qui comptent » :
+
+| Surface | Entrée et arguments | Cas opposés couverts |
+|---|---|---|
+| `validate --json` | `appendix_a --as-of 2026-09-25` ; `okf_v02_reserved --as-of 2026-09-25` | conforme / non conforme ; `errorCount` nul / non nul ; `warningCount` nul / non nul ; diagnostic avec `field` / sans ; la collection complète des diagnostics |
+| `info --json` | `appendix_a` ; un bundle construit dans le test avec un lien cassé, un fichier non parsable et un index racine portant `okf_version` | liens valides / cassés ; `okfVersion` absent / présent ; `parseErrors` vide / non vide ; `indexFileCount` et `logFileCount` nuls / non nuls ; chaque couple de `types` |
+| `audit --json` | `okf_v02 --as-of 2099-06-01` ; `okf_v02 --as-of 2026-09-25` ; une requête `--trust`/`--status`/`--type` | `stale` vrai / faux ; `findings` non vide / vide ; chaque champ de `query` nul / renseigné ; plusieurs statuts et niveaux de confiance dans les comptes |
+| `graph --dot` | un bundle construit dans le test : trois concepts, un lien résolu, un lien cassé, un concept isolé | arête résolue / cassée ; concept sans lien sortant → rien ; plusieurs arêtes |
+
+**Construction de l'attendu** : écrit à la main dans le test, **indépendamment
+des DTO de production** (`JsonOutput.cs`), sous forme de JSON littéral parsé en
+`JsonElement`. Comparaison **structurelle récursive** : propriété manquante ou
+en trop = échec ; ordre des propriétés d'un objet **indifférent** (c'est de la
+présentation, section 1) ; ordre des éléments d'un tableau **significatif**.
+Jamais copié d'une sortie observée — ce serait la tautologie de la section 2 en
+plus discret.
+
+**Assertions existantes de `CliTests`** : les tests de branche, de frontière ou
+d'erreur qui apportent un cas distinct restent ; les tests de simple présence
+qu'une projection complète couvre entièrement sont remplacés. **L'inventaire
+fichier:ligne de ce tri est renvoyé au plan** — c'est la seule tâche de cette
+section qui l'est, parce qu'elle se fait test par test, le code sous les yeux.
+
+#### 5.4 Le test DOT structurel
+
+Sa garantie est nommée : **le document respecte notre grammaire restreinte**, et
+rien de plus — pas l'acceptation par Graphviz, qui n'est pas installé en CI et
+ne le sera pas pour ce test. La grammaire : première ligne `digraph okf {` ;
+deuxième ligne l'en-tête `rankdir` exact ; puis zéro ou plusieurs lignes d'arête
+de la forme `  "<id>" -> "<id>";` ou `  "<id>" -> "<id>" [style=dashed,
+color=red];`, ids quotés par `DebugQuote` (dont `DebugQuoteTests` répond) ; puis
+`}` et le saut de ligne final ; aucune autre ligne. Le test asserte cette forme
+ligne à ligne, l'**ensemble** des arêtes attendu, et le déterminisme par deux
+runs — pas l'ordre.
+
+#### 5.5 Entrée et attendu distinctif des autres tests directs
+
+- Index avec `okf_version` racine préservé : `IndexTests.cs:49` existe déjà ;
+  le nouveau test couvre le cas symétrique, un bundle **sans** index préexistant
+  dont l'index racine généré n'a **aucun** frontmatter.
+- Groupe `Other` : un bundle avec `log.md` sans frontmatter ; attendu, une
+  section `# Other` listant `log`, titre = nom du fichier.
+- Entrée sans description : un concept sans `description` ; attendu, sa ligne
+  se termine sur `)` sans ` - `.
+- `index.md` ne se liste pas lui-même : **deux** régénérations sur le même
+  bundle ; attendu, le second index ne contient aucune entrée `index.md` — c'est
+  le second passage qui exerce la branche, le golden ne le fait pas.
+- Texte complet de `Serialize()` : un document à trois clés et un corps ;
+  attendu, la chaîne entière `---\n…\n---\n\n<corps>\n`.
+- Idempotence : `appendix_a/tables/users.md` ; attendu,
+  `Serialize(Parse(x)) == x` octet pour octet.
+- `fmt` stdout : le même fichier ; attendu, stdout égal au fichier, exit 0,
+  fichier non modifié.
+- Ligne `links:` : `appendix_a` ; attendu `5 internal (0 broken)`, et un bundle
+  construit avec un lien cassé ; attendu `(1 broken)`.
+
+#### 5.6 Trace documentaire
+
+- `tests/fixtures/README.md` : **une entrée datée par suppression**, à la date
+  du commit qui l'effectue, disant ce qui est perdu (les cinq copies : une
+  archive autonome du bundle d'entrée ; les quatre `.exitcode` : rien, les
+  valeurs vivent dans les assertions) et ce qui est conservé.
+- `CHANGELOG.md`, sous `[Unreleased]` → `### Changed` : une seule entrée pour
+  le changement de règle, qui mentionne les deux suppressions. Le dépôt n'utilise
+  pas de rubrique `Removed`, et les suppressions sont une conséquence de la
+  règle, pas un changement séparé.
+
+#### 5.7 Ordre des travaux
+
+Un ordre partiel obligatoire, qui rétablit la condition de v2 tombée en v3 :
+**rien ne devient régénérable avant que la fidélité indépendante soit en
+place.**
+
+1. Épingler `--as-of` sur les quatre goldens `validate` — aucun diff attendu.
+2. Écrire les tests directs de la section 3 — projections complètes, DOT
+   structurel, lignes « exigé » — et les faire passer sur le code actuel.
+3. Effectuer les deux suppressions, avec leurs entrées datées.
+4. Réécrire la doctrine : `CLAUDE.md`, `tests/fixtures/README.md`, les trois
+   textes du producteur, le site, les deux commentaires de code, `CHANGELOG.md`.
+5. **En dernier**, le mode update — puis sa première utilisation réelle :
+   capture d'un groupe, lecture du diff (vide attendu), run sans variable.
+
+Les étapes 3 et 4 peuvent s'intervertir ; 1 et 2 précèdent tout ; 5 ferme.
+
+#### 5.8 Plan du nouveau `tests/fixtures/README.md`
+
+Sections, dans cet ordre : ce que ce dossier est et n'est pas (instantanés de
+notre sortie ; la spec est l'autorité) ; les deux régimes, avec les cinq
+critères et les six exemples de ce document (indentation, ligne `links:`,
+permutation d'arêtes, ordre des propriétés JSON, `[Comptes]`, réalignement de
+colonne) ; l'inventaire **par test**, avec son groupe d'artefacts et, par
+propriété, ce qui est présentation et ce qui est sémantique ; la procédure
+update — commande, deux runs, les deux échecs ; la provenance historique,
+**conservée** telle quelle (les captures Rust, la date, l'image Docker) sous un
+titre qui la date ; et le journal des révisions, où les entrées datées
+existantes restent et où les nouvelles s'ajoutent.
 
 ## Risques et limites
 
