@@ -3,7 +3,22 @@
 Date : 2026-09-22
 Statut : proposé
 
-**Révision (revue externe, 2026-09-25)** : une revue externe adversariale a
+**Révision (revue externe, ronde 2, 2026-09-30)** : une seconde revue externe,
+menée sur la branche rebasée, ne trouve **aucun nouveau bloquant** et conclut
+« implémentable après corrections nommées ». Cinq corrections importantes sont
+intégrées inline : le critère présentation / sémantique devient une liste de
+cinq propriétés à préserver au lieu de catégories lexicales qui rangeaient mal
+(un diff d'espacement peut détruire une structure §8) ; le relâchement sur les
+captures Rust est double et n'était annoncé qu'à moitié ; le balayage des
+sorties machine a été fait et montre 22 champs sans assertion de valeur, avec un
+seuil « asserté une fois » trop faible — d'où l'assertion de projection complète
+par surface ; l'unité de sélection du mode update est définie (le test et son
+groupe d'artefacts) ; et deux attributions normatives sont corrigées (le code de
+sortie `1` est notre contrat, pas §11 ; l'index racine a droit à `okf_version`).
+La revue a aussi trouvé que l'ancienne doctrine vit **dans le code**, pas
+seulement dans la documentation.
+
+**Révision (revue externe, ronde 1, 2026-09-25)** : une revue externe adversariale a
 trouvé un bloquant et huit constats importants, dont plusieurs réfutent des
 affirmations de la première version. Les trois corrections structurantes : la
 promesse de complétude de la section 3 était fausse (un champ projeté dans
@@ -58,7 +73,9 @@ d'expliquer que sa discipline est « l'opposé de `tests/fixtures/` ». Le mot
 
 L'intention initiale était de supprimer les goldens devenus sans objet. Un
 inventaire de couverture (quelle garantie disparaîtrait si tel golden était
-supprimé ?) a montré que **ce n'est le cas d'aucun des 23**.
+supprimé ?) a montré qu'**aucun test golden n'est à supprimer**. Cinq *fichiers*
+le sont, mais pour une autre raison — ils ne sont lus par aucun test, voir
+section 4 — et non parce que la garantie qu'ils portaient aurait disparu.
 
 La première version citait deux exemples. La revue en a invalidé un et confirmé
 l'autre, et la façon dont le premier s'est trompé vaut d'être gardée :
@@ -67,7 +84,8 @@ l'autre, et la façon dont le premier s'est trompé vaut d'être gardée :
   ailleurs ». L'inventaire avait grepé le **nom** `DefaultSynthesize`, qui
   n'apparaît dans aucun test — mais la surcharge publique
   `IndexGenerator.RegenerateIndexes` l'utilise par défaut, et `IndexTests`
-  l'appelle dix fois. Le synthétiseur réel est donc exécuté. Ce que le golden
+  l'appelle sur **19 sites** (la v2 disait dix, comptage lui aussi trop étroit —
+  revue). Le synthétiseur réel est donc exécuté. Ce que le golden
   fige seul, c'est le **texte** qu'il produit
   (`Contains 3: Customers, Orders, Users.`). Leçon à retenir pour la suite du
   chantier : grep d'un identifiant ≠ mesure de couverture.
@@ -154,29 +172,68 @@ neutraliser un test sans toucher aucun golden.**
 La règle retenue ne partitionne donc plus des fichiers. Elle qualifie **ce que
 le diff change** :
 
-- **Diff de présentation** — espacement, alignement de colonnes, formulation
-  d'un message, ordre d'affichage qu'aucun `§` ne prescrit : procédure en deux
-  runs et relecture du diff, rien de plus.
-- **Diff sémantique** — verdict de conformité, comptes d'erreurs, code de
-  sortie, structure d'un fichier réservé (§8/§9), valeur projetée dans une
-  sortie machine (trust, statut, péremption), contenu d'un document que le verbe
-  écrit (`verify-dau.md`), **et toute modification d'un fixture d'entrée** :
-  arbitrage explicite de l'utilisateur **et** entrée datée dans
-  `tests/fixtures/README.md`, comme aujourd'hui.
+Un diff est **de présentation** — deux runs et relecture, rien de plus — s'il
+préserve les cinq propriétés suivantes. Une seule qui bouge, et le diff est
+**sémantique** : arbitrage explicite de l'utilisateur **et** entrée datée dans
+`tests/fixtures/README.md`, comme aujourd'hui.
 
-Un même fichier peut donc relever des deux régimes selon le diff : réaligner
-une colonne de `okf info` n'est pas réviser un verdict, même si les deux
-touchent `info.out`.
+1. **Les faits exposés**, leurs valeurs et leurs associations (un compte reste
+   attaché au même type, un diagnostic à la même sévérité).
+2. **Les éléments présents, absents et leur multiplicité** — rien ne disparaît,
+   rien n'apparaît, rien ne se duplique.
+3. **Les cibles de liens et les relations** — un graphe garde ses arêtes et
+   leurs extrémités.
+4. **La validité syntaxique et la structure interprétée du format** — un
+   document DOT reste analysable par `dot`, un `index.md` reste des sections et
+   des listes au sens de §8.
+5. **Les effets écrits et les codes de sortie.**
+
+Un diff mixte relève du régime sémantique, et le doute se tranche du même côté.
+
+**La nature visuelle d'un diff ne suffit donc pas à le qualifier**, et c'est la
+correction que la ronde 2 impose : la v2 énonçait des catégories lexicales
+(« espacement, formulation, ordre »), dont deux contre-exemples vérifiés
+montrent qu'elles rangent mal. Indenter de quatre espaces un `index.md` entier
+est *littéralement* un diff d'espacement, et transforme des sections en bloc de
+code — la structure que §8 exige disparaît (critère 4). Remplacer
+`5 internal (0 broken)` par `5 internal` est *littéralement* une reformulation,
+et fait disparaître l'information sur les liens cassés (critère 1).
+
+Un même fichier relève donc des deux régimes selon le diff : réaligner une
+colonne de `okf info` n'est pas réviser un verdict, même si les deux touchent
+`info.out`.
+
+**Une propriété change de camp par rapport à la v2** : la v2 laissait au seul
+instantané « l'accolade fermante » du DOT. C'est faux — sans elle le document
+n'est plus analysable (critère 4), et aucun test direct ne la vérifie : les
+tests DOT existants contrôlent le préfixe `digraph okf {` et certaines arêtes,
+jamais la fermeture ni le document entier. La validité syntaxique d'une sortie
+machine relève du régime sémantique, et un test direct doit la couvrir.
 
 #### Un relâchement assumé, pas un effet de bord
 
 Sous la règle actuelle, les 4 captures Rust ne sont révisables que lors d'un
-bump de spec délibéré. Sous la règle ci-dessus, un diff **de présentation** les
-rend révisables par la procédure en deux runs. **C'est un vrai relâchement, il
-est décidé, et la nouvelle rédaction doit le présenter comme une décision
-nouvelle** (arbitré avec l'utilisateur le 2026-09-25, revue), pas comme une
-conséquence mécanique du changement de méthode de capture. Un diff sémantique
-dans ces mêmes fichiers reste sous arbitrage.
+bump de spec délibéré. La règle ci-dessus les relâche **deux fois**, et la v2 n'en
+annonçait qu'une (revue) :
+
+1. Un diff **de présentation** les rend révisables par la procédure en deux
+   runs, sans arbitrage.
+2. Un diff **sémantique** devient possible sous arbitrage et entrée datée,
+   **sans exiger de bump de spec**. C'est le second relâchement, celui que la v2
+   passait sous silence en écrivant seulement « reste sous arbitrage ».
+
+Exemple concret de ce que le point 2 ouvre : décider que l'index racine généré
+déclare désormais `okf_version: "0.2"` — un changement structurel que §12
+autorise explicitement — et réviser `index-input/index.md` en conséquence. La
+règle actuelle l'interdit sans bump de spec ; la nouvelle le permet sous
+arbitrage.
+
+**Les deux sont des décisions, arbitrées avec l'utilisateur le 2026-09-30**, pas
+des conséquences mécaniques du changement de méthode de capture. Le second se
+défend par la même raison que tout le reste : la condition « bump de spec »
+était le corollaire d'une autorité Rust qu'on abandonne, et le contrôle qui
+reste — arbitrage plus trace datée — est celui qui gouverne déjà les fixtures
+écrites à la main.
 
 #### Les autres textes à corriger
 
@@ -196,6 +253,19 @@ la même discipline » serait faux ; ils partagent la mécanique de capture.
 
 `.github/PULL_REQUEST_TEMPLATE.md` n'est **pas** concerné : il dit seulement
 « including golden comparisons », ce qui reste exact.
+
+**L'ancienne doctrine vit aussi dans le code, pas seulement dans la
+documentation** (revue), et ces deux textes contrediraient directement la
+nouvelle procédure :
+
+- le docstring de la classe `GoldenParityTests` — « Any divergence … is a bug in
+  the CLI, never a reason to touch a golden fixture » ;
+- le commentaire de `WriteGraphDot` dans `OkfCli.cs` — « Byte-for-byte
+  golden-locked … a diff here is a regression, never a fixture to refresh ».
+
+Ils font partie du même balayage. Un commentaire de code qui énonce une règle
+abrogée est plus nuisible qu'une page de site périmée : c'est lui qu'on lit en
+travaillant.
 
 #### Ce qui ne change pas
 
@@ -227,14 +297,38 @@ vraiment, committer le diff avec le changement qui l'a causé.
 #### Le périmètre est obligatoire
 
 Le mode du producteur s'active par `=1` et réécrit tout. **Ici, non** : la
-variable prend la liste des goldens (ou des tests) à réécrire, et sans valeur
-utile, rien n'est réécrit. La raison est celle que la revue a nommée : l'échec
-volontaire empêche de présenter une tautologie comme un succès, il **n'empêche
-pas l'écriture**. Un lancement non filtré pour un changement de présentation
-écraserait au passage des goldens sémantiques, et le message n'arriverait
-qu'après. Trois choses restent distinctes, et la rédaction doit les nommer
-séparément : **autorisation préalable**, **périmètre de capture**, **validation
-après capture** (arbitré avec l'utilisateur le 2026-09-25).
+variable nomme ce qui doit être réécrit, et sans valeur résoluble, rien n'est
+réécrit. La raison est celle que la revue a nommée : l'échec volontaire empêche
+de présenter une tautologie comme un succès, il **n'empêche pas l'écriture**. Un
+lancement non filtré pour un changement de présentation écraserait au passage
+des goldens sémantiques, et le message n'arriverait qu'après. Trois choses
+restent distinctes, et la rédaction doit les nommer séparément : **autorisation
+préalable**, **périmètre de capture**, **validation après capture** (arbitré
+avec l'utilisateur le 2026-09-25).
+
+**L'unité de sélection est le test, et ses artefacts forment un groupe**
+(revue) : la v2 disait « goldens ou tests » sans trancher, ce qui laissait trois
+implémentations possibles pour un test qui produit plusieurs fichiers — nommer
+`verify.out` seul devait-il écrire aussi `verify-dau.md`, ne rien écrire
+d'autre, ou être refusé ? Le contrat retenu :
+
+- **Un nom désigne un test et le groupe d'artefacts qu'il capture.**
+  `Verify_output_matches_golden` couvre `verify.out` **et** `verify-dau.md` ;
+  `Index_generation_matches_golden` couvre les trois `index.md`. Il n'existe pas
+  de demi-capture d'un groupe, et la capture ne s'élargit jamais au-delà des
+  groupes explicitement nommés.
+- **Un identifiant inconnu est un échec**, pas un no-op silencieux : une faute
+  de frappe qui ne réécrit rien ressemble trop à un test qui passe.
+- **Les comparaisons hors périmètre restent actives.** Régénérer `audit-v02.out`
+  ne désarme pas `audit-v02.json` ; les deux se nomment quand un même
+  changement les touche.
+
+Ce que ce contrat **ne** fait pas, et la v2 le reconnaissait déjà : il ne met en
+place aucune autorisation technique. Il déplace la responsabilité sur le choix
+du périmètre et sa relecture — un périmètre large par commodité réécrit
+effectivement des goldens au diff sémantique. La formule « frein humain
+qu'aucune variable d'environnement ne contourne », plus loin dans les risques,
+décrit donc une **règle de procédure**, pas une propriété du programme (revue).
 
 Corollaire : **le mode update n'écrit jamais un fixture d'entrée.** Les entrées
 (`appendix_a/`, `okf_v02/`, `okf_v02_computation/`, `okf_v02_reserved/`) se
@@ -292,10 +386,21 @@ goldens sont suspendus à l'horloge de la machine, et le jour venu ils gagneront
 un avertissement de péremption que personne n'a demandé. Le mode update rend la
 chose plus visible mais ne la crée pas.
 
-Correctif : **épingler `--as-of` sur les invocations `validate` des goldens**,
-à une date antérieure à toute péremption des fixtures, pour que la sortie ne
-dépende plus du jour du run. À faire avant le mode update, sans quoi la première
-regénération capturerait une sortie datée.
+Correctif : **épingler `--as-of` sur les quatre invocations `validate` des
+goldens**, à une date fixe antérieure à toute péremption des fixtures, pour que
+la sortie ne dépende plus du jour du run. À faire avant le mode update, sans
+quoi la première regénération capturerait une sortie datée.
+
+**Vérifié par exécution** (revue) : avec `--as-of 2026-09-25`, les quatre
+sorties sont **identiques aux goldens actuels**, codes de sortie compris —
+`appendix_a` 0 erreur / 8 avertissements / exit 0, `okf_v02` 0/3/0,
+`okf_v02_computation` 0/5/0, `okf_v02_reserved` 4/0/**1**. Le correctif ne crée
+donc aucun diff caché. Deux choses à ne pas confondre avec de la péremption : les
+avertissements §10 sur la forme date-only de `stale_after` et de
+`sources[].last_modified` **subsistent** avec une date fixe, parce qu'ils portent
+sur la forme du champ et non sur son échéance ; et à la frontière
+`--as-of 2099-01-01`, `okf_v02` passe à 4 avertissements et le bundle
+computation à 6 — ce qui confirme que la date choisie doit rester en deçà.
 
 #### Ce que le message d'échec doit dire
 
@@ -326,8 +431,38 @@ aucune assertion ne le dit.
 La spec ne prescrit pas ce format JSON, ce qui n'autorise pas à y dénaturer une
 valeur qu'elle définit. D'où la deuxième obligation du périmètre : **balayer
 chaque champ de chaque sortie machine** (`validate --json`, `info --json`,
-`audit --json`, le DOT) et vérifier qu'il est asserté au moins une fois hors
-golden. Corriger le seul `status` traiterait le symptôme.
+`audit --json`, le DOT). Corriger le seul `status` traiterait le symptôme.
+
+**Le balayage a été fait, et il est plus large que prévu** (revue) : **22 champs
+ou familles** n'ont aucune assertion de **valeur** hors golden — 6 dans
+`validate --json` (`warningCount`, `infoCount`, `diagnostics[].severity`,
+`.path`, `.conceptId`, `.message`), 9 dans `info --json` (`bundle`,
+`okfVersion`, `indexFileCount`, `logFileCount`, les couples de `types.*`,
+`linkCount`, `brokenLinkCount`, `parseErrors` et ses deux champs), 7 dans
+`audit --json` (`bundle`, `evaluatedAt`, `query.status`, le compte de
+`trust.machine-confirmed`, `status.draft`, `status.deprecated`,
+`findings[].path`), plus le `status` par résultat de la ronde 1. `info --json`
+est le plus nu : seul `conceptCount` y est asserté par valeur, `linkCount` et
+`brokenLinkCount` par simple présence — un `linkCount` constamment nul
+passerait — **et aucun golden ne compense**, puisque le golden `info` capture le
+rendu texte.
+
+**Et le critère « asserté au moins une fois » est lui-même trop faible.**
+`conformant` et `errorCount` le satisfont déjà, alors qu'une projection
+constante `true`/`0` passerait les assertions existantes. Le critère retenu est
+donc : **une assertion discriminante**, c'est-à-dire qui distingue la valeur
+correcte de la valeur plausible-mais-fausse — conformité vraie *et* fausse,
+compte nul *et* non nul, champ présent *et* absent, catégories distinctes,
+collection complète sur un petit exemple.
+
+**Forme retenue (arbitrée le 2026-09-30) : une assertion de projection complète
+par surface.** Un test par sortie machine compare le document **entier** à un
+objet attendu construit dans le test, sur un petit fixture, plus les cas opposés
+qui comptent. Quatre tests plutôt que vingt-deux assertions dispersées, et deux
+propriétés qu'une assertion champ par champ n'apporte pas : la **complétude** de
+la collection — un champ qui disparaît fait échouer le test — et la couverture
+automatique du **prochain champ ajouté**, qui est exactement ce qui a manqué au
+`status` de la ronde 1.
 
 #### Bascule en test direct
 
@@ -339,10 +474,12 @@ octet-exacte.
 
 | Propriété | Nature | Où |
 |---|---|---|
-| Statut par résultat dans `audit --json`, et balayage des autres champs projetés | Fidélité sémantique (§5.4) | `CliTests` |
-| Index racine sans frontmatter, structure en sections | **Exigé** (§8, §11) | `IndexTests` |
+| Projection complète de `validate --json`, `info --json`, `audit --json` (dont le statut par résultat), avec leurs cas opposés | Fidélité sémantique | `CliTests` |
+| Validité syntaxique du DOT : accolade fermante, document analysable, ordre des arêtes, et rien d'émis pour un concept sans lien sortant | Contrat de sortie machine | `CliTests` |
+| Ligne `links: N internal (M broken)` de `okf info` : les deux comptes, pas seulement le premier | Fidélité sémantique | `CliTests` |
+| Structure d'un `index.md` en sections — **sans** frontmatter, à la seule exception du `okf_version` racine que §12 autorise | **Exigé** (§8, §11) | `IndexTests` |
 | Verdict « conformant » malgré des champs optionnels absents | **Exigé** (§11) | `ValidateTests` |
-| Code de sortie 1 sur fichier réservé malformé | **Exigé** (§11) | `CliTests` |
+| Verdict non conforme sur fichier réservé malformé (§11) — et sa traduction en code de sortie `1`, qui est notre contrat, pas celui de la spec | **Exigé** + contrat local | `CliTests` |
 | Texte du synthétiseur par défaut (`Contains N: …`) | Notre comportement | `IndexTests` |
 | Groupe `Other` — produit par `log.md`, fichier réservé sans frontmatter, et non par un concept sans `type` | Notre comportement | `IndexTests` |
 | Entrée sans description → pas de suffixe ` - ` | Notre comportement | `IndexTests` |
@@ -353,13 +490,20 @@ octet-exacte.
 
 Restent **volontairement** couverts par le seul instantané, et le README les
 nomme comme tels : l'alignement des colonnes de `okf info`, son bloc `types:`,
-sa ligne `links:`, la deuxième ligne d'en-tête du DOT
-(`rankdir=LR; node [shape=box, fontsize=10];`), l'indentation des arêtes,
-l'accolade fermante, l'ordre global des arêtes, et le fait qu'un concept sans
-lien sortant n'émette rien. Vérifié : la spec ne prescrit aucun de ces deux
-formats — §6.1 décrit la sémantique des relations, pas `rankdir` ni des
-colonnes. Absence de format normatif n'est pas absence de sémantique normative,
-et c'est pourquoi les lignes « exigé » ci-dessus existent.
+la deuxième ligne d'en-tête du DOT
+(`rankdir=LR; node [shape=box, fontsize=10];`) et l'indentation des arêtes.
+Vérifié : la spec ne prescrit aucun de ces deux formats — §6.1 décrit la
+sémantique des relations, pas `rankdir` ni des colonnes. Absence de format
+normatif n'est pas absence de sémantique normative, et c'est pourquoi les lignes
+« exigé » ci-dessus existent.
+
+Quatre propriétés que la v2 rangeait ici en sortent (revue), parce qu'elles
+relèvent des critères de la section 1 : l'**accolade fermante** et l'**ordre
+global des arêtes** (validité syntaxique, relations), le fait qu'un concept sans
+lien sortant **n'émette rien** (présence et multiplicité), et la ligne
+`links: N internal (M broken)` — dont la reformulation peut faire disparaître
+l'information sur les liens cassés. Ce sont des tests directs, pas des
+instantanés.
 
 #### Ce que cette section permet de promettre — et ce qu'elle ne permet pas
 
@@ -391,17 +535,21 @@ Deux suppressions de duplication, tout de même :
    périmées sans qu'aucun test ne s'en aperçoive. Ce qu'elles perdent est une
    archive historique autonome du bundle d'entrée, à assumer explicitement.
    La cardinalité conservée (`Assert.Equal(8, allFiles.Length)`) doit être
-   décrite pour ce qu'elle est : elle attrape un fichier **créé** en trop, pas
-   la modification du contenu d'un original ni une suppression compensée par une
-   création. « Rien d'autre touché » était trop fort (revue).
+   décrite pour ce qu'elle est : elle attrape un fichier **créé** en trop et une
+   **suppression nette**, mais ni la modification du contenu d'un original, ni
+   une suppression compensée par une création. « Rien d'autre touché » était trop
+   fort (revue).
 2. **Les 4 fichiers `*.exitcode`**, chacun un caractère ASCII sans saut de ligne
    final, avec une note dédiée dans le README et une protection
    `.gitattributes`. Un code de sortie est un entier, pas une sortie à figer.
    Mais **leurs valeurs ne sont pas toutes `0`** (revue) : `validate.exitcode`,
    `validate-v02.exitcode` et `validate-computation.exitcode` valent `0` — un
    bundle reste conformant malgré ses avertissements — et
-   `validate-reserved.exitcode` vaut **`1`**, le rejet d'un fichier réservé
-   malformé exigé par §11. Chaque valeur devient donc une assertion explicite
+   `validate-reserved.exitcode` vaut **`1`**. Deux choses à distinguer ici, que
+   la v2 confondait (revue) : le **verdict non conforme** sur un fichier réservé
+   malformé est exigé par §11 ; sa **traduction en code de sortie `1`** est notre
+   contrat de CLI, que la spec ne prescrit nulle part. La valeur à conserver est
+   la même ; l'autorité invoquée ne l'est pas. Chaque valeur devient donc une assertion explicite
    avec sa raison ; la suggestion « `Assert.Equal(0, r.Code)` » de la première
    version aurait rendu rouge un comportement correct.
 
@@ -411,19 +559,24 @@ Deux suppressions de duplication, tout de même :
   tautologie pour un succès ; il n'empêche pas l'écriture, et c'est pourquoi le
   périmètre est obligatoire. Pour un diff de présentation, la relecture est le
   seul filet. Pour un diff sémantique, l'arbitrage et l'entrée datée ajoutent un
-  frein humain qu'aucune variable d'environnement ne contourne.
-- **La frontière présentation / sémantique est un jugement**, pas un test
-  automatique. C'est le prix de l'abandon du partage par nom de fichier, qui
-  était faux. Le README doit donner des exemples des deux côtés plutôt qu'une
-  définition, et le doute se tranche du côté sémantique.
+  frein — **humain et procédural, pas technique** : rien dans le programme ne
+  l'impose, et un périmètre large choisi par commodité réécrit effectivement des
+  goldens sémantiques.
+- **La frontière présentation / sémantique est un jugement**, encadré par les
+  cinq critères de la section 1 mais pas automatisable. C'est le prix de
+  l'abandon du partage par nom de fichier, qui était faux. Le README doit donner
+  des exemples des deux côtés — dont les deux pièges vérifiés : une indentation
+  qui détruit une structure §8, une reformulation qui supprime un compte — et le
+  doute se tranche du côté sémantique.
 - **La couche instantané ne prouve rien sur la conformité**, par construction.
   Un `okf info` parfaitement conforme à son golden peut violer la spec.
 - **Le jeu d'instantanés reste large**, donc chaque changement de formulation
   d'un verbe touchera un fichier et demandera deux runs. C'est le coût assumé
   pour garder une alarme sur `okf info` et `okf audit`.
-- **Le relâchement sur les 4 captures Rust est réel** et assumé : un diff de
-  présentation y suffit désormais, là où la règle actuelle exigeait un bump de
-  spec.
+- **Le relâchement sur les 4 captures Rust est double** et assumé : un diff de
+  présentation y suffit désormais sans arbitrage, et un diff sémantique n'exige
+  plus de bump de spec, seulement l'arbitrage et l'entrée datée. La règle
+  actuelle interdisait les deux.
 
 ## Travaux futurs
 
