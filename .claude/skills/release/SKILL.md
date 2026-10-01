@@ -281,3 +281,15 @@ Then confirm the PR exists on `microsoft/winget-pkgs` with the search in step 7
 it goes green by *skipping* (`::notice::`) until it has been published to
 winget-pkgs once by hand and the repository variable
 `WINGET_RENDER_PUBLISHED=true` is set.
+
+**The winget PR opened but `wingetvalidator-prod` flags `Missing property
+MinimumOSVersion`** (label `Manifest-Metadata-Consistency`): expected on every
+release. `komac update` regenerates the manifests itself and drops
+`MinimumOSVersion: 10.0.0.0`, which our own templates
+(`packaging/winget/templates/*.installer.yaml.in`) and every published version
+carry. Fix it on the PR's branch in the fork — insert the line right after
+`PackageVersion:` in the `.installer.yaml`, keeping the file's **CRLF** endings
+(Git Bash `sed` strips them; edit through PowerShell) — and push it with
+`gh api -X PUT repos/jchable/winget-pkgs/contents/<path>` (`content` base64,
+the file's current `sha`, `branch` = the PR head). Check the PR comments a few
+minutes after it opens; the validator posts there.
