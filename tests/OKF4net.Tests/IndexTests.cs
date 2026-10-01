@@ -668,4 +668,96 @@ public class IndexTests
         // File.Exists resolve optimistically.
         Assert.True(File.Exists(Path.Combine(content.Path, "index.md")));
     }
+
+    /// <summary>
+    /// §8: an index file has no frontmatter. The existing tests cover a root
+    /// index whose PRE-EXISTING frontmatter is dropped or preserved; this is
+    /// the case where no index existed at all, so nothing could be preserved
+    /// and the generated root must start straight at its first section.
+    /// </summary>
+    [Fact]
+    public void Regenerate_writes_no_frontmatter_when_no_root_index_pre_existed()
+    {
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "notes/a.md", "Note", "A", "First.");
+
+        IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        Assert.StartsWith("# ", rootIndex, StringComparison.Ordinal);
+        Assert.DoesNotContain("---", rootIndex, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A reserved log.md has no frontmatter and therefore no type; the
+    /// generator lists it under `# Other` with its file stem as the title.
+    /// This is our behaviour, not a §8 requirement -- §8 does not name the
+    /// group -- pinned because only a snapshot pinned it before.
+    /// </summary>
+    [Fact]
+    public void Regenerate_lists_a_reserved_log_under_Other_by_file_stem()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("log.md", "# Log\n\n## 2026-05-27\n* **Added**: something.\n");
+        WriteDoc(tmp, "a.md", "Note", "A", "First.");
+
+        IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        Assert.Contains("# Other\n\n* [log](log.md)\n", rootIndex, StringComparison.Ordinal);
+    }
+
+    /// <summary>An entry without a description ends at the link -- no dangling ` - `.</summary>
+    [Fact]
+    public void Regenerate_omits_the_description_suffix_when_there_is_none()
+    {
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: Bare\n---\n\nbody\n");
+
+        IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        Assert.Contains("* [Bare](a.md)\n", rootIndex, StringComparison.Ordinal);
+        Assert.DoesNotContain("* [Bare](a.md) - ", rootIndex, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The generated index.md must not list itself on the NEXT regeneration.
+    /// A single pass on a bundle without indexes never exercises this branch
+    /// (there is no index.md to skip yet), which is why the snapshot never did.
+    /// </summary>
+    [Fact]
+    public void Regenerate_does_not_list_index_md_as_an_entry_on_a_second_pass()
+    {
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "tables/a.md", "Table", "A", "First.");
+
+        IndexGenerator.RegenerateIndexes(tmp.Path);
+        IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        var tablesIndex = File.ReadAllText(Path.Combine(tmp.Path, "tables", "index.md"));
+        Assert.DoesNotContain("(index.md)", tablesIndex, StringComparison.Ordinal);
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        Assert.DoesNotContain("[index](index.md)", rootIndex, StringComparison.Ordinal);
+        Assert.Contains("(tables/index.md)", rootIndex, StringComparison.Ordinal); // the subdirectory link is not the self-listing
+    }
+
+    /// <summary>
+    /// The default synthesizer's text for a subdirectory: `Contains N: titles`.
+    /// Executed by every RegenerateIndexes call in this file, but its exact
+    /// wording was pinned only by the index snapshot until now.
+    /// </summary>
+    [Fact]
+    public void Default_synthesizer_lists_child_titles_in_order()
+    {
+        using var tmp = new TempDir();
+        WriteDoc(tmp, "tables/customers.md", "Table", "Customers", "c");
+        WriteDoc(tmp, "tables/orders.md", "Table", "Orders", "o");
+        WriteDoc(tmp, "tables/users.md", "Table", "Users", "u");
+
+        IndexGenerator.RegenerateIndexes(tmp.Path);
+
+        var rootIndex = File.ReadAllText(Path.Combine(tmp.Path, "index.md"));
+        Assert.Contains("* [tables](tables/index.md) - Contains 3: Customers, Orders, Users.\n", rootIndex, StringComparison.Ordinal);
+    }
 }
