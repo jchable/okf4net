@@ -1199,7 +1199,7 @@ Spec §2 and §5.2 in full, with the two corrections the plan review forced: a f
 - Modify: `tests/OKF4net.Tests/GoldenParityTests.cs` (collection attribute, constructor, `AssertGolden`, every test, the class docstring's cref)
 
 **Interfaces:**
-- Produces: `GoldenUpdate.Variable` (`"OKF_UPDATE_GOLDEN"`), `GoldenUpdate.CollectionName`, `GoldenUpdate.Groups` (test name → snapshot files), `GoldenUpdate.ParseScope(string?)`, `GoldenUpdate.Scope` (the collection fixture: one public constructor; `Includes(test)`, `MarkCaptured(test)`, teardown check; an `internal` constructor for tests), `GoldenUpdate.Commit(Scope, test, artefacts, goldenRoot?)` (atomic per group, restore on failure), `GoldenUpdate.RefusesToAssert(test)`.
+- Produces: `GoldenUpdate.Variable` (`"OKF_UPDATE_GOLDEN"`), `GoldenUpdate.CollectionName`, `GoldenUpdate.Groups` (test name → snapshot files), `GoldenUpdate.ParseScope(string?)`, `GoldenUpdate.Scope` (the collection fixture: one public constructor; `Includes(test)`, `MarkCaptured(test)`, teardown check; an `internal` constructor for tests), `GoldenUpdate.Commit(Scope, test, artefacts, goldenRoot?)` (atomic per group, restore on failure; an `internal` overload takes a `Func<DirectoryInfo> createStaging` so a test can fail the very first step without mutating process-wide temp variables), `GoldenUpdate.RefusesToAssert(test)`.
 
 - [ ] **Step 1: Write the unit tests for the parts that run without the variable**
 
@@ -1322,6 +1322,33 @@ public class GoldenUpdateTests
         Assert.Contains("verify-dau.md", ex.Message, StringComparison.Ordinal);
         Assert.Contains("nothing written", ex.Message, StringComparison.Ordinal);
         Assert.False(File.Exists(Path.Combine(root.Path, "verify.out")));
+    }
+
+    [Fact]
+    public void Commit_reports_nothing_written_when_the_staging_directory_cannot_be_created()
+    {
+        // The staging directory is the first thing the commit creates (the
+        // real case: TMP pointing at a file, a full or read-only temp volume).
+        // The failure is injected rather than provoked through TMP/TEMP/TMPDIR:
+        // those are process-wide, and every other test class -- xunit runs
+        // them in parallel -- creates its TempDir from them.
+        using var root = new TempDir();
+        root.Write("verify.out", "OLD\n");
+        root.Write("verify-dau.md", "OLD2\n");
+        var scope = new GoldenUpdate.Scope(GoldenUpdate.ParseScope("Verify_output_matches_golden"));
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            GoldenUpdate.Commit(
+                scope,
+                "Verify_output_matches_golden",
+                [("verify.out", "NEW\n"), ("verify-dau.md", "NEW2\n")],
+                root.Path,
+                () => throw new IOException("Cannot create the staging directory")));
+
+        Assert.Contains("Cannot create the staging directory", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("nothing written", ex.Message, StringComparison.Ordinal);
+        Assert.Equal("OLD\n", File.ReadAllText(Path.Combine(root.Path, "verify.out")));
+        Assert.Equal("OLD2\n", File.ReadAllText(Path.Combine(root.Path, "verify-dau.md")));
     }
 
     [Fact]
@@ -1483,7 +1510,16 @@ public static class GoldenUpdate
     /// <param name="test">The <see cref="GoldenParityTests"/> method name.</param>
     /// <param name="artefacts">Each snapshot file of the group with the exact text to write.</param>
     /// <param name="goldenRoot">Where the snapshots live; tests pass a temporary directory.</param>
-    public static void Commit(Scope scope, string test, IReadOnlyList<(string Relative, string Content)> artefacts, string? goldenRoot = null)
+    public static void Commit(Scope scope, string test, IReadOnlyList<(string Relative, string Content)> artefacts, string? goldenRoot = null) =>
+        Commit(scope, test, artefacts, goldenRoot, () => Directory.CreateTempSubdirectory("okf-golden-"));
+
+    /// <summary>
+    /// The public overload's implementation, with the staging directory's
+    /// creation injected, so a test can make that first step fail without
+    /// touching the process-wide temp variables -- which every other test
+    /// class running in parallel reads.
+    /// </summary>
+    internal static void Commit(Scope scope, string test, IReadOnlyList<(string Relative, string Content)> artefacts, string? goldenRoot, Func<DirectoryInfo> createStaging)
     {
         var root = goldenRoot ?? DefaultGoldenRoot;
         var expected = Groups[test].Order(StringComparer.Ordinal).ToList();
@@ -1494,15 +1530,18 @@ public static class GoldenUpdate
                 $"nothing written: the group of {test} is [{string.Join(", ", expected)}] but the test offered [{string.Join(", ", given)}].");
         }
 
-        var staging = Directory.CreateTempSubdirectory("okf-golden-");
+        DirectoryInfo? staging = null;
         try
         {
-            // Phase 1, before writing: stage every new file and back up every
-            // existing destination. A failure here has replaced nothing.
+            // Phase 1, before writing: create the staging directory, stage
+            // every new file and back up every existing destination. A failure
+            // anywhere here -- the temp directory itself included -- has
+            // replaced nothing, and says so.
             var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
             var planned = new List<(string Staged, string Destination, string? Backup)>();
             try
             {
+                staging = createStaging();
                 foreach (var (relative, content) in artefacts)
                 {
                     var native = relative.Replace('/', Path.DirectorySeparatorChar);
@@ -1571,7 +1610,7 @@ public static class GoldenUpdate
         {
             try
             {
-                staging.Delete(recursive: true);
+                staging?.Delete(recursive: true);
             }
             catch (IOException)
             {
@@ -1661,7 +1700,7 @@ public sealed class GoldenParityCollection : ICollectionFixture<GoldenUpdate.Sco
 - [ ] **Step 4: Run the unit tests**
 
 Run: `dotnet test tests/OKF4net.Tests/OKF4net.Tests.csproj --filter "FullyQualifiedName~GoldenUpdateTests" --no-restore`
-Expected: 10 passed. (`Groups_name_every_snapshot_file_exactly_once_and_every_golden_test` passes only because Task 8 deleted the nine files.)
+Expected: 11 passed. (`Groups_name_every_snapshot_file_exactly_once_and_every_golden_test` passes only because Task 8 deleted the nine files.)
 
 - [ ] **Step 5: Wire `GoldenParityTests` into the collection and route every test through `AssertGolden`**
 
@@ -1870,7 +1909,7 @@ Keep `Run`, `WithRepoRootAsCwd`, `CopyDirectory`, `PinnedAsOf`, `BundlePath`, `G
 - [ ] **Step 6: Run the snapshot and update-mode tests without the variable**
 
 Run: `dotnet test tests/OKF4net.Tests/OKF4net.Tests.csproj --filter "FullyQualifiedName~GoldenParityTests|FullyQualifiedName~GoldenUpdateTests" --no-restore`
-Expected: 21 passed.
+Expected: 22 passed.
 
 - [ ] **Step 7: Format, commit**
 
@@ -2308,7 +2347,7 @@ Expected: every snapshot test errors at fixture construction with `OKF_UPDATE_GO
 
 Make sure the variable is unset (`echo $OKF_UPDATE_GOLDEN` prints nothing; PowerShell `Remove-Item Env:OKF_UPDATE_GOLDEN`).
 Run: `dotnet test tests/OKF4net.Tests/OKF4net.Tests.csproj --no-restore --filter "Category!=ContainerIntegration"`
-Expected: 0 failed. The pre-plan run on this machine was 2300 passed + 12 skipped = 2312. The plan deletes 6 `CliTests` methods and adds 37 (7 `JsonShapeTests`, 12 `MachineOutputTests`, 5 `IndexTests`, 2 `DocumentTests`, 1 `CliTests`, 10 `GoldenUpdateTests`), so expect **2343 total**. The skipped count is host-dependent (symlink privilege, case sensitivity, POSIX-only cases — not the container tests, which the filter removes from the selection entirely), so judge the **total**, not the split; a different total means a task added or removed a test the plan did not account for: list it in the final report.
+Expected: 0 failed. The pre-plan run on this machine was 2300 passed + 12 skipped = 2312. The plan deletes 6 `CliTests` methods and adds 38 (7 `JsonShapeTests`, 12 `MachineOutputTests`, 5 `IndexTests`, 2 `DocumentTests`, 1 `CliTests`, 11 `GoldenUpdateTests`), so expect **2344 total**. The skipped count is host-dependent (symlink privilege, case sensitivity, POSIX-only cases — not the container tests, which the filter removes from the selection entirely), so judge the **total**, not the split; a different total means a task added or removed a test the plan did not account for: list it in the final report.
 Run: `dotnet format OKF4net.sln --verify-no-changes --no-restore` → exit 0.
 
 Nothing to commit. Report the five observed outcomes verbatim in the task's completion note.
