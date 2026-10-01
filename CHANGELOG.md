@@ -8,7 +8,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-This release is large: 145 entries below. What follows is the short version —
+This release is large: 146 entries below. What follows is the short version —
 what breaks, and what is new. The detail for every line is in the sections
 after it.
 
