@@ -188,12 +188,23 @@ public class JsonShapeTests
     [Fact]
     public void AssertEquivalent_compares_decoded_strings_not_escaped_text()
     {
-        // System.Text.Json escapes '`' as ` in its output; the expected
-        // side is written with the plain character. Same string, different
-        // text -- and a different decoded string still fails.
-        JsonShape.AssertEquivalent("""{"m":"`x`"}""", """{"m":"`x`"}""");
+        // System.Text.Json's default encoder escapes '`' as a backslash-u
+        // sequence; the expected side is written with the plain character.
+        // The escaped text is produced at run time by the serializer itself,
+        // never spelled with a backslash in this source: an editor, a tool or
+        // a review that materialises this file can decode a backslash-u
+        // sequence on the way, and the two arguments then become identical
+        // text -- which is exactly how the first version of this test was
+        // inert. The guard below proves the escape is really there.
+        var escaped = "{\"m\":" + System.Text.Json.JsonSerializer.Serialize("`x`") + "}";
+        Assert.Contains("u0060", escaped, StringComparison.Ordinal);
+        Assert.DoesNotContain("`", escaped, StringComparison.Ordinal);
+
+        JsonShape.AssertEquivalent("""{"m":"`x`"}""", escaped);
+
+        var different = "{\"m\":" + System.Text.Json.JsonSerializer.Serialize("axa") + "}";
         Assert.Throws<TrueException>(() =>
-            JsonShape.AssertEquivalent("""{"m":"`x`"}""", """{"m":"axa"}"""));
+            JsonShape.AssertEquivalent("""{"m":"`x`"}""", different));
     }
 
     [Fact]
@@ -1180,7 +1191,7 @@ git commit -m "test(golden): drop the unread bundle copies and the four exit-cod
 
 ### Task 9: The scoped update mode
 
-Spec §2 and §5.2 in full, with the two corrections the plan review forced: a fixture may have **one** public constructor, and a group commit must **restore** what it already replaced when a later move fails. Also: every error on the capture path — a guard, an artefact read, the CLI, the commit — surfaces as a *capture failure* naming what was written or restored, distinct from the deliberate *refuses to assert*.
+Spec §2 and §5.2 in full, with the two corrections the plan review forced: a fixture may have **one** public constructor, and a group commit must **restore** what it already replaced when a later move fails. The capture path **starts at the exit-code guard** in `AssertGolden` and has two phases, each named in its failure message: *before writing* (the guard, the artefact reader with its own cardinality guards, the commit's staging and backups — the message ends with "nothing written") and *while replacing* (the moves — the message says the group was restored, or names what could not be). Both are a *capture failure*, distinct from the deliberate *refuses to assert*. What precedes the capture path — `TestPaths.Run` (which returns exit codes rather than throwing for CLI errors) and, for the index test, `IndexGenerator.RegenerateIndexes` — is an ordinary test failure in either mode, with nothing written, and the plan claims no more than that.
 
 **Files:**
 - Create: `tests/OKF4net.Tests/GoldenUpdate.cs`
@@ -1486,27 +1497,38 @@ public static class GoldenUpdate
         var staging = Directory.CreateTempSubdirectory("okf-golden-");
         try
         {
+            // Phase 1, before writing: stage every new file and back up every
+            // existing destination. A failure here has replaced nothing.
             var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
             var planned = new List<(string Staged, string Destination, string? Backup)>();
-            foreach (var (relative, content) in artefacts)
+            try
             {
-                var native = relative.Replace('/', Path.DirectorySeparatorChar);
-                var staged = Path.Combine(staging.FullName, "new", native);
-                Directory.CreateDirectory(Path.GetDirectoryName(staged)!);
-                File.WriteAllBytes(staged, utf8.GetBytes(content));
-
-                var destination = Path.Combine(root, native);
-                string? backup = null;
-                if (File.Exists(destination))
+                foreach (var (relative, content) in artefacts)
                 {
-                    backup = Path.Combine(staging.FullName, "old", native);
-                    Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
-                    File.Copy(destination, backup);
-                }
+                    var native = relative.Replace('/', Path.DirectorySeparatorChar);
+                    var staged = Path.Combine(staging.FullName, "new", native);
+                    Directory.CreateDirectory(Path.GetDirectoryName(staged)!);
+                    File.WriteAllBytes(staged, utf8.GetBytes(content));
 
-                planned.Add((staged, destination, backup));
+                    var destination = Path.Combine(root, native);
+                    string? backup = null;
+                    if (File.Exists(destination))
+                    {
+                        backup = Path.Combine(staging.FullName, "old", native);
+                        Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
+                        File.Copy(destination, backup);
+                    }
+
+                    planned.Add((staged, destination, backup));
+                }
+            }
+            catch (Exception stagingFailure) when (stagingFailure is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException($"{stagingFailure.Message}; nothing written (staging failed before any file was replaced).", stagingFailure);
             }
 
+            // Phase 2, while replacing: move the staged files into place. A
+            // failure here puts back what was already replaced.
             var replaced = new List<(string Destination, string? Backup)>();
             try
             {
@@ -1660,11 +1682,15 @@ Add this helper after `WithRepoRootAsCwd`:
 
 ```csharp
     /// <summary>
-    /// The one comparison path for every snapshot test. The artefacts are read
-    /// lazily, inside the capture path, so that in update mode EVERY error --
-    /// the exit-code guard, a cardinality guard inside the reader, a missing
-    /// file, the commit itself -- surfaces as one "capture failure" whose
-    /// message says what was written or restored, distinct from the deliberate
+    /// The one comparison path for every snapshot test, and where the capture
+    /// path STARTS: the CLI (or the index generator) has already run by the
+    /// time this is called, and an exception there is an ordinary failure in
+    /// either mode, with nothing written. From here on, in update mode, every
+    /// error surfaces as one "capture failure" whose message names its phase:
+    /// the exit-code guard and the artefact reader (with its own cardinality
+    /// guards) fail "before writing: nothing written"; the commit's own
+    /// messages say whether staging failed (nothing written) or a move failed
+    /// (the group restored, or what was not). All distinct from the deliberate
     /// <see cref="GoldenUpdate.RefusesToAssert"/> raised after a successful
     /// rewrite. Outside update mode every artefact is compared to its snapshot.
     /// </summary>
@@ -1676,18 +1702,21 @@ Add this helper after `WithRepoRootAsCwd`:
     {
         if (scope.Includes(test))
         {
+            var phase = "before writing: nothing written";
             try
             {
                 if (code != expectedCode)
                 {
-                    throw new InvalidOperationException($"exit code {code}, expected {expectedCode}; nothing written");
+                    throw new InvalidOperationException($"exit code {code}, expected {expectedCode}");
                 }
 
-                GoldenUpdate.Commit(scope, test, artefacts().Select(a => (a.Relative, a.Actual)).ToList());
+                var captured = artefacts().Select(a => (a.Relative, a.Actual)).ToList();
+                phase = "in the commit, which reports its own state";
+                GoldenUpdate.Commit(scope, test, captured);
             }
             catch (Exception e)
             {
-                Assert.Fail($"capture failure for {test}: {e.Message}");
+                Assert.Fail($"capture failure for {test} ({phase}): {e.Message}");
             }
 
             Assert.Fail(GoldenUpdate.RefusesToAssert(test));
@@ -1919,7 +1948,7 @@ Design and rationale: `docs/superpowers/specs/2026-09-22-golden-fixtures-authori
 | `Info_output_matches_golden` | `info.out` | `okf info tests/fixtures/appendix_a` | column alignment, the `types:` block | every count (`MachineOutputTests.Info_json_*`), both numbers of the `links:` line |
 | `Audit_report_matches_golden` | `audit-v02.out` | `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01` | column layout | the selection, tiers, statuses, staleness (`MachineOutputTests.Audit_json_*`, `AuditTests`) |
 | `Audit_json_matches_golden` | `audit-v02.json` | `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01 --json` | property order | every value (`MachineOutputTests.Audit_json_projects_a_stale_finding_completely`) |
-| `Graph_dot_matches_golden` | `graph.dot` | `okf graph <appendix_a> --dot` | the `rankdir` header line, edge indentation, edge order | grammar, edge set and size, determinism (`MachineOutputTests.Graph_dot_*`) |
+| `Graph_dot_matches_golden` | `graph.dot` | `okf graph <appendix_a> --dot` | edge order | the grammar — header line, the `rankdir` line, two-space edge indentation, closing brace — the edge set and its size, determinism (`MachineOutputTests.Graph_dot_*`) |
 | `Fmt_output_matches_golden` | `fmt/users.md` | `okf fmt <appendix_a>/tables/users.md` | nothing beyond the envelope | the envelope, idempotence, the stdout branch (`DocumentTests`, `CliTests`) |
 | `Index_generation_matches_golden` | `index-input/index.md`, `index-input/datasets/index.md`, `index-input/tables/index.md` | `IndexGenerator.RegenerateIndexes` on a copy of `appendix_a` | the synthesizer wording | §8 structure and no frontmatter, `# Other`, no description suffix, self-listing (`IndexTests`) |
 | `Verify_output_matches_golden` | `verify.out`, `verify-dau.md` | `okf verify <copy of okf_v02> metrics/dau metrics/legacy --by human:ada --at 2026-08-28T09:14:00Z` | the two stdout lines' wording | the written `verified` block (§5.2) and that nothing else moved (`RecordVerificationTests`) |
@@ -2216,7 +2245,7 @@ Under `## [Unreleased]` → `### Changed` (line 440), insert as the first bullet
 - [ ] **Step 11: Grep for leftovers, build, run the suite, check the site compiles, format, commit**
 
 Run from the repo root: `grep -rn -i "never touch \`tests/fixtures/\`\|byte-exact golden\|golden-locked\|never a reason to touch\|OPPOSITE of" --include=*.md --include=*.cs --include=*.tsx --include=.gitattributes . | grep -v "docs/superpowers\|docs/design\|docs/review-briefing\|node_modules\|/bin/\|/obj/\|graphify-out"`
-Expected: no line outside `tests/fixtures/README.md`'s revision log (historical entries quote the old rule and stay) and `src/OKF4net.Agents/OkfBundleTools.cs` (its two "golden-locked" comments ask that the agent rendering not alter the CLI rendering — compatible with the design, left as is). Anything else is a leftover: fix it in this task.
+Expected: no line outside these three, each kept on purpose: `tests/fixtures/README.md`'s revision log (historical entries quote the old rule and stay), `src/OKF4net.Agents/OkfBundleTools.cs` (its two "golden-locked" comments ask that the agent rendering not alter the CLI rendering — compatible with the design), and `docs/outreach/issues/add-fmt-idempotency-golden-test.md` (superseded by Step 9's banner, kept for the record, never to be published). Anything else is a leftover: fix it in this task.
 
 Run: `dotnet build tests/OKF4net.Tests/OKF4net.Tests.csproj --no-restore` (doc-comment warnings are errors).
 Run: `dotnet test tests/OKF4net.Tests/OKF4net.Tests.csproj --no-restore --filter "Category!=ContainerIntegration"`

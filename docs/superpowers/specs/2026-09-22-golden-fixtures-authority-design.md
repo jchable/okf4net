@@ -528,12 +528,15 @@ octet-exacte.
 
 Restent **volontairement** couverts par le seul instantané, et le README les
 nomme comme tels : l'alignement des colonnes de `okf info`, son bloc `types:`,
-la deuxième ligne d'en-tête du DOT
-(`rankdir=LR; node [shape=box, fontsize=10];`), l'indentation des arêtes et
-**l'ordre des arêtes**. Vérifié : la spec ne prescrit aucun de ces deux
-formats — §6.1 décrit la sémantique des relations, pas `rankdir` ni des
-colonnes. Absence de format normatif n'est pas absence de sémantique normative,
-et c'est pourquoi les lignes « exigé » ci-dessus existent.
+et **l'ordre des arêtes** du DOT. La deuxième ligne d'en-tête du DOT
+(`rankdir=LR; node [shape=box, fontsize=10];`) et l'indentation des arêtes,
+que la v3 rangeait ici, sont en réalité fixées par le test de grammaire de
+§5.4 — il asserte l'en-tête exact et une indentation de deux espaces par ligne
+d'arête (revue du plan, ronde 2) — et relèvent donc du test direct. Vérifié :
+la spec ne prescrit aucun de ces deux formats — §6.1 décrit la sémantique des
+relations, pas `rankdir` ni des colonnes. Absence de format normatif n'est pas
+absence de sémantique normative, et c'est pourquoi les lignes « exigé »
+ci-dessus existent.
 
 Sur l'ordre des arêtes, la ronde 3 a relevé une contradiction réelle : la v3
 le rangeait en test direct alors qu'une permutation préserve les cinq critères.
