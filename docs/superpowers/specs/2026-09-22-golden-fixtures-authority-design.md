@@ -634,8 +634,15 @@ qu'elle porte un compte que rien d'autre en texte n'expose.
   collection, compare l'ensemble nommé à l'ensemble des tests qui ont
   effectivement capturé. Tout écart — un test nommé que `dotnet test --filter`
   a exclu — est un échec explicite (« périmètre demandé mais non exécuté »), pas
-  un run vert. La commande recommandée dans le README passe la même liste au
-  filtre et à la variable, mais le contrôle ne repose pas sur cette discipline.
+  un run vert. **Limite, trouvée par la revue du plan** : ce contrôle vit dans
+  la fixture de la collection, qui n'est construite que si au moins un test de
+  la collection s'exécute. Un filtre qui exclut **toute** la collection laisse
+  la variable sans effet et le run vert — xunit 2 n'a pas de fixture
+  d'assemblée pour le détecter. Ce cas n'écrit rien et ne produit aucun diff,
+  donc il est bruyant par absence plutôt que silencieux ; le README le nomme,
+  et la commande recommandée passe la même liste au filtre et à la variable.
+  Le contrôle couvre l'exclusion partielle ; l'exclusion totale repose sur
+  cette discipline, et le document le dit plutôt que de prétendre le contraire.
 - **Gardes conservées avant écriture** : le code de sortie attendu par le test
   (`1` pour `validate-reserved`, `0` ailleurs), la cardinalité de l'index,
   l'existence de chaque artefact du groupe, et un stderr vide là où le test
@@ -730,12 +737,19 @@ place.**
 2. Écrire les tests directs de la section 3 — projections complètes, DOT
    structurel, lignes « exigé » — et les faire passer sur le code actuel.
 3. Effectuer les deux suppressions, avec leurs entrées datées.
-4. Réécrire la doctrine : `CLAUDE.md`, `tests/fixtures/README.md`, les trois
+4. Le mode update, avec ses tests unitaires.
+5. Réécrire la doctrine : `CLAUDE.md`, `tests/fixtures/README.md`, les trois
    textes du producteur, le site, les deux commentaires de code, `CHANGELOG.md`.
-5. **En dernier**, le mode update — puis sa première utilisation réelle :
-   capture d'un groupe, lecture du diff (vide attendu), run sans variable.
+6. **En dernier**, la première utilisation réelle du mode update : capture
+   d'un groupe, lecture du diff (vide attendu), run sans variable.
 
-Les étapes 3 et 4 peuvent s'intervertir ; 1 et 2 précèdent tout ; 5 ferme.
+1 et 2 précèdent tout ; 3 peut se placer n'importe où après 2 ; 4 précède 5,
+parce qu'une doctrine qui documente une variable et une commande absentes est
+fausse pendant un commit (revue du plan — la v3 mettait la doctrine avant le
+mode update, et le plan qui en découlait écrivait `OKF_UPDATE_GOLDEN` dans
+`CLAUDE.md` une tâche avant de le créer) ; 6 ferme. La condition de fond ne
+bouge pas : rien n'est régénérable (4) avant que la fidélité indépendante (2)
+soit en place.
 
 #### 5.8 Plan du nouveau `tests/fixtures/README.md`
 
