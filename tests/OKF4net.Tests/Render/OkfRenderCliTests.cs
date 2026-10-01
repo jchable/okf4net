@@ -70,8 +70,8 @@ public class OkfRenderCliTests
         // Regression guard: if this check ever weakens, `dotnet test` would
         // write generated HTML straight into whatever bundle path is passed
         // here. Use a throwaway bundle in a TempDir -- never BundlePath,
-        // which is the byte-exact golden fixture tests/fixtures/appendix_a --
-        // so a regression can never corrupt the real goldens the
+        // which is the snapshot-tested fixture tests/fixtures/appendix_a --
+        // so a regression can never corrupt the real fixtures the
         // golden-parity tests depend on.
         using var tmp = new TempDir();
         tmp.Write("index.md", "---\ntype: index\ntitle: Root\ndescription: Root\n---\n");

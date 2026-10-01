@@ -14,16 +14,18 @@ process, so they share the per-process string hash seed: any ordering that leake
 compares equal to itself and the test stays green. The bytes here were written by a different
 process on a different day, so they do not.
 
-## Read this first: the discipline here is the OPPOSITE of `tests/fixtures/`
+## Read this first: the same capture mechanics as `tests/fixtures/`, without its arbitration layer
 
-The repository's other golden directory, `tests/fixtures/`, holds **byte-exact captures of the
-reference implementation's CLI output**, and a hard rule in `CLAUDE.md` forbids editing them to make
-a test pass: a difference there is a regression on the C# side.
+The repository's other golden directory, `tests/fixtures/golden/`, also holds **our own** output and
+is also regenerable — since 2026-10-01, under the two regimes its README states (a presentation diff
+is regenerated and reviewed; a semantic diff or an input edit needs explicit arbitration and a dated
+entry first), with an update mode that must be given the names of the tests to rewrite.
 
-**This golden is a different animal.** It captures **our own** output. It is regenerable by
-construction, and it **must** be regenerated whenever the generator changes intentionally — then the
-diff is reviewed as part of that change. Never carry the `tests/fixtures/` rule across to this
-directory; applying it here would freeze the producer.
+**This golden has no protected subset**, so it keeps the simpler shape: it captures **our own**
+output, it is regenerable by construction, and it **must** be regenerated whenever the generator
+changes intentionally — then the diff is reviewed as part of that change. The refusal-to-assert on
+update and the two-run procedure are shared with `tests/fixtures/`; the arbitration layer is not,
+because nothing here carries a conformance verdict.
 
 The corollary matters too: a diff you did **not** intend is a real failure. `--check` exists to make
 an unintended one loud, so read the diff before you accept it.

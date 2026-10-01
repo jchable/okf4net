@@ -252,7 +252,7 @@ public sealed record Diagnostic(Severity Severity, string? Path, ConceptId? Conc
     /// Renders as <c>[severity] path: message</c> or <c>[severity] concept:
     /// message</c> (falling back to a bare <c>[severity] message</c> if
     /// neither is set). Unaffected by <see cref="Code"/> or <see cref="Field"/>
-    /// -- this is the exact text every byte-exact golden fixture pins.
+    /// -- this is the exact text the `validate` snapshots pin.
     /// </summary>
     public override string ToString()
     {

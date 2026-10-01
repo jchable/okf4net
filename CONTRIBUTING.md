@@ -31,14 +31,19 @@ dotnet publish src/OKF4net.Render -c Release   # Native AOT okf-render binary
 
 All warnings are treated as errors, so a clean build is required.
 
-### Golden fixtures — do not reformat
+### Snapshot fixtures — do not reformat, do not regenerate blindly
 
-`tests/fixtures/` contains **byte-exact golden files**: several tests compare
-generated output (index files, formatted documents, CLI output) byte-for-byte
-against them. They are protected by `.gitattributes` (`-text`) and excluded
-from `.editorconfig` normalization. Never let an editor or formatter touch
-them — trailing whitespace, final newlines, and line endings are all
-significant.
+`tests/fixtures/golden/` holds **snapshots of this project's own CLI output**:
+several tests compare generated output (index files, formatted documents, CLI
+output) as text against them — after path-separator normalisation for the
+outputs that embed paths. They are regenerable under two regimes stated in
+`tests/fixtures/README.md`: a presentation-only diff goes through the scoped
+update mode and a review of the diff; a semantic diff, or any edit to an input
+bundle, needs explicit arbitration and a dated entry first. Conformance is
+verified against the spec by tests that cite a §, not by these files. They are
+protected by `.gitattributes` (`-text`) and excluded from `.editorconfig`
+normalization. Never let an editor or formatter touch them — trailing
+whitespace, final newlines, and line endings are all significant.
 
 ## Code style
 
@@ -53,8 +58,7 @@ significant.
 
 OKF4net implements the [OKF v0.2 spec](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
 Behavioural changes must stay conformant with the spec — cite the relevant
-section (§) in your PR description. Behaviour intentionally mirrors the OKF
-reference implementation; divergences need a documented reason.
+section (§) in your PR description. The spec is the authority; where this implementation deliberately reads it differently, or departs from the OKF reference implementation's behaviour, the reason is recorded in `docs/spec-conformance/`.
 
 ## Submitting changes
 
