@@ -37,6 +37,20 @@ everything is checked *before* the tag exists.
   outside `OKF4net.sln`/`ci.yml` (a settled decision, see `ROADMAP.md`), so CI
   never builds it: a public `OKF4net` API change can break it silently. This
   manual run is the whole trade-off for keeping it out of CI — do not skip it.
+- **Sync the winget-pkgs fork before tagging.** `komac` (behind
+  `winget-submit`) creates its branch on `jchable/winget-pkgs` from the
+  *upstream* `master` head, and GitHub refuses that on a fork far behind
+  upstream — reported as a **permissions** error (`jchable does not have the
+  correct permissions to execute CreateRef`), not as a stale fork, so it reads
+  like a bad token when the token is fine. The fork carries no commits of its
+  own, so syncing is a plain fast-forward:
+  ```sh
+  gh api "repos/microsoft/winget-pkgs/compare/master...jchable:winget-pkgs:master" --jq '"ahead=\(.ahead_by) behind=\(.behind_by)"'
+  gh repo sync jchable/winget-pkgs --source microsoft/winget-pkgs --branch master
+  ```
+  Expect `ahead=0` before syncing; anything else means someone committed to
+  the fork, so stop and ask. It drifts thousands of commits between releases
+  (10 581 behind at 0.6.0), so this is every release, not a one-off.
 - First release only: the nuget.org **Trusted Publishing policy** must exist
   (owner `jchable`, repo `okf4net`, workflow file `release.yml` — file name
   only) and the `NUGET_USER` GitHub secret must contain the nuget.org
@@ -176,14 +190,25 @@ spot-check https://www.nuget.org/packages/OKF4net — README rendered, license
 
 ## 6. GitHub Release page
 
-Create the release from the CHANGELOG section (not `--generate-notes` alone —
-the changelog is written for users; generated notes are a commit list):
+`release.yml`'s `publish GitHub Release` job **already creates the release**,
+with the binaries and winget manifests attached — but with an **empty body**
+and the bare tag (`vX.Y.Z`) as its title. So `gh release create` fails here
+("already exists"); **edit** it instead, with notes written for users, not
+`--generate-notes` (a commit list):
 
 ```sh
-gh release create vX.Y.Z --verify-tag --title "OKF4net X.Y.Z" --notes "<extracted CHANGELOG section, plus link to full CHANGELOG>"
+gh release view vX.Y.Z --json name,body,assets --jq '"\(.name) body=\(.body|length) assets=\(.assets|length)"'
+gh release edit vX.Y.Z --title "OKF4net X.Y.Z" --notes-file <notes.md>
 ```
 
-Append a short install line (`dotnet add package OKF4net --version X.Y.Z`).
+Build the notes from the CHANGELOG section. When the section is long (0.6.0's
+ran to ~2 300 lines), use the digest at its top — the "Breaking changes at a
+glance" and "What is new" parts — and rewrite any sentence that points at
+"the sections below", which do not exist on the release page. End with a link
+to the version's CHANGELOG anchor and an install block:
+`dotnet add package OKF4net --version X.Y.Z` and
+`dotnet tool install -g OKF4net.Mcp --version X.Y.Z` (the `okf-mcp` tool's
+PackageId is `OKF4net.Mcp`).
 
 ## 7. Post-release
 
@@ -236,3 +261,23 @@ expired (re-arm the 7-day window on nuget.org and retry).
 **Tag exists but points at the wrong commit and nothing was published**:
 treat as "workflow failed" above — user deletes the remote tag, you re-tag.
 Verify with `git ls-remote origin refs/tags/vX.Y.Z` before re-pushing.
+
+**`submit winget update PR (Coderise.OKF4net)` failed**: NuGet is already
+published and the Release already carries the manifests, so never touch the
+tag — fix the cause, then re-run that one job:
+`gh run rerun <release-run-id> --failed`. Read the error under `Error:` in the
+job log (`komac` prints a numbered cause chain; the last line alone says
+nothing useful). Two signatures, both met at 0.6.0:
+- `GitHub token is invalid.` — the `WINGET_TOKEN` PAT expired or was revoked.
+  The user generates a new **classic** PAT with `public_repo` and sets it with
+  `gh secret set WINGET_TOKEN --repo jchable/okf4net` (no `--body`: it prompts
+  hidden, so the token never reaches shell history or this conversation).
+- `jchable does not have the correct permissions to execute CreateRef` — **not**
+  a token problem, even though it says permissions: the fork is behind
+  upstream. Sync it as in the preflight step, then re-run.
+
+Then confirm the PR exists on `microsoft/winget-pkgs` with the search in step 7
+— a green re-run is not the proof. `Coderise.OKF4net.Render` is a separate case:
+it goes green by *skipping* (`::notice::`) until it has been published to
+winget-pkgs once by hand and the repository variable
+`WINGET_RENDER_PUBLISHED=true` is set.
