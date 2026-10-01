@@ -606,11 +606,12 @@ public sealed class BundleConceptWriter
     /// comment was meant to annotate, so it cannot be preserved separately
     /// from the value it comments on.
     ///
-    /// Fully validated before the first write: every concept id is resolved
-    /// to a target path before the bundle lock is taken (like
-    /// <see cref="AppendToConceptAtomic"/> does); then, inside one hold of
-    /// that lock, each target is read, edited and validated, all before a
-    /// single byte is written. A batch is therefore REJECTED as a whole — an
+    /// Fully validated before the first write: inside one hold of the bundle
+    /// lock, every concept id is checked and resolved to a target path, then
+    /// each target is read, edited and validated, all before a single byte is
+    /// written. The pre-checks read the files too, so they cannot run before
+    /// the lock is taken: a concurrent writer of the same concept would make
+    /// them fail on a sharing violation or a half-written file (#131). A batch is therefore REJECTED as a whole — an
     /// unknown id, a malformed actor or a non-conformant document writes
     /// nothing.
     ///
@@ -715,69 +716,72 @@ public sealed class BundleConceptWriter
         var records = new List<VerificationRecord>(conceptIds.Count);
         var message = RunTool(() =>
         {
-            // Checked FIRST for five of its six kinds, so THIS method's own
-            // refusal names the offender: before this call existed, an
-            // unparseable concept escaped as an unattributed, generic
-            // "Error: {yaml/parse message}" naming no concept at all -- the
-            // exact gap the CLI verb and the okf_verify tool each worked
-            // around with their own duplicate pre-loop.
-            //
-            // NotConformant is deliberately EXCLUDED here (left to fall
-            // through to the unchanged prepare loop below, where
-            // ValidateConformance already runs): a concept missing `type`
-            // can ALSO be one of the hostile shapes below it -- a corrupted
-            // round-trip, an unemittable deep nesting -- and those failures
-            // are strictly MORE specific and were surfacing first long before
-            // this method existed. (A third shape, an indented `---` inside a
-            // block scalar misread as the closing fence (finding #C7-A), no
-            // longer exists: OkfDocument.IsFenceLine accepts only a column-0
-            // fence, §4.) Short-circuiting on NotConformant here would let
-            // §11's generic message pre-empt a specific, better diagnostic. Bailing out here for the
-            // OTHER five kinds carries no such risk FOR THE SAME ID: an
-            // invalid id, a missing file, an unreadable file, an unparseable
-            // document or a resolved-path duplicate are all structurally
-            // prior to any edit attempt in the unchanged loop below too, so
-            // moving THAT id's detection earlier changes nothing about what
-            // would eventually have been reported for it. This does NOT hold
-            // ACROSS ids in a batch with more than one problem: e.g. a batch
-            // `[concept-with-a-NaN-float, metrics/nope]` used to refuse on
-            // index 0 (the NaN concept, reached first by the old sequential
-            // per-index loop below); bailing out here on CheckVerificationTargets's
-            // own id-validity/existence/duplicate scan instead reports index
-            // 1 (`metrics/nope`, "does not exist") first, since that scan
-            // runs its OWN passes over every id before this method's prepare
-            // loop ever starts. Both are correct refusals of the same batch;
-            // which one is named first can move.
-            var targetProblem = CheckVerificationTargets(conceptIds);
-            if (targetProblem is { Kind: not VerificationTargetProblemKind.NotConformant } problem)
-            {
-                return FormatVerificationTargetProblem(problem);
-            }
-
-            // Resolved outside the lock, like AppendToConceptAtomic does.
-            var targets = new List<ConceptTarget>(conceptIds.Count);
-            foreach (var conceptId in conceptIds)
-            {
-                var targetError = ValidateConceptTarget(conceptId, out var target);
-                if (targetError is not null)
-                {
-                    return targetError;
-                }
-
-                targets.Add(target);
-            }
-
-            // No duplicate-by-path check here any more (a prior review round
-            // singled this exact loop out as dead code once the early
-            // CheckVerificationTargets call above ran first): that call
-            // applies the identical resolved-path, case-insensitive rule to
-            // every id in the batch before this line is ever reached, so a
-            // batch containing any duplicate already returned via
-            // FormatVerificationTargetProblem above. See
-            // CheckVerificationTargets's own duplicate-check block for the
-            // rule's rationale (moved there from this comment).
+            // Target validation also reads the files. Keep it in the same
+            // lock hold as prepare/write: otherwise a cooperating writer can
+            // expose a sharing violation or a partially written document (#131).
             lock (_bundleLock)
             {
+                // Checked FIRST for five of its six kinds, so THIS method's own
+                // refusal names the offender: before this call existed, an
+                // unparseable concept escaped as an unattributed, generic
+                // "Error: {yaml/parse message}" naming no concept at all -- the
+                // exact gap the CLI verb and the okf_verify tool each worked
+                // around with their own duplicate pre-loop.
+                //
+                // NotConformant is deliberately EXCLUDED here (left to fall
+                // through to the unchanged prepare loop below, where
+                // ValidateConformance already runs): a concept missing `type`
+                // can ALSO be one of the hostile shapes below it -- a corrupted
+                // round-trip, an unemittable deep nesting -- and those failures
+                // are strictly MORE specific and were surfacing first long before
+                // this method existed. (A third shape, an indented `---` inside a
+                // block scalar misread as the closing fence (finding #C7-A), no
+                // longer exists: OkfDocument.IsFenceLine accepts only a column-0
+                // fence, §4.) Short-circuiting on NotConformant here would let
+                // §11's generic message pre-empt a specific, better diagnostic. Bailing out here for the
+                // OTHER five kinds carries no such risk FOR THE SAME ID: an
+                // invalid id, a missing file, an unreadable file, an unparseable
+                // document or a resolved-path duplicate are all structurally
+                // prior to any edit attempt in the unchanged loop below too, so
+                // moving THAT id's detection earlier changes nothing about what
+                // would eventually have been reported for it. This does NOT hold
+                // ACROSS ids in a batch with more than one problem: e.g. a batch
+                // `[concept-with-a-NaN-float, metrics/nope]` used to refuse on
+                // index 0 (the NaN concept, reached first by the old sequential
+                // per-index loop below); bailing out here on CheckVerificationTargets's
+                // own id-validity/existence/duplicate scan instead reports index
+                // 1 (`metrics/nope`, "does not exist") first, since that scan
+                // runs its OWN passes over every id before this method's prepare
+                // loop ever starts. Both are correct refusals of the same batch;
+                // which one is named first can move.
+                var targetProblem = CheckVerificationTargets(conceptIds);
+                if (targetProblem is { Kind: not VerificationTargetProblemKind.NotConformant } problem)
+                {
+                    return FormatVerificationTargetProblem(problem);
+                }
+
+                var targets = new List<ConceptTarget>(conceptIds.Count);
+                foreach (var conceptId in conceptIds)
+                {
+                    var targetError = ValidateConceptTarget(conceptId, out var target);
+                    if (targetError is not null)
+                    {
+                        return targetError;
+                    }
+
+                    targets.Add(target);
+                }
+
+                // No duplicate-by-path check here any more (a prior review round
+                // singled this exact loop out as dead code once the early
+                // CheckVerificationTargets call above ran first): that call
+                // applies the identical resolved-path, case-insensitive rule to
+                // every id in the batch before this line is ever reached, so a
+                // batch containing any duplicate already returned via
+                // FormatVerificationTargetProblem above. See
+                // CheckVerificationTargets's own duplicate-check block for the
+                // rule's rationale (moved there from this comment).
+
                 // PREPARE every concept — read, parse, upsert the stamp, and
                 // validate — before writing any of them, so an unknown,
                 // unreadable, or non-conformant concept later in the list
@@ -1190,6 +1194,17 @@ public sealed class BundleConceptWriter
     /// first can move.
     /// </returns>
     internal VerificationTargetProblem? CheckVerificationTargets(IReadOnlyList<string> conceptIds)
+    {
+        // CLI/agent callers also use this preflight on its own. Serialize its
+        // reads against writers; RecordVerifications keeps this reentrant
+        // monitor held through the subsequent prepare/write as well.
+        lock (_bundleLock)
+        {
+            return CheckVerificationTargetsLocked(conceptIds);
+        }
+    }
+
+    private VerificationTargetProblem? CheckVerificationTargetsLocked(IReadOnlyList<string> conceptIds)
     {
         var targets = new List<ConceptTarget>(conceptIds.Count);
         for (var i = 0; i < conceptIds.Count; i++)

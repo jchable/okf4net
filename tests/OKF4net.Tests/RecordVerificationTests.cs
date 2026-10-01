@@ -540,19 +540,120 @@ public class RecordVerificationTests
     /// the transform and the write all happen inside one hold of the writer's
     /// bundle lock.
     /// </summary>
-    [Fact]
-    public void Concurrent_verifications_of_one_concept_both_land()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Concurrent_verifications_of_one_concept_both_land(bool separateWriters)
     {
         using var tmp = new TempDir();
         tmp.Write("metrics/dau.md", Fm + "---\n\nbody\n");
         var writer = WriterOver(tmp);
+        var otherWriter = separateWriters ? WriterOver(tmp) : writer;
 
         Parallel.Invoke(
-            () => writer.RecordVerifications(["metrics/dau"], "human:ada"),
-            () => writer.RecordVerifications(["metrics/dau"], "process:nightly"));
+            () =>
+            {
+                var result = writer.RecordVerifications(["metrics/dau"], "human:ada");
+                Assert.True(result.Recorded, result.Message);
+            },
+            () =>
+            {
+                var result = otherWriter.RecordVerifications(["metrics/dau"], "process:nightly");
+                Assert.True(result.Recorded, result.Message);
+            });
 
         var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
         Assert.Equal(2, stamps.Count);
+        Assert.Contains(stamps, stamp => stamp.By?.Raw == "human:ada");
+        Assert.Contains(stamps, stamp => stamp.By?.Raw == "process:nightly");
+    }
+
+    /// <summary>
+    /// #131: hold a cooperating writer's lock while its file is mid-write.
+    /// The other writer must wait before reading, including in the standalone
+    /// preflight used by CLI/agent callers. Exercise both a sharing violation
+    /// and readable, incomplete YAML, without relying on a lucky scheduling race.
+    /// </summary>
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Verification_reads_wait_for_an_in_progress_write(bool preflightOnly, bool exclusiveHandle)
+    {
+        using var tmp = new TempDir();
+        const string before = Fm + "---\n\nbody\n";
+        tmp.Write("metrics/dau.md", before);
+        var writer = WriterOver(tmp);
+        var otherWriter = WriterOver(tmp);
+        var path = Path.Combine(tmp.Path, "metrics/dau.md");
+        string? failure = null;
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                if (preflightOnly)
+                {
+                    failure = otherWriter.CheckVerificationTargets(["metrics/dau"])?.ToString();
+                }
+                else
+                {
+                    var result = otherWriter.RecordVerifications(["metrics/dau"], "process:nightly");
+                    if (!result.Recorded)
+                    {
+                        failure = result.Message;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                failure = ex.ToString();
+            }
+        })
+        { IsBackground = true };
+
+        var settled = false;
+        try
+        {
+            lock (writer.WriteLock)
+            {
+                File.WriteAllText(path, "---\ntype: [\n");
+                // Close the handle in the partial-YAML case: ReadAllBytes's
+                // FileShare.Read otherwise refuses even a shared writer handle
+                // on Windows, masking the parse failure we want to exercise.
+                using (exclusiveHandle ? new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None) : null)
+                {
+                    worker.Start();
+                    // A dedicated thread has no other managed wait in this call:
+                    // it either blocks on the bundle monitor or returns a refusal.
+                    // The timeout is a deadlock guard, not an ordering delay.
+                    settled = SpinWait.SpinUntil(
+                        () => (worker.ThreadState & (ThreadState.WaitSleepJoin | ThreadState.Stopped)) != 0,
+                        TimeSpan.FromSeconds(10));
+                }
+
+                File.WriteAllText(path, before);
+                var first = writer.RecordVerifications(["metrics/dau"], "human:ada");
+                Assert.True(first.Recorded, first.Message);
+            }
+        }
+        finally
+        {
+            if ((worker.ThreadState & ThreadState.Unstarted) == 0)
+            {
+                Assert.True(worker.Join(TimeSpan.FromSeconds(10)), "The verification worker did not finish.");
+            }
+        }
+
+        Assert.True(settled, "The verification worker neither waited nor completed.");
+        Assert.True(failure is null, failure);
+        var stamps = OkfDocument.Parse(Read(tmp, "metrics/dau.md")).Frontmatter.Verified;
+        Assert.Equal(preflightOnly ? 1 : 2, stamps.Count);
+        Assert.Contains(stamps, stamp => stamp.By?.Raw == "human:ada");
+        if (!preflightOnly)
+        {
+            Assert.Contains(stamps, stamp => stamp.By?.Raw == "process:nightly");
+        }
     }
 
     // --- End-to-end regression coverage for the review round (#C7-1..4) ----

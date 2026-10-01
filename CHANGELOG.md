@@ -8,7 +8,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-This release is large: 144 entries below. What follows is the short version —
+This release is large: 145 entries below. What follows is the short version —
 what breaks, and what is new. The detail for every line is in the sections
 after it.
 
@@ -1056,6 +1056,16 @@ Everything here is a 0.x minor break, stated in full further down.
 
 ### Fixed
 
+- **Two concurrent verifications of the same concept no longer refuse one of
+  them (#131).** `RecordVerifications` ran its pre-checks — which read and
+  parse each target file — before taking the bundle lock, so a second
+  `okf verify` or `okf_verify` call could read the file while the first was
+  rewriting it, and fail on a sharing violation (Windows) or a half-written
+  document (about 1.5% of concurrent pairs, measured). The pre-checks now run
+  inside the same lock hold as the read, edit and write, and so does the
+  standalone `CheckVerificationTargets` preflight the CLI verb and the tool
+  call first. A deterministic test holds one writer's lock mid-write and
+  checks the other waits instead of failing.
 - **A §5 timestamp dated in year 1 is no longer read as "no date at all"
   (§5).** `0001-01-01T00:00:00Z` is an ordinary four-digit §5 timestamp and
   parses without complaint, but the date-presence guard — the one that stops a
