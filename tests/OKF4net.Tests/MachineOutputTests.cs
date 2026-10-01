@@ -302,4 +302,93 @@ public class MachineOutputTests
 
         JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
     }
+
+    /// <summary>
+    /// The restricted DOT grammar <c>WriteGraphDot</c> emits: header, the
+    /// fixed <c>rankdir</c> line, one edge statement per link, a closing
+    /// brace, nothing else. This is the guarantee -- Graphviz is not installed
+    /// in CI and is not invoked; a document this grammar accepts that
+    /// Graphviz would reject is outside what the test can promise.
+    /// </summary>
+    private static readonly Regex DotEdgeLine = new(
+        "^  \"[^\"]+\" -> \"[^\"]+\"( \\[style=dashed, color=red\\])?;$",
+        RegexOptions.CultureInvariant);
+
+    [Fact]
+    public void Graph_dot_follows_the_restricted_grammar_with_the_expected_edge_set()
+    {
+        // Three concepts: one with a resolved link and a broken one, one
+        // linked-to with no outgoing link, one isolated. Edge ORDER is not
+        // asserted -- it is presentation (design §1); the SET is, and so is
+        // its size, so an edge emitted twice cannot hide in a set.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: A\n---\n\nSee [b](/b.md) and [gone](/missing.md).\n");
+        tmp.Write("b.md", "---\ntype: Note\ntitle: B\n---\n\nno links\n");
+        tmp.Write("c.md", "---\ntype: Note\ntitle: C\n---\n\nisolated\n");
+
+        var r = Run("graph", tmp.Path, "--dot");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("}\n", r.Out, StringComparison.Ordinal);
+
+        var lines = r.Out.Split('\n');
+        Assert.Equal("", lines[^1]); // the trailing newline
+        Assert.Equal("digraph okf {", lines[0]);
+        Assert.Equal("  rankdir=LR; node [shape=box, fontsize=10];", lines[1]);
+        Assert.Equal("}", lines[^2]);
+
+        var edges = lines[2..^2];
+        Assert.Equal(2, edges.Length);
+        Assert.All(edges, line => Assert.Matches(DotEdgeLine, line));
+        Assert.Equal(
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                "  \"a\" -> \"b\";",
+                "  \"a\" -> \"missing\" [style=dashed, color=red];",
+            },
+            edges.ToHashSet(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void Graph_dot_is_deterministic_across_runs()
+    {
+        var first = Run("graph", AppendixA, "--dot");
+        var second = Run("graph", AppendixA, "--dot");
+        Assert.Equal(0, first.Code);
+        Assert.Equal(first.Out, second.Out);
+    }
+
+    /// <summary>
+    /// The one text line the design keeps under direct test (§5.1): it carries
+    /// two counts, and a rewording that drops the second silently loses the
+    /// broken-link information. Spacing is presentation and is not asserted.
+    /// </summary>
+    private static readonly Regex LinksLine = new(@"^links:\s+(\d+) internal \((\d+) broken\)$", RegexOptions.Multiline | RegexOptions.CultureInvariant);
+
+    [Fact]
+    public void Info_links_line_reports_both_counts()
+    {
+        var r = Run("info", AppendixA);
+        Assert.Equal(0, r.Code);
+        var m = LinksLine.Match(r.Out);
+        Assert.True(m.Success, "no `links: N internal (M broken)` line in:\n" + r.Out);
+        Assert.Equal("5", m.Groups[1].Value);
+        Assert.Equal("0", m.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Info_links_line_counts_a_broken_link()
+    {
+        // A broken link is still a link: `linkCount` sums LinksFrom, which
+        // includes unresolved targets (JsonOutput.WriteInfo), so one broken
+        // link reads `1 internal (1 broken)` -- verified by execution.
+        using var tmp = new TempDir();
+        tmp.Write("a.md", "---\ntype: Note\ntitle: A\n---\n\n[gone](/missing.md)\n");
+
+        var r = Run("info", tmp.Path);
+        Assert.Equal(0, r.Code);
+        var m = LinksLine.Match(r.Out);
+        Assert.True(m.Success, r.Out);
+        Assert.Equal("1", m.Groups[1].Value);
+        Assert.Equal("1", m.Groups[2].Value);
+    }
 }
