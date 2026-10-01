@@ -34,6 +34,18 @@ public class GoldenParityTests
     private static readonly string BundlePath = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a");
     private static readonly string GoldenRoot = Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "golden");
 
+    /// <summary>
+    /// The date every <c>validate</c> snapshot is evaluated at. Pinned so the
+    /// captured output cannot drift with the calendar: <c>okf_v02/metrics/dau.md</c>
+    /// carries <c>stale_after: 2099-01-01T00:00:00Z</c>, and an unpinned run
+    /// would gain a staleness warning on that day. Any date before the first
+    /// <c>stale_after</c> in the fixtures gives the same output -- the validator
+    /// has no "timestamp in the future" check -- but this is the date that was
+    /// exercised when the pin was introduced, so keep it rather than a
+    /// supposedly equivalent one.
+    /// </summary>
+    private const string PinnedAsOf = "2026-09-25";
+
     private static string Golden(string rel) => File.ReadAllText(Path.Combine(GoldenRoot, rel));
 
     private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
@@ -68,7 +80,7 @@ public class GoldenParityTests
     [Fact]
     public void Validate_output_and_exitcode_match_golden()
     {
-        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/appendix_a"));
+        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/appendix_a", "--as-of", PinnedAsOf));
         Assert.Equal(int.Parse(Golden("validate.exitcode")), r.Code);
 
         // The golden was captured on Linux, where paths display with '/'.
@@ -88,7 +100,7 @@ public class GoldenParityTests
     [Fact]
     public void Validate_v02_fixture_matches_golden()
     {
-        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02"));
+        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02", "--as-of", PinnedAsOf));
         Assert.Equal(int.Parse(Golden("validate-v02.exitcode")), r.Code);
         Assert.Equal(Golden("validate-v02.out"), r.Out.Replace('\\', '/'));
     }
@@ -96,7 +108,7 @@ public class GoldenParityTests
     [Fact]
     public void Validate_computation_fixture_matches_golden()
     {
-        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_computation"));
+        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_computation", "--as-of", PinnedAsOf));
         Assert.Equal(int.Parse(Golden("validate-computation.exitcode")), r.Code);
         Assert.Equal(Golden("validate-computation.out"), r.Out.Replace('\\', '/'));
     }
@@ -104,7 +116,7 @@ public class GoldenParityTests
     [Fact]
     public void Validate_reserved_fixture_matches_golden()
     {
-        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_reserved"));
+        var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_reserved", "--as-of", PinnedAsOf));
         Assert.Equal(int.Parse(Golden("validate-reserved.exitcode")), r.Code);
         Assert.Equal(Golden("validate-reserved.out"), r.Out.Replace('\\', '/'));
     }
