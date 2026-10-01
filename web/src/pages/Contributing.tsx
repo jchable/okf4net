@@ -105,8 +105,8 @@ export default function Contributing() {
             OKF4net implements the{' '}
             <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">OKF v0.2 spec</a>
             . Behavioural changes must stay conformant — <strong>cite the relevant section (§) in your PR description</strong>.
-            The data model intentionally mirrors Google's OKF reference implementation's structure; divergences
-            need a documented reason.
+            The spec is the authority; where this implementation deliberately reads it differently, or departs from the OKF
+            reference implementation's behaviour, the reason is recorded in <code>docs/spec-conformance/</code>.
           </p>
         </Chapter>
 

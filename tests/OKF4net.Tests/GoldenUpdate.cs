@@ -109,8 +109,10 @@ public static class GoldenUpdate
     /// BOM, bytes as given -- LF stays LF), every existing destination is
     /// backed up, and the staged files are moved into place one by one. If a
     /// move fails, every planned destination (the failing one included) is put
-    /// back from its backup, or deleted if it did not exist before, so the committed group is whole again -- and if THAT fails, the
-    /// message says which files are not restored rather than claiming they are.
+    /// back from its backup, or deleted if it did not exist before, so the
+    /// committed group is whole again -- and if THAT fails, the message says
+    /// which files are not restored rather than claiming they are, and the
+    /// staging directory, which then holds the only backups, is kept and named.
     /// </summary>
     /// <param name="scope">The run's scope; the test is marked captured on success.</param>
     /// <param name="test">The <see cref="GoldenParityTests"/> method name.</param>
@@ -137,6 +139,7 @@ public static class GoldenUpdate
         }
 
         DirectoryInfo? staging = null;
+        var keepStaging = false;
         try
         {
             // Phase 1, before writing: create the staging directory, stage
@@ -208,9 +211,20 @@ public static class GoldenUpdate
                     }
                 }
 
-                var state = notRestored.Count == 0
-                    ? "the group was restored to its committed state"
-                    : "RESTORE FAILED, check `git status tests/fixtures/golden` -- not restored: " + string.Join("; ", notRestored);
+                string state;
+                if (notRestored.Count == 0)
+                {
+                    state = "the group was restored to its committed state";
+                }
+                else
+                {
+                    // The backups in the staging directory are now the only
+                    // copy of the committed files: keep them.
+                    keepStaging = true;
+                    state = "RESTORE FAILED, check `git status tests/fixtures/golden` -- not restored: " + string.Join("; ", notRestored)
+                        + $". The backups are kept in {staging!.FullName}";
+                }
+
                 throw new InvalidOperationException($"{moveFailure.Message}; {state}.", moveFailure);
             }
         }
@@ -218,9 +232,12 @@ public static class GoldenUpdate
         {
             try
             {
-                staging?.Delete(recursive: true);
+                if (!keepStaging)
+                {
+                    staging?.Delete(recursive: true);
+                }
             }
-            catch (IOException)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 // Best-effort cleanup of the staging directory.
             }

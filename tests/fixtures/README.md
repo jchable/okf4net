@@ -37,8 +37,8 @@ Design and rationale: `docs/superpowers/specs/2026-09-22-golden-fixtures-authori
 | Test | Snapshot files | Invocation | Guarded by the snapshot alone (presentation) | Also pinned directly (semantic) |
 |---|---|---|---|---|
 | `Validate_output_and_exitcode_match_golden` | `validate.out` | `okf validate tests/fixtures/appendix_a --as-of 2026-09-25` | line wording and order | the verdict, every diagnostic, the counts (`MachineOutputTests`, `ValidateTests`), exit code 0 |
-| `Validate_v02_fixture_matches_golden` | `validate-v02.out` | `okf validate tests/fixtures/okf_v02 --as-of 2026-09-25` | line wording | the diagnostics (`ValidateTests`), exit code 0 |
-| `Validate_computation_fixture_matches_golden` | `validate-computation.out` | `okf validate tests/fixtures/okf_v02_computation --as-of 2026-09-25` | line wording | the §10/§6.2 diagnostics (`AttestedComputationTests`, `ValidateTests`), exit code 0 |
+| `Validate_v02_fixture_matches_golden` | `validate-v02.out` | `okf validate tests/fixtures/okf_v02 --as-of 2026-09-25` | line wording | the rules behind these diagnostics, on their own inputs (`ValidateTests`); exit code 0 — this fixture's own diagnostic set and counts are guarded by the snapshot and the semantic regime |
+| `Validate_computation_fixture_matches_golden` | `validate-computation.out` | `okf validate tests/fixtures/okf_v02_computation --as-of 2026-09-25` | line wording | the §10/§6.2 rules, on their own inputs (`AttestedComputationTests`, `ValidateTests`); exit code 0 — this fixture's own diagnostic set and counts are guarded by the snapshot and the semantic regime |
 | `Validate_reserved_fixture_matches_golden` | `validate-reserved.out` | `okf validate tests/fixtures/okf_v02_reserved --as-of 2026-09-25` | line wording | the four §11 errors and the non-conformant verdict (`MachineOutputTests`), exit code 1 |
 | `Info_output_matches_golden` | `info.out` | `okf info tests/fixtures/appendix_a` | column alignment, the `types:` block | every count (`MachineOutputTests.Info_json_*`), both numbers of the `links:` line |
 | `Audit_report_matches_golden` | `audit-v02.out` | `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01` | column layout | the selection, tiers, statuses, staleness (`MachineOutputTests.Audit_json_*`, `AuditTests`) |
@@ -111,8 +111,12 @@ disarms a snapshot without anyone noticing. Two failures are possible and say
 which they are: **capture failure** (a guard such as the exit code did not
 hold, or a file could not be written — the message says whether the group was
 left untouched or restored) and **refuses to assert** (the group was rewritten;
-read the diff). If a named test did not run because `--filter` excluded it, the
-collection fails at teardown and says so.
+read the diff). If a file could not be put back, the message names it and the
+directory where the backups were kept. If a named test did not run because
+`--filter` excluded it, the collection fails at teardown
+(`Test Collection Cleanup Failure (GoldenParity)`, exit code 1); the console
+prints only the exception type, and the names of the tests that did not capture
+are in the detailed log (`--logger "console;verbosity=detailed"`).
 
 One limit, stated rather than hidden: if the filter excludes **every**
 `GoldenParityTests` test, the fixture that enforces the scope is never

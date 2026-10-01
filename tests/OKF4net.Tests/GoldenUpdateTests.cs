@@ -6,8 +6,9 @@ namespace OKF4net.Tests;
 /// variable: scope parsing (design §5.2 -- the whole list is validated before
 /// any write), the atomic group commit with restore, the encoding contract of
 /// what it writes, and the teardown check. The end-to-end behaviour under the
-/// variable -- including the <c>--filter</c> interaction -- is verified by
-/// hand once (README, "Regenerating") because it cannot run inside one test.
+/// variable -- including the <c>--filter</c> interaction -- was verified by
+/// hand when the mode was introduced (the scenarios are listed in the
+/// implementation plan, Task 11) because it cannot run inside one test.
 /// </summary>
 public class GoldenUpdateTests
 {
@@ -78,10 +79,10 @@ public class GoldenUpdateTests
         using var root = new TempDir();
         var scope = new GoldenUpdate.Scope(GoldenUpdate.ParseScope("Info_output_matches_golden"));
 
-        GoldenUpdate.Commit(scope, "Info_output_matches_golden", [("info.out", "a\nb\n")], root.Path);
+        GoldenUpdate.Commit(scope, "Info_output_matches_golden", [("info.out", "a\n§\n")], root.Path);
 
         var bytes = File.ReadAllBytes(Path.Combine(root.Path, "info.out"));
-        Assert.Equal(new byte[] { 0x61, 0x0A, 0x62, 0x0A }, bytes);
+        Assert.Equal(new byte[] { 0x61, 0x0A, 0xC2, 0xA7, 0x0A }, bytes);
         scope.Dispose(); // every requested test captured: no throw
     }
 

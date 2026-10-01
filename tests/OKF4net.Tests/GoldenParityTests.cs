@@ -169,12 +169,9 @@ public class GoldenParityTests(GoldenUpdate.Scope scope)
     }
 
     /// <summary>
-    /// <c>audit</c>'s goldens are hand-authored and verified against the spec
-    /// text (§5.3 tiers, §5.4 statuses, §5.5 staleness), not captured from the
-    /// reference CLI -- the verb has no upstream counterpart. The date is
-    /// pinned with <c>--as-of</c> so the output cannot drift with the calendar.
-    /// There is no <c>audit-v02.exitcode</c>: the verb always exits 0, so the
-    /// code is asserted inline (as <see cref="Info_output_matches_golden"/> does).
+    /// The date is pinned with <c>--as-of</c> so the output cannot drift with
+    /// the calendar: at 2099-06-01 the fixture's one <c>stale_after</c> has
+    /// passed, so the report lists a stale finding.
     /// </summary>
     [Fact]
     public void Audit_report_matches_golden()

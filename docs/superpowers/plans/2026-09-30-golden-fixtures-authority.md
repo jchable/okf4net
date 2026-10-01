@@ -1389,6 +1389,8 @@ public class GoldenUpdateTests
 Run: `dotnet test tests/OKF4net.Tests/OKF4net.Tests.csproj --filter "FullyQualifiedName~GoldenUpdateTests" --no-restore`
 Expected: build error — `GoldenUpdate` does not exist.
 
+> **Superseded in execution (commit 21db7dd and the final fix wave):** the restore loop below covers only the destinations already replaced. The task review found that the destination of the move that FAILS was left unrestored; the shipped code restores every planned destination, keeps the staging directory when a restore fails, and has more tests. The file in the repository is authoritative, not this listing.
+
 - [ ] **Step 3: Write `GoldenUpdate.cs`**
 
 ```csharp

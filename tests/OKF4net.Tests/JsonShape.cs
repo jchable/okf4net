@@ -10,8 +10,8 @@ namespace OKF4net.Tests;
 /// assertion cannot -- a property that disappeared, appeared or was
 /// duplicated, an array that lost an element, an integer a double would
 /// round. Object property order is ignored (it is presentation, design §1);
-/// array order is significant. Strings compare decoded, so a <c>`</c>
-/// in the actual text equals a plain backtick in the expected literal.
+/// array order is significant. Strings compare decoded, so an escaped
+/// character in the actual text equals the plain character in the expected literal.
 /// Numbers compare as text.
 /// </summary>
 internal static class JsonShape
