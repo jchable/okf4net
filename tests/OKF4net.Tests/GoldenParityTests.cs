@@ -81,7 +81,7 @@ public class GoldenParityTests
     public void Validate_output_and_exitcode_match_golden()
     {
         var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/appendix_a", "--as-of", PinnedAsOf));
-        Assert.Equal(int.Parse(Golden("validate.exitcode")), r.Code);
+        Assert.Equal(0, r.Code); // warnings only: appendix_a stays conformant (§11)
 
         // The golden was captured on Linux, where paths display with '/'.
         // The per-file diagnostic paths are built by
@@ -101,7 +101,7 @@ public class GoldenParityTests
     public void Validate_v02_fixture_matches_golden()
     {
         var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02", "--as-of", PinnedAsOf));
-        Assert.Equal(int.Parse(Golden("validate-v02.exitcode")), r.Code);
+        Assert.Equal(0, r.Code); // warnings only: okf_v02 stays conformant (§11)
         Assert.Equal(Golden("validate-v02.out"), r.Out.Replace('\\', '/'));
     }
 
@@ -109,7 +109,7 @@ public class GoldenParityTests
     public void Validate_computation_fixture_matches_golden()
     {
         var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_computation", "--as-of", PinnedAsOf));
-        Assert.Equal(int.Parse(Golden("validate-computation.exitcode")), r.Code);
+        Assert.Equal(0, r.Code); // §10 diagnostics are warnings; conformance (§11) is unaffected
         Assert.Equal(Golden("validate-computation.out"), r.Out.Replace('\\', '/'));
     }
 
@@ -117,7 +117,10 @@ public class GoldenParityTests
     public void Validate_reserved_fixture_matches_golden()
     {
         var r = WithRepoRootAsCwd(() => Run("validate", "tests/fixtures/okf_v02_reserved", "--as-of", PinnedAsOf));
-        Assert.Equal(int.Parse(Golden("validate-reserved.exitcode")), r.Code);
+        // §11 condition 3 fails: malformed reserved files make the bundle
+        // non-conformant, and this CLI's contract maps that verdict to exit
+        // code 1 -- the spec defines the verdict, the integer is ours.
+        Assert.Equal(1, r.Code);
         Assert.Equal(Golden("validate-reserved.out"), r.Out.Replace('\\', '/'));
     }
 
@@ -214,8 +217,9 @@ public class GoldenParityTests
             Assert.Equal(expected, actual);
         }
 
-        // Exactly the 3 generated index.md files plus the 5 original
-        // source documents copied in -- no extras.
+        // Exactly the 3 generated index.md files plus the 5 source documents
+        // copied in from appendix_a: catches a file created in excess or a
+        // net deletion; not a modified original, nor a delete-and-create.
         var allFiles = Directory.GetFiles(tmp.Path, "*", SearchOption.AllDirectories);
         Assert.Equal(8, allFiles.Length);
     }

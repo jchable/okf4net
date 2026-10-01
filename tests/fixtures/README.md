@@ -11,21 +11,18 @@
     has `type` and `title` but is missing `description` and `timestamp`, so
     `validate` emits the two "missing recommended frontmatter field"
     warnings (§11 soft guidance — the bundle stays conformant, exit code 0).
-- `golden/validate.out` — stdout of `okf validate tests/fixtures/appendix_a`.
-- `golden/validate.exitcode` — the process exit code of that same run, as a
-  bare ASCII digit with **no trailing newline** (currently `0`).
+- `golden/validate.out` — stdout of `okf validate tests/fixtures/appendix_a
+  --as-of 2026-09-25`; the exit code (`0`) is asserted in the test.
 - `golden/info.out` — stdout of `okf info tests/fixtures/appendix_a`.
 - `golden/graph.dot` — stdout of `okf graph tests/fixtures/appendix_a --dot`
   (Graphviz DOT source).
 - `golden/fmt/users.md` — stdout of
   `okf fmt tests/fixtures/appendix_a/tables/users.md` (parse + re-serialize
   normalization).
-- `golden/index-input/` — a full copy of `appendix_a/` **after** running
-  `okf index tests/fixtures/golden/index-input` on it. The `index.md` files
-  written inside it (`index-input/index.md`, `index-input/datasets/index.md`,
-  `index-input/tables/index.md`) are the reference output of the index
-  generator; every other file in the tree is an unmodified copy of the input
-  bundle, included so the whole directory can be diffed/compared as a unit.
+- `golden/index-input/` — the three `index.md` files (`index.md`,
+  `datasets/index.md`, `tables/index.md`) the index generator writes over a
+  copy of `appendix_a/`; the test makes that copy in a temporary directory
+  and reads only these three.
 
 ## Provenance
 
@@ -368,3 +365,10 @@ What changed:
 `malformed/broken-exec.md` keeps its bare `does-not-exist.md`: it names a file
 that exists at neither base, so it still contributes exactly the one
 `… not found` warning it is there for, with the same message text.
+
+## Two deletions under the fixtures-authority design (2026-10-01)
+
+Arbitration: `docs/superpowers/specs/2026-09-22-golden-fixtures-authority-design.md`, §4 and §5.6. Both are element removals (criterion 2 of that design's diff rule), hence recorded here.
+
+- **`golden/index-input/`'s five bundle copies** (`log.md`, `datasets/sales.md`, `tables/{customers,orders,users}.md`) are deleted. `Index_generation_matches_golden` copies `appendix_a/` into a temporary directory and reads only the three generated `index.md` files, so no assertion changes. What is lost is a standalone historical archive of the input bundle as it was captured on 2026-07-21; what is kept is the three `index.md` outputs and the file-count assertion (which catches an extra file or a net deletion, not a modified original).
+- **The four `*.exitcode` files** are deleted. Each held one ASCII digit; the values now live in `GoldenParityTests` as assertions with their reason: `0` for `appendix_a`, `okf_v02` and `okf_v02_computation` (warnings only, still conformant), `1` for `okf_v02_reserved` (§11 condition 3 fails; the integer is this CLI's contract, not the spec's).
