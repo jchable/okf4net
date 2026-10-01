@@ -368,4 +368,33 @@ public class DocumentTests
             () => OkfDocument.Parse("---\ntype: T\ntitle: X\n---\nbody\n").Validate());
         Assert.Contains("description", ex.Message);
     }
+
+    /// <summary>
+    /// The full serialized text, in one assertion: `---`, three frontmatter
+    /// keys in order, `---`, one blank line, the body, one trailing newline.
+    /// Every other test here round-trips through Parse and compares structure;
+    /// this is the only place the envelope itself is pinned outside a snapshot.
+    /// </summary>
+    [Fact]
+    public void Serialize_emits_the_canonical_envelope_exactly()
+    {
+        var doc = OkfDocument.Parse("---\ntype: BigQuery Table\ntitle: Users\ndescription: Application users.\n---\n\nApplication users; not part of the sales domain.\n");
+
+        Assert.Equal(
+            "---\ntype: BigQuery Table\ntitle: Users\ndescription: Application users.\n---\n\nApplication users; not part of the sales domain.\n",
+            doc.Serialize());
+    }
+
+    /// <summary>A document already in canonical form re-serializes to the same bytes.</summary>
+    [Fact]
+    public void Serialize_is_idempotent_on_a_canonical_document()
+    {
+        var canonical = File.ReadAllText(Path.Combine(TestPaths.RepoRoot(), "tests", "fixtures", "appendix_a", "tables", "users.md"));
+
+        var once = OkfDocument.Parse(canonical).Serialize();
+        var twice = OkfDocument.Parse(once).Serialize();
+
+        Assert.Equal(canonical, once);
+        Assert.Equal(once, twice);
+    }
 }

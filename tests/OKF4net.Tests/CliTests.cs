@@ -482,6 +482,26 @@ public class CliTests
         Assert.Contains("body\n", File.ReadAllText(path));
     }
 
+    /// <summary>
+    /// `fmt` without `-w` prints the formatted document to stdout and leaves
+    /// the file alone. Until now the only passing test through this branch was
+    /// the snapshot comparison. On this canonical input the output equals the
+    /// file; the test pins the branch, not a normalisation.
+    /// </summary>
+    [Fact]
+    public void Fmt_without_write_prints_the_document_and_leaves_the_file_untouched()
+    {
+        var path = Path.Combine(BundlePath, "tables", "users.md");
+        var before = File.ReadAllBytes(path);
+
+        var r = Run("fmt", path);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+        Assert.Equal(File.ReadAllText(path), r.Out);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
     // ----------------------------------------------------------------
     // A3: invalid-path arguments must exit 1 with a uniform "error: ..."
     // message on stderr, never an unhandled-exception stack trace -- every
