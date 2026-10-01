@@ -116,4 +116,68 @@ public class MachineOutputTests
 
         JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
     }
+
+    [Fact]
+    public void Info_json_projects_appendix_a_completely()
+    {
+        var r = Run("info", AppendixA, "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(AppendixA, r.Out);
+
+        var expected = $$"""
+        {
+          "bundle": "{{Fwd(AppendixA)}}",
+          "okfVersion": null,
+          "conceptCount": 4,
+          "indexFileCount": 0,
+          "logFileCount": 1,
+          "types": { "BigQuery Dataset": 1, "BigQuery Table": 3 },
+          "linkCount": 5,
+          "brokenLinkCount": 0,
+          "parseErrors": []
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
+    public void Info_json_projects_the_opposite_cases_completely()
+    {
+        // okfVersion present, a broken link, a parse error, an index file and
+        // no log file: the opposite of every appendix_a value above.
+        using var tmp = new TempDir();
+        tmp.Write("index.md", "---\nokf_version: \"0.2\"\n---\n\n# Root\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: A\ndescription: d\n---\n\nSee [b](/b.md) and [gone](/missing.md).\n");
+        tmp.Write("b.md", "---\ntype: Note\ntitle: B\ndescription: d\n---\n\nbody\n");
+        tmp.Write("bad.md", "---\ntype: Note\nk: *a\n---\nbody\n");
+
+        var r = Run("info", tmp.Path, "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(tmp.Path, r.Out);
+
+        // The parse error's message is DERIVED: YamlParser.AliasMessage, wrapped
+        // by YamlParseException.FormatMessage with the frontmatter line (the
+        // alias is on line 2 of the frontmatter), then by OkfDocument.Parse's
+        // "Invalid YAML in frontmatter: " prefix. Not read from r.Out.
+        var expected = $$"""
+        {
+          "bundle": "{{Fwd(tmp.Path)}}",
+          "okfVersion": "0.2",
+          "conceptCount": 2,
+          "indexFileCount": 1,
+          "logFileCount": 0,
+          "types": { "Note": 2 },
+          "linkCount": 2,
+          "brokenLinkCount": 1,
+          "parseErrors": [
+            { "path": "{{Fwd(Path.Combine(tmp.Path, "bad.md"))}}", "message": "Invalid YAML in frontmatter: YAML error at line 2: YAML aliases (*name) are not supported by the OKF YAML subset" }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
 }

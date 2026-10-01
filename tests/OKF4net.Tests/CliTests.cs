@@ -381,21 +381,6 @@ public class CliTests
     }
 
     [Fact]
-    public void Info_json_reports_bundle_summary()
-    {
-        var r = Run("info", "--json", BundlePath);
-        Assert.Equal(0, r.Code);
-
-        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
-        var root = doc.RootElement;
-        Assert.Equal(4, root.GetProperty("conceptCount").GetInt32());
-        Assert.True(root.TryGetProperty("types", out var types));
-        Assert.True(types.EnumerateObject().Any());
-        Assert.True(root.TryGetProperty("linkCount", out _));
-        Assert.True(root.TryGetProperty("brokenLinkCount", out _));
-    }
-
-    [Fact]
     public void Info_json_types_is_present_and_empty_for_a_bundle_with_no_concepts()
     {
         using var tmp = new TempDir();
