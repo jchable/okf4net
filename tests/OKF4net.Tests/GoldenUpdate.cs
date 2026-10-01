@@ -108,8 +108,8 @@ public static class GoldenUpdate
     /// or nothing is written. Then every new file is staged (UTF-8 without
     /// BOM, bytes as given -- LF stays LF), every existing destination is
     /// backed up, and the staged files are moved into place one by one. If a
-    /// move fails, every destination already replaced is put back from its
-    /// backup, so the committed group is whole again -- and if THAT fails, the
+    /// move fails, every planned destination (the failing one included) is put
+    /// back from its backup, or deleted if it did not exist before, so the committed group is whole again -- and if THAT fails, the
     /// message says which files are not restored rather than claiming they are.
     /// </summary>
     /// <param name="scope">The run's scope; the test is marked captured on success.</param>
@@ -174,30 +174,32 @@ public static class GoldenUpdate
 
             // Phase 2, while replacing: move the staged files into place. A
             // failure here puts back what was already replaced.
-            var replaced = new List<(string Destination, string? Backup)>();
             try
             {
-                foreach (var (staged, destination, backup) in planned)
+                foreach (var (staged, destination, _) in planned)
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                     File.Move(staged, destination, overwrite: true);
-                    replaced.Add((destination, backup));
                 }
             }
             catch (Exception moveFailure) when (moveFailure is IOException or UnauthorizedAccessException)
             {
+                // Restore EVERY planned destination, the one whose move threw
+                // included: staging is usually on another volume, so a move is
+                // a copy then a delete, and a failed copy can leave its
+                // destination truncated.
                 var notRestored = new List<string>();
-                foreach (var (destination, backup) in replaced)
+                foreach (var (_, destination, backup) in planned)
                 {
                     try
                     {
-                        if (backup is null)
-                        {
-                            File.Delete(destination);
-                        }
-                        else
+                        if (backup is not null)
                         {
                             File.Copy(backup, destination, overwrite: true);
+                        }
+                        else if (File.Exists(destination))
+                        {
+                            File.Delete(destination);
                         }
                     }
                     catch (Exception restoreFailure) when (restoreFailure is IOException or UnauthorizedAccessException)

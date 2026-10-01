@@ -157,10 +157,26 @@ public class GoldenUpdateTests
         var ex = Assert.Throws<InvalidOperationException>(() =>
             GoldenUpdate.Commit(scope, "Verify_output_matches_golden", [("verify.out", "NEW\n"), ("verify-dau.md", "NEW2\n")], root.Path));
 
-        Assert.Contains("restored", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("the group was restored to its committed state", ex.Message, StringComparison.Ordinal);
         Assert.Equal("OLD\n", File.ReadAllText(Path.Combine(root.Path, "verify.out")));
         var teardown = Assert.Throws<InvalidOperationException>(scope.Dispose); // not marked captured
         Assert.Contains("Verify_output_matches_golden", teardown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Commit_removes_a_file_it_created_when_a_later_move_fails()
+    {
+        // No backup exists for verify.out (it did not exist), so restoring it
+        // means deleting what the first move created.
+        using var root = new TempDir();
+        Directory.CreateDirectory(Path.Combine(root.Path, "verify-dau.md"));
+        var scope = new GoldenUpdate.Scope(GoldenUpdate.ParseScope("Verify_output_matches_golden"));
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            GoldenUpdate.Commit(scope, "Verify_output_matches_golden", [("verify.out", "NEW\n"), ("verify-dau.md", "NEW2\n")], root.Path));
+
+        Assert.Contains("the group was restored to its committed state", ex.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(root.Path, "verify.out")));
     }
 
     [Fact]
