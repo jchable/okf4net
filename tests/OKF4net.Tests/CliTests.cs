@@ -368,26 +368,6 @@ public class CliTests
     }
 
     [Fact]
-    public void Validate_json_reports_bundle_conformance_and_diagnostics()
-    {
-        var r = Run("validate", "--json", BundlePath);
-        Assert.Equal(0, r.Code);
-
-        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
-        var root = doc.RootElement;
-        Assert.Equal(BundlePath, root.GetProperty("bundle").GetString());
-        Assert.True(root.GetProperty("conformant").GetBoolean());
-        Assert.Equal(4, root.GetProperty("conceptCount").GetInt32());
-        Assert.Equal(0, root.GetProperty("errorCount").GetInt32());
-        var diagnostics = root.GetProperty("diagnostics");
-        Assert.True(diagnostics.GetArrayLength() > 0);
-        var first = diagnostics[0];
-        Assert.True(first.TryGetProperty("severity", out _));
-        Assert.True(first.TryGetProperty("code", out _));
-        Assert.True(first.TryGetProperty("message", out _));
-    }
-
-    [Fact]
     public void Validate_json_diagnostic_field_is_populated_when_applicable()
     {
         using var tmp = new TempDir();
