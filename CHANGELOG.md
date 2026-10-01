@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-01
+
 This release is large: 146 entries below. What follows is the short version —
 what breaks, and what is new. The detail for every line is in the sections
 after it.
@@ -936,11 +938,13 @@ Everything here is a 0.x minor break, stated in full further down.
   the diagnostics. Recorded as **S6.2-1** in
   `docs/spec-conformance/2026-07-31-okf-spec-gap-report.md`.
   - Where it reaches beyond diagnostics: `AttestationOrchestrator` resolves a
-    file-backed `computation:` path (`AttestationOrchestrator.cs:295`), so a
-    bare one now names a different file. It does **not** resolve
-    `executor.resource` or `attester.resource` — those implementations come
-    from the host runtime — so no computation became runnable or unrunnable
-    because of this change.
+    file-backed `computation:` path and, since this release, the
+    `attester.resource` it reads before execution (`TryResolveAttesterSource`),
+    so a bare value of either now names a different file. Together with that
+    attester resolution failing closed, this is what stops a 0.5.0 bundle whose
+    attester sits beside its concept — see the **Breaking (combined effect on
+    0.5.0 bundles)** entry under *Changed*. `executor.resource` is still not
+    resolved: the executor's implementation comes from the host runtime.
   - **Breaking (source):** `FrontmatterResourceKind.Relative` is renamed
     `FrontmatterResourceKind.ConceptRelative`, and a bare path now classifies
     as `BundleRelative`. The rename is deliberate: it turns a silent change of
@@ -2722,7 +2726,8 @@ host-scopeable long-term memory — all built on the same zero-dependency core.
 - Relicensed from Apache-2.0 to LGPL-3.0-or-later; Apache-2.0 attribution for
   upstream ported portions is preserved in `NOTICE` and `LICENSE.Apache-2.0`.
 
-[Unreleased]: https://github.com/jchable/okf4net/compare/v0.5.0...main
+[Unreleased]: https://github.com/jchable/okf4net/compare/v0.6.0...main
+[0.6.0]: https://github.com/jchable/okf4net/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jchable/okf4net/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jchable/okf4net/compare/v0.3.1-preview.1...v0.4.0
 [0.3.1-preview.1]: https://github.com/jchable/okf4net/compare/v0.3.0...v0.3.1-preview.1
