@@ -9,12 +9,12 @@ namespace OkfProducer.Tests.Generation;
 /// §6.2's <c>--check</c>, against the committed golden bundle in
 /// <c>producers/tests/OkfProducer.Tests/fixtures/</c>.
 ///
-/// <para><b>The golden here follows the OPPOSITE discipline to <c>tests/fixtures/</c>.</b> That
-/// directory holds byte-exact captures of a reference implementation and a hard rule forbids editing
-/// them to make a test pass. This one captures <b>our own</b> output: it is regenerable by
-/// construction and it <i>must</i> be regenerated whenever the generator changes intentionally, with
-/// the diff reviewed as part of that change. <c>fixtures/README.md</c> states it in full; the
-/// regeneration switch is <see cref="UpdateGoldenVariable"/>, read by
+/// <para><b>This golden captures our own output and is regenerable by construction</b>, like
+/// <c>tests/fixtures/golden/</c> since 2026-10-01 -- with one difference: nothing here carries a
+/// conformance verdict, so there is no arbitration layer, and the update switch rewrites the whole
+/// golden rather than a named scope. It <i>must</i> be regenerated whenever the generator changes
+/// intentionally, with the diff reviewed as part of that change. <c>fixtures/README.md</c> states it
+/// in full; the regeneration switch is <see cref="UpdateGoldenVariable"/>, read by
 /// <see cref="Check_passes_on_an_unchanged_bundle"/> below.</para>
 ///
 /// <para><b>Every test here runs against a copy of the fixture repository placed outside any git

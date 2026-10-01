@@ -183,9 +183,9 @@ export default function Spec() {
             independent implementation of it — not a port of Google's own reference implementation, whose CLI
             covers a different surface entirely (BigQuery/Gemini bundle enrichment and Cytoscape.js visualization,
             not <code>validate</code>/<code>info</code>/<code>graph</code>/<code>fmt</code>/<code>index</code>).
-            The suite's byte-exact golden CLI comparisons mostly trace to this project's own former Rust
-            implementation, before its removal; the newer v0.2 and §10 behaviour predates any reference
-            implementation and is hand-verified against the spec text instead. Any intentional divergence from the
+            The suite pins the CLI's rendering with snapshots of this project's own output (regenerable under
+            the regimes in <code>tests/fixtures/README.md</code>) and its machine outputs with full-projection
+            tests against hand-derived expectations; the spec is the only conformance authority. Any intentional divergence from the
             spec is documented with its reason; there are none that affect conformance.
           </p>
           <ul className="plain">

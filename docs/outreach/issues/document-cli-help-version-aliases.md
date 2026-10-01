@@ -9,4 +9,4 @@
 2. Keep the formatting aligned with the existing column layout used by the `COMMANDS:` section above it.
 3. In `tests/OKF4net.Tests/CliTests.cs`, extend `Help_prints_usage_and_succeeds` (or add a new small `[Fact]`) to assert the usage text now mentions `version` alongside `--version`/`-V`.
 **How to verify:** `dotnet test OKF4net.sln --filter "FullyQualifiedName~CliTests"` and manually run `dotnet run --project src/OKF4net.Cli -- --help` to eyeball the updated `OPTIONS:` block.
-**Good to know:** This text is not part of any byte-exact golden fixture (`tests/fixtures/golden/` has no usage/help capture), so it's safe to edit. See `CONTRIBUTING.md` for build/test basics.
+**Good to know:** This text has no snapshot under `tests/fixtures/golden/` (no usage/help capture), so editing it regenerates nothing. See `CONTRIBUTING.md` for build/test basics.

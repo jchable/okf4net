@@ -21,8 +21,8 @@ undocumented gaps.
 code or executable assertions, just a report for a human to act on), not
 responsible for fixing anything it finds or for updating `ROADMAP.md`, and
 it must never imply touching `tests/fixtures/` to resolve a finding — those
-are byte-exact golden captures the project's `CLAUDE.md` forbids editing to
-make a test pass. The report describes gaps; closing one (without touching
+are snapshots of our own CLI output that the project's `CLAUDE.md` forbids
+regenerating to make a test pass. The report describes gaps; closing one (without touching
 golden fixtures) is a separate, human-directed follow-up.
 
 ## 1. Fetch the current spec
@@ -236,7 +236,7 @@ project's rule that commits only happen on explicit request.
 
 Never suggest editing `tests/fixtures/` to resolve a finding, even for a
 `Diverges` finding that involves v0.1-covered behavior — `CLAUDE.md`
-forbids touching those byte-exact golden captures to make a test pass.
+forbids regenerating those snapshots to make a test pass.
 Describing a gap is this skill's job; how (or whether) to close one is a
 separate human decision.
 

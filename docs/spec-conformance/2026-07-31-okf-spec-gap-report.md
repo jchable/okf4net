@@ -897,3 +897,7 @@ README mapping: `Frontmatter.LastChangedAt` (falls back to legacy
 - §11 yields 8 of its own atomic statements (S11-1..S11-8, i.e. the three
   declarative conditions plus five non-pointer MUST/SHOULD bullets),
   matching the skill's own worked-example count.
+
+## Addendum (2026-10-01) — what `tests/fixtures/` is, since this report was written
+
+This report calls `tests/fixtures/` "byte-exact golden captures" and, under S4.1, justifies keeping the `resource` suppression narrow because a wider one "would rewrite that byte-exact capture" of "the reference CLI". Since 2026-10-01 that framing no longer holds: `docs/spec/SPEC.md` is the only conformance authority, and `tests/fixtures/golden/` holds snapshots of this project's own output, regenerable under the two regimes in `tests/fixtures/README.md`. The S4.1 decision stands on its own merits — a missing optional field must never fail conformance (§11) and the type-keyed rule is the smallest change — but "it would change a capture" is no longer, by itself, a reason: changing the diagnostic set of `validate.out` is a semantic diff, which takes explicit arbitration and a dated entry, not a prohibition.

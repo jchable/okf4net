@@ -2,7 +2,7 @@
 **Labels:** good first issue ; documentation
 **Difficulty / est. effort:** ~1h, small
 
-**Context:** The only bundle in the repo today is `tests/fixtures/appendix_a` (a byte-exact golden fixture — see "Never touch `tests/fixtures/`" in `CONTRIBUTING.md`), so a newcomer who wants to `okf validate`/`okf info`/`okf graph` something has nothing safe to point the CLI at without first authoring their own concept files by hand. A small, throwaway-friendly example bundle under `examples/` gives newcomers (and the README) something concrete to run the CLI against in one sitting.
+**Context:** The only bundle in the repo today is `tests/fixtures/appendix_a` (a test fixture — see "Snapshot fixtures" in `CONTRIBUTING.md`), so a newcomer who wants to `okf validate`/`okf info`/`okf graph` something has nothing safe to point the CLI at without first authoring their own concept files by hand. A small, throwaway-friendly example bundle under `examples/` gives newcomers (and the README) something concrete to run the CLI against in one sitting.
 **Files to touch:** `examples/quickstart/index.md` (new), `examples/quickstart/orders.md` (new), `examples/quickstart/refunds.md` (new), `README.md`
 **What to do:**
 1. Create `examples/quickstart/` with 2-3 tiny concept documents, e.g. `orders.md` and `refunds.md`, each with a valid frontmatter block (`type`, `title`, `description`, `timestamp` — see `Frontmatter.RequiredKeys` in `src/OKF4net/Frontmatter.cs` for the producer-side required keys) and a one-paragraph body; have `refunds.md` cross-link to `orders.md` via a relative markdown link (e.g. `[orders](./orders.md)`) to demonstrate §5 cross-linking.

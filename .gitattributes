@@ -14,5 +14,5 @@ docs/spec/SPEC.md -text
 # BYTE by `producers/tests/OkfProducer.Tests/Generation/CheckTests.cs`. Without -text, git would
 # translate line endings on checkout and the comparison would fail on a fresh clone for a reason no
 # diff of those files would show. `producers/` is outside CI, so nothing else would catch it.
-# Note the discipline there is the OPPOSITE of tests/fixtures/ -- see that directory's own README.
+# tests/fixtures/ is regenerable too, under its own README's regimes; the -text protection is shared.
 producers/tests/OkfProducer.Tests/fixtures/** -text

@@ -13,7 +13,7 @@ export default function Contributing() {
   return (
     <Layout
       title="Contributing — OKF4net"
-      description="How to contribute to OKF4net: one prerequisite (the .NET SDK), byte-exact golden fixtures, spec citations in PRs, and zero third-party runtime dependencies — by design."
+      description="How to contribute to OKF4net: one prerequisite (the .NET SDK), snapshot fixtures, spec citations in PRs, and zero third-party runtime dependencies — by design."
       current="contributing"
     >
       <PageDoc
@@ -71,15 +71,14 @@ export default function Contributing() {
           <p>All warnings are treated as errors, so a clean build is required.</p>
           <Warn title="GOLDEN FIXTURES — DO NOT REFORMAT">
             <p>
-              <code>tests/fixtures/</code> contains <strong>byte-exact golden files</strong>: several tests compare
-              generated output byte-for-byte against them. Most were captured from this project's own former Rust
-              implementation before its removal (see <code>tests/fixtures/README.md</code>); a couple of newer ones (v0.2, §10
-              Attested Computation) postdate that implementation and are hand-verified against the spec text
-              instead — none of them currently re-check against Google's own OKF reference implementation, whose
-              CLI has no equivalent commands to compare output against. They are protected by{' '}
-              <code>.gitattributes</code> and excluded from <code>.editorconfig</code> normalization. Never let an
-              editor or formatter touch them — trailing whitespace, final newlines, and line endings are all
-              significant.
+              <code>tests/fixtures/golden/</code> holds <strong>snapshots of this project's own CLI output</strong>,
+              compared as text (after path-separator normalisation for the outputs that embed paths). They are
+              regenerable under two regimes stated in <code>tests/fixtures/README.md</code>: a presentation-only diff
+              is regenerated through the scoped update mode and reviewed; a semantic diff, or any edit to an input
+              bundle, needs explicit arbitration and a dated entry first. Conformance is verified against the spec by
+              tests that cite a §, not by these files. They are protected by <code>.gitattributes</code> and excluded
+              from <code>.editorconfig</code> normalization — never let an editor or formatter touch them: trailing
+              whitespace, final newlines, and line endings are all significant.
             </p>
           </Warn>
         </Chapter>
@@ -106,8 +105,8 @@ export default function Contributing() {
             OKF4net implements the{' '}
             <a href="https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md">OKF v0.2 spec</a>
             . Behavioural changes must stay conformant — <strong>cite the relevant section (§) in your PR description</strong>.
-            The data model intentionally mirrors Google's OKF reference implementation's structure; divergences
-            need a documented reason.
+            The spec is the authority; where this implementation deliberately reads it differently, or departs from the OKF
+            reference implementation's behaviour, the reason is recorded in <code>docs/spec-conformance/</code>.
           </p>
         </Chapter>
 

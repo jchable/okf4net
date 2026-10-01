@@ -18,8 +18,8 @@ a directory of markdown files with YAML frontmatter.
 >
 > OKF4net is an independent, zero-dependency .NET implementation of the Open
 > Knowledge Format, built from the OKF v0.2 specification. It is backed by an
-> extensive test suite, including byte-exact golden CLI comparisons (see
-> [`tests/fixtures/`](tests/fixtures/README.md)). Everything it builds is
+> extensive test suite, including snapshot comparisons of the CLI's output and full-projection
+> tests of its machine outputs (see [`tests/fixtures/`](tests/fixtures/README.md)). Everything it builds is
 > LGPL-3.0-or-later; see [`NOTICE`](NOTICE).
 
 **📖 [Documentation & project site → jchable.github.io/okf4net](https://jchable.github.io/okf4net/)** —
@@ -98,7 +98,7 @@ other project layers a specific integration on top and points back to it.
 The split follows the OKF reference implementation's `bundle/` package
 (`document.py`, `index.py`, `paths.py`) so behaviour stays spec-compatible:
 the document parser, validator, and index generator are verified by an
-extensive test suite, including byte-exact golden CLI comparisons.
+extensive test suite, including snapshot comparisons of the CLI's output.
 
 ### Design choices
 

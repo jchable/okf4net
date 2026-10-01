@@ -2,8 +2,8 @@
 
 Sample [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 v0.2 bundles used in this repo for manual testing and samples — distinct
-from [`tests/fixtures/`](../tests/fixtures/README.md), which stays
-byte-exact golden CLI captures. Consumed together by
+from [`tests/fixtures/`](../tests/fixtures/README.md), which holds
+snapshots of our own CLI output. Consumed together by
 [`samples/catalog-explorer/`](../samples/catalog-explorer/README.md);
 `acme_retail` alone is also consumed by
 [`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md).

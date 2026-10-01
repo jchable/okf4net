@@ -1,3 +1,4 @@
+> **Superseded (2026-10-01):** this test was added as `DocumentTests.Serialize_is_idempotent_on_a_canonical_document`; do not publish. Kept for the record.
 ### Title: Add a golden-parity idempotency test for `okf fmt`
 **Labels:** help wanted ; test
 **Difficulty / est. effort:** ~2-3h, medium
@@ -10,4 +11,4 @@
 3. Write that text to a `TempDir` file, run `okf fmt <path>` (no `-w`, stdout mode — see the sibling issue `test-cli-fmt-without-write-flag.md` if it hasn't landed yet) against it, and assert the CLI's stdout output is byte-identical to the original golden text (`Assert.Equal(Golden(Path.Combine("fmt", "users.md")), r.Out)`, following the same strict byte-for-byte comparison style already used elsewhere in this file).
 4. Optionally, also verify `OkfDocument.Parse(golden).Serialize()` equals the golden text directly at the library level (no CLI round-trip), for a second, narrower confirmation of the same property.
 **How to verify:** `dotnet test OKF4net.sln --filter "FullyQualifiedName~GoldenParityTests"` — expect all tests in the class, including the new one, to pass.
-**Good to know:** This reads `tests/fixtures/golden/fmt/users.md` but never modifies it or any file under `tests/fixtures/` — see `CONTRIBUTING.md`'s "Golden fixtures — do not reformat" section and `CLAUDE.md`'s "Never touch `tests/fixtures/`" hard rule.
+**Good to know:** This reads `tests/fixtures/golden/fmt/users.md` but never modifies it or any file under `tests/fixtures/` — see `CONTRIBUTING.md`'s "Snapshot fixtures" section and `CLAUDE.md`'s "Never regenerate a snapshot without reading the diff" hard rule.

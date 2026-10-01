@@ -368,26 +368,6 @@ public class CliTests
     }
 
     [Fact]
-    public void Validate_json_reports_bundle_conformance_and_diagnostics()
-    {
-        var r = Run("validate", "--json", BundlePath);
-        Assert.Equal(0, r.Code);
-
-        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
-        var root = doc.RootElement;
-        Assert.Equal(BundlePath, root.GetProperty("bundle").GetString());
-        Assert.True(root.GetProperty("conformant").GetBoolean());
-        Assert.Equal(4, root.GetProperty("conceptCount").GetInt32());
-        Assert.Equal(0, root.GetProperty("errorCount").GetInt32());
-        var diagnostics = root.GetProperty("diagnostics");
-        Assert.True(diagnostics.GetArrayLength() > 0);
-        var first = diagnostics[0];
-        Assert.True(first.TryGetProperty("severity", out _));
-        Assert.True(first.TryGetProperty("code", out _));
-        Assert.True(first.TryGetProperty("message", out _));
-    }
-
-    [Fact]
     public void Validate_json_diagnostic_field_is_populated_when_applicable()
     {
         using var tmp = new TempDir();
@@ -398,21 +378,6 @@ public class CliTests
         var diagnostics = doc.RootElement.GetProperty("diagnostics");
         var timestampDiag = diagnostics.EnumerateArray().Single(d => d.GetProperty("code").GetString() == "LegacyTimestamp");
         Assert.Equal("timestamp", timestampDiag.GetProperty("field").GetString());
-    }
-
-    [Fact]
-    public void Info_json_reports_bundle_summary()
-    {
-        var r = Run("info", "--json", BundlePath);
-        Assert.Equal(0, r.Code);
-
-        using var doc = System.Text.Json.JsonDocument.Parse(r.Out);
-        var root = doc.RootElement;
-        Assert.Equal(4, root.GetProperty("conceptCount").GetInt32());
-        Assert.True(root.TryGetProperty("types", out var types));
-        Assert.True(types.EnumerateObject().Any());
-        Assert.True(root.TryGetProperty("linkCount", out _));
-        Assert.True(root.TryGetProperty("brokenLinkCount", out _));
     }
 
     [Fact]
@@ -496,42 +461,6 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Equal("a\n  -> b\n  -x missing\n", r.Out);
     }
-    [Fact]
-    public void Graph_dot_prints_digraph()
-    {
-        var r = Run("graph", BundlePath, "--dot");
-        Assert.Equal(0, r.Code);
-        Assert.StartsWith("digraph okf {", r.Out);
-    }
-
-    [Fact]
-    public void Graph_dot_styles_broken_links_dashed_and_red()
-    {
-        // CmdGraph: an edge to a non-existent concept gets
-        // ` [style=dashed, color=red]` appended before the trailing `;`.
-        // A resolvable edge gets no style suffix at all. Build a small bundle
-        // with one concept linking to a target that does not exist in the
-        // bundle.
-        using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\n---\nSee [missing](/does/not/exist.md).\n");
-        var r = Run("graph", tmp.Path, "--dot");
-
-        Assert.Equal(0, r.Code);
-        Assert.Contains("\"a\" -> \"does/not/exist\" [style=dashed, color=red];\n", r.Out);
-    }
-
-    [Fact]
-    public void Graph_dot_does_not_style_resolvable_links()
-    {
-        using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\n---\nSee [b](/b.md).\n");
-        tmp.Write("b.md", "---\ntype: Note\n---\nbody\n");
-        var r = Run("graph", tmp.Path, "--dot");
-
-        Assert.Equal(0, r.Code);
-        Assert.Contains("\"a\" -> \"b\";\n", r.Out);
-        Assert.DoesNotContain("style=dashed", r.Out);
-    }
 
     [Fact]
     public void Parse_prints_document_structure()
@@ -551,6 +480,26 @@ public class CliTests
         Assert.Equal(0, r.Code);
         Assert.Contains("formatted", r.Out);
         Assert.Contains("body\n", File.ReadAllText(path));
+    }
+
+    /// <summary>
+    /// `fmt` without `-w` prints the formatted document to stdout and leaves
+    /// the file alone. Until now the only passing test through this branch was
+    /// the snapshot comparison. On this canonical input the output equals the
+    /// file; the test pins the branch, not a normalisation.
+    /// </summary>
+    [Fact]
+    public void Fmt_without_write_prints_the_document_and_leaves_the_file_untouched()
+    {
+        var path = Path.Combine(BundlePath, "tables", "users.md");
+        var before = File.ReadAllBytes(path);
+
+        var r = Run("fmt", path);
+
+        Assert.Equal(0, r.Code);
+        Assert.Equal("", r.Err);
+        Assert.Equal(File.ReadAllText(path), r.Out);
+        Assert.Equal(before, File.ReadAllBytes(path));
     }
 
     // ----------------------------------------------------------------
@@ -1020,40 +969,6 @@ public class CliTests
         var auditIndex = lines.FindIndex(l => l.StartsWith("audit ", StringComparison.Ordinal));
 
         Assert.True(validateIndex >= 0 && auditIndex == validateIndex + 1);
-    }
-
-    [Fact]
-    public void Audit_json_carries_counts_query_and_findings()
-    {
-        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01", "--json");
-
-        Assert.Equal(0, r.Code);
-        Assert.EndsWith("\n", r.Out);
-
-        using var doc = JsonDocument.Parse(r.Out);
-        var root = doc.RootElement;
-
-        Assert.Equal("2099-06-01", root.GetProperty("asOf").GetString());
-        Assert.Equal(2, root.GetProperty("conceptCount").GetInt32());
-        Assert.Equal(1, root.GetProperty("staleCount").GetInt32());
-
-        // Report mode selects what --stale selects, so the replayed query says so.
-        Assert.True(root.GetProperty("query").GetProperty("stale").GetBoolean());
-        Assert.Equal(JsonValueKind.Null, root.GetProperty("query").GetProperty("trust").ValueKind);
-
-        Assert.Equal(1, root.GetProperty("trust").GetProperty("human-reviewed").GetInt32());
-        Assert.Equal(1, root.GetProperty("trust").GetProperty("unverified").GetInt32());
-        Assert.Equal(2, root.GetProperty("status").GetProperty("stable").GetInt32());
-
-        var finding = root.GetProperty("findings").EnumerateArray().Single();
-        Assert.Equal("metrics/dau", finding.GetProperty("conceptId").GetString());
-        Assert.Equal("Metric", finding.GetProperty("type").GetString());
-        Assert.Equal("Daily Active Users", finding.GetProperty("title").GetString());
-        Assert.Equal("human-reviewed", finding.GetProperty("trust").GetString());
-        // Verbatim raw frontmatter, not the parsed instant: the fixture carries
-        // the §5 conformant form, so the JSON echoes it unchanged.
-        Assert.Equal("2099-01-01T00:00:00Z", finding.GetProperty("staleAfter").GetString());
-        Assert.True(finding.GetProperty("stale").GetBoolean());
     }
 
     [Fact]

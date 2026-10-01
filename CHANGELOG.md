@@ -8,7 +8,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-This release is large: 145 entries below. What follows is the short version —
+This release is large: 146 entries below. What follows is the short version —
 what breaks, and what is new. The detail for every line is in the sections
 after it.
 
@@ -439,6 +439,22 @@ Everything here is a 0.x minor break, stated in full further down.
 
 ### Changed
 
+- **`tests/fixtures/golden/` is now a set of snapshots of this project's own CLI output, and
+  `docs/spec/SPEC.md` is the only conformance authority.** The directory presented itself as
+  byte-exact captures of a reference implementation and `CLAUDE.md` forbade touching it. That
+  authority was real — the Rust crate those bytes came from was the norm of the July migration — and
+  it is abandoned by decision: the crate was removed in July, and a project that implements a
+  published spec answers to the spec. Conformance is verified by the tests that cite a section; the
+  four machine outputs (`validate`/`info`/`audit --json`, `graph --dot`) are pinned by new
+  full-projection tests against hand-derived expectations; and the snapshots pin rendering only.
+  They are regenerable with a scoped update mode (`OKF_UPDATE_GOLDEN=<test names>`, which rewrites
+  the named groups atomically then deliberately fails so a tautology is never reported green) under
+  two regimes that depend on what the diff changes: presentation diffs are regenerated and reviewed;
+  semantic diffs and any input-bundle edit need explicit arbitration and a dated README entry. Two
+  deletions came with it: the five unread bundle copies under `golden/index-input/`, and the four
+  one-byte `*.exitcode` files, whose values are assertions now. The four `validate` snapshot
+  invocations are pinned with `--as-of` so they no longer depend on the machine clock.
+  Design: `docs/superpowers/specs/2026-09-22-golden-fixtures-authority-design.md`.
 - **Breaking (0.x): the frontmatter fence is `---` at column 0, and the YAML
   subset rejects what the docs already said it rejects.**
   - An indented `---` no longer opens or closes the frontmatter (§4: "delimited

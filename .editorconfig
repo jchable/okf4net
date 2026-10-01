@@ -13,7 +13,7 @@ indent_size = 2
 [*.md]
 trim_trailing_whitespace = false
 
-# Golden test fixtures are compared byte-exact — never normalize them.
+# Test fixtures and snapshots are compared as text, byte for byte once read — never normalize them.
 [tests/fixtures/**]
 charset = unset
 insert_final_newline = unset

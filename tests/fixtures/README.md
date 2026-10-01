@@ -1,37 +1,156 @@
+# Test fixtures — what this directory is, and what has authority
+
+This directory holds the input bundles the test suite exercises and, under
+`golden/`, **snapshots of this project's own CLI output**. The snapshots are
+regenerable, under conditions stated below. They are not a reference
+implementation's output, and they carry no conformance authority of their own.
+
+**The OKF specification is the only conformance authority**: `docs/spec/SPEC.md`,
+vendored at a fixed version. What the spec requires is verified by tests that
+cite a `§` (`ValidateTests`, `IndexTests`, `AttestedComputationTests`, …).
+What the four machine outputs (`validate --json`, `info --json`,
+`audit --json`, `graph --dot`) project is verified by the full-projection
+tests in `MachineOutputTests`, against hand-derived expectations. What the
+snapshots here verify is that the CLI's **rendering** has not changed — no
+more, and no less.
+
+Design and rationale: `docs/superpowers/specs/2026-09-22-golden-fixtures-authority-design.md`.
+
 ## Layout
 
-- `appendix_a/` — the example bundle. Reproduces the `appendix_a()` helper
-  from `tests/bundle.rs` (`datasets/sales.md`, `tables/orders.md`,
-  `tables/customers.md`, byte-for-byte), plus two additions to exercise more
-  of the CLI:
+- `appendix_a/` — the example bundle: `datasets/sales.md`, `tables/orders.md`,
+  `tables/customers.md`, plus two additions to exercise more of the CLI:
   - `log.md` — a root-level reserved log file with one valid ISO-8601 dated
     entry, so `info`/`index` see a non-empty log and `validate` reports no
     log-related warnings.
   - `tables/users.md` — a deliberately **non-strict** concept document: it
-    has `type` and `title` but is missing `description` and `timestamp`, so
-    `validate` emits the two "missing recommended frontmatter field"
-    warnings (§11 soft guidance — the bundle stays conformant, exit code 0).
-- `golden/validate.out` — stdout of `okf validate tests/fixtures/appendix_a`.
-- `golden/validate.exitcode` — the process exit code of that same run, as a
-  bare ASCII digit with **no trailing newline** (currently `0`).
-- `golden/info.out` — stdout of `okf info tests/fixtures/appendix_a`.
-- `golden/graph.dot` — stdout of `okf graph tests/fixtures/appendix_a --dot`
-  (Graphviz DOT source).
-- `golden/fmt/users.md` — stdout of
-  `okf fmt tests/fixtures/appendix_a/tables/users.md` (parse + re-serialize
-  normalization).
-- `golden/index-input/` — a full copy of `appendix_a/` **after** running
-  `okf index tests/fixtures/golden/index-input` on it. The `index.md` files
-  written inside it (`index-input/index.md`, `index-input/datasets/index.md`,
-  `index-input/tables/index.md`) are the reference output of the index
-  generator; every other file in the tree is an unmodified copy of the input
-  bundle, included so the whole directory can be diffed/compared as a unit.
+    has `type` and `title` but none of the recommended `description`,
+    `resource` and `tags`, so `validate` emits one "missing recommended
+    frontmatter field" warning for each of the three (§11 soft guidance —
+    the bundle stays conformant, exit code 0).
+- `okf_v02/`, `okf_v02_computation/`, `okf_v02_reserved/` — hand-authored
+  v0.2 input bundles; see the revision log below for what each isolates.
+- `golden/` — one group of snapshot files per test in `GoldenParityTests`.
+  Exit codes are asserted in the tests, not stored as files. The `validate`
+  invocations run from the repository root with the relative path shown,
+  because the output embeds the path as given.
 
-## Provenance
+| Test | Snapshot files | Invocation | Guarded by the snapshot alone (presentation) | Also pinned directly (semantic) |
+|---|---|---|---|---|
+| `Validate_output_and_exitcode_match_golden` | `validate.out` | `okf validate tests/fixtures/appendix_a --as-of 2026-09-25` | line wording and order | the verdict, every diagnostic, the counts (`MachineOutputTests`, `ValidateTests`), exit code 0 |
+| `Validate_v02_fixture_matches_golden` | `validate-v02.out` | `okf validate tests/fixtures/okf_v02 --as-of 2026-09-25` | line wording | the rules behind these diagnostics, on their own inputs (`ValidateTests`); exit code 0 — this fixture's own diagnostic set and counts are guarded by the snapshot and the semantic regime |
+| `Validate_computation_fixture_matches_golden` | `validate-computation.out` | `okf validate tests/fixtures/okf_v02_computation --as-of 2026-09-25` | line wording | the §10/§6.2 rules, on their own inputs (`AttestedComputationTests`, `ValidateTests`); exit code 0 — this fixture's own diagnostic set and counts are guarded by the snapshot and the semantic regime |
+| `Validate_reserved_fixture_matches_golden` | `validate-reserved.out` | `okf validate tests/fixtures/okf_v02_reserved --as-of 2026-09-25` | line wording | the four §11 errors and the non-conformant verdict (`MachineOutputTests`), exit code 1 |
+| `Info_output_matches_golden` | `info.out` | `okf info tests/fixtures/appendix_a` | column alignment, the `types:` block | every count (`MachineOutputTests.Info_json_*`), both numbers of the `links:` line |
+| `Audit_report_matches_golden` | `audit-v02.out` | `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01` | column layout | the selection, tiers, statuses, staleness (`MachineOutputTests.Audit_json_*`, `AuditTests`) |
+| `Audit_json_matches_golden` | `audit-v02.json` | `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01 --json` | property order | every value (`MachineOutputTests.Audit_json_projects_a_stale_finding_completely`) |
+| `Graph_dot_matches_golden` | `graph.dot` | `okf graph <appendix_a> --dot` | edge order | the grammar — header line, the `rankdir` line, two-space edge indentation, closing brace — the edge set and its size, determinism (`MachineOutputTests.Graph_dot_*`) |
+| `Fmt_output_matches_golden` | `fmt/users.md` | `okf fmt <appendix_a>/tables/users.md` | nothing beyond the envelope | the envelope, idempotence, the stdout branch (`DocumentTests`, `CliTests`) |
+| `Index_generation_matches_golden` | `index-input/index.md`, `index-input/datasets/index.md`, `index-input/tables/index.md` | `IndexGenerator.RegenerateIndexes` on a copy of `appendix_a` | the order of sections and entries for this bundle | §8 structure and no frontmatter, `# Other`, no description suffix, self-listing, the default synthesizer's text (`IndexTests`) |
+| `Verify_output_matches_golden` | `verify.out`, `verify-dau.md` | `okf verify <copy of okf_v02> metrics/dau metrics/legacy --by human:ada --at 2026-08-28T09:14:00Z` | the two stdout lines' wording | the written `verified` block (§5.2) and that nothing else moved (`RecordVerificationTests`) |
 
-Generated on 2026-07-21 by building the Rust crate in Docker (cargo is not
-installed on the host) and running each subcommand against
-`tests/fixtures/appendix_a`:
+## Two regimes for a change to a snapshot
+
+A snapshot changes when the CLI's output changes on purpose. **Which procedure
+applies depends on what the diff changes, not on which file it lands in.** A
+diff is **presentation** only if it preserves all five of:
+
+1. the facts exposed, their values and their associations (a count stays on
+   the same type, a diagnostic on the same severity);
+2. the elements present, absent, and their multiplicity;
+3. link targets and relations;
+4. the syntactic validity and interpreted structure of the format (a DOT
+   document stays parseable; an `index.md` stays sections and lists in the
+   sense of §8);
+5. written effects and exit codes.
+
+A diff that changes any of these is **semantic**. A mixed diff is semantic.
+Doubt resolves to semantic.
+
+- **Presentation diff** — regenerate with the update mode (below), read the
+  diff, re-run without the variable. Nothing else.
+- **Semantic diff, and every edit to an input bundle** — explicit user
+  arbitration first, then a dated entry in the revision log below saying what
+  changed and why, then the same two runs. The update mode is a capture tool;
+  having the command is not permission to use it on these.
+
+Examples, so the rule is applied the same way twice:
+
+| Change | Regime | Why |
+|---|---|---|
+| Realign the columns of `okf info` | presentation | same facts, same values |
+| Swap two DOT edge lines without changing the edges | presentation | same edge set (order is not a contract; determinism is, and `MachineOutputTests` pins it) |
+| Reorder the properties of a JSON object | presentation | same interpreted object |
+| `5 internal (0 broken)` → `5 internal` | **semantic** | a fact disappeared (criterion 1) |
+| Indent a whole `index.md` by four spaces | **semantic** | sections become a code block (criterion 4) |
+| `[Users](users.md)` → `[Comptes](users.md)` in an index | **semantic** | the visible label is a fact exposed to the reader (criterion 1) |
+
+## Regenerating a snapshot
+
+The update mode is **scoped**: it rewrites only the tests you name, and refuses
+the whole list before writing anything if a name is unknown, empty or
+duplicated. Name the tests (exact `GoldenParityTests` method names,
+comma-separated, no wildcard) in `OKF_UPDATE_GOLDEN`, and pass the same names
+to `--filter` so the run executes them:
+
+```sh
+OKF_UPDATE_GOLDEN=Info_output_matches_golden,Graph_dot_matches_golden \
+  dotnet test tests/OKF4net.Tests/OKF4net.Tests.csproj \
+  --filter "FullyQualifiedName~GoldenParityTests.Info_output_matches_golden|FullyQualifiedName~GoldenParityTests.Graph_dot_matches_golden"
+```
+
+(PowerShell: `$env:OKF_UPDATE_GOLDEN = "Info_output_matches_golden,Graph_dot_matches_golden"`
+first, and `Remove-Item Env:OKF_UPDATE_GOLDEN` afterwards.)
+
+**That command exits RED, by design, and a green run would be the bug.** Each
+named test rewrites its group of files — a group is written whole, and put back
+whole if a file cannot be replaced — from the value it would have compared, and
+then *refuses to assert*: the expected side was just produced by the same
+harness as the actual side, so the comparison would be a tautology, and a
+tautology reported green is exactly how a stale variable in someone's shell
+disarms a snapshot without anyone noticing. Two failures are possible and say
+which they are: **capture failure** (a guard such as the exit code did not
+hold, or a file could not be written — the message says whether the group was
+left untouched or restored) and **refuses to assert** (the group was rewritten;
+read the diff). If a file could not be put back, the message names it and the
+directory where the backups were kept. If a named test did not run because
+`--filter` excluded it, the collection fails at teardown
+(`Test Collection Cleanup Failure (GoldenParity)`, exit code 1); the console
+prints only the exception type, and the names of the tests that did not capture
+are in the detailed log (`--logger "console;verbosity=detailed"`).
+
+One limit, stated rather than hidden: if the filter excludes **every**
+`GoldenParityTests` test, the fixture that enforces the scope is never
+constructed, the variable has no effect, and the run is green. Nothing is
+written and there is no diff — the absence is the signal. Keep the filter and
+the variable naming the same tests.
+
+So the procedure is two runs, not one:
+
+1. Run with the variable. Read `git diff tests/fixtures/golden`. Decide the
+   regime (above): a presentation diff needs nothing more; a semantic diff
+   needed arbitration **before** this step and needs its dated entry below.
+2. Re-run **without** the variable to actually check, and commit the diff with
+   the change that caused it.
+
+## Comparison contract
+
+Snapshots are committed with LF endings, UTF-8 without BOM, and compared after
+being read as text: the four `validate` outputs and `audit-v02.json` are
+compared **after** the OUTPUT's native path separators are normalised to `/`
+(the snapshots were captured on Linux and embed paths); every other file is
+compared as read. The update mode writes the normalised text, UTF-8 without
+BOM, LF, nothing added. `.gitattributes` marks `tests/fixtures/** -text` and
+`.editorconfig` excludes this directory, so no tool normalises them. Never let
+an editor touch them: trailing whitespace, final newlines and line endings are
+significant.
+
+## Provenance (historical)
+
+Four snapshot groups — `info.out`, `graph.dot`, `fmt/users.md` and the three
+`index-input/*.md` (six files) — still hold the bytes first captured on
+2026-07-21 from the Rust `okf` crate that then lived in this repository (source
+at commit `d20343c`), built in Docker:
 
 ```
 docker image: rust:1  (pulled digest sha256:9a2cd304a852f05d3352f75bc2775242371c0169a72dbb40d5d881379d571989)
@@ -40,20 +159,14 @@ cargo 1.97.1 (c980f4866 2026-06-30)
 ```
 
 Build: `cargo build --release` with `CARGO_TARGET_DIR=/tmp/target` (kept
-outside the mounted worktree so no build artifacts land in git).
+outside the mounted worktree so no build artifacts landed in git).
 
-## Rules
+That origin is history, not authority: the project implements the published
+spec, and treating a deleted reimplementation as its norm was an authority that
+existed and was abandoned by decision on 2026-09-30. These four groups follow
+the same two regimes as every other snapshot.
 
-- **These files are byte-exact captures of the (now removed) Rust binary's
-  real output.** Never hand-edit them and never regenerate them from the C#
-  port — if the C# output differs, that is a bug in the port to fix on the
-  C# side (the Rust behavior was the specification of record for Phase 1).
-  They can only be regenerated from the Rust source as of commit d20343c
-  (before its removal), and only if the `appendix_a` bundle itself
-  intentionally changes.
-- Line endings are exactly what the Rust binary emitted (`\n`, never
-  `\r\n`). The repository's `.gitattributes` marks `tests/fixtures/** -text`
-  so git never normalizes them regardless of `core.autocrlf`.
+## Revision log
 
 ## v0.1 → v0.2 bump (2026-07-28)
 
@@ -368,3 +481,10 @@ What changed:
 `malformed/broken-exec.md` keeps its bare `does-not-exist.md`: it names a file
 that exists at neither base, so it still contributes exactly the one
 `… not found` warning it is there for, with the same message text.
+
+## Two deletions under the fixtures-authority design (2026-10-01)
+
+Arbitration: `docs/superpowers/specs/2026-09-22-golden-fixtures-authority-design.md`, §4 and §5.6. Both are element removals (criterion 2 of that design's diff rule), hence recorded here.
+
+- **`golden/index-input/`'s five bundle copies** (`log.md`, `datasets/sales.md`, `tables/{customers,orders,users}.md`) are deleted. `Index_generation_matches_golden` copies `appendix_a/` into a temporary directory and reads only the three generated `index.md` files, so no assertion changes. What is lost is a standalone historical archive of the input bundle as it was captured on 2026-07-21; what is kept is the three `index.md` outputs and the file-count assertion (which catches an extra file or a net deletion, not a modified original).
+- **The four `*.exitcode` files** are deleted. Each held one ASCII digit; the values now live in `GoldenParityTests` as assertions with their reason: `0` for `appendix_a`, `okf_v02` and `okf_v02_computation` (warnings only, still conformant), `1` for `okf_v02_reserved` (§11 condition 3 fails; the integer is this CLI's contract, not the spec's).

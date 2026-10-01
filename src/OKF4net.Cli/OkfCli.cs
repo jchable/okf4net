@@ -936,8 +936,10 @@ public static class OkfCli
 
     /// <summary>
     /// Renders the link graph as Graphviz DOT, broken links dashed and red.
-    /// Byte-for-byte golden-locked (<c>tests/fixtures/golden/graph.dot</c>):
-    /// a diff here is a regression, never a fixture to refresh.
+    /// The grammar (header, one edge statement per link, closing brace), the
+    /// edge set and determinism are pinned by <c>MachineOutputTests</c>; the
+    /// exact bytes are snapshotted in <c>tests/fixtures/golden/graph.dot</c>
+    /// under the regimes in <c>tests/fixtures/README.md</c>.
     /// </summary>
     private static void WriteGraphDot(Bundle bundle, TextWriter stdout)
     {

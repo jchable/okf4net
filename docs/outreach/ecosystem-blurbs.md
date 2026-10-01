@@ -49,7 +49,7 @@ verified above).
 - Include a link to the added project in the PR description.
 - Quality bar the maintainers apply: "generally useful to the community,"
   "actively maintained," "stable," "documented," and has tests — OKF4net
-  qualifies (a comprehensive test suite with byte-exact golden CLI parity
+  qualifies (a comprehensive test suite with snapshot-tested CLI output
   per README, CI on three OSes, `dotnet format --verify-no-changes` gate).
 - Tags like `**[Research]**`, `**[$]**`, `**[Proprietary]**`,
   `**[Free for OSS]**` exist for special cases; none apply here (OKF4net is
