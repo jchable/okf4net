@@ -24,9 +24,10 @@ Design and rationale: `docs/superpowers/specs/2026-09-22-golden-fixtures-authori
     entry, so `info`/`index` see a non-empty log and `validate` reports no
     log-related warnings.
   - `tables/users.md` — a deliberately **non-strict** concept document: it
-    has `type` and `title` but is missing `description` and `timestamp`, so
-    `validate` emits the "missing recommended frontmatter field" warnings
-    (§11 soft guidance — the bundle stays conformant, exit code 0).
+    has `type` and `title` but none of the recommended `description`,
+    `resource` and `tags`, so `validate` emits one "missing recommended
+    frontmatter field" warning for each of the three (§11 soft guidance —
+    the bundle stays conformant, exit code 0).
 - `okf_v02/`, `okf_v02_computation/`, `okf_v02_reserved/` — hand-authored
   v0.2 input bundles; see the revision log below for what each isolates.
 - `golden/` — one group of snapshot files per test in `GoldenParityTests`.
@@ -45,7 +46,7 @@ Design and rationale: `docs/superpowers/specs/2026-09-22-golden-fixtures-authori
 | `Audit_json_matches_golden` | `audit-v02.json` | `okf audit tests/fixtures/okf_v02 --as-of 2099-06-01 --json` | property order | every value (`MachineOutputTests.Audit_json_projects_a_stale_finding_completely`) |
 | `Graph_dot_matches_golden` | `graph.dot` | `okf graph <appendix_a> --dot` | edge order | the grammar — header line, the `rankdir` line, two-space edge indentation, closing brace — the edge set and its size, determinism (`MachineOutputTests.Graph_dot_*`) |
 | `Fmt_output_matches_golden` | `fmt/users.md` | `okf fmt <appendix_a>/tables/users.md` | nothing beyond the envelope | the envelope, idempotence, the stdout branch (`DocumentTests`, `CliTests`) |
-| `Index_generation_matches_golden` | `index-input/index.md`, `index-input/datasets/index.md`, `index-input/tables/index.md` | `IndexGenerator.RegenerateIndexes` on a copy of `appendix_a` | the synthesizer wording | §8 structure and no frontmatter, `# Other`, no description suffix, self-listing (`IndexTests`) |
+| `Index_generation_matches_golden` | `index-input/index.md`, `index-input/datasets/index.md`, `index-input/tables/index.md` | `IndexGenerator.RegenerateIndexes` on a copy of `appendix_a` | the order of sections and entries for this bundle | §8 structure and no frontmatter, `# Other`, no description suffix, self-listing, the default synthesizer's text (`IndexTests`) |
 | `Verify_output_matches_golden` | `verify.out`, `verify-dau.md` | `okf verify <copy of okf_v02> metrics/dau metrics/legacy --by human:ada --at 2026-08-28T09:14:00Z` | the two stdout lines' wording | the written `verified` block (§5.2) and that nothing else moved (`RecordVerificationTests`) |
 
 ## Two regimes for a change to a snapshot

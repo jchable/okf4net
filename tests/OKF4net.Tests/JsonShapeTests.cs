@@ -91,4 +91,20 @@ public class JsonShapeTests
             JsonShape.AssertEquivalent("""{"a":1}""", """{"a":"1"}"""));
         Assert.Contains("$.a: expected Number, got String", kind.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void AssertEquivalent_is_case_sensitive_for_values_and_property_names()
+    {
+        // A comparator that folded case passed the seven tests above (an
+        // external review's mutation survived). Both a string VALUE and a
+        // property NAME differing only by case must fail.
+        var value = Assert.Throws<TrueException>(() =>
+            JsonShape.AssertEquivalent("""{"status":"stable"}""", """{"status":"Stable"}"""));
+        Assert.Contains("$.status: expected \"stable\", got \"Stable\"", value.Message, StringComparison.Ordinal);
+
+        var name = Assert.Throws<TrueException>(() =>
+            JsonShape.AssertEquivalent("""{"conceptId":"a"}""", """{"ConceptId":"a"}"""));
+        Assert.Contains("$.conceptId: missing", name.Message, StringComparison.Ordinal);
+        Assert.Contains("$.ConceptId: unexpected property", name.Message, StringComparison.Ordinal);
+    }
 }

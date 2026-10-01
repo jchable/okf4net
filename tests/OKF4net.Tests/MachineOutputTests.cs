@@ -118,6 +118,48 @@ public class MachineOutputTests
     }
 
     [Fact]
+    public void Validate_json_projects_an_info_diagnostic_completely()
+    {
+        // The two projections above both carry infoCount 0, so a projection
+        // that returned a constant 0 passed every test (an external review's
+        // mutation survived). A broken cross-link is the one diagnostic the
+        // validator reports as info (Validate.cs: "Broken cross-links are
+        // permitted; report them as info only"): Diagnostic(Severity.Info,
+        // path: null, concept: the source, "link target does not resolve to
+        // a concept in the bundle: " + the link's target as written,
+        // DiagnosticCode.BrokenLink), with no field. The concept carries
+        // every recommended field so nothing else is reported, and a
+        // conformant bundle with a non-zero infoCount still exits 0.
+        using var tmp = new TempDir();
+        tmp.Write(
+            "a.md",
+            "---\ntype: Note\ntitle: A\ndescription: d\nresource: https://example.com/a\ntags: [x]\n---\n\nSee [gone](/missing.md).\n");
+
+        var r = Run("validate", tmp.Path, "--as-of", AsOf, "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(tmp.Path, r.Out);
+
+        var expected = $$"""
+        {
+          "bundle": "{{Fwd(tmp.Path)}}",
+          "asOf": "2026-09-25",
+          "evaluatedAt": "2026-09-25T00:00:00Z",
+          "conformant": true,
+          "conceptCount": 1,
+          "errorCount": 0,
+          "warningCount": 0,
+          "infoCount": 1,
+          "diagnostics": [
+            { "severity": "info", "code": "BrokenLink", "path": null, "conceptId": "a", "field": null, "message": "link target does not resolve to a concept in the bundle: /missing.md" }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
     public void Info_json_projects_appendix_a_completely()
     {
         var r = Run("info", AppendixA, "--json");
@@ -317,12 +359,16 @@ public class MachineOutputTests
     [Fact]
     public void Graph_dot_follows_the_restricted_grammar_with_the_expected_edge_set()
     {
-        // Three concepts: one with a resolved link and a broken one, one
+        // Three concepts: one with a resolved link and two broken ones, one
         // linked-to with no outgoing link, one isolated. Edge ORDER is not
         // asserted -- it is presentation (design §1); the SET is, and so is
-        // its size, so an edge emitted twice cannot hide in a set.
+        // its size, so an edge emitted twice cannot hide in a set. The second
+        // broken target is NESTED (`does/not/exist`): the test this one
+        // replaced used that shape, and without it an implementation that
+        // kept only the last segment of a broken target passed the whole
+        // suite (an external review's mutation survived).
         using var tmp = new TempDir();
-        tmp.Write("a.md", "---\ntype: Note\ntitle: A\n---\n\nSee [b](/b.md) and [gone](/missing.md).\n");
+        tmp.Write("a.md", "---\ntype: Note\ntitle: A\n---\n\nSee [b](/b.md), [gone](/missing.md) and [deep](/does/not/exist.md).\n");
         tmp.Write("b.md", "---\ntype: Note\ntitle: B\n---\n\nno links\n");
         tmp.Write("c.md", "---\ntype: Note\ntitle: C\n---\n\nisolated\n");
 
@@ -337,13 +383,14 @@ public class MachineOutputTests
         Assert.Equal("}", lines[^2]);
 
         var edges = lines[2..^2];
-        Assert.Equal(2, edges.Length);
+        Assert.Equal(3, edges.Length);
         Assert.All(edges, line => Assert.Matches(DotEdgeLine, line));
         Assert.Equal(
             new HashSet<string>(StringComparer.Ordinal)
             {
                 "  \"a\" -> \"b\";",
                 "  \"a\" -> \"missing\" [style=dashed, color=red];",
+                "  \"a\" -> \"does/not/exist\" [style=dashed, color=red];",
             },
             edges.ToHashSet(StringComparer.Ordinal));
     }
