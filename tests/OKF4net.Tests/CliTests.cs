@@ -988,40 +988,6 @@ public class CliTests
     }
 
     [Fact]
-    public void Audit_json_carries_counts_query_and_findings()
-    {
-        var r = Run("audit", V02BundlePath, "--as-of", "2099-06-01", "--json");
-
-        Assert.Equal(0, r.Code);
-        Assert.EndsWith("\n", r.Out);
-
-        using var doc = JsonDocument.Parse(r.Out);
-        var root = doc.RootElement;
-
-        Assert.Equal("2099-06-01", root.GetProperty("asOf").GetString());
-        Assert.Equal(2, root.GetProperty("conceptCount").GetInt32());
-        Assert.Equal(1, root.GetProperty("staleCount").GetInt32());
-
-        // Report mode selects what --stale selects, so the replayed query says so.
-        Assert.True(root.GetProperty("query").GetProperty("stale").GetBoolean());
-        Assert.Equal(JsonValueKind.Null, root.GetProperty("query").GetProperty("trust").ValueKind);
-
-        Assert.Equal(1, root.GetProperty("trust").GetProperty("human-reviewed").GetInt32());
-        Assert.Equal(1, root.GetProperty("trust").GetProperty("unverified").GetInt32());
-        Assert.Equal(2, root.GetProperty("status").GetProperty("stable").GetInt32());
-
-        var finding = root.GetProperty("findings").EnumerateArray().Single();
-        Assert.Equal("metrics/dau", finding.GetProperty("conceptId").GetString());
-        Assert.Equal("Metric", finding.GetProperty("type").GetString());
-        Assert.Equal("Daily Active Users", finding.GetProperty("title").GetString());
-        Assert.Equal("human-reviewed", finding.GetProperty("trust").GetString());
-        // Verbatim raw frontmatter, not the parsed instant: the fixture carries
-        // the §5 conformant form, so the JSON echoes it unchanged.
-        Assert.Equal("2099-01-01T00:00:00Z", finding.GetProperty("staleAfter").GetString());
-        Assert.True(finding.GetProperty("stale").GetBoolean());
-    }
-
-    [Fact]
     public void Audit_json_serializes_trust_query_in_ladder_order()
     {
         var r = Run("audit", V02BundlePath, "--trust", "human-reviewed,unverified", "--json");

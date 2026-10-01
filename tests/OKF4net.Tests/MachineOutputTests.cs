@@ -180,4 +180,126 @@ public class MachineOutputTests
 
         JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
     }
+
+    [Fact]
+    public void Audit_json_projects_a_stale_finding_completely()
+    {
+        var r = Run("audit", OkfV02, "--as-of", "2099-06-01", "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(OkfV02, r.Out);
+
+        var b = Fwd(OkfV02);
+        var expected = $$"""
+        {
+          "bundle": "{{b}}",
+          "asOf": "2099-06-01",
+          "evaluatedAt": "2099-06-01T00:00:00Z",
+          "conceptCount": 2,
+          "query": { "stale": true, "trust": null, "status": null, "type": null },
+          "trust": { "unverified": 1, "machine-confirmed": 0, "human-reviewed": 1 },
+          "status": { "draft": 0, "stable": 2, "deprecated": 0 },
+          "staleCount": 1,
+          "findings": [
+            { "conceptId": "metrics/dau", "path": "{{b}}/metrics/dau.md", "type": "Metric", "title": "Daily Active Users", "trust": "human-reviewed", "status": "stable", "staleAfter": "2099-01-01T00:00:00Z", "stale": true }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
+    public void Audit_json_projects_an_empty_stale_query_completely()
+    {
+        // Same bundle before anything is stale: staleCount 0, findings empty,
+        // the counts unchanged -- they are bundle-wide, not query-scoped.
+        var r = Run("audit", OkfV02, "--as-of", AsOf, "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+
+        var expected = $$"""
+        {
+          "bundle": "{{Fwd(OkfV02)}}",
+          "asOf": "2026-09-25",
+          "evaluatedAt": "2026-09-25T00:00:00Z",
+          "conceptCount": 2,
+          "query": { "stale": true, "trust": null, "status": null, "type": null },
+          "trust": { "unverified": 1, "machine-confirmed": 0, "human-reviewed": 1 },
+          "status": { "draft": 0, "stable": 2, "deprecated": 0 },
+          "staleCount": 0,
+          "findings": []
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
+    public void Audit_json_projects_a_filtered_query_completely()
+    {
+        // Every query field non-null at once; --stale is off because a filter
+        // is a report over the selection, so `dau` is listed for its trust and
+        // still reported stale at this date.
+        var r = Run("audit", OkfV02, "--as-of", "2099-06-01", "--status", "stable", "--type", "Metric", "--trust", "human-reviewed", "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+
+        var b = Fwd(OkfV02);
+        var expected = $$"""
+        {
+          "bundle": "{{b}}",
+          "asOf": "2099-06-01",
+          "evaluatedAt": "2099-06-01T00:00:00Z",
+          "conceptCount": 2,
+          "query": { "stale": false, "trust": ["human-reviewed"], "status": "stable", "type": "Metric" },
+          "trust": { "unverified": 1, "machine-confirmed": 0, "human-reviewed": 1 },
+          "status": { "draft": 0, "stable": 2, "deprecated": 0 },
+          "staleCount": 1,
+          "findings": [
+            { "conceptId": "metrics/dau", "path": "{{b}}/metrics/dau.md", "type": "Metric", "title": "Daily Active Users", "trust": "human-reviewed", "status": "stable", "staleAfter": "2099-01-01T00:00:00Z", "stale": true }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
+
+    [Fact]
+    public void Audit_json_projects_distinct_categories_with_asymmetric_counts()
+    {
+        // okf_v02 only ever yields stable / human-reviewed, with zeros in the
+        // other buckets, so a projection that permuted the vocabularies would
+        // pass the three tests above. Here every count differs from its
+        // neighbours: trust 1/2/0, status 2/0/1.
+        using var tmp = new TempDir();
+        tmp.Write("d1.md", "---\ntype: Note\ntitle: D1\nstatus: draft\nverified:\n  - { by: process:bot, at: 2026-06-01T00:00:00Z }\n---\n\nbody\n");
+        tmp.Write("d2.md", "---\ntype: Note\ntitle: D2\nstatus: draft\nverified:\n  - { by: process:bot, at: 2026-06-01T00:00:00Z }\n---\n\nbody\n");
+        tmp.Write("e.md", "---\ntype: Note\ntitle: E\nstatus: deprecated\n---\n\nbody\n");
+
+        var r = Run("audit", tmp.Path, "--as-of", AsOf, "--status", "draft", "--json");
+        Assert.Equal(0, r.Code);
+        Assert.EndsWith("\n", r.Out, StringComparison.Ordinal);
+        AssertRawBundle(tmp.Path, r.Out);
+
+        var b = Fwd(tmp.Path);
+        var expected = $$"""
+        {
+          "bundle": "{{b}}",
+          "asOf": "2026-09-25",
+          "evaluatedAt": "2026-09-25T00:00:00Z",
+          "conceptCount": 3,
+          "query": { "stale": false, "trust": null, "status": "draft", "type": null },
+          "trust": { "unverified": 1, "machine-confirmed": 2, "human-reviewed": 0 },
+          "status": { "draft": 2, "stable": 0, "deprecated": 1 },
+          "staleCount": 0,
+          "findings": [
+            { "conceptId": "d1", "path": "{{b}}/d1.md", "type": "Note", "title": "D1", "trust": "machine-confirmed", "status": "draft", "staleAfter": null, "stale": false },
+            { "conceptId": "d2", "path": "{{b}}/d2.md", "type": "Note", "title": "D2", "trust": "machine-confirmed", "status": "draft", "staleAfter": null, "stale": false }
+          ]
+        }
+        """;
+
+        JsonShape.AssertEquivalent(expected, NormalizeJsonPaths(r.Out));
+    }
 }
