@@ -6,7 +6,9 @@ from [`tests/fixtures/`](../tests/fixtures/README.md), which holds
 snapshots of our own CLI output. Consumed together by
 [`samples/catalog-explorer/`](../samples/catalog-explorer/README.md);
 `acme_retail` alone is also consumed by
-[`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md).
+[`samples/acme-retail-agent/`](../samples/acme-retail-agent/README.md),
+and `ga4` alone by
+[`samples/agents-quickstart/`](../samples/agents-quickstart/README.md).
 
 ## Acme Retail
 
@@ -148,8 +150,9 @@ recorded SQL.
 
 Google's public GA4 ecommerce reference docs bundle, used in this repo as
 a second knowledge source alongside `acme_retail` — see
-[`samples/catalog-explorer/`](../samples/catalog-explorer/README.md). It
-exercises concept types `acme_retail` doesn't: a `BigQuery Dataset`, and a
+[`samples/catalog-explorer/`](../samples/catalog-explorer/README.md) — and
+as the bundle [`samples/agents-quickstart/`](../samples/agents-quickstart/README.md)
+reads. It exercises concept types `acme_retail` doesn't: a `BigQuery Dataset`, and a
 set of `Reference` concepts documenting ecommerce audience metrics
 (`purchasers`, `n_day_active_users`, and others).
 

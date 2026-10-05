@@ -127,7 +127,9 @@ are the concrete entry points.
   through `Extension("usage_window", …)`. The builder currently makes the
   exception easier to write than the rule.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
-  `samples/acme-retail-agent`, shipped in 0.4.0; more welcome.
+  `samples/acme-retail-agent`, shipped in 0.4.0, and
+  `samples/agents-quickstart` (no model or API key needed) followed; more
+  welcome.
 - `OKF4net.Catalog` samples: `samples/catalog-explorer` (multi-source
   search, ranking strategies, per-caller visibility, the `role: memory`
   tier) shipped. A natural next one: a read-write "second brain"

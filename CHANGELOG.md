@@ -8,6 +8,16 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`samples/agents-quickstart`**, an `OKF4net.Agents` sample that runs with
+  `dotnet run` and needs no LLM endpoint, API key or network access (#5). Over
+  `bundles/ga4`, it lists the read-only tools, calls `Search` and
+  `ReadConcept` directly, then runs the `AsAIAgent` wiring from the README with
+  a scripted `IChatClient` standing in for the model, so the Agent Framework's
+  real tool-calling pipeline executes the tools. Standalone solution, not part
+  of `OKF4net.sln`/CI; it never writes to the bundle.
+
 ### Fixed
 
 All five entries are in `okfgen` (`producers/OkfProducer`, not published, outside
