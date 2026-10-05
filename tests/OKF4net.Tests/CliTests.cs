@@ -30,12 +30,27 @@ public class CliTests
     private static (int Code, string Out, string Err) Run(params string[] args) => TestPaths.Run(args);
 
     [Fact]
-    public void No_args_prints_usage_and_fails()
+    public void No_args_is_the_same_request_as_help()
     {
-        var r = Run();
-        Assert.Equal(1, r.Code);
-        Assert.Contains("USAGE:", r.Err);
-        Assert.Equal("", r.Out);
+        // Byte-for-byte what `okf help` prints, on stdout, exit 0: winget's
+        // validator runs the exe with no argument and flags any non-zero exit
+        // (see the comment on OkfCli.Run's zero-argument case).
+        var bare = Run();
+        var help = Run("help");
+        Assert.Equal(0, bare.Code);
+        Assert.Contains("USAGE:", bare.Out);
+        Assert.Equal("", bare.Err);
+        Assert.Equal(help.Out, bare.Out);
+    }
+
+    [Fact]
+    public void A_verb_missing_its_bundle_is_still_an_error()
+    {
+        // Only "no arguments at all" became a help request; a verb without
+        // its required argument must keep failing, or a script passing an
+        // empty variable as the bundle would pass silently.
+        var r = Run("validate");
+        Assert.NotEqual(0, r.Code);
     }
 
     [Fact]

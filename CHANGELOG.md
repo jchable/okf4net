@@ -23,6 +23,16 @@ and this project adheres to
 - **`okf --help` now lists the bare `help` and `version` commands (#11).** Both
   already worked as aliases of `-h`/`--help` and `-V`/`--version`, but nothing
   said so; a test now pins that each answers exactly like its flag form.
+- **`okf` and `okf-render` run with no arguments now print their usage on stdout
+  and exit 0, exactly like `--help`.** They used to print it on stderr and exit
+  1, a behaviour inherited from the reference CLI rather than decided. It cost
+  every release a manual unblock: winget's validator runs a portable executable
+  with no argument and labels any non-zero exit `Validation-Executable-Error`,
+  which only a Microsoft administrator can clear (0.5.0 and 0.6.0 both waited on
+  one). A verb missing its required argument (`okf validate` with no bundle)
+  still fails, so a script passing an empty variable as the bundle is still
+  caught. A script that relied on a bare `okf` failing must now check its own
+  arguments.
 
 ### Fixed
 

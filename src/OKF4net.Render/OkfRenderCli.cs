@@ -94,11 +94,13 @@ public static class OkfRenderCli
         if (args.Length == 0)
         {
             // A bare invocation is the discovery gesture for a one-command
-            // tool: the full usage block on stderr, not "error: missing
-            // <bundle>", mirroring OkfCli.Run's identical zero-argument case.
-            stderr.Write(Usage);
-            stderr.Write("\n");
-            return 1;
+            // tool, so it is the same request as `--help`: usage on stdout,
+            // exit 0 -- not "error: missing <bundle>". Mirrors OkfCli.Run's
+            // identical zero-argument case, which explains why it is not an
+            // error (winget's validator runs the exe with no argument).
+            stdout.Write(Usage);
+            stdout.Write("\n");
+            return 0;
         }
 
         try

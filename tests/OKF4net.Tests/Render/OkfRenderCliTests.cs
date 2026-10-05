@@ -52,16 +52,18 @@ public class OkfRenderCliTests
     }
 
     [Fact]
-    public void No_args_prints_usage_and_fails()
+    public void No_args_is_the_same_request_as_help()
     {
-        // A bare invocation is the discovery gesture for a one-command tool:
-        // OkfCli.Run does exactly this for zero arguments (full Usage block
-        // on stderr, no "error: " prefix), and this tool should behave the
-        // same way rather than surfacing "error: missing <bundle>".
-        var r = Run();
-        Assert.Equal(1, r.Code);
-        Assert.Contains("USAGE:", r.Err);
-        Assert.Equal("", r.Out);
+        // A bare invocation is the discovery gesture for a one-command tool,
+        // not "error: missing <bundle>": byte-for-byte what --help prints, on
+        // stdout, exit 0. winget's validator runs the exe with no argument and
+        // flags any non-zero exit (see OkfCli.Run's zero-argument case).
+        var bare = Run();
+        var help = Run("--help");
+        Assert.Equal(0, bare.Code);
+        Assert.Contains("USAGE:", bare.Out);
+        Assert.Equal("", bare.Err);
+        Assert.Equal(help.Out, bare.Out);
     }
 
     [Fact]
