@@ -59,21 +59,28 @@ dotnet run --project producers/src/OkfProducer.Cli -- validate --okf ./bundle
 | `--roslyn-timeout <seconds>` | *none* | Wall-clock budget for the whole Roslyn stage — the `dotnet msbuild` queries and the compilations after them. **Absent means unbounded**, which is the default and is deliberate: each query is capped at two minutes on its own, but nothing caps their sum, so a large repository runs for as long as it runs, and a budget would make the emitted bundle a function of how fast this machine is (§6.2 pins determinism at a fixed extractor version, not a fixed CPU). If the budget runs out the stage is abandoned **whole**, never truncated — you get the same uniformly name-matched bundle `--no-msbuild` produces, with a note naming the same two losses, rather than one whose exact and name-matched links are divided by machine speed with nothing recording where the line fell. The budget is consulted between individual project queries and between compilations, never only once at the top of a stage — the finest thing it can interrupt is the gap between two projects, since one `dotnet msbuild` invocation has its own two-minute cap and is not interruptible by this. |
 | `--max-file-size <bytes>` | 2 MiB | Largest source file the code stage will read — by **both** engines. The tree-sitter engine skips a larger one *and counts it*, which makes the run partial: the concepts it owned are then not pruned. The Roslyn engine applies the same cap to the `Compile` items MSBuild reports, but drops an over-cap item **silently** — for a file the scan also walked the counted skip covers it, and for one it did not (a linked out-of-repository source, an SDK-generated file in the query's scratch directory) nothing reports it: the project simply fails to compile and is named as such. |
 
-### Known limitation: `dotnet exec <dll>` can silently degrade an SDK-8-pinned sub-project
+### Which `dotnet` the MSBuild queries use
 
-Use `dotnet run --project producers/src/OkfProducer.Cli -- generate …` (above) or the packaged
-native executable (see "Packaging" below) to run `okfgen`. Invoking the already-built
-`OkfProducer.Cli.dll` directly via `dotnet exec OkfProducer.Cli.dll generate …` is **not**
-confirmed equivalent: measured against a scanned repository whose sub-project pins SDK 8 via
-`global.json`, with a real SDK 8 installed, the `dotnet exec` invocation degraded that
-sub-project silently — the run still exited `0` and wrote a bundle, with only
+The exact resolver asks MSBuild by running `dotnet msbuild` in each project's directory, and
+which `dotnet` that is matters whenever a scanned repository's `global.json` pins an SDK: only
+an install that carries it can answer. The producer uses **the first `dotnet` on `PATH`** — what
+a shell would run — and only when `PATH` has none, the `dotnet` hosting the producer
+(`dotnet exec OkfProducer.Cli.dll …`).
+
+This was not always so, and the history is worth keeping because the cause was invisible from
+the environment. Until #112, `dotnet exec OkfProducer.Cli.dll generate …` could silently degrade
+an SDK-pinned sub-project — exit `0`, a bundle written, and only
 `note: <project>.csproj: not compiled (MsBuildQueryFailed) ... A compatible .NET SDK was not
-found. Requested SDK version: 8.0.100` marking it, a line easy to miss in a CI log. The same
-reproduction against `dotnet run --project`, the native apphost (`OkfProducer.Cli.exe`), and
-the native apphost run from inside an MSBuild `<Exec>` target were all confirmed clean. Every
-`DOTNET_*`/`MSBuild*` environment variable and `PATH` were confirmed identical between the clean
-and the degraded run — the cause is not one of those, and it has not been root-caused further.
-See `ROADMAP.md` for the open investigation.
+found` to say so — while `dotnet run --project`, the apphost and the apphost inside an MSBuild
+`<Exec>` were clean, and every `DOTNET_*`/`MSBuild*` variable and `PATH` were identical between
+them. The producer started a bare `"dotnet"`, and `Process.Start` searches the *running
+application's* directory before `PATH`: under `dotnet exec` that application is `dotnet`, so the
+child was the hosting install, whatever `PATH` said. Reproduced 2026-10-05 on Windows with the
+smallest layout that shows it — a repository pinning `10.0.204` with `rollForward: disable`, the
+SDK-bearing install on `PATH`, and a copy of `dotnet.exe` plus a runtime but **no `sdk\`** folder
+as the host: the apphost compiled the project cleanly, `dotnet exec` through the host did not
+(`MsBuildQueryFailed`, exit `0`), and after the fix both do. SDK 8 itself was not installed for
+that measurement, so the message differs from the original report; the mechanism does not.
 
 ### Generating from a repository runs that repository's build logic
 
@@ -219,13 +226,23 @@ there are hundreds of them.
 
 **A directory the walk could not list at all is named the same way, but it is not a
 "visited" file.** One inaccessible subdirectory (a permission-denying ACL, most
-concretely) no longer empties the whole file list the way an unreadable repository root or
-a circular junction does — every other file the walk finds is still visited and reported,
+concretely) no longer empties the whole file list the way an unreadable repository root does —
+every other file the walk finds is still visited and reported,
 and the directory itself is named under the line (`- locked/: skipped, directory not
 readable`), sharing the same ten-entry cap as the per-file causes above. It does not,
 however, add to the "N source file(s) visited" count: that count is a statement about files
 this run actually *attempted*, and a directory it could not even list was never one of
 those — counting it there would overstate how much of the repository this run touched.
+
+**A directory link — a symbolic link or a junction — is named, never entered.** The walk does
+not descend into one, on any platform, and says so under the line (`- alias/: skipped,
+directory is a link, not entered`, same ten-entry cap). It is not a "visited" file either, and it
+makes the run *not complete*, but it does not stop the traversal counting as complete: the
+extractor already refuses any file reached through a link, so nothing a link hides could have
+been extracted, and pruning is unaffected. Entering links was not merely noise. A link back to an
+ancestor made the walk fail outright on Windows and, on Linux, followed it until the kernel
+refused another hop — and with two such links under one directory the count multiplies per
+level (a standalone walk had produced 432,906 paths when it was abandoned after 15 seconds).
 
 **What the line still cannot tell you.** It states what the run *visited* and how it
 *resolved* — never what it chose not to *emit*. A file read in full, extracted cleanly and
@@ -252,8 +269,8 @@ fire. Reproduced on this host, each exiting 0 having printed *nothing at all*
 beyond `Wrote N concept(s)`: a `--max-file-size` below the only source file, which drops
 every `code` concept; a repository with no package manifest and no source-ownership map,
 where every `code` concept is unreachable from `overview` while `okf validate` stays
-silent because nothing dangles; and a walk truncated by a circular junction, which writes
-`overview` alone. A fourth — a repository with no `.csproj` but *with* a package manifest,
+silent because nothing dangles. (A walk truncated by a circular junction, which wrote
+`overview` alone, belonged here until the walk stopped entering directory links.) A third — a repository with no `.csproj` but *with* a package manifest,
 where the whole Roslyn stage sits behind a guard with no `else` — printed the generic "no
 source-ownership map" note and nothing more: true as far as it goes, and silent about the
 stage having been skipped and about every call link being a name match.

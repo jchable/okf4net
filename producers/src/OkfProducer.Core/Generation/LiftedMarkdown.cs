@@ -18,6 +18,13 @@ namespace OkfProducer.Core.Generation;
 /// the consumer's rules rather than CommonMark's wherever the two differ, and each place it does says
 /// so at the site.</para>
 ///
+/// <para><b>Those mirrored rules are the preferred rendering, not the safety argument (#111).</b> A copy
+/// is only as good as the day it was made, and this one was made against a scanner that has since been
+/// rewritten twice. What makes the output safe is that each lifted text is checked by the real
+/// <c>LinkScanner</c> in a frame shaped like the body it will sit in, and replaced by a stricter
+/// encoding when the scanner disagrees -- see the section at the end of this type.
+/// <c>LiftedMarkdownAgreementTests</c> is the executable guard.</para>
+///
 /// <para>The seam is worth having because of what kept going wrong on the other side of it. The
 /// defects recorded in this neighbourhood are, repeatedly, one shape: <i>this code and
 /// <c>Links.cs</c> disagree about one character class</i> -- a backslash before a backtick, a bracket
@@ -48,7 +55,7 @@ internal static class LiftedMarkdown
     /// dotted type name. Applied uniformly all the same, because a per-family exception is exactly how
     /// two concepts with identical text end up behaving differently.</para>
     /// </summary>
-    internal static string LiftedBodyText(string text) => NeutralizeMarkdownLinks(text);
+    internal static string LiftedBodyText(string text) => Guarded(text, Placement.Heading);
 
     /// <summary>
     /// <see cref="LiftedBodyText"/> for lifted text that <b>begins a paragraph</b> in the body: it
@@ -90,7 +97,7 @@ internal static class LiftedMarkdown
     /// <c>Citations</c> as §13.1's legacy citations marker -- a structural claim about the concept,
     /// made by text its author wrote for a compiler.</para>
     /// </summary>
-    internal static string LiftedBodyParagraph(string text) => EscapeLeadingBlockMarker(LiftedBodyText(text));
+    internal static string LiftedBodyParagraph(string text) => Guarded(text, Placement.Paragraph);
 
     /// <summary>
     /// A <see cref="LiftedBodyParagraph(string)"/> that respects <paramref name="preservedSource"/>: text this
@@ -99,7 +106,7 @@ internal static class LiftedMarkdown
     /// keyed the same way, so two concepts with identical text cannot behave differently.
     /// </summary>
     internal static string LiftedBodyParagraph(string text, string? preservedSource) =>
-        preservedSource is null ? LiftedBodyParagraph(text) : DefuseLeadingFenceOnly(text);
+        preservedSource is null ? LiftedBodyParagraph(text) : PreservedParagraph(text);
 
     /// <summary>
     /// Escapes the one character that would make <paramref name="text"/> open a markdown block, or
@@ -337,7 +344,7 @@ internal static class LiftedMarkdown
     internal static string BodyDescription(string description, string descriptionSource) =>
         descriptionSource is DocCommentSource.SourceLabel or SignatureSource.SourceLabel
             ? LiftedBodyParagraph(description)
-            : DefuseLeadingFenceOnly(description);
+            : PreservedParagraph(description);
 
     /// <summary>
     /// Escapes the leading fenced-code-block marker that <b>never closes</b> -- nothing else, including
@@ -586,9 +593,154 @@ internal static class LiftedMarkdown
     /// substitution is not applied to <see cref="CodeSpan"/>, where a backtick is content and the fence
     /// is widened around it instead.</para>
     /// </summary>
-    internal static string LinkText(string text) =>
-        Flatten(text).Replace("\\", "\\\\", StringComparison.Ordinal)
+    internal static string LinkText(string text)
+    {
+        var flat = Flatten(text);
+        var preferred = flat.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("`", "&#96;", StringComparison.Ordinal)
             .Replace("[", "\\[", StringComparison.Ordinal)
             .Replace("]", "\\]", StringComparison.Ordinal);
+
+        // The label is checked in place like every other lifted text (see Guarded): the link it labels
+        // has to survive it, and it must not add one. A `<!--` in a label blanks the very `](/id)` that
+        // follows it, which the escapes above do not see.
+        if (LabelKeepsItsLink(preferred))
+        {
+            return preferred;
+        }
+
+        var encoded = EncodeStructuralCharacters(flat);
+        if (LabelKeepsItsLink(encoded))
+        {
+            return encoded;
+        }
+
+        var inert = KeepInertCharacters(flat);
+        return LabelKeepsItsLink(inert) ? inert : string.Empty;
+    }
+
+    /// <summary>True when the scanner finds exactly the two links of a two-item list, the first one labelled by <paramref name="label"/>.</summary>
+    private static bool LabelKeepsItsLink(string label) =>
+        LinkScanner.ExtractLinks($"## Contains\n\n- [{label}](/a)\n- [B](/b)\n") is [{ Target: "/a" }, { Text: "B", Target: "/b" }];
+
+    // ---------------------------------------------------------------------------------------------
+    // Asking the scanner (#111).
+    //
+    // Everything above this line is a hand-copy of the scanner's rules, and a copy is only as good as
+    // the day it was made: it was made against a scanner that blanked a code span on every backtick and
+    // never looked at raw HTML, and #101 / #105 replaced that scanner with one that matches backtick
+    // runs, blanks raw HTML, reads containers and resolves links a paragraph at a time. The copy went on
+    // believing `` a ` b `` [x](y) was still inside a span, and shipped the link it thought it had
+    // suppressed. Re-deriving the rules from the current scanner would be the same bet on the next
+    // rewrite, so the rules above are now only the PREFERRED rendering -- the one that reads best -- and
+    // what decides is the scanner itself, called on the text this producer is about to emit.
+    //
+    // "Safe" is a property of the text IN PLACE, in both directions: the lifted text must not
+    // manufacture a link, and it must not hide one of the producer's own (an unclosed span, comment or
+    // fence swallows what follows it, and `okf validate` cannot see that -- nothing dangles). So each
+    // candidate is put in a frame shaped like the body the generator builds, followed by one link the
+    // PRODUCER wrote, and the scanner has to find exactly that link.
+    //
+    // Three candidates, in order of fidelity: the preferred rendering; one that encodes every character
+    // the scanner turns on (renders identically in CommonMark, but a code span loses its formatting);
+    // and one that keeps only inert characters. If even that fails -- it cannot, but a guard that cannot
+    // fail is not a reason to omit it -- the text is dropped rather than risk the structure.
+    // ---------------------------------------------------------------------------------------------
+
+    private enum Placement
+    {
+        /// <summary>After <c># </c>: a title.</summary>
+        Heading,
+
+        /// <summary>A paragraph of its own.</summary>
+        Paragraph,
+    }
+
+    /// <summary>The link the producer wrote after the lifted text, which the scanner has to still find.</summary>
+    private const string OwnLink = "- [A](/a)";
+
+    private static string Frame(string text, Placement placement) =>
+        placement == Placement.Heading
+            ? $"# {text}\n\n## Contains\n\n{OwnLink}\n"
+            : $"# T\n\n{text}\n\n## Contains\n\n{OwnLink}\n";
+
+    /// <summary>True when the scanner finds the producer's own link in <paramref name="frame"/>, however many others.</summary>
+    private static bool KeepsOwnLink(string frame) =>
+        LinkScanner.ExtractLinks(frame).Any(link => link is { Text: "A", Target: "/a" });
+
+    /// <summary>
+    /// True when the scanner finds exactly the producer's own link in <paramref name="frame"/> and no
+    /// legacy citations section -- the lifted text added no link and no structural claim, and took none
+    /// away.
+    /// </summary>
+    private static bool OnlyOwnLink(string frame) =>
+        LinkScanner.ExtractLinks(frame) is [{ Text: "A", Target: "/a" }]
+        && LinkScanner.ExtractCitations(frame).Count == 0;
+
+    /// <summary>
+    /// <paramref name="text"/> in the form the scanner agrees is inert at <paramref name="placement"/>:
+    /// the preferred rendering when it passes, otherwise a stricter one, otherwise nothing.
+    /// </summary>
+    private static string Guarded(string text, Placement placement)
+    {
+        string Shape(string candidate) => placement == Placement.Paragraph ? EscapeLeadingBlockMarker(candidate) : candidate;
+
+        var preferred = Shape(NeutralizeMarkdownLinks(text));
+        if (OnlyOwnLink(Frame(preferred, placement)))
+        {
+            return preferred;
+        }
+
+        var encoded = Shape(EncodeStructuralCharacters(text));
+        if (OnlyOwnLink(Frame(encoded, placement)))
+        {
+            return encoded;
+        }
+
+        var inert = Shape(KeepInertCharacters(text));
+        return OnlyOwnLink(Frame(inert, placement)) ? inert : string.Empty;
+    }
+
+    /// <summary>
+    /// Text the author wrote INTO the bundle: left as written, so the links in it are theirs and are
+    /// allowed -- only what it does to the producer's own structure is checked. The fence defuser is the
+    /// mirror of the scanner's fence loop and stays the first attempt; when the scanner finds the
+    /// producer's link missing anyway (a raw-HTML comment that never closes does that, and no fence
+    /// rule sees it), the text gets the full treatment, because a severed branch is worse than an
+    /// edited description.
+    /// </summary>
+    private static string PreservedParagraph(string text)
+    {
+        var defused = DefuseLeadingFenceOnly(text);
+        return KeepsOwnLink(Frame(defused, Placement.Paragraph)) ? defused : Guarded(text, Placement.Paragraph);
+    }
+
+    /// <summary>
+    /// Every character the scanner turns on, as a numeric character reference. It renders as the
+    /// character the author wrote, and the scanner decodes no references, so none of them can open or
+    /// close a span, a bracket or a tag. The price is that a code span stops being one.
+    /// </summary>
+    private static string EncodeStructuralCharacters(string text)
+    {
+        var builder = new StringBuilder(text.Length + 16);
+        foreach (var c in text)
+        {
+            builder.Append(c switch
+            {
+                '\\' => "&#92;",
+                '`' => "&#96;",
+                '[' => "&#91;",
+                ']' => "&#93;",
+                '<' => "&lt;",
+                '~' => "&#126;",
+                _ => c.ToString(),
+            });
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>Letters, digits and plain punctuation, everything else a space: the last resort.</summary>
+    private static string KeepInertCharacters(string text) =>
+        string.Concat(text.Select(c => char.IsLetterOrDigit(c) || c is ' ' or '.' or ',' or '_' or '\'' or ':' or ';' or '?' ? c : ' ')).Trim();
 }

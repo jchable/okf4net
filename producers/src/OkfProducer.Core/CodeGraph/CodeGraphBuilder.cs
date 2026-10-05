@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+using System.IO.Enumeration;
 using System.Threading;
 using OkfProducer.Core.Scanning;
 
@@ -27,9 +28,8 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// <see cref="RunStatus.IsComplete"/> but, on its own, leaves <see cref="RunStatus.TraversalComplete"/>
     /// <see langword="true"/> (the file WAS visited). Only <paramref name="limits"/>.<see cref="ExtractionLimits.Timeout"/>
     /// being found already elapsed at a between-files checkpoint, <paramref name="cancellationToken"/>
-    /// itself being cancelled, the walk failing outright (a missing/unreadable repository root, or an
-    /// enumeration failure such as a circular reparse point -- both still empty the whole file list),
-    /// or one inaccessible subdirectory being found among otherwise-readable ones (named in
+    /// itself being cancelled, the walk failing outright (a missing/unreadable repository root, which
+    /// still empties the whole file list), or one inaccessible subdirectory being found among otherwise-readable ones (named in
     /// <see cref="RunStatus.InaccessibleDirectories"/>; every OTHER file is still visited and
     /// reported) before every eligible file is even visited flips
     /// <see cref="RunStatus.TraversalComplete"/> to <see langword="false"/> -- see
@@ -81,10 +81,11 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         var incomplete = false;
 
         // The file list is materialised in its own try, separate from the per-file loop below: a
-        // failure here (a missing or unreadable repository ROOT, or a circular reparse point -- see
-        // both catch clauses) means the walk itself could not produce a list at all, so nothing was
-        // ever attempted and the run is unconditionally incomplete with an empty file list. Only the
-        // root and a cycle are all-or-nothing like that now (E5): a single inaccessible SUBdirectory
+        // failure here (a missing or unreadable repository ROOT -- see both catch clauses) means the
+        // walk itself could not produce a list at all, so nothing was ever attempted and the run is
+        // unconditionally incomplete with an empty file list. Only the root is all-or-nothing like
+        // that now (E5, and #118 for a circular link, which is no longer entered at all, so it can no
+        // longer fail the walk): a single inaccessible SUBdirectory
         // no longer takes the rest of the walk down with it -- see the nested try just below, which
         // names it in `inaccessibleDirectories` instead of emptying `orderedRelativePaths`. An
         // IOException raised later, while extracting one specific file, must NOT be folded into this
@@ -97,9 +98,11 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // and is deliberately left to propagate rather than be silently absorbed here.
         List<string> orderedRelativePaths;
         List<string> inaccessibleDirectories = [];
+        List<string> linkedDirectories = [];
         try
         {
             orderedRelativePaths = EnumerateFiles(snapshot.RepoPath).ToList();
+            linkedDirectories = EnumerateLinkedDirectories(snapshot.RepoPath).ToList();
 
             // A second, directory-scoped pass, inside the same try: `EnumerateFiles` above already
             // asks .NET to IGNORE an inaccessible subdirectory rather than throw for it (E5 -- see
@@ -120,13 +123,12 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    // Deliberately not IOException here (unlike the outer catch below): a directory
-                    // that is itself the loop of a circular reparse point throws PathTooLongException
-                    // (an IOException subtype) partway through THIS SAME `EnumerateDirectories` walk,
-                    // not UnauthorizedAccessException, and that failure means the walk itself could
-                    // not be trusted to have found every directory -- it belongs in the outer catch,
-                    // discarding this list along with `orderedRelativePaths`, not folded in here as one
-                    // more named entry among directories the walk otherwise did enumerate correctly.
+                    // Deliberately not IOException here (unlike the outer catch below): an IOException
+                    // raised partway through THIS SAME `EnumerateDirectories` walk means the walk
+                    // itself could not be trusted to have found every directory -- it belongs in the
+                    // outer catch, discarding this list along with `orderedRelativePaths`, not folded
+                    // in here as one more named entry among directories the walk otherwise did
+                    // enumerate correctly.
                     inaccessibleDirectories.Add(Path.GetRelativePath(snapshot.RepoPath, directory).Replace(Path.DirectorySeparatorChar, '/'));
                     incomplete = true;
                 }
@@ -137,24 +139,24 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
             // Covers, among other IOException subtypes: a missing repository root
             // (DirectoryNotFoundException) -- reachable from the public API on nothing more than a
             // typo'd or transiently-unmounted RepositorySnapshot.RepoPath, since neither
-            // RepositoryScanner.Scan nor this method checked existence before this fix -- and a
-            // circular reparse point (measured, not assumed: a junction pointing back at one of its
-            // own ancestors is not detected as a cycle by Directory.EnumerateFiles below; it keeps
-            // recursing into it, extending the accumulated path a level deeper on every re-entry, and
-            // throws PathTooLongException within a fraction of a second, nowhere near
-            // ExtractionLimits.Timeout). Both cases mean the walk produced no file list at all, so
+            // RepositoryScanner.Scan nor this method checked existence before this fix. (A circular
+            // reparse point used to land here too, through a PathTooLongException; the walk no longer
+            // enters a directory link, so it cannot -- see RunStatus.LinkedDirectories.) That means the
+            // walk produced no file list at all, so
             // treating that the same as "zero files, nothing skipped" and returning RunStatus.Complete
             // would silently look like an empty-but-valid repository -- exactly the ambiguity that
             // would make Task 11's pruning gate delete every concept in the user's bundle on what was
             // really a broken run, not an empty one.
             orderedRelativePaths = [];
             inaccessibleDirectories = [];
+            linkedDirectories = [];
             incomplete = true;
         }
         catch (UnauthorizedAccessException)
         {
             orderedRelativePaths = [];
             inaccessibleDirectories = [];
+            linkedDirectories = [];
             incomplete = true;
         }
 
@@ -325,7 +327,7 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
         // extraction quality: a symbol may have moved to a file this run never reached at all, so
         // RunStatus.TraversalComplete carries it separately from RunStatus.IsComplete (see both types'
         // own doc comments for the full reasoning §6.3 and this task's own measurement forced).
-        var status = new RunStatus(!incomplete, skipped) { InaccessibleDirectories = inaccessibleDirectories };
+        var status = new RunStatus(!incomplete, skipped) { InaccessibleDirectories = inaccessibleDirectories, LinkedDirectories = linkedDirectories.OrderBy(d => d, StringComparer.Ordinal).ToList() };
 
         return new CodeGraph(symbols, edges, status) { CappedByContainer = cappedByContainer };
     }
@@ -390,7 +392,7 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// </para>
     /// </summary>
     private static IEnumerable<string> EnumerateFiles(string repoPath) =>
-        Directory.EnumerateFiles(repoPath, "*", WalkOptions)
+        Walk(repoPath, static (ref FileSystemEntry e) => !e.IsDirectory)
             .Select(path => Path.GetRelativePath(repoPath, path).Replace(Path.DirectorySeparatorChar, '/'))
             .OrderBy(path => path, StringComparer.Ordinal);
 
@@ -407,7 +409,38 @@ public sealed class CodeGraphBuilder(ILanguageExtractor extractor, IReadOnlyList
     /// found, not walk further to see how much was lost beneath it.
     /// </summary>
     private static IEnumerable<string> EnumerateDirectories(string repoPath) =>
-        Directory.EnumerateDirectories(repoPath, "*", WalkOptions);
+        Walk(repoPath, static (ref FileSystemEntry e) => e.IsDirectory && !IsLink(ref e));
+
+    /// <summary>
+    /// Repo-relative, <c>/</c>-separated paths of every directory link the walk found and did not enter
+    /// (see <see cref="RunStatus.LinkedDirectories"/>). Shares <see cref="Walk"/>'s recursion rule with
+    /// <see cref="EnumerateFiles"/> and <see cref="EnumerateDirectories"/>, so the three always agree on
+    /// which directories were entered.
+    /// </summary>
+    private static IEnumerable<string> EnumerateLinkedDirectories(string repoPath) =>
+        Walk(repoPath, static (ref FileSystemEntry e) => e.IsDirectory && IsLink(ref e))
+            .Select(path => Path.GetRelativePath(repoPath, path).Replace(Path.DirectorySeparatorChar, '/'));
+
+    /// <summary>
+    /// The one recursive walk under <paramref name="repoPath"/>, yielding the full path of every entry
+    /// <paramref name="include"/> accepts, with <see cref="WalkOptions"/> and one rule on top of them: a
+    /// directory link is yielded where <paramref name="include"/> wants it but never entered (#118, see
+    /// <see cref="RunStatus.LinkedDirectories"/>). <see cref="Directory.EnumerateFiles(string, string, EnumerationOptions)"/>
+    /// cannot express that rule -- it follows a link while recursing, and nothing stops a cycle -- which is
+    /// why this is a <see cref="FileSystemEnumerable{TResult}"/>.
+    /// </summary>
+    private static FileSystemEnumerable<string> Walk(string repoPath, FileSystemEnumerable<string>.FindPredicate include) =>
+        new(repoPath, static (ref FileSystemEntry e) => e.ToFullPath(), WalkOptions)
+        {
+            ShouldIncludePredicate = include,
+            ShouldRecursePredicate = static (ref FileSystemEntry e) => !IsLink(ref e),
+        };
+
+    /// <summary>
+    /// Whether the entry is a symbolic link or a junction. <see cref="FileAttributes.ReparsePoint"/> is
+    /// how <see cref="FileSystemEntry.Attributes"/> reports both, on Windows and on Unix.
+    /// </summary>
+    private static bool IsLink(ref FileSystemEntry entry) => (entry.Attributes & FileAttributes.ReparsePoint) != 0;
 
     /// <summary>
     /// The <see cref="EnumerationOptions"/> both repository walks above share. See

@@ -481,7 +481,33 @@ public static class MsBuildProjectQuery
     /// references" -- the caller must degrade, not compile from a half-answer.
     /// </exception>
     public static ProjectInputs Query(string projectPath, MsBuildQueryScratch scratch) =>
-        Query(projectPath, scratch, "dotnet", QueryTimeout);
+        Query(projectPath, scratch, ResolveDotnet(), QueryTimeout);
+
+    /// <summary>
+    /// The <c>dotnet</c> to query with: the one a shell would run, which is the first on <c>PATH</c>,
+    /// and only failing that the one hosting this process.
+    ///
+    /// <para><b>A bare <c>"dotnet"</c> is not "the one on <c>PATH</c>".</b> <see cref="Process.Start(ProcessStartInfo)"/>
+    /// searches the running application's own directory first, so under <c>dotnet exec
+    /// OkfProducer.Cli.dll</c> -- where the application is <c>dotnet</c> -- the child is the hosting
+    /// install, whatever <c>PATH</c> says, while the apphost, <c>dotnet run</c> and an MSBuild
+    /// <c>&lt;Exec&gt;</c> read <c>PATH</c>. A scanned repository whose <c>global.json</c> pins an SDK only
+    /// the <c>PATH</c> install carries was then queried by an install that lacks it, and the project
+    /// degraded to <c>MsBuildQueryFailed</c> with exit code 0 (#112; measured, see
+    /// <c>producers/README.md</c>). Resolving the name here makes every way of launching the producer
+    /// ask the same <c>dotnet</c>.</para>
+    ///
+    /// <para>The hosting install is the fallback, not the first choice, so a machine that has no
+    /// <c>dotnet</c> on <c>PATH</c> at all but runs the producer through one keeps working as it did.
+    /// When neither exists the bare name is returned and starting it fails the way it always did, with
+    /// the "dotnet CLI was not found" diagnosis.</para>
+    /// </summary>
+    internal static string ResolveDotnet() =>
+        GitRevision.ResolveOnPath("dotnet")
+        ?? (Environment.ProcessPath is { } host
+            && string.Equals(Path.GetFileNameWithoutExtension(host), "dotnet", StringComparison.OrdinalIgnoreCase)
+                ? host
+                : "dotnet");
 
     /// <summary>
     /// <see cref="Query(string, MsBuildQueryScratch)"/> against a named <paramref name="executable"/>

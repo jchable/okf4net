@@ -101,6 +101,31 @@ public class RepositoryScannerTests
         }
     }
 
+    [UnixOnlyFact]
+    public void Scan_does_not_spell_a_posix_directory_named_dot_dot_backslash_as_a_climb_posix()
+    {
+        // #117. On POSIX `..\x` is one directory NAME, inside the repository. The package path is
+        // published as the concept's `resource`, so folding that `\` into a `/` made it read
+        // `../x/P.csproj` -- a file outside the repository. Only a separator the platform itself
+        // produced is a separator; a backslash that was part of a name stays part of it.
+        var repo = CreateTempRepo();
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(repo, "..\\x")).FullName;
+            File.WriteAllText(Path.Combine(directory, "P.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+            var snapshot = new RepositoryScanner().Scan(repo);
+
+            var pkg = Assert.Single(snapshot.Packages);
+            Assert.Equal("..\\x/P.csproj", pkg.RelativePath);
+            Assert.DoesNotContain("../", pkg.RelativePath, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TempTree.Delete(repo);
+        }
+    }
+
     [Fact]
     public void Scan_csproj_finds_PackageId_and_Description_split_across_multiple_PropertyGroups()
     {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 using System.Diagnostics;
 using OkfProducer.Core.Generation;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.Generation;
 
@@ -351,16 +352,7 @@ public class GitRevisionTests
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Path, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Path);
         }
     }
 }

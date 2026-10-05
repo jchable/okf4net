@@ -6,6 +6,7 @@ using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Generation;
 using OkfProducer.Core.Scanning;
 using OkfProducer.Core.Validation;
+using OkfProducer.Tests.TestSupport;
 using TreeSitterExtractor = OkfProducer.CodeGraph.TreeSitter.TreeSitterExtractor;
 
 namespace OkfProducer.Tests.Generation;
@@ -469,16 +470,7 @@ internal static class ProducerFixture
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Path, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Path);
         }
     }
 

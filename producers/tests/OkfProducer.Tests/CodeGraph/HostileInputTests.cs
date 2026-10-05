@@ -25,17 +25,7 @@ public class HostileInputTests : IDisposable
 
         foreach (var directory in _tempDirectories)
         {
-            try
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup; a locked file on the way out should not fail the test run.
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(directory);
         }
     }
 
@@ -54,18 +44,25 @@ public class HostileInputTests : IDisposable
     private static OkfProducer.Core.CodeGraph.CodeGraph BuildWith(params (string Path, FileStatus Status)[] files)
     {
         var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-").FullName;
-        foreach (var (path, _) in files)
+        try
         {
-            var fullPath = Path.Combine(repoPath, path.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-            File.WriteAllText(fullPath, string.Empty);
+            foreach (var (path, _) in files)
+            {
+                var fullPath = Path.Combine(repoPath, path.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+                File.WriteAllText(fullPath, string.Empty);
+            }
+
+            var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+            var statusByPath = files.ToDictionary(f => f.Path, f => f.Status);
+            var builder = new CodeGraphBuilder(new StubExtractor(statusByPath), [CSharpProfile.Instance], []);
+
+            return builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
         }
-
-        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
-        var statusByPath = files.ToDictionary(f => f.Path, f => f.Status);
-        var builder = new CodeGraphBuilder(new StubExtractor(statusByPath), [CSharpProfile.Instance], []);
-
-        return builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+        finally
+        {
+            TempTree.Delete(repoPath);
+        }
     }
 
     [Theory]
@@ -927,47 +924,126 @@ public class HostileInputTests : IDisposable
         Assert.Empty(graph.Symbols);
     }
 
-    [Fact]
-    public void A_circular_reparse_point_degrades_the_run_to_incomplete_instead_of_crashing()
+    [DirectoryLinkFact]
+    public void A_circular_directory_link_is_not_entered_and_the_run_still_finds_its_real_files()
     {
-        // Measured (see task-4-report.md's fix section): Directory.EnumerateFiles does not detect a
-        // junction pointing back at one of its own ancestors -- it keeps recursing into it, extending
-        // the accumulated path a level deeper on every re-entry, and throws PathTooLongException
-        // within a fraction of a second, nowhere near ExtractionLimits.Timeout. Left uncaught that
-        // would crash Build entirely instead of returning even a partial CodeGraph.
+        // #118. This used to assert, on every host, that the walk FAILED (TraversalComplete false)
+        // because it followed the link until Windows threw PathTooLongException -- an accident of one
+        // platform, and the test failed on Linux, where the walk instead followed the link until the
+        // kernel stopped resolving hops (42 paths for one link) and reported a complete traversal.
+        // Neither is what a link in a repository should do. The walk now never enters a directory
+        // link, on any host, so the loop costs nothing: the real file is found once, the link is named,
+        // and the run is not "complete" because something was left unanalysed. TraversalComplete stays
+        // true -- the pruning gate keys off it, and nothing a link hides could have been extracted.
         var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-circular-").FullName;
         _tempDirectories.Add(repoPath);
         var sub = Path.Combine(repoPath, "a");
         Directory.CreateDirectory(sub);
         File.WriteAllText(Path.Combine(sub, "File.cs"), "namespace N;\npublic class T {}");
-        var loop = Path.Combine(sub, "loop");
+        DirectoryLinks.Create(Path.Combine(sub, "loop"), sub);
 
-        if (!TryCreateJunction(loop, sub))
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+        var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.True(graph.Status.TraversalComplete);
+        Assert.False(graph.Status.IsComplete);
+        Assert.Equal(["a/loop"], graph.Status.LinkedDirectories);
+        Assert.Equal([("a/File.cs", FileStatus.Extracted)], graph.Status.Skipped);
+        Assert.Single(graph.Symbols, s => s.Name == "T");
+    }
+
+    [DirectoryLinkFact]
+    public void Several_links_back_to_an_ancestor_do_not_multiply_the_walk()
+    {
+        // #118, the shape that made the walk unbounded on Linux: one self-link costs 42 paths there
+        // (the kernel refuses a 41st hop), but every level can take ANY of the links, so with two the
+        // count multiplies per level -- measured: 432,906 paths when the run was abandoned after 15
+        // seconds, still climbing; three were no better. Asserted by what the walk returns, never by a
+        // clock: exactly one file, however many links there are. (Not run against the old walk: a
+        // standalone walk with the same options did not finish in 15 seconds.)
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-selflinks-").FullName;
+        _tempDirectories.Add(repoPath);
+        var sub = Path.Combine(repoPath, "a");
+        Directory.CreateDirectory(sub);
+        File.WriteAllText(Path.Combine(sub, "File.cs"), "namespace N;\npublic class T {}");
+        foreach (var name in new[] { "l0", "l1", "l2" })
         {
-            return; // Same graceful skip as the sibling reparse-point tests when this environment
-                    // cannot create one (see TryCreateJunction).
+            DirectoryLinks.Create(Path.Combine(sub, name), sub);
         }
 
-        try
-        {
-            var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
-            var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+        var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
 
-            var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
 
-            Assert.False(graph.Status.TraversalComplete);
-            Assert.False(graph.Status.IsComplete);
-        }
-        finally
+        Assert.Equal([("a/File.cs", FileStatus.Extracted)], graph.Status.Skipped);
+        Assert.Equal(["a/l0", "a/l1", "a/l2"], graph.Status.LinkedDirectories);
+    }
+
+    [DirectoryLinkFact]
+    public void A_link_to_a_directory_elsewhere_in_the_repository_is_named_and_its_target_is_still_walked_once()
+    {
+        // Not a cycle, so nothing here would have looped. The policy is the same for every directory
+        // link, which is what keeps it explainable: files reached through one were already refused by
+        // the extractor (SkippedSymlink), so entering it only produced duplicates of the real thing.
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-sibling-").FullName;
+        _tempDirectories.Add(repoPath);
+        var real = Path.Combine(repoPath, "real");
+        Directory.CreateDirectory(real);
+        File.WriteAllText(Path.Combine(real, "File.cs"), "namespace N;\npublic class T {}");
+        DirectoryLinks.Create(Path.Combine(repoPath, "alias"), real);
+
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+        var builder = new CodeGraphBuilder(_extractor, [CSharpProfile.Instance], []);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.Equal([("real/File.cs", FileStatus.Extracted)], graph.Status.Skipped);
+        Assert.Equal(["alias"], graph.Status.LinkedDirectories);
+        Assert.False(graph.Status.IsComplete);
+    }
+
+    [Fact]
+    public void Hidden_and_system_files_and_directories_are_still_walked()
+    {
+        // #118. WalkOptions sets AttributesToSkip = 0 on purpose, overriding .NET's default of
+        // Hidden | System. Nothing pinned it: a tidy-looking "use the defaults" edit would silently
+        // drop every such file from the graph, with no failure anywhere. Hidden is set the way each
+        // platform spells it -- on Unix a leading dot IS the attribute and File.SetAttributes cannot
+        // set it; on Windows the attribute is real and a dot means nothing -- and System can only be set
+        // on Windows, so there the file gets both.
+        var repoPath = Directory.CreateTempSubdirectory("okfproducer-hostile-attributes-").FullName;
+        _tempDirectories.Add(repoPath);
+
+        var files = new List<string> { ".Dotted.cs", ".dotted-dir/Inside.cs", "Plain.cs" };
+        foreach (var relative in files)
         {
-            // Dispose()'s recursive Directory.Delete does not follow a junction into its target (a
-            // non-recursive delete on the junction path alone confirmed that, and leaves the target
-            // untouched) -- but a RECURSIVE delete rooted above the junction throws partway through
-            // instead of skipping cleanly over it, which Dispose()'s best-effort catch then silently
-            // swallows, leaking this whole temp directory. Unlinking the junction itself first (never
-            // recursive -- that would follow it into the target) avoids the leak entirely.
-            Directory.Delete(loop, recursive: false);
+            var full = Path.Combine(repoPath, relative.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            File.WriteAllText(full, string.Empty);
         }
+
+        if (OperatingSystem.IsWindows())
+        {
+            File.SetAttributes(Path.Combine(repoPath, "Plain.cs"), FileAttributes.Hidden | FileAttributes.System);
+            File.SetAttributes(Path.Combine(repoPath, ".dotted-dir"), FileAttributes.Directory | FileAttributes.Hidden);
+            files.Add("Hidden.cs");
+            File.WriteAllText(Path.Combine(repoPath, "Hidden.cs"), string.Empty);
+            File.SetAttributes(Path.Combine(repoPath, "Hidden.cs"), FileAttributes.Hidden);
+        }
+
+        var snapshot = new RepositorySnapshot(repoPath, "test-repo", [], []);
+        var statusByPath = files.ToDictionary(f => f, _ => FileStatus.Extracted);
+        var builder = new CodeGraphBuilder(new StubExtractor(statusByPath), [CSharpProfile.Instance], []);
+
+        var graph = builder.Build(snapshot, ExtractionLimits.Default, ScopeOptions.Default);
+
+        Assert.True(graph.Status.TraversalComplete);
+        Assert.Equal(
+            files.OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            graph.Status.Skipped.Select(s => s.Path).OrderBy(p => p, StringComparer.Ordinal).ToArray());
     }
 
     // E5: one inaccessible directory degrades the run instead of emptying the whole file list. Before
@@ -1131,16 +1207,7 @@ public class HostileInputTests : IDisposable
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Path, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Path);
         }
     }
 

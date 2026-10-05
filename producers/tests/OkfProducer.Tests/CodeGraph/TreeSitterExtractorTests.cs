@@ -3,6 +3,7 @@ using OkfProducer.CodeGraph.TreeSitter;
 using OkfProducer.CodeGraph.TreeSitter.Profiles;
 using OkfProducer.Core.CodeGraph;
 using OkfProducer.Core.Scanning;
+using OkfProducer.Tests.TestSupport;
 
 namespace OkfProducer.Tests.CodeGraph;
 
@@ -17,17 +18,7 @@ public class TreeSitterExtractorTests : IDisposable
 
         foreach (var directory in _tempDirectories)
         {
-            try
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup; a locked file on the way out should not fail the test run.
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(directory);
         }
     }
 

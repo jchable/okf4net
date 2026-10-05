@@ -420,16 +420,7 @@ public class BundlePathsTests
 
         public void Dispose()
         {
-            try
-            {
-                Directory.Delete(Path, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TempTree.Delete(Path);
         }
     }
 }
