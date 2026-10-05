@@ -58,7 +58,8 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
             # be told about it before the retry.
             #
             # Which tmpfs is the host's choice, so the path is never written here: the
-            # executor sets TMPDIR to the first configured mount, and gettempdir()
+            # ContainerIsolation.ToRunSpec sets TMPDIR to the first configured mount
+            # (unless the profile's Environment already sets one), and gettempdir()
             # follows it. That is load-bearing twice -- pip unpacks and builds in
             # TMPDIR too, so even a correct --target fails when TMPDIR is left
             # pointing at a read-only /tmp.
@@ -73,9 +74,12 @@ public sealed class SqlClientComputationExecutor(IContainerEngine engine, Contai
         sql = envelope['sql']
         values = envelope.get('values') or {}
         u = urlparse(os.environ['OKF_CONN'])
-        # urlparse hands userinfo back still percent-encoded; libpq decodes it,
-        # so a password spelled `p%40ss` (the only way to write `p@ss` in a URL)
-        # must be decoded here or it never authenticates.
+        # urlparse hands userinfo back still percent-encoded, and libpq decodes it,
+        # so it has to be decoded here too: a password written `p%40ss` would
+        # otherwise be sent as those literal characters and never authenticate.
+        # (urlparse splits userinfo off at the rightmost `@`, so a raw `p@ss` also
+        # parses; percent-encoding is how a URL is meant to carry it, not the only
+        # spelling urlparse accepts.)
         conn = pg8000.native.Connection(
             user=unquote(u.username or ''), password=unquote(u.password or ''),
             host=u.hostname, port=u.port or 5432, database=unquote(u.path.lstrip('/')))
