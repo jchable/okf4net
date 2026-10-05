@@ -81,6 +81,32 @@ public class ContainerRuntimeProfileTests
     }
 
     /// <summary>
+    /// The attester's ceilings are deliberately smaller than the executors' (an attester
+    /// is a pure function over its inputs, never a network call), and the
+    /// <c>&gt; 0</c> checks above would let a change that widened them back to
+    /// <see cref="ContainerIsolation"/>'s own defaults go unnoticed. These are the numbers
+    /// <see cref="ContainerAttesterOptions.Isolation"/> documents; changing one should be
+    /// a deliberate edit to this test, visible in the diff. The last four lines pin that
+    /// the attester differs from a default executor profile on each ceiling.
+    /// </summary>
+    [Fact]
+    public void The_attester_options_default_to_their_documented_smaller_ceilings()
+    {
+        var isolation = new ContainerAttesterOptions().Isolation;
+
+        Assert.Equal(256L * 1024 * 1024, isolation.MemoryBytes);
+        Assert.Equal(0.5, isolation.Cpus);
+        Assert.Equal(32, isolation.PidsLimit);
+        Assert.Equal(TimeSpan.FromSeconds(30), isolation.Timeout);
+
+        var executor = new ContainerIsolation();
+        Assert.True(isolation.MemoryBytes < executor.MemoryBytes);
+        Assert.True(isolation.Cpus < executor.Cpus);
+        Assert.True(isolation.PidsLimit < executor.PidsLimit);
+        Assert.True(isolation.Timeout < executor.Timeout);
+    }
+
+    /// <summary>
     /// Network isolation defaults by kind and is overridable on the profile, which
     /// is the point of moving it off the executors: a host that vendors its SQL
     /// driver into its own image can close the SqlClient path down, and one that
