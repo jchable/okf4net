@@ -56,7 +56,17 @@ namespace OKF4net.Tests;
 /// proves the link pass ran, not just the file walk), the bundle staying
 /// producer-grade under <see cref="BundleValidator"/>, and one deliberately
 /// generous time ceiling — see <see cref="PathologicalCeiling"/>.</para>
+///
+/// <para><b>Runs alone.</b> The class sits in a collection with
+/// parallelization disabled (<see cref="BundleLoadPerformanceCollection"/>),
+/// which xunit runs by itself after every parallel collection has finished.
+/// Writing and loading 2,001 files is a burst of disk and CPU work (and of
+/// on-access scanning on Windows); run alongside the rest of the suite, it
+/// pushed a wall-clock-bounded test in <c>CliContainerEngineRunTests</c> over
+/// its bound on a Windows CI runner, and the suite's own load would in turn
+/// leak into these numbers.</para>
 /// </summary>
+[Collection(BundleLoadPerformanceCollection.Name)]
 public class BundleLoadPerformanceTests
 {
     private static readonly string[] Domains = ["datasets", "tables", "metrics", "guides"];
@@ -244,4 +254,16 @@ public class BundleLoadPerformanceTests
 
     private static string Rate(int count, TimeSpan t) =>
         t.TotalSeconds > 0 ? string.Create(CultureInfo.InvariantCulture, $"{count / t.TotalSeconds:N0}") : "n/a";
+}
+
+/// <summary>
+/// Runs <see cref="BundleLoadPerformanceTests"/> with no other test alongside it:
+/// xunit executes a collection that disables parallelization on its own, after
+/// all the parallel ones.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class BundleLoadPerformanceCollection
+{
+    /// <summary>The collection's name, shared by the definition and the test class.</summary>
+    public const string Name = "Bundle.Load performance baseline";
 }
