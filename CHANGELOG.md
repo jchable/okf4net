@@ -17,6 +17,16 @@ and this project adheres to
   a scripted `IChatClient` standing in for the model, so the Agent Framework's
   real tool-calling pipeline executes the tools. Standalone solution, not part
   of `OKF4net.sln`/CI; it never writes to the bundle.
+- **`OkfDocumentBuilder.SharedUsageWindow(UsageWindow)` (§5.1).** A typed setter
+  for the shared, top-level `usage_window` — the period every entry's
+  `usage_count` is counted over, written once as a sibling of `sources`. The
+  builder could already write a per-entry override (`AddSource(…, usageWindow:)`),
+  but the shared window, §5.1's normal case, had to be hand-built and passed
+  through `Extension("usage_window", …)`. It is written right after `sources`
+  (also when no source was added), a window with no bounds stays the empty
+  mapping `usage_window: {}`, and an `Extension("usage_window", …)` call still
+  wins as before. A per-entry override and the shared window now share one
+  internal serialization, so they cannot drift.
 
 ### Changed
 

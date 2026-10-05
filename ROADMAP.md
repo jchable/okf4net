@@ -72,13 +72,6 @@ are the concrete entry points.
   therefore contained to one method — it is the *interaction* with the late
   reparse-point re-check and the lock that needs the tests, not a scattered
   edit.
-- **A typed `OkfDocumentBuilder` method for the shared `usage_window`.** The
-  builder can now write a *per-entry* §5.1 override (`AddSource(…,
-  usageWindow:)`), but the shared, top-level `usage_window` — §5.1's normal
-  case, the one that frames every `usage_count` in a document — has no typed
-  setter: a producer must hand-build its `{ from, to }` mapping and pass it
-  through `Extension("usage_window", …)`. The builder currently makes the
-  exception easier to write than the rule.
 - More `OKF4net.Agents` samples with Microsoft Agent Framework — the first,
   `samples/acme-retail-agent`, shipped in 0.4.0, and
   `samples/agents-quickstart` (no model or API key needed) followed; more

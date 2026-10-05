@@ -229,4 +229,87 @@ public class OkfDocumentBuilderTests
         Assert.Equal(first.Frontmatter, second.Frontmatter);
         Assert.Equal(first.Body, second.Body);
     }
+
+    [Fact]
+    public void SharedUsageWindow_writes_the_top_level_window_right_after_sources()
+    {
+        var window = new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z");
+        var doc = OkfDocumentBuilder.ForType("t")
+            .Title("x")
+            .AddSource(resource: "README.md", usageCount: 3)
+            .SharedUsageWindow(window)
+            .Extension("custom_field", new YamlString("v"))
+            .Body("")
+            .Build();
+
+        Assert.Equal(window, doc.Frontmatter.UsageWindow);
+        Assert.Equal(
+            new[] { "type", "title", "sources", "usage_window", "custom_field" },
+            doc.Frontmatter.AsMapping().Keys.ToList());
+    }
+
+    [Fact]
+    public void A_shared_window_round_trips_through_serialization()
+    {
+        var window = new UsageWindow("2026-01-01T00:00:00Z", null);
+        var text = OkfDocumentBuilder.ForType("t")
+            .AddSource(resource: "README.md", usageCount: 3)
+            .SharedUsageWindow(window)
+            .Body("")
+            .Build()
+            .Serialize();
+
+        var reparsed = OkfDocument.Parse(text);
+
+        Assert.Equal(window, reparsed.Frontmatter.UsageWindow);
+        Assert.Null(reparsed.Frontmatter.UsageWindow!.Value.To);
+    }
+
+    [Fact]
+    public void An_empty_shared_window_is_kept_as_an_empty_mapping()
+    {
+        var doc = OkfDocumentBuilder.ForType("t")
+            .SharedUsageWindow(new UsageWindow(null, null))
+            .Body("")
+            .Build();
+
+        var mapping = Assert.IsType<YamlMapping>(doc.Frontmatter.AsMapping().Get("usage_window"));
+        Assert.True(mapping.IsEmpty);
+        Assert.NotNull(OkfDocument.Parse(doc.Serialize()).Frontmatter.UsageWindow);
+    }
+
+    [Fact]
+    public void The_per_entry_override_and_the_shared_window_serialize_identically()
+    {
+        foreach (var window in new[]
+        {
+            new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"),
+            new UsageWindow("2026-01-01T00:00:00Z", null),
+            new UsageWindow(null, "2026-01-31T00:00:00Z"),
+            new UsageWindow(null, null),
+        })
+        {
+            var entry = (YamlMapping)Provenance.ToYaml([new Source(null, "r", null, null, null, null, window)]).Items[0];
+
+            Assert.Equal(
+                YamlEmitter.Emit(entry.Get("usage_window")!),
+                YamlEmitter.Emit(Provenance.UsageWindowToYaml(window)));
+        }
+    }
+
+    [Fact]
+    public void An_Extension_call_on_usage_window_still_wins_as_documented()
+    {
+        var shared = new YamlMapping();
+        shared.Insert("from", new YamlString("2020-01-01T00:00:00Z"));
+
+        var doc = OkfDocumentBuilder.ForType("t")
+            .SharedUsageWindow(new UsageWindow("2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z"))
+            .Extension("usage_window", shared)
+            .Body("")
+            .Build();
+
+        Assert.Equal(new UsageWindow("2020-01-01T00:00:00Z", null), doc.Frontmatter.UsageWindow);
+        Assert.Equal(1, doc.Frontmatter.AsMapping().Keys.Count(k => k == "usage_window"));
+    }
 }
