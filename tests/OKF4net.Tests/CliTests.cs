@@ -54,6 +54,26 @@ public class CliTests
         Assert.Contains("USAGE:", r.Out);
     }
 
+    /// <summary>
+    /// <c>help</c> and <c>version</c> also work as bare commands (#11); the usage
+    /// text must say so, and each must answer exactly like its flag form.
+    /// </summary>
+    [Fact]
+    public void Bare_help_and_version_commands_are_documented_and_match_their_flags()
+    {
+        var usage = Run("--help").Out;
+        Assert.Contains("\n    help ", usage, StringComparison.Ordinal);
+        Assert.Contains("\n    version ", usage, StringComparison.Ordinal);
+
+        var help = Run("help");
+        Assert.Equal(0, help.Code);
+        Assert.Equal(usage, help.Out);
+
+        var version = Run("version");
+        Assert.Equal(0, version.Code);
+        Assert.Equal(Run("--version").Out, version.Out);
+    }
+
     // Every verb, and every flag each one actually accepts. Kept here rather
     // than derived from the CLI's own tables so the tests fail if a verb
     // silently loses a flag.

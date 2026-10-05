@@ -191,6 +191,31 @@ doc.ValidateConformance(); // throws DocumentValidationException on failure
 var text = doc.Serialize();
 ```
 
+Reading and appending to a bundle's `log.md` change history (§9):
+
+```csharp
+using System.Globalization;
+using OKF4net;
+
+var log = ChangeLog.Parse(File.ReadAllText("./my_bundle/log.md"));
+foreach (var day in log.Days) // newest first, by convention
+{
+    foreach (var entry in day.Entries)
+    {
+        Console.WriteLine($"{day.Date} {entry.Kind}: {entry.Text}"); // Kind is null without a **bold** marker
+    }
+}
+
+// Days are immutable records: build the new list, then re-render.
+var today = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+var added = new LogEntry("Update", "Documented the refunds table.");
+var days = log.Days.ToList();
+var i = days.FindIndex(d => d.Date == today);
+if (i >= 0) days[i] = days[i] with { Entries = [.. days[i].Entries, added] };
+else days.Insert(0, new LogDay(today, [added]));
+File.WriteAllText("./my_bundle/log.md", new ChangeLog(log.Title, days).ToMarkdown());
+```
+
 ### As a CLI
 
 On Windows, install via [winget](https://github.com/microsoft/winget-pkgs):
@@ -227,6 +252,8 @@ okf index    <bundle>    (Re)generate every index.md in the bundle
 okf graph    <bundle>    Print the cross-link graph (--dot for Graphviz DOT)
 okf parse    <file>      Parse one concept document and print its structure
 okf fmt      <file>      Normalize a document by parse + re-serialize (-w writes)
+okf help                 Show this help (same as -h, --help)
+okf version              Show version (same as -V, --version)
 ```
 
 Every verb takes `-h`/`--help` for its own usage and option list. Arguments are
@@ -235,7 +262,9 @@ positional, is an error rather than silently ignored — so a typo'd flag never
 runs the command with different behaviour than you asked for.
 
 `okf validate` exits non-zero when a bundle is not conformant, so it drops
-straight into CI:
+straight into CI. No bundle of your own yet? The repository ships sample
+bundles under [`bundles/`](bundles/README.md) — `ga4` validates with no
+warnings, so it is a good first target:
 
 ```sh
 okf validate ./bundles/ga4
