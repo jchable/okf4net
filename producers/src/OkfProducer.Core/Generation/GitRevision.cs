@@ -34,9 +34,14 @@ public static class GitRevision
     /// <summary>How long one <c>git</c> invocation may take before it is abandoned and the outside-git fallback applies.</summary>
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>The absolute path of <c>git</c> found on <c>PATH</c>, or <see langword="null"/>. See <see cref="ResolveOnPath"/>.</summary>
+    internal static string? ResolveGitExecutable() => ResolveOnPath("git");
+
     /// <summary>
-    /// The absolute path of <c>git</c> found on <c>PATH</c>, or <see langword="null"/> when it is not
-    /// there.
+    /// The absolute path of the executable called <paramref name="baseName"/> found on <c>PATH</c>, or
+    /// <see langword="null"/> when it is not there. <see cref="ResolveGitExecutable"/> and the <c>dotnet</c>
+    /// lookup in <c>MsBuildProjectQuery</c> are the two callers; the reasoning below was written for <c>git</c>
+    /// and holds for both.
     ///
     /// <para><b>Why this exists at all, rather than handing <c>"git"</c> straight to
     /// <see cref="ProcessStartInfo"/>.</b> A bare executable name lets Windows' <c>CreateProcess</c>
@@ -79,14 +84,18 @@ public static class GitRevision
     /// the whole launch instead of continuing to the next <c>PATH</c> entry the way a real PATH search
     /// would.</para>
     ///
-    /// <para><b>Adjacent, not closed here.</b> <c>MsBuildProjectQuery</c>
-    /// (<c>OkfProducer.CodeGraph.Roslyn</c>) starts a bare <c>dotnet</c> the same unguarded way this
-    /// method exists to stop <c>git</c> from being started -- left alone because it only runs without
-    /// <c>--no-msbuild</c>, where MSBuild project evaluation already executes arbitrary code from the
-    /// scanned repository (see <c>GenerateRun</c>'s remarks), so resolving <c>dotnet</c> off <c>PATH</c>
-    /// there would not remove an execution surface, only rename it.</para>
+    /// <para><b>The same search order is also a correctness problem, not only a security one (#112).</b>
+    /// The application directory comes first, and the application is whatever process is running: under
+    /// <c>dotnet exec OkfProducer.Cli.dll</c> it is <c>dotnet</c> itself, so a bare <c>"dotnet"</c> start
+    /// finds the HOSTING install and never looks at <c>PATH</c>, while the apphost, <c>dotnet run</c> and
+    /// an MSBuild <c>&lt;Exec&gt;</c> of the apphost have no <c>dotnet</c> beside them and do read
+    /// <c>PATH</c>. Same environment, same <c>PATH</c>, two different <c>dotnet</c>s -- which is why every
+    /// variable compared between the clean and the degraded run came out identical. A scanned
+    /// repository whose <c>global.json</c> pins an SDK that only the <c>PATH</c> install has was then
+    /// queried by an install that does not, and the project degraded to <c>MsBuildQueryFailed</c> with
+    /// exit code 0. <c>MsBuildProjectQuery</c> now resolves <c>dotnet</c> here too.</para>
     /// </summary>
-    internal static string? ResolveGitExecutable()
+    internal static string? ResolveOnPath(string baseName)
     {
         IEnumerable<string> names;
         if (OperatingSystem.IsWindows())
@@ -108,11 +117,11 @@ public static class GitRevision
             // `PATHEXT=EXE`, missing every leading dot) rather than searching PATH with an empty
             // candidate list and finding git unconditionally absent.
             var extensions = filtered.Length > 0 ? filtered : defaultExtensions;
-            names = extensions.Select(ext => "git" + ext);
+            names = extensions.Select(ext => baseName + ext);
         }
         else
         {
-            names = ["git"];
+            names = [baseName];
         }
 
         foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)

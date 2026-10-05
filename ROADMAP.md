@@ -326,19 +326,19 @@ are the concrete entry points.
   no-`--repo-url` fallback, kept deliberately: omitting the field costs the same 10 warnings
   (measured, 2026-09-03) and the path is the only pointer those concepts have to their own subject.
   See `producers/README.md`, "What `--repo-url` changes".
-- **Known limitation: `dotnet exec <dll>` can silently degrade an SDK-8-pinned sub-project —
-  investigation open.** Measured (2026-09-15): building the solution and running
-  `dotnet exec <path-to>/OkfProducer.Cli.dll generate --repo <repo> --out <bundle>` against a
-  scanned repository whose sub-project pins SDK 8 via `global.json`, with a real SDK 8 installed,
-  silently degrades that sub-project's Roslyn resolution — the run exits `0` and writes a bundle,
-  with only a `note: <project>.csproj: not compiled (MsBuildQueryFailed) ... A compatible .NET SDK
-  was not found. Requested SDK version: 8.0.100` marking it. The same reproduction against
-  `dotnet run --project producers/src/OkfProducer.Cli -- generate …` (the documented invocation),
-  the native apphost (`OkfProducer.Cli.exe`), and the native apphost run from inside an MSBuild
-  `<Exec>` target were all confirmed clean. Every `DOTNET_*`/`MSBuild*` environment variable and
-  `PATH` were confirmed identical between the clean and the degraded run, so the cause is not one
-  of those — not yet root-caused further. See `producers/README.md`, "Known limitation:
-  `dotnet exec <dll>`…".
+- **Fixed (#112): `dotnet exec <dll>` queried a different `dotnet` than every other way of
+  launching the producer.** Reported 2026-09-15 as silent degradation of an SDK-8-pinned
+  sub-project (exit `0`, only a `note: … not compiled (MsBuildQueryFailed)`), with every
+  `DOTNET_*`/`MSBuild*` variable and `PATH` identical between the clean and the degraded run. They
+  were identical because the difference is not in the environment: `Process.Start("dotnet")`
+  searches the *running application's* directory before `PATH`, and under `dotnet exec` the
+  application is `dotnet` itself, so the child was the hosting install while the apphost,
+  `dotnet run` and an MSBuild `<Exec>` of the apphost read `PATH`. A repository whose
+  `global.json` pins an SDK only the `PATH` install has was queried by one that lacks it.
+  `MsBuildProjectQuery` now resolves `dotnet` against `PATH` (the same resolver `git` already
+  had) and falls back to the hosting install only when `PATH` has none. Reproduced and verified
+  2026-10-05 on Windows with a runtime-only second install as the host (SDK 8 itself was not
+  installed); see `producers/README.md`.
 - **Measured and dropped: parallel `dotnet msbuild` queries.** Measured (2026-09-15) on a 20-core
   host with SDK 10.0.204, against a throwaway prototype querying each dependency wave with
   `MaxDegreeOfParallelism = Math.Min(ProcessorCount, 4)` (4 here), 5 warm runs per configuration
