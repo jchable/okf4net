@@ -424,6 +424,15 @@ var response = await agent.RunAsync("Search the bundle for concepts about refund
 Console.WriteLine(response.Text);
 ```
 
+To see this run before choosing a model,
+[`samples/agents-quickstart/`](samples/agents-quickstart/README.md) does it with
+no LLM endpoint, API key or network access: it lists the tools, calls two of
+them directly, then drives the same `AsAIAgent` wiring — with the read-only
+tool list — through a scripted `IChatClient` against `bundles/ga4`
+(`dotnet run --project samples/agents-quickstart/src/AgentsQuickstart`).
+[`samples/acme-retail-agent/`](samples/acme-retail-agent/README.md) is the
+same kind of agent over a real OpenAI-compatible endpoint.
+
 The twelve unconditional tools, plus the thirteenth conditional on an attestation
 orchestrator being wired (read → browse → graph → search → audit → write →
 verify → append → regenerate → validate → changes-since → get-computation → run-computation):

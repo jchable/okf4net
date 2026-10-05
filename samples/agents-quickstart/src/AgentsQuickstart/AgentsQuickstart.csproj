@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>OKF4net.Samples.AgentsQuickstart</RootNamespace>
+    <AssemblyName>AgentsQuickstart</AssemblyName>
+  </PropertyGroup>
+
+  <!--
+    Deliberately one ProjectReference and zero PackageReference:
+    Microsoft.Agents.AI (and Microsoft.Extensions.AI behind it) arrive
+    transitively through OKF4net.Agents, at exactly the version it was built
+    against. There is no OpenAI/Azure client here because there is no real
+    model; see ScriptedChatClient.cs.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\src\OKF4net.Agents\OKF4net.Agents.csproj" />
+  </ItemGroup>
+
+</Project>
